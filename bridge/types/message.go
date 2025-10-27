@@ -15,19 +15,19 @@ type Message struct {
 	// CreatedAt is the timestamp when the message was created.
 	//
 	// The _TTL_ (time-to-live) is calculated from this timestamp.
-	CreatedAt time.Time
+	CreatedAt time.Time `json:"created"`
 	// Topic is the topic of the message. This is always a concrete topic string and do never contain
 	// any wildcards.
-	Topic string
+	Topic string `json:"topic"`
 	// Payload is the payload of the message.
-	Payload []byte
+	Payload []byte `json:"payload,omitempty"`
 	// Qos is the QoS level of the message.
-	Qos *QosLevel
+	Qos *QosLevel `json:"qos,omitempty"`
 	// TTL is a optional _Time-To-Live_ in nanoseconds for the message as a duration. When zero,
 	// the message does not expire.
-	TTL time.Duration
+	TTL time.Duration `json:"ttl,omitzero"`
 	// Metadata is any additional metadata associated with the message.
-	Metadata map[string]any
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // IsExpired checks whether the message has expired based on its TTL and CreatedAt timestamp.

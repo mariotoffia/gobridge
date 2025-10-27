@@ -24,6 +24,8 @@ type LogCreator func(ctx context.Context, level LogLevel) Logger
 //
 // It is used to allow different logging implementations to be plugged into the system.
 type Logger interface {
+	// WhenLevel executes the provided function if the current log level is equal to or higher than the specified level.
+	WhenLevel(level LogLevel, fn func(l Logger)) Logger
 	WithMethod(method string) Logger
 	WithService(service string) Logger
 	AsJSON(key string, value any) Logger
@@ -33,4 +35,8 @@ type Logger interface {
 	Error(err error) Logger
 	Msg(msg string)
 	Msgf(format string, args ...any)
+	// Sets the global log level for all loggers.
+	//
+	// CAUTION: Use this with caution as it affects all logging.
+	SetGlobalLevel(level LogLevel) Logger
 }

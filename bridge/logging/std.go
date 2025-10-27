@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/mariotoffia/gobridge/bridge/types"
 )
+
+var globalLevel int32 = int32(slog.LevelInfo)
 
 // StandardLogger is a basic implementation of the Logger interface using golang standard log package.
 type StandardLogger struct {
@@ -20,6 +23,23 @@ func NewSlogCreator(base *slog.Logger) types.LogCreator {
 	return func(ctx context.Context, level types.LogLevel) types.Logger {
 		return &StandardLogger{logger: base, level: level, ctx: ctx}
 	}
+}
+
+func (l *StandardLogger) SetGlobalLevel(level types.LogLevel) types.Logger {
+	slv := toSlogLevel(level)
+
+	atomic.StoreInt32(&globalLevel, int32(slv))
+	slog.SetLogLoggerLevel(slv)
+
+	return l
+}
+
+func (l *StandardLogger) WhenLevel(level types.LogLevel, fn func(l types.Logger)) types.Logger {
+	if l.level <= types.LogLevel(atomic.LoadInt32(&globalLevel)) {
+		fn(l)
+	}
+
+	return l
 }
 
 func (l *StandardLogger) WithMethod(method string) types.Logger {
@@ -51,14 +71,14 @@ func (l *StandardLogger) Error(err error) types.Logger {
 	return l
 }
 func (l *StandardLogger) Msg(msg string) {
-	l.logger.LogAttrs(l.ctx, l.toSlogLevel(), msg, l.attrs...)
+	l.logger.LogAttrs(l.ctx, toSlogLevel(l.level), msg, l.attrs...)
 }
 func (l *StandardLogger) Msgf(format string, args ...any) {
-	l.logger.LogAttrs(l.ctx, l.toSlogLevel(), fmt.Sprintf(format, args...), l.attrs...)
+	l.logger.LogAttrs(l.ctx, toSlogLevel(l.level), fmt.Sprintf(format, args...), l.attrs...)
 }
 
-func (l *StandardLogger) toSlogLevel() slog.Level {
-	switch l.level {
+func toSlogLevel(level types.LogLevel) slog.Level {
+	switch level {
 	case types.LogLevelDebug:
 		return slog.LevelDebug
 	case types.LogLevelInfo:
