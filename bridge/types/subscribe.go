@@ -47,9 +47,6 @@ type TopicSubscriberManager interface {
 	RemoveTopicSubscriber(topic string, callback TopicSubscriber) error
 }
 
-// TopicSubscriberAdapter is an adapter to allow the use of ordinary functions as `TopicSubscriber` interfaces.
-type TopicSubscriberAdapter func(ctx context.Context, topic string, payload Message) error
-
 // ChainableSubscriber is an interface that allows chaining of subscribers to create middleware-like behavior.
 type ChainableSubscriber interface {
 	Next(ctx context.Context, topic string, payload Message, next ChainableSubscriber) error
@@ -66,9 +63,4 @@ func ChainSubscriber(s TopicSubscriber, middlewares ...SubscriberMiddleware) Top
 	}
 
 	return s
-}
-
-// Subscribe calls the underlying function of the TopicSubscriberAdapter.
-func (f TopicSubscriberAdapter) Subscribe(ctx context.Context, topic string, payload Message) error {
-	return f(ctx, topic, payload)
 }

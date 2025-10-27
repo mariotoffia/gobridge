@@ -15,14 +15,14 @@ type FactoryLoggerOptions struct {
 	Error bool
 }
 
-// New creates a PublisherMiddleware that logs publishing actions based on the provided _settings_.
+// NewPublish creates a PublisherMiddleware that logs publishing actions based on the provided _settings_.
 //
 // If Neither `Before` nor `After` nor `Error` is set to true, the middleware will not log anything.
 //
 // NOTE: It will only log the payload and options at Trace log level to avoid excessive logging at higher levels.
 //
 // It logs using the `types.LogLevelInfo` level for normal operations and `types.LogLevelError` for errors.
-func New(logger types.LogCreator, settings FactoryLoggerOptions) types.PublisherMiddleware {
+func NewPublish(logger types.LogCreator, settings FactoryLoggerOptions) types.PublisherMiddleware {
 	return func(next types.Publisher) types.Publisher {
 		return types.PublisherAdapter(
 			func(ctx context.Context, topic string, payload types.Message, opts types.PublishOptions) error {
