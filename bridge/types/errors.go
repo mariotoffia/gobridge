@@ -5,6 +5,40 @@ import (
 	"fmt"
 )
 
+var (
+	//
+	// Temporary / retryable (recoverable) errors
+	//
+	ErrServerUnavailable  = NewBridgeError("server unavailable", true, 503)
+	ErrNetworkUnavailable = NewBridgeError("network unavailable", true, 503)
+	ErrBrokerOverload     = NewBridgeError("broker overloaded", true, 503)
+	ErrPublishTimeout     = NewBridgeError("publish timeout", true, 504)
+	ErrBackoff            = NewBackoffError("Backoff in effect", 30)
+	// ErrTemporaryAuthFailed is returned when authentication or authorization fails temporarily. This can be
+	// e.g. when publishing messages and the credentials may be reconfigured to make subsequent attempts succeed.
+	ErrTemporaryAuthFailed = NewBridgeError("authentication/authorization failed", true, 401)
+
+	//
+	// Permanent / non-recoverable errors
+	//
+
+	ErrServerNotConnected    = NewBridgeError("server not connected", false, 502)
+	ErrTopicDoesNotExist     = NewBridgeError("topic does not exist", false, 404)
+	ErrInvalidTopicName      = NewBridgeError("invalid topic name", false, 400)
+	ErrQoSNotSupported       = NewBridgeError("QoS level not supported", false, 400)
+	ErrPayloadTooLarge       = NewBridgeError("payload too large", false, 413)
+	ErrInvalidPayload        = NewBridgeError("invalid payload", false, 422)
+	ErrPermanentAuthFailed   = NewBridgeError("authentication/authorization failed", false, 401)
+	ErrPublishDeniedByBroker = NewBridgeError("publish denied by broker policy", false, 403)
+	ErrProtocolMismatch      = NewBridgeError("protocol version or feature not supported", false, 400)
+	ErrMessageExpired        = NewBridgeError("message expired before delivery", false, 410)
+
+	//
+	// Other errors
+	//
+	ErrNotFound = NewBridgeError("not found", false, 404)
+)
+
 type BridgeError struct {
 	// Message is the human-readable description of the error.
 	Message string
@@ -58,29 +92,6 @@ func NewBridgeErrorWrapped(message string, wrapped error, isRecoverable bool, ht
 func IsBridgeError(err error, target *BridgeError) bool {
 	return errors.Is(err, target)
 }
-
-// Pre-defined sentinel errors for publish and subscribe operations
-
-var (
-	// Temporary / retryable (recoverable) errors
-	ErrServerUnavailable  = NewBridgeError("server unavailable", true, 503)
-	ErrNetworkUnavailable = NewBridgeError("network unavailable", true, 503)
-	ErrBrokerOverload     = NewBridgeError("broker overloaded", true, 503)
-	ErrPublishTimeout     = NewBridgeError("publish timeout", true, 504)
-	ErrBackoff            = NewBackoffError("Backoff in effect", 30)
-
-	// Permanent / non-recoverable errors
-	ErrServerNotConnected    = NewBridgeError("server not connected", false, 502)
-	ErrTopicDoesNotExist     = NewBridgeError("topic does not exist", false, 404)
-	ErrInvalidTopicName      = NewBridgeError("invalid topic name", false, 400)
-	ErrQoSNotSupported       = NewBridgeError("QoS level not supported", false, 400)
-	ErrPayloadTooLarge       = NewBridgeError("payload too large", false, 413)
-	ErrInvalidPayload        = NewBridgeError("invalid payload", false, 422)
-	ErrAuthNotAllowed        = NewBridgeError("authentication/authorization failed", false, 401)
-	ErrPublishDeniedByBroker = NewBridgeError("publish denied by broker policy", false, 403)
-	ErrProtocolMismatch      = NewBridgeError("protocol version or feature not supported", false, 400)
-	ErrMessageExpired        = NewBridgeError("message expired before delivery", false, 410)
-)
 
 type BackoffError struct {
 	*BridgeError
