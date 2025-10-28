@@ -34,9 +34,15 @@ var (
 	ErrMessageExpired        = NewBridgeError("message expired before delivery", false, 410)
 
 	//
-	// Other errors
+	// Generic errors
 	//
 	ErrNotFound = NewBridgeError("not found", false, 404)
+
+	//
+	// Subscriber related errors
+	//
+	ErrSubscriptionAlreadyExists    = NewBridgeError("subscriber already exists for topic", false, 409)
+	ErrSubscriptionInvalidTopicName = NewBridgeError("topic is not a valid topic", false, 400)
 )
 
 type BridgeError struct {

@@ -2,12 +2,7 @@ package types
 
 import "context"
 
-type PublishOptions struct {
-	// Retry indicates whether the publish operation should be retried on failure, thus only
-	// permanent errors shall be interpreted as non-retirable.
-	Retry bool
-}
-
+// Publisher is a interface to let clients publish messages to a remote server.
 type Publisher interface {
 	// Publish sends a message to the remote server.
 	//
@@ -45,22 +40,22 @@ type Publisher interface {
 	// - ErrProtocolMismatch: protocol version or feature not supported - HTTP 400
 	//
 	// - ErrMessageExpired: message expired before delivery - HTTP 410
-	Publish(ctx context.Context, topic string, payload Message, opts PublishOptions) error
+	Publish(ctx context.Context, topic string, payload Message) error
 }
 
 // PublisherAdapter is an adapter to allow the use of ordinary functions as `Publisher` interfaces.
-type PublisherAdapter func(ctx context.Context, topic string, payload Message, opts PublishOptions) error
+type PublisherAdapter func(ctx context.Context, topic string, payload Message) error
 
 // Publish calls the underlying function of the PublisherFunc.
-func (f PublisherAdapter) Publish(ctx context.Context, topic string, payload Message, opts PublishOptions) error {
-	return f(ctx, topic, payload, opts)
+func (f PublisherAdapter) Publish(ctx context.Context, topic string, payload Message) error {
+	return f(ctx, topic, payload)
 }
 
 // ChainablePublisher is an interface that allows chaining of publishers to create middleware-like behavior.
 //
 // The last one should be the actual publisher that sends the message to the remote server.
 type ChainablePublisher interface {
-	Next(ctx context.Context, topic string, payload Message, next ChainablePublisher, opts PublishOptions) error
+	Next(ctx context.Context, topic string, payload Message, next ChainablePublisher) error
 }
 
 // PublisherMiddleware is a function type that defines middleware for the `Publisher` interface.

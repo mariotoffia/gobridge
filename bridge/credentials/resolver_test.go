@@ -25,12 +25,12 @@ func TestResolver_ResolveRepository(t *testing.T) {
 	// Register several repositories
 	root := dummyRepo{scheme: "pms", namespace: ""}
 	tenantA := dummyRepo{scheme: "pms", namespace: "tenantA"}
-	tenantAapp1 := dummyRepo{scheme: "pms", namespace: "tenantA/app1"}
+	tenantAApp1 := dummyRepo{scheme: "pms", namespace: "tenantA/app1"}
 	otherScheme := dummyRepo{scheme: "mqtt", namespace: "tenantA/app1"}
 
 	r.RegisterRepository(root)
 	r.RegisterRepository(tenantA)
-	r.RegisterRepository(tenantAapp1)
+	r.RegisterRepository(tenantAApp1)
 	r.RegisterRepository(otherScheme)
 
 	tests := []struct {

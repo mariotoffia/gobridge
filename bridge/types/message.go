@@ -2,6 +2,16 @@ package types
 
 import "time"
 
+type MessageMetadataKeys string
+
+const (
+	// Retry indicates whether the publish operation should be retried on failure, thus only
+	// permanent errors shall be interpreted as non-retirable.
+	//
+	// It must be a `bool` value.
+	MessageMetadataKeysRetry MessageMetadataKeys = "retry"
+)
+
 type QosLevel struct {
 	// Level is a QoS level supported by the server/topic.
 	//
@@ -42,6 +52,26 @@ func (m *Message) IsExpired() error {
 	}
 
 	return nil
+}
+
+// RequestRetry checks whether the message requests retry on failure.
+func (m *Message) RequestRetry() bool {
+	return m.GetMetadataBool(string(MessageMetadataKeysRetry), false)
+}
+
+func (m *Message) GetMetadataBool(key string, defaultValue bool) bool {
+	if m.Metadata == nil {
+		return defaultValue
+	}
+	value, ok := m.Metadata[key]
+	if !ok {
+		return defaultValue
+	}
+	boolValue, ok := value.(bool)
+	if !ok {
+		return defaultValue
+	}
+	return boolValue
 }
 
 // QosOrDefault returns the QoS level of the message, or the provided default if not set.
