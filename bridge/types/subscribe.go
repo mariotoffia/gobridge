@@ -26,7 +26,7 @@ type SubscriberSource interface {
 	// an `ErrSubscriptionAlreadyExists` is returned.
 	//
 	// The optional _opts_ can be used to provide additional subscription configuration when registering
-	// the subscriber. Depending on the `Transport` implementation, it may ignore the options.
+	// the subscriber. Depending on the `Connection` implementation, it may ignore the options.
 	//
 	// The _id_ is a unique identifier for the _subscriber_.
 	//
@@ -61,14 +61,14 @@ type Subscriber interface {
 	// Subscriber is a  callback that the `SubscriberSource` (or `SubscriberRouter`) calls when a message is received and
 	// it is registered in the `Subscriber` interface.
 	//
-	// When the `Transport` supports re-sends, it can retry if the `Subscriber` returns:
+	// When the `Connection` supports re-sends, it can retry if the `Subscriber` returns:
 	//
 	// - ErrBackoff: backoff in effect (see RetryAfterSeconds) - HTTP 429
 	//
 	// All other errors, will result in the _payload_ being dropped. When `nil` is returned, the message is considered
 	// successfully processed.
 	//
-	// When the `Transport` do not support re-sends, all errors returned by the `Subscriber` are ignored and
+	// When the `Connection` do not support re-sends, all errors returned by the `Subscriber` are ignored and
 	// dropped.
 	Process(ctx context.Context, topic string, payload Message) error
 }
@@ -76,7 +76,7 @@ type Subscriber interface {
 // SubscriberConfigSource is a `SubscriberConfigSource` that can accept configuration changes during runtime.
 //
 // If a `SubscriberSource` do not implement this interface, it means that the `SubscriberSource` is only accepts
-// a initial configuration at creation time `Transport.ListenAndServe`.
+// a initial `ConnectionConfig` at creation time (`Connection.Start`).
 type SubscriberConfigSource interface {
 	// GetSubscriberConfig returns the current configuration of the subscriber.
 	GetSubscriberConfig() any

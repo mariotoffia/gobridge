@@ -2,75 +2,71 @@ package registry
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"sync"
 
 	"github.com/mariotoffia/gobridge/bridge/types"
 )
 
-// TransportCreatorFunc is a function type that creates a Transport based on the provided configuration.
-type TransportCreatorFunc func(ctx context.Context, config types.TransportConfig) (types.Transport, error)
+// ConnectionCreatorFunc is a function type that creates a Connection based on the provided configuration.
+type ConnectionCreatorFunc func(ctx context.Context, config types.ConnectionConfig) (types.Connection, error)
 
-// TransportRegistryImpl is a concrete implementation of the `types.TransportRegistry` interface.
-type TransportRegistryImpl struct {
+// ConnectionRegistryImpl is a concrete implementation of the `types.TransportRegistry` interface.
+type ConnectionRegistryImpl struct {
 	mu *sync.RWMutex
-	// transports holds the registered transports mapped by their unique IDs.
-	transports map[string]types.Transport
-	// creators holds the registered creator functions for different transport types.
-	creators map[types.TransportType]TransportCreatorFunc
+	// connections holds the registered connections mapped by their unique IDs.
+	connections map[string]types.Connection
+	// creators holds the registered creator functions for different connection types.
+	creators map[types.TransportType]ConnectionCreatorFunc
 }
 
-// RegisterTransport adds a server to the registry.
-func (r *TransportRegistryImpl) RegisterTransport(server types.Transport) error {
+// RegisterConnection adds a connection to the registry.
+func (r *ConnectionRegistryImpl) RegisterConnection(connection types.Connection) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.transports[server.GetID()] = server
+	r.connections[connection.GetID()] = connection
 	return nil
 }
 
-// GetTransport retrieves a server by its unique ID.
-func (r *TransportRegistryImpl) GetTransport(id string) (types.Transport, error) {
+// GetConnection retrieves a connection by its unique ID.
+func (r *ConnectionRegistryImpl) GetConnection(id string) (types.Connection, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	server, exists := r.transports[id]
+	connection, exists := r.connections[id]
 
 	if !exists {
 		return nil, types.ErrNotFound
 	}
 
-	return server, nil
+	return connection, nil
 }
 
-// ListTransports returns a list of all registered transports.
-func (r *TransportRegistryImpl) ListTransports() ([]types.Transport, error) {
+// AllConnection returns a list of all registered connections.
+func (r *ConnectionRegistryImpl) AllConnection() ([]types.Connection, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	transports := make([]types.Transport, 0, len(r.transports))
-
-	for _, server := range r.transports {
-		transports = append(transports, server)
-	}
-
-	return transports, nil
+	return slices.Collect(maps.Values(r.connections)), nil
 }
 
-// RemoveTransport removes a transport from the registry by its unique ID.
-func (r *TransportRegistryImpl) RemoveTransport(id string) error {
+// RemoveConnections removes a connection from the registry by its unique ID.
+func (r *ConnectionRegistryImpl) RemoveConnections(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, exists := r.transports[id]; !exists {
+	if _, exists := r.connections[id]; !exists {
 		return types.ErrNotFound
 	}
 
-	delete(r.transports, id)
+	delete(r.connections, id)
 	return nil
 }
 
-// CreateTransport creates a new transport instance based on the provided configuration.
-func (r *TransportRegistryImpl) CreateTransport(ctx context.Context, config types.TransportConfig) (types.Transport, error) {
+// CreateConnection creates a new connection instance based on the provided configuration.
+func (r *ConnectionRegistryImpl) CreateConnection(ctx context.Context, config types.ConnectionConfig) (types.Connection, error) {
 	r.mu.RLock()
 	creator, exists := r.creators[config.GetTransportType()]
 	r.mu.RUnlock()
@@ -79,5 +75,6 @@ func (r *TransportRegistryImpl) CreateTransport(ctx context.Context, config type
 		return nil, types.ErrNotFound
 	}
 
+	// TODO: Check if we should configure it as well? or maybe we do this externally?
 	return creator(ctx, config)
 }
