@@ -75,6 +75,6 @@ func (r *ConnectionRegistryImpl) CreateConnection(ctx context.Context, config ty
 		return nil, types.ErrNotFound
 	}
 
-	// TODO: Check if we should configure it as well? or maybe we do this externally?
+	// Create the connection using the registered creator function.
 	return creator(ctx, config)
 }
