@@ -6,16 +6,16 @@ import (
 	"github.com/mariotoffia/gobridge/bridge/types"
 )
 
-// NewTopicSubscriber creates a SubscriberMiddleware that logs subscription processing based on the provided _settings_.
+// SubscriberLogger creates a SubscriberMiddleware that logs subscription processing based on the provided _settings_.
 //
 // If Neither `Before` nor `After` nor `Error` is set to true, the middleware will not log anything.
 //
 // NOTE: It will only log the payload at Trace log level to avoid excessive logging at higher levels.
 //
 // It logs using the `types.LogLevelInfo` level for normal operations and `types.LogLevelError` for errors.
-func NewTopicSubscriber(logger types.LogCreator, settings FactoryLoggerOptions) types.SubscriberMiddleware {
-	return func(next types.TopicSubscriber) types.TopicSubscriber {
-		return func(ctx context.Context, topic string, payload types.Message) error {
+func SubscriberLogger(logger types.LogCreator, settings FactoryLoggerOptions) types.SubscriberMiddleware {
+	return func(next types.Subscriber) types.Subscriber {
+		return types.SubscriberAdapter(func(ctx context.Context, topic string, payload types.Message) error {
 			if settings.Before {
 				logger(ctx, types.LogLevelInfo).
 					WithMethod("Subscriber::Before").
@@ -26,7 +26,7 @@ func NewTopicSubscriber(logger types.LogCreator, settings FactoryLoggerOptions) 
 					Msg("Before processing message")
 			}
 
-			err := next(ctx, topic, payload)
+			err := next.Process(ctx, topic, payload)
 
 			if err != nil {
 				if settings.Error {
@@ -55,6 +55,6 @@ func NewTopicSubscriber(logger types.LogCreator, settings FactoryLoggerOptions) 
 			}
 
 			return nil
-		}
+		})
 	}
 }
