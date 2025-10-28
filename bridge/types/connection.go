@@ -42,14 +42,16 @@ type Connection interface {
 	//
 	// TIP: Use a context that can be cancelled to stop the connection.
 	//
-	// When the _initial_ configuration is passed, all source and target are configured according to it before
-	// accepting messages. If it fails to configure the connection it will return an error.
+	// If the _override_ configuration is passed, all source and target are configured according to it before
+	// accepting messages. Any earlier configuration e.g from `Registry.CreateConnection` will be discarded.
+	//
+	// If it fails to configure the connection it will return an error.
 	//
 	// If the source and targets support dynamic re-configuration, an external actor may change the configuration
 	// during runtime.
 	//
 	// It will still be in _Start_ mode until the `Close` method is called.
-	Start(ctx context.Context, initial ConnectionConfig) error
+	Start(ctx context.Context, override ConnectionConfig) error
 	// Capabilities returns the capabilities supported by the connection (and the different topics/subscribers/publishers).
 	//
 	// NOTE: Depending on the configuration of the `SubscriberSource`, `Publisher`, and even specific topic

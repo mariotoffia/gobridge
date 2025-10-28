@@ -76,7 +76,7 @@ type Subscriber interface {
 // SubscriberConfigSource is a `SubscriberConfigSource` that can accept configuration changes during runtime.
 //
 // If a `SubscriberSource` do not implement this interface, it means that the `SubscriberSource` is only accepts
-// a initial `ConnectionConfig` at creation time (`Connection.Start`).
+// a initial `ConnectionConfig` at creation in `ConnectionRegistry.CreateConnection` and overrides in (`Connection.Start`).
 type SubscriberConfigSource interface {
 	// GetSubscriberConfig returns the current configuration of the subscriber.
 	GetSubscriberConfig() any
