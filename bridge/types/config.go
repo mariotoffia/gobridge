@@ -1,26 +1,22 @@
 package types
 
-// Config is required for all `TransportConfig` parts.
+// Config is required for all `ConnectionConfig` parts.
 type Config interface {
 	// GetID returns the unique identifier of the subscriber configuration. This _ID_ must be unique
-	// across restarts and uniquely identify the subscriber configuration within the `TransportConfig`.
+	// across restarts and uniquely identify the subscriber configuration within the `ConnectionConfig`.
 	GetID() string
 	// GetTransportType returns the type of the transport (e.g., "MQTT", "AzureServiceBus").
 	GetTransportType() TransportType
 }
 
-// TransportConfig defines the configuration required to create a Transport and configure all parts of it.
-//
-// Depending on the `TransportType`, different parts of the configuration may be active.
-type TransportConfig interface {
+// ConnectionConfig defines the configuration required to create a Connection and configure all parts of it.
+type ConnectionConfig interface {
 	Config
-	// GetBridgeID returns the unique identifier of the bridge this transport belongs to.
+	// GetBridgeID returns the unique identifier of the bridge this connection belongs to.
 	//
 	// This is useful when multiple bridges collaborates together to e.g. share publishers but
 	// re-/elective handle subscriptions for e.g. failover.
 	GetBridgeID() string
-	// GetTransportType returns the type of the transport (e.g., "MQTT", "AzureServiceBus").
-	GetTransportType() TransportType
 }
 
 type TopicConfigTarget int
@@ -37,7 +33,7 @@ type TopicConfig interface {
 	Config
 	// GetTopics returns the list of topics this configuration applies to.
 	//
-	// NOTE: That the topics may be wildcard topics depending on the `Transport` capabilities.
+	// NOTE: That the topics may be wildcard topics depending on the `Connection` capabilities.
 	//
 	// If this list is empty, the `GetID` returns the one and only topic.
 	GetTopics() []string

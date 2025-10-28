@@ -43,6 +43,10 @@ var (
 	//
 	ErrSubscriptionAlreadyExists    = NewBridgeError("subscriber already exists for topic", false, 409)
 	ErrSubscriptionInvalidTopicName = NewBridgeError("topic is not a valid topic", false, 400)
+	//
+	// Connection related errors
+	//
+	ConnectionNotBidirectionalError = NewBridgeError("connection is not bidirectional", false, 400)
 )
 
 type BridgeError struct {
