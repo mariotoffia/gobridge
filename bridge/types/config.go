@@ -1,5 +1,13 @@
 package types
 
+// Tag represents a key-value pair where the `Tag.Value` is optional (empty).
+type Tag struct {
+	// Key is the tag key. e.g. queue-name
+	Key string `json:"key"`
+	// Value is the optional tag value. e.g. my-queue
+	Value string `json:"value,omitempty"`
+}
+
 // Config is required for all `ConnectionConfig` parts.
 type Config interface {
 	// GetID returns the unique identifier of the subscriber configuration. This _ID_ must be unique
@@ -19,14 +27,32 @@ type ConnectionConfig interface {
 	GetBridgeID() string
 }
 
-type TopicConfigTarget int
+type ResourceBasedLookupConfig interface {
+	// GetResources returns the list of resources to be used to do the lookup.
+	//
+	// These are key value pairs to match in e.g. AWS resource lookup API to
+	// find the correct resource to use.
+	GetResources() []Tag
+	// AllowMultipleResourceMatches indicates whether multiple resource matches are allowed.
+	//
+	// If `false`, only one resource match is allowed and an error will be returned
+	// if multiple resources are found.
+	AllowMultipleResourceMatches() bool
+}
 
-const (
-	// TopicConfigTargetPublisher indicates that the topic configuration is for a `Publisher`.
-	TopicConfigTargetPublisher TopicConfigTarget = 1
-	// TopicConfigTargetSubscriber indicates that the topic configuration is for a `SubscriberSource`.
-	TopicConfigTargetSubscriber TopicConfigTarget = 2
-)
+type SourceConfig interface {
+	Config
+	ResourceBasedLookupConfig
+	// GetQoS returns the desired QoS level when publishing messages to publish targets.
+	//
+	// If the transport does not support QoS levels, it may return `nil`.
+	GetQoS() *QosLevel
+}
+
+type TargetConfig interface {
+	Config
+	ResourceBasedLookupConfig
+}
 
 // TopicConfig represents a configuration for one or more topics.
 type TopicConfig interface {
@@ -37,12 +63,17 @@ type TopicConfig interface {
 	//
 	// If this list is empty, the `GetID` returns the one and only topic.
 	GetTopics() []string
+	// GetMeta may return any additional metadata associated with the topic configuration.
+	GetMeta() map[string]any
+}
+
+type TopicSubscriberConfig interface {
+	TopicConfig
 	// GetQoS returns the desired QoS level for the topic configuration.
 	//
 	// If the transport does not support QoS levels, it may return `nil`.
 	GetQoS() *QosLevel
-	// GetMeta may return any additional metadata associated with the topic configuration.
-	GetMeta() map[string]any
-	// GetTopicTarget returns whether this topic configuration is for a `Publisher` or `SubscriberSource`.
-	GetTopicTarget() TopicConfigTarget
+}
+type TopicPublisherConfig interface {
+	TopicConfig
 }
