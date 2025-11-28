@@ -2,7 +2,7 @@ package types
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"io"
 )
 
@@ -65,19 +65,16 @@ type Connection interface {
 // Connections is a slice of Connection interfaces.
 type Connections []Connection
 
-// Close implements the `io.Closer` interface for the Connections slice. It will wrap all errors in a chain.
+// Close implements the `io.Closer` interface for the Connections slice.
+// It closes all connections and joins all errors using errors.Join.
 func (c Connections) Close() error {
-	var firstErr error
+	var errs []error
 
 	for _, conn := range c {
 		if err := conn.Close(); err != nil {
-			if firstErr != nil {
-				firstErr = fmt.Errorf("multiple errors on Connections.Close: %w", firstErr)
-			} else {
-				firstErr = err
-			}
+			errs = append(errs, err)
 		}
 	}
 
-	return firstErr
+	return errors.Join(errs...)
 }

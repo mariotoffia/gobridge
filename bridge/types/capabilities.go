@@ -45,8 +45,8 @@ const (
 
 // Capability is exposed by the `Connection` to indicate supported features or settings.
 type Capability struct {
-	Type  string `json:"type"`
-	Value any    `json:"value,omitempty"`
+	Type  CapabilityType `json:"type"`
+	Value any            `json:"value,omitempty"`
 }
 
 // Capabilities is a slice of Capability interfaces.

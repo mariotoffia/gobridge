@@ -85,7 +85,7 @@ type SubscriberConfigSource interface {
 // SubscriberAdapter is an adapter to allow the use of ordinary functions as `Subscriber` interfaces.
 type SubscriberAdapter func(ctx context.Context, topic string, payload Message) error
 
-// Publish calls the underlying function of the SubscriberAdapter.
+// Process calls the underlying function of the SubscriberAdapter.
 func (f SubscriberAdapter) Process(ctx context.Context, topic string, payload Message) error {
 	return f(ctx, topic, payload)
 }

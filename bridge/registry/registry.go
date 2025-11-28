@@ -12,7 +12,7 @@ import (
 // ConnectionCreatorFunc is a function type that creates a Connection based on the provided configuration.
 type ConnectionCreatorFunc func(ctx context.Context, config types.ConnectionConfig) (types.Connection, error)
 
-// ConnectionRegistryImpl is a concrete implementation of the `types.TransportRegistry` interface.
+// ConnectionRegistryImpl is a concrete implementation of the `types.ConnectionRegistry` interface.
 type ConnectionRegistryImpl struct {
 	mu *sync.RWMutex
 	// connections holds the registered connections mapped by their unique IDs.
@@ -44,16 +44,16 @@ func (r *ConnectionRegistryImpl) GetConnection(id string) (types.Connection, err
 	return connection, nil
 }
 
-// AllConnection returns a list of all registered connections.
-func (r *ConnectionRegistryImpl) AllConnection() ([]types.Connection, error) {
+// ListConnections returns a list of all registered connections.
+func (r *ConnectionRegistryImpl) ListConnections() ([]types.Connection, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	return slices.Collect(maps.Values(r.connections)), nil
 }
 
-// RemoveConnections removes a connection from the registry by its unique ID.
-func (r *ConnectionRegistryImpl) RemoveConnections(id string) error {
+// RemoveConnection removes a connection from the registry by its unique ID.
+func (r *ConnectionRegistryImpl) RemoveConnection(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
