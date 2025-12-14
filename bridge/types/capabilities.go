@@ -1,53 +1,180 @@
 package types
 
+// CapabilityType identifies a specific capability that a Source or Target supports.
+// Use capabilities to query what features are available and adapt behavior accordingly.
 type CapabilityType string
 
+// ============================================================================
+// Delivery Semantics Capabilities
+// ============================================================================
+
+// These capabilities describe the delivery guarantees of a Source or Target.
 const (
-	// CapabilityReceiveExactOnce indicates that the connection/topic supports exact-once delivery semantics and
-	// thus, will ack message when successfully processed by `Subscriber`.
+	// CapabilityReceiveExactOnce indicates the source supports exact-once delivery.
+	// Messages are delivered exactly once and automatically acknowledged on success.
 	//
-	// In combination with a `Subscriber` that supports idempotent processing (like _AWS_ SQS FIFO queue), this will ensure that
-	// each message is processed exactly once.
-	CapabilityReceiveExactOnce CapabilityType = "ReceiveOnce"
-	// CapabilityReceiveAtLeastOnce indicates that the connection/topic supports at-least-once delivery semantics and
-	// thus, will re-deliver messages that were not acked by the `Subscriber`.
+	// Suitable for: FIFO queues with deduplication, transactional systems.
+	CapabilityReceiveExactOnce CapabilityType = "ReceiveExactOnce"
+
+	// CapabilityReceiveAtLeastOnce indicates the source will redeliver unacked messages.
+	// Messages may be delivered multiple times if not acknowledged.
 	//
-	// This is the default behavior for most connections.
+	// Suitable for: Most queue systems (SQS, RabbitMQ, Kafka with commits).
+	// Consumer SHOULD handle duplicates idempotently.
 	CapabilityReceiveAtLeastOnce CapabilityType = "ReceiveAtLeastOnce"
-	// CapabilityReceiveAtMostOnce indicates that the connection/topic supports at-most-once delivery semantics and
-	// thus, will not re-deliver messages even if they were not acked by the `Subscriber`.
+
+	// CapabilityReceiveAtMostOnce indicates messages are not redelivered.
+	// Messages may be lost if processing fails.
 	//
-	// This means that some messages may be lost if the `Subscriber` fails to process them.
+	// Suitable for: MQTT QoS 0, fire-and-forget telemetry.
 	CapabilityReceiveAtMostOnce CapabilityType = "ReceiveAtMostOnce"
-	// CapabilityPublishExactOnce indicates that the connection/topic supports exact-once delivery semantics for publishing messages.
+
+	// CapabilityPublishExactOnce indicates the target ensures exact-once delivery.
+	// Each message is delivered exactly once to the target system.
 	//
-	// This means that the connection will ensure that each published message is delivered exactly once to the remote server.
-	CapabilityPublishExactOnce CapabilityType = "PublishOnce"
-	// CapabilityPublishAtLeastOnce indicates that the connection/topic supports at-least-once delivery semantics for publishing messages.
+	// Suitable for: MQTT QoS 2, transactional sends.
+	CapabilityPublishExactOnce CapabilityType = "PublishExactOnce"
+
+	// CapabilityPublishAtLeastOnce indicates the target retries until acknowledged.
+	// Messages are guaranteed to reach the target but may be duplicated.
 	//
-	// This means that the connection may re-attempt to deliver the published message until it receives an acknowledgment from the remote server.
-	//
-	// This is the default behavior for most connections.
+	// Suitable for: MQTT QoS 1, SQS sends with retries.
 	CapabilityPublishAtLeastOnce CapabilityType = "PublishAtLeastOnce"
-	// CapabilityPublishAtMostOnce indicates that the connection/topic supports at-most-once delivery semantics for publishing messages.
+
+	// CapabilityPublishAtMostOnce indicates no delivery guarantee.
+	// Send is attempted once without confirmation.
 	//
-	// This means that the connection will attempt to deliver the published message only once, without any retries.
-	//
-	// Some messages may be lost if the initial delivery attempt fails.
+	// Suitable for: MQTT QoS 0, best-effort telemetry.
 	CapabilityPublishAtMostOnce CapabilityType = "PublishAtMostOnce"
-	// CapabilityPublishInMemoryRetryable indicates that the connection/topic supports in memory retryable publishes.
-	//
-	// This means that if a publish fails due to a temporary error, the connection will retry the publish
-	// using an in-memory queue until it succeeds or a permanent error occurs. It will, however, not persist
-	// messages to disk for retrying later.
-	CapabilityPublishInMemoryRetryable CapabilityType = "PublishInMemoryRetryable"
 )
 
-// Capability is exposed by the `Connection` to indicate supported features or settings.
+// ============================================================================
+// Source-Specific Capabilities
+// ============================================================================
+
+// These capabilities are specific to Source implementations.
+const (
+	// CapabilityRedelivery indicates Nack() can return messages for redelivery.
+	// When set, calling Nack() on a SourceMessage will cause the message to be
+	// redelivered by the source system (e.g., visibility timeout reset in SQS).
+	//
+	// Sources without this capability will log failures but cannot redeliver.
+	CapabilityRedelivery CapabilityType = "Redelivery"
+
+	// CapabilityExtendTimeout indicates Extend() is functional.
+	// When set, calling Extend() on a SourceMessage will extend the processing
+	// deadline (e.g., visibility timeout in SQS).
+	//
+	// Use for long-running message processing to prevent premature redelivery.
+	CapabilityExtendTimeout CapabilityType = "ExtendTimeout"
+
+	// CapabilityOrdering indicates messages are delivered in order.
+	// When set, the source guarantees FIFO ordering of messages.
+	//
+	// Note: Ordering may be per-partition/group depending on the source.
+	CapabilityOrdering CapabilityType = "Ordering"
+
+	// CapabilityPrefetch indicates the source supports message prefetching.
+	// When set, the source can fetch multiple messages ahead of processing.
+	CapabilityPrefetch CapabilityType = "Prefetch"
+)
+
+// ============================================================================
+// Target-Specific Capabilities
+// ============================================================================
+
+// These capabilities are specific to Target implementations.
+const (
+	// CapabilityBatching indicates the target supports batch sends.
+	// When set, SendBatch() is optimized for multiple messages.
+	CapabilityBatching CapabilityType = "Batching"
+
+	// CapabilityTransactional indicates the target supports transactions.
+	// When set, multiple sends can be committed atomically.
+	CapabilityTransactional CapabilityType = "Transactional"
+
+	// CapabilityNativeRetry indicates the target handles retries internally.
+	// When set, the transport protocol handles retransmission (e.g., MQTT QoS 1/2).
+	// The pipeline should NOT add redundant retry logic for transport-level failures.
+	//
+	// Note: This only applies to transport-level delivery. Application-level
+	// failures (e.g., target service down) still need external retry handling.
+	CapabilityNativeRetry CapabilityType = "NativeRetry"
+)
+
+// ============================================================================
+// Retry-Related Capabilities
+// ============================================================================
+
+// These capabilities relate to retry and dead-letter queue handling.
+const (
+	// CapabilityDeadLetterQueue indicates built-in DLQ support.
+	// When set, failed messages can be automatically moved to a dead-letter queue.
+	CapabilityDeadLetterQueue CapabilityType = "DeadLetterQueue"
+
+	// CapabilityDelayedDelivery indicates support for delayed message delivery.
+	// When set, messages can be scheduled for future delivery (retry backoff).
+	CapabilityDelayedDelivery CapabilityType = "DelayedDelivery"
+)
+
+// ============================================================================
+// Capability Struct and Helpers
+// ============================================================================
+
+// Capability represents a single capability with optional configuration value.
+// The Type identifies the capability, and Value provides additional details.
 type Capability struct {
-	Type  CapabilityType `json:"type"`
-	Value any            `json:"value,omitempty"`
+	// Type identifies the capability.
+	Type CapabilityType `json:"type"`
+
+	// Value provides optional capability-specific configuration.
+	// For example, CapabilityPrefetch might have Value=10 for prefetch count.
+	Value any `json:"value,omitempty"`
 }
 
-// Capabilities is a slice of Capability interfaces.
+// Capabilities is a collection of capabilities.
 type Capabilities []Capability
+
+// Has returns true if the capability type is present.
+func (c Capabilities) Has(t CapabilityType) bool {
+	for _, cap := range c {
+		if cap.Type == t {
+			return true
+		}
+	}
+	return false
+}
+
+// Get returns the capability with the given type, or nil if not present.
+func (c Capabilities) Get(t CapabilityType) *Capability {
+	for i := range c {
+		if c[i].Type == t {
+			return &c[i]
+		}
+	}
+	return nil
+}
+
+// GetValue returns the value of a capability, or the default if not present.
+func (c Capabilities) GetValue(t CapabilityType, defaultValue any) any {
+	cap := c.Get(t)
+	if cap == nil || cap.Value == nil {
+		return defaultValue
+	}
+	return cap.Value
+}
+
+// Add adds a capability to the collection.
+func (c *Capabilities) Add(cap Capability) {
+	*c = append(*c, cap)
+}
+
+// AddType adds a capability with just a type (no value).
+func (c *Capabilities) AddType(t CapabilityType) {
+	*c = append(*c, Capability{Type: t})
+}
+
+// AddWithValue adds a capability with a type and value.
+func (c *Capabilities) AddWithValue(t CapabilityType, value any) {
+	*c = append(*c, Capability{Type: t, Value: value})
+}
