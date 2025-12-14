@@ -2,6 +2,7 @@ package logging
 
 import (
 	"context"
+	"time"
 
 	"github.com/mariotoffia/gobridge/bridge/types"
 )
@@ -16,13 +17,32 @@ import (
 func SubscriberLogger(logger types.LogCreator, settings FactoryLoggerOptions) types.SubscriberMiddleware {
 	return func(next types.Subscriber) types.Subscriber {
 		return types.SubscriberAdapter(func(ctx context.Context, topic string, payload types.Message) error {
+			var correlationID string
+			var startTime time.Time
+
+			// Handle correlation ID
+			if settings.CorrelationID {
+				ctx, correlationID = ExtractOrGenerateCorrelationID(ctx, &payload)
+				InjectCorrelationID(&payload, correlationID)
+			}
+
+			// Track duration
+			if settings.Duration || settings.After {
+				startTime = time.Now()
+			}
+
 			if settings.Before {
-				logger(ctx, types.LogLevelInfo).
+				l := logger(ctx, types.LogLevelInfo).
 					WithMethod("Subscriber::Before").
-					Str("topic", topic).
-					WhenLevel(types.LogLevelTrace, func(l types.Logger) {
-						l.AsJSON("payload", payload)
-					}).
+					Str("topic", topic)
+
+				if settings.CorrelationID && correlationID != "" {
+					l = l.Str("correlationId", correlationID)
+				}
+
+				l.WhenLevel(types.LogLevelTrace, func(l types.Logger) {
+					l.AsJSON("payload", payload)
+				}).
 					Msg("Before processing message")
 			}
 
@@ -30,14 +50,22 @@ func SubscriberLogger(logger types.LogCreator, settings FactoryLoggerOptions) ty
 
 			if err != nil {
 				if settings.Error {
-					// Log error
-					logger(ctx, types.LogLevelError).
+					l := logger(ctx, types.LogLevelError).
 						WithMethod("Subscriber::Error").
 						Error(err).
-						Str("topic", topic).
-						WhenLevel(types.LogLevelTrace, func(l types.Logger) {
-							l.AsJSON("payload", payload)
-						}).
+						Str("topic", topic)
+
+					if settings.CorrelationID && correlationID != "" {
+						l = l.Str("correlationId", correlationID)
+					}
+
+					if settings.Duration {
+						l = l.Str("duration", time.Since(startTime).String())
+					}
+
+					l.WhenLevel(types.LogLevelTrace, func(l types.Logger) {
+						l.AsJSON("payload", payload)
+					}).
 						Msg("Error processing message in subscription")
 				}
 
@@ -45,12 +73,21 @@ func SubscriberLogger(logger types.LogCreator, settings FactoryLoggerOptions) ty
 			}
 
 			if settings.After {
-				logger(ctx, types.LogLevelInfo).
+				l := logger(ctx, types.LogLevelInfo).
 					WithMethod("Subscriber::After").
-					Str("topic", topic).
-					WhenLevel(types.LogLevelTrace, func(l types.Logger) {
-						l.AsJSON("payload", payload)
-					}).
+					Str("topic", topic)
+
+				if settings.CorrelationID && correlationID != "" {
+					l = l.Str("correlationId", correlationID)
+				}
+
+				if settings.Duration {
+					l = l.Str("duration", time.Since(startTime).String())
+				}
+
+				l.WhenLevel(types.LogLevelTrace, func(l types.Logger) {
+					l.AsJSON("payload", payload)
+				}).
 					Msg("Successfully processed message in subscription")
 			}
 
