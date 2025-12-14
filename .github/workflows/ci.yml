@@ -1,0 +1,296 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  # ============================================================================
+  # Detect which modules changed
+  # ============================================================================
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      core: ${{ steps.filter.outputs.core }}
+      mqtt: ${{ steps.filter.outputs.mqtt }}
+      aws: ${{ steps.filter.outputs.aws }}
+      azure: ${{ steps.filter.outputs.azure }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            core:
+              - 'go.mod'
+              - 'go.sum'
+              - 'bridge/**'
+              - 'tests/**'
+            mqtt:
+              - 'transport/mqtt/**'
+            aws:
+              - 'transport/aws/**'
+            azure:
+              - 'transport/azure/**'
+
+  # ============================================================================
+  # Core module (types, runtime - zero external deps)
+  # ============================================================================
+  core:
+    needs: changes
+    if: needs.changes.outputs.core == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ matrix.go-version }}-core-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ matrix.go-version }}-core-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build
+        run: go build ./bridge/...
+
+      - name: Test
+        run: go test -v -race -coverprofile=coverage-core.txt -covermode=atomic ./bridge/...
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: matrix.go-version == '1.24'
+        with:
+          files: coverage-core.txt
+          flags: core
+          fail_ci_if_error: false
+
+  # ============================================================================
+  # MQTT module (paho.golang)
+  # ============================================================================
+  mqtt:
+    needs: changes
+    if: needs.changes.outputs.mqtt == 'true' || needs.changes.outputs.core == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.24', '1.23']
+    defaults:
+      run:
+        working-directory: transport/mqtt
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ matrix.go-version }}-mqtt-${{ hashFiles('transport/mqtt/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ matrix.go-version }}-mqtt-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -v -race -coverprofile=coverage-mqtt.txt -covermode=atomic ./...
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: matrix.go-version == '1.24'
+        with:
+          files: transport/mqtt/coverage-mqtt.txt
+          flags: mqtt
+          fail_ci_if_error: false
+
+  # ============================================================================
+  # AWS module (SQS transport)
+  # ============================================================================
+  aws:
+    needs: changes
+    if: needs.changes.outputs.aws == 'true' || needs.changes.outputs.core == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.24']
+    defaults:
+      run:
+        working-directory: transport/aws
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ matrix.go-version }}-aws-${{ hashFiles('transport/aws/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ matrix.go-version }}-aws-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -v -race -coverprofile=coverage-aws.txt -covermode=atomic ./...
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: matrix.go-version == '1.24'
+        with:
+          files: transport/aws/coverage-aws.txt
+          flags: aws
+          fail_ci_if_error: false
+
+  # ============================================================================
+  # Azure module (Service Bus transport)
+  # ============================================================================
+  azure:
+    needs: changes
+    if: needs.changes.outputs.azure == 'true' || needs.changes.outputs.core == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.24']
+    defaults:
+      run:
+        working-directory: transport/azure
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ matrix.go-version }}-azure-${{ hashFiles('transport/azure/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ matrix.go-version }}-azure-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -v -race -coverprofile=coverage-azure.txt -covermode=atomic ./...
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: matrix.go-version == '1.24'
+        with:
+          files: transport/azure/coverage-azure.txt
+          flags: azure
+          fail_ci_if_error: false
+
+  # ============================================================================
+  # Integration tests (Docker-based)
+  # ============================================================================
+  integration:
+    needs: [core]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-1.24-integration-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-1.24-integration-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run integration tests
+        run: go test -v -tags=integration -timeout=300s ./tests/docker/...
+
+  # ============================================================================
+  # Lint all modules
+  # ============================================================================
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: golangci-lint (core)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: .
+          args: --timeout=5m
+
+      - name: golangci-lint (mqtt)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: transport/mqtt
+          args: --timeout=5m
+
+      - name: golangci-lint (aws)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: transport/aws
+          args: --timeout=5m
+
+      - name: golangci-lint (azure)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: transport/azure
+          args: --timeout=5m

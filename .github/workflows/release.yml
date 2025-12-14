@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'                    # Core module: v1.0.0
+      - 'transport/mqtt/v*'     # MQTT module: transport/mqtt/v1.0.0
+      - 'transport/aws/v*'      # AWS module: transport/aws/v1.0.0
+      - 'transport/azure/v*'    # Azure module: transport/azure/v1.0.0
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Determine module
+        id: module
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          
+          if [[ "$TAG" == transport/mqtt/* ]]; then
+            echo "module=mqtt" >> $GITHUB_OUTPUT
+            echo "version=${TAG#transport/mqtt/}" >> $GITHUB_OUTPUT
+            echo "path=transport/mqtt" >> $GITHUB_OUTPUT
+          elif [[ "$TAG" == transport/aws/* ]]; then
+            echo "module=aws" >> $GITHUB_OUTPUT
+            echo "version=${TAG#transport/aws/}" >> $GITHUB_OUTPUT
+            echo "path=transport/aws" >> $GITHUB_OUTPUT
+          elif [[ "$TAG" == transport/azure/* ]]; then
+            echo "module=azure" >> $GITHUB_OUTPUT
+            echo "version=${TAG#transport/azure/}" >> $GITHUB_OUTPUT
+            echo "path=transport/azure" >> $GITHUB_OUTPUT
+          else
+            echo "module=core" >> $GITHUB_OUTPUT
+            echo "version=$TAG" >> $GITHUB_OUTPUT
+            echo "path=." >> $GITHUB_OUTPUT
+          fi
+
+      - name: Verify build (${{ steps.module.outputs.module }})
+        working-directory: ${{ steps.module.outputs.path }}
+        run: |
+          go mod download
+          go build ./...
+          go test -v ./...
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.module.outputs.module }} ${{ steps.module.outputs.version }}
+          body: |
+            ## ${{ steps.module.outputs.module }} Module Release
+            
+            **Version:** ${{ steps.module.outputs.version }}
+            **Tag:** ${{ steps.module.outputs.tag }}
+            
+            ### Installation
+            
+            ```bash
+            ${{ steps.module.outputs.module == 'core' && 'go get github.com/mariotoffia/gobridge@' || steps.module.outputs.module == 'aws' && 'go get github.com/mariotoffia/gobridge/transport/aws@' || 'go get github.com/mariotoffia/gobridge/transport/azure@' }}${{ steps.module.outputs.version }}
+            ```
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
