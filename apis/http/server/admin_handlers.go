@@ -3,10 +3,13 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/mariotoffia/gobridge/bridge/types"
 )
 
 // ============================================================================
@@ -426,12 +429,23 @@ func (s *Server) handleDLQ(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// DLQ summary - would need DLQ implementation
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"totalMessages": 0,
-		"byTopic":       map[string]int{},
-		"byErrorCode":   map[string]int{},
-	})
+	if s.dlqManager == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"totalMessages": 0,
+			"byTopic":       map[string]int64{},
+			"byErrorCode":   map[string]int64{},
+		})
+		return
+	}
+
+	ctx := r.Context()
+	summary, err := s.dlqManager.GetSummary(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DLQ_ERROR", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, summary)
 }
 
 func (s *Server) handleDLQMessages(w http.ResponseWriter, r *http.Request) {
@@ -440,16 +454,87 @@ func (s *Server) handleDLQMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"messages": []interface{}{},
-		"total":    0,
-		"offset":   0,
-		"limit":    100,
-	})
+	if s.dlqManager == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"messages": []interface{}{},
+			"total":    0,
+			"offset":   0,
+			"limit":    100,
+			"hasMore":  false,
+		})
+		return
+	}
+
+	// Parse query parameters
+	query := r.URL.Query()
+	filter := types.DLQFilter{
+		Topic:    query.Get("topic"),
+		SourceID: query.Get("sourceId"),
+	}
+
+	if since := query.Get("since"); since != "" {
+		if t, err := time.Parse(time.RFC3339, since); err == nil {
+			filter.Since = t
+		}
+	}
+	if until := query.Get("until"); until != "" {
+		if t, err := time.Parse(time.RFC3339, until); err == nil {
+			filter.Until = t
+		}
+	}
+
+	pagination := types.DLQPagination{
+		Limit:  100,
+		Offset: 0,
+	}
+	if limit := query.Get("limit"); limit != "" {
+		fmt.Sscanf(limit, "%d", &pagination.Limit)
+	}
+	if offset := query.Get("offset"); offset != "" {
+		fmt.Sscanf(offset, "%d", &pagination.Offset)
+	}
+
+	ctx := r.Context()
+	result, err := s.dlqManager.ListMessages(ctx, filter, pagination)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DLQ_ERROR", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleDLQMessage(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotFound, "NOT_FOUND", "message not found")
+	prefix := s.config.AdminAPIPrefix + "/dlq/messages/"
+	messageID := extractPathParam(r, prefix)
+
+	if s.dlqManager == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "message not found")
+		return
+	}
+
+	ctx := r.Context()
+
+	switch r.Method {
+	case http.MethodGet:
+		msg, err := s.dlqManager.GetMessage(ctx, messageID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "message not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, msg)
+
+	case http.MethodDelete:
+		err := s.dlqManager.DeleteMessage(ctx, messageID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "message not found")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+	}
 }
 
 func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
@@ -458,11 +543,30 @@ func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"replayed": 0,
-		"failed":   0,
-		"errors":   []string{},
-	})
+	if s.dlqManager == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"replayed":    0,
+			"failed":      0,
+			"errors":      []string{},
+			"replayedIds": []string{},
+		})
+		return
+	}
+
+	var req types.DLQReplayRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+
+	ctx := r.Context()
+	result, err := s.dlqManager.Replay(ctx, &req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "REPLAY_ERROR", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleDLQPurge(w http.ResponseWriter, r *http.Request) {
@@ -471,9 +575,26 @@ func (s *Server) handleDLQPurge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"purged": 0,
-	})
+	if s.dlqManager == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"purged": 0,
+		})
+		return
+	}
+
+	var filter types.DLQFilter
+	if r.Body != nil && r.ContentLength > 0 {
+		json.NewDecoder(r.Body).Decode(&filter)
+	}
+
+	ctx := r.Context()
+	result, err := s.dlqManager.Purge(ctx, filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "PURGE_ERROR", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 // ============================================================================
@@ -498,11 +619,27 @@ func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Config reload would need config source integration
+	if s.configReloader == nil {
+		writeError(w, http.StatusServiceUnavailable, "NOT_CONFIGURED", "config reloader not configured")
+		return
+	}
+
+	ctx := r.Context()
+	result, err := s.configReloader.Reload(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "RELOAD_ERROR", err.Error())
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success":        true,
-		"changesApplied": 0,
-		"errors":         []string{},
+		"success":        len(result.Errors) == 0,
+		"changesApplied": result.ChangesApplied,
+		"added":          result.Added,
+		"updated":        result.Updated,
+		"deleted":        result.Deleted,
+		"errors":         result.Errors,
+		"durationMs":     result.Duration.Milliseconds(),
+		"timestamp":      result.Timestamp.Format(time.RFC3339),
 	})
 }
 

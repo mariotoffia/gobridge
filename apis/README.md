@@ -21,6 +21,20 @@ GoBridge provides two separate APIs:
 | Monitor API Handlers | `http/server/monitor_handlers.go` | ✅ Complete |
 | WebSocket Streaming | `http/server/websocket.go` | ✅ Complete |
 | InjectMiddleware | `../../middleware/inject/inject.go` | ✅ Complete |
+| DLQ Management Integration | `../../middleware/retry/dlq_manager.go` | ✅ Complete |
+| Config Reload Integration | `../../bridge/core/config_reload.go` | ✅ Complete |
+
+### Feature Integration
+
+The HTTP API handlers are integrated with the following subsystems:
+
+| Feature | Handler | Backend Implementation |
+|---------|---------|------------------------|
+| DLQ Summary | `GET /dlq` | `types.DLQManager.GetSummary()` |
+| DLQ Messages | `GET /dlq/messages` | `types.DLQManager.ListMessages()` |
+| DLQ Replay | `POST /dlq/replay` | `types.DLQManager.Replay()` |
+| DLQ Purge | `POST /dlq/purge` | `types.DLQManager.Purge()` |
+| Config Reload | `POST /config/reload` | `ConfigReloaderInterface.Reload()` |
 
 ## API Specifications
 

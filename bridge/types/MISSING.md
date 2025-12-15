@@ -407,8 +407,8 @@ func WithMeter(meter metric.Meter) BridgeOption
 1. ✅ ConfigChangeHandler integration - `WithConfigHandler()` and `handleConfigChange()`
 2. ✅ Dynamic pipeline add/remove - `AddPipelineRunning()`, `RemovePipelineRunning()`
 3. ✅ Config-driven creation - `CreatePipelineFromConfig()`, `CreateRouteFromConfig()`
-4. Partial: Runtime config reload - via ConfigChangeHandler
-5. Missing: DLQ management API
+4. ✅ Runtime config reload - `core/config_reload.go` with ConfigReloader
+5. ✅ DLQ management API - `types/dlq.go`, `middleware/retry/dlq_manager.go`
 
 ### Phase 3: Clustering (Pending)
 

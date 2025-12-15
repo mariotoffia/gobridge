@@ -21,13 +21,34 @@ type Server struct {
 	adminMux   *http.ServeMux
 	monitorMux *http.ServeMux
 
-	bridge  BridgeController
-	config  Config
-	logger  SimpleLogger
-	metrics types.MetricsCollector
+	bridge         BridgeController
+	config         Config
+	logger         SimpleLogger
+	metrics        types.MetricsCollector
+	dlqManager     types.DLQManager
+	configReloader ConfigReloaderInterface
 
 	mu      sync.RWMutex
 	running bool
+}
+
+// ConfigReloaderInterface defines the interface for config reloading.
+type ConfigReloaderInterface interface {
+	Reload(ctx context.Context) (*ConfigReloadResult, error)
+	StartWatching(ctx context.Context) error
+	StopWatching()
+}
+
+// ConfigReloadResult contains the result of a configuration reload.
+type ConfigReloadResult struct {
+	Timestamp      time.Time     `json:"timestamp"`
+	Source         string        `json:"source,omitempty"`
+	ChangesApplied int           `json:"changesApplied"`
+	Added          []string      `json:"added,omitempty"`
+	Updated        []string      `json:"updated,omitempty"`
+	Deleted        []string      `json:"deleted,omitempty"`
+	Errors         []string      `json:"errors,omitempty"`
+	Duration       time.Duration `json:"duration"`
 }
 
 // Config holds the HTTP server configuration.
@@ -145,6 +166,20 @@ func WithLogger(logger SimpleLogger) Option {
 func WithMetrics(metrics types.MetricsCollector) Option {
 	return func(s *Server) {
 		s.metrics = metrics
+	}
+}
+
+// WithDLQManager sets the DLQ manager.
+func WithDLQManager(dlq types.DLQManager) Option {
+	return func(s *Server) {
+		s.dlqManager = dlq
+	}
+}
+
+// WithConfigReloader sets the config reloader.
+func WithConfigReloader(reloader ConfigReloaderInterface) Option {
+	return func(s *Server) {
+		s.configReloader = reloader
 	}
 }
 
