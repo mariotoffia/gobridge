@@ -17,24 +17,31 @@ import (
 
 // Source implements types.Source for MQTT subscriptions.
 type Source struct {
-	id         string
-	config     *SourceConfigImpl
-	client     *autopaho.ConnectionManager
-	messages   chan *types.SourceMessage
-	topics     []string
-	qos        byte
-	running    atomic.Bool
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	mu         sync.RWMutex
-	closeOnce  sync.Once
-	closeErr   error
+	id        string
+	config    *SourceConfigImpl
+	client    *autopaho.ConnectionManager
+	messages  chan *types.SourceMessage
+	topics    []string
+	qos       byte
+	running   atomic.Bool
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	mu        sync.RWMutex
+	closeOnce sync.Once
+	closeErr  error
+
+	// sharedClient indicates the client is managed externally (by MQTTConnection)
+	// and should NOT be closed when the Source is closed.
+	sharedClient bool
+	// router is used for shared client mode to register/unregister message handlers
+	router *messageRouter
 }
 
 // Ensure Source implements types.Source
 var _ types.Source = (*Source)(nil)
 
-// NewSource creates a new MQTT source.
+// NewSource creates a new MQTT source that manages its own connection.
+// For shared connection mode, use NewSourceWithClient instead.
 func NewSource(config *SourceConfigImpl) (*Source, error) {
 	if config == nil {
 		return nil, errors.New("config is required")
@@ -52,11 +59,49 @@ func NewSource(config *SourceConfigImpl) (*Source, error) {
 	}
 
 	return &Source{
-		id:       config.ID,
-		config:   config,
-		topics:   config.Topics,
-		qos:      qos,
-		messages: make(chan *types.SourceMessage, 100),
+		id:           config.ID,
+		config:       config,
+		topics:       config.Topics,
+		qos:          qos,
+		messages:     make(chan *types.SourceMessage, 100),
+		sharedClient: false,
+	}, nil
+}
+
+// NewSourceWithClient creates a new MQTT source that uses a shared client.
+// The client is managed externally (typically by MQTTConnection) and will NOT
+// be closed when the Source is closed.
+//
+// The router is used to register this source's message handler so it receives
+// messages from the shared client.
+func NewSourceWithClient(config *SourceConfigImpl, client *autopaho.ConnectionManager, router *messageRouter) (*Source, error) {
+	if config == nil {
+		return nil, errors.New("config is required")
+	}
+	if client == nil {
+		return nil, errors.New("client is required for shared client mode")
+	}
+	if router == nil {
+		return nil, errors.New("router is required for shared client mode")
+	}
+	if len(config.Topics) == 0 {
+		return nil, errors.New("at least one topic is required")
+	}
+
+	qos := byte(config.QoS)
+	if qos > 2 {
+		qos = 1 // Default to QoS 1
+	}
+
+	return &Source{
+		id:           config.ID,
+		config:       config,
+		client:       client,
+		topics:       config.Topics,
+		qos:          qos,
+		messages:     make(chan *types.SourceMessage, 100),
+		sharedClient: true,
+		router:       router,
 	}, nil
 }
 
@@ -95,21 +140,8 @@ func (s *Source) Start(ctx context.Context) error {
 		return errors.New("source already running")
 	}
 
-	// Parse broker URL
-	serverURL, err := url.Parse(s.config.Connection.BrokerURL)
-	if err != nil {
-		s.running.Store(false)
-		return fmt.Errorf("invalid broker URL: %w", err)
-	}
-
 	// Create cancellable context
 	ctx, s.cancel = context.WithCancel(ctx)
-
-	// Build client configuration
-	clientID := s.config.Connection.ClientID
-	if clientID == "" {
-		clientID = fmt.Sprintf("gobridge-source-%s-%d", s.id, time.Now().UnixNano())
-	}
 
 	// Build subscription slice
 	subscriptions := make([]paho.SubscribeOptions, 0, len(s.topics))
@@ -118,6 +150,48 @@ func (s *Source) Start(ctx context.Context) error {
 			Topic: topic,
 			QoS:   s.qos,
 		})
+	}
+
+	if s.sharedClient {
+		// Shared client mode - register handler and subscribe
+		return s.startSharedMode(ctx, subscriptions)
+	}
+
+	// Standalone mode - create our own connection
+	return s.startStandaloneMode(ctx, subscriptions)
+}
+
+// startSharedMode starts the source using a shared client from MQTTConnection.
+func (s *Source) startSharedMode(ctx context.Context, subscriptions []paho.SubscribeOptions) error {
+	// Register our message handler with the router
+	s.router.register(s.id, s.handleMessage)
+
+	// Subscribe to topics
+	_, err := s.client.Subscribe(ctx, &paho.Subscribe{
+		Subscriptions: subscriptions,
+	})
+	if err != nil {
+		s.router.unregister(s.id)
+		s.running.Store(false)
+		return fmt.Errorf("failed to subscribe to topics: %w", MapError(err))
+	}
+
+	return nil
+}
+
+// startStandaloneMode starts the source with its own dedicated connection.
+func (s *Source) startStandaloneMode(ctx context.Context, subscriptions []paho.SubscribeOptions) error {
+	// Parse broker URL
+	serverURL, err := url.Parse(s.config.Connection.BrokerURL)
+	if err != nil {
+		s.running.Store(false)
+		return fmt.Errorf("invalid broker URL: %w", err)
+	}
+
+	// Build client configuration
+	clientID := s.config.Connection.ClientID
+	if clientID == "" {
+		clientID = fmt.Sprintf("gobridge-source-%s-%d", s.id, time.Now().UnixNano())
 	}
 
 	// Build autopaho config
@@ -260,6 +334,8 @@ func (s *Source) Messages() <-chan *types.SourceMessage {
 }
 
 // Close stops the source and releases resources.
+// For shared client mode, this does NOT close the underlying MQTT connection -
+// that is managed by the MQTTConnection that created this source.
 func (s *Source) Close() error {
 	s.closeOnce.Do(func() {
 		s.running.Store(false)
@@ -268,12 +344,26 @@ func (s *Source) Close() error {
 			s.cancel()
 		}
 
-		if s.client != nil {
-			// Disconnect with a short timeout
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			_ = s.client.Disconnect(ctx)
+		if s.sharedClient {
+			// Shared mode - unregister from router but don't close client
+			if s.router != nil {
+				s.router.unregister(s.id)
+			}
+			// Unsubscribe from topics (best effort)
+			if s.client != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_, _ = s.client.Unsubscribe(ctx, &paho.Unsubscribe{
+					Topics: s.topics,
+				})
+			}
+		} else {
+			// Standalone mode - disconnect and close client
+			if s.client != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = s.client.Disconnect(ctx)
+			}
 		}
 
 		// Close messages channel
@@ -305,4 +395,3 @@ func buildTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 
 	return tlsConfig, nil
 }
-

@@ -24,6 +24,15 @@ const (
 //
 // It implements `io.Closer` to allow proper resource cleanup such as draining the messages and
 // return when closed and fully drained.
+//
+// # Shared Connection Pattern
+//
+// For transports that use a single underlying connection for both subscribing and publishing
+// (like MQTT), the Connection can implement SourceProvider and TargetProvider to create
+// Source and Target instances that share the underlying transport connection.
+//
+// Use SourceProvider() and TargetProvider() to check if the connection supports creating
+// sources and targets respectively. These return nil if not supported.
 type Connection interface {
 	// Close closes the connection and releases all resources by first draining all messages and orderly
 	// shutting down the connection(s).
@@ -60,6 +69,44 @@ type Connection interface {
 	//
 	// If zero topics are presented, it should return the generic ("most supported") capabilities of the connection.
 	Capabilities(topics ...string) map[string]Capabilities
+	// SourceProvider returns a SourceProvider if this connection supports creating sources
+	// that share the underlying transport connection. Returns nil if not supported.
+	//
+	// This enables transports like MQTT to use a single connection for both subscribing
+	// and publishing, where Source and Target instances share the same client.
+	SourceProvider() SourceProvider
+	// TargetProvider returns a TargetProvider if this connection supports creating targets
+	// that share the underlying transport connection. Returns nil if not supported.
+	//
+	// This enables transports like MQTT to use a single connection for both subscribing
+	// and publishing, where Source and Target instances share the same client.
+	TargetProvider() TargetProvider
+}
+
+// SourceProvider creates Source instances from a shared Connection.
+// This is used by connections that support creating sources that share the underlying
+// transport connection (e.g., MQTT where subscriptions and publishing use the same client).
+type SourceProvider interface {
+	// CreateSource creates a new Source from the given configuration.
+	// The Source shares the underlying transport connection with other sources/targets
+	// created from the same Connection.
+	//
+	// The Source's Close() method should NOT close the underlying connection -
+	// only the Connection's Close() should do that.
+	CreateSource(ctx context.Context, config SourceConfig) (Source, error)
+}
+
+// TargetProvider creates Target instances from a shared Connection.
+// This is used by connections that support creating targets that share the underlying
+// transport connection (e.g., MQTT where subscriptions and publishing use the same client).
+type TargetProvider interface {
+	// CreateTarget creates a new Target from the given configuration.
+	// The Target shares the underlying transport connection with other sources/targets
+	// created from the same Connection.
+	//
+	// The Target's Close() method should NOT close the underlying connection -
+	// only the Connection's Close() should do that.
+	CreateTarget(ctx context.Context, config TargetConfig) (Target, error)
 }
 
 // Connections is a slice of Connection interfaces.

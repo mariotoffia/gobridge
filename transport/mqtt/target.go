@@ -55,12 +55,17 @@ type Target struct {
 	mu           sync.RWMutex
 	closeOnce    sync.Once
 	closeErr     error
+
+	// sharedClient indicates the client is managed externally (by MQTTConnection)
+	// and should NOT be closed when the Target is closed.
+	sharedClient bool
 }
 
 // Ensure Target implements types.Target
 var _ types.Target = (*Target)(nil)
 
-// NewTarget creates a new MQTT target.
+// NewTarget creates a new MQTT target that manages its own connection.
+// For shared connection mode, use NewTargetWithClient instead.
 func NewTarget(config *TargetConfigImpl) (*Target, error) {
 	if config == nil {
 		return nil, errors.New("config is required")
@@ -86,6 +91,41 @@ func NewTarget(config *TargetConfigImpl) (*Target, error) {
 		qos:          qos,
 		retain:       config.Retain,
 		timeout:      timeout,
+		sharedClient: false,
+	}, nil
+}
+
+// NewTargetWithClient creates a new MQTT target that uses a shared client.
+// The client is managed externally (typically by MQTTConnection) and will NOT
+// be closed when the Target is closed.
+func NewTargetWithClient(config *TargetConfigImpl, client *autopaho.ConnectionManager) (*Target, error) {
+	if config == nil {
+		return nil, errors.New("config is required")
+	}
+	if client == nil {
+		return nil, errors.New("client is required for shared client mode")
+	}
+
+	qos := byte(config.QoS)
+	if qos > 2 {
+		qos = 1 // Default to QoS 1
+	}
+
+	timeout := config.Timeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+
+	return &Target{
+		id:           config.ID,
+		config:       config,
+		client:       client,
+		defaultTopic: config.DefaultTopic,
+		qos:          qos,
+		retain:       config.Retain,
+		timeout:      timeout,
+		sharedClient: true,
+		running:      atomic.Bool{},
 	}, nil
 }
 
@@ -119,11 +159,25 @@ func (t *Target) Capabilities() types.Capabilities {
 
 // Connect establishes the connection to the MQTT broker.
 // This is called automatically on first Send if not already connected.
+// For shared client mode, this just marks the target as ready since the
+// connection is managed by MQTTConnection.
 func (t *Target) Connect(ctx context.Context) error {
 	if t.running.Load() {
 		return nil // Already connected
 	}
 
+	if t.sharedClient {
+		// Shared mode - client is already connected, just mark as running
+		t.running.Store(true)
+		return nil
+	}
+
+	// Standalone mode - create our own connection
+	return t.connectStandalone(ctx)
+}
+
+// connectStandalone creates and connects to MQTT broker with a dedicated connection.
+func (t *Target) connectStandalone(ctx context.Context) error {
 	// Parse broker URL
 	serverURL, err := url.Parse(t.config.Connection.BrokerURL)
 	if err != nil {
@@ -298,6 +352,8 @@ func (t *Target) SendBatch(ctx context.Context, msgs []types.Message) (sent int,
 }
 
 // Close disconnects from the broker and releases resources.
+// For shared client mode, this does NOT close the underlying MQTT connection -
+// that is managed by the MQTTConnection that created this target.
 func (t *Target) Close() error {
 	t.closeOnce.Do(func() {
 		t.running.Store(false)
@@ -306,15 +362,15 @@ func (t *Target) Close() error {
 			t.cancel()
 		}
 
-		if t.client != nil {
-			// Disconnect with a short timeout
+		if !t.sharedClient && t.client != nil {
+			// Standalone mode - disconnect and close client
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
 			t.closeErr = t.client.Disconnect(ctx)
 		}
+		// Shared mode - don't close the client, it's managed by MQTTConnection
 	})
 
 	return t.closeErr
 }
-

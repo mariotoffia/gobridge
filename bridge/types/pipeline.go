@@ -52,6 +52,10 @@ type PipelineConfig interface {
 	GetMiddlewareNames() []string
 	// GetErrorHandling returns error handling configuration.
 	GetErrorHandling() *PipelineErrorConfig
+	// GetConnectionID returns the ID of a shared Connection to use.
+	// If empty, Source and Target are created independently via their factories.
+	// If set, Source and Target are created from the Connection's providers.
+	GetConnectionID() string
 }
 
 // PipelineErrorConfig defines how errors are handled in a pipeline.
@@ -126,4 +130,3 @@ type StatsProvider interface {
 	// Stats returns current pipeline statistics.
 	Stats() PipelineStats
 }
-
