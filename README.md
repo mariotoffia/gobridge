@@ -5,10 +5,21 @@ A message bridge framework for connecting different transport technologies. Rout
 ## Features
 
 - **Multi-transport support**: MQTT v5, AWS SQS, Azure Service Bus
+- **Shared connections**: Multiple sources/targets on single transport connection
 - **Middleware chains**: Transform, filter, log, and retry messages
 - **Pluggable architecture**: Easy to add new transports and middlewares
+- **Dynamic configuration**: Runtime updates from DynamoDB, files, etc.
 - **Clusterable**: External retry backing (e.g., SQS) for HA deployments
-- **Observable**: Metrics and health check support
+- **Credential management**: Inline or URI-based (AWS Parameter Store, files)
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Architecture Overview](bridge/types/ARCHITECTURE.md) | System design, core concepts, and component interactions |
+| [Transport Guide](bridge/types/ARCHITECTURE-TRANSPORTS.md) | Transport implementations and how to add new ones |
+| [Middleware Guide](bridge/types/ARCHITECTURE-MIDDLEWARE.md) | Middleware chains, retry system, and error handling |
+| [Missing Features](bridge/types/MISSING.md) | Roadmap for production readiness |
 
 ## Installation
 
@@ -83,27 +94,22 @@ func main() {
 }
 ```
 
-## Module Structure
+## Project Structure
 
 ```
 gobridge/
-├── go.work                 # Workspace definition
-├── go.mod                  # Core module (zero external deps)
-├── bridge/
-│   ├── core/               # Pipeline, Route, Bridge runtime
-│   └── types/              # Interfaces and common types
-├── transport/
-│   ├── mqtt/               # MQTT module (paho.golang)
-│   │   └── go.mod
-│   ├── aws/                # AWS module (AWS SDK v2)
-│   │   ├── go.mod
-│   │   └── sqs/            # SQS transport
-│   └── azure/              # Azure module (Azure SDK)
-│       ├── go.mod
-│       └── servicebus/     # Service Bus transport
-└── tests/
-    └── docker/             # Docker test utilities
+├── bridge/                 # Core abstractions
+│   ├── core/               # Bridge runtime, Pipeline, Route
+│   ├── credentials/        # Credential resolution and builders
+│   └── types/              # Interfaces and documentation
+├── config/                 # Configuration sources (DynamoDB, file)
+├── credentials/            # Credential repositories (AWS PMS, file)
+├── middleware/             # Filter, transform, retry
+├── metrics/                # CloudWatch, OpenTelemetry exporters
+└── transport/              # MQTT, SQS, Azure Service Bus
 ```
+
+See [Architecture Overview](bridge/types/ARCHITECTURE.md) for detailed package documentation.
 
 ## Development
 
@@ -158,52 +164,13 @@ make tidy
 
 ## Transports
 
-### MQTT v5 (MQTT Module)
+| Transport | Module | Features |
+|-----------|--------|----------|
+| **MQTT v5** | `transport/mqtt` | Shared connections, QoS 0/1/2, wildcards |
+| **AWS SQS** | `transport/aws/sqs` | Long polling, batching, DLQ |
+| **Azure Service Bus** | `transport/azure/servicebus` | Queues, topics, subscriptions |
 
-Uses [paho.golang](https://github.com/eclipse/paho.golang) for native MQTT v5 support.
-
-```go
-import "github.com/mariotoffia/gobridge/transport/mqtt"
-
-source := &mqtt.SourceConfigImpl{
-    ID: "mqtt-source",
-    Connection: mqtt.ConnectionConfig{
-        BrokerURL: "tcp://localhost:1883",
-    },
-    Topics: []string{"sensors/#"},
-    QoS: 1,
-}
-```
-
-### AWS SQS (AWS Module)
-
-```go
-import "github.com/mariotoffia/gobridge/transport/aws/sqs"
-
-source := &sqs.SourceConfigImpl{
-    ID: "sqs-source",
-    Connection: sqs.ConnectionConfig{
-        Region: "us-east-1",
-        // For LocalStack:
-        // Endpoint: "http://localhost:4566",
-    },
-    QueueName: "my-queue",
-}
-```
-
-### Azure Service Bus (Azure Module)
-
-```go
-import "github.com/mariotoffia/gobridge/transport/azure/servicebus"
-
-source := &servicebus.SourceConfigImpl{
-    ID: "sb-source",
-    Connection: servicebus.ConnectionConfig{
-        ConnectionString: "Endpoint=sb://...",
-    },
-    QueueName: "my-queue",
-}
-```
+See [Transport Guide](bridge/types/ARCHITECTURE-TRANSPORTS.md) for configuration examples and implementation details.
 
 ## Delivery Guarantees
 

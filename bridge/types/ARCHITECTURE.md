@@ -1,372 +1,483 @@
-# Bridge Architecture
+# GoBridge Architecture
 
-This document describes the architecture of the gobridge message bridge system.
+This document provides a comprehensive overview of the GoBridge message bridge system architecture.
+
+**Related Documentation:**
+- [ARCHITECTURE-TRANSPORTS.md](./ARCHITECTURE-TRANSPORTS.md) - Transport implementations
+- [ARCHITECTURE-MIDDLEWARE.md](./ARCHITECTURE-MIDDLEWARE.md) - Middleware and retry system
+- [MISSING.md](./MISSING.md) - Missing features for production readiness
+
+## Table of Contents
+
+1. [System Overview](#system-overview)
+2. [Core Concepts](#core-concepts)
+3. [Bridge Runtime](#bridge-runtime)
+4. [Pipeline Architecture](#pipeline-architecture)
+5. [Configuration System](#configuration-system)
+6. [Credentials System](#credentials-system)
+7. [Clustering](#clustering)
+
+---
 
 ## System Overview
 
-The bridge provides a flexible, type-safe abstraction for connecting message sources to targets through configurable pipelines.
+GoBridge is a flexible, type-safe message bridge for connecting message sources to targets through configurable pipelines. It supports multiple transports (MQTT, SQS, Azure Service Bus) and provides middleware chains for message transformation, filtering, and error handling.
 
 ```mermaid
 graph TB
-    subgraph types [bridge/types]
-        Config[Config Interfaces]
-        Connection[Connection]
-        Source[Source]
-        Target[Target]
-        Pipeline[Pipeline]
-        Middleware[Middleware]
+    subgraph External [External Systems]
+        MQTT[MQTT Broker]
+        SQS[AWS SQS]
+        ASB[Azure Service Bus]
     end
     
-    subgraph core [bridge/core]
-        Bridge[Bridge]
-        PipelineImpl[PipelineImpl]
-        Registries[Registries]
+    subgraph GoBridge [GoBridge Runtime]
+        subgraph Core [bridge/core]
+            Bridge[Bridge]
+            Pipeline[Pipeline]
+            Route[Route]
+        end
+        
+        subgraph Registries [Registries]
+            SR[SourceRegistry]
+            TR[TargetRegistry]
+            MR[MiddlewareRegistry]
+            CR[ConnectionRegistry]
+        end
+        
+        subgraph Config [Configuration]
+            CS[ConfigSource]
+            CH[ConfigHandler]
+        end
     end
     
-    subgraph transport [transport/mqtt]
-        MQTTConn[MQTTConnection]
-        MQTTSrc[Source]
-        MQTTTgt[Target]
+    subgraph Transports [transport/]
+        MQTTTransport[mqtt/]
+        SQSTransport[aws/sqs/]
+        ASBTransport[azure/servicebus/]
     end
     
-    core -->|implements| types
-    transport -->|implements| types
-    core -->|uses| transport
+    External <--> Transports
+    Transports <--> Core
+    Registries --> Core
+    Config --> Core
 ```
 
-## Interface Hierarchy
+## Core Concepts
 
-The type system is designed around composable interfaces:
+### Package Structure
+
+```
+gobridge/
+├── bridge/                    # Core bridge abstractions
+│   ├── core/                  # Runtime implementations
+│   │   ├── bridge.go          # Main Bridge runtime
+│   │   ├── pipeline.go        # Pipeline implementation
+│   │   ├── route.go           # Route implementation
+│   │   ├── config_handler.go  # Dynamic config handling
+│   │   └── *_registry.go      # Factory registries
+│   ├── credentials/           # Credential management
+│   │   ├── resolver.go        # URI-based credential resolution
+│   │   └── builders/          # Fluent credential builders
+│   ├── registry/              # Connection registry
+│   └── types/                 # Interface definitions
+├── config/                    # Configuration sources
+│   ├── aws/dynamodb/          # DynamoDB config source
+│   └── file/                  # File-based config
+├── credentials/               # Credential repositories
+│   ├── aws/pms/               # AWS Parameter Store
+│   └── file/                  # File-based credentials
+├── middleware/                # Middleware implementations
+│   ├── filter/                # Message filtering
+│   ├── retry/                 # Retry and DLQ
+│   └── transform/             # Message transformation
+├── metrics/                   # Metrics exporters
+│   ├── aws/cloudwatch/        # CloudWatch metrics
+│   └── otel/                  # OpenTelemetry
+└── transport/                 # Transport implementations
+    ├── mqtt/                  # MQTT v5 transport
+    ├── aws/sqs/               # AWS SQS transport
+    └── azure/servicebus/      # Azure Service Bus
+```
+
+### Key Interfaces
 
 ```mermaid
 classDiagram
-    class Config {
+    class Source {
         <<interface>>
         +GetID() string
-        +GetTransportType() TransportType
+        +Start(ctx) error
+        +Messages() chan SourceMessage
+        +Capabilities() Capabilities
+        +Close() error
     }
     
-    class ConnectionConfig {
+    class Target {
         <<interface>>
-        +GetBridgeID() string
+        +GetID() string
+        +Send(ctx, msg) error
+        +SendBatch(ctx, msgs) int, error
+        +Capabilities() Capabilities
+        +Close() error
     }
-    
-    class SourceConfig {
-        <<interface>>
-        +GetQoS() QosLevel
-        +GetPrefetch() int
-    }
-    
-    class TargetConfig {
-        <<interface>>
-        +GetDefaultQoS() QosLevel
-        +GetBatchSize() int
-    }
-    
-    Config <|-- ConnectionConfig
-    Config <|-- SourceConfig
-    Config <|-- TargetConfig
     
     class Connection {
         <<interface>>
+        +GetID() string
         +Start(ctx, config) error
         +Close() error
         +SourceProvider() SourceProvider
         +TargetProvider() TargetProvider
         +LifecycleCoordinator() LifecycleCoordinator
+        +UpdateSettings(ctx, settings) error
+        +Drain(ctx) error
+        +IsDraining() bool
     }
     
-    class Source {
+    class Pipeline {
         <<interface>>
+        +GetID() string
+        +GetMode() PipelineMode
         +Start(ctx) error
-        +Messages() chan SourceMessage
-        +Capabilities() Capabilities
+        +Source() Source
+        +Target() Target
+        +Middlewares() MiddlewareChain
+        +Close() error
     }
     
-    class Target {
-        <<interface>>
-        +Send(ctx, msg) error
-        +SendBatch(ctx, msgs) error
-        +Capabilities() Capabilities
-    }
+    Source --> Pipeline
+    Target --> Pipeline
+    Connection --> Source : creates
+    Connection --> Target : creates
 ```
 
-## Message Flow
+---
 
-Messages flow from Source through Middleware to Target:
+## Bridge Runtime
+
+The `Bridge` is the central runtime that orchestrates all components.
+
+### Bridge Structure
+
+```go
+type Bridge struct {
+    id                 string
+    sourceRegistry     types.SourceRegistry
+    targetRegistry     types.TargetRegistry
+    middlewareRegistry *MiddlewareRegistry
+    configSource       types.ConfigSource
+    pipelines          map[string]types.Pipeline
+    routes             map[string]types.Route
+}
+```
+
+### Bridge Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Created: NewBridge
+    Created --> Configured: Add Pipelines/Routes
+    Configured --> Running: Start
+    Running --> Running: Process Messages
+    Running --> Stopping: Stop/Close
+    Stopping --> Stopped: Cleanup Complete
+    Stopped --> [*]
+    
+    Running --> Running: Handle Config Change
+```
+
+### Creating a Bridge
+
+```go
+// Create bridge with options
+bridge := core.NewBridge("my-bridge",
+    core.WithSourceRegistry(sourceRegistry),
+    core.WithTargetRegistry(targetRegistry),
+    core.WithMiddlewareRegistry(middlewareRegistry),
+    core.WithConfigSource(configSource),
+)
+
+// Register transport factories
+bridge.SourceRegistry().RegisterFactory(mqttFactory)
+bridge.TargetRegistry().RegisterFactory(sqsFactory)
+
+// Create and add pipelines
+pipeline, _ := bridge.CreatePipeline(ctx, "mqtt-to-sqs",
+    mqttSourceConfig,
+    sqsTargetConfig,
+    []string{"logging", "transform"},
+)
+bridge.AddPipeline(pipeline)
+
+// Start the bridge
+bridge.Start(ctx)
+defer bridge.Close()
+```
+
+---
+
+## Pipeline Architecture
+
+Pipelines connect Sources to Targets through Middleware chains.
+
+### Message Flow
 
 ```mermaid
 sequenceDiagram
     participant Broker as External Broker
-    participant Conn as Connection
     participant Src as Source
-    participant MW as Middleware
+    participant Chain as Middleware Chain
     participant Tgt as Target
     participant Dest as Destination
     
-    Broker->>Conn: message arrives
-    Conn->>Src: route to source
+    Broker->>Src: message arrives
     Src->>Src: create SourceMessage
-    Src-->>MW: Messages channel
-    MW->>MW: process chain
-    MW->>Tgt: Send msg
-    Tgt->>Dest: publish
-    Dest-->>Tgt: ack
-    Tgt-->>MW: nil
-    MW-->>Src: success
-    Src->>Src: Ack
+    
+    loop For each message
+        Src-->>Chain: msg via channel
+        
+        Note over Chain: Middleware 1: Logging
+        Note over Chain: Middleware 2: Transform
+        Note over Chain: Middleware 3: Filter
+        
+        Chain->>Tgt: Send(msg)
+        Tgt->>Dest: publish
+        Dest-->>Tgt: ack
+        Tgt-->>Chain: nil
+        Chain-->>Src: success
+        Src->>Src: Ack()
+    end
 ```
 
-## Connection Architecture
+### Pipeline Modes
 
-Connections can provide Sources and Targets that share the underlying transport:
+- **Simplex**: One-way flow (Source → Target)
+- **Duplex**: Bidirectional flow (Source ↔ Target)
+
+### Routes
+
+Routes chain multiple Pipelines together:
 
 ```mermaid
-flowchart TB
-    subgraph MQTTConnection [MQTT Connection]
-        Client[autopaho.ConnectionManager]
-        Router[messageRouter]
-        Coordinator[LifecycleCoordinator]
+flowchart LR
+    subgraph Route [Route: sqs-mqtt-azure]
+        subgraph P1 [Pipeline 1]
+            SQS[SQS Source] --> MW1[Middlewares] --> MQTT1[MQTT Target]
+        end
+        subgraph P2 [Pipeline 2]
+            MQTT2[MQTT Source] --> MW2[Middlewares] --> ASB[Service Bus Target]
+        end
     end
     
-    subgraph Sources [Sources]
-        S1[Source sensors]
-        S2[Source devices]
-    end
-    
-    subgraph Targets [Targets]
-        T1[Target cloud/data]
-        T2[Target alerts]
-    end
-    
-    Client -->|subscribe| S1
-    Client -->|subscribe| S2
-    Client -->|publish| T1
-    Client -->|publish| T2
-    
-    Router -->|dispatch| S1
-    Router -->|dispatch| S2
-    
-    Coordinator -->|manages| S1
-    Coordinator -->|manages| S2
-    Coordinator -->|manages| T1
-    Coordinator -->|manages| T2
+    MQTT1 -.-> MQTT2
 ```
+
+---
 
 ## Configuration System
 
-The configuration system supports dynamic updates:
+### Configuration Sources
 
 ```mermaid
 flowchart TB
-    subgraph config [ConfigSource]
-        CS[ConfigSource]
-        CW[ConfigWriter]
+    subgraph Sources [ConfigSource Implementations]
+        DDB[DynamoDB]
+        File[File System]
+        Custom[Custom Implementation]
     end
     
-    subgraph bridge [Bridge Runtime]
-        CH[ConfigHandler]
-        CM[ConnectionManager]
-        PM[PipelineManager]
+    subgraph Bridge [Bridge Runtime]
+        CS[ConfigSource Interface]
+        Watch[Watch Channel]
+        Handler[ConfigHandler]
     end
     
-    subgraph connection [Connection Layer]
-        CONN[Connection]
-        LC[LifecycleCoordinator]
-        SP[SourceProvider]
-        TP[TargetProvider]
-    end
-    
-    subgraph endpoints [Endpoints]
-        SRC[Source]
-        TGT[Target]
-    end
-    
-    CS -->|ConfigChange| CH
-    CH -->|ConnectionChange| CM
-    CH -->|SourceChange| PM
-    CH -->|TargetChange| PM
-    
-    CM -->|manages| CONN
-    CONN -->|owns| LC
-    LC -->|coordinates| SP
-    LC -->|coordinates| TP
-    SP -->|creates| SRC
-    TP -->|creates| TGT
+    Sources --> CS
+    CS --> Watch
+    Watch --> Handler
+    Handler --> |ConnectionChange| ConnectionRegistry
+    Handler --> |SourceChange| LifecycleCoordinator
+    Handler --> |TargetChange| LifecycleCoordinator
 ```
 
-## Configuration Change Flow
+### Dynamic Configuration
 
-How configuration changes are processed:
+The system supports runtime configuration changes:
 
-```mermaid
-stateDiagram-v2
-    [*] --> Watching: Start
-    Watching --> ProcessingChange: ConfigChange received
-    
-    ProcessingChange --> ConnectionChange: Type is connection
-    ProcessingChange --> SourceChange: Type is source
-    ProcessingChange --> TargetChange: Type is target
-    
-    ConnectionChange --> CheckReconnect: UpdateSettings
-    CheckReconnect --> Drain: RequiresReconnect true
-    CheckReconnect --> ApplySettings: RequiresReconnect false
-    Drain --> Reconnect
-    Reconnect --> RestoreEndpoints
-    RestoreEndpoints --> Watching
-    ApplySettings --> Watching
-    
-    SourceChange --> BeginTransaction
-    TargetChange --> BeginTransaction
-    BeginTransaction --> ScheduleChanges
-    ScheduleChanges --> Commit
-    Commit --> UpdatePipelines
-    UpdatePipelines --> Watching
+```go
+type ConfigChange struct {
+    Type      ConfigChangeType  // add, update, delete
+    Item      ConfigItem
+    Timestamp time.Time
+}
+
+type ConfigChangeHandler interface {
+    HandleConnectionChange(ctx, change) error
+    HandleSourceChange(ctx, change) error
+    HandleTargetChange(ctx, change) error
+    HandleBatchChanges(ctx, changes) error
+}
 ```
 
-## Lifecycle Transaction
+### Lifecycle Coordination
 
-Atomic changes to Sources/Targets on shared connections:
+For shared connections (like MQTT), atomic changes are coordinated:
 
 ```mermaid
 sequenceDiagram
     participant Handler as ConfigHandler
     participant Coord as LifecycleCoordinator
     participant Txn as Transaction
-    participant Client as MQTT Client
+    participant Client as Transport Client
     
     Handler->>Coord: BeginTransaction
     Coord-->>Handler: txn
     
-    Handler->>Txn: AddSource config1
-    Handler->>Txn: RemoveSource id2
-    Handler->>Txn: UpdateSource id3 config3
+    Handler->>Txn: AddSource(config1)
+    Handler->>Txn: RemoveSource(id2)
     
     Handler->>Txn: Commit
     
-    Txn->>Txn: collect topic changes
-    Txn->>Client: Unsubscribe removed topics
-    Client-->>Txn: ok
-    Txn->>Client: Subscribe new topics
-    Client-->>Txn: ok
-    Txn->>Txn: create/remove Source instances
+    Txn->>Client: Unsubscribe(removed)
+    Txn->>Client: Subscribe(added)
+    Txn->>Txn: Update internal state
     Txn-->>Handler: LifecycleChangeResult
 ```
 
+---
+
 ## Credentials System
-
-The credentials system supports both inline credentials and URI-based resolution:
-
-```mermaid
-flowchart TB
-    subgraph config [Connection Config]
-        Creds[Credentials]
-    end
-    
-    subgraph detection [Detection]
-        IsURI{IsServerURI?}
-    end
-    
-    subgraph inline [Inline Path]
-        UP[UsernamePassword]
-        TLS[TlsCredentials]
-    end
-    
-    subgraph resolution [Resolution Path]
-        Resolver[credentials.Resolver]
-        Repo[CredentialsRepository]
-    end
-    
-    Creds --> IsURI
-    IsURI -->|No| UP
-    IsURI -->|No| TLS
-    IsURI -->|Yes| Resolver
-    Resolver --> Repo
-    Repo -->|pms://| PMS[AWS Parameter Store]
-    Repo -->|file://| File[File Repository]
-```
 
 ### Credential Types
 
-- **Inline**: Actual credentials embedded in configuration
-  - `UsernamePasswordCredentials`: Username and password
-  - `TlsCredentials`: Certificates and keys (PEM encoded)
-
-- **URI-based**: References to external credential stores
-  - `pms://tenant/app/creds`: AWS Parameter Store
-  - `file://path/to/creds`: Local file system
-
-### ServerURI Detection
-
-A string is considered a serverURI if it matches the pattern `[a-z]+://.*`:
-
 ```go
-func IsServerURI(s string) bool {
-    idx := strings.Index(s, "://")
-    if idx <= 0 {
-        return false
-    }
-    scheme := s[:idx]
-    for _, c := range scheme {
-        if c < 'a' || c > 'z' {
-            return false
-        }
-    }
-    return true
+type Credentials struct {
+    Type        []CredentialsType  // UsernamePassword, TLS
+    Credentials []any              // Inline or URI references
+}
+
+type UsernamePasswordCredentials struct {
+    Username string
+    Password string
+}
+
+type TlsCredentials struct {
+    CertPEM            string
+    KeyPEM             string
+    CaPEM              []string
+    InsecureSkipVerify bool
 }
 ```
 
-## Registry Interfaces
+### Credential Resolution
 
-The system uses optional admin interfaces for CRUD operations:
+```mermaid
+flowchart TB
+    subgraph Input [Credentials Input]
+        Inline[Inline Credentials]
+        URI[URI Reference]
+    end
+    
+    subgraph Detection [IsServerURI Check]
+        Check{scheme://pattern?}
+    end
+    
+    subgraph Resolution [Resolution Path]
+        Resolver[Resolver]
+        Cache[Cache]
+        Repo[Repository]
+    end
+    
+    subgraph Repositories [Repository Implementations]
+        PMS[AWS Parameter Store<br/>pms://]
+        FileRepo[File System<br/>file://]
+    end
+    
+    Input --> Check
+    Check -->|Inline| DirectUse[Use Directly]
+    Check -->|URI| Resolver
+    Resolver --> Cache
+    Cache -->|miss| Repo
+    Repo --> Repositories
+```
 
-### ConnectionRegistry (Read-only)
+### Credentials Builder
 
 ```go
-type ConnectionRegistry interface {
-    GetConnection(id string) (Connection, error)
-    ListConnections() ([]Connection, error)
-    CreateConnection(ctx context.Context, config ConnectionConfig) (Connection, error)
+// Build credentials fluently
+creds, _ := builders.NewCredentialsBuilder().
+    WithUsernamePassword("admin", "secret").
+    WithCertFile("/path/to/cert.pem").
+    WithKeyFile("/path/to/key.pem").
+    WithCAFiles("/path/to/ca-chain.pem").
+    Build()
+
+// Generate self-signed for testing
+testCreds, _ := builders.GenerateTestCredentials("localhost")
+```
+
+---
+
+## Clustering
+
+The `ClusterConfigurator` interface enables multi-node deployments:
+
+```mermaid
+flowchart TB
+    subgraph Cluster [Bridge Cluster]
+        subgraph Node1 [Node 1 - Leader]
+            B1[Bridge]
+            CC1[ClusterConfigurator]
+        end
+        subgraph Node2 [Node 2]
+            B2[Bridge]
+            CC2[ClusterConfigurator]
+        end
+        subgraph Node3 [Node 3]
+            B3[Bridge]
+            CC3[ClusterConfigurator]
+        end
+    end
+    
+    subgraph Coordination [Coordination Layer]
+        Election[Leader Election]
+        Membership[Membership]
+        ConfigDist[Config Distribution]
+    end
+    
+    CC1 <--> Coordination
+    CC2 <--> Coordination
+    CC3 <--> Coordination
+```
+
+### Cluster Features
+
+- **Leader Election**: Cluster-wide decisions
+- **Shared Subscriptions**: Coordinated message consumption
+- **Drain Coordination**: Graceful node shutdown
+- **Configuration Filtering**: Node-specific config views
+
+```go
+type ClusterConfigurator interface {
+    ConfigSource  // Filtered config view
+    
+    GetIdentity() BridgeIdentity
+    RequestDrain(ctx context.Context) error
+    IsDraining() bool
+    IsLeader() bool
+    WaitForReady(ctx context.Context) error
 }
 ```
 
-### ConnectionAdminRegistry (Optional CRUD)
-
-```go
-type ConnectionAdminRegistry interface {
-    ConnectionRegistry
-    UpdateConnection(ctx context.Context, id string, settings ConnectionSettingsConfig) error
-    DeleteConnection(ctx context.Context, id string) error
-    GetOrCreateConnection(ctx context.Context, config ConnectionConfig) (Connection, error)
-}
-```
-
-### CredentialsRepository (Read-only)
-
-```go
-type CredentialsRepository interface {
-    GetScheme() string
-    GetNamespace() string
-    GetCredentials(serverURI string) (*Credentials, error)
-}
-```
-
-### CredentialsAdminRepository (Optional CRUD)
-
-```go
-type CredentialsAdminRepository interface {
-    CredentialsRepository
-    CreateCredentials(ctx context.Context, serverURI string, creds *Credentials) error
-    UpdateCredentials(ctx context.Context, serverURI string, creds *Credentials, version int64) error
-    DeleteCredentials(ctx context.Context, serverURI string, version int64) error
-    ListCredentials(ctx context.Context, prefix string) ([]string, error)
-}
-```
+---
 
 ## Key Design Principles
 
-1. **Minimal Reconnect**: Connection updates check if reconnect is actually needed
-2. **Source/Target as Unit**: Topic changes create/destroy/replace instances
-3. **Lifecycle Coordinator**: For shared connections, coordinate changes atomically
-4. **Drain-First**: Always drain in-flight messages before disruptive changes
-5. **Optional Admin**: Admin interfaces are optional extensions of read-only interfaces
+1. **Interface-First**: All components defined as interfaces in `bridge/types`
+2. **Pluggable Transports**: Easy to add new message brokers
+3. **Middleware Chains**: Composable message processing
+4. **Optional Admin**: CRUD interfaces extend read-only base interfaces
+5. **Graceful Lifecycle**: Drain-first approach for all changes
+6. **Credential Abstraction**: Support inline and external credential stores
+7. **Dynamic Configuration**: Runtime updates without restart
