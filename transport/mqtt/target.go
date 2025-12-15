@@ -26,15 +26,24 @@ import (
 //
 //   - QoS 0: Fire-and-forget. Returns nil on successful socket write.
 //     WARNING: This does NOT confirm broker received the message!
-//     Do NOT use with external retry managers - you cannot reliably decide when to ack.
+//     Transport Retry is enabled for QoS 0 to handle infrastructure failures.
 //
 //   - QoS 1: Returns nil when PUBACK received from broker.
 //     The broker has accepted the message and owns delivery to subscribers.
-//     Caller MUST NOT retry - the broker handles subscriber delivery.
+//     Native retry is used - Transport Retry is skipped (SkipNativeRetry=true).
 //
 //   - QoS 2: Returns nil when PUBCOMP received from broker.
 //     Exactly-once delivery to broker confirmed.
-//     Caller MUST NOT retry.
+//     Native retry is used - Transport Retry is skipped (SkipNativeRetry=true).
+//
+// # Transport Retry vs Message Retry
+//
+// This target implements TRANSPORT RETRY for infrastructure failures:
+//   - Retries until message TTL expires
+//   - Adaptive backoff (longer for infrastructure errors)
+//   - Skipped for QoS 1/2 if SkipNativeRetry=true (default)
+//
+// MESSAGE RETRY is handled by middleware/retry/RetryManager (separate system).
 //
 // # External Retry Integration (e.g., SQS-backed)
 //
@@ -59,14 +68,39 @@ type Target struct {
 	// sharedClient indicates the client is managed externally (by MQTTConnection)
 	// and should NOT be closed when the Target is closed.
 	sharedClient bool
+
+	// transportRetry configures retry behavior for infrastructure failures.
+	// This is TRANSPORT RETRY, not MESSAGE RETRY.
+	transportRetry types.TransportRetryConfig
+
+	// defaultTTL is the default message TTL for transport retry bounds.
+	defaultTTL time.Duration
 }
 
 // Ensure Target implements types.Target
 var _ types.Target = (*Target)(nil)
 
+// TargetOption configures a Target.
+type TargetOption func(*Target)
+
+// WithTransportRetry sets the transport retry configuration.
+// This is for TRANSPORT RETRY (infrastructure failures), not MESSAGE RETRY.
+func WithTransportRetry(config types.TransportRetryConfig) TargetOption {
+	return func(t *Target) {
+		t.transportRetry = config
+	}
+}
+
+// WithDefaultTTL sets the default TTL for messages without explicit TTL.
+func WithDefaultTTL(ttl time.Duration) TargetOption {
+	return func(t *Target) {
+		t.defaultTTL = ttl
+	}
+}
+
 // NewTarget creates a new MQTT target that manages its own connection.
 // For shared connection mode, use NewTargetWithClient instead.
-func NewTarget(config *TargetConfigImpl) (*Target, error) {
+func NewTarget(config *TargetConfigImpl, opts ...TargetOption) (*Target, error) {
 	if config == nil {
 		return nil, errors.New("config is required")
 	}
@@ -84,21 +118,29 @@ func NewTarget(config *TargetConfigImpl) (*Target, error) {
 		timeout = 30 * time.Second
 	}
 
-	return &Target{
-		id:           config.ID,
-		config:       config,
-		defaultTopic: config.DefaultTopic,
-		qos:          qos,
-		retain:       config.Retain,
-		timeout:      timeout,
-		sharedClient: false,
-	}, nil
+	t := &Target{
+		id:             config.ID,
+		config:         config,
+		defaultTopic:   config.DefaultTopic,
+		qos:            qos,
+		retain:         config.Retain,
+		timeout:        timeout,
+		sharedClient:   false,
+		transportRetry: types.DefaultTransportRetryConfig(),
+		defaultTTL:     2 * time.Minute, // 120 seconds default
+	}
+
+	for _, opt := range opts {
+		opt(t)
+	}
+
+	return t, nil
 }
 
 // NewTargetWithClient creates a new MQTT target that uses a shared client.
 // The client is managed externally (typically by MQTTConnection) and will NOT
 // be closed when the Target is closed.
-func NewTargetWithClient(config *TargetConfigImpl, client *autopaho.ConnectionManager) (*Target, error) {
+func NewTargetWithClient(config *TargetConfigImpl, client *autopaho.ConnectionManager, opts ...TargetOption) (*Target, error) {
 	if config == nil {
 		return nil, errors.New("config is required")
 	}
@@ -116,17 +158,24 @@ func NewTargetWithClient(config *TargetConfigImpl, client *autopaho.ConnectionMa
 		timeout = 30 * time.Second
 	}
 
-	return &Target{
-		id:           config.ID,
-		config:       config,
-		client:       client,
-		defaultTopic: config.DefaultTopic,
-		qos:          qos,
-		retain:       config.Retain,
-		timeout:      timeout,
-		sharedClient: true,
-		running:      atomic.Bool{},
-	}, nil
+	t := &Target{
+		id:             config.ID,
+		config:         config,
+		client:         client,
+		defaultTopic:   config.DefaultTopic,
+		qos:            qos,
+		retain:         config.Retain,
+		timeout:        timeout,
+		sharedClient:   true,
+		transportRetry: types.DefaultTransportRetryConfig(),
+		defaultTTL:     2 * time.Minute, // 120 seconds default
+	}
+
+	for _, opt := range opts {
+		opt(t)
+	}
+
+	return t, nil
 }
 
 // GetID returns the unique identifier of the target.
@@ -255,6 +304,11 @@ func (t *Target) connectStandalone(ctx context.Context) error {
 //   - nil: Message ACCEPTED by broker. For QoS 1/2, PUBACK/PUBCOMP received.
 //     Broker now owns delivery. Caller MUST NOT retry.
 //   - error: Message NOT accepted. Classified as recoverable or permanent.
+//
+// # Transport Retry Behavior
+//
+// For QoS 1/2 (native retry): Single attempt, broker handles durability.
+// For QoS 0 (no native retry): Retry with backoff until TTL expires.
 func (t *Target) Send(ctx context.Context, msg types.Message) error {
 	// Ensure connected
 	if !t.running.Load() {
@@ -263,6 +317,80 @@ func (t *Target) Send(ctx context.Context, msg types.Message) error {
 		}
 	}
 
+	// Check if we should use transport retry
+	if t.shouldUseTransportRetry() {
+		return t.sendWithRetry(ctx, msg)
+	}
+
+	// Native retry (QoS 1/2) - single attempt
+	return t.sendOnce(ctx, msg)
+}
+
+// shouldUseTransportRetry returns true if transport retry should be used.
+// Detection is automatic via CapabilityNativeRetry exposed by the target.
+func (t *Target) shouldUseTransportRetry() bool {
+	// If SkipNativeRetry is false, always use transport retry
+	if !t.transportRetry.ShouldSkipNativeRetry() {
+		return true
+	}
+
+	// Auto-detect via capabilities - skip transport retry if target has native retry
+	return !t.hasNativeRetry()
+}
+
+// hasNativeRetry returns true if this target has native retry capability.
+// This is auto-detected from the target's capabilities.
+func (t *Target) hasNativeRetry() bool {
+	return t.Capabilities().Has(types.CapabilityNativeRetry)
+}
+
+// sendWithRetry implements transport retry with adaptive backoff.
+// Retries until message TTL expires, not based on error classification.
+func (t *Target) sendWithRetry(ctx context.Context, msg types.Message) error {
+	config := t.transportRetry.WithDefaults()
+	attempt := 0
+	var lastErr error
+
+	for {
+		attempt++
+
+		// Check message TTL FIRST (before attempting)
+		waitDuration, expired := types.CalculateWaitDuration(0, &msg, t.defaultTTL)
+		if expired {
+			if lastErr != nil {
+				return types.ErrMessageExpired.Wrap(lastErr)
+			}
+			return types.ErrMessageExpired
+		}
+		_ = waitDuration // Used below for wait calculation
+
+		// Attempt to send
+		err := t.sendOnce(ctx, msg)
+		if err == nil {
+			return nil // Success
+		}
+		lastErr = err
+
+		// Calculate backoff with error-aware adjustment
+		backoff := types.CalculateAdaptiveBackoff(attempt, config, err)
+
+		// Calculate wait respecting TTL
+		waitDuration, expired = types.CalculateWaitDuration(backoff, &msg, t.defaultTTL)
+		if expired {
+			return types.ErrMessageExpired.Wrap(err)
+		}
+
+		// Wait with backoff
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(waitDuration):
+		}
+	}
+}
+
+// sendOnce performs a single publish attempt.
+func (t *Target) sendOnce(ctx context.Context, msg types.Message) error {
 	// Determine topic
 	topic := msg.Topic
 	if topic == "" {

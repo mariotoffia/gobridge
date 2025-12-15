@@ -28,6 +28,16 @@ type Bridge struct {
 	// configSource provides configuration (optional)
 	configSource types.ConfigSource
 
+	// transportRetry is the default transport retry configuration.
+	// Used for Connection, Subscribe, and Publish retries.
+	// Can be overridden at the Connection level.
+	transportRetry types.TransportRetryConfig
+
+	// flowControl is the default flow control configuration.
+	// Used for backpressure (MaxInFlight) and default message TTL.
+	// Can be overridden at the Pipeline level.
+	flowControl types.FlowControlConfig
+
 	// pipelines holds all active pipelines by ID
 	pipelines map[string]types.Pipeline
 
@@ -78,6 +88,27 @@ func WithConfigSource(source types.ConfigSource) BridgeOption {
 	}
 }
 
+// WithTransportRetry sets the default transport retry configuration.
+// This configures retries for infrastructure failures (connection, subscribe, publish).
+// Can be overridden at the Connection level.
+//
+// NOTE: This is for TRANSPORT RETRY (infrastructure failures).
+// For MESSAGE RETRY (application failures), configure RetryPolicy on the pipeline.
+func WithTransportRetry(config types.TransportRetryConfig) BridgeOption {
+	return func(b *Bridge) {
+		b.transportRetry = config
+	}
+}
+
+// WithFlowControl sets the default flow control configuration.
+// This configures backpressure (MaxInFlight) and default message TTL.
+// Can be overridden at the Pipeline level.
+func WithFlowControl(config types.FlowControlConfig) BridgeOption {
+	return func(b *Bridge) {
+		b.flowControl = config
+	}
+}
+
 // NewBridge creates a new Bridge instance.
 func NewBridge(id string, opts ...BridgeOption) *Bridge {
 	b := &Bridge{
@@ -85,6 +116,8 @@ func NewBridge(id string, opts ...BridgeOption) *Bridge {
 		sourceRegistry:     NewSourceRegistry(),
 		targetRegistry:     NewTargetRegistry(),
 		middlewareRegistry: NewMiddlewareRegistry(),
+		transportRetry:     types.DefaultTransportRetryConfig(),
+		flowControl:        types.DefaultFlowControlConfig(),
 		pipelines:          make(map[string]types.Pipeline),
 		routes:             make(map[string]types.Route),
 	}
@@ -114,6 +147,18 @@ func (b *Bridge) TargetRegistry() types.TargetRegistry {
 // MiddlewareRegistry returns the middleware registry.
 func (b *Bridge) MiddlewareRegistry() *MiddlewareRegistry {
 	return b.middlewareRegistry
+}
+
+// TransportRetry returns the default transport retry configuration.
+// This is used by connections that don't have their own retry config.
+func (b *Bridge) TransportRetry() types.TransportRetryConfig {
+	return b.transportRetry
+}
+
+// FlowControl returns the default flow control configuration.
+// This is used by pipelines that don't have their own flow control config.
+func (b *Bridge) FlowControl() types.FlowControlConfig {
+	return b.flowControl
 }
 
 // Start starts the bridge and all registered pipelines/routes.
@@ -409,4 +454,3 @@ func (b *Bridge) CreatePipeline(
 
 	return pipeline, nil
 }
-

@@ -23,10 +23,17 @@ type PipelineImpl struct {
 	stats PipelineStats
 
 	// retryManager handles message retries (optional)
+	// This is for MESSAGE RETRY (application failures).
 	retryManager types.RetryManager
 
 	// dlq is the dead letter queue for permanent failures (optional)
 	dlq types.DeadLetterQueue
+
+	// flowControl configures backpressure and default message TTL
+	flowControl types.FlowControlConfig
+
+	// inFlightSem is a semaphore for backpressure (nil if unlimited)
+	inFlightSem chan struct{}
 
 	// running indicates if the pipeline is currently running
 	running atomic.Bool
@@ -74,6 +81,20 @@ func WithDeadLetterQueue(dlq types.DeadLetterQueue) PipelineOption {
 	}
 }
 
+// PipelineWithFlowControl sets the flow control configuration for the pipeline.
+// This configures:
+//   - MaxInFlight: Maximum concurrent messages (backpressure)
+//   - DefaultMessageTTL: TTL for messages without explicit TTL
+func PipelineWithFlowControl(config types.FlowControlConfig) PipelineOption {
+	return func(p *PipelineImpl) {
+		p.flowControl = config
+		// Initialize semaphore if MaxInFlight is set
+		if config.MaxInFlight > 0 {
+			p.inFlightSem = make(chan struct{}, config.MaxInFlight)
+		}
+	}
+}
+
 // NewPipeline creates a new Pipeline.
 func NewPipeline(
 	id string,
@@ -93,10 +114,16 @@ func NewPipeline(
 		source:      source,
 		target:      target,
 		middlewares: middlewares,
+		flowControl: types.DefaultFlowControlConfig(),
 	}
 
 	for _, opt := range opts {
 		opt(p)
+	}
+
+	// Initialize semaphore if MaxInFlight is set and not already initialized
+	if p.flowControl.MaxInFlight > 0 && p.inFlightSem == nil {
+		p.inFlightSem = make(chan struct{}, p.flowControl.MaxInFlight)
 	}
 
 	return p
@@ -183,11 +210,30 @@ func (p *PipelineImpl) processMessages(ctx context.Context) {
 
 // handleMessage processes a single message through the middleware chain and target.
 func (p *PipelineImpl) handleMessage(ctx context.Context, srcMsg *types.SourceMessage) {
+	// BACKPRESSURE: Wait for available slot
+	if err := p.acquireSlot(ctx); err != nil {
+		// Context cancelled while waiting
+		return
+	}
+	defer p.releaseSlot()
+
 	p.stats.MessagesReceived.Add(1)
 	p.stats.InFlight.Add(1)
 	defer p.stats.InFlight.Add(-1)
 
 	msg := &srcMsg.Message
+
+	// Apply default TTL if message has none
+	if msg.TTL == 0 && p.flowControl.DefaultMessageTTL > 0 {
+		msg.TTL = p.flowControl.DefaultMessageTTL
+	}
+
+	// Check if already expired BEFORE processing
+	if err := msg.IsExpired(); err != nil {
+		p.stats.MessagesDropped.Add(1)
+		_ = srcMsg.Ack() // Don't retry expired messages
+		return
+	}
 
 	// Define the final handler that sends to the target
 	finalHandler := func(ctx context.Context, msg *types.Message) error {
@@ -209,6 +255,27 @@ func (p *PipelineImpl) handleMessage(ctx context.Context, srcMsg *types.SourceMe
 
 	// Handle error
 	p.handleError(ctx, srcMsg, msg, err)
+}
+
+// acquireSlot blocks until a slot is available or context is cancelled.
+// This implements backpressure when MaxInFlight is set.
+func (p *PipelineImpl) acquireSlot(ctx context.Context) error {
+	if p.inFlightSem == nil {
+		return nil // Unlimited
+	}
+	select {
+	case p.inFlightSem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// releaseSlot releases a slot for another message.
+func (p *PipelineImpl) releaseSlot() {
+	if p.inFlightSem != nil {
+		<-p.inFlightSem
+	}
 }
 
 // handleError processes errors according to classification.

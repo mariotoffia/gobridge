@@ -167,6 +167,13 @@ type Bridge struct {
     targetRegistry     types.TargetRegistry
     middlewareRegistry *MiddlewareRegistry
     configSource       types.ConfigSource
+    
+    // Transport retry defaults (Connection level override)
+    transportRetry     types.TransportRetryConfig
+    
+    // Flow control defaults (Pipeline level override)
+    flowControl        types.FlowControlConfig
+    
     pipelines          map[string]types.Pipeline
     routes             map[string]types.Route
 }
@@ -221,12 +228,44 @@ defer bridge.Close()
 
 Pipelines connect Sources to Targets through Middleware chains.
 
+### ⚠️ Two Retry Systems
+
+GoBridge has **two separate retry systems**:
+
+| System | Location | Purpose | Limit |
+|--------|----------|---------|-------|
+| **Transport Retry** | Target.Send() | Infrastructure failures | Message TTL |
+| **Message Retry** | RetryManager | Application failures | MaxAttempts |
+
+See [ARCHITECTURE-MIDDLEWARE.md](./ARCHITECTURE-MIDDLEWARE.md) for detailed explanation.
+
+### Flow Control
+
+Pipelines implement backpressure and message TTL:
+
+```go
+bridge := core.NewBridge("my-bridge",
+    // Transport retry defaults (for infrastructure failures)
+    core.WithTransportRetry(types.TransportRetryConfig{
+        InitialBackoff: time.Second,
+        MaxBackoff:     5 * time.Minute,
+    }),
+    
+    // Flow control defaults
+    core.WithFlowControl(types.FlowControlConfig{
+        MaxInFlight:       100,             // Backpressure limit
+        DefaultMessageTTL: 2 * time.Minute, // For messages without TTL
+    }),
+)
+```
+
 ### Message Flow
 
 ```mermaid
 sequenceDiagram
     participant Broker as External Broker
     participant Src as Source
+    participant FC as Flow Control
     participant Chain as Middleware Chain
     participant Tgt as Target
     participant Dest as Destination
@@ -235,18 +274,31 @@ sequenceDiagram
     Src->>Src: create SourceMessage
     
     loop For each message
-        Src-->>Chain: msg via channel
+        Src-->>FC: acquire slot
+        Note over FC: Wait if MaxInFlight reached
+        FC-->>FC: check TTL
+        FC-->>Chain: msg (with default TTL applied)
         
         Note over Chain: Middleware 1: Logging
-        Note over Chain: Middleware 2: Transform
+        Note over Chain: Middleware 2: Transform  
         Note over Chain: Middleware 3: Filter
         
+        alt Middleware error
+            Chain-->>Chain: MESSAGE RETRY<br/>(MaxAttempts)
+        end
+        
         Chain->>Tgt: Send(msg)
+        
+        alt Infrastructure error
+            Tgt-->>Tgt: TRANSPORT RETRY<br/>(until TTL expires)
+        end
+        
         Tgt->>Dest: publish
         Dest-->>Tgt: ack
         Tgt-->>Chain: nil
         Chain-->>Src: success
         Src->>Src: Ack()
+        FC-->>FC: release slot
     end
 ```
 

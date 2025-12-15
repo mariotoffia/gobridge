@@ -56,6 +56,13 @@ type PipelineConfig interface {
 	// If empty, Source and Target are created independently via their factories.
 	// If set, Source and Target are created from the Connection's providers.
 	GetConnectionID() string
+	// GetFlowControl returns pipeline-specific flow control configuration.
+	// Returns nil to use bridge defaults.
+	//
+	// Flow control includes:
+	//   - MaxInFlight: Backpressure limit for concurrent messages
+	//   - DefaultMessageTTL: TTL for messages without explicit TTL
+	GetFlowControl() *FlowControlConfig
 }
 
 // PipelineErrorConfig defines how errors are handled in a pipeline.

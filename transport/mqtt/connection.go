@@ -69,6 +69,13 @@ type MQTTConnectionConfig struct {
 
 	// Connection holds the MQTT connection settings.
 	Connection ConnectionConfig `json:"connection"`
+
+	// TransportRetry configures retry behavior for infrastructure operations.
+	// If nil, uses bridge defaults.
+	//
+	// This is for TRANSPORT RETRY (infrastructure failures like connect, subscribe, publish).
+	// NOT to be confused with RetryPolicy which is for MESSAGE RETRY.
+	TransportRetry *types.TransportRetryConfig `json:"transportRetry,omitempty"`
 }
 
 // Ensure MQTTConnectionConfig implements types.ConnectionConfig
@@ -84,6 +91,12 @@ func (c *MQTTConnectionConfig) GetTransportType() types.TransportType {
 
 func (c *MQTTConnectionConfig) GetBridgeID() string {
 	return "" // Can be extended if needed
+}
+
+// GetTransportRetryConfig returns connection-specific transport retry configuration.
+// Returns nil to use bridge defaults.
+func (c *MQTTConnectionConfig) GetTransportRetryConfig() *types.TransportRetryConfig {
+	return c.TransportRetry
 }
 
 // messageRouter routes incoming MQTT messages to registered source handlers.

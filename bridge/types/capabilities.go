@@ -95,10 +95,22 @@ const (
 
 	// CapabilityNativeRetry indicates the target handles retries internally.
 	// When set, the transport protocol handles retransmission (e.g., MQTT QoS 1/2).
-	// The pipeline should NOT add redundant retry logic for transport-level failures.
+	//
+	// This capability is AUTO-DETECTED by the transport retry system:
+	//   - If TransportRetryConfig.SkipNativeRetry=true (default) AND target has this capability,
+	//     transport retry is skipped to avoid redundant retransmission.
+	//   - If SkipNativeRetry=false, transport retry is used regardless of this capability.
+	//
+	// Transports that expose this capability:
+	//   - MQTT QoS 1: PUBACK handshake (at-least-once)
+	//   - MQTT QoS 2: PUBCOMP handshake (exactly-once)
+	//   - SQS: Built-in retry with visibility timeout
+	//   - Azure Service Bus: Native retry with dead-letter support
 	//
 	// Note: This only applies to transport-level delivery. Application-level
-	// failures (e.g., target service down) still need external retry handling.
+	// failures (e.g., middleware errors) still need MESSAGE RETRY via RetryManager.
+	//
+	// See: TransportRetryConfig.SkipNativeRetry
 	CapabilityNativeRetry CapabilityType = "NativeRetry"
 )
 

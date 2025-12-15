@@ -6,8 +6,149 @@ import (
 )
 
 // ============================================================================
-// Retry Manager
+// ⚠️  TWO DISTINCT RETRY SYSTEMS - READ CAREFULLY ⚠️
 // ============================================================================
+//
+// This file contains TWO different retry configurations:
+//
+// 1. TransportRetryConfig (Infrastructure Level)
+//    - Used by: Target.Send(), Connection.Start(), Source.Subscribe()
+//    - Purpose: Retry infrastructure failures (DNS, connection, broker down)
+//    - Limit: Message TTL (no attempt limit)
+//    - Config hierarchy: Bridge -> Connection
+//
+// 2. RetryPolicy (Application Level) - MESSAGE RETRY
+//    - Used by: middleware/retry/RetryManager
+//    - Purpose: Retry application failures (transform, validation, business logic)
+//    - Limit: MaxAttempts (attempt count limit)
+//    - Config hierarchy: Pipeline level
+//
+// See ARCHITECTURE-MIDDLEWARE.md for detailed explanation.
+// ============================================================================
+
+// ============================================================================
+// TRANSPORT RETRY - Infrastructure Level
+// ============================================================================
+
+// TransportRetryConfig configures retry behavior for infrastructure operations.
+// Used for connection, subscription, and publish retries in transport layer.
+//
+// This is for TRANSPORT RETRY (infrastructure failures).
+// NOT to be confused with RetryPolicy which is for MESSAGE RETRY (application failures).
+//
+// KEY DESIGN: TTL is the only retry limiter. We retry until message TTL expires,
+// regardless of error type. Error classification only affects backoff duration.
+//
+// Configuration hierarchy: Bridge (default) -> Connection (override)
+//
+// Example:
+//
+//	bridge := core.NewBridge("my-bridge",
+//	    core.WithTransportRetry(types.TransportRetryConfig{
+//	        InitialBackoff: 500 * time.Millisecond,
+//	        MaxBackoff:     2 * time.Minute,
+//	    }),
+//	)
+type TransportRetryConfig struct {
+	// InitialBackoff is the first retry delay (default: 1s)
+	InitialBackoff time.Duration `json:"initialBackoff,omitempty"`
+	// MaxBackoff is the maximum retry delay (default: 5m)
+	MaxBackoff time.Duration `json:"maxBackoff,omitempty"`
+	// Multiplier increases backoff each attempt (default: 2.0)
+	Multiplier float64 `json:"multiplier,omitempty"`
+	// Jitter adds randomness to prevent thundering herd (default: 0.1, range 0.0-1.0)
+	Jitter float64 `json:"jitter,omitempty"`
+	// InfrastructureBackoffMultiplier applies extra backoff for severe errors
+	// like DNS failure, connection refused (default: 2.0)
+	InfrastructureBackoffMultiplier float64 `json:"infrastructureBackoffMultiplier,omitempty"`
+	// SkipNativeRetry skips transport retry for targets with native retry (default: true).
+	//
+	// Native retry is AUTO-DETECTED via CapabilityNativeRetry exposed by targets:
+	//   - MQTT QoS 1/2: PUBACK/PUBCOMP handshake with broker retransmission
+	//   - SQS: Built-in retry with visibility timeout
+	//   - Azure Service Bus: Native retry with dead-letter support
+	//
+	// When true (default): Transport retry is skipped if target.Capabilities().Has(CapabilityNativeRetry)
+	// When false: Transport retry is always used (useful for additional reliability on top of native)
+	//
+	// See: types.CapabilityNativeRetry, Target.Capabilities()
+	SkipNativeRetry *bool `json:"skipNativeRetry,omitempty"`
+}
+
+// DefaultTransportRetryConfig returns sensible defaults for autonomous operation.
+func DefaultTransportRetryConfig() TransportRetryConfig {
+	skipNative := true
+	return TransportRetryConfig{
+		InitialBackoff:                  time.Second,
+		MaxBackoff:                      5 * time.Minute,
+		Multiplier:                      2.0,
+		Jitter:                          0.1,
+		InfrastructureBackoffMultiplier: 2.0,
+		SkipNativeRetry:                 &skipNative,
+	}
+}
+
+// Merge returns a new config with non-zero values from override.
+func (c TransportRetryConfig) Merge(override TransportRetryConfig) TransportRetryConfig {
+	result := c
+	if override.InitialBackoff > 0 {
+		result.InitialBackoff = override.InitialBackoff
+	}
+	if override.MaxBackoff > 0 {
+		result.MaxBackoff = override.MaxBackoff
+	}
+	if override.Multiplier > 0 {
+		result.Multiplier = override.Multiplier
+	}
+	if override.Jitter > 0 {
+		result.Jitter = override.Jitter
+	}
+	if override.InfrastructureBackoffMultiplier > 0 {
+		result.InfrastructureBackoffMultiplier = override.InfrastructureBackoffMultiplier
+	}
+	if override.SkipNativeRetry != nil {
+		result.SkipNativeRetry = override.SkipNativeRetry
+	}
+	return result
+}
+
+// ShouldSkipNativeRetry returns true if native retry should be skipped.
+func (c TransportRetryConfig) ShouldSkipNativeRetry() bool {
+	if c.SkipNativeRetry == nil {
+		return true // Default to skip
+	}
+	return *c.SkipNativeRetry
+}
+
+// WithDefaults returns the config with default values applied for zero fields.
+func (c TransportRetryConfig) WithDefaults() TransportRetryConfig {
+	defaults := DefaultTransportRetryConfig()
+	if c.InitialBackoff == 0 {
+		c.InitialBackoff = defaults.InitialBackoff
+	}
+	if c.MaxBackoff == 0 {
+		c.MaxBackoff = defaults.MaxBackoff
+	}
+	if c.Multiplier == 0 {
+		c.Multiplier = defaults.Multiplier
+	}
+	if c.Jitter == 0 {
+		c.Jitter = defaults.Jitter
+	}
+	if c.InfrastructureBackoffMultiplier == 0 {
+		c.InfrastructureBackoffMultiplier = defaults.InfrastructureBackoffMultiplier
+	}
+	if c.SkipNativeRetry == nil {
+		c.SkipNativeRetry = defaults.SkipNativeRetry
+	}
+	return c
+}
+
+// ============================================================================
+// MESSAGE RETRY - Application Level (RetryManager)
+// ============================================================================
+
+// RetryManager handles message retry logic.
 
 // RetryManager handles message retry logic.
 // The implementation can be backed by various technologies:
@@ -200,4 +341,3 @@ func RetryMiddleware(name string, manager RetryManager, policy RetryPolicy) Midd
 		return nil
 	})
 }
-

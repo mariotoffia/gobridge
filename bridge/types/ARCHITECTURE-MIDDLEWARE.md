@@ -119,49 +119,114 @@ subscribe := logging.NewSubscribeLogging(logger)
 
 ---
 
-## Retry System
+## ⚠️ Two Distinct Retry Systems
 
-### Architecture
+GoBridge has **TWO separate retry systems** serving different purposes. Understanding when each is used is critical.
+
+### Retry Systems Comparison
+
+| Aspect | Transport Retry | Message Retry |
+|--------|-----------------|---------------|
+| **Location** | Target.Send() / Connection | Middleware / Pipeline |
+| **Purpose** | Infrastructure failures | Application failures |
+| **Limit** | Message TTL | MaxAttempts |
+| **Config** | `TransportRetryConfig` | `RetryPolicy` |
+| **Hierarchy** | Bridge → Connection | Pipeline level |
+| **Examples** | DNS down, broker unreachable | Transform error, validation |
+
+### When Each System Is Used
 
 ```mermaid
 flowchart TB
-    subgraph Pipeline [Pipeline Processing]
-        Source[Source] --> MW[Middleware Chain] --> Target[Target]
+    subgraph Pipeline ["Pipeline Processing"]
+        Source[Source] --> FC{Backpressure<br/>Check}
+        FC -->|blocked| Wait[Wait for slot]
+        Wait --> FC
+        FC -->|slot available| TTL{Check TTL}
+        TTL -->|expired| Drop1[Drop Message]
+        TTL -->|valid| MW[Middleware Chain]
     end
     
-    subgraph ErrorHandling [Error Handling]
+    subgraph MessageRetry ["MESSAGE RETRY<br/>(Application Level)"]
         MW -->|error| Classify{Recoverable?}
-        Classify -->|Yes| RetryManager[RetryManager]
+        Classify -->|Yes| RetryManager[RetryManager<br/>MaxAttempts based]
         Classify -->|No| DLQ[DeadLetterQueue]
         RetryManager -->|exhausted| DLQ
         RetryManager -->|retry| MW
+        MW -->|success| Target["Target.Send()"]
     end
+    
+    subgraph TransportRetry ["TRANSPORT RETRY<br/>(Infrastructure Level)"]
+        Target -->|infra error| Check{TTL<br/>expired?}
+        Check -->|No| Backoff[Adaptive Backoff]
+        Backoff --> Target
+        Check -->|Yes| Drop2[Drop + ErrMessageExpired]
+        Target -->|success| Ack[Acknowledge Source]
+    end
+    
+    style MessageRetry fill:#e1f5fe
+    style TransportRetry fill:#fff3e0
 ```
 
-### RetryManager Interface
+### Transport Retry (Infrastructure Level)
+
+Used by `Target.Send()`, `Connection.Start()`, and `Source.Subscribe()` for infrastructure failures.
+
+**Key characteristics:**
+- **TTL-based**: Retries until message TTL expires (no attempt limit)
+- **Adaptive backoff**: Longer delays for infrastructure errors (DNS, connection refused)
+- **Native retry aware**: Skips retry for QoS 1/2 MQTT (broker handles durability)
 
 ```go
-type RetryManager interface {
-    Enqueue(ctx context.Context, msg Message, reason error) error
-    Start(ctx context.Context, handler Subscriber) error
-    Stats() RetryStats
-    Purge(ctx context.Context) error
+// TransportRetryConfig - for infrastructure failures
+type TransportRetryConfig struct {
+    InitialBackoff                  time.Duration // Default: 1s
+    MaxBackoff                      time.Duration // Default: 5m
+    Multiplier                      float64       // Default: 2.0
+    Jitter                          float64       // Default: 0.1
+    InfrastructureBackoffMultiplier float64       // Default: 2.0 (extra for DNS/network)
+    SkipNativeRetry                 *bool         // Default: true (skip for QoS 1/2)
 }
 
+// Configure at Bridge level (default)
+bridge := core.NewBridge("my-bridge",
+    core.WithTransportRetry(types.TransportRetryConfig{
+        InitialBackoff: 500 * time.Millisecond,
+        MaxBackoff:     3 * time.Minute,
+    }),
+)
+
+// Override at Connection level
+mqttConn := &mqtt.MQTTConnectionConfig{
+    ID: "mqtt-1",
+    TransportRetry: &types.TransportRetryConfig{
+        InitialBackoff: time.Second,
+        MaxBackoff:     5 * time.Minute,
+    },
+}
+```
+
+### Message Retry (Application Level)
+
+Used by `RetryManager` and retry middleware for application-level failures.
+
+**Key characteristics:**
+- **Attempt-based**: Limited by MaxAttempts
+- **Standard backoff**: Exponential with jitter
+- **Middleware integration**: Works with pipeline middleware chain
+
+```go
+// RetryPolicy - for application failures  
 type RetryPolicy struct {
-    MaxAttempts       int
-    InitialBackoff    time.Duration
-    MaxBackoff        time.Duration
-    BackoffMultiplier float64
-    Jitter            float64
-    RetryableErrors   []ErrorCode
+    MaxAttempts       int           // Maximum retry attempts
+    InitialBackoff    time.Duration // First retry delay
+    MaxBackoff        time.Duration // Maximum delay
+    BackoffMultiplier float64       // Backoff growth rate
+    Jitter            float64       // Randomness (0.0-1.0)
+    RetryableErrors   []ErrorCode   // Optional: specific errors to retry
 }
-```
 
-### Using Retry Manager
-
-```go
-// Create retry manager with policy
+// Configure at Pipeline level
 policy := types.RetryPolicy{
     MaxAttempts:       5,
     InitialBackoff:    time.Second,
@@ -172,24 +237,51 @@ policy := types.RetryPolicy{
 
 retryManager := retry.NewMemoryRetryManager(policy, dlq)
 
-// Use in pipeline
 pipeline := core.NewPipeline(id, mode, source, target, chain,
     core.WithRetryManager(retryManager),
     core.WithDeadLetterQueue(dlq),
 )
 ```
 
+### Flow Control and Backpressure
+
+The pipeline implements flow control to prevent unbounded message processing:
+
+```go
+// FlowControlConfig - pipeline level
+type FlowControlConfig struct {
+    MaxInFlight       int           // Max concurrent messages (default: 100)
+    DefaultMessageTTL time.Duration // TTL for messages without explicit TTL (default: 120s)
+}
+
+// Configure at Bridge level (default)
+bridge := core.NewBridge("my-bridge",
+    core.WithFlowControl(types.FlowControlConfig{
+        MaxInFlight:       200,
+        DefaultMessageTTL: 5 * time.Minute,
+    }),
+)
+
+// Override at Pipeline level
+pipeline := core.NewPipeline(id, mode, source, target, chain,
+    core.PipelineWithFlowControl(types.FlowControlConfig{
+        MaxInFlight:       50,
+        DefaultMessageTTL: 2 * time.Minute,
+    }),
+)
+```
+
 ### Retry Middleware
 
 ```go
-// Create retry middleware
+// Create retry middleware for application-level retry
 retryMW := types.RetryMiddleware("retry", retryManager, policy)
 
-// Add to chain
+// Add to chain (should be last before target)
 chain := types.NewMiddlewareChain(
     loggingMW,
     transformMW,
-    retryMW, // Should be last before target
+    retryMW,
 )
 ```
 

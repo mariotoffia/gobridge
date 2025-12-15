@@ -475,3 +475,87 @@ func IsRecoverableError(err error) bool {
 	}
 	return be.IsRecoverable
 }
+
+// IsInfrastructureError checks if an error is an infrastructure-level failure.
+// Infrastructure errors include DNS failures, connection refused, network unreachable, etc.
+// These errors typically warrant longer backoff times in Transport Retry.
+//
+// Used by Transport Retry (Target.Send) to adjust backoff duration.
+func IsInfrastructureError(err error) bool {
+	if err == nil {
+		return false
+	}
+	be, ok := AsBridgeError(err)
+	if !ok {
+		// Unknown error - check string patterns as fallback
+		errStr := err.Error()
+		return containsAnyPattern(errStr,
+			"connection refused",
+			"no such host",
+			"network unreachable",
+			"no route to host",
+			"dns",
+			"lookup",
+		)
+	}
+
+	// Infrastructure error codes
+	switch be.Code {
+	case ErrCodeConnectionLost, ErrCodeUnavailable, ErrCodeTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+// GetRetryAfter extracts the RetryAfter duration from an error.
+// Returns 0 if the error doesn't have a RetryAfter hint.
+//
+// Used by Transport Retry (Target.Send) to respect server-provided backoff hints.
+func GetRetryAfter(err error) time.Duration {
+	if err == nil {
+		return 0
+	}
+	be, ok := AsBridgeError(err)
+	if !ok {
+		return 0
+	}
+	return be.RetryAfter
+}
+
+// containsAnyPattern checks if s contains any of the patterns (case-insensitive).
+func containsAnyPattern(s string, patterns ...string) bool {
+	lower := toLower(s)
+	for _, p := range patterns {
+		if containsSubstring(lower, toLower(p)) {
+			return true
+		}
+	}
+	return false
+}
+
+// toLower converts a string to lowercase without importing strings package.
+func toLower(s string) string {
+	b := make([]byte, len(s))
+	for i := range s {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		b[i] = c
+	}
+	return string(b)
+}
+
+// containsSubstring checks if s contains substr.
+func containsSubstring(s, substr string) bool {
+	if len(substr) > len(s) {
+		return false
+	}
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

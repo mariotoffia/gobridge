@@ -30,6 +30,12 @@ type ConnectionConfig interface {
 	// This is useful when multiple bridges collaborates together to e.g. share publishers but
 	// re-/elective handle subscriptions for e.g. failover.
 	GetBridgeID() string
+	// GetTransportRetryConfig returns connection-specific transport retry configuration.
+	// Returns nil to use bridge defaults.
+	//
+	// This is for TRANSPORT RETRY (infrastructure failures like connection, subscribe, publish).
+	// Configuration hierarchy: Bridge (default) -> Connection (override)
+	GetTransportRetryConfig() *TransportRetryConfig
 }
 
 type ResourceBasedLookupConfig interface {
