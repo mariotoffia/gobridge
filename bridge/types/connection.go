@@ -81,6 +81,35 @@ type Connection interface {
 	// This enables transports like MQTT to use a single connection for both subscribing
 	// and publishing, where Source and Target instances share the same client.
 	TargetProvider() TargetProvider
+
+	// UpdateSettings applies new connection settings.
+	// If RequiresReconnect() is true on the settings comparison, it drains and reconnects.
+	// Otherwise, applies settings without disruption.
+	//
+	// The implementation should:
+	//  1. Compare new settings with current using RequiresReconnect()
+	//  2. If reconnect needed: Drain(), disconnect, reconnect with new settings
+	//  3. If no reconnect: Apply settings in-place
+	//
+	// Returns an error if the update fails.
+	UpdateSettings(ctx context.Context, settings ConnectionSettingsConfig) error
+
+	// LifecycleCoordinator returns the coordinator for atomic Source/Target operations.
+	// Returns nil if the connection doesn't need coordination (independent sources/targets).
+	//
+	// For transports like MQTT where sources/targets share a connection, this provides
+	// atomic transaction support for adding/removing multiple sources/targets.
+	LifecycleCoordinator() LifecycleCoordinator
+
+	// Drain stops accepting new work and waits for in-flight messages to complete.
+	// Returns when drained or context cancelled.
+	//
+	// This is a simplified drain that uses default options. For more control,
+	// use the Drainable interface if the connection implements it.
+	Drain(ctx context.Context) error
+
+	// IsDraining returns true if the connection is currently draining.
+	IsDraining() bool
 }
 
 // SourceProvider creates Source instances from a shared Connection.

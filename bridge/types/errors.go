@@ -94,6 +94,12 @@ const (
 
 	// ErrCodeNotBidirectional indicates a connection does not support the operation.
 	ErrCodeNotBidirectional ErrorCode = "NOT_BIDIRECTIONAL"
+
+	// ErrCodeAlreadyExists indicates a resource already exists.
+	ErrCodeAlreadyExists ErrorCode = "ALREADY_EXISTS"
+
+	// ErrCodeVersionMismatch indicates a version mismatch for optimistic locking.
+	ErrCodeVersionMismatch ErrorCode = "VERSION_MISMATCH"
 )
 
 // ============================================================================
@@ -267,6 +273,24 @@ var (
 		Code:          ErrCodeNotBidirectional,
 		Message:       "connection is not bidirectional",
 		HttpCode:      400,
+		IsRecoverable: false,
+	}
+
+	// ErrAlreadyExists indicates a resource already exists.
+	// IsRecoverable: false - resource must be removed or updated instead.
+	ErrAlreadyExists = &BridgeError{
+		Code:          ErrCodeAlreadyExists,
+		Message:       "resource already exists",
+		HttpCode:      409,
+		IsRecoverable: false,
+	}
+
+	// ErrVersionMismatch indicates a version mismatch for optimistic locking.
+	// IsRecoverable: false - caller should refresh and retry.
+	ErrVersionMismatch = &BridgeError{
+		Code:          ErrCodeVersionMismatch,
+		Message:       "version mismatch",
+		HttpCode:      409,
 		IsRecoverable: false,
 	}
 )

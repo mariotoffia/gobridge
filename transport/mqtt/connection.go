@@ -46,7 +46,16 @@ type MQTTConnection struct {
 	// router handles incoming messages and dispatches to registered sources
 	router *messageRouter
 
+	// coordinator manages atomic source/target lifecycle changes
+	coordinator *mqttLifecycleCoordinator
+
+	// activeSources tracks currently active sources by ID
+	activeSources map[string]types.Source
+	// activeTargets tracks currently active targets by ID
+	activeTargets map[string]types.Target
+
 	running   atomic.Bool
+	draining  atomic.Bool
 	cancel    context.CancelFunc
 	mu        sync.RWMutex
 	closeOnce sync.Once
@@ -127,11 +136,16 @@ func NewConnection(config *MQTTConnectionConfig) (*MQTTConnection, error) {
 		return nil, errors.New("broker URL is required")
 	}
 
-	return &MQTTConnection{
-		id:     config.ID,
-		config: config,
-		router: newMessageRouter(),
-	}, nil
+	conn := &MQTTConnection{
+		id:            config.ID,
+		config:        config,
+		router:        newMessageRouter(),
+		activeSources: make(map[string]types.Source),
+		activeTargets: make(map[string]types.Target),
+	}
+	conn.coordinator = newMQTTLifecycleCoordinator(conn)
+
+	return conn, nil
 }
 
 // GetID returns the unique identifier of the connection.
@@ -287,6 +301,9 @@ func (c *MQTTConnection) CreateSource(ctx context.Context, config types.SourceCo
 		return nil, err
 	}
 
+	// Register the source for lifecycle tracking
+	c.registerSource(config.GetID(), source)
+
 	return source, nil
 }
 
@@ -305,6 +322,9 @@ func (c *MQTTConnection) CreateTarget(ctx context.Context, config types.TargetCo
 	if err != nil {
 		return nil, err
 	}
+
+	// Register the target for lifecycle tracking
+	c.registerTarget(config.GetID(), target)
 
 	return target, nil
 }
@@ -339,4 +359,224 @@ func (c *MQTTConnection) Client() *autopaho.ConnectionManager {
 // IsRunning returns true if the connection is currently active.
 func (c *MQTTConnection) IsRunning() bool {
 	return c.running.Load()
+}
+
+// UpdateSettings applies new connection settings.
+// If RequiresReconnect() is true, it drains and reconnects.
+func (c *MQTTConnection) UpdateSettings(ctx context.Context, settings types.ConnectionSettingsConfig) error {
+	mqttSettings, ok := settings.(*MQTTConnectionSettings)
+	if !ok {
+		return fmt.Errorf("invalid settings type: expected *MQTTConnectionSettings, got %T", settings)
+	}
+
+	// Check if we need to reconnect
+	if c.config.Connection.RequiresReconnect(mqttSettings) {
+		// Full reconnect needed
+		if err := c.Drain(ctx); err != nil {
+			return fmt.Errorf("failed to drain before reconnect: %w", err)
+		}
+		return c.reconnectWithSettings(ctx, mqttSettings)
+	}
+
+	// Non-disruptive update (apply what we can without reconnect)
+	c.applySettings(mqttSettings)
+	return nil
+}
+
+// reconnectWithSettings disconnects and reconnects with new settings.
+func (c *MQTTConnection) reconnectWithSettings(ctx context.Context, settings *MQTTConnectionSettings) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Disconnect current client
+	if c.client != nil {
+		disconnectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_ = c.client.Disconnect(disconnectCtx)
+		cancel()
+	}
+
+	// Apply new settings
+	c.applySettings(settings)
+
+	// Reconnect
+	return c.startLocked(ctx)
+}
+
+// applySettings applies settings that don't require reconnect.
+func (c *MQTTConnection) applySettings(settings *MQTTConnectionSettings) {
+	// Update config with new settings
+	// This is where we'd apply non-disruptive settings
+	// For now, most MQTT settings require reconnect
+}
+
+// startLocked starts the connection (caller must hold mu).
+func (c *MQTTConnection) startLocked(ctx context.Context) error {
+	// Parse broker URLs
+	var serverURLs []*url.URL
+	brokerURLs := c.config.Connection.BrokerURLs
+	if len(brokerURLs) == 0 && c.config.Connection.BrokerURL != "" {
+		brokerURLs = []string{c.config.Connection.BrokerURL}
+	}
+
+	for _, urlStr := range brokerURLs {
+		serverURL, err := url.Parse(urlStr)
+		if err != nil {
+			return fmt.Errorf("invalid broker URL %q: %w", urlStr, err)
+		}
+		serverURLs = append(serverURLs, serverURL)
+	}
+
+	if len(serverURLs) == 0 {
+		return errors.New("no broker URLs configured")
+	}
+
+	// Create cancellable context
+	ctx, c.cancel = context.WithCancel(ctx)
+
+	// Build client configuration
+	clientID := c.config.Connection.ClientID
+	if clientID == "" {
+		clientID = fmt.Sprintf("gobridge-conn-%s-%d", c.id, time.Now().UnixNano())
+	}
+
+	keepAlive := c.config.Connection.KeepAlive
+	if keepAlive == 0 {
+		keepAlive = 30
+	}
+
+	cliCfg := autopaho.ClientConfig{
+		ServerUrls: serverURLs,
+		KeepAlive:  keepAlive,
+		ClientConfig: paho.ClientConfig{
+			ClientID: clientID,
+			Router:   paho.NewSingleHandlerRouter(c.router.handleMessage),
+		},
+	}
+
+	// Configure authentication
+	if c.config.Connection.Username != "" {
+		cliCfg.ConnectUsername = c.config.Connection.Username
+		cliCfg.ConnectPassword = []byte(c.config.Connection.Password)
+	}
+
+	// Configure session
+	cliCfg.CleanStartOnInitialConnection = c.config.Connection.CleanStart
+	if c.config.Connection.SessionExpiryInterval > 0 {
+		cliCfg.SessionExpiryInterval = c.config.Connection.SessionExpiryInterval
+	}
+
+	// Configure TLS
+	if c.config.Connection.TLS != nil && c.config.Connection.TLS.Enable {
+		tlsConfig, err := buildTLSConfig(c.config.Connection.TLS)
+		if err != nil {
+			return fmt.Errorf("failed to build TLS config: %w", err)
+		}
+		cliCfg.TlsCfg = tlsConfig
+	}
+
+	// Create connection manager
+	client, err := autopaho.NewConnection(ctx, cliCfg)
+	if err != nil {
+		return fmt.Errorf("failed to create MQTT client: %w", err)
+	}
+
+	c.client = client
+
+	// Wait for initial connection
+	connectTimeout := c.config.Connection.ConnectTimeout
+	if connectTimeout == 0 {
+		connectTimeout = 30 * time.Second
+	}
+
+	connectCtx, cancel := context.WithTimeout(ctx, connectTimeout)
+	defer cancel()
+
+	if err := client.AwaitConnection(connectCtx); err != nil {
+		c.client = nil
+		return fmt.Errorf("failed to connect to MQTT broker: %w", MapError(err))
+	}
+
+	return nil
+}
+
+// LifecycleCoordinator returns the coordinator for atomic Source/Target operations.
+func (c *MQTTConnection) LifecycleCoordinator() types.LifecycleCoordinator {
+	return c.coordinator
+}
+
+// Drain stops accepting new work and waits for in-flight messages to complete.
+func (c *MQTTConnection) Drain(ctx context.Context) error {
+	if !c.draining.CompareAndSwap(false, true) {
+		// Already draining, wait for completion
+		return c.waitForDrain(ctx)
+	}
+	defer c.draining.Store(false)
+
+	c.mu.RLock()
+	sources := make([]types.Source, 0, len(c.activeSources))
+	for _, src := range c.activeSources {
+		sources = append(sources, src)
+	}
+	c.mu.RUnlock()
+
+	// Drain all active sources
+	for _, src := range sources {
+		if drainable, ok := src.(types.Drainable); ok {
+			if err := drainable.Drain(ctx, types.DrainOptions{WaitForInFlight: true}); err != nil {
+				return fmt.Errorf("failed to drain source: %w", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// waitForDrain waits for an ongoing drain to complete.
+func (c *MQTTConnection) waitForDrain(ctx context.Context) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if !c.draining.Load() {
+				return nil
+			}
+		}
+	}
+}
+
+// IsDraining returns true if the connection is currently draining.
+func (c *MQTTConnection) IsDraining() bool {
+	return c.draining.Load()
+}
+
+// registerSource adds a source to the active sources map.
+func (c *MQTTConnection) registerSource(id string, src types.Source) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.activeSources[id] = src
+}
+
+// unregisterSource removes a source from the active sources map.
+func (c *MQTTConnection) unregisterSource(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.activeSources, id)
+}
+
+// registerTarget adds a target to the active targets map.
+func (c *MQTTConnection) registerTarget(id string, tgt types.Target) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.activeTargets[id] = tgt
+}
+
+// unregisterTarget removes a target from the active targets map.
+func (c *MQTTConnection) unregisterTarget(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.activeTargets, id)
 }

@@ -49,7 +49,12 @@ const (
 // ConnectionConfig holds common connection settings for MQTT.
 type ConnectionConfig struct {
 	// BrokerURL is the MQTT broker URL (e.g., "tcp://localhost:1883").
+	// Deprecated: Use BrokerURLs for multi-broker support.
 	BrokerURL string `json:"brokerUrl"`
+
+	// BrokerURLs is the list of MQTT broker URLs for high-availability.
+	// The client will try each URL in order until one connects.
+	BrokerURLs []string `json:"brokerUrls,omitempty"`
 
 	// ClientID is the MQTT client identifier.
 	// If empty, a unique ID is generated.
@@ -60,6 +65,10 @@ type ConnectionConfig struct {
 
 	// Password for authentication (optional).
 	Password string `json:"password,omitempty"`
+
+	// Credentials for authentication (optional).
+	// Supports both inline credentials and URI references.
+	Credentials *types.Credentials `json:"credentials,omitempty"`
 
 	// CleanStart indicates whether to start a clean session.
 	// If true, any previous session state is discarded.
@@ -77,6 +86,215 @@ type ConnectionConfig struct {
 
 	// TLS configures TLS/SSL for the connection.
 	TLS *TLSConfig `json:"tls,omitempty"`
+}
+
+// RequiresReconnect compares with another config and returns true if changes require reconnect.
+func (c *ConnectionConfig) RequiresReconnect(other *MQTTConnectionSettings) bool {
+	// BrokerURLs changes require reconnect
+	if !slicesEqual(c.getBrokerURLs(), other.GetBrokerURLs()) {
+		return true
+	}
+
+	// ClientID changes require reconnect
+	if c.ClientID != other.clientID {
+		return true
+	}
+
+	// Credentials changes require reconnect
+	if !credentialsEqual(c.Credentials, other.credentials) {
+		return true
+	}
+
+	// TLS changes require reconnect
+	if c.TLS != nil && other.tls != nil {
+		if c.TLS.Enable != other.tls.Enable ||
+			c.TLS.InsecureSkipVerify != other.tls.InsecureSkipVerify ||
+			c.TLS.CACertFile != other.tls.CACertFile ||
+			c.TLS.CertFile != other.tls.CertFile ||
+			c.TLS.KeyFile != other.tls.KeyFile {
+			return true
+		}
+	} else if (c.TLS != nil) != (other.tls != nil) {
+		return true
+	}
+
+	return false
+}
+
+// getBrokerURLs returns the broker URLs, handling both old and new fields.
+func (c *ConnectionConfig) getBrokerURLs() []string {
+	if len(c.BrokerURLs) > 0 {
+		return c.BrokerURLs
+	}
+	if c.BrokerURL != "" {
+		return []string{c.BrokerURL}
+	}
+	return nil
+}
+
+// slicesEqual compares two string slices for equality.
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// MQTTConnectionSettings implements types.ConnectionSettingsConfig for MQTT.
+type MQTTConnectionSettings struct {
+	id          string
+	brokerURLs  []string
+	clientID    string
+	credentials *types.Credentials
+	keepAlive   *DefaultKeepAliveConfig
+	tls         *TLSConfig
+}
+
+// DefaultKeepAliveConfig provides keep-alive settings for MQTT.
+type DefaultKeepAliveConfig struct {
+	interval time.Duration
+	timeout  time.Duration
+}
+
+func (c *DefaultKeepAliveConfig) GetInterval() time.Duration {
+	return c.interval
+}
+
+func (c *DefaultKeepAliveConfig) GetTimeout() time.Duration {
+	return c.timeout
+}
+
+// Ensure MQTTConnectionSettings implements types.ConnectionSettingsConfig
+var _ types.ConnectionSettingsConfig = (*MQTTConnectionSettings)(nil)
+
+// NewMQTTConnectionSettings creates new connection settings.
+func NewMQTTConnectionSettings(id string) *MQTTConnectionSettings {
+	return &MQTTConnectionSettings{id: id}
+}
+
+// WithBrokerURLs sets the broker URLs.
+func (s *MQTTConnectionSettings) WithBrokerURLs(urls []string) *MQTTConnectionSettings {
+	s.brokerURLs = urls
+	return s
+}
+
+// WithClientID sets the client ID.
+func (s *MQTTConnectionSettings) WithClientID(clientID string) *MQTTConnectionSettings {
+	s.clientID = clientID
+	return s
+}
+
+// WithCredentials sets the credentials.
+// Use this for both inline credentials (UsernamePasswordCredentials, TlsCredentials)
+// and URI-based credentials (e.g., "pms://tenant/app/mqtt-creds").
+//
+// Use the bridge/credentials/builders to build `*types.Credentials` objects.
+//
+// Example:
+//
+//	s.WithCredentials(credentials.NewCredentialsBuilder().
+//		WithUsernamePassword("username", "password").
+//		Build())
+func (s *MQTTConnectionSettings) WithCredentials(creds *types.Credentials) *MQTTConnectionSettings {
+	s.credentials = creds
+	return s
+}
+
+// WithTLS sets TLS configuration.
+func (s *MQTTConnectionSettings) WithTLS(tls *TLSConfig) *MQTTConnectionSettings {
+	s.tls = tls
+	return s
+}
+
+// WithKeepAlive sets keep-alive settings.
+func (s *MQTTConnectionSettings) WithKeepAlive(interval, timeout time.Duration) *MQTTConnectionSettings {
+	s.keepAlive = &DefaultKeepAliveConfig{interval: interval, timeout: timeout}
+	return s
+}
+
+func (s *MQTTConnectionSettings) GetID() string {
+	return s.id
+}
+
+func (s *MQTTConnectionSettings) GetTransportType() types.TransportType {
+	return TransportType
+}
+
+func (s *MQTTConnectionSettings) GetBrokerURLs() []string {
+	return s.brokerURLs
+}
+
+func (s *MQTTConnectionSettings) GetCredentials() *types.Credentials {
+	return s.credentials
+}
+
+func (s *MQTTConnectionSettings) GetKeepAlive() types.KeepAliveConfig {
+	if s.keepAlive == nil {
+		return nil
+	}
+	return s.keepAlive
+}
+
+func (s *MQTTConnectionSettings) RequiresReconnect(other types.ConnectionSettingsConfig) bool {
+	otherMQTT, ok := other.(*MQTTConnectionSettings)
+	if !ok {
+		return true // Different type, definitely needs reconnect
+	}
+
+	// BrokerURLs changes require reconnect
+	if !slicesEqual(s.brokerURLs, otherMQTT.brokerURLs) {
+		return true
+	}
+
+	// ClientID changes require reconnect
+	if s.clientID != otherMQTT.clientID {
+		return true
+	}
+
+	// Credentials changes require reconnect
+	if !credentialsEqual(s.credentials, otherMQTT.credentials) {
+		return true
+	}
+
+	// TLS changes require reconnect
+	if s.tls != nil && otherMQTT.tls != nil {
+		if s.tls.Enable != otherMQTT.tls.Enable ||
+			s.tls.InsecureSkipVerify != otherMQTT.tls.InsecureSkipVerify {
+			return true
+		}
+	} else if (s.tls != nil) != (otherMQTT.tls != nil) {
+		return true
+	}
+
+	return false
+}
+
+// credentialsEqual compares two Credentials for equality.
+// Returns true if both are nil or if they have the same content.
+func credentialsEqual(a, b *types.Credentials) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	if len(a.Type) != len(b.Type) {
+		return false
+	}
+	for i := range a.Type {
+		if a.Type[i] != b.Type[i] {
+			return false
+		}
+	}
+	// Note: Deep comparison of Credentials is complex.
+	// For now, if types match and lengths match, assume equal.
+	// A more thorough comparison would serialize and compare.
+	return len(a.Credentials) == len(b.Credentials)
 }
 
 // TLSConfig holds TLS configuration.

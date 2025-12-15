@@ -2,6 +2,8 @@ package pms
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	"github.com/mariotoffia/gobridge/bridge/types"
 )
 
@@ -180,5 +183,194 @@ func (r *Repository) loadAWSConfig(ctx context.Context) (aws.Config, error) {
 	return config.LoadDefaultConfig(ctx, opts...)
 }
 
+// ============================================================================
+// CredentialsAdminRepository Implementation
+// ============================================================================
+
+// CreateCredentials creates new credentials in AWS Parameter Store.
+func (r *Repository) CreateCredentials(ctx context.Context, serverURI string, creds *types.Credentials) error {
+	paramPath, err := r.parseURI(serverURI)
+	if err != nil {
+		return err
+	}
+
+	value, err := serializeCredentials(creds)
+	if err != nil {
+		return fmt.Errorf("failed to serialize credentials: %w", err)
+	}
+
+	_, err = r.client.PutParameter(ctx, &ssm.PutParameterInput{
+		Name:      aws.String(paramPath),
+		Value:     aws.String(value),
+		Type:      ssmtypes.ParameterTypeSecureString,
+		Overwrite: aws.Bool(false), // Fail if exists
+	})
+
+	if err != nil {
+		return mapAWSError(err)
+	}
+
+	// Invalidate cache
+	r.invalidateCache(paramPath)
+	return nil
+}
+
+// UpdateCredentials updates existing credentials in AWS Parameter Store.
+func (r *Repository) UpdateCredentials(ctx context.Context, serverURI string, creds *types.Credentials, version int64) error {
+	paramPath, err := r.parseURI(serverURI)
+	if err != nil {
+		return err
+	}
+
+	// If version checking is needed, get current version first
+	if version > 0 {
+		result, err := r.client.GetParameter(ctx, &ssm.GetParameterInput{
+			Name: aws.String(paramPath),
+		})
+		if err != nil {
+			return mapAWSError(err)
+		}
+		if result.Parameter != nil && result.Parameter.Version != version {
+			return types.ErrVersionMismatch
+		}
+	}
+
+	value, err := serializeCredentials(creds)
+	if err != nil {
+		return fmt.Errorf("failed to serialize credentials: %w", err)
+	}
+
+	_, err = r.client.PutParameter(ctx, &ssm.PutParameterInput{
+		Name:      aws.String(paramPath),
+		Value:     aws.String(value),
+		Type:      ssmtypes.ParameterTypeSecureString,
+		Overwrite: aws.Bool(true),
+	})
+
+	if err != nil {
+		return mapAWSError(err)
+	}
+
+	// Invalidate cache
+	r.invalidateCache(paramPath)
+	return nil
+}
+
+// DeleteCredentials deletes credentials from AWS Parameter Store.
+func (r *Repository) DeleteCredentials(ctx context.Context, serverURI string, version int64) error {
+	paramPath, err := r.parseURI(serverURI)
+	if err != nil {
+		return err
+	}
+
+	// If version checking is needed, get current version first
+	if version > 0 {
+		result, err := r.client.GetParameter(ctx, &ssm.GetParameterInput{
+			Name: aws.String(paramPath),
+		})
+		if err != nil {
+			return mapAWSError(err)
+		}
+		if result.Parameter != nil && result.Parameter.Version != version {
+			return types.ErrVersionMismatch
+		}
+	}
+
+	_, err = r.client.DeleteParameter(ctx, &ssm.DeleteParameterInput{
+		Name: aws.String(paramPath),
+	})
+
+	if err != nil {
+		return mapAWSError(err)
+	}
+
+	// Invalidate cache
+	r.invalidateCache(paramPath)
+	return nil
+}
+
+// ListCredentials lists all credential URIs in this repository.
+func (r *Repository) ListCredentials(ctx context.Context, prefix string) ([]string, error) {
+	var uris []string
+
+	// Build the path prefix for the query
+	pathPrefix := "/" + r.config.Namespace
+	if prefix != "" {
+		pathPrefix = pathPrefix + "/" + prefix
+	}
+	pathPrefix = strings.TrimPrefix(pathPrefix, "//")
+	if !strings.HasPrefix(pathPrefix, "/") {
+		pathPrefix = "/" + pathPrefix
+	}
+
+	paginator := ssm.NewGetParametersByPathPaginator(r.client, &ssm.GetParametersByPathInput{
+		Path:      aws.String(pathPrefix),
+		Recursive: aws.Bool(true),
+	})
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list parameters: %w", err)
+		}
+
+		for _, param := range page.Parameters {
+			if param.Name != nil {
+				// Convert path back to URI
+				uri := r.pathToURI(*param.Name)
+				uris = append(uris, uri)
+			}
+		}
+	}
+
+	return uris, nil
+}
+
+// invalidateCache removes a specific entry from the cache.
+func (r *Repository) invalidateCache(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.cache, key)
+}
+
+// pathToURI converts a parameter path back to a URI.
+func (r *Repository) pathToURI(path string) string {
+	// Remove leading slash
+	path = strings.TrimPrefix(path, "/")
+	return fmt.Sprintf("%s://%s", Scheme, path)
+}
+
+// serializeCredentials converts credentials to JSON for storage.
+func serializeCredentials(creds *types.Credentials) (string, error) {
+	data, err := json.Marshal(creds)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// mapAWSError converts AWS errors to bridge errors.
+func mapAWSError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	// Check for specific AWS SSM errors
+	var paramNotFound *ssmtypes.ParameterNotFound
+	if errors.As(err, &paramNotFound) {
+		return types.ErrNotFound
+	}
+
+	var paramAlreadyExists *ssmtypes.ParameterAlreadyExists
+	if errors.As(err, &paramAlreadyExists) {
+		return types.ErrAlreadyExists
+	}
+
+	return fmt.Errorf("AWS SSM error: %w", err)
+}
+
 // Ensure Repository implements types.CredentialsRepository
 var _ types.CredentialsRepository = (*Repository)(nil)
+
+// Ensure Repository implements types.CredentialsAdminRepository
+var _ types.CredentialsAdminRepository = (*Repository)(nil)

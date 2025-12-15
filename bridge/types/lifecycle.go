@@ -152,3 +152,59 @@ type ReadyChecker interface {
 	WaitForReady(ctx context.Context) error
 }
 
+// ============================================================================
+// Lifecycle Coordination for Shared Connections
+// ============================================================================
+
+// LifecycleCoordinator manages atomic lifecycle changes for shared connections.
+// This is needed for transports like MQTT where Source/Target share a client.
+//
+// Use BeginTransaction() to start an atomic change operation. All Source/Target
+// changes within the transaction are applied atomically when Commit() is called.
+type LifecycleCoordinator interface {
+	// BeginTransaction starts an atomic change operation.
+	// All Source/Target changes within the transaction are applied atomically.
+	BeginTransaction(ctx context.Context) (LifecycleTransaction, error)
+}
+
+// LifecycleTransaction represents an atomic set of changes to Sources and Targets.
+// Changes are staged and applied atomically when Commit() is called.
+//
+// For MQTT: unsubscribes removed topics and subscribes new topics in one operation.
+type LifecycleTransaction interface {
+	// AddSource schedules a source to be added.
+	AddSource(config SourceConfig) error
+	// RemoveSource schedules a source to be removed by ID.
+	RemoveSource(sourceID string) error
+	// UpdateSource schedules a source to be updated (remove + add).
+	UpdateSource(sourceID string, config SourceConfig) error
+
+	// AddTarget schedules a target to be added.
+	AddTarget(config TargetConfig) error
+	// RemoveTarget schedules a target to be removed by ID.
+	RemoveTarget(targetID string) error
+	// UpdateTarget schedules a target to be updated (remove + add).
+	UpdateTarget(targetID string, config TargetConfig) error
+
+	// Commit applies all scheduled changes atomically.
+	// Returns the result of the operation, which includes created instances
+	// and any errors that occurred.
+	Commit(ctx context.Context) (*LifecycleChangeResult, error)
+
+	// Rollback cancels the transaction without applying changes.
+	Rollback() error
+}
+
+// LifecycleChangeResult contains the results of a committed transaction.
+type LifecycleChangeResult struct {
+	// AddedSources contains the Source instances that were created.
+	AddedSources []Source
+	// RemovedSources contains the IDs of Sources that were removed.
+	RemovedSources []string
+	// AddedTargets contains the Target instances that were created.
+	AddedTargets []Target
+	// RemovedTargets contains the IDs of Targets that were removed.
+	RemovedTargets []string
+	// Errors contains any non-fatal errors that occurred during the transaction.
+	Errors []error
+}

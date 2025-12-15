@@ -115,6 +115,14 @@ func (s *Source) GetTransportType() types.TransportType {
 	return TransportType
 }
 
+// getTopics returns the topics this source is subscribed to.
+// This is used internally for lifecycle coordination.
+func (s *Source) getTopics() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.topics
+}
+
 // Capabilities returns the capabilities of this source.
 func (s *Source) Capabilities() types.Capabilities {
 	caps := types.Capabilities{}

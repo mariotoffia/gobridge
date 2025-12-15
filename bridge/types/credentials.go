@@ -1,5 +1,10 @@
 package types
 
+import (
+	"context"
+	"time"
+)
+
 // CredentialsType is indicating the type of credentials.
 type CredentialsType int
 
@@ -74,4 +79,50 @@ type CredentialsRepository interface {
 	// GetCredentials returns the credentials object for the given server URI (which includes scheme://path).
 	// It may return an error if credentials cannot be found or repository cannot serve that URI.
 	GetCredentials(serverURI string) (*Credentials, error)
+}
+
+// CredentialsAdminRepository extends CredentialsRepository with CRUD operations.
+// This interface is optional - implementations that support credential management
+// should implement this in addition to CredentialsRepository.
+//
+// Use type assertion to check if a repository supports admin operations:
+//
+//	adminRepo, ok := repo.(types.CredentialsAdminRepository)
+//	if !ok {
+//	    return fmt.Errorf("repository does not support admin operations")
+//	}
+type CredentialsAdminRepository interface {
+	CredentialsRepository
+
+	// CreateCredentials creates new credentials at the given serverURI.
+	// Returns ErrAlreadyExists if credentials already exist at that URI.
+	CreateCredentials(ctx context.Context, serverURI string, creds *Credentials) error
+
+	// UpdateCredentials updates existing credentials at the given serverURI.
+	// Returns ErrNotFound if credentials don't exist at that URI.
+	// If version > 0, performs optimistic locking (fails if version mismatch).
+	UpdateCredentials(ctx context.Context, serverURI string, creds *Credentials, version int64) error
+
+	// DeleteCredentials deletes credentials at the given serverURI.
+	// Returns ErrNotFound if credentials don't exist.
+	// If version > 0, performs optimistic locking.
+	DeleteCredentials(ctx context.Context, serverURI string, version int64) error
+
+	// ListCredentials lists all credential URIs in this repository.
+	// If prefix is provided, only URIs matching the prefix are returned.
+	ListCredentials(ctx context.Context, prefix string) ([]string, error)
+}
+
+// CredentialsMetadata contains metadata about stored credentials.
+type CredentialsMetadata struct {
+	// URI is the full credentials URI.
+	URI string `json:"uri"`
+	// Version is the current version (for optimistic locking).
+	Version int64 `json:"version"`
+	// CreatedAt is when the credentials were created.
+	CreatedAt time.Time `json:"createdAt"`
+	// UpdatedAt is when the credentials were last updated.
+	UpdatedAt time.Time `json:"updatedAt"`
+	// Types lists the credential types stored.
+	Types []CredentialsType `json:"types"`
 }
