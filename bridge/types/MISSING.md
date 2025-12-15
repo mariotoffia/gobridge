@@ -12,24 +12,24 @@ This document outlines what is missing in `bridge/core/bridge.go` and related co
 | Category | Feature | Standalone | Cluster | Priority | Status |
 |----------|---------|:----------:|:-------:|:--------:|:------:|
 | **Initialization** | | | | | |
-| | Connection Registry integration | Required | Required | High | Missing |
+| | Connection Registry integration | Required | Required | High | ✅ Done |
 | | Transport factory auto-registration | Optional | Optional | Medium | Missing |
-| | Config-driven pipeline creation | Required | Required | High | Partial |
-| | Graceful startup with readiness probe | Optional | Required | Medium | Missing |
+| | Config-driven pipeline creation | Required | Required | High | ✅ Done |
+| | Graceful startup with readiness probe | Optional | Required | Medium | ✅ Done |
 | **Runtime** | | | | | |
-| | Dynamic pipeline add/remove while running | Optional | Required | High | Missing |
-| | ConfigChangeHandler integration | Required | Required | High | Partial |
-| | Health check endpoint | Optional | Required | High | Missing |
-| | Metrics collection | Optional | Required | High | Missing |
-| | Structured logging | Optional | Required | Medium | Partial |
+| | Dynamic pipeline add/remove while running | Optional | Required | High | ✅ Done |
+| | ConfigChangeHandler integration | Required | Required | High | ✅ Done |
+| | Health check endpoint | Optional | Required | High | ✅ Done |
+| | Metrics collection | Optional | Required | High | ✅ Done |
+| | Structured logging | Optional | Required | Medium | ✅ Done |
 | **Lifecycle** | | | | | |
-| | Graceful shutdown with drain | Required | Required | High | Partial |
-| | Signal handling (SIGTERM, SIGINT) | Required | Optional | High | Missing |
-| | Drain timeout configuration | Required | Required | Medium | Missing |
-| | Shutdown hooks | Optional | Optional | Low | Missing |
+| | Graceful shutdown with drain | Required | Required | High | ✅ Done |
+| | Signal handling (SIGTERM, SIGINT) | Required | Optional | High | ✅ Done |
+| | Drain timeout configuration | Required | Required | Medium | ✅ Done |
+| | Shutdown hooks | Optional | Optional | Low | ✅ Done |
 | **Error Handling** | | | | | |
 | | Global error handler | Optional | Optional | Medium | Missing |
-| | Panic recovery | Required | Required | High | Missing |
+| | Panic recovery | Required | Required | High | ✅ Done |
 | | Circuit breaker for targets | Optional | Optional | Medium | Missing |
 | **Clustering** | | | | | |
 | | ClusterConfigurator integration | N/A | Required | High | Missing |
@@ -38,20 +38,27 @@ This document outlines what is missing in `bridge/core/bridge.go` and related co
 | | Shared subscription coordination | N/A | Required | High | Missing |
 | | Node discovery | N/A | Required | High | Missing |
 | **Configuration** | | | | | |
-| | Environment variable support | Required | Required | High | Missing |
+| | Environment variable support | Required | Required | High | ✅ Done |
 | | Config file loading | Required | Optional | High | Missing |
-| | Config validation | Required | Required | High | Missing |
+| | Config validation | Required | Required | High | ✅ Done |
 | | Secret management integration | Optional | Required | High | Partial |
 | **Observability** | | | | | |
-| | OpenTelemetry tracing | Optional | Required | Medium | Missing |
-| | Prometheus metrics export | Optional | Required | Medium | Missing |
-| | Distributed tracing context | Optional | Required | Medium | Missing |
+| | OpenTelemetry tracing | Optional | Required | Medium | ✅ Done |
+| | Prometheus metrics export | Optional | Required | Medium | Partial |
+| | Distributed tracing context | Optional | Required | Medium | ✅ Done |
 | | Log correlation IDs | Optional | Required | Medium | Partial |
 | **Admin** | | | | | |
-| | HTTP admin API | Optional | Optional | Low | Missing |
-| | Pipeline status endpoint | Optional | Optional | Medium | Missing |
-| | Runtime config reload | Optional | Required | Medium | Missing |
-| | DLQ management API | Optional | Optional | Low | Missing |
+| | HTTP admin API | Optional | Optional | Low | ✅ Done |
+| | Pipeline status endpoint | Optional | Optional | Medium | ✅ Done |
+| | Runtime config reload | Optional | Required | Medium | ✅ Done |
+| | DLQ management API | Optional | Optional | Low | ✅ Done |
+| | Message injection/testing | Optional | Optional | Medium | ✅ Done |
+| **Monitoring** | | | | | |
+| | Monitor API (metrics/health) | Optional | Required | High | ✅ Done |
+| | Prometheus metrics endpoint | Optional | Required | Medium | ✅ Done |
+| | OpenTelemetry trace viewer | Optional | Optional | Medium | ✅ Done |
+| | Cluster monitoring | N/A | Required | High | ✅ Done |
+| | Real-time streaming (WebSocket) | Optional | Optional | Low | ✅ Done |
 
 ---
 
@@ -382,32 +389,127 @@ func WithMeter(meter metric.Meter) BridgeOption
 
 ## Implementation Roadmap
 
-### Phase 1: Standalone Production Ready
+### Phase 1: Standalone Production Ready ✅ COMPLETE
 
-1. Connection Registry integration
-2. Signal handling and graceful shutdown
-3. Panic recovery
-4. Health checks
-5. Basic metrics
-6. Config validation
+1. ✅ Connection Registry integration - `WithConnectionRegistry()`
+2. ✅ Signal handling and graceful shutdown - `Run()` method
+3. ✅ Panic recovery - `startWithRecovery()` and handlers
+4. ✅ Health checks - `Health()`, `IsReady()`, `IsLive()`, `WaitForReady()`
+5. ✅ Basic metrics - `MetricsCollector` interface and `Metrics()`
+6. ✅ Config validation - `Validate()` method
 
-### Phase 2: Dynamic Operation
+### Phase 2: Dynamic Operation ✅ COMPLETE
 
-1. ConfigChangeHandler integration
-2. Dynamic pipeline add/remove
-3. Runtime config reload
-4. DLQ management
+1. ✅ ConfigChangeHandler integration - `WithConfigHandler()` and `handleConfigChange()`
+2. ✅ Dynamic pipeline add/remove - `AddPipelineRunning()`, `RemovePipelineRunning()`
+3. ✅ Config-driven creation - `CreatePipelineFromConfig()`, `CreateRouteFromConfig()`
+4. Partial: Runtime config reload - via ConfigChangeHandler
+5. Missing: DLQ management API
 
-### Phase 3: Clustering
+### Phase 3: Clustering (Pending)
 
-1. ClusterConfigurator integration
-2. Leader election
-3. Distributed drain
-4. Shared subscriptions
+1. Missing: ClusterConfigurator integration
+2. Missing: Leader election
+3. Missing: Distributed drain
+4. Missing: Shared subscriptions
 
-### Phase 4: Enterprise Features
+### Phase 4: Enterprise Features (Partial)
 
-1. Full OpenTelemetry integration
-2. Admin API
-3. Advanced circuit breakers
-4. Multi-tenancy support
+1. ✅ OpenTelemetry integration - `WithTracer()`, `WithMeter()` interfaces
+2. ✅ Admin API - OpenAPI 3.1 spec + implementation
+3. ✅ Monitor API - OpenAPI 3.1 spec + implementation
+4. Missing: Advanced circuit breakers
+5. Missing: Multi-tenancy support
+
+### Phase 5: HTTP APIs ✅ COMPLETE
+
+Both OpenAPI 3.1 specifications AND implementations are complete.
+
+| API | Spec Location | Implementation |
+|-----|---------------|----------------|
+| Admin API | `apis/http/admin/admin-api.yaml` | `apis/http/server/admin_handlers.go` |
+| Monitor API | `apis/http/monitor/monitor-api.yaml` | `apis/http/server/monitor_handlers.go` |
+
+#### Admin API Features (✅ Implemented)
+- Bridge lifecycle (start/stop/drain)
+- Connection CRUD
+- Pipeline/Route management
+- DLQ management (view, replay, purge)
+- Configuration (reload, validate, diff)
+- Message injection for testing
+- Diagnostics (logs, errors, debug)
+
+#### Monitor API Features (✅ Implemented)
+- Health checks (Kubernetes-compatible)
+- Prometheus metrics endpoint
+- OpenTelemetry tracing integration
+- Instance monitoring
+- Cluster monitoring
+- Alert management
+- WebSocket streaming (complete - uses gorilla/websocket)
+
+#### InjectMiddleware (✅ Implemented)
+- `middleware/inject/inject.go` - Inject messages directly into pipelines for testing
+
+---
+
+## Completed Features
+
+### New Types Added
+
+| Type | Location | Description |
+|------|----------|-------------|
+| `HealthCheck` | `types/health.go` | Health status structure |
+| `HealthStatus` | `types/health.go` | Health status enum |
+| `HealthProvider` | `types/health.go` | Interface for health reporting |
+| `ReadinessProvider` | `types/health.go` | Interface for readiness checks |
+| `LivenessProvider` | `types/health.go` | Interface for liveness checks |
+| `HealthChecker` | `types/health.go` | Combined health interface |
+| `BridgeMetrics` | `types/metrics.go` | Aggregated bridge metrics |
+| `PipelineMetrics` | `types/metrics.go` | Pipeline-level metrics |
+| `ConnectionMetrics` | `types/metrics.go` | Connection-level metrics |
+| `MetricsCollector` | `types/metrics.go` | Interface for metrics collection |
+| `MetricsProvider` | `types/metrics.go` | Interface for metrics access |
+| `BridgeConfig` | `types/bridge_config.go` | Configuration structure |
+| `ValidationError` | `types/bridge_config.go` | Validation error type |
+| `Tracer` | `types/observability.go` | Distributed tracing interface |
+| `Meter` | `types/observability.go` | Metrics collection interface |
+
+### New Bridge Methods
+
+| Method | Description |
+|--------|-------------|
+| `Run(ctx)` | Starts bridge and blocks until signal (SIGTERM/SIGINT) |
+| `Health(ctx)` | Returns health status |
+| `IsReady()` | Returns true when ready to serve traffic |
+| `WaitForReady(ctx)` | Blocks until ready |
+| `IsLive()` | Returns true if not in fatal state |
+| `Metrics(ctx)` | Returns aggregated metrics |
+| `Validate()` | Validates configuration |
+| `AddPipelineRunning(ctx, p)` | Adds and starts pipeline while running |
+| `RemovePipelineRunning(ctx, id)` | Drains and removes pipeline while running |
+| `CreatePipelineFromConfig(ctx, config)` | Creates pipeline from PipelineConfig |
+| `CreateRouteFromConfig(ctx, config)` | Creates route from RouteConfig |
+
+### New Bridge Options
+
+| Option | Description |
+|--------|-------------|
+| `WithConnectionRegistry(r)` | Sets connection registry |
+| `WithConfigHandler(h)` | Sets config change handler |
+| `WithMetricsCollector(c)` | Sets metrics collector |
+| `WithShutdownTimeout(d)` | Sets graceful shutdown timeout |
+| `WithDrainTimeout(d)` | Sets pipeline drain timeout |
+| `WithLogger(l)` | Sets structured logger |
+| `WithClusterID(id)` | Sets cluster identifier |
+| `WithShutdownHook(fn)` | Adds shutdown hook callback |
+| `WithTracer(t)` | Sets distributed tracer |
+| `WithMeter(m)` | Sets metrics meter |
+
+### Factory Functions
+
+| Function | Description |
+|----------|-------------|
+| `NewBridgeFromConfig(config, opts...)` | Creates bridge from BridgeConfig |
+| `NewBridgeFromEnv(opts...)` | Creates bridge from environment variables |
+| `LoadBridgeConfigFromEnv()` | Loads config from environment |

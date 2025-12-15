@@ -6,209 +6,142 @@ import (
 )
 
 // ============================================================================
-// Standard Metric Names
+// Metrics Types
 // ============================================================================
 
-const (
-	// Message metrics
-	MetricMessagesReceived  = "bridge.messages.received"
-	MetricMessagesPublished = "bridge.messages.published"
-	MetricMessagesFailed    = "bridge.messages.failed"
-	MetricMessagesRetried   = "bridge.messages.retried"
-	MetricMessagesDropped   = "bridge.messages.dropped"
-	MetricMessagesAcked     = "bridge.messages.acked"
-	MetricMessagesNacked    = "bridge.messages.nacked"
+// BridgeMetrics contains aggregated metrics for the entire bridge.
+type BridgeMetrics struct {
+	// BridgeID is the identifier of this bridge instance.
+	BridgeID string `json:"bridgeId"`
+	// Uptime is how long the bridge has been running.
+	Uptime time.Duration `json:"uptime"`
+	// StartedAt is when the bridge started.
+	StartedAt time.Time `json:"startedAt"`
+	// Pipelines contains metrics for each pipeline.
+	Pipelines map[string]PipelineMetrics `json:"pipelines,omitempty"`
+	// Connections contains metrics for each connection.
+	Connections map[string]ConnectionMetrics `json:"connections,omitempty"`
+	// Retry contains retry system metrics.
+	Retry RetryMetrics `json:"retry"`
+	// FlowControl contains flow control metrics.
+	FlowControl FlowControlMetrics `json:"flowControl"`
+}
 
-	// Latency metrics
-	MetricLatencyProcessMs = "bridge.latency.process.ms"
-	MetricLatencyPublishMs = "bridge.latency.publish.ms"
-	MetricLatencyE2EMs     = "bridge.latency.e2e.ms"
+// PipelineMetrics contains metrics for a single pipeline.
+type PipelineMetrics struct {
+	// ID is the pipeline identifier.
+	ID string `json:"id"`
+	// Stats contains the pipeline statistics.
+	Stats PipelineStats `json:"stats"`
+	// Status is the current pipeline status.
+	Status string `json:"status"`
+	// LastMessageAt is when the last message was processed.
+	LastMessageAt time.Time `json:"lastMessageAt,omitempty"`
+	// AverageLatency is the average message processing latency.
+	AverageLatency time.Duration `json:"averageLatency,omitempty"`
+}
 
-	// Queue/buffer metrics
-	MetricQueueDepth   = "bridge.queue.depth"
-	MetricInFlight     = "bridge.inflight"
-	MetricBufferSize   = "bridge.buffer.size"
-	MetricBackpressure = "bridge.backpressure"
+// ConnectionMetrics contains metrics for a single connection.
+type ConnectionMetrics struct {
+	// ID is the connection identifier.
+	ID string `json:"id"`
+	// TransportType is the transport type (MQTT, SQS, etc.).
+	TransportType TransportType `json:"transportType"`
+	// Status is the current connection status.
+	Status string `json:"status"`
+	// ConnectedAt is when the connection was established.
+	ConnectedAt time.Time `json:"connectedAt,omitempty"`
+	// ReconnectCount is the number of reconnections.
+	ReconnectCount int64 `json:"reconnectCount"`
+	// LastError is the last error message if any.
+	LastError string `json:"lastError,omitempty"`
+}
 
-	// Connection metrics
-	MetricConnectionsActive    = "bridge.connections.active"
-	MetricConnectionsTotal     = "bridge.connections.total"
-	MetricConnectionErrors     = "bridge.connections.errors"
-	MetricConnectionReconnects = "bridge.connections.reconnects"
+// RetryMetrics contains metrics for the retry system.
+type RetryMetrics struct {
+	// TransportRetryAttempts is the total transport retry attempts.
+	TransportRetryAttempts int64 `json:"transportRetryAttempts"`
+	// TransportRetrySuccesses is the number of successful transport retries.
+	TransportRetrySuccesses int64 `json:"transportRetrySuccesses"`
+	// MessageRetryAttempts is the total message retry attempts.
+	MessageRetryAttempts int64 `json:"messageRetryAttempts"`
+	// MessageRetrySuccesses is the number of successful message retries.
+	MessageRetrySuccesses int64 `json:"messageRetrySuccesses"`
+	// DLQMessages is the number of messages in DLQ.
+	DLQMessages int64 `json:"dlqMessages"`
+	// ExpiredMessages is the number of messages dropped due to TTL.
+	ExpiredMessages int64 `json:"expiredMessages"`
+}
 
-	// Pipeline metrics
-	MetricPipelinesActive = "bridge.pipelines.active"
-	MetricPipelineErrors  = "bridge.pipelines.errors"
-
-	// Drain metrics
-	MetricDrainProgress = "bridge.drain.progress"
-	MetricDrainRemaining = "bridge.drain.remaining"
-
-	// Cluster metrics
-	MetricClusterMembers  = "bridge.cluster.members"
-	MetricClusterIsLeader = "bridge.cluster.is_leader"
-)
+// FlowControlMetrics contains flow control metrics.
+type FlowControlMetrics struct {
+	// CurrentInFlight is the current number of in-flight messages.
+	CurrentInFlight int64 `json:"currentInFlight"`
+	// MaxInFlight is the configured maximum.
+	MaxInFlight int `json:"maxInFlight"`
+	// BackpressureEvents is the number of backpressure events.
+	BackpressureEvents int64 `json:"backpressureEvents"`
+}
 
 // ============================================================================
-// Metrics Interface (Push-based for Fargate/Serverless)
+// Metrics Collector Interface
 // ============================================================================
 
-// MetricsExporter pushes metrics to external systems.
-// This interface is designed for push-based metrics in serverless environments
-// like AWS Fargate where pull-based scraping (like Prometheus) isn't practical.
-//
-// Implementations may include:
-//   - AWS CloudWatch
-//   - Datadog
-//   - OTEL Collector
-//   - StatsD
-//   - In-memory (for testing)
+// MetricsCollector collects and exports metrics.
+type MetricsCollector interface {
+	// RecordMessageReceived records a message received from a source.
+	RecordMessageReceived(pipelineID string)
+	// RecordMessageSent records a message sent to a target.
+	RecordMessageSent(pipelineID string)
+	// RecordMessageFailed records a failed message.
+	RecordMessageFailed(pipelineID string, err error)
+	// RecordRetry records a retry attempt.
+	RecordRetry(pipelineID string, isTransport bool)
+	// RecordLatency records message processing latency.
+	RecordLatency(pipelineID string, duration time.Duration)
+	// RecordBackpressure records a backpressure event.
+	RecordBackpressure(pipelineID string)
+}
+
+// MetricsProvider provides access to collected metrics.
+type MetricsProvider interface {
+	// Metrics returns the current bridge metrics.
+	Metrics(ctx context.Context) *BridgeMetrics
+}
+
+// ============================================================================
+// Metrics Exporter Interface
+// ============================================================================
+
+// MetricsExporter exports metrics to external systems (CloudWatch, OTEL, etc.).
+// This is a low-level interface for pushing metrics to backends.
 type MetricsExporter interface {
-	// Counter increments a counter metric by the given value.
-	// Counters are cumulative and only increase.
+	// Counter increments a counter metric.
 	Counter(name string, value int64, tags ...Tag)
-
-	// Gauge sets the current value of a gauge metric.
-	// Gauges can go up or down and represent a point-in-time value.
+	// Gauge sets a gauge metric value.
 	Gauge(name string, value float64, tags ...Tag)
-
-	// Histogram records a value for distribution/histogram analysis.
-	// Used for latencies, sizes, etc.
+	// Histogram records a histogram/distribution value.
 	Histogram(name string, value float64, tags ...Tag)
-
-	// Timer records a duration. This is a convenience wrapper around Histogram
-	// that converts the duration to the appropriate unit.
+	// Timer records a duration (typically as milliseconds).
 	Timer(name string, duration time.Duration, tags ...Tag)
-
 	// Flush sends all buffered metrics to the backend.
-	// This MUST be called before shutdown to ensure metrics are not lost.
-	// In serverless, call this at the end of each request/batch.
 	Flush(ctx context.Context) error
-
-	// Close closes the exporter and releases resources.
-	// Calls Flush internally before closing.
+	// Close stops the exporter and flushes remaining metrics.
 	Close(ctx context.Context) error
 }
 
-// MetricsExporterFactory creates MetricsExporter instances.
-type MetricsExporterFactory interface {
-	// Create creates a new MetricsExporter with the given options.
-	Create(ctx context.Context, opts MetricsExporterOptions) (MetricsExporter, error)
-}
-
-// MetricsExporterOptions configures a MetricsExporter.
-type MetricsExporterOptions struct {
-	// Namespace is a prefix for all metric names (e.g., "myapp").
-	Namespace string `json:"namespace,omitempty"`
-	// DefaultTags are added to all metrics.
-	DefaultTags []Tag `json:"defaultTags,omitempty"`
-	// FlushInterval is how often to flush buffered metrics.
-	FlushInterval time.Duration `json:"flushInterval,omitempty"`
-	// BufferSize is the maximum number of metrics to buffer before flushing.
-	BufferSize int `json:"bufferSize,omitempty"`
-	// Backend-specific configuration
-	Backend map[string]any `json:"backend,omitempty"`
-}
-
 // ============================================================================
-// Metrics Middleware
+// No-op Metrics Collector
 // ============================================================================
 
-// MetricsMiddleware wraps publishers and subscribers with automatic metrics.
-type MetricsMiddleware interface {
-	// WrapPublisher wraps a Publisher with metrics collection.
-	WrapPublisher(p Publisher) Publisher
+// NoopMetricsCollector is a no-op implementation of MetricsCollector.
+type NoopMetricsCollector struct{}
 
-	// WrapSubscriber wraps a Subscriber with metrics collection.
-	WrapSubscriber(s Subscriber) Subscriber
+var _ MetricsCollector = (*NoopMetricsCollector)(nil)
 
-	// WrapMiddleware wraps a Middleware with metrics collection.
-	WrapMiddleware(m Middleware) Middleware
-}
-
-// NewMetricsMiddleware creates a MetricsMiddleware using the given exporter.
-func NewMetricsMiddleware(exporter MetricsExporter) MetricsMiddleware {
-	return &metricsMiddleware{exporter: exporter}
-}
-
-type metricsMiddleware struct {
-	exporter MetricsExporter
-}
-
-func (m *metricsMiddleware) WrapPublisher(p Publisher) Publisher {
-	return PublisherAdapter(func(ctx context.Context, topic string, msg Message) error {
-		start := time.Now()
-
-		err := p.Publish(ctx, topic, msg)
-
-		duration := time.Since(start)
-		tags := []Tag{{Key: "topic", Value: topic}}
-
-		if err != nil {
-			m.exporter.Counter(MetricMessagesFailed, 1, tags...)
-			return err
-		}
-
-		m.exporter.Counter(MetricMessagesPublished, 1, tags...)
-		m.exporter.Timer(MetricLatencyPublishMs, duration, tags...)
-		return nil
-	})
-}
-
-func (m *metricsMiddleware) WrapSubscriber(s Subscriber) Subscriber {
-	return SubscriberAdapter(func(ctx context.Context, topic string, msg Message) error {
-		start := time.Now()
-
-		m.exporter.Counter(MetricMessagesReceived, 1, Tag{Key: "topic", Value: topic})
-
-		err := s.Process(ctx, topic, msg)
-
-		duration := time.Since(start)
-		tags := []Tag{{Key: "topic", Value: topic}}
-
-		if err != nil {
-			m.exporter.Counter(MetricMessagesFailed, 1, tags...)
-		} else {
-			m.exporter.Timer(MetricLatencyProcessMs, duration, tags...)
-		}
-
-		return err
-	})
-}
-
-func (m *metricsMiddleware) WrapMiddleware(mw Middleware) Middleware {
-	return NewMiddlewareAdapter(mw.Name()+".metrics", func(ctx context.Context, msg *Message, next MiddlewareFunc) error {
-		start := time.Now()
-
-		err := mw.Process(ctx, msg, next)
-
-		duration := time.Since(start)
-		tags := []Tag{{Key: "middleware", Value: mw.Name()}}
-
-		m.exporter.Timer("bridge.middleware.duration.ms", duration, tags...)
-		if err != nil {
-			m.exporter.Counter("bridge.middleware.errors", 1, tags...)
-		}
-
-		return err
-	})
-}
-
-// ============================================================================
-// No-op Metrics Exporter (for testing/disabled metrics)
-// ============================================================================
-
-// NoopMetricsExporter is a MetricsExporter that does nothing.
-// Useful for testing or when metrics are disabled.
-type NoopMetricsExporter struct{}
-
-func (n *NoopMetricsExporter) Counter(name string, value int64, tags ...Tag)        {}
-func (n *NoopMetricsExporter) Gauge(name string, value float64, tags ...Tag)        {}
-func (n *NoopMetricsExporter) Histogram(name string, value float64, tags ...Tag)    {}
-func (n *NoopMetricsExporter) Timer(name string, duration time.Duration, tags ...Tag) {}
-func (n *NoopMetricsExporter) Flush(ctx context.Context) error                      { return nil }
-func (n *NoopMetricsExporter) Close(ctx context.Context) error                      { return nil }
-
-// Ensure NoopMetricsExporter implements MetricsExporter
-var _ MetricsExporter = (*NoopMetricsExporter)(nil)
-
+func (n *NoopMetricsCollector) RecordMessageReceived(pipelineID string)          {}
+func (n *NoopMetricsCollector) RecordMessageSent(pipelineID string)              {}
+func (n *NoopMetricsCollector) RecordMessageFailed(pipelineID string, err error) {}
+func (n *NoopMetricsCollector) RecordRetry(pipelineID string, isTransport bool)  {}
+func (n *NoopMetricsCollector) RecordLatency(pipelineID string, d time.Duration) {}
+func (n *NoopMetricsCollector) RecordBackpressure(pipelineID string)             {}

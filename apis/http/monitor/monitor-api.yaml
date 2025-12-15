@@ -1,0 +1,1386 @@
+openapi: 3.1.0
+info:
+  title: GoBridge Monitor API
+  description: |
+    Monitoring API for observing GoBridge instances and clusters.
+    
+    This API provides endpoints for:
+    - Health and readiness checks (Kubernetes-compatible)
+    - Metrics export (Prometheus-compatible)
+    - Distributed tracing (OpenTelemetry-compatible)
+    - Real-time monitoring and alerting
+    - Cluster-wide observability
+    
+    ## OpenTelemetry Integration
+    
+    This API integrates with OpenTelemetry for distributed tracing:
+    - Trace context propagation via W3C TraceContext headers
+    - Span export to configured backends (Jaeger, Zipkin, OTLP)
+    - Metric export via OTLP or Prometheus
+    - Log correlation with trace IDs
+    
+    ## Prometheus Integration
+    
+    Metrics are exposed in Prometheus format at `/metrics` endpoint.
+    
+    ## Health Checks
+    
+    Kubernetes-compatible health endpoints:
+    - `/health/live` - Liveness probe
+    - `/health/ready` - Readiness probe
+  version: 1.0.0
+  contact:
+    name: GoBridge Team
+    url: https://github.com/mariotoffia/gobridge
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8081/api/v1/monitor
+    description: Local development (separate port from admin)
+  - url: https://{host}/api/v1/monitor
+    description: Production
+    variables:
+      host:
+        default: monitor.bridge.example.com
+
+tags:
+  - name: Health
+    description: Health and readiness checks
+  - name: Metrics
+    description: Metrics and statistics
+  - name: Tracing
+    description: Distributed tracing with OpenTelemetry
+  - name: Instances
+    description: Bridge instance monitoring
+  - name: Cluster
+    description: Cluster-wide monitoring
+  - name: Alerts
+    description: Alerting and notifications
+
+paths:
+  # ============================================================================
+  # Health Checks (Kubernetes-compatible)
+  # ============================================================================
+  /health:
+    get:
+      tags: [Health]
+      summary: Get full health status
+      description: Returns comprehensive health status of the bridge
+      operationId: getHealth
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheck'
+        '503':
+          description: Unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheck'
+
+  /health/live:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      description: |
+        Kubernetes liveness probe endpoint.
+        Returns 200 if the process is alive and not in a fatal state.
+        Returns 503 if the process should be restarted.
+      operationId: getLiveness
+      responses:
+        '200':
+          description: Alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LivenessResponse'
+        '503':
+          description: Dead - should restart
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LivenessResponse'
+
+  /health/ready:
+    get:
+      tags: [Health]
+      summary: Readiness probe
+      description: |
+        Kubernetes readiness probe endpoint.
+        Returns 200 if the bridge is ready to accept traffic.
+        Returns 503 if the bridge is not ready (starting, draining, etc.).
+      operationId: getReadiness
+      responses:
+        '200':
+          description: Ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+        '503':
+          description: Not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+
+  /health/startup:
+    get:
+      tags: [Health]
+      summary: Startup probe
+      description: |
+        Kubernetes startup probe endpoint.
+        Returns 200 once the bridge has completed initial startup.
+      operationId: getStartup
+      responses:
+        '200':
+          description: Started
+        '503':
+          description: Still starting
+
+  # ============================================================================
+  # Metrics (Prometheus-compatible)
+  # ============================================================================
+  /metrics:
+    get:
+      tags: [Metrics]
+      summary: Get metrics (Prometheus format)
+      description: Returns metrics in Prometheus text format
+      operationId: getPrometheusMetrics
+      responses:
+        '200':
+          description: Metrics in Prometheus format
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  # HELP gobridge_messages_received_total Total messages received
+                  # TYPE gobridge_messages_received_total counter
+                  gobridge_messages_received_total{pipeline="mqtt-to-sqs"} 12345
+                  
+                  # HELP gobridge_messages_sent_total Total messages sent
+                  # TYPE gobridge_messages_sent_total counter
+                  gobridge_messages_sent_total{pipeline="mqtt-to-sqs"} 12340
+
+  /metrics/json:
+    get:
+      tags: [Metrics]
+      summary: Get metrics (JSON format)
+      description: Returns metrics in JSON format
+      operationId: getJsonMetrics
+      responses:
+        '200':
+          description: Metrics in JSON format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BridgeMetrics'
+
+  /metrics/pipelines:
+    get:
+      tags: [Metrics]
+      summary: Get pipeline metrics
+      operationId: getPipelineMetrics
+      responses:
+        '200':
+          description: Pipeline metrics
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PipelineMetrics'
+
+  /metrics/pipelines/{pipelineId}:
+    get:
+      tags: [Metrics]
+      summary: Get metrics for specific pipeline
+      operationId: getPipelineMetricsById
+      parameters:
+        - $ref: '#/components/parameters/PipelineId'
+      responses:
+        '200':
+          description: Pipeline metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineMetrics'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /metrics/connections:
+    get:
+      tags: [Metrics]
+      summary: Get connection metrics
+      operationId: getConnectionMetrics
+      responses:
+        '200':
+          description: Connection metrics
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ConnectionMetrics'
+
+  /metrics/retry:
+    get:
+      tags: [Metrics]
+      summary: Get retry metrics
+      description: Returns metrics for both Transport Retry and Message Retry systems
+      operationId: getRetryMetrics
+      responses:
+        '200':
+          description: Retry metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetryMetrics'
+
+  /metrics/flow-control:
+    get:
+      tags: [Metrics]
+      summary: Get flow control metrics
+      operationId: getFlowControlMetrics
+      responses:
+        '200':
+          description: Flow control metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowControlMetrics'
+
+  # ============================================================================
+  # OpenTelemetry Tracing
+  # ============================================================================
+  /traces:
+    get:
+      tags: [Tracing]
+      summary: List recent traces
+      description: |
+        Returns recent traces from this bridge instance.
+        Traces are stored in-memory with configurable retention.
+        
+        For production, use an external tracing backend (Jaeger, Zipkin, etc.)
+        via OpenTelemetry exporters.
+      operationId: listTraces
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+        - name: service
+          in: query
+          description: Filter by service name
+          schema:
+            type: string
+        - name: operation
+          in: query
+          description: Filter by operation name
+          schema:
+            type: string
+        - name: minDuration
+          in: query
+          description: Minimum duration (e.g., "100ms")
+          schema:
+            type: string
+        - name: maxDuration
+          in: query
+          description: Maximum duration
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: Filter by status
+          schema:
+            type: string
+            enum: [ok, error]
+        - name: since
+          in: query
+          description: Filter traces after this time
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: List of traces
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceList'
+
+  /traces/{traceId}:
+    get:
+      tags: [Tracing]
+      summary: Get trace by ID
+      description: Returns detailed trace information including all spans
+      operationId: getTrace
+      parameters:
+        - $ref: '#/components/parameters/TraceId'
+      responses:
+        '200':
+          description: Trace details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Trace'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /traces/{traceId}/spans:
+    get:
+      tags: [Tracing]
+      summary: Get spans for a trace
+      operationId: getTraceSpans
+      parameters:
+        - $ref: '#/components/parameters/TraceId'
+      responses:
+        '200':
+          description: Trace spans
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Span'
+
+  /traces/search:
+    post:
+      tags: [Tracing]
+      summary: Search traces
+      description: Advanced trace search with multiple filters
+      operationId: searchTraces
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TraceSearchRequest'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceList'
+
+  /traces/config:
+    get:
+      tags: [Tracing]
+      summary: Get tracing configuration
+      operationId: getTracingConfig
+      responses:
+        '200':
+          description: Tracing configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TracingConfig'
+
+    put:
+      tags: [Tracing]
+      summary: Update tracing configuration
+      operationId: updateTracingConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TracingConfigUpdate'
+      responses:
+        '200':
+          description: Configuration updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TracingConfig'
+
+  /traces/export:
+    get:
+      tags: [Tracing]
+      summary: Get trace export status
+      description: Returns status of OpenTelemetry exporters
+      operationId: getTraceExportStatus
+      responses:
+        '200':
+          description: Export status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceExportStatus'
+
+  # ============================================================================
+  # Instance Monitoring
+  # ============================================================================
+  /instances:
+    get:
+      tags: [Instances]
+      summary: List all bridge instances
+      description: |
+        Returns all known bridge instances in the cluster.
+        Includes both healthy and unhealthy instances.
+      operationId: listInstances
+      parameters:
+        - name: clusterId
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [healthy, degraded, unhealthy, unknown]
+      responses:
+        '200':
+          description: List of instances
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BridgeInstance'
+
+  /instances/{instanceId}:
+    get:
+      tags: [Instances]
+      summary: Get instance details
+      operationId: getInstance
+      parameters:
+        - $ref: '#/components/parameters/InstanceId'
+      responses:
+        '200':
+          description: Instance details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BridgeInstance'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /instances/{instanceId}/metrics:
+    get:
+      tags: [Instances]
+      summary: Get instance metrics
+      operationId: getInstanceMetrics
+      parameters:
+        - $ref: '#/components/parameters/InstanceId'
+      responses:
+        '200':
+          description: Instance metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BridgeMetrics'
+
+  /instances/{instanceId}/logs:
+    get:
+      tags: [Instances]
+      summary: Get instance logs
+      operationId: getInstanceLogs
+      parameters:
+        - $ref: '#/components/parameters/InstanceId'
+        - name: level
+          in: query
+          schema:
+            type: string
+            enum: [debug, info, warn, error]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Log entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogEntries'
+
+  # ============================================================================
+  # Cluster Monitoring
+  # ============================================================================
+  /cluster:
+    get:
+      tags: [Cluster]
+      summary: Get cluster status
+      operationId: getClusterStatus
+      responses:
+        '200':
+          description: Cluster status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterStatus'
+
+  /cluster/topology:
+    get:
+      tags: [Cluster]
+      summary: Get cluster topology
+      description: Returns the cluster topology including all nodes and their relationships
+      operationId: getClusterTopology
+      responses:
+        '200':
+          description: Cluster topology
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterTopology'
+
+  /cluster/metrics:
+    get:
+      tags: [Cluster]
+      summary: Get aggregated cluster metrics
+      operationId: getClusterMetrics
+      responses:
+        '200':
+          description: Aggregated metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterMetrics'
+
+  /cluster/leader:
+    get:
+      tags: [Cluster]
+      summary: Get current leader
+      operationId: getClusterLeader
+      responses:
+        '200':
+          description: Leader information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeaderInfo'
+        '404':
+          description: No leader elected
+
+  # ============================================================================
+  # Alerts
+  # ============================================================================
+  /alerts:
+    get:
+      tags: [Alerts]
+      summary: List active alerts
+      operationId: listAlerts
+      parameters:
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [critical, warning, info]
+        - name: acknowledged
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Active alerts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Alert'
+
+  /alerts/{alertId}:
+    get:
+      tags: [Alerts]
+      summary: Get alert details
+      operationId: getAlert
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      responses:
+        '200':
+          description: Alert details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Alert'
+
+  /alerts/{alertId}/acknowledge:
+    post:
+      tags: [Alerts]
+      summary: Acknowledge alert
+      operationId: acknowledgeAlert
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                comment:
+                  type: string
+      responses:
+        '200':
+          description: Alert acknowledged
+
+  /alerts/rules:
+    get:
+      tags: [Alerts]
+      summary: List alert rules
+      operationId: listAlertRules
+      responses:
+        '200':
+          description: Alert rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AlertRule'
+
+    post:
+      tags: [Alerts]
+      summary: Create alert rule
+      operationId: createAlertRule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertRuleCreate'
+      responses:
+        '201':
+          description: Rule created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertRule'
+
+  # ============================================================================
+  # WebSocket Streaming
+  # ============================================================================
+  /stream/metrics:
+    get:
+      tags: [Metrics]
+      summary: Stream metrics (WebSocket)
+      description: |
+        WebSocket endpoint for real-time metrics streaming.
+        
+        Connect via WebSocket and receive metrics updates every second.
+        
+        Protocol: ws:// or wss://
+        
+        Message format:
+        ```json
+        {
+          "type": "metrics",
+          "timestamp": "2024-01-15T10:30:00Z",
+          "data": { ... metrics ... }
+        }
+        ```
+      operationId: streamMetrics
+      responses:
+        '101':
+          description: Switching to WebSocket protocol
+
+  /stream/logs:
+    get:
+      tags: [Instances]
+      summary: Stream logs (WebSocket)
+      description: |
+        WebSocket endpoint for real-time log streaming.
+        
+        Query parameters:
+        - `level`: Minimum log level
+        - `component`: Filter by component
+      operationId: streamLogs
+      parameters:
+        - name: level
+          in: query
+          schema:
+            type: string
+            enum: [debug, info, warn, error]
+        - name: component
+          in: query
+          schema:
+            type: string
+      responses:
+        '101':
+          description: Switching to WebSocket protocol
+
+  /stream/traces:
+    get:
+      tags: [Tracing]
+      summary: Stream traces (WebSocket)
+      description: Real-time trace streaming
+      operationId: streamTraces
+      responses:
+        '101':
+          description: Switching to WebSocket protocol
+
+components:
+  parameters:
+    PipelineId:
+      name: pipelineId
+      in: path
+      required: true
+      schema:
+        type: string
+    TraceId:
+      name: traceId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: ^[a-f0-9]{32}$
+        description: W3C TraceContext trace ID (32 hex chars)
+    InstanceId:
+      name: instanceId
+      in: path
+      required: true
+      schema:
+        type: string
+    AlertId:
+      name: alertId
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+
+    # Health
+    HealthCheck:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        message:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        components:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/HealthCheck'
+        details:
+          type: object
+          additionalProperties: true
+
+    LivenessResponse:
+      type: object
+      required: [live]
+      properties:
+        live:
+          type: boolean
+        message:
+          type: string
+
+    ReadinessResponse:
+      type: object
+      required: [ready]
+      properties:
+        ready:
+          type: boolean
+        message:
+          type: string
+        checks:
+          type: object
+          additionalProperties:
+            type: boolean
+
+    # Metrics
+    BridgeMetrics:
+      type: object
+      properties:
+        bridgeId:
+          type: string
+        uptime:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        pipelines:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/PipelineMetrics'
+        connections:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ConnectionMetrics'
+        retry:
+          $ref: '#/components/schemas/RetryMetrics'
+        flowControl:
+          $ref: '#/components/schemas/FlowControlMetrics'
+
+    PipelineMetrics:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+        messagesReceived:
+          type: integer
+          format: int64
+        messagesSent:
+          type: integer
+          format: int64
+        messagesFailed:
+          type: integer
+          format: int64
+        messagesRetried:
+          type: integer
+          format: int64
+        messagesDropped:
+          type: integer
+          format: int64
+        inFlight:
+          type: integer
+          format: int64
+        averageLatencyMs:
+          type: number
+          format: float
+        p50LatencyMs:
+          type: number
+        p95LatencyMs:
+          type: number
+        p99LatencyMs:
+          type: number
+        lastMessageAt:
+          type: string
+          format: date-time
+        throughputPerSecond:
+          type: number
+
+    ConnectionMetrics:
+      type: object
+      properties:
+        id:
+          type: string
+        transportType:
+          type: string
+        status:
+          type: string
+        connectedAt:
+          type: string
+          format: date-time
+        reconnectCount:
+          type: integer
+        lastError:
+          type: string
+        bytesReceived:
+          type: integer
+          format: int64
+        bytesSent:
+          type: integer
+          format: int64
+
+    RetryMetrics:
+      type: object
+      properties:
+        transportRetry:
+          type: object
+          properties:
+            attempts:
+              type: integer
+              format: int64
+            successes:
+              type: integer
+              format: int64
+            failures:
+              type: integer
+              format: int64
+            averageBackoffMs:
+              type: number
+        messageRetry:
+          type: object
+          properties:
+            attempts:
+              type: integer
+              format: int64
+            successes:
+              type: integer
+              format: int64
+            exhausted:
+              type: integer
+              format: int64
+        dlqMessages:
+          type: integer
+          format: int64
+        expiredMessages:
+          type: integer
+          format: int64
+
+    FlowControlMetrics:
+      type: object
+      properties:
+        currentInFlight:
+          type: integer
+          format: int64
+        maxInFlight:
+          type: integer
+        backpressureEvents:
+          type: integer
+          format: int64
+        backpressureDurationMs:
+          type: integer
+          format: int64
+
+    # Tracing
+    TraceList:
+      type: object
+      properties:
+        traces:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraceSummary'
+        total:
+          type: integer
+        hasMore:
+          type: boolean
+
+    TraceSummary:
+      type: object
+      properties:
+        traceId:
+          type: string
+          description: W3C TraceContext trace ID
+        rootSpan:
+          type: string
+        serviceName:
+          type: string
+        operationName:
+          type: string
+        startTime:
+          type: string
+          format: date-time
+        duration:
+          type: string
+        spanCount:
+          type: integer
+        status:
+          type: string
+          enum: [ok, error]
+        hasErrors:
+          type: boolean
+
+    Trace:
+      type: object
+      properties:
+        traceId:
+          type: string
+        spans:
+          type: array
+          items:
+            $ref: '#/components/schemas/Span'
+        services:
+          type: array
+          items:
+            type: string
+        duration:
+          type: string
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+
+    Span:
+      type: object
+      description: OpenTelemetry-compatible span
+      properties:
+        traceId:
+          type: string
+        spanId:
+          type: string
+        parentSpanId:
+          type: string
+        operationName:
+          type: string
+        serviceName:
+          type: string
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        duration:
+          type: string
+        status:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [UNSET, OK, ERROR]
+            message:
+              type: string
+        kind:
+          type: string
+          enum: [INTERNAL, SERVER, CLIENT, PRODUCER, CONSUMER]
+        attributes:
+          type: object
+          additionalProperties: true
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              timestamp:
+                type: string
+                format: date-time
+              attributes:
+                type: object
+        links:
+          type: array
+          items:
+            type: object
+            properties:
+              traceId:
+                type: string
+              spanId:
+                type: string
+
+    TraceSearchRequest:
+      type: object
+      properties:
+        serviceName:
+          type: string
+        operationName:
+          type: string
+        tags:
+          type: object
+          additionalProperties:
+            type: string
+        minDuration:
+          type: string
+        maxDuration:
+          type: string
+        startTimeMin:
+          type: string
+          format: date-time
+        startTimeMax:
+          type: string
+          format: date-time
+        limit:
+          type: integer
+          default: 100
+
+    TracingConfig:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        samplingRate:
+          type: number
+          minimum: 0
+          maximum: 1
+        exporters:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                enum: [otlp, jaeger, zipkin, stdout]
+              endpoint:
+                type: string
+              headers:
+                type: object
+                additionalProperties:
+                  type: string
+        propagators:
+          type: array
+          items:
+            type: string
+            enum: [tracecontext, baggage, b3, jaeger]
+        resourceAttributes:
+          type: object
+          additionalProperties:
+            type: string
+
+    TracingConfigUpdate:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        samplingRate:
+          type: number
+
+    TraceExportStatus:
+      type: object
+      properties:
+        exporters:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+              endpoint:
+                type: string
+              status:
+                type: string
+                enum: [connected, disconnected, error]
+              lastExportAt:
+                type: string
+                format: date-time
+              exportedSpans:
+                type: integer
+                format: int64
+              failedSpans:
+                type: integer
+                format: int64
+
+    # Instances
+    BridgeInstance:
+      type: object
+      properties:
+        id:
+          type: string
+        clusterId:
+          type: string
+        hostname:
+          type: string
+        ipAddress:
+          type: string
+        port:
+          type: integer
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy, unknown]
+        version:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        lastSeenAt:
+          type: string
+          format: date-time
+        isLeader:
+          type: boolean
+        pipelinesCount:
+          type: integer
+        connectionsCount:
+          type: integer
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+
+    LogEntries:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            type: object
+            properties:
+              timestamp:
+                type: string
+                format: date-time
+              level:
+                type: string
+              message:
+                type: string
+              component:
+                type: string
+              traceId:
+                type: string
+              spanId:
+                type: string
+              fields:
+                type: object
+                additionalProperties: true
+
+    # Cluster
+    ClusterStatus:
+      type: object
+      properties:
+        clusterId:
+          type: string
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        instanceCount:
+          type: integer
+        healthyInstances:
+          type: integer
+        leaderElected:
+          type: boolean
+        leaderId:
+          type: string
+
+    ClusterTopology:
+      type: object
+      properties:
+        clusterId:
+          type: string
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/BridgeInstance'
+        edges:
+          type: array
+          items:
+            type: object
+            properties:
+              from:
+                type: string
+              to:
+                type: string
+              type:
+                type: string
+
+    ClusterMetrics:
+      type: object
+      properties:
+        clusterId:
+          type: string
+        totalMessagesReceived:
+          type: integer
+          format: int64
+        totalMessagesSent:
+          type: integer
+          format: int64
+        totalMessagesFailed:
+          type: integer
+          format: int64
+        aggregatedThroughput:
+          type: number
+        instanceMetrics:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/BridgeMetrics'
+
+    LeaderInfo:
+      type: object
+      properties:
+        leaderId:
+          type: string
+        hostname:
+          type: string
+        electedAt:
+          type: string
+          format: date-time
+        term:
+          type: integer
+
+    # Alerts
+    Alert:
+      type: object
+      properties:
+        id:
+          type: string
+        ruleName:
+          type: string
+        severity:
+          type: string
+          enum: [critical, warning, info]
+        status:
+          type: string
+          enum: [firing, resolved, acknowledged]
+        message:
+          type: string
+        instanceId:
+          type: string
+        component:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        resolvedAt:
+          type: string
+          format: date-time
+        acknowledgedAt:
+          type: string
+          format: date-time
+        acknowledgedBy:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
+
+    AlertRule:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        expression:
+          type: string
+          description: PromQL-like expression
+        severity:
+          type: string
+          enum: [critical, warning, info]
+        duration:
+          type: string
+          description: Duration before firing
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
+        enabled:
+          type: boolean
+
+    AlertRuleCreate:
+      type: object
+      required: [name, expression, severity]
+      properties:
+        name:
+          type: string
+        expression:
+          type: string
+        severity:
+          type: string
+          enum: [critical, warning, info]
+        duration:
+          type: string
+          default: "1m"
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        annotations:
+          type: object
+          additionalProperties:
+            type: string

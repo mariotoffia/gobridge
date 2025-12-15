@@ -1,0 +1,1838 @@
+openapi: 3.1.0
+info:
+  title: GoBridge Admin API
+  description: |
+    Administrative API for managing GoBridge instances.
+    
+    This API provides endpoints for:
+    - Bridge lifecycle management
+    - Connection management (CRUD)
+    - Pipeline and route management
+    - Subscription and publish configuration
+    - Dead Letter Queue (DLQ) management
+    - Configuration reload and validation
+    - Message injection for testing
+    - Troubleshooting and diagnostics
+    
+    ## Authentication
+    
+    All endpoints require authentication via Bearer token or API key.
+    
+    ## Rate Limiting
+    
+    Administrative operations are rate-limited to prevent abuse.
+    Default: 100 requests per minute per API key.
+  version: 1.0.0
+  contact:
+    name: GoBridge Team
+    url: https://github.com/mariotoffia/gobridge
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8080/api/v1/admin
+    description: Local development
+  - url: https://{host}/api/v1/admin
+    description: Production
+    variables:
+      host:
+        default: bridge.example.com
+
+security:
+  - bearerAuth: []
+  - apiKeyAuth: []
+
+tags:
+  - name: Bridge
+    description: Bridge lifecycle operations
+  - name: Connections
+    description: Connection management
+  - name: Pipelines
+    description: Pipeline management
+  - name: Routes
+    description: Route management
+  - name: Subscriptions
+    description: Subscription management
+  - name: Publishers
+    description: Publisher management
+  - name: DLQ
+    description: Dead Letter Queue management
+  - name: Config
+    description: Configuration management
+  - name: Testing
+    description: Testing and message injection
+  - name: Diagnostics
+    description: Troubleshooting and diagnostics
+
+paths:
+  # ============================================================================
+  # Bridge Lifecycle
+  # ============================================================================
+  /bridge:
+    get:
+      tags: [Bridge]
+      summary: Get bridge status
+      description: Returns the current status of this bridge instance
+      operationId: getBridgeStatus
+      responses:
+        '200':
+          description: Bridge status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BridgeStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /bridge/start:
+    post:
+      tags: [Bridge]
+      summary: Start the bridge
+      description: Starts the bridge if it is stopped
+      operationId: startBridge
+      responses:
+        '200':
+          description: Bridge started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResult'
+        '409':
+          description: Bridge already running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /bridge/stop:
+    post:
+      tags: [Bridge]
+      summary: Stop the bridge
+      description: Gracefully stops the bridge with optional drain
+      operationId: stopBridge
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StopRequest'
+      responses:
+        '200':
+          description: Bridge stopped
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResult'
+        '409':
+          description: Bridge already stopped
+
+  /bridge/drain:
+    post:
+      tags: [Bridge]
+      summary: Drain the bridge
+      description: Drains all pipelines without stopping
+      operationId: drainBridge
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DrainRequest'
+      responses:
+        '200':
+          description: Drain initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DrainProgress'
+        '202':
+          description: Drain in progress (long-running)
+
+  # ============================================================================
+  # Connections
+  # ============================================================================
+  /connections:
+    get:
+      tags: [Connections]
+      summary: List all connections
+      operationId: listConnections
+      parameters:
+        - $ref: '#/components/parameters/TransportType'
+        - $ref: '#/components/parameters/Status'
+      responses:
+        '200':
+          description: List of connections
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Connection'
+
+    post:
+      tags: [Connections]
+      summary: Create a new connection
+      operationId: createConnection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectionCreate'
+      responses:
+        '201':
+          description: Connection created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Connection'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Connection already exists
+
+  /connections/{connectionId}:
+    get:
+      tags: [Connections]
+      summary: Get connection by ID
+      operationId: getConnection
+      parameters:
+        - $ref: '#/components/parameters/ConnectionId'
+      responses:
+        '200':
+          description: Connection details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Connection'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Connections]
+      summary: Update connection
+      operationId: updateConnection
+      parameters:
+        - $ref: '#/components/parameters/ConnectionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectionUpdate'
+      responses:
+        '200':
+          description: Connection updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Connection'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Connections]
+      summary: Delete connection
+      operationId: deleteConnection
+      parameters:
+        - $ref: '#/components/parameters/ConnectionId'
+        - name: force
+          in: query
+          description: Force delete even if in use
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '204':
+          description: Connection deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Connection in use
+
+  /connections/{connectionId}/reconnect:
+    post:
+      tags: [Connections]
+      summary: Force reconnection
+      operationId: reconnectConnection
+      parameters:
+        - $ref: '#/components/parameters/ConnectionId'
+      responses:
+        '200':
+          description: Reconnection initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResult'
+
+  /connections/{connectionId}/test:
+    post:
+      tags: [Connections]
+      summary: Test connection
+      description: Tests connectivity without affecting running operations
+      operationId: testConnection
+      parameters:
+        - $ref: '#/components/parameters/ConnectionId'
+      responses:
+        '200':
+          description: Connection test result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectionTestResult'
+
+  # ============================================================================
+  # Pipelines
+  # ============================================================================
+  /pipelines:
+    get:
+      tags: [Pipelines]
+      summary: List all pipelines
+      operationId: listPipelines
+      parameters:
+        - $ref: '#/components/parameters/Status'
+      responses:
+        '200':
+          description: List of pipelines
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Pipeline'
+
+    post:
+      tags: [Pipelines]
+      summary: Create a new pipeline
+      operationId: createPipeline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PipelineCreate'
+      responses:
+        '201':
+          description: Pipeline created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pipeline'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /pipelines/{pipelineId}:
+    get:
+      tags: [Pipelines]
+      summary: Get pipeline by ID
+      operationId: getPipeline
+      parameters:
+        - $ref: '#/components/parameters/PipelineId'
+      responses:
+        '200':
+          description: Pipeline details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pipeline'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Pipelines]
+      summary: Update pipeline
+      operationId: updatePipeline
+      parameters:
+        - $ref: '#/components/parameters/PipelineId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PipelineUpdate'
+      responses:
+        '200':
+          description: Pipeline updated
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Pipelines]
+      summary: Delete pipeline
+      operationId: deletePipeline
+      parameters:
+        - $ref: '#/components/parameters/PipelineId'
+        - name: drain
+          in: query
+          description: Drain before deleting
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '204':
+          description: Pipeline deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /pipelines/{pipelineId}/start:
+    post:
+      tags: [Pipelines]
+      summary: Start pipeline
+      operationId: startPipeline
+      parameters:
+        - $ref: '#/components/parameters/PipelineId'
+      responses:
+        '200':
+          description: Pipeline started
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Pipeline already running
+
+  /pipelines/{pipelineId}/stop:
+    post:
+      tags: [Pipelines]
+      summary: Stop pipeline
+      operationId: stopPipeline
+      parameters:
+        - $ref: '#/components/parameters/PipelineId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DrainRequest'
+      responses:
+        '200':
+          description: Pipeline stopped
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /pipelines/{pipelineId}/stats:
+    get:
+      tags: [Pipelines]
+      summary: Get pipeline statistics
+      operationId: getPipelineStats
+      parameters:
+        - $ref: '#/components/parameters/PipelineId'
+      responses:
+        '200':
+          description: Pipeline statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineStats'
+
+  # ============================================================================
+  # Routes
+  # ============================================================================
+  /routes:
+    get:
+      tags: [Routes]
+      summary: List all routes
+      operationId: listRoutes
+      responses:
+        '200':
+          description: List of routes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Route'
+
+    post:
+      tags: [Routes]
+      summary: Create a new route
+      operationId: createRoute
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RouteCreate'
+      responses:
+        '201':
+          description: Route created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Route'
+
+  /routes/{routeId}:
+    get:
+      tags: [Routes]
+      summary: Get route by ID
+      operationId: getRoute
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+      responses:
+        '200':
+          description: Route details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Route'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Routes]
+      summary: Delete route
+      operationId: deleteRoute
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+      responses:
+        '204':
+          description: Route deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # Subscriptions
+  # ============================================================================
+  /subscriptions:
+    get:
+      tags: [Subscriptions]
+      summary: List all subscriptions
+      operationId: listSubscriptions
+      parameters:
+        - $ref: '#/components/parameters/ConnectionIdQuery'
+      responses:
+        '200':
+          description: List of subscriptions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Subscription'
+
+    post:
+      tags: [Subscriptions]
+      summary: Add a subscription
+      operationId: addSubscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionCreate'
+      responses:
+        '201':
+          description: Subscription added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+
+  /subscriptions/{subscriptionId}:
+    get:
+      tags: [Subscriptions]
+      summary: Get subscription by ID
+      operationId: getSubscription
+      parameters:
+        - $ref: '#/components/parameters/SubscriptionId'
+      responses:
+        '200':
+          description: Subscription details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+
+    put:
+      tags: [Subscriptions]
+      summary: Update subscription
+      operationId: updateSubscription
+      parameters:
+        - $ref: '#/components/parameters/SubscriptionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionUpdate'
+      responses:
+        '200':
+          description: Subscription updated
+
+    delete:
+      tags: [Subscriptions]
+      summary: Remove subscription
+      operationId: removeSubscription
+      parameters:
+        - $ref: '#/components/parameters/SubscriptionId'
+      responses:
+        '204':
+          description: Subscription removed
+
+  # ============================================================================
+  # Publishers
+  # ============================================================================
+  /publishers:
+    get:
+      tags: [Publishers]
+      summary: List all publishers
+      operationId: listPublishers
+      parameters:
+        - $ref: '#/components/parameters/ConnectionIdQuery'
+      responses:
+        '200':
+          description: List of publishers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Publisher'
+
+    post:
+      tags: [Publishers]
+      summary: Add a publisher
+      operationId: addPublisher
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublisherCreate'
+      responses:
+        '201':
+          description: Publisher added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Publisher'
+
+  /publishers/{publisherId}:
+    delete:
+      tags: [Publishers]
+      summary: Remove publisher
+      operationId: removePublisher
+      parameters:
+        - $ref: '#/components/parameters/PublisherId'
+      responses:
+        '204':
+          description: Publisher removed
+
+  # ============================================================================
+  # DLQ Management
+  # ============================================================================
+  /dlq:
+    get:
+      tags: [DLQ]
+      summary: Get DLQ summary
+      operationId: getDLQSummary
+      responses:
+        '200':
+          description: DLQ summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DLQSummary'
+
+  /dlq/messages:
+    get:
+      tags: [DLQ]
+      summary: List DLQ messages
+      operationId: listDLQMessages
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: topic
+          in: query
+          description: Filter by original topic
+          schema:
+            type: string
+        - name: since
+          in: query
+          description: Filter messages failed after this time
+          schema:
+            type: string
+            format: date-time
+        - name: sourceId
+          in: query
+          description: Filter by source ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: DLQ messages
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DLQMessageList'
+
+  /dlq/messages/{messageId}:
+    get:
+      tags: [DLQ]
+      summary: Get DLQ message details
+      operationId: getDLQMessage
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '200':
+          description: Message details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DLQMessage'
+
+    delete:
+      tags: [DLQ]
+      summary: Delete DLQ message
+      operationId: deleteDLQMessage
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '204':
+          description: Message deleted
+
+  /dlq/replay:
+    post:
+      tags: [DLQ]
+      summary: Replay DLQ messages
+      description: Moves messages from DLQ back to the retry queue
+      operationId: replayDLQMessages
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DLQReplayRequest'
+      responses:
+        '200':
+          description: Replay result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DLQReplayResult'
+
+  /dlq/purge:
+    post:
+      tags: [DLQ]
+      summary: Purge DLQ
+      description: Deletes all messages from the DLQ
+      operationId: purgeDLQ
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DLQPurgeRequest'
+      responses:
+        '200':
+          description: Purge result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DLQPurgeResult'
+
+  # ============================================================================
+  # Configuration
+  # ============================================================================
+  /config:
+    get:
+      tags: [Config]
+      summary: Get current configuration
+      operationId: getConfig
+      responses:
+        '200':
+          description: Current configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BridgeConfig'
+
+  /config/reload:
+    post:
+      tags: [Config]
+      summary: Reload configuration
+      description: Reloads configuration from the config source
+      operationId: reloadConfig
+      responses:
+        '200':
+          description: Configuration reloaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigReloadResult'
+
+  /config/validate:
+    post:
+      tags: [Config]
+      summary: Validate configuration
+      description: Validates configuration without applying it
+      operationId: validateConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BridgeConfig'
+      responses:
+        '200':
+          description: Configuration is valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigValidationResult'
+        '400':
+          description: Configuration is invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigValidationResult'
+
+  /config/diff:
+    post:
+      tags: [Config]
+      summary: Preview configuration changes
+      description: Shows what would change if the new config is applied
+      operationId: diffConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BridgeConfig'
+      responses:
+        '200':
+          description: Configuration diff
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigDiff'
+
+  # ============================================================================
+  # Testing and Message Injection
+  # ============================================================================
+  /test/message:
+    post:
+      tags: [Testing]
+      summary: Inject test message
+      description: |
+        Injects a test message into a pipeline for testing.
+        Uses the message-push middleware to inject directly into the pipeline.
+      operationId: injectTestMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestMessageRequest'
+      responses:
+        '200':
+          description: Message injected and processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestMessageResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /test/message/batch:
+    post:
+      tags: [Testing]
+      summary: Inject batch of test messages
+      operationId: injectTestMessageBatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestMessageBatchRequest'
+      responses:
+        '200':
+          description: Batch processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestMessageBatchResult'
+
+  /test/pipeline/{pipelineId}:
+    post:
+      tags: [Testing]
+      summary: Test pipeline end-to-end
+      description: Sends a test message through the entire pipeline
+      operationId: testPipeline
+      parameters:
+        - $ref: '#/components/parameters/PipelineId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PipelineTestRequest'
+      responses:
+        '200':
+          description: Pipeline test result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineTestResult'
+
+  # ============================================================================
+  # Diagnostics
+  # ============================================================================
+  /diagnostics/logs:
+    get:
+      tags: [Diagnostics]
+      summary: Get recent logs
+      operationId: getLogs
+      parameters:
+        - name: level
+          in: query
+          schema:
+            type: string
+            enum: [debug, info, warn, error]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: component
+          in: query
+          description: Filter by component (pipeline, connection, etc.)
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Log entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogEntries'
+
+  /diagnostics/errors:
+    get:
+      tags: [Diagnostics]
+      summary: Get recent errors
+      operationId: getErrors
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Error entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEntries'
+
+  /diagnostics/debug:
+    get:
+      tags: [Diagnostics]
+      summary: Get debug information
+      description: Returns detailed debug information about the bridge state
+      operationId: getDebugInfo
+      responses:
+        '200':
+          description: Debug information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DebugInfo'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+  parameters:
+    ConnectionId:
+      name: connectionId
+      in: path
+      required: true
+      schema:
+        type: string
+    ConnectionIdQuery:
+      name: connectionId
+      in: query
+      schema:
+        type: string
+    PipelineId:
+      name: pipelineId
+      in: path
+      required: true
+      schema:
+        type: string
+    RouteId:
+      name: routeId
+      in: path
+      required: true
+      schema:
+        type: string
+    SubscriptionId:
+      name: subscriptionId
+      in: path
+      required: true
+      schema:
+        type: string
+    PublisherId:
+      name: publisherId
+      in: path
+      required: true
+      schema:
+        type: string
+    MessageId:
+      name: messageId
+      in: path
+      required: true
+      schema:
+        type: string
+    TransportType:
+      name: transportType
+      in: query
+      schema:
+        type: string
+        enum: [MQTT, SQS, AzureServiceBus]
+    Status:
+      name: status
+      in: query
+      schema:
+        type: string
+        enum: [running, stopped, draining, error]
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    # Common
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+
+    OperationResult:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    # Bridge
+    BridgeStatus:
+      type: object
+      required: [id, status, ready]
+      properties:
+        id:
+          type: string
+        clusterId:
+          type: string
+        status:
+          type: string
+          enum: [starting, running, stopping, stopped, draining]
+        ready:
+          type: boolean
+        live:
+          type: boolean
+        uptime:
+          type: string
+          description: Duration string (e.g., "2h30m")
+        startedAt:
+          type: string
+          format: date-time
+        pipelinesCount:
+          type: integer
+        connectionsCount:
+          type: integer
+        version:
+          type: string
+
+    StopRequest:
+      type: object
+      properties:
+        drain:
+          type: boolean
+          default: true
+        timeout:
+          type: string
+          description: Duration string (e.g., "30s")
+
+    DrainRequest:
+      type: object
+      properties:
+        timeout:
+          type: string
+        topics:
+          type: array
+          items:
+            type: string
+        waitForInFlight:
+          type: boolean
+          default: true
+
+    DrainProgress:
+      type: object
+      properties:
+        startedAt:
+          type: string
+          format: date-time
+        total:
+          type: integer
+        drained:
+          type: integer
+        inFlight:
+          type: integer
+        failed:
+          type: integer
+        complete:
+          type: boolean
+        percentComplete:
+          type: number
+          format: float
+
+    # Connections
+    Connection:
+      type: object
+      required: [id, transportType, status]
+      properties:
+        id:
+          type: string
+        transportType:
+          type: string
+          enum: [MQTT, SQS, AzureServiceBus]
+        status:
+          type: string
+          enum: [connected, disconnected, connecting, error]
+        brokerUrls:
+          type: array
+          items:
+            type: string
+        clientId:
+          type: string
+        connectedAt:
+          type: string
+          format: date-time
+        reconnectCount:
+          type: integer
+        lastError:
+          type: string
+        sourcesCount:
+          type: integer
+        targetsCount:
+          type: integer
+
+    ConnectionCreate:
+      type: object
+      required: [id, transportType]
+      properties:
+        id:
+          type: string
+        transportType:
+          type: string
+          enum: [MQTT, SQS, AzureServiceBus]
+        brokerUrls:
+          type: array
+          items:
+            type: string
+        clientId:
+          type: string
+        credentialsUri:
+          type: string
+          description: URI to credentials (e.g., pms://tenant/app/creds)
+        options:
+          type: object
+          additionalProperties: true
+
+    ConnectionUpdate:
+      type: object
+      properties:
+        brokerUrls:
+          type: array
+          items:
+            type: string
+        credentialsUri:
+          type: string
+        options:
+          type: object
+          additionalProperties: true
+
+    ConnectionTestResult:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+        latencyMs:
+          type: integer
+        error:
+          type: string
+        serverInfo:
+          type: object
+          additionalProperties: true
+
+    # Pipelines
+    Pipeline:
+      type: object
+      required: [id, mode, status]
+      properties:
+        id:
+          type: string
+        mode:
+          type: string
+          enum: [simplex, duplex]
+        status:
+          type: string
+          enum: [running, stopped, draining, error]
+        connectionId:
+          type: string
+        sourceConfig:
+          $ref: '#/components/schemas/SourceConfig'
+        targetConfig:
+          $ref: '#/components/schemas/TargetConfig'
+        middlewares:
+          type: array
+          items:
+            type: string
+        stats:
+          $ref: '#/components/schemas/PipelineStats'
+
+    PipelineCreate:
+      type: object
+      required: [id, sourceConfig, targetConfig]
+      properties:
+        id:
+          type: string
+        mode:
+          type: string
+          enum: [simplex, duplex]
+          default: simplex
+        connectionId:
+          type: string
+          description: ID of shared connection (optional)
+        sourceConfig:
+          $ref: '#/components/schemas/SourceConfig'
+        targetConfig:
+          $ref: '#/components/schemas/TargetConfig'
+        middlewares:
+          type: array
+          items:
+            type: string
+        flowControl:
+          $ref: '#/components/schemas/FlowControlConfig'
+        autoStart:
+          type: boolean
+          default: true
+
+    PipelineUpdate:
+      type: object
+      properties:
+        middlewares:
+          type: array
+          items:
+            type: string
+        flowControl:
+          $ref: '#/components/schemas/FlowControlConfig'
+
+    PipelineStats:
+      type: object
+      properties:
+        messagesReceived:
+          type: integer
+          format: int64
+        messagesSent:
+          type: integer
+          format: int64
+        messagesFailed:
+          type: integer
+          format: int64
+        messagesRetried:
+          type: integer
+          format: int64
+        messagesDropped:
+          type: integer
+          format: int64
+        inFlight:
+          type: integer
+          format: int64
+        averageLatencyMs:
+          type: number
+          format: float
+
+    SourceConfig:
+      type: object
+      required: [transportType]
+      properties:
+        id:
+          type: string
+        transportType:
+          type: string
+        topics:
+          type: array
+          items:
+            type: string
+        qos:
+          type: integer
+          minimum: 0
+          maximum: 2
+        options:
+          type: object
+          additionalProperties: true
+
+    TargetConfig:
+      type: object
+      required: [transportType]
+      properties:
+        id:
+          type: string
+        transportType:
+          type: string
+        topic:
+          type: string
+        qos:
+          type: integer
+          minimum: 0
+          maximum: 2
+        options:
+          type: object
+          additionalProperties: true
+
+    FlowControlConfig:
+      type: object
+      properties:
+        maxInFlight:
+          type: integer
+          default: 100
+        defaultMessageTTL:
+          type: string
+          description: Duration string (e.g., "2m")
+
+    # Routes
+    Route:
+      type: object
+      required: [id, pipelines]
+      properties:
+        id:
+          type: string
+        pipelines:
+          type: array
+          items:
+            type: string
+          description: Pipeline IDs in order
+        status:
+          type: string
+
+    RouteCreate:
+      type: object
+      required: [id, pipelines]
+      properties:
+        id:
+          type: string
+        pipelines:
+          type: array
+          items:
+            $ref: '#/components/schemas/PipelineCreate'
+
+    # Subscriptions
+    Subscription:
+      type: object
+      required: [id, connectionId, topics]
+      properties:
+        id:
+          type: string
+        connectionId:
+          type: string
+        topics:
+          type: array
+          items:
+            type: string
+        qos:
+          type: integer
+        status:
+          type: string
+          enum: [active, paused, error]
+
+    SubscriptionCreate:
+      type: object
+      required: [connectionId, topics]
+      properties:
+        id:
+          type: string
+        connectionId:
+          type: string
+        topics:
+          type: array
+          items:
+            type: string
+        qos:
+          type: integer
+          default: 1
+
+    SubscriptionUpdate:
+      type: object
+      properties:
+        topics:
+          type: array
+          items:
+            type: string
+        qos:
+          type: integer
+
+    # Publishers
+    Publisher:
+      type: object
+      required: [id, connectionId]
+      properties:
+        id:
+          type: string
+        connectionId:
+          type: string
+        defaultTopic:
+          type: string
+        qos:
+          type: integer
+
+    PublisherCreate:
+      type: object
+      required: [connectionId]
+      properties:
+        id:
+          type: string
+        connectionId:
+          type: string
+        defaultTopic:
+          type: string
+        qos:
+          type: integer
+          default: 1
+
+    # DLQ
+    DLQSummary:
+      type: object
+      properties:
+        totalMessages:
+          type: integer
+          format: int64
+        oldestMessage:
+          type: string
+          format: date-time
+        newestMessage:
+          type: string
+          format: date-time
+        byTopic:
+          type: object
+          additionalProperties:
+            type: integer
+        byErrorCode:
+          type: object
+          additionalProperties:
+            type: integer
+
+    DLQMessage:
+      type: object
+      required: [id, originalTopic, failedAt, reason]
+      properties:
+        id:
+          type: string
+        originalTopic:
+          type: string
+        payload:
+          type: string
+          format: byte
+        payloadPreview:
+          type: string
+          description: First 500 chars of payload
+        failedAt:
+          type: string
+          format: date-time
+        reason:
+          type: string
+        errorCode:
+          type: string
+        retryInfo:
+          type: object
+          properties:
+            attempt:
+              type: integer
+            maxAttempts:
+              type: integer
+            firstAttemptAt:
+              type: string
+              format: date-time
+        sourceId:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+
+    DLQMessageList:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/DLQMessage'
+        total:
+          type: integer
+        offset:
+          type: integer
+        limit:
+          type: integer
+
+    DLQReplayRequest:
+      type: object
+      properties:
+        messageIds:
+          type: array
+          items:
+            type: string
+          description: Specific message IDs to replay (optional)
+        filter:
+          type: object
+          properties:
+            topic:
+              type: string
+            since:
+              type: string
+              format: date-time
+            until:
+              type: string
+              format: date-time
+            sourceId:
+              type: string
+            maxMessages:
+              type: integer
+
+    DLQReplayResult:
+      type: object
+      properties:
+        replayed:
+          type: integer
+        failed:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: string
+
+    DLQPurgeRequest:
+      type: object
+      properties:
+        filter:
+          type: object
+          properties:
+            topic:
+              type: string
+            before:
+              type: string
+              format: date-time
+        confirm:
+          type: boolean
+          description: Must be true to confirm purge
+
+    DLQPurgeResult:
+      type: object
+      properties:
+        purged:
+          type: integer
+
+    # Config
+    BridgeConfig:
+      type: object
+      properties:
+        id:
+          type: string
+        clusterId:
+          type: string
+        shutdownTimeout:
+          type: string
+        drainTimeout:
+          type: string
+        transportRetry:
+          $ref: '#/components/schemas/TransportRetryConfig'
+        flowControl:
+          $ref: '#/components/schemas/FlowControlConfig'
+
+    TransportRetryConfig:
+      type: object
+      properties:
+        initialBackoff:
+          type: string
+        maxBackoff:
+          type: string
+        multiplier:
+          type: number
+        jitter:
+          type: number
+        skipNativeRetry:
+          type: boolean
+
+    ConfigReloadResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        changesApplied:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: string
+
+    ConfigValidationResult:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+        warnings:
+          type: array
+          items:
+            type: string
+
+    ConfigDiff:
+      type: object
+      properties:
+        changes:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              type:
+                type: string
+                enum: [added, removed, modified]
+              oldValue:
+                type: string
+              newValue:
+                type: string
+
+    # Testing
+    TestMessageRequest:
+      type: object
+      required: [pipelineId, payload]
+      properties:
+        pipelineId:
+          type: string
+        topic:
+          type: string
+        payload:
+          type: string
+          format: byte
+        payloadString:
+          type: string
+          description: Alternative to payload as plain string
+        contentType:
+          type: string
+          default: application/json
+        metadata:
+          type: object
+          additionalProperties: true
+        ttl:
+          type: string
+          description: Message TTL duration
+        waitForResult:
+          type: boolean
+          default: true
+          description: Wait for message to be processed
+
+    TestMessageResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        messageId:
+          type: string
+        processingTimeMs:
+          type: integer
+        middlewareResults:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              durationMs:
+                type: integer
+              error:
+                type: string
+        targetResult:
+          type: object
+          properties:
+            sent:
+              type: boolean
+            error:
+              type: string
+        error:
+          type: string
+
+    TestMessageBatchRequest:
+      type: object
+      required: [pipelineId, messages]
+      properties:
+        pipelineId:
+          type: string
+        messages:
+          type: array
+          items:
+            type: object
+            properties:
+              topic:
+                type: string
+              payload:
+                type: string
+              metadata:
+                type: object
+                additionalProperties: true
+
+    TestMessageBatchResult:
+      type: object
+      properties:
+        total:
+          type: integer
+        succeeded:
+          type: integer
+        failed:
+          type: integer
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/TestMessageResult'
+
+    PipelineTestRequest:
+      type: object
+      properties:
+        payload:
+          type: string
+        iterations:
+          type: integer
+          default: 1
+        validateOutput:
+          type: boolean
+          default: false
+
+    PipelineTestResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        iterations:
+          type: integer
+        averageLatencyMs:
+          type: number
+        errors:
+          type: array
+          items:
+            type: string
+
+    # Diagnostics
+    LogEntries:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            type: object
+            properties:
+              timestamp:
+                type: string
+                format: date-time
+              level:
+                type: string
+              message:
+                type: string
+              component:
+                type: string
+              traceId:
+                type: string
+              fields:
+                type: object
+                additionalProperties: true
+
+    ErrorEntries:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            type: object
+            properties:
+              timestamp:
+                type: string
+                format: date-time
+              code:
+                type: string
+              message:
+                type: string
+              component:
+                type: string
+              stack:
+                type: string
+              context:
+                type: object
+                additionalProperties: true
+
+    DebugInfo:
+      type: object
+      properties:
+        bridge:
+          $ref: '#/components/schemas/BridgeStatus'
+        goroutines:
+          type: integer
+        memoryMB:
+          type: number
+        connections:
+          type: array
+          items:
+            $ref: '#/components/schemas/Connection'
+        pipelines:
+          type: array
+          items:
+            $ref: '#/components/schemas/Pipeline'
+        config:
+          $ref: '#/components/schemas/BridgeConfig'

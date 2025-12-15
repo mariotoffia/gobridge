@@ -73,41 +73,7 @@ func (d *DrainProgress) Remaining() int64 {
 // Health Checking
 // ============================================================================
 
-// HealthStatus represents the health status of a component.
-type HealthStatus string
-
-const (
-	// HealthStatusHealthy indicates the component is functioning normally.
-	HealthStatusHealthy HealthStatus = "healthy"
-	// HealthStatusDegraded indicates the component is functioning but with issues.
-	HealthStatusDegraded HealthStatus = "degraded"
-	// HealthStatusUnhealthy indicates the component is not functioning.
-	HealthStatusUnhealthy HealthStatus = "unhealthy"
-	// HealthStatusUnknown indicates the health status cannot be determined.
-	HealthStatusUnknown HealthStatus = "unknown"
-)
-
-// HealthCheck represents the result of a health check.
-type HealthCheck struct {
-	// Status is the overall health status.
-	Status HealthStatus `json:"status"`
-	// Message provides additional context about the status.
-	Message string `json:"message,omitempty"`
-	// LastCheck is when this check was performed.
-	LastCheck time.Time `json:"lastCheck"`
-	// Duration is how long the check took.
-	Duration time.Duration `json:"duration"`
-	// Details contains component-specific health details.
-	Details map[string]any `json:"details,omitempty"`
-	// Children contains health checks for sub-components.
-	Children map[string]*HealthCheck `json:"children,omitempty"`
-}
-
-// HealthChecker is implemented by components that can report their health.
-type HealthChecker interface {
-	// Health performs a health check and returns the result.
-	Health(ctx context.Context) *HealthCheck
-}
+// NOTE: HealthStatus, HealthCheck, HealthChecker, etc. are defined in health.go
 
 // ============================================================================
 // Lifecycle Hooks

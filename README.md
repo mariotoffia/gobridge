@@ -11,6 +11,8 @@ A message bridge framework for connecting different transport technologies. Rout
 - **Dynamic configuration**: Runtime updates from DynamoDB, files, etc.
 - **Clusterable**: External retry backing (e.g., SQS) for HA deployments
 - **Credential management**: Inline or URI-based (AWS Parameter Store, files)
+- **HTTP Admin API**: Manage connections, pipelines, DLQ, and inject test messages
+- **HTTP Monitor API**: Prometheus metrics, health checks, OpenTelemetry tracing
 
 ## Documentation
 
@@ -19,6 +21,9 @@ A message bridge framework for connecting different transport technologies. Rout
 | [Architecture Overview](bridge/types/ARCHITECTURE.md) | System design, core concepts, and component interactions |
 | [Transport Guide](bridge/types/ARCHITECTURE-TRANSPORTS.md) | Transport implementations and how to add new ones |
 | [Middleware Guide](bridge/types/ARCHITECTURE-MIDDLEWARE.md) | Middleware chains, retry system, and error handling |
+| [HTTP APIs](apis/README.md) | Admin and Monitor HTTP API documentation |
+| [Admin API Spec](apis/http/admin/admin-api.yaml) | OpenAPI 3.1 spec for administration |
+| [Monitor API Spec](apis/http/monitor/monitor-api.yaml) | OpenAPI 3.1 spec for monitoring |
 | [Missing Features](bridge/types/MISSING.md) | Roadmap for production readiness |
 
 ## Installation
