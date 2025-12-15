@@ -6,6 +6,7 @@
         "mariotoffia",
         "MQTT",
         "omitzero",
+        "paho",
         "retryable"
     ]
 }

@@ -293,9 +293,10 @@ func (t *mqttLifecycleTransaction) collectSubscribeOptions() []paho.SubscribeOpt
 			continue
 		}
 
-		qos := byte(1) // Default QoS
-		if mqttConfig.QoS != nil {
-			qos = byte(*mqttConfig.QoS)
+		qos := byte(mqttConfig.QoS)
+		// Clamp to valid QoS range (0-2)
+		if qos > 2 {
+			qos = 1
 		}
 
 		for _, topic := range mqttConfig.Topics {
