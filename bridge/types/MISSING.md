@@ -13,7 +13,6 @@ This document outlines what is missing in `bridge/core/bridge.go` and related co
 |----------|---------|:----------:|:-------:|:--------:|:------:|
 | **Initialization** | | | | | |
 | | Connection Registry integration | Required | Required | High | ✅ Done |
-| | Transport factory auto-registration | Optional | Optional | Medium | Missing |
 | | Config-driven pipeline creation | Required | Required | High | ✅ Done |
 | | Graceful startup with readiness probe | Optional | Required | Medium | ✅ Done |
 | **Runtime** | | | | | |
@@ -39,14 +38,14 @@ This document outlines what is missing in `bridge/core/bridge.go` and related co
 | | Node discovery | N/A | Required | High | Missing |
 | **Configuration** | | | | | |
 | | Environment variable support | Required | Required | High | ✅ Done |
-| | Config file loading | Required | Optional | High | Missing |
+| | Config file loading | Required | Optional | High | ✅ Done |
 | | Config validation | Required | Required | High | ✅ Done |
 | | Secret management integration | Optional | Required | High | Partial |
 | **Observability** | | | | | |
 | | OpenTelemetry tracing | Optional | Required | Medium | ✅ Done |
 | | Prometheus metrics export | Optional | Required | Medium | Partial |
 | | Distributed tracing context | Optional | Required | Medium | ✅ Done |
-| | Log correlation IDs | Optional | Required | Medium | Partial |
+| | Log correlation IDs | Optional | Required | Medium | ✅ Done |
 | **Admin** | | | | | |
 | | HTTP admin API | Optional | Optional | Low | ✅ Done |
 | | Pipeline status endpoint | Optional | Optional | Medium | ✅ Done |
