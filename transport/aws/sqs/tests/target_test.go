@@ -1,7 +1,9 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // SQS Transport - Target Unit Tests
 //
-// Tests for SQS Target constructor validation, behavior, and helpers.
+// Tests for SQS Target constructor validation and behavior.
+// Internal helper tests (buildMessageAttributes, generateDeduplicationID)
+// are in target_internal_test.go in the sqs package.
 //
 // Summary:
 // ┌──────┬────────────────────────────────────────┬──────────┐
@@ -18,10 +20,6 @@
 // │ T009 │ Target GetTransportType returns SQS    │ PASS     │
 // │ T010 │ Target Capabilities correct            │ PASS     │
 // │ T011 │ Target Close idempotent                │ PASS     │
-// │ T012 │ buildMessageAttributes empty           │ PASS     │
-// │ T013 │ buildMessageAttributes types           │ PASS     │
-// │ T014 │ buildMessageAttributes skips internal  │ PASS     │
-// │ T015 │ generateDeduplicationID deterministic  │ PASS     │
 // └──────┴────────────────────────────────────────┴──────────┘
 // ═══════════════════════════════════════════════════════════════════════════
 package sqstests
@@ -263,43 +261,4 @@ func TestTarget_CloseIdempotent(t *testing.T) {
 	// Third close should not panic
 	err3 := tgt.Close()
 	assert.NoError(t, err3)
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Message Attribute Helper Tests
-// ═══════════════════════════════════════════════════════════════════════════
-
-// Note: buildMessageAttributes and generateDeduplicationID are not exported,
-// so we test them indirectly through integration tests. These tests document
-// expected behavior.
-
-// TestBuildMessageAttributes_Documentation documents expected behavior.
-//
-// Data Flow:
-// ┌─────────────────────┐     ┌─────────────────────────────────────────┐
-// │  Message.Metadata   │────▶│  map[string]MessageAttributeValue       │
-// │                     │     │                                         │
-// │  key: string        │     │  String  → DataType: "String"           │
-// │  key: []byte        │     │  Binary  → DataType: "Binary"           │
-// │  key: int/float     │     │  Number  → DataType: "Number"           │
-// │                     │     │                                         │
-// │  Topic: non-empty   │     │  "Topic" attribute added                │
-// │                     │     │                                         │
-// │  messageGroupId     │     │  SKIPPED (internal)                     │
-// │  retryDelay         │     │  SKIPPED (internal)                     │
-// └─────────────────────┘     └─────────────────────────────────────────┘
-func TestBuildMessageAttributes_Documentation(t *testing.T) {
-	t.Skip("buildMessageAttributes is not exported; tested via integration")
-}
-
-// TestGenerateDeduplicationID_Documentation documents expected behavior.
-//
-// Deduplication ID is MD5 hash of:
-//   - Payload
-//   - Topic
-//   - CreatedAt timestamp
-//
-// This ensures identical messages at different times get different IDs.
-func TestGenerateDeduplicationID_Documentation(t *testing.T) {
-	t.Skip("generateDeduplicationID is not exported; tested via integration")
 }

@@ -128,10 +128,13 @@ func (t *Target) Connect(ctx context.Context) error {
 
 // createClient creates the Service Bus client.
 func (t *Target) createClient() (*azservicebus.Client, error) {
+	// Build client options with TLS config if provided
+	opts := t.buildClientOptions()
+
 	if t.cfg.Connection.ConnectionString != "" {
 		return azservicebus.NewClientFromConnectionString(
 			t.cfg.Connection.ConnectionString,
-			nil,
+			opts,
 		)
 	}
 
@@ -156,7 +159,36 @@ func (t *Target) createClient() (*azservicebus.Client, error) {
 		return nil, fmt.Errorf("failed to create credential: %w", err)
 	}
 
-	return azservicebus.NewClient(t.cfg.Connection.Namespace, cred, nil)
+	return azservicebus.NewClient(t.cfg.Connection.Namespace, cred, opts)
+}
+
+// buildClientOptions builds Azure SDK client options with TLS configuration.
+func (t *Target) buildClientOptions() *azservicebus.ClientOptions {
+	// Check if any TLS configuration is needed
+	if t.cfg.Connection.TLSConfig == nil &&
+		t.cfg.Connection.CaPEM == "" &&
+		!t.cfg.Connection.InsecureSkipVerify {
+		return nil
+	}
+
+	opts := &azservicebus.ClientOptions{}
+
+	// Use provided TLSConfig directly if available
+	if t.cfg.Connection.TLSConfig != nil {
+		opts.TLSConfig = t.cfg.Connection.TLSConfig
+		return opts
+	}
+
+	// Build TLS config from CaPEM and InsecureSkipVerify
+	tlsConfig := buildTLSConfig(
+		t.cfg.Connection.CaPEM,
+		t.cfg.Connection.InsecureSkipVerify,
+	)
+	if tlsConfig != nil {
+		opts.TLSConfig = tlsConfig
+	}
+
+	return opts
 }
 
 // createSender creates the message sender.
@@ -383,4 +415,3 @@ func (t *Target) Close() error {
 
 	return t.closeErr
 }
-

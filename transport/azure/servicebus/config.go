@@ -29,6 +29,8 @@
 package servicebus
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"time"
 
 	"github.com/mariotoffia/gobridge/bridge/types"
@@ -61,6 +63,21 @@ type ConnectionConfig struct {
 
 	// ClientSecret is the Azure AD client secret (for service principal auth).
 	ClientSecret string `json:"clientSecret,omitempty"`
+
+	// TLSConfig provides custom TLS configuration for the connection.
+	// This is primarily used for testing with self-signed certificates.
+	// If nil, the default TLS configuration is used.
+	TLSConfig *tls.Config `json:"-"`
+
+	// CaPEM is the CA certificate(s) in PEM format for verifying the server.
+	// Can be inline PEM data or a URI (e.g., "pms://path/to/ca") to resolve.
+	// If types.IsServerURI() returns true, the URI will be resolved via
+	// the credentials resolver.
+	CaPEM string `json:"caPEM,omitempty"`
+
+	// InsecureSkipVerify skips TLS certificate verification.
+	// WARNING: Only use for testing with self-signed certificates.
+	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
 }
 
 // SourceConfigImpl implements types.SourceConfig for Service Bus message receiving.
@@ -200,4 +217,29 @@ func (c *TargetConfigImpl) GetResources() []types.Tag {
 
 func (c *TargetConfigImpl) AllowMultipleResourceMatches() bool {
 	return c.AllowMultiple
+}
+
+// buildTLSConfig creates a tls.Config from CA PEM data and InsecureSkipVerify flag.
+// If caPEM is a URI (detected by types.IsServerURI), it should be resolved by the caller
+// before passing to this function.
+// Returns nil if no TLS configuration is needed.
+func buildTLSConfig(caPEM string, insecureSkipVerify bool) *tls.Config {
+	if caPEM == "" && !insecureSkipVerify {
+		return nil
+	}
+
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: insecureSkipVerify,
+	}
+
+	// Add CA certificates if provided
+	if caPEM != "" && !types.IsServerURI(caPEM) {
+		// Inline PEM data - parse and add to root CAs
+		certPool := x509.NewCertPool()
+		if certPool.AppendCertsFromPEM([]byte(caPEM)) {
+			tlsConfig.RootCAs = certPool
+		}
+	}
+
+	return tlsConfig
 }

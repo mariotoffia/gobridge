@@ -13,8 +13,9 @@ This file indexes all tests for the SQS transport package.
 | TestSource_* | SQS Source behavior and capabilities | unit | source | ✓ |
 | TestNewTarget_* | SQS Target constructor validation | unit | target | ✓ |
 | TestTarget_* | SQS Target behavior and capabilities | unit | target | ✓ |
-| TestBuildMessageAttributes_* | SQS message attribute conversion | unit | target | ✓ |
-| TestGenerateDeduplicationID | FIFO deduplication ID generation | unit | target | ✓ |
+| TestBuildMessageAttributes_* | SQS message attribute conversion (internal) | unit | target-internal | ✓ |
+| TestGenerateDeduplicationID_* | FIFO deduplication ID generation (internal) | unit | target-internal | ✓ |
+| TestConvertMessage_* | SQS to bridge message conversion (internal) | unit | source-internal | ✓ |
 | TestSourceFactory_* | SQS SourceFactory implementation | unit | factory | ✓ |
 | TestTargetFactory_* | SQS TargetFactory implementation | unit | factory | ✓ |
 | TestMapError_* | AWS/SQS error mapping to BridgeError | unit | errors | ✓ |
@@ -34,14 +35,21 @@ This file indexes all tests for the SQS transport package.
 |------|---------|-----|-------------|
 | config_test.go | sqstests | 194 | Configuration tests |
 | source_test.go | sqstests | 302 | Source unit tests |
-| target_test.go | sqstests | 301 | Target unit tests |
+| target_test.go | sqstests | 265 | Target unit tests |
 | factory_test.go | sqstests | 162 | Factory tests |
 | errors_test.go | sqstests | 388 | Error mapping tests |
 | sqs_local.go | sqstests | 265 | LocalStack helper |
 | integration_sqs_test.go | sqstests | 657 | Integration tests |
 | error_injection_test.go | sqstests | 580 | Error injection tests |
 
-**Total: 2,849 LOC**
+### Internal Tests (package sqs)
+
+| File | Package | LOC | Description |
+|------|---------|-----|-------------|
+| target_internal_test.go | sqs | 413 | buildMessageAttributes, generateDeduplicationID |
+| source_internal_test.go | sqs | 317 | convertMessage |
+
+**Total: ~3,563 LOC**
 
 ## Shared Test Utilities
 
@@ -56,6 +64,12 @@ The roundtripper utilities have been moved to `tests/awsutils/` module for reuse
 
 ```bash
 # Unit tests only (no Docker required)
+go test ./transport/aws/sqs/... -v
+
+# Internal tests only (unexported functions)
+go test ./transport/aws/sqs -v
+
+# External tests only (exported API)
 go test ./transport/aws/sqs/tests/... -v
 
 # Integration tests (Docker with LocalStack required)

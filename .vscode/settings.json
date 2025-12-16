@@ -1,13 +1,19 @@
 {
+    "go.testEnvFile": "${workspaceFolder}/.env",
+  "go.buildTags": "ews,desigocc,mock",
+  "go.testTimeout": "10m",
+  "go.diagnostic.vulncheck": "Imports",
     "cSpell.words": [
-        "acked",
-        "backpressure",
-        "Configurator",
-        "gobridge",
-        "mariotoffia",
-        "MQTT",
-        "omitzero",
-        "paho",
-        "retryable"
+      "acked",
+      "backpressure",
+      "Configurator",
+      "gobridge",
+      "mariotoffia",
+      "MQTT",
+      "omitzero",
+      "paho",
+      "retryable",
+      "servicebus",
+      "servicebustests"
     ]
 }
