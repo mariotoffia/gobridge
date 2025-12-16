@@ -65,6 +65,9 @@ type Target struct {
 	closeOnce    sync.Once
 	closeErr     error
 
+	// Log is the LogCreator for the target component (optional)
+	Log types.LogCreator
+
 	// sharedClient indicates the client is managed externally (by MQTTConnection)
 	// and should NOT be closed when the Target is closed.
 	sharedClient bool
@@ -140,7 +143,9 @@ func NewTarget(config *TargetConfigImpl, opts ...TargetOption) (*Target, error) 
 // NewTargetWithClient creates a new MQTT target that uses a shared client.
 // The client is managed externally (typically by MQTTConnection) and will NOT
 // be closed when the Target is closed.
-func NewTargetWithClient(config *TargetConfigImpl, client *autopaho.ConnectionManager, opts ...TargetOption) (*Target, error) {
+//
+// If loggerFactory is provided, the target will create its own LogCreator.
+func NewTargetWithClient(config *TargetConfigImpl, client *autopaho.ConnectionManager, loggerFactory types.LoggerFactory, opts ...TargetOption) (*Target, error) {
 	if config == nil {
 		return nil, errors.New("config is required")
 	}
@@ -169,6 +174,11 @@ func NewTargetWithClient(config *TargetConfigImpl, client *autopaho.ConnectionMa
 		sharedClient:   true,
 		transportRetry: types.DefaultTransportRetryConfig(),
 		defaultTTL:     2 * time.Minute, // 120 seconds default
+	}
+
+	// Create logger if factory is provided
+	if loggerFactory != nil {
+		t.Log = loggerFactory("mqtt-target:" + config.ID)
 	}
 
 	for _, opt := range opts {
@@ -218,6 +228,9 @@ func (t *Target) Connect(ctx context.Context) error {
 	if t.sharedClient {
 		// Shared mode - client is already connected, just mark as running
 		t.running.Store(true)
+		if t.Log != nil {
+			t.Log(ctx, types.LogLevelInfo).Msg("target ready (shared mode)")
+		}
 		return nil
 	}
 
@@ -227,6 +240,10 @@ func (t *Target) Connect(ctx context.Context) error {
 
 // connectStandalone creates and connects to MQTT broker with a dedicated connection.
 func (t *Target) connectStandalone(ctx context.Context) error {
+	if t.Log != nil {
+		t.Log(ctx, types.LogLevelInfo).Str("broker", t.config.Connection.BrokerURL).Msg("connecting to MQTT broker")
+	}
+
 	// Parse broker URL
 	serverURL, err := url.Parse(t.config.Connection.BrokerURL)
 	if err != nil {
@@ -248,6 +265,13 @@ func (t *Target) connectStandalone(ctx context.Context) error {
 		ClientConfig: paho.ClientConfig{
 			ClientID: clientID,
 		},
+	}
+
+	// Wire paho logging to our logger at debug level
+	if t.Log != nil {
+		pahoAdapter := NewPahoLoggerAdapter(t.Log, ctx)
+		cliCfg.Debug = pahoAdapter
+		cliCfg.Errors = pahoAdapter
 	}
 
 	// Configure authentication
@@ -274,6 +298,9 @@ func (t *Target) connectStandalone(ctx context.Context) error {
 	// Create connection manager
 	client, err := autopaho.NewConnection(ctx, cliCfg)
 	if err != nil {
+		if t.Log != nil {
+			t.Log(ctx, types.LogLevelError).Err(err).Msg("failed to create MQTT client")
+		}
 		return fmt.Errorf("failed to create MQTT client: %w", err)
 	}
 
@@ -292,7 +319,14 @@ func (t *Target) connectStandalone(ctx context.Context) error {
 	if err := client.AwaitConnection(connectCtx); err != nil {
 		t.client = nil
 		t.running.Store(false)
+		if t.Log != nil {
+			t.Log(ctx, types.LogLevelError).Err(err).Msg("failed to connect to MQTT broker")
+		}
 		return fmt.Errorf("failed to connect to MQTT broker: %w", MapError(err))
+	}
+
+	if t.Log != nil {
+		t.Log(ctx, types.LogLevelInfo).Str("clientID", clientID).Msg("target connected (standalone mode)")
 	}
 
 	return nil
@@ -367,9 +401,16 @@ func (t *Target) sendWithRetry(ctx context.Context, msg types.Message) error {
 		// Attempt to send
 		err := t.sendOnce(ctx, msg)
 		if err == nil {
+			if attempt > 1 && t.Log != nil {
+				t.Log(ctx, types.LogLevelInfo).Int("attempt", attempt).Str("topic", msg.Topic).Msg("message sent after retry")
+			}
 			return nil // Success
 		}
 		lastErr = err
+
+		if t.Log != nil {
+			t.Log(ctx, types.LogLevelWarn).Int("attempt", attempt).Err(err).Str("topic", msg.Topic).Msg("send failed, will retry")
+		}
 
 		// Calculate backoff with error-aware adjustment
 		backoff := types.CalculateAdaptiveBackoff(attempt, config, err)
@@ -377,6 +418,9 @@ func (t *Target) sendWithRetry(ctx context.Context, msg types.Message) error {
 		// Calculate wait respecting TTL
 		waitDuration, expired = types.CalculateWaitDuration(backoff, &msg, t.defaultTTL)
 		if expired {
+			if t.Log != nil {
+				t.Log(ctx, types.LogLevelError).Err(err).Str("topic", msg.Topic).Msg("message expired during retry")
+			}
 			return types.ErrMessageExpired.Wrap(err)
 		}
 
@@ -407,6 +451,10 @@ func (t *Target) sendOnce(ctx context.Context, msg types.Message) error {
 		if qos > 2 {
 			qos = t.qos
 		}
+	}
+
+	if t.Log != nil {
+		t.Log(ctx, types.LogLevelDebug).Str("topic", topic).Int("qos", int(qos)).Int("payload_size", len(msg.Payload)).Msg("publishing message")
 	}
 
 	// Build publish packet
@@ -456,12 +504,22 @@ func (t *Target) sendOnce(ctx context.Context, msg types.Message) error {
 	// For QoS 2: Blocks until PUBCOMP received
 	resp, err := t.client.Publish(publishCtx, publish)
 	if err != nil {
+		if t.Log != nil {
+			t.Log(ctx, types.LogLevelError).Err(err).Str("topic", topic).Msg("publish failed")
+		}
 		return MapError(err)
 	}
 
 	// Check response reason code for QoS 1/2
 	if resp != nil && resp.ReasonCode != 0 && resp.ReasonCode != 0x10 {
+		if t.Log != nil {
+			t.Log(ctx, types.LogLevelError).Int("reasonCode", int(resp.ReasonCode)).Str("topic", topic).Msg("publish rejected by broker")
+		}
 		return MapPublishError(nil, resp.ReasonCode)
+	}
+
+	if t.Log != nil {
+		t.Log(ctx, types.LogLevelDebug).Str("topic", topic).Msg("message published successfully")
 	}
 
 	// Success - broker accepted the message
@@ -484,6 +542,11 @@ func (t *Target) SendBatch(ctx context.Context, msgs []types.Message) (sent int,
 // that is managed by the MQTTConnection that created this target.
 func (t *Target) Close() error {
 	t.closeOnce.Do(func() {
+		ctx := context.Background()
+		if t.Log != nil {
+			t.Log(ctx, types.LogLevelInfo).Msg("closing target")
+		}
+
 		t.running.Store(false)
 
 		if t.cancel != nil {
@@ -492,12 +555,16 @@ func (t *Target) Close() error {
 
 		if !t.sharedClient && t.client != nil {
 			// Standalone mode - disconnect and close client
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			disconnectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 
-			t.closeErr = t.client.Disconnect(ctx)
+			t.closeErr = t.client.Disconnect(disconnectCtx)
 		}
 		// Shared mode - don't close the client, it's managed by MQTTConnection
+
+		if t.Log != nil {
+			t.Log(ctx, types.LogLevelInfo).Msg("target closed")
+		}
 	})
 
 	return t.closeErr

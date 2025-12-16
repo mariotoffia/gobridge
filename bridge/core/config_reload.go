@@ -34,8 +34,8 @@ type ConfigReloader struct {
 	// pollInterval for polling-based sources
 	pollInterval time.Duration
 
-	// logger for logging
-	logger types.Logger
+	// Log is the LogCreator for logging (optional)
+	Log types.LogCreator
 
 	// onReload is called after a successful reload
 	onReload func(result *ReloadResult)
@@ -79,10 +79,13 @@ func ReloaderWithPollInterval(interval time.Duration) ConfigReloaderOption {
 	}
 }
 
-// WithLogger sets the logger.
-func ReloaderWithLogger(logger types.Logger) ConfigReloaderOption {
+// ReloaderWithLoggerFactory sets the logger factory.
+// The reloader will create its own LogCreator using factory("config-reloader").
+func ReloaderWithLoggerFactory(factory types.LoggerFactory) ConfigReloaderOption {
 	return func(r *ConfigReloader) {
-		r.logger = logger
+		if factory != nil {
+			r.Log = factory("config-reloader")
+		}
 	}
 }
 
@@ -311,8 +314,8 @@ func (r *ConfigReloader) StopWatching() {
 func (r *ConfigReloader) watchSource(ctx context.Context, watcher types.ConfigWatcher) {
 	changes, err := watcher.Watch(ctx)
 	if err != nil {
-		if r.logger != nil {
-			r.logger.Error(err).Msg("failed to start watcher")
+		if r.Log != nil {
+			r.Log(ctx, types.LogLevelError).Err(err).Msg("failed to start watcher")
 		}
 		return
 	}
@@ -329,8 +332,8 @@ func (r *ConfigReloader) watchSource(ctx context.Context, watcher types.ConfigWa
 			}
 			r.mu.Lock()
 			if err := r.applyChange(ctx, change); err != nil {
-				if r.logger != nil {
-					r.logger.Error(err).Msg("failed to apply config change")
+				if r.Log != nil {
+					r.Log(ctx, types.LogLevelError).Err(err).Msg("failed to apply config change")
 				}
 			} else {
 				// Update last config
@@ -359,8 +362,8 @@ func (r *ConfigReloader) pollLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if _, err := r.Reload(ctx); err != nil {
-				if r.logger != nil {
-					r.logger.Error(err).Msg("config reload failed")
+				if r.Log != nil {
+					r.Log(ctx, types.LogLevelError).Err(err).Msg("config reload failed")
 				}
 			}
 		}

@@ -51,22 +51,6 @@ func (l *ContextLogger) WhenLevel(level types.LogLevel, fn func(l types.Logger))
 	return l
 }
 
-// WithMethod adds a method name to the logger.
-func (l *ContextLogger) WithMethod(method string) types.Logger {
-	return &ContextLogger{
-		logger: l.logger.WithMethod(method),
-		ctx:    l.ctx,
-	}
-}
-
-// WithService adds a service name to the logger.
-func (l *ContextLogger) WithService(service string) types.Logger {
-	return &ContextLogger{
-		logger: l.logger.WithService(service),
-		ctx:    l.ctx,
-	}
-}
-
 // AsJSON adds a JSON-encoded value to the logger.
 func (l *ContextLogger) AsJSON(key string, value any) types.Logger {
 	return &ContextLogger{
@@ -99,10 +83,10 @@ func (l *ContextLogger) Bool(key string, value bool) types.Logger {
 	}
 }
 
-// Error adds an error to the logger.
-func (l *ContextLogger) Error(err error) types.Logger {
+// Err adds an error to the logger.
+func (l *ContextLogger) Err(err error) types.Logger {
 	return &ContextLogger{
-		logger: l.logger.Error(err),
+		logger: l.logger.Err(err),
 		ctx:    l.ctx,
 	}
 }
@@ -172,5 +156,5 @@ func Warn(ctx context.Context, logger types.Logger, msg string) {
 
 // ErrorLog logs an error message with context IDs.
 func ErrorLog(ctx context.Context, logger types.Logger, err error, msg string) {
-	NewContextLogger(ctx, logger).Error(err).Msg(msg)
+	NewContextLogger(ctx, logger).Err(err).Msg(msg)
 }

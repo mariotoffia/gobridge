@@ -33,7 +33,7 @@ func SubscriberLogger(logger types.LogCreator, settings FactoryLoggerOptions) ty
 
 			if settings.Before {
 				l := logger(ctx, types.LogLevelInfo).
-					WithMethod("Subscriber::Before").
+					Str("method", "Subscriber::Before").
 					Str("topic", topic)
 
 				if settings.CorrelationID && correlationID != "" {
@@ -51,8 +51,8 @@ func SubscriberLogger(logger types.LogCreator, settings FactoryLoggerOptions) ty
 			if err != nil {
 				if settings.Error {
 					l := logger(ctx, types.LogLevelError).
-						WithMethod("Subscriber::Error").
-						Error(err).
+						Str("method", "Subscriber::Error").
+						Err(err).
 						Str("topic", topic)
 
 					if settings.CorrelationID && correlationID != "" {
@@ -74,7 +74,7 @@ func SubscriberLogger(logger types.LogCreator, settings FactoryLoggerOptions) ty
 
 			if settings.After {
 				l := logger(ctx, types.LogLevelInfo).
-					WithMethod("Subscriber::After").
+					Str("method", "Subscriber::After").
 					Str("topic", topic)
 
 				if settings.CorrelationID && correlationID != "" {

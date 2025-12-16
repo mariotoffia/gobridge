@@ -97,22 +97,18 @@ type Bridge struct {
 	// shutdownHooks are called during shutdown
 	shutdownHooks []func(context.Context) error
 
-	// logger for structured logging (optional)
-	logger Logger
+	// loggerFactory creates component-bound LogCreators (optional)
+	loggerFactory types.LoggerFactory
+
+	// Log is the LogCreator for the bridge component (optional)
+	// Created from loggerFactory("bridge") if factory is provided.
+	Log types.LogCreator
 
 	// tracer for distributed tracing (optional)
 	tracer types.Tracer
 
 	// meter for metrics collection (optional)
 	meter types.Meter
-}
-
-// Logger is a simple logging interface.
-type Logger interface {
-	Debug(msg string, keysAndValues ...any)
-	Info(msg string, keysAndValues ...any)
-	Warn(msg string, keysAndValues ...any)
-	Error(msg string, keysAndValues ...any)
 }
 
 // Ensure Bridge implements the health interfaces
@@ -208,10 +204,19 @@ func WithDrainTimeout(timeout time.Duration) BridgeOption {
 	}
 }
 
-// WithLogger sets the logger.
-func WithLogger(logger Logger) BridgeOption {
+// WithLoggerFactory sets the logger factory for creating component-bound loggers.
+// The bridge will create its own LogCreator using factory("bridge").
+//
+// Example:
+//
+//	factory := logging.NewSlogFactory(slog.Default())
+//	bridge := NewBridge("my-bridge", WithLoggerFactory(factory))
+func WithLoggerFactory(factory types.LoggerFactory) BridgeOption {
 	return func(b *Bridge) {
-		b.logger = logger
+		b.loggerFactory = factory
+		if factory != nil {
+			b.Log = factory("bridge")
+		}
 	}
 }
 
@@ -305,6 +310,12 @@ func (b *Bridge) GetClusterID() string {
 	return b.clusterID
 }
 
+// LoggerFactory returns the logger factory for creating component-bound loggers.
+// Returns nil if no logger factory was configured.
+func (b *Bridge) LoggerFactory() types.LoggerFactory {
+	return b.loggerFactory
+}
+
 // SourceRegistry returns the source registry.
 func (b *Bridge) SourceRegistry() types.SourceRegistry {
 	return b.sourceRegistry
@@ -364,7 +375,9 @@ func (b *Bridge) Start(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.logInfo("starting bridge", "id", b.id, "cluster", b.clusterID)
+	if b.Log != nil {
+		b.Log(ctx, types.LogLevelInfo).Str("id", b.id).Str("cluster", b.clusterID).Msg("starting bridge")
+	}
 
 	// Start all connections first
 	for id, conn := range b.connections {
@@ -407,7 +420,9 @@ func (b *Bridge) Start(ctx context.Context) error {
 	b.ready.Store(true)
 	close(b.readyCh)
 
-	b.logInfo("bridge started", "pipelines", len(b.pipelines), "routes", len(b.routes))
+	if b.Log != nil {
+		b.Log(ctx, types.LogLevelInfo).Int("pipelines", len(b.pipelines)).Int("routes", len(b.routes)).Msg("bridge started")
+	}
 
 	return nil
 }
@@ -417,7 +432,9 @@ func (b *Bridge) startWithRecovery(ctx context.Context, componentType, id string
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic starting %s %s: %v", componentType, id, r)
-			b.logError("panic during start", "component", componentType, "id", id, "panic", r)
+			if b.Log != nil {
+				b.Log(ctx, types.LogLevelError).Str("component", componentType).Str("id", id).AsJSON("panic", r).Msg("panic during start")
+			}
 		}
 	}()
 	return start()
@@ -437,7 +454,9 @@ func (b *Bridge) Run(ctx context.Context) error {
 
 	// Wait for shutdown signal
 	<-ctx.Done()
-	b.logInfo("shutdown signal received")
+	if b.Log != nil {
+		b.Log(ctx, types.LogLevelInfo).Msg("shutdown signal received")
+	}
 
 	// Graceful shutdown with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), b.shutdownTimeout)
@@ -486,7 +505,9 @@ func (b *Bridge) watchConfig(ctx context.Context) {
 func (b *Bridge) handleConfigChange(ctx context.Context, change types.ConfigChange) {
 	defer func() {
 		if r := recover(); r != nil {
-			b.logError("panic handling config change", "panic", r, "type", change.Item.GetType())
+			if b.Log != nil {
+				b.Log(ctx, types.LogLevelError).AsJSON("panic", r).Str("type", string(change.Item.GetType())).Msg("panic handling config change")
+			}
 		}
 	}()
 
@@ -495,22 +516,30 @@ func (b *Bridge) handleConfigChange(ctx context.Context, change types.ConfigChan
 		switch change.Item.GetType() {
 		case types.ConfigItemTypeConnection:
 			if err := b.configHandler.HandleConnectionChange(ctx, change); err != nil {
-				b.logError("failed to handle connection change", "error", err)
+				if b.Log != nil {
+					b.Log(ctx, types.LogLevelError).Err(err).Msg("failed to handle connection change")
+				}
 			}
 		case types.ConfigItemTypeSource:
 			if err := b.configHandler.HandleSourceChange(ctx, change); err != nil {
-				b.logError("failed to handle source change", "error", err)
+				if b.Log != nil {
+					b.Log(ctx, types.LogLevelError).Err(err).Msg("failed to handle source change")
+				}
 			}
 		case types.ConfigItemTypeTarget:
 			if err := b.configHandler.HandleTargetChange(ctx, change); err != nil {
-				b.logError("failed to handle target change", "error", err)
+				if b.Log != nil {
+					b.Log(ctx, types.LogLevelError).Err(err).Msg("failed to handle target change")
+				}
 			}
 		case types.ConfigItemTypePipeline:
 			b.handlePipelineChange(ctx, change)
 		case types.ConfigItemTypeRoute:
 			b.handleRouteChange(ctx, change)
 		default:
-			b.logWarn("unhandled config change type", "type", change.Item.GetType())
+			if b.Log != nil {
+				b.Log(ctx, types.LogLevelWarn).Str("type", string(change.Item.GetType())).Msg("unhandled config change type")
+			}
 		}
 	}
 }
@@ -522,15 +551,21 @@ func (b *Bridge) handlePipelineChange(ctx context.Context, change types.ConfigCh
 	switch change.Type {
 	case types.ConfigChangeAdd:
 		// Pipeline creation from config is handled by CreatePipelineFromConfig
-		b.logInfo("pipeline add requested", "id", pipelineID)
+		if b.Log != nil {
+			b.Log(ctx, types.LogLevelInfo).Str("id", pipelineID).Msg("pipeline add requested")
+		}
 
 	case types.ConfigChangeUpdate:
 		// For updates, we may need to restart the pipeline
-		b.logInfo("pipeline update requested", "id", pipelineID)
+		if b.Log != nil {
+			b.Log(ctx, types.LogLevelInfo).Str("id", pipelineID).Msg("pipeline update requested")
+		}
 
 	case types.ConfigChangeDelete:
 		if err := b.RemovePipelineRunning(ctx, pipelineID); err != nil {
-			b.logError("failed to remove pipeline", "id", pipelineID, "error", err)
+			if b.Log != nil {
+				b.Log(ctx, types.LogLevelError).Str("id", pipelineID).Err(err).Msg("failed to remove pipeline")
+			}
 		}
 	}
 }
@@ -541,13 +576,19 @@ func (b *Bridge) handleRouteChange(ctx context.Context, change types.ConfigChang
 
 	switch change.Type {
 	case types.ConfigChangeAdd:
-		b.logInfo("route add requested", "id", routeID)
+		if b.Log != nil {
+			b.Log(ctx, types.LogLevelInfo).Str("id", routeID).Msg("route add requested")
+		}
 
 	case types.ConfigChangeUpdate:
-		b.logInfo("route update requested", "id", routeID)
+		if b.Log != nil {
+			b.Log(ctx, types.LogLevelInfo).Str("id", routeID).Msg("route update requested")
+		}
 
 	case types.ConfigChangeDelete:
-		b.logInfo("route delete requested", "id", routeID)
+		if b.Log != nil {
+			b.Log(ctx, types.LogLevelInfo).Str("id", routeID).Msg("route delete requested")
+		}
 	}
 }
 
@@ -557,7 +598,9 @@ func (b *Bridge) Stop(ctx context.Context) error {
 		return nil // Already stopped
 	}
 
-	b.logInfo("stopping bridge", "id", b.id)
+	if b.Log != nil {
+		b.Log(ctx, types.LogLevelInfo).Str("id", b.id).Msg("stopping bridge")
+	}
 	b.ready.Store(false)
 
 	// Cancel context to signal all goroutines
@@ -575,7 +618,9 @@ func (b *Bridge) Stop(ctx context.Context) error {
 	select {
 	case <-done:
 	case <-ctx.Done():
-		b.logWarn("timeout waiting for goroutines during shutdown")
+		if b.Log != nil {
+			b.Log(ctx, types.LogLevelWarn).Msg("timeout waiting for goroutines during shutdown")
+		}
 	}
 
 	b.mu.Lock()
@@ -593,7 +638,9 @@ func (b *Bridge) Stop(ctx context.Context) error {
 				Timeout:         b.drainTimeout,
 				WaitForInFlight: true,
 			}); err != nil {
-				b.logWarn("failed to drain pipeline", "id", id, "error", err)
+				if b.Log != nil {
+					b.Log(ctx, types.LogLevelWarn).Str("id", id).Err(err).Msg("failed to drain pipeline")
+				}
 			}
 		}
 	}
@@ -626,7 +673,9 @@ func (b *Bridge) Stop(ctx context.Context) error {
 		}
 	}
 
-	b.logInfo("bridge stopped", "id", b.id)
+	if b.Log != nil {
+		b.Log(ctx, types.LogLevelInfo).Str("id", b.id).Msg("bridge stopped")
+	}
 
 	return errors.Join(errs...)
 }
@@ -679,7 +728,9 @@ func (b *Bridge) AddPipelineRunning(ctx context.Context, pipeline types.Pipeline
 	}
 
 	b.pipelines[id] = pipeline
-	b.logInfo("pipeline added while running", "id", id)
+	if b.Log != nil {
+		b.Log(ctx, types.LogLevelInfo).Str("id", id).Msg("pipeline added while running")
+	}
 	return nil
 }
 
@@ -714,7 +765,9 @@ func (b *Bridge) RemovePipelineRunning(ctx context.Context, id string) error {
 		drainCtx, cancel := context.WithTimeout(ctx, b.drainTimeout)
 		defer cancel()
 		if err := drainable.Drain(drainCtx, types.DrainOptions{WaitForInFlight: true}); err != nil {
-			b.logWarn("failed to drain pipeline during removal", "id", id, "error", err)
+			if b.Log != nil {
+				b.Log(ctx, types.LogLevelWarn).Str("id", id).Err(err).Msg("failed to drain pipeline during removal")
+			}
 		}
 	}
 
@@ -723,7 +776,9 @@ func (b *Bridge) RemovePipelineRunning(ctx context.Context, id string) error {
 		return fmt.Errorf("failed to close pipeline %s: %w", id, err)
 	}
 
-	b.logInfo("pipeline removed while running", "id", id)
+	if b.Log != nil {
+		b.Log(ctx, types.LogLevelInfo).Str("id", id).Msg("pipeline removed while running")
+	}
 	return nil
 }
 
@@ -1025,6 +1080,10 @@ func (b *Bridge) CreatePipeline(
 	allOpts := []PipelineOption{
 		PipelineWithFlowControl(b.flowControl),
 	}
+	// Add logger factory if available
+	if b.loggerFactory != nil {
+		allOpts = append(allOpts, PipelineWithLoggerFactory(b.loggerFactory))
+	}
 	allOpts = append(allOpts, opts...)
 
 	pipeline := NewPipeline(id, types.PipelineModeSimplex, source, target, chain, allOpts...)
@@ -1101,6 +1160,15 @@ func (b *Bridge) CreatePipelineFromConfig(ctx context.Context, config types.Pipe
 		flowControl = flowControl.Merge(*fc)
 	}
 
+	// Build pipeline options
+	pipelineOpts := []PipelineOption{
+		PipelineWithFlowControl(flowControl),
+	}
+	// Add logger factory if available
+	if b.loggerFactory != nil {
+		pipelineOpts = append(pipelineOpts, PipelineWithLoggerFactory(b.loggerFactory))
+	}
+
 	// Create pipeline
 	pipeline := NewPipeline(
 		config.GetID(),
@@ -1108,7 +1176,7 @@ func (b *Bridge) CreatePipelineFromConfig(ctx context.Context, config types.Pipe
 		source,
 		target,
 		chain,
-		PipelineWithFlowControl(flowControl),
+		pipelineOpts...,
 	)
 
 	return pipeline, nil
@@ -1171,32 +1239,4 @@ func (b *Bridge) ListConnections() []string {
 		ids = append(ids, id)
 	}
 	return ids
-}
-
-// ============================================================================
-// Logging Helpers
-// ============================================================================
-
-func (b *Bridge) logDebug(msg string, keysAndValues ...any) {
-	if b.logger != nil {
-		b.logger.Debug(msg, keysAndValues...)
-	}
-}
-
-func (b *Bridge) logInfo(msg string, keysAndValues ...any) {
-	if b.logger != nil {
-		b.logger.Info(msg, keysAndValues...)
-	}
-}
-
-func (b *Bridge) logWarn(msg string, keysAndValues ...any) {
-	if b.logger != nil {
-		b.logger.Warn(msg, keysAndValues...)
-	}
-}
-
-func (b *Bridge) logError(msg string, keysAndValues ...any) {
-	if b.logger != nil {
-		b.logger.Error(msg, keysAndValues...)
-	}
 }

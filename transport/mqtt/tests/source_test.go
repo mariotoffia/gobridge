@@ -139,7 +139,7 @@ func TestNewSource_QoSClamping(t *testing.T) {
 func TestNewSourceWithClient_NilConfig(t *testing.T) {
 	// We can't easily create a real client/router without a broker,
 	// so we just test the nil config case
-	src, err := mqtt.NewSourceWithClient(nil, nil, nil)
+	src, err := mqtt.NewSourceWithClient(nil, nil, nil, nil)
 	assert.Nil(t, src)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "config is required")

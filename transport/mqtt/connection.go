@@ -56,6 +56,9 @@ type MQTTConnection struct {
 	// activeTargets tracks currently active targets by ID
 	activeTargets map[string]types.Target
 
+	// Log is the LogCreator for the connection component (optional)
+	Log types.LogCreator
+
 	running   atomic.Bool
 	draining  atomic.Bool
 	cancel    context.CancelFunc
@@ -78,6 +81,10 @@ type MQTTConnectionConfig struct {
 	// This is for TRANSPORT RETRY (infrastructure failures like connect, subscribe, publish).
 	// NOT to be confused with RetryPolicy which is for MESSAGE RETRY.
 	TransportRetry *types.TransportRetryConfig `json:"transportRetry,omitempty"`
+
+	// LoggerFactory creates component-bound LogCreators (optional).
+	// If provided, the connection and its sources/targets will use it for logging.
+	LoggerFactory types.LoggerFactory `json:"-"`
 }
 
 // Ensure MQTTConnectionConfig implements types.ConnectionConfig
@@ -187,6 +194,12 @@ func NewConnection(config *MQTTConnectionConfig) (*MQTTConnection, error) {
 		activeSources: make(map[string]types.Source),
 		activeTargets: make(map[string]types.Target),
 	}
+
+	// Create logger if factory is provided
+	if config.LoggerFactory != nil {
+		conn.Log = config.LoggerFactory("mqtt-connection:" + config.ID)
+	}
+
 	conn.coordinator = newMQTTLifecycleCoordinator(conn)
 
 	return conn, nil
@@ -222,7 +235,15 @@ func (c *MQTTConnection) Start(ctx context.Context, override types.ConnectionCon
 	if override != nil {
 		if mqttOverride, ok := override.(*MQTTConnectionConfig); ok {
 			c.config = mqttOverride
+			// Update logger if factory changed
+			if mqttOverride.LoggerFactory != nil {
+				c.Log = mqttOverride.LoggerFactory("mqtt-connection:" + c.id)
+			}
 		}
+	}
+
+	if c.Log != nil {
+		c.Log(ctx, types.LogLevelInfo).Str("broker", c.config.Connection.BrokerURL).Msg("connecting to MQTT broker")
 	}
 
 	// Parse broker URL
@@ -255,6 +276,14 @@ func (c *MQTTConnection) Start(ctx context.Context, override types.ConnectionCon
 		},
 	}
 
+	// Wire paho logging to our logger at debug level
+	if c.Log != nil {
+		pahoAdapter := NewPahoLoggerAdapter(c.Log, ctx)
+		cliCfg.Debug = pahoAdapter
+		cliCfg.Errors = pahoAdapter
+		c.router.SetDebugLogger(pahoAdapter)
+	}
+
 	// Configure authentication
 	if c.config.Connection.Username != "" {
 		cliCfg.ConnectUsername = c.config.Connection.Username
@@ -281,6 +310,9 @@ func (c *MQTTConnection) Start(ctx context.Context, override types.ConnectionCon
 	client, err := autopaho.NewConnection(ctx, cliCfg)
 	if err != nil {
 		c.running.Store(false)
+		if c.Log != nil {
+			c.Log(ctx, types.LogLevelError).Err(err).Msg("failed to create MQTT client")
+		}
 		return fmt.Errorf("failed to create MQTT client: %w", err)
 	}
 
@@ -298,7 +330,14 @@ func (c *MQTTConnection) Start(ctx context.Context, override types.ConnectionCon
 	if err := client.AwaitConnection(connectCtx); err != nil {
 		c.client = nil
 		c.running.Store(false)
+		if c.Log != nil {
+			c.Log(ctx, types.LogLevelError).Err(err).Msg("failed to connect to MQTT broker")
+		}
 		return fmt.Errorf("failed to connect to MQTT broker: %w", MapError(err))
+	}
+
+	if c.Log != nil {
+		c.Log(ctx, types.LogLevelInfo).Str("clientID", clientID).Msg("connected to MQTT broker")
 	}
 
 	return nil
@@ -340,13 +379,18 @@ func (c *MQTTConnection) CreateSource(ctx context.Context, config types.SourceCo
 		return nil, fmt.Errorf("invalid config type: expected *mqtt.SourceConfigImpl, got %T", config)
 	}
 
-	source, err := NewSourceWithClient(mqttConfig, c.client, c.router)
+	// Pass logger factory to source
+	source, err := NewSourceWithClient(mqttConfig, c.client, c.router, c.config.LoggerFactory)
 	if err != nil {
 		return nil, err
 	}
 
 	// Register the source for lifecycle tracking
 	c.registerSource(config.GetID(), source)
+
+	if c.Log != nil {
+		c.Log(ctx, types.LogLevelInfo).Str("sourceID", config.GetID()).Msg("created source")
+	}
 
 	return source, nil
 }
@@ -362,7 +406,8 @@ func (c *MQTTConnection) CreateTarget(ctx context.Context, config types.TargetCo
 		return nil, fmt.Errorf("invalid config type: expected *mqtt.TargetConfigImpl, got %T", config)
 	}
 
-	target, err := NewTargetWithClient(mqttConfig, c.client)
+	// Pass logger factory to target
+	target, err := NewTargetWithClient(mqttConfig, c.client, c.config.LoggerFactory)
 	if err != nil {
 		return nil, err
 	}
@@ -370,12 +415,21 @@ func (c *MQTTConnection) CreateTarget(ctx context.Context, config types.TargetCo
 	// Register the target for lifecycle tracking
 	c.registerTarget(config.GetID(), target)
 
+	if c.Log != nil {
+		c.Log(ctx, types.LogLevelInfo).Str("targetID", config.GetID()).Msg("created target")
+	}
+
 	return target, nil
 }
 
 // Close disconnects from the broker and releases resources.
 func (c *MQTTConnection) Close() error {
 	c.closeOnce.Do(func() {
+		ctx := context.Background()
+		if c.Log != nil {
+			c.Log(ctx, types.LogLevelInfo).Msg("closing connection")
+		}
+
 		c.running.Store(false)
 
 		if c.cancel != nil {
@@ -384,10 +438,14 @@ func (c *MQTTConnection) Close() error {
 
 		if c.client != nil {
 			// Disconnect with a short timeout
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			disconnectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 
-			c.closeErr = c.client.Disconnect(ctx)
+			c.closeErr = c.client.Disconnect(disconnectCtx)
+		}
+
+		if c.Log != nil {
+			c.Log(ctx, types.LogLevelInfo).Msg("connection closed")
 		}
 	})
 
@@ -415,6 +473,9 @@ func (c *MQTTConnection) UpdateSettings(ctx context.Context, settings types.Conn
 
 	// Check if we need to reconnect
 	if c.config.Connection.RequiresReconnect(mqttSettings) {
+		if c.Log != nil {
+			c.Log(ctx, types.LogLevelInfo).Msg("settings require reconnect")
+		}
 		// Full reconnect needed
 		if err := c.Drain(ctx); err != nil {
 			return fmt.Errorf("failed to drain before reconnect: %w", err)
@@ -497,6 +558,13 @@ func (c *MQTTConnection) startLocked(ctx context.Context) error {
 		},
 	}
 
+	// Wire paho logging to our logger at debug level
+	if c.Log != nil {
+		pahoAdapter := NewPahoLoggerAdapter(c.Log, ctx)
+		cliCfg.Debug = pahoAdapter
+		cliCfg.Errors = pahoAdapter
+	}
+
 	// Configure authentication
 	if c.config.Connection.Username != "" {
 		cliCfg.ConnectUsername = c.config.Connection.Username
@@ -556,6 +624,10 @@ func (c *MQTTConnection) Drain(ctx context.Context) error {
 	}
 	defer c.draining.Store(false)
 
+	if c.Log != nil {
+		c.Log(ctx, types.LogLevelInfo).Msg("draining connection")
+	}
+
 	c.mu.RLock()
 	sources := make([]types.Source, 0, len(c.activeSources))
 	for _, src := range c.activeSources {
@@ -570,6 +642,10 @@ func (c *MQTTConnection) Drain(ctx context.Context) error {
 				return fmt.Errorf("failed to drain source: %w", err)
 			}
 		}
+	}
+
+	if c.Log != nil {
+		c.Log(ctx, types.LogLevelInfo).Msg("connection drained")
 	}
 
 	return nil

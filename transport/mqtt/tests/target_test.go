@@ -139,7 +139,7 @@ func TestNewTarget_QoSClamping(t *testing.T) {
 
 // TestNewTargetWithClient_NilConfig validates nil config returns error.
 func TestNewTargetWithClient_NilConfig(t *testing.T) {
-	tgt, err := mqtt.NewTargetWithClient(nil, nil)
+	tgt, err := mqtt.NewTargetWithClient(nil, nil, nil)
 	assert.Nil(t, tgt)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "config is required")

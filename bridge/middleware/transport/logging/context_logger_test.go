@@ -145,7 +145,7 @@ func TestContextLogger_Msgf_WithIDs(t *testing.T) {
 // Field Builder Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestContextLogger_WithMethod validates method field addition.
+// TestContextLogger_WithMethod validates method field addition using Str.
 func TestContextLogger_WithMethod(t *testing.T) {
 	var buf bytes.Buffer
 	logger := testLogger(&buf)
@@ -153,7 +153,8 @@ func TestContextLogger_WithMethod(t *testing.T) {
 	ctx := WithCorrelationID(context.Background(), "method-corr")
 	cl := NewContextLogger(ctx, logger)
 
-	cl.WithMethod("TestMethod").Msg("with method")
+	// Use Str("method", ...) instead of removed WithMethod
+	cl.Str("method", "TestMethod").Msg("with method")
 
 	entry := parseLogEntry(t, &buf)
 
@@ -165,7 +166,7 @@ func TestContextLogger_WithMethod(t *testing.T) {
 	}
 }
 
-// TestContextLogger_WithService validates service field addition.
+// TestContextLogger_WithService validates service field addition using Str.
 func TestContextLogger_WithService(t *testing.T) {
 	var buf bytes.Buffer
 	logger := testLogger(&buf)
@@ -173,7 +174,8 @@ func TestContextLogger_WithService(t *testing.T) {
 	ctx := WithCorrelationID(context.Background(), "service-corr")
 	cl := NewContextLogger(ctx, logger)
 
-	cl.WithService("TestService").Msg("with service")
+	// Use Str("service", ...) instead of removed WithService
+	cl.Str("service", "TestService").Msg("with service")
 
 	entry := parseLogEntry(t, &buf)
 
@@ -227,13 +229,13 @@ func TestContextLogger_Bool(t *testing.T) {
 	}
 }
 
-// TestContextLogger_Error validates error field addition.
-func TestContextLogger_Error(t *testing.T) {
+// TestContextLogger_Err validates error field addition.
+func TestContextLogger_Err(t *testing.T) {
 	var buf bytes.Buffer
 	logger := testLogger(&buf)
 
 	cl := NewContextLogger(context.Background(), logger)
-	cl.Error(types.ErrNotFound).Msg("with error")
+	cl.Err(types.ErrNotFound).Msg("with error")
 
 	entry := parseLogEntry(t, &buf)
 
@@ -276,8 +278,9 @@ func TestContextLogger_Chaining(t *testing.T) {
 	ctx = WithTraceID(ctx, "chain-trace")
 
 	cl := NewContextLogger(ctx, logger)
-	cl.WithService("ChainService").
-		WithMethod("ChainMethod").
+	// Use Str("service", ...) and Str("method", ...) instead of removed methods
+	cl.Str("service", "ChainService").
+		Str("method", "ChainMethod").
 		Str("key", "value").
 		Int("num", 123).
 		Bool("flag", true).

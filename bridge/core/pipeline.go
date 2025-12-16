@@ -35,6 +35,9 @@ type PipelineImpl struct {
 	// inFlightSem is a semaphore for backpressure (nil if unlimited)
 	inFlightSem chan struct{}
 
+	// Log is the LogCreator for the pipeline component (optional)
+	Log types.LogCreator
+
 	// running indicates if the pipeline is currently running
 	running atomic.Bool
 
@@ -91,6 +94,16 @@ func PipelineWithFlowControl(config types.FlowControlConfig) PipelineOption {
 		// Initialize semaphore if MaxInFlight is set
 		if config.MaxInFlight > 0 {
 			p.inFlightSem = make(chan struct{}, config.MaxInFlight)
+		}
+	}
+}
+
+// PipelineWithLoggerFactory sets the logger factory for the pipeline.
+// The pipeline will create its own LogCreator using factory("pipeline:<id>").
+func PipelineWithLoggerFactory(factory types.LoggerFactory) PipelineOption {
+	return func(p *PipelineImpl) {
+		if factory != nil {
+			p.Log = factory("pipeline:" + p.id)
 		}
 	}
 }
@@ -176,15 +189,26 @@ func (p *PipelineImpl) Start(ctx context.Context) error {
 	// Create cancellable context
 	ctx, p.cancel = context.WithCancel(ctx)
 
+	if p.Log != nil {
+		p.Log(ctx, types.LogLevelInfo).Str("source", p.source.GetID()).Str("target", p.target.GetID()).Msg("pipeline starting")
+	}
+
 	// Start the source
 	if err := p.source.Start(ctx); err != nil {
 		p.running.Store(false)
+		if p.Log != nil {
+			p.Log(ctx, types.LogLevelError).Err(err).Msg("failed to start source")
+		}
 		return fmt.Errorf("failed to start source: %w", err)
 	}
 
 	// Start message processing goroutine
 	p.wg.Add(1)
 	go p.processMessages(ctx)
+
+	if p.Log != nil {
+		p.Log(ctx, types.LogLevelInfo).Msg("pipeline started")
+	}
 
 	return nil
 }
@@ -223,6 +247,10 @@ func (p *PipelineImpl) handleMessage(ctx context.Context, srcMsg *types.SourceMe
 
 	msg := &srcMsg.Message
 
+	if p.Log != nil {
+		p.Log(ctx, types.LogLevelDebug).Str("topic", msg.Topic).Int("payload_size", len(msg.Payload)).Msg("processing message")
+	}
+
 	// Apply default TTL if message has none
 	if msg.TTL == 0 && p.flowControl.DefaultMessageTTL > 0 {
 		msg.TTL = p.flowControl.DefaultMessageTTL
@@ -231,6 +259,9 @@ func (p *PipelineImpl) handleMessage(ctx context.Context, srcMsg *types.SourceMe
 	// Check if already expired BEFORE processing
 	if err := msg.IsExpired(); err != nil {
 		p.stats.MessagesDropped.Add(1)
+		if p.Log != nil {
+			p.Log(ctx, types.LogLevelWarn).Str("topic", msg.Topic).Msg("dropping expired message")
+		}
 		_ = srcMsg.Ack() // Don't retry expired messages
 		return
 	}
@@ -246,9 +277,13 @@ func (p *PipelineImpl) handleMessage(ctx context.Context, srcMsg *types.SourceMe
 	if err == nil {
 		// Success - acknowledge the message
 		p.stats.MessagesSent.Add(1)
+		if p.Log != nil {
+			p.Log(ctx, types.LogLevelDebug).Str("topic", msg.Topic).Msg("message sent successfully")
+		}
 		if ackErr := srcMsg.Ack(); ackErr != nil {
-			// Log ack error but don't fail - message was processed
-			_ = ackErr // TODO: Add logging
+			if p.Log != nil {
+				p.Log(ctx, types.LogLevelWarn).Err(ackErr).Str("topic", msg.Topic).Msg("failed to ack message")
+			}
 		}
 		return
 	}
@@ -282,6 +317,10 @@ func (p *PipelineImpl) releaseSlot() {
 func (p *PipelineImpl) handleError(ctx context.Context, srcMsg *types.SourceMessage, msg *types.Message, err error) {
 	p.stats.MessagesFailed.Add(1)
 
+	if p.Log != nil {
+		p.Log(ctx, types.LogLevelError).Err(err).Str("topic", msg.Topic).Bool("recoverable", types.IsRecoverableError(err)).Msg("message processing failed")
+	}
+
 	// Check if error is recoverable
 	if types.IsRecoverableError(err) {
 		// Try to enqueue for retry if manager is available
@@ -289,6 +328,9 @@ func (p *PipelineImpl) handleError(ctx context.Context, srcMsg *types.SourceMess
 			if enqErr := p.retryManager.Enqueue(ctx, *msg, err); enqErr == nil {
 				// Message queued for retry - ack the source
 				p.stats.MessagesRetried.Add(1)
+				if p.Log != nil {
+					p.Log(ctx, types.LogLevelInfo).Str("topic", msg.Topic).Msg("message queued for retry")
+				}
 				_ = srcMsg.Ack()
 				return
 			}
@@ -304,6 +346,9 @@ func (p *PipelineImpl) handleError(ctx context.Context, srcMsg *types.SourceMess
 		if dlqErr := p.dlq.Send(ctx, *msg, err); dlqErr == nil {
 			// Message archived - ack the source
 			p.stats.MessagesDropped.Add(1)
+			if p.Log != nil {
+				p.Log(ctx, types.LogLevelInfo).Str("topic", msg.Topic).Msg("message sent to DLQ")
+			}
 			_ = srcMsg.Ack()
 			return
 		}
@@ -311,6 +356,9 @@ func (p *PipelineImpl) handleError(ctx context.Context, srcMsg *types.SourceMess
 
 	// No DLQ or DLQ failed - drop the message
 	p.stats.MessagesDropped.Add(1)
+	if p.Log != nil {
+		p.Log(ctx, types.LogLevelWarn).Str("topic", msg.Topic).Msg("message dropped (no DLQ)")
+	}
 	_ = srcMsg.Ack() // Ack to prevent infinite redelivery
 }
 
@@ -318,6 +366,11 @@ func (p *PipelineImpl) handleError(ctx context.Context, srcMsg *types.SourceMess
 func (p *PipelineImpl) Close() error {
 	if !p.running.CompareAndSwap(true, false) {
 		return nil // Already stopped
+	}
+
+	ctx := context.Background()
+	if p.Log != nil {
+		p.Log(ctx, types.LogLevelInfo).Msg("pipeline stopping")
 	}
 
 	// Cancel context to stop processing
@@ -337,6 +390,10 @@ func (p *PipelineImpl) Close() error {
 
 	if err := p.target.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("target close: %w", err))
+	}
+
+	if p.Log != nil {
+		p.Log(ctx, types.LogLevelInfo).Msg("pipeline stopped")
 	}
 
 	return errors.Join(errs...)

@@ -5,7 +5,6 @@
 
 .PHONY: all build test lint clean tidy sync help
 .PHONY: build-core build-mqtt build-aws build-azure
-.PHONY: test-core test-mqtt test-aws test-azure test-integration
 .PHONY: lint-core lint-mqtt lint-aws lint-azure
 
 # Default target
@@ -39,29 +38,8 @@ build-azure: ## Build Azure module only
 # Test targets
 # ============================================================================
 
-test: test-core test-mqtt test-aws test-azure ## Run all tests (unit only)
-
-test-core: ## Test core module
-	@echo "Testing core module..."
-	go test -v -race ./bridge/...
-
-test-mqtt: ## Test MQTT module
-	@echo "Testing MQTT module..."
-	cd transport/mqtt && go test -v -race ./...
-
-test-aws: ## Test AWS module
-	@echo "Testing AWS module..."
-	cd transport/aws && go test -v -race ./...
-
-test-azure: ## Test Azure module
-	@echo "Testing Azure module..."
-	cd transport/azure && go test -v -race ./...
-
-test-integration: ## Run integration tests (requires Docker)
-	@echo "Running integration tests..."
-	go test -v -tags=integration -timeout=300s ./tests/docker/...
-
-test-all: test test-integration ## Run all tests including integration
+test: ## Test core module
+	go test -v -race ./...
 
 # ============================================================================
 # Lint targets

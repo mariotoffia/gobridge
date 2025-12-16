@@ -101,6 +101,9 @@ type Source struct {
 	closeOnce sync.Once
 	closeErr  error
 
+	// Log is the LogCreator for the source component (optional)
+	Log types.LogCreator
+
 	// sharedClient indicates the client is managed externally (by MQTTConnection)
 	// and should NOT be closed when the Source is closed.
 	sharedClient bool
@@ -145,7 +148,9 @@ func NewSource(config *SourceConfigImpl) (*Source, error) {
 //
 // The router is used to register this source's message handler so it receives
 // messages from the shared client.
-func NewSourceWithClient(config *SourceConfigImpl, client *autopaho.ConnectionManager, router *messageRouter) (*Source, error) {
+//
+// If loggerFactory is provided, the source will create its own LogCreator.
+func NewSourceWithClient(config *SourceConfigImpl, client *autopaho.ConnectionManager, router *messageRouter, loggerFactory types.LoggerFactory) (*Source, error) {
 	if config == nil {
 		return nil, errors.New("config is required")
 	}
@@ -164,7 +169,7 @@ func NewSourceWithClient(config *SourceConfigImpl, client *autopaho.ConnectionMa
 		qos = 1 // Default to QoS 1
 	}
 
-	return &Source{
+	s := &Source{
 		id:           config.ID,
 		config:       config,
 		client:       client,
@@ -173,7 +178,14 @@ func NewSourceWithClient(config *SourceConfigImpl, client *autopaho.ConnectionMa
 		messages:     make(chan *types.SourceMessage, 100),
 		sharedClient: true,
 		router:       router,
-	}, nil
+	}
+
+	// Create logger if factory is provided
+	if loggerFactory != nil {
+		s.Log = loggerFactory("mqtt-source:" + config.ID)
+	}
+
+	return s, nil
 }
 
 // GetID returns the unique identifier of the source.
@@ -219,6 +231,10 @@ func (s *Source) Start(ctx context.Context) error {
 		return errors.New("source already running")
 	}
 
+	if s.Log != nil {
+		s.Log(ctx, types.LogLevelInfo).Int("topics", len(s.topics)).Int("qos", int(s.qos)).Msg("starting source")
+	}
+
 	// Create cancellable context
 	ctx, s.cancel = context.WithCancel(ctx)
 
@@ -245,6 +261,10 @@ func (s *Source) startSharedMode(ctx context.Context, subscriptions []paho.Subsc
 	// Register our message handler with the router
 	s.router.register(s.id, s.handleMessage)
 
+	if s.Log != nil {
+		s.Log(ctx, types.LogLevelDebug).Msg("subscribing to topics")
+	}
+
 	// Subscribe to topics
 	_, err := s.client.Subscribe(ctx, &paho.Subscribe{
 		Subscriptions: subscriptions,
@@ -252,7 +272,14 @@ func (s *Source) startSharedMode(ctx context.Context, subscriptions []paho.Subsc
 	if err != nil {
 		s.router.unregister(s.id)
 		s.running.Store(false)
+		if s.Log != nil {
+			s.Log(ctx, types.LogLevelError).Err(err).Msg("failed to subscribe to topics")
+		}
 		return fmt.Errorf("failed to subscribe to topics: %w", MapError(err))
+	}
+
+	if s.Log != nil {
+		s.Log(ctx, types.LogLevelInfo).Msg("source started (shared mode)")
 	}
 
 	return nil
@@ -283,14 +310,22 @@ func (s *Source) startStandaloneMode(ctx context.Context, subscriptions []paho.S
 				Subscriptions: subscriptions,
 			})
 			if err != nil {
-				// Log error but don't crash - will retry on reconnect
-				_ = err
+				if s.Log != nil {
+					s.Log(ctx, types.LogLevelError).Err(err).Msg("failed to subscribe on reconnect")
+				}
 			}
 		},
 		ClientConfig: paho.ClientConfig{
 			ClientID: clientID,
 			Router:   newSingleHandlerRouter(s.handleMessage),
 		},
+	}
+
+	// Wire paho logging to our logger at debug level
+	if s.Log != nil {
+		pahoAdapter := NewPahoLoggerAdapter(s.Log, ctx)
+		cliCfg.Debug = pahoAdapter
+		cliCfg.Errors = pahoAdapter
 	}
 
 	// Configure authentication
@@ -319,6 +354,9 @@ func (s *Source) startStandaloneMode(ctx context.Context, subscriptions []paho.S
 	client, err := autopaho.NewConnection(ctx, cliCfg)
 	if err != nil {
 		s.running.Store(false)
+		if s.Log != nil {
+			s.Log(ctx, types.LogLevelError).Err(err).Msg("failed to create MQTT client")
+		}
 		return fmt.Errorf("failed to create MQTT client: %w", err)
 	}
 
@@ -336,7 +374,14 @@ func (s *Source) startStandaloneMode(ctx context.Context, subscriptions []paho.S
 	if err := client.AwaitConnection(connectCtx); err != nil {
 		s.client = nil
 		s.running.Store(false)
+		if s.Log != nil {
+			s.Log(ctx, types.LogLevelError).Err(err).Msg("failed to connect to MQTT broker")
+		}
 		return fmt.Errorf("failed to connect to MQTT broker: %w", MapError(err))
+	}
+
+	if s.Log != nil {
+		s.Log(ctx, types.LogLevelInfo).Str("clientID", clientID).Msg("source started (standalone mode)")
 	}
 
 	return nil
@@ -400,8 +445,14 @@ func (s *Source) handleMessage(m *paho.Publish) {
 	// Send to channel (non-blocking with timeout)
 	select {
 	case s.messages <- srcMsg:
+		if s.Log != nil {
+			s.Log(context.Background(), types.LogLevelDebug).Str("topic", m.Topic).Int("payload_size", len(m.Payload)).Msg("message received")
+		}
 	default:
 		// Channel full - drop message (should be rare with properly sized buffer)
+		if s.Log != nil {
+			s.Log(context.Background(), types.LogLevelWarn).Str("topic", m.Topic).Msg("message dropped (channel full)")
+		}
 	}
 }
 
@@ -415,6 +466,11 @@ func (s *Source) Messages() <-chan *types.SourceMessage {
 // that is managed by the MQTTConnection that created this source.
 func (s *Source) Close() error {
 	s.closeOnce.Do(func() {
+		ctx := context.Background()
+		if s.Log != nil {
+			s.Log(ctx, types.LogLevelInfo).Msg("closing source")
+		}
+
 		s.running.Store(false)
 
 		if s.cancel != nil {
@@ -428,23 +484,27 @@ func (s *Source) Close() error {
 			}
 			// Unsubscribe from topics (best effort)
 			if s.client != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				unsubCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				defer cancel()
-				_, _ = s.client.Unsubscribe(ctx, &paho.Unsubscribe{
+				_, _ = s.client.Unsubscribe(unsubCtx, &paho.Unsubscribe{
 					Topics: s.topics,
 				})
 			}
 		} else {
 			// Standalone mode - disconnect and close client
 			if s.client != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				disconnectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				defer cancel()
-				_ = s.client.Disconnect(ctx)
+				_ = s.client.Disconnect(disconnectCtx)
 			}
 		}
 
 		// Close messages channel
 		close(s.messages)
+
+		if s.Log != nil {
+			s.Log(ctx, types.LogLevelInfo).Msg("source closed")
+		}
 	})
 
 	return s.closeErr

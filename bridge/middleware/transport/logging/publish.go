@@ -53,7 +53,7 @@ func PublishLogger(logger types.LogCreator, settings FactoryLoggerOptions) types
 
 				if settings.Before {
 					l := logger(ctx, types.LogLevelInfo).
-						WithMethod("Publish::Before").
+						Str("method", "Publish::Before").
 						Str("topic", topic)
 
 					if settings.CorrelationID && correlationID != "" {
@@ -71,8 +71,8 @@ func PublishLogger(logger types.LogCreator, settings FactoryLoggerOptions) types
 				if err != nil {
 					if settings.Error {
 						l := logger(ctx, types.LogLevelError).
-							WithMethod("Publish::Error").
-							Error(err).
+							Str("method", "Publish::Error").
+							Err(err).
 							Str("topic", topic)
 
 						if settings.CorrelationID && correlationID != "" {
@@ -92,7 +92,7 @@ func PublishLogger(logger types.LogCreator, settings FactoryLoggerOptions) types
 
 				if settings.After {
 					l := logger(ctx, types.LogLevelInfo).
-						WithMethod("Publish::After").
+						Str("method", "Publish::After").
 						Str("topic", topic)
 
 					if settings.CorrelationID && correlationID != "" {
