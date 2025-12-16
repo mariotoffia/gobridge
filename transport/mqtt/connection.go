@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/eclipse/paho.golang/autopaho"
+	"github.com/eclipse/paho.golang/packets"
 	"github.com/eclipse/paho.golang/paho"
+	"github.com/eclipse/paho.golang/paho/log"
 	"github.com/mariotoffia/gobridge/bridge/types"
 )
 
@@ -100,14 +102,20 @@ func (c *MQTTConnectionConfig) GetTransportRetryConfig() *types.TransportRetryCo
 }
 
 // messageRouter routes incoming MQTT messages to registered source handlers.
+// It implements paho.Router interface.
 type messageRouter struct {
 	mu       sync.RWMutex
 	handlers map[string]func(*paho.Publish) // sourceID -> handler
+	debug    log.Logger
 }
+
+// Ensure messageRouter implements paho.Router
+var _ paho.Router = (*messageRouter)(nil)
 
 func newMessageRouter() *messageRouter {
 	return &messageRouter{
 		handlers: make(map[string]func(*paho.Publish)),
+		debug:    log.NOOPLogger{},
 	}
 }
 
@@ -115,22 +123,45 @@ func (r *messageRouter) register(sourceID string, handler func(*paho.Publish)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.handlers[sourceID] = handler
+	r.debug.Printf("registered handler for source %s (total handlers: %d)", sourceID, len(r.handlers))
 }
 
 func (r *messageRouter) unregister(sourceID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.handlers, sourceID)
+	r.debug.Printf("unregistered handler for source %s (remaining handlers: %d)", sourceID, len(r.handlers))
 }
 
-func (r *messageRouter) handleMessage(m *paho.Publish) {
+// Route implements paho.Router interface.
+// It dispatches messages to all registered handlers.
+func (r *messageRouter) Route(pb *packets.Publish) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	r.debug.Printf("routing message on topic %s to %d handlers", pb.Topic, len(r.handlers))
+
+	// Convert packets.Publish to paho.Publish for handlers
+	m := packetToPublish(pb)
+
 	// Dispatch to all registered handlers
-	for _, handler := range r.handlers {
+	for sourceID, handler := range r.handlers {
+		r.debug.Printf("dispatching to handler %s", sourceID)
 		handler(m)
 	}
+}
+
+// RegisterHandler implements paho.Router interface (no-op for this router).
+func (r *messageRouter) RegisterHandler(topic string, handler paho.MessageHandler) {}
+
+// UnregisterHandler implements paho.Router interface (no-op for this router).
+func (r *messageRouter) UnregisterHandler(topic string) {}
+
+// SetDebugLogger implements paho.Router interface.
+func (r *messageRouter) SetDebugLogger(l log.Logger) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.debug = l
 }
 
 // Ensure MQTTConnection implements required interfaces
@@ -220,7 +251,7 @@ func (c *MQTTConnection) Start(ctx context.Context, override types.ConnectionCon
 		KeepAlive:  keepAlive,
 		ClientConfig: paho.ClientConfig{
 			ClientID: clientID,
-			Router:   paho.NewSingleHandlerRouter(c.router.handleMessage),
+			Router:   c.router,
 		},
 	}
 
@@ -462,7 +493,7 @@ func (c *MQTTConnection) startLocked(ctx context.Context) error {
 		KeepAlive:  keepAlive,
 		ClientConfig: paho.ClientConfig{
 			ClientID: clientID,
-			Router:   paho.NewSingleHandlerRouter(c.router.handleMessage),
+			Router:   c.router,
 		},
 	}
 

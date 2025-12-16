@@ -10,10 +10,75 @@ import (
 	"time"
 
 	"github.com/eclipse/paho.golang/autopaho"
+	"github.com/eclipse/paho.golang/packets"
 	"github.com/eclipse/paho.golang/paho"
+	"github.com/eclipse/paho.golang/paho/log"
 	"github.com/mariotoffia/gobridge/tests/docker"
 	"github.com/mariotoffia/gobridge/transport/mqtt"
 )
+
+// singleHandlerRouter is a simple paho.Router that routes all messages to a single handler.
+type singleHandlerRouter struct {
+	handler func(*paho.Publish)
+	debug   log.Logger
+}
+
+// Ensure singleHandlerRouter implements paho.Router
+var _ paho.Router = (*singleHandlerRouter)(nil)
+
+// newSingleHandlerRouter creates a new singleHandlerRouter with the given handler.
+func newSingleHandlerRouter(handler func(*paho.Publish)) *singleHandlerRouter {
+	return &singleHandlerRouter{
+		handler: handler,
+		debug:   log.NOOPLogger{},
+	}
+}
+
+// Route implements paho.Router interface.
+func (r *singleHandlerRouter) Route(pb *packets.Publish) {
+	if r.handler != nil {
+		r.debug.Printf("routing message on topic %s", pb.Topic)
+		r.handler(&paho.Publish{
+			QoS:        pb.QoS,
+			Retain:     pb.Retain,
+			Topic:      pb.Topic,
+			PacketID:   pb.PacketID,
+			Payload:    pb.Payload,
+			Properties: publishPropertiesFromPacket(pb.Properties),
+		})
+	}
+}
+
+// RegisterHandler implements paho.Router interface (no-op).
+func (r *singleHandlerRouter) RegisterHandler(topic string, handler paho.MessageHandler) {}
+
+// UnregisterHandler implements paho.Router interface (no-op).
+func (r *singleHandlerRouter) UnregisterHandler(topic string) {}
+
+// SetDebugLogger implements paho.Router interface.
+func (r *singleHandlerRouter) SetDebugLogger(l log.Logger) {
+	r.debug = l
+}
+
+// publishPropertiesFromPacket converts packets.Properties to paho.PublishProperties.
+func publishPropertiesFromPacket(p *packets.Properties) *paho.PublishProperties {
+	if p == nil {
+		return nil
+	}
+	props := &paho.PublishProperties{
+		CorrelationData: p.CorrelationData,
+		ContentType:     p.ContentType,
+		ResponseTopic:   p.ResponseTopic,
+		MessageExpiry:   p.MessageExpiry,
+	}
+	if len(p.User) > 0 {
+		props.User = make([]paho.UserProperty, len(p.User))
+		for i, u := range p.User {
+			props.User[i] = paho.UserProperty{Key: u.Key, Value: u.Value}
+		}
+	}
+	return props
+}
 
 // ============================================================================
 // MQTT Mosquitto Helper
@@ -352,7 +417,7 @@ func buildTestClientConfig(brokerURL, clientID string, handler func(*paho.Publis
 		CleanStartOnInitialConnection: true,
 		ClientConfig: paho.ClientConfig{
 			ClientID: clientID,
-			Router:   paho.NewSingleHandlerRouter(handler),
+			Router:   newSingleHandlerRouter(handler),
 		},
 	}, nil
 }

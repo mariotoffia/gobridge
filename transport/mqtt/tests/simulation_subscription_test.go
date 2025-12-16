@@ -357,6 +357,7 @@ func TestSimulation_OverlappingWildcards(t *testing.T) {
 	received1 := false
 	received2 := false
 
+loop:
 	for i := 0; i < 2; i++ {
 		select {
 		case msg := <-src1.Messages():
@@ -366,7 +367,7 @@ func TestSimulation_OverlappingWildcards(t *testing.T) {
 			received2 = true
 			msg.Ack()
 		case <-time.After(5 * time.Second):
-			break
+			break loop
 		}
 	}
 

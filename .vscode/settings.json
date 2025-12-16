@@ -5,6 +5,7 @@
   "go.diagnostic.vulncheck": "Imports",
     "cSpell.words": [
       "acked",
+      "autopaho",
       "backpressure",
       "Configurator",
       "gobridge",

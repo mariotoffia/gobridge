@@ -298,7 +298,7 @@ func TestErrorInjection_ContextCancellation(t *testing.T) {
 		Payload:   []byte("cancelled"),
 	}
 
-	err = tgt.Send(ctx, msg)
+	_ = tgt.Send(ctx, msg)
 	// Should either error or succeed if sent before cancellation processed
 	// The important thing is it doesn't hang
 }
