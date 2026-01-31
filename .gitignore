@@ -30,8 +30,8 @@ go.work.sum
 # Editor/IDE
 .idea/
 # .vscode/
-.claude/
-.cursor/
+#.claude/
+#.cursor/
 
 # other junk files
 .temp-files/
