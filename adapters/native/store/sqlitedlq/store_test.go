@@ -10,7 +10,13 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/ports/storetest"
 )
+
+func TestDLQStoreConformance(t *testing.T) {
+	s := newTempStore(t)
+	storetest.RunDLQStoreTests(t, s)
+}
 
 func newTempStore(t *testing.T) *sqlitedlq.Store {
 	t.Helper()

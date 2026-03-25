@@ -206,6 +206,36 @@ func TestRouteRunner_ProcessorError_Transient(t *testing.T) {
 	}
 }
 
+func TestRouteRunner_ProcessorError_MessageFiltered(t *testing.T) {
+	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+		cfg.Processors = []ports.Processor{
+			&FakeProcessor{NameVal: "filter", ProcessErr: domain.ErrMessageFiltered},
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = runner.Run(ctx) }()
+
+	del := NewFakeDelivery(&domain.Envelope{ID: "msg-filtered"})
+	_ = receiver.Emit(ctx, del)
+	time.Sleep(50 * time.Millisecond)
+
+	if !del.Acked {
+		t.Fatal("filtered message should be acked (silent drop)")
+	}
+	if del.Retried {
+		t.Fatal("filtered message should not be retried")
+	}
+	if dlqStore.Count() != 0 {
+		t.Fatalf("filtered message should not go to DLQ, got %d entries", dlqStore.Count())
+	}
+	if sender.SentCount() != 0 {
+		t.Fatalf("filtered message should not be sent, got %d", sender.SentCount())
+	}
+}
+
 func TestRouteRunner_SharedOutbox_HappyPath(t *testing.T) {
 	receiver, _, _, outbox, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = domain.DeliverySharedOutbox

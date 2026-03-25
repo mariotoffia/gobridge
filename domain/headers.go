@@ -19,6 +19,8 @@ const (
 	HeaderDeduplicationID = "x-bridge.dedup-id"
 	HeaderTraceParent     = "traceparent"
 	HeaderTraceState      = "tracestate"
+	HeaderTenantID        = "x-bridge.tenant-id"
+	HeaderRouteOverride   = "x-bridge.route-override"
 )
 
 // IsReservedHeader returns true if the key uses the reserved x-bridge. prefix.

@@ -17,6 +17,8 @@ func TestIsReservedHeader(t *testing.T) {
 		{"traceparent", false},
 		{"my-header", false},
 		{"", false},
+		{domain.HeaderTenantID, true},
+		{domain.HeaderRouteOverride, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.key, func(t *testing.T) {
@@ -30,9 +32,9 @@ func TestIsReservedHeader(t *testing.T) {
 func TestStripReservedHeaders(t *testing.T) {
 	headers := map[string]any{
 		domain.HeaderCorrelationID: "abc",
-		domain.HeaderSourceID:     "src-1",
-		"traceparent":             "00-trace",
-		"custom":                  "value",
+		domain.HeaderSourceID:      "src-1",
+		"traceparent":              "00-trace",
+		"custom":                   "value",
 	}
 	stripped := domain.StripReservedHeaders(headers)
 

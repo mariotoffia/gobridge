@@ -11,7 +11,13 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorydlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/ports/storetest"
 )
+
+func TestDLQStoreConformance(t *testing.T) {
+	s := memorydlq.NewStore()
+	storetest.RunDLQStoreTests(t, s)
+}
 
 func makeEntry(id, routeID, category string, failedAt time.Time) domain.DLQEntry {
 	return domain.DLQEntry{

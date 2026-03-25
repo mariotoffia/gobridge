@@ -11,8 +11,14 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/ports/storetest"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
+
+func TestDLQStoreConformance(t *testing.T) {
+	store := newStore(t, "dlq-conf")
+	storetest.RunDLQStoreTests(t, store)
+}
 
 func TestMain(m *testing.M) {
 	code := m.Run()

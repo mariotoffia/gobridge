@@ -11,6 +11,9 @@ import (
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/httpapi"
+
+	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
+	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
 )
 
 func main() {
@@ -35,15 +38,21 @@ func main() {
 
 	builder := bridge.NewBuilder(cfg, bridge.WithLogger(logger))
 
-	// Register transport and store factories here. In production, the
-	// concrete factories come from the adapter modules:
+	builder.RegisterTransport("mqtt", paho.NewBridgeFactory(logger))
+	builder.RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory())
+
+	// AWS adapters require an AWS SDK client. Uncomment and configure
+	// when deploying with AWS backing services:
 	//
-	//   builder.RegisterTransport("mqtt", paho.NewTransportFactory(logger))
-	//   builder.RegisterTransport("sqs", sqs.NewTransportFactory(logger))
-	//   builder.RegisterStoreFactory("dynamodb", ddb.NewStoreFactory(client))
-	//   builder.RegisterStoreFactory("memory", native.NewStoreFactory())
+	//   import awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	//   import "github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	//   import "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
+	//   import awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
 	//
-	// The binary that imports this main package wires the specific adapters.
+	//   awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+	//   ddbClient := dynamodb.NewFromConfig(awsCfg)
+	//   builder.RegisterTransport("sqs", sqs.NewBridgeFactory(logger))
+	//   builder.RegisterStoreFactory("dynamodb", awsstore.NewDynamoDBStoreFactory(ddbClient))
 
 	rt, err := builder.Build(ctx)
 	if err != nil {

@@ -145,6 +145,7 @@ func TestSentinelClasses(t *testing.T) {
 		{domain.ErrInvalidTopic, domain.ErrorRejected},
 		{domain.ErrSchemaViolation, domain.ErrorRejected},
 		{domain.ErrMessageExpired, domain.ErrorExpired},
+		{domain.ErrMessageFiltered, domain.ErrorRejected},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.err.Code), func(t *testing.T) {
@@ -152,5 +153,14 @@ func TestSentinelClasses(t *testing.T) {
 				t.Fatalf("expected class %s, got %s", tt.class, tt.err.Class)
 			}
 		})
+	}
+}
+
+func TestErrMessageFiltered_Is(t *testing.T) {
+	if !errors.Is(domain.ErrMessageFiltered, domain.ErrMessageFiltered) {
+		t.Fatal("ErrMessageFiltered should match itself via errors.Is")
+	}
+	if errors.Is(domain.ErrMessageFiltered, domain.ErrNotFound) {
+		t.Fatal("ErrMessageFiltered should not match ErrNotFound")
 	}
 }

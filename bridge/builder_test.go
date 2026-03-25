@@ -88,6 +88,27 @@ func (f *fakeStoreFactory) NewDLQStore(_ context.Context, _ config.StoreConfig) 
 	return nil, nil
 }
 
+type fakeCredentialStore struct {
+	creds map[string]*domain.CredentialSet
+}
+
+func (f *fakeCredentialStore) Resolve(_ context.Context, uri string) (*domain.CredentialSet, error) {
+	if cs, ok := f.creds[uri]; ok {
+		return cs, nil
+	}
+	return nil, domain.ErrNotFound.WithMessage("not found: " + uri)
+}
+
+type capturingTransportFactory struct {
+	fakeTransportFactory
+	capturedSessionDef config.SessionDef
+}
+
+func (c *capturingTransportFactory) NewSession(_ context.Context, def config.SessionDef) (ports.Session, error) {
+	c.capturedSessionDef = def
+	return &fakeSession{}, nil
+}
+
 // --- tests ---
 
 func testConfig() *config.BridgeConfig {
@@ -206,4 +227,89 @@ func TestBuilder_DirectHoldRoute(t *testing.T) {
 	routes := rt.Routes()
 	require.Len(t, routes, 1)
 	assert.Equal(t, domain.DeliveryDirectHold, routes[0].DeliveryMode)
+}
+
+func TestBuilder_WithCredentialStore(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sessions[0].Options = map[string]any{
+		"credentials_uri": "file://test/creds",
+	}
+
+	cs := &fakeCredentialStore{
+		creds: map[string]*domain.CredentialSet{
+			"file://test/creds": {
+				Password: &domain.PasswordCredential{
+					Username: "resolved-user",
+					Password: "resolved-pass",
+				},
+			},
+		},
+	}
+
+	mqttFactory := &capturingTransportFactory{}
+
+	rt, err := NewBuilder(cfg, WithCredentialStore(cs)).
+		RegisterTransport("mqtt", mqttFactory).
+		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterStoreFactory("memory", &fakeStoreFactory{}).
+		Build(context.Background())
+
+	require.NoError(t, err)
+	require.NotNil(t, rt)
+
+	assert.Equal(t, "resolved-user", mqttFactory.capturedSessionDef.Options["username"])
+	assert.Equal(t, "resolved-pass", mqttFactory.capturedSessionDef.Options["password"])
+	_, hasURI := mqttFactory.capturedSessionDef.Options["credentials_uri"]
+	assert.False(t, hasURI, "credentials_uri should be removed after resolution")
+}
+
+func TestBuilder_CredentialInlineOverride(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sessions[0].Options = map[string]any{
+		"credentials_uri": "file://test/creds",
+		"username":        "inline-user",
+	}
+
+	cs := &fakeCredentialStore{
+		creds: map[string]*domain.CredentialSet{
+			"file://test/creds": {
+				Password: &domain.PasswordCredential{
+					Username: "resolved-user",
+					Password: "resolved-pass",
+				},
+			},
+		},
+	}
+
+	mqttFactory := &capturingTransportFactory{}
+
+	rt, err := NewBuilder(cfg, WithCredentialStore(cs)).
+		RegisterTransport("mqtt", mqttFactory).
+		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterStoreFactory("memory", &fakeStoreFactory{}).
+		Build(context.Background())
+
+	require.NoError(t, err)
+	require.NotNil(t, rt)
+
+	assert.Equal(t, "inline-user", mqttFactory.capturedSessionDef.Options["username"],
+		"inline value should take precedence over resolved credential")
+	assert.Equal(t, "resolved-pass", mqttFactory.capturedSessionDef.Options["password"],
+		"password should be resolved from credential store")
+}
+
+func TestBuilder_CredentialsURIWithoutStore(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sessions[0].Options = map[string]any{
+		"credentials_uri": "file://test/creds",
+	}
+
+	_, err := NewBuilder(cfg).
+		RegisterTransport("mqtt", &fakeTransportFactory{}).
+		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterStoreFactory("memory", &fakeStoreFactory{}).
+		Build(context.Background())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no credential store registered")
 }

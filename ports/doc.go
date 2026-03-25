@@ -15,6 +15,9 @@
 //   - Lease: cluster ownership for single-active scenarios
 //   - DestinationResolver: runtime egress binding selection
 //   - Processor: message transformation chain element
+//   - CredentialStore: URI-based credential resolution
+//   - CredentialRepository: per-backend credential adapter
+//   - CredentialAdmin: credential lifecycle management (CRUD)
 //
 // Adapter modules under adapters/ implement these interfaces.
 // The bridge/runtime package (future) depends on these interfaces.

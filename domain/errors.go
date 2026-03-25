@@ -41,6 +41,7 @@ const (
 	ErrCodeSchemaViolation ErrorCode = "SCHEMA_VIOLATION"
 	ErrCodeMessageExpired  ErrorCode = "MESSAGE_EXPIRED"
 	ErrCodeQoSNotSupported ErrorCode = "QOS_NOT_SUPPORTED"
+	ErrCodeMessageFiltered ErrorCode = "MESSAGE_FILTERED"
 )
 
 // Infrastructure and fencing error codes.
@@ -195,6 +196,10 @@ var (
 	ErrQoSNotSupported = &BridgeError{
 		Code: ErrCodeQoSNotSupported, Class: ErrorPermanent,
 		Message: "QoS level not supported",
+	}
+	ErrMessageFiltered = &BridgeError{
+		Code: ErrCodeMessageFiltered, Class: ErrorRejected,
+		Message: "message filtered",
 	}
 )
 

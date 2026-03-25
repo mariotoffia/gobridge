@@ -17,6 +17,7 @@ type Builder struct {
 	storeFactories map[string]StoreFactory
 	processors     map[string]ports.Processor
 	logger         *slog.Logger
+	credStore      ports.CredentialStore
 }
 
 // BuilderOption configures a Builder.
@@ -25,6 +26,12 @@ type BuilderOption func(*Builder)
 // WithLogger sets the logger for the builder and the resulting runtime.
 func WithLogger(l *slog.Logger) BuilderOption {
 	return func(b *Builder) { b.logger = l }
+}
+
+// WithCredentialStore sets the credential store used to resolve
+// credentials_uri references in session, receiver, and sender options.
+func WithCredentialStore(cs ports.CredentialStore) BuilderOption {
+	return func(b *Builder) { b.credStore = cs }
 }
 
 // NewBuilder creates a builder from the given configuration.
@@ -262,6 +269,13 @@ func (b *Builder) buildSessions(ctx context.Context) (map[string]ports.Session, 
 		if !ok {
 			return nil, fmt.Errorf("bridge: no transport factory registered for %q (session %q)", sd.Transport, sd.ID)
 		}
+		if sd.Options != nil {
+			opts, err := b.resolveCredentials(ctx, sd.Options, fmt.Sprintf("session %q", sd.ID))
+			if err != nil {
+				return nil, err
+			}
+			sd.Options = opts
+		}
 		sess, err := tf.NewSession(ctx, sd)
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create session %q: %w", sd.ID, err)
@@ -290,6 +304,13 @@ func (b *Builder) buildReceivers(ctx context.Context, sessions map[string]ports.
 		if rd.SessionID != "" {
 			sess = sessions[rd.SessionID]
 		}
+		if rd.Options != nil {
+			opts, err := b.resolveCredentials(ctx, rd.Options, fmt.Sprintf("receiver %q", rd.ID))
+			if err != nil {
+				return nil, err
+			}
+			rd.Options = opts
+		}
 		recv, err := tf.NewReceiver(ctx, rd, sess)
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create receiver %q: %w", rd.ID, err)
@@ -316,6 +337,13 @@ func (b *Builder) buildSenders(ctx context.Context, sessions map[string]ports.Se
 		if sd.SessionID != "" {
 			sess = sessions[sd.SessionID]
 		}
+		if sd.Options != nil {
+			opts, err := b.resolveCredentials(ctx, sd.Options, fmt.Sprintf("sender %q", sd.ID))
+			if err != nil {
+				return nil, err
+			}
+			sd.Options = opts
+		}
 		snd, err := tf.NewSender(ctx, sd, sess)
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create sender %q: %w", sd.ID, err)
@@ -338,4 +366,56 @@ func (b *Builder) resolveProcessors(names []string) ([]ports.Processor, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+func (b *Builder) resolveCredentials(ctx context.Context, opts map[string]any, label string) (map[string]any, error) {
+	uriVal, hasURI := opts["credentials_uri"]
+	if !hasURI {
+		return opts, nil
+	}
+
+	uri, ok := uriVal.(string)
+	if !ok {
+		return nil, fmt.Errorf("bridge: %s: credentials_uri must be a string", label)
+	}
+
+	if b.credStore == nil {
+		return nil, fmt.Errorf("bridge: %s: credentials_uri specified but no credential store registered", label)
+	}
+
+	creds, err := b.credStore.Resolve(ctx, uri)
+	if err != nil {
+		return nil, fmt.Errorf("bridge: %s: resolve credentials: %w", label, err)
+	}
+
+	resolved := make(map[string]any, len(opts))
+	for k, v := range opts {
+		resolved[k] = v
+	}
+	delete(resolved, "credentials_uri")
+
+	if creds.Password != nil {
+		if _, exists := resolved["username"]; !exists {
+			resolved["username"] = creds.Password.Username
+		}
+		if _, exists := resolved["password"]; !exists {
+			resolved["password"] = creds.Password.Password
+		}
+	}
+	if creds.TLS != nil {
+		if _, exists := resolved["tls_cert"]; !exists {
+			resolved["tls_cert"] = creds.TLS.CertPEM
+		}
+		if _, exists := resolved["tls_key"]; !exists {
+			resolved["tls_key"] = creds.TLS.KeyPEM
+		}
+		if _, exists := resolved["tls_ca"]; !exists && len(creds.TLS.CAPEMs) > 0 {
+			resolved["tls_ca"] = creds.TLS.CAPEMs
+		}
+		if _, exists := resolved["tls_insecure"]; !exists && creds.TLS.InsecureSkipVerify {
+			resolved["tls_insecure"] = true
+		}
+	}
+
+	return resolved, nil
 }

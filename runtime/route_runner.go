@@ -245,6 +245,9 @@ func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env
 }
 
 func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delivery, env *domain.Envelope, err error) error {
+	if errors.Is(err, domain.ErrMessageFiltered) {
+		return del.Ack(ctx)
+	}
 	if domain.IsRecoverableError(err) {
 		retryAfter := domain.GetRetryAfter(err)
 		return del.Retry(ctx, retryAfter, err)

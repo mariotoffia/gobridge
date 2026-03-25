@@ -1,0 +1,207 @@
+package runtime
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/ports"
+)
+
+// DefaultCredentialCacheTTL is the default TTL for cached credentials.
+const DefaultCredentialCacheTTL = 5 * time.Minute
+
+var _ ports.CredentialStore = (*CredentialResolver)(nil)
+
+// CredentialResolverOption configures a CredentialResolver.
+type CredentialResolverOption func(*CredentialResolver)
+
+// WithCredentialCacheTTL sets the cache TTL for resolved credentials.
+func WithCredentialCacheTTL(ttl time.Duration) CredentialResolverOption {
+	return func(r *CredentialResolver) { r.cacheTTL = ttl }
+}
+
+// WithCredentialCacheDisabled disables credential caching entirely.
+func WithCredentialCacheDisabled() CredentialResolverOption {
+	return func(r *CredentialResolver) { r.cacheDisabled = true }
+}
+
+// CredentialResolver implements ports.CredentialStore by dispatching to
+// registered CredentialRepository backends based on URI scheme and
+// longest namespace prefix match.
+type CredentialResolver struct {
+	mu            sync.RWMutex
+	repos         []ports.CredentialRepository
+	cache         map[string]*credCacheEntry
+	cacheTTL      time.Duration
+	cacheDisabled bool
+}
+
+type credCacheEntry struct {
+	creds     *domain.CredentialSet
+	expiresAt time.Time
+}
+
+// NewCredentialResolver creates a resolver with the given options.
+func NewCredentialResolver(opts ...CredentialResolverOption) *CredentialResolver {
+	r := &CredentialResolver{
+		repos:    make([]ports.CredentialRepository, 0),
+		cache:    make(map[string]*credCacheEntry),
+		cacheTTL: DefaultCredentialCacheTTL,
+	}
+	for _, o := range opts {
+		o(r)
+	}
+	return r
+}
+
+// Register adds a credential repository backend. Should be called
+// during initialization before Resolve calls.
+func (r *CredentialResolver) Register(repo ports.CredentialRepository) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.repos = append(r.repos, repo)
+}
+
+// Resolve looks up credentials for the given URI. It selects the best
+// matching repository by scheme and longest namespace prefix, fetches
+// credentials from it, and optionally caches the result.
+func (r *CredentialResolver) Resolve(ctx context.Context, uri string) (*domain.CredentialSet, error) {
+	if !r.cacheDisabled {
+		if creds := r.getCached(uri); creds != nil {
+			return creds, nil
+		}
+	}
+
+	repo, err := r.resolveRepo(uri)
+	if err != nil {
+		return nil, err
+	}
+
+	creds, err := repo.Get(ctx, uri)
+	if err != nil {
+		return nil, err
+	}
+
+	if !r.cacheDisabled {
+		r.setCached(uri, creds)
+	}
+
+	return creds, nil
+}
+
+// resolveRepo finds the best matching repository for the URI.
+func (r *CredentialResolver) resolveRepo(uri string) (ports.CredentialRepository, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("credential resolver: invalid URI %q: %w", uri, err)
+	}
+
+	scheme := u.Scheme
+	path := strings.Trim(u.Host+"/"+strings.Trim(u.Path, "/"), "/")
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var (
+		best    ports.CredentialRepository
+		bestLen = -1
+	)
+
+	for _, repo := range r.repos {
+		if repo.Scheme() != scheme {
+			continue
+		}
+		ns := strings.Trim(repo.Namespace(), "/")
+		if ns == "" {
+			if best == nil && bestLen < 0 {
+				best = repo
+				bestLen = 0
+			}
+			continue
+		}
+		if path == ns || strings.HasPrefix(path, ns+"/") {
+			if len(ns) > bestLen {
+				best = repo
+				bestLen = len(ns)
+			}
+		}
+	}
+
+	if best == nil {
+		return nil, domain.ErrNotFound.WithMessage(
+			fmt.Sprintf("no credential repository for URI %q", uri),
+		)
+	}
+	return best, nil
+}
+
+func (r *CredentialResolver) getCached(uri string) *domain.CredentialSet {
+	r.mu.RLock()
+	entry, ok := r.cache[uri]
+	r.mu.RUnlock()
+
+	if !ok {
+		return nil
+	}
+	if time.Now().After(entry.expiresAt) {
+		r.mu.Lock()
+		delete(r.cache, uri)
+		r.mu.Unlock()
+		return nil
+	}
+	return entry.creds
+}
+
+func (r *CredentialResolver) setCached(uri string, creds *domain.CredentialSet) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cache[uri] = &credCacheEntry{
+		creds:     creds,
+		expiresAt: time.Now().Add(r.cacheTTL),
+	}
+}
+
+// InvalidateCache removes a specific URI from the cache.
+func (r *CredentialResolver) InvalidateCache(uri string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.cache, uri)
+}
+
+// ClearCache removes all entries from the cache.
+func (r *CredentialResolver) ClearCache() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cache = make(map[string]*credCacheEntry)
+}
+
+// CacheStats returns current cache statistics.
+func (r *CredentialResolver) CacheStats() CredentialCacheStats {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var expired int
+	now := time.Now()
+	for _, e := range r.cache {
+		if now.After(e.expiresAt) {
+			expired++
+		}
+	}
+	return CredentialCacheStats{
+		Size:    len(r.cache),
+		Expired: expired,
+		Active:  len(r.cache) - expired,
+	}
+}
+
+// CredentialCacheStats holds cache statistics.
+type CredentialCacheStats struct {
+	Size    int
+	Expired int
+	Active  int
+}
