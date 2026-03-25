@@ -48,7 +48,12 @@ type BridgeConfig struct {
 	Sessions               map[string]SessionConfig
 	HasOutboxStore         bool
 	HasLeaseStore          bool
+	HasDLQStore            bool
 	OutboxTransactionLimit int
+	DeploymentMode         string
+	LeaseStoreDistributed  bool
+	OutboxStoreDistributed bool
+	DLQStoreDistributed    bool
 }
 
 // ValidationError records a single validation failure.

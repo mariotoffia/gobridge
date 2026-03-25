@@ -35,6 +35,7 @@ func makeRunner(t *testing.T, opts ...func(*runtime.RouteRunnerConfig)) (*FakeRe
 	return receiver, sender, dlqStore, outbox, runner
 }
 
+// TestRouteRunner_DirectHold_HappyPath verifies direct hold delivers a message, sends once, and acks the delivery.
 func TestRouteRunner_DirectHold_HappyPath(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t)
 
@@ -60,6 +61,7 @@ func TestRouteRunner_DirectHold_HappyPath(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_DirectHold_TransientSendError verifies transient send failure retries the delivery without acking.
 func TestRouteRunner_DirectHold_TransientSendError(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
@@ -83,6 +85,7 @@ func TestRouteRunner_DirectHold_TransientSendError(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_DirectHold_PermanentSendError verifies permanent send failure moves the message to DLQ and acks.
 func TestRouteRunner_DirectHold_PermanentSendError(t *testing.T) {
 	receiver, sender, dlqStore, _, runner := makeRunner(t)
 	sender.SendErr = domain.ErrNotAuthorized
@@ -104,6 +107,7 @@ func TestRouteRunner_DirectHold_PermanentSendError(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_ExpiredMessage verifies expired envelopes skip send, land on DLQ, and ack to stop redelivery.
 func TestRouteRunner_ExpiredMessage(t *testing.T) {
 	receiver, sender, dlqStore, _, runner := makeRunner(t)
 
@@ -131,6 +135,7 @@ func TestRouteRunner_ExpiredMessage(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_HeaderInjection verifies reserved correlation headers are regenerated while custom headers are kept.
 func TestRouteRunner_HeaderInjection(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t)
 
@@ -163,6 +168,7 @@ func TestRouteRunner_HeaderInjection(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_ProcessorError_Permanent verifies permanent processor errors route to DLQ and ack the delivery.
 func TestRouteRunner_ProcessorError_Permanent(t *testing.T) {
 	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Processors = []ports.Processor{
@@ -187,6 +193,7 @@ func TestRouteRunner_ProcessorError_Permanent(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_ProcessorError_Transient verifies transient processor errors trigger source retry without ack.
 func TestRouteRunner_ProcessorError_Transient(t *testing.T) {
 	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Processors = []ports.Processor{
@@ -208,6 +215,7 @@ func TestRouteRunner_ProcessorError_Transient(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_ProcessorError_MessageFiltered verifies filtered messages ack silently without send, retry, or DLQ.
 func TestRouteRunner_ProcessorError_MessageFiltered(t *testing.T) {
 	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Processors = []ports.Processor{

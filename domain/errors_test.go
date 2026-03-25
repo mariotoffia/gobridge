@@ -9,6 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
+// TestBridgeError_Error verifies Error returns the message and Wrap formats a chained error string.
 func TestBridgeError_Error(t *testing.T) {
 	e := &domain.BridgeError{
 		Code: domain.ErrCodeTimeout, Class: domain.ErrorTransient,
@@ -24,6 +25,7 @@ func TestBridgeError_Error(t *testing.T) {
 	}
 }
 
+// TestBridgeError_Is verifies errors.Is matches wrapped BridgeError sentinels and does not match unrelated codes.
 func TestBridgeError_Is(t *testing.T) {
 	err := domain.ErrTimeout.Wrap(fmt.Errorf("deadline"))
 	if !errors.Is(err, domain.ErrTimeout) {
@@ -34,6 +36,7 @@ func TestBridgeError_Is(t *testing.T) {
 	}
 }
 
+// TestBridgeError_As verifies AsBridgeError unwraps to the correct code and RetryAfter from a wrapped error chain.
 func TestBridgeError_As(t *testing.T) {
 	err := domain.ErrThrottled.WithRetryAfter(5 * time.Second).Wrap(fmt.Errorf("429"))
 	be, ok := domain.AsBridgeError(err)
@@ -48,6 +51,7 @@ func TestBridgeError_As(t *testing.T) {
 	}
 }
 
+// TestBridgeError_With verifies With attaches context on a copy without mutating the original sentinel.
 func TestBridgeError_With(t *testing.T) {
 	e := domain.ErrConnectionLost.With("topic", "sensors/temp")
 	if v, ok := e.Context["topic"]; !ok || v != "sensors/temp" {
@@ -59,6 +63,7 @@ func TestBridgeError_With(t *testing.T) {
 	}
 }
 
+// TestBridgeError_WithMessage verifies WithMessage overrides the message on a copy without mutating the sentinel.
 func TestBridgeError_WithMessage(t *testing.T) {
 	e := domain.ErrUnavailable.WithMessage("broker down")
 	if e.Message != "broker down" {
@@ -69,6 +74,7 @@ func TestBridgeError_WithMessage(t *testing.T) {
 	}
 }
 
+// TestBridgeError_Unwrap verifies Unwrap returns the underlying cause from a wrapped BridgeError.
 func TestBridgeError_Unwrap(t *testing.T) {
 	cause := fmt.Errorf("root cause")
 	e := domain.ErrNotFound.Wrap(cause)
@@ -77,6 +83,7 @@ func TestBridgeError_Unwrap(t *testing.T) {
 	}
 }
 
+// TestIsRecoverableError validates IsRecoverableError for nil, transient, permanent, rejected, expired, and arbitrary errors.
 func TestIsRecoverableError(t *testing.T) {
 	tests := []struct {
 		name string
@@ -99,6 +106,7 @@ func TestIsRecoverableError(t *testing.T) {
 	}
 }
 
+// TestGetRetryAfter verifies GetRetryAfter returns zero for nil and non-throttled errors and honors RetryAfter on throttled errors.
 func TestGetRetryAfter(t *testing.T) {
 	if d := domain.GetRetryAfter(nil); d != 0 {
 		t.Fatalf("expected 0 for nil, got %v", d)
@@ -112,6 +120,7 @@ func TestGetRetryAfter(t *testing.T) {
 	}
 }
 
+// TestNewBridgeError verifies NewBridgeError sets the code and error class on the constructed BridgeError.
 func TestNewBridgeError(t *testing.T) {
 	e := domain.NewBridgeError("CUSTOM", domain.ErrorTransient, "custom error")
 	if e.Code != "CUSTOM" || e.Class != domain.ErrorTransient {
@@ -119,6 +128,7 @@ func TestNewBridgeError(t *testing.T) {
 	}
 }
 
+// TestSentinelClasses validates each package sentinel BridgeError carries the expected ErrorClass.
 func TestSentinelClasses(t *testing.T) {
 	tests := []struct {
 		err   *domain.BridgeError
@@ -156,6 +166,7 @@ func TestSentinelClasses(t *testing.T) {
 	}
 }
 
+// TestErrMessageFiltered_Is verifies errors.Is for ErrMessageFiltered matches itself and not other sentinels.
 func TestErrMessageFiltered_Is(t *testing.T) {
 	if !errors.Is(domain.ErrMessageFiltered, domain.ErrMessageFiltered) {
 		t.Fatal("ErrMessageFiltered should match itself via errors.Is")

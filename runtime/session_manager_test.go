@@ -9,6 +9,7 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
+// Verifies a non-exclusive session manager starts the session and reconciles once without a lease.
 func TestSessionManager_NonExclusive(t *testing.T) {
 	session := NewFakeSession()
 	cfg := goruntime.SessionConfig{
@@ -32,6 +33,7 @@ func TestSessionManager_NonExclusive(t *testing.T) {
 	}
 }
 
+// Verifies exclusive mode acquires a lease, exposes a token with owner and version, and starts the session.
 func TestSessionManager_ExclusiveLease(t *testing.T) {
 	session := NewFakeSession()
 	leaseStore := NewFakeLeaseStore()
@@ -68,6 +70,9 @@ func TestSessionManager_ExclusiveLease(t *testing.T) {
 	}
 }
 
+// Verifies lease loss after renew failure clears hasLease and Run exits with error when the context is cancelled.
+//
+// Scenario: run manager; force renew errors; poll until lease cleared; cancel context and assert Run returns non-nil error.
 func TestSessionManager_StepDown(t *testing.T) {
 	session := NewFakeSession()
 	leaseStore := NewFakeLeaseStore()
@@ -121,6 +126,7 @@ func TestSessionManager_StepDown(t *testing.T) {
 	}
 }
 
+// Verifies Close succeeds after Run is cancelled following an exclusive session with lease renewal.
 func TestSessionManager_Close(t *testing.T) {
 	session := NewFakeSession()
 	leaseStore := NewFakeLeaseStore()

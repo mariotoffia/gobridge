@@ -33,6 +33,7 @@ func testConfig() Config {
 
 // --- Config validation tests ---
 
+// Verifies Start fails when the admin API key is not configured.
 func TestValidateConfig_AdminAPIKeyRequired(t *testing.T) {
 	rt := testRuntime()
 	cfg := DefaultConfig()
@@ -42,6 +43,7 @@ func TestValidateConfig_AdminAPIKeyRequired(t *testing.T) {
 	assert.Contains(t, err.Error(), "admin API key is required")
 }
 
+// Verifies Start rejects a lone wildcard CORS origin.
 func TestValidateConfig_CORSWildcardRejected(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -52,6 +54,7 @@ func TestValidateConfig_CORSWildcardRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "wildcard CORS origin")
 }
 
+// Verifies Start rejects wildcard CORS when it appears in a comma-separated list.
 func TestValidateConfig_CORSWildcardInListRejected(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -62,6 +65,7 @@ func TestValidateConfig_CORSWildcardInListRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "wildcard CORS origin")
 }
 
+// Verifies validateConfig accepts explicit comma-separated CORS origins.
 func TestValidateConfig_ExplicitCORSAllowed(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -71,6 +75,7 @@ func TestValidateConfig_ExplicitCORSAllowed(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// Verifies validateConfig allows empty CORS configuration (disabled).
 func TestValidateConfig_EmptyCORSAllowed(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -81,6 +86,7 @@ func TestValidateConfig_EmptyCORSAllowed(t *testing.T) {
 
 // --- Admin auth tests ---
 
+// Verifies admin routes require authentication when an API key is set: missing or wrong keys yield 401; valid X-API-Key or Bearer succeeds.
 func TestAdminAuth_RequiredWhenKeySet(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -123,6 +129,7 @@ func TestAdminAuth_RequiredWhenKeySet(t *testing.T) {
 
 // --- Monitor auth tests ---
 
+// Verifies health, live, and ready probe endpoints do not require authentication.
 func TestMonitorProbes_NoAuthRequired(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -142,6 +149,7 @@ func TestMonitorProbes_NoAuthRequired(t *testing.T) {
 	}
 }
 
+// Verifies topology, routes, and logs monitor endpoints require auth without a key and return 200 with the admin API key.
 func TestMonitorSensitive_RequiresAuth(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -175,6 +183,7 @@ func TestMonitorSensitive_RequiresAuth(t *testing.T) {
 	}
 }
 
+// Verifies a dedicated MonitorAPIKey is enforced: admin key is rejected, monitor key is accepted for sensitive monitor routes.
 func TestMonitorSensitive_SeparateMonitorKey(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -203,6 +212,7 @@ func TestMonitorSensitive_SeparateMonitorKey(t *testing.T) {
 
 // --- CORS tests ---
 
+// Verifies no Access-Control-Allow-Origin is set when CORS origins are not configured.
 func TestCORS_DisabledByDefault(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -221,6 +231,7 @@ func TestCORS_DisabledByDefault(t *testing.T) {
 		"CORS should be disabled when CORSOrigins is empty")
 }
 
+// Verifies an allowed Origin receives Access-Control-Allow-Origin and Vary: Origin.
 func TestCORS_ExplicitOriginAllowed(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -240,6 +251,7 @@ func TestCORS_ExplicitOriginAllowed(t *testing.T) {
 	assert.Equal(t, "Origin", rec.Header().Get("Vary"))
 }
 
+// Verifies a request Origin not in the allowlist does not get CORS reflection headers.
 func TestCORS_UnlistedOriginRejected(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -258,6 +270,7 @@ func TestCORS_UnlistedOriginRejected(t *testing.T) {
 	assert.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
 }
 
+// Verifies OPTIONS preflight for an allowed origin returns 204 No Content with CORS headers.
 func TestCORS_PreflightReturns204(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -279,6 +292,7 @@ func TestCORS_PreflightReturns204(t *testing.T) {
 
 // --- Handler tests ---
 
+// Verifies GET /api/v1/admin/bridge returns instance metadata and running=false when authenticated.
 func TestHandleBridge(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -300,6 +314,7 @@ func TestHandleBridge(t *testing.T) {
 	assert.Equal(t, false, body["running"])
 }
 
+// Verifies GET /api/v1/admin/routes returns an empty JSON array when no routes exist.
 func TestHandleRoutes_Empty(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -320,6 +335,7 @@ func TestHandleRoutes_Empty(t *testing.T) {
 	assert.Empty(t, routes)
 }
 
+// Verifies GET /api/v1/monitor/health reports not_running and 503 when the bridge is not running.
 func TestHandleHealth(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -339,6 +355,7 @@ func TestHandleHealth(t *testing.T) {
 	assert.Equal(t, "not_running", body["status"])
 }
 
+// Verifies GET /api/v1/monitor/live returns 200 for liveness.
 func TestHandleLive(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -354,6 +371,7 @@ func TestHandleLive(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+// Verifies GET /api/v1/monitor/ready returns 503 when the bridge is not ready.
 func TestHandleReady_NotRunning(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()

@@ -37,6 +37,11 @@ func Validate(cfg *BridgeConfig) error {
 		ve.add("bridge.id is required")
 	}
 
+	if cfg.Bridge.DeploymentMode != "" {
+		validateEnum(ve, "bridge.deployment_mode", cfg.Bridge.DeploymentMode,
+			"standalone", "clustered")
+	}
+
 	sessionIDs := collectIDs(ve, "sessions", len(cfg.Sessions), func(i int) (string, string) {
 		s := cfg.Sessions[i]
 		if s.Transport == "" {

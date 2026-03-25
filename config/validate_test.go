@@ -41,11 +41,13 @@ func validConfig() *BridgeConfig {
 	}
 }
 
+// Verifies Validate accepts a minimal structurally consistent bridge configuration.
 func TestValidate_ValidConfig(t *testing.T) {
 	err := Validate(validConfig())
 	assert.NoError(t, err)
 }
 
+// Verifies Validate rejects a configuration with an empty bridge ID.
 func TestValidate_MissingBridgeID(t *testing.T) {
 	cfg := validConfig()
 	cfg.Bridge.ID = ""
@@ -54,6 +56,7 @@ func TestValidate_MissingBridgeID(t *testing.T) {
 	assert.Contains(t, err.Error(), "bridge.id is required")
 }
 
+// Verifies Validate rejects duplicate session IDs.
 func TestValidate_DuplicateSessionIDs(t *testing.T) {
 	cfg := validConfig()
 	cfg.Sessions = append(cfg.Sessions, SessionDef{ID: "s1", Transport: "mqtt"})
@@ -62,6 +65,7 @@ func TestValidate_DuplicateSessionIDs(t *testing.T) {
 	assert.Contains(t, err.Error(), "duplicate id")
 }
 
+// Verifies Validate rejects an unsupported session_mode value.
 func TestValidate_InvalidSessionMode(t *testing.T) {
 	cfg := validConfig()
 	cfg.Sessions[0].SessionMode = "invalid"
@@ -70,6 +74,7 @@ func TestValidate_InvalidSessionMode(t *testing.T) {
 	assert.Contains(t, err.Error(), "session_mode")
 }
 
+// Verifies Validate rejects receivers that omit both transport and session_id.
 func TestValidate_ReceiverMissingTransport(t *testing.T) {
 	cfg := validConfig()
 	cfg.Receivers[0].Transport = ""
@@ -78,6 +83,7 @@ func TestValidate_ReceiverMissingTransport(t *testing.T) {
 	assert.Contains(t, err.Error(), "transport or session_id is required")
 }
 
+// Verifies Validate rejects receiver session_id values that do not match any session.
 func TestValidate_ReceiverBadSessionRef(t *testing.T) {
 	cfg := validConfig()
 	cfg.Receivers[0].SessionID = "nonexistent"
@@ -86,6 +92,7 @@ func TestValidate_ReceiverBadSessionRef(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found in sessions")
 }
 
+// Verifies Validate rejects bindings with an empty sender_id.
 func TestValidate_BindingMissingSender(t *testing.T) {
 	cfg := validConfig()
 	cfg.Bindings[0].SenderID = ""
@@ -94,6 +101,7 @@ func TestValidate_BindingMissingSender(t *testing.T) {
 	assert.Contains(t, err.Error(), "sender_id is required")
 }
 
+// Verifies Validate rejects bindings whose sender_id does not exist in senders.
 func TestValidate_BindingBadSenderRef(t *testing.T) {
 	cfg := validConfig()
 	cfg.Bindings[0].SenderID = "ghost"
@@ -102,6 +110,7 @@ func TestValidate_BindingBadSenderRef(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found in senders")
 }
 
+// Verifies Validate rejects routes with an empty receiver_id.
 func TestValidate_RouteMissingReceiver(t *testing.T) {
 	cfg := validConfig()
 	cfg.Routes[0].ReceiverID = ""
@@ -110,6 +119,7 @@ func TestValidate_RouteMissingReceiver(t *testing.T) {
 	assert.Contains(t, err.Error(), "receiver_id is required")
 }
 
+// Verifies Validate rejects routes whose receiver_id does not exist in receivers.
 func TestValidate_RouteBadReceiverRef(t *testing.T) {
 	cfg := validConfig()
 	cfg.Routes[0].ReceiverID = "missing"
@@ -118,6 +128,7 @@ func TestValidate_RouteBadReceiverRef(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found in receivers")
 }
 
+// Verifies Validate rejects unknown delivery_mode values.
 func TestValidate_InvalidDeliveryMode(t *testing.T) {
 	cfg := validConfig()
 	cfg.Routes[0].DeliveryMode = "bogus"
@@ -126,6 +137,7 @@ func TestValidate_InvalidDeliveryMode(t *testing.T) {
 	assert.Contains(t, err.Error(), "delivery_mode")
 }
 
+// Verifies Validate rejects unknown dispatch_mode values.
 func TestValidate_InvalidDispatchMode(t *testing.T) {
 	cfg := validConfig()
 	cfg.Routes[0].DispatchMode = "bogus"
@@ -134,6 +146,7 @@ func TestValidate_InvalidDispatchMode(t *testing.T) {
 	assert.Contains(t, err.Error(), "dispatch_mode")
 }
 
+// Verifies Validate rejects shared_outbox routes when stores.outbox is missing.
 func TestValidate_SharedOutboxWithoutStore(t *testing.T) {
 	cfg := validConfig()
 	cfg.Stores.Outbox = nil
@@ -142,6 +155,7 @@ func TestValidate_SharedOutboxWithoutStore(t *testing.T) {
 	assert.Contains(t, err.Error(), "requires stores.outbox")
 }
 
+// Verifies Validate rejects exclusive MQTT sessions when stores.lease is missing.
 func TestValidate_ExclusiveSessionWithoutLeaseStore(t *testing.T) {
 	cfg := validConfig()
 	cfg.Stores.Lease = nil
@@ -150,6 +164,7 @@ func TestValidate_ExclusiveSessionWithoutLeaseStore(t *testing.T) {
 	assert.Contains(t, err.Error(), "requires stores.lease")
 }
 
+// Verifies Validate rejects routes with no bindings.
 func TestValidate_RouteNoBindings(t *testing.T) {
 	cfg := validConfig()
 	cfg.Routes[0].Bindings = nil
@@ -158,6 +173,7 @@ func TestValidate_RouteNoBindings(t *testing.T) {
 	assert.Contains(t, err.Error(), "at least one binding")
 }
 
+// Verifies Validate rejects route binding references that are not defined in bindings.
 func TestValidate_RouteBadBindingRef(t *testing.T) {
 	cfg := validConfig()
 	cfg.Routes[0].Bindings = []string{"nope"}
@@ -166,6 +182,7 @@ func TestValidate_RouteBadBindingRef(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found in bindings")
 }
 
+// Verifies Validate rejects unsupported ack_after policy values.
 func TestValidate_InvalidAckAfter(t *testing.T) {
 	cfg := validConfig()
 	cfg.Routes[0].Policy.AckAfter = "never"
@@ -174,6 +191,28 @@ func TestValidate_InvalidAckAfter(t *testing.T) {
 	assert.Contains(t, err.Error(), "ack_after")
 }
 
+// Verifies Validate rejects unknown deployment_mode values on the bridge.
+func TestValidate_InvalidDeploymentMode(t *testing.T) {
+	cfg := validConfig()
+	cfg.Bridge.DeploymentMode = "invalid"
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deployment_mode")
+}
+
+// Verifies Validate accepts empty, standalone, and clustered deployment_mode values.
+func TestValidate_ValidDeploymentModes(t *testing.T) {
+	for _, mode := range []string{"", "standalone", "clustered"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Bridge.DeploymentMode = mode
+			err := Validate(cfg)
+			assert.NoError(t, err)
+		})
+	}
+}
+
+// Verifies Validate accepts a direct_hold route without session stores when the graph is otherwise valid.
 func TestValidate_DirectHold(t *testing.T) {
 	cfg := &BridgeConfig{
 		Bridge: BridgeSettings{ID: "b1"},

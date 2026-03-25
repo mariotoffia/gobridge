@@ -145,6 +145,7 @@ func testConfig() *config.BridgeConfig {
 	}
 }
 
+// Verifies NewBuilder wires transports and stores and produces a runtime with the expected route metadata.
 func TestBuilder_Build(t *testing.T) {
 	cfg := testConfig()
 
@@ -163,6 +164,7 @@ func TestBuilder_Build(t *testing.T) {
 	assert.Equal(t, domain.DeliverySharedOutbox, routes[0].DeliveryMode)
 }
 
+// Verifies Build fails when a configured transport has no registered factory.
 func TestBuilder_MissingTransportFactory(t *testing.T) {
 	cfg := testConfig()
 
@@ -175,6 +177,7 @@ func TestBuilder_MissingTransportFactory(t *testing.T) {
 	assert.Contains(t, err.Error(), "no transport factory")
 }
 
+// Verifies Build fails when shared_outbox requires a store type with no registered factory.
 func TestBuilder_MissingStoreFactory(t *testing.T) {
 	cfg := testConfig()
 
@@ -187,6 +190,7 @@ func TestBuilder_MissingStoreFactory(t *testing.T) {
 	assert.Contains(t, err.Error(), "no store factory")
 }
 
+// Verifies Build surfaces config validation errors for an empty bridge configuration.
 func TestBuilder_InvalidConfig(t *testing.T) {
 	cfg := &config.BridgeConfig{}
 
@@ -195,6 +199,7 @@ func TestBuilder_InvalidConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "config validation")
 }
 
+// Verifies Build constructs a direct_hold route without session-scoped stores when the config is valid.
 func TestBuilder_DirectHoldRoute(t *testing.T) {
 	cfg := &config.BridgeConfig{
 		Bridge: config.BridgeSettings{ID: "b1"},
@@ -229,6 +234,7 @@ func TestBuilder_DirectHoldRoute(t *testing.T) {
 	assert.Equal(t, domain.DeliveryDirectHold, routes[0].DeliveryMode)
 }
 
+// Verifies WithCredentialStore resolves credentials_uri into session options before creating the transport session.
 func TestBuilder_WithCredentialStore(t *testing.T) {
 	cfg := testConfig()
 	cfg.Sessions[0].Options = map[string]any{
@@ -263,6 +269,7 @@ func TestBuilder_WithCredentialStore(t *testing.T) {
 	assert.False(t, hasURI, "credentials_uri should be removed after resolution")
 }
 
+// Verifies inline session option keys override resolved credential fields while still filling missing values from the store.
 func TestBuilder_CredentialInlineOverride(t *testing.T) {
 	cfg := testConfig()
 	cfg.Sessions[0].Options = map[string]any{
@@ -298,6 +305,58 @@ func TestBuilder_CredentialInlineOverride(t *testing.T) {
 		"password should be resolved from credential store")
 }
 
+type fakeDistributedStoreFactory struct {
+	fakeStoreFactory
+}
+
+func (f *fakeDistributedStoreFactory) IsDistributed() bool { return true }
+
+// Verifies Build rejects clustered deployment when registered store factories are not distributed.
+func TestBuilder_Clustered_NonDistributedStore_Rejected(t *testing.T) {
+	cfg := testConfig()
+	cfg.Bridge.DeploymentMode = "clustered"
+
+	_, err := NewBuilder(cfg).
+		RegisterTransport("mqtt", &fakeTransportFactory{}).
+		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterStoreFactory("memory", &fakeStoreFactory{}).
+		Build(context.Background())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "clustered deployment requires a distributed")
+}
+
+// Verifies Build succeeds for clustered deployment when store factories report IsDistributed.
+func TestBuilder_Clustered_DistributedStore_OK(t *testing.T) {
+	cfg := testConfig()
+	cfg.Bridge.DeploymentMode = "clustered"
+
+	rt, err := NewBuilder(cfg).
+		RegisterTransport("mqtt", &fakeTransportFactory{}).
+		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterStoreFactory("memory", &fakeDistributedStoreFactory{}).
+		Build(context.Background())
+
+	require.NoError(t, err)
+	require.NotNil(t, rt)
+}
+
+// Verifies Build accepts standalone deployment with non-distributed memory stores.
+func TestBuilder_Standalone_NonDistributedStore_OK(t *testing.T) {
+	cfg := testConfig()
+	cfg.Bridge.DeploymentMode = "standalone"
+
+	rt, err := NewBuilder(cfg).
+		RegisterTransport("mqtt", &fakeTransportFactory{}).
+		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterStoreFactory("memory", &fakeStoreFactory{}).
+		Build(context.Background())
+
+	require.NoError(t, err)
+	require.NotNil(t, rt)
+}
+
+// Verifies Build fails when session options reference credentials_uri but no credential store was provided.
 func TestBuilder_CredentialsURIWithoutStore(t *testing.T) {
 	cfg := testConfig()
 	cfg.Sessions[0].Options = map[string]any{

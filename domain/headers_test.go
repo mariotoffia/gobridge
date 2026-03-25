@@ -6,6 +6,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
+// TestIsReservedHeader validates IsReservedHeader for bridge-reserved keys, custom prefixes, and ordinary headers.
 func TestIsReservedHeader(t *testing.T) {
 	tests := []struct {
 		key  string
@@ -29,6 +30,7 @@ func TestIsReservedHeader(t *testing.T) {
 	}
 }
 
+// TestStripReservedHeaders verifies StripReservedHeaders removes reserved keys, keeps others, copies into a new map, and leaves the input unchanged.
 func TestStripReservedHeaders(t *testing.T) {
 	headers := map[string]any{
 		domain.HeaderCorrelationID: "abc",
@@ -53,12 +55,14 @@ func TestStripReservedHeaders(t *testing.T) {
 	}
 }
 
+// TestStripReservedHeaders_Nil verifies StripReservedHeaders returns nil when the input map is nil.
 func TestStripReservedHeaders_Nil(t *testing.T) {
 	if got := domain.StripReservedHeaders(nil); got != nil {
 		t.Fatalf("expected nil, got %v", got)
 	}
 }
 
+// TestMergeHeaders verifies MergeHeaders overlays keys and optionally preserves reserved keys already present in the base map.
 func TestMergeHeaders(t *testing.T) {
 	base := map[string]any{
 		domain.HeaderRouteID: "route-1",
@@ -92,6 +96,7 @@ func TestMergeHeaders(t *testing.T) {
 	}
 }
 
+// TestMergeHeaders_NilInputs verifies MergeHeaders handles nil base and overlay combinations.
 func TestMergeHeaders_NilInputs(t *testing.T) {
 	if got := domain.MergeHeaders(nil, nil, false); got != nil {
 		t.Fatalf("expected nil, got %v", got)
@@ -102,6 +107,7 @@ func TestMergeHeaders_NilInputs(t *testing.T) {
 	}
 }
 
+// TestGetHeaderString verifies GetHeaderString returns string values, rejects wrong types and missing keys, and handles nil maps.
 func TestGetHeaderString(t *testing.T) {
 	headers := map[string]any{
 		"str":    "value",
@@ -121,6 +127,7 @@ func TestGetHeaderString(t *testing.T) {
 	}
 }
 
+// TestSetHeader verifies SetHeader initializes a new map from nil and appends keys on an existing map.
 func TestSetHeader(t *testing.T) {
 	h := domain.SetHeader(nil, "key", "value")
 	if h["key"] != "value" {

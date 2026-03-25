@@ -59,6 +59,8 @@ func fastSessionConfig(sessionID string) goruntime.SessionConfig {
 // Basic shared outbox flow tests
 // ---------------------------------------------------------------------------
 
+// verifies end-to-end shared outbox flow: outbox persist after receive, source ack,
+// drainer send to the resolved subject, and outbox completion.
 func TestSharedOutbox_BasicFlow(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	lease := NewFakeLeaseStore()
@@ -138,6 +140,7 @@ func TestSharedOutbox_BasicFlow(t *testing.T) {
 	})
 }
 
+// verifies route processors run in order and their mutations appear on envelopes the drainer sends.
 func TestSharedOutbox_ProcessorChainRuns(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	lease := NewFakeLeaseStore()
@@ -202,6 +205,7 @@ func TestSharedOutbox_ProcessorChainRuns(t *testing.T) {
 	}
 }
 
+// verifies correlation ID and route ID headers are injected on outbound envelopes.
 func TestSharedOutbox_CorrelationIDInjected(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	lease := NewFakeLeaseStore()
@@ -252,6 +256,7 @@ func TestSharedOutbox_CorrelationIDInjected(t *testing.T) {
 	}
 }
 
+// verifies reserved x-bridge ingress headers are stripped and non-reserved headers are preserved on send.
 func TestSharedOutbox_ReservedHeadersStripped(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	lease := NewFakeLeaseStore()

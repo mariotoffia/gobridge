@@ -13,7 +13,10 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-var _ bridge.StoreFactory = (*DynamoDBStoreFactory)(nil)
+var (
+	_ bridge.StoreFactory            = (*DynamoDBStoreFactory)(nil)
+	_ bridge.DistributedStoreFactory = (*DynamoDBStoreFactory)(nil)
+)
 
 // DynamoDBStoreFactory creates DynamoDB-backed lease, outbox, and DLQ stores.
 type DynamoDBStoreFactory struct {
@@ -25,6 +28,8 @@ type DynamoDBStoreFactory struct {
 func NewDynamoDBStoreFactory(client *dynamodb.Client) *DynamoDBStoreFactory {
 	return &DynamoDBStoreFactory{client: client}
 }
+
+func (f *DynamoDBStoreFactory) IsDistributed() bool { return true }
 
 func (f *DynamoDBStoreFactory) NewLeaseStore(_ context.Context, cfg config.StoreConfig) (ports.LeaseStore, error) {
 	var opts []dynamodblease.Option

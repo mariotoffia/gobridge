@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Verifies Parse unmarshals a representative YAML bridge config into the expected struct fields.
 func TestParse_YAML(t *testing.T) {
 	input := `
 bridge:
@@ -109,6 +110,7 @@ routes:
 	assert.Equal(t, "mqtt-tx", r.Session.SenderID)
 }
 
+// Verifies Parse unmarshals a minimal JSON bridge config without error.
 func TestParse_JSON(t *testing.T) {
 	input := `{
   "bridge": {"id": "bridge-json"},
@@ -123,16 +125,19 @@ func TestParse_JSON(t *testing.T) {
 	require.Len(t, cfg.Routes, 1)
 }
 
+// Verifies Parse returns an error for malformed YAML input.
 func TestParse_InvalidYAML(t *testing.T) {
 	_, err := Parse(strings.NewReader("{{invalid"), FormatYAML)
 	assert.Error(t, err)
 }
 
+// Verifies Parse returns an error for malformed JSON input.
 func TestParse_InvalidJSON(t *testing.T) {
 	_, err := Parse(strings.NewReader("{not json"), FormatJSON)
 	assert.Error(t, err)
 }
 
+// Verifies detectFormat maps common file extensions to YAML or JSON, defaulting unknown extensions to YAML.
 func TestDetectFormat(t *testing.T) {
 	assert.Equal(t, FormatYAML, detectFormat("config.yaml"))
 	assert.Equal(t, FormatYAML, detectFormat("config.yml"))
@@ -140,12 +145,14 @@ func TestDetectFormat(t *testing.T) {
 	assert.Equal(t, FormatYAML, detectFormat("config.txt"))
 }
 
+// Verifies BridgeSettings duration helpers parse explicit shutdown and drain timeout strings to nanoseconds.
 func TestBridgeSettings_Durations(t *testing.T) {
 	bs := BridgeSettings{ShutdownTimeout: "10s", DrainTimeout: "5s"}
 	assert.Equal(t, 10*1e9, float64(bs.ShutdownTimeoutDuration()))
 	assert.Equal(t, 5*1e9, float64(bs.DrainTimeoutDuration()))
 }
 
+// Verifies BridgeSettings duration helpers apply the default 30s when shutdown and drain timeouts are unset.
 func TestBridgeSettings_DurationDefaults(t *testing.T) {
 	bs := BridgeSettings{}
 	assert.Equal(t, 30*1e9, float64(bs.ShutdownTimeoutDuration()))

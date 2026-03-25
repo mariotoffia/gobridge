@@ -7,6 +7,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
+// TestEnvelope_HasExpiry verifies HasExpiry is false for zero ExpiresAt and true when expiry is set.
 func TestEnvelope_HasExpiry(t *testing.T) {
 	e := &domain.Envelope{}
 	if e.HasExpiry() {
@@ -18,6 +19,7 @@ func TestEnvelope_HasExpiry(t *testing.T) {
 	}
 }
 
+// TestEnvelope_IsExpired verifies IsExpired for no expiry, past ExpiresAt, and future ExpiresAt.
 func TestEnvelope_IsExpired(t *testing.T) {
 	e := &domain.Envelope{}
 	if e.IsExpired() {
@@ -35,6 +37,7 @@ func TestEnvelope_IsExpired(t *testing.T) {
 	}
 }
 
+// TestEnvelope_RemainingTTL verifies RemainingTTL is zero without expiry or when expired, and positive before ExpiresAt.
 func TestEnvelope_RemainingTTL(t *testing.T) {
 	e := &domain.Envelope{}
 	if r := e.RemainingTTL(); r != 0 {
@@ -53,6 +56,7 @@ func TestEnvelope_RemainingTTL(t *testing.T) {
 	}
 }
 
+// TestEnvelope_Clone verifies Clone copies scalar fields and deep-copies payload and headers so mutations do not alias the original.
 func TestEnvelope_Clone(t *testing.T) {
 	orig := &domain.Envelope{
 		ID:        "msg-1",
@@ -84,6 +88,7 @@ func TestEnvelope_Clone(t *testing.T) {
 	}
 }
 
+// TestEnvelope_Clone_NilFields verifies Clone leaves nil Payload and Headers nil on the copy.
 func TestEnvelope_Clone_NilFields(t *testing.T) {
 	orig := &domain.Envelope{ID: "msg-nil"}
 	clone := orig.Clone()

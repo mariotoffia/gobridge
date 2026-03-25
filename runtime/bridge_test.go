@@ -10,6 +10,7 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
+// Verifies that the runtime starts and stops cleanly with a single route.
 func TestRuntime_StartStop(t *testing.T) {
 	rt := goruntime.New(
 		goruntime.WithInstanceID("bridge-test"),
@@ -42,6 +43,7 @@ func TestRuntime_StartStop(t *testing.T) {
 	}
 }
 
+// Verifies that adding a route with the same ID as an existing route fails.
 func TestRuntime_DuplicateRoute(t *testing.T) {
 	rt := goruntime.New()
 	cfg := goruntime.RouteConfig{ID: "dup"}
@@ -55,6 +57,7 @@ func TestRuntime_DuplicateRoute(t *testing.T) {
 	}
 }
 
+// Verifies that routes cannot be added while the runtime is running.
 func TestRuntime_AddRouteWhileRunning(t *testing.T) {
 	rt := goruntime.New()
 	cfg := goruntime.RouteConfig{
@@ -72,6 +75,7 @@ func TestRuntime_AddRouteWhileRunning(t *testing.T) {
 	}
 }
 
+// Verifies direct-hold delivery: receiver message is forwarded, delivery acked, sender sees one send.
 func TestRuntime_DirectHoldEndToEnd(t *testing.T) {
 	dlqStore := NewFakeDLQStore()
 	rt := goruntime.New(
@@ -111,6 +115,7 @@ func TestRuntime_DirectHoldEndToEnd(t *testing.T) {
 	_ = rt.Stop(stopCtx)
 }
 
+// Verifies Inject delivers an envelope through a running route to the sender with expected payload.
 func TestRuntime_Inject_HappyPath(t *testing.T) {
 	dlqStore := NewFakeDLQStore()
 	rt := goruntime.New(
@@ -157,6 +162,7 @@ func TestRuntime_Inject_HappyPath(t *testing.T) {
 	}
 }
 
+// Verifies Inject returns an error when the route ID does not exist.
 func TestRuntime_Inject_UnknownRoute(t *testing.T) {
 	rt := goruntime.New(goruntime.WithInstanceID("inject-unknown"))
 
@@ -179,6 +185,7 @@ func TestRuntime_Inject_UnknownRoute(t *testing.T) {
 	}
 }
 
+// Verifies Inject returns an error when the runtime has not been started.
 func TestRuntime_Inject_NotRunning(t *testing.T) {
 	rt := goruntime.New(goruntime.WithInstanceID("inject-stopped"))
 
@@ -188,6 +195,7 @@ func TestRuntime_Inject_NotRunning(t *testing.T) {
 	}
 }
 
+// Verifies Inject assigns an ID on the cloned envelope when the input has no ID without mutating the original.
 func TestRuntime_Inject_AssignsIDWhenEmpty(t *testing.T) {
 	rt := goruntime.New(goruntime.WithInstanceID("inject-id"))
 
@@ -225,6 +233,7 @@ func TestRuntime_Inject_AssignsIDWhenEmpty(t *testing.T) {
 	}
 }
 
+// Verifies Inject does not mutate the caller's envelope headers after processing.
 func TestRuntime_Inject_DoesNotMutateOriginal(t *testing.T) {
 	rt := goruntime.New(goruntime.WithInstanceID("inject-clone"))
 
@@ -260,6 +269,9 @@ func TestRuntime_Inject_DoesNotMutateOriginal(t *testing.T) {
 	}
 }
 
+// Verifies shared-outbox delivery: message is acked after persist, outbox records appear, drain sends to destination.
+//
+// Scenario: start runtime with session lease and drain; emit one message; assert ack, outbox, then at least one send after drain.
 func TestRuntime_SharedOutboxEndToEnd(t *testing.T) {
 	dlqStore := NewFakeDLQStore()
 	outbox := NewFakeOutboxStore()

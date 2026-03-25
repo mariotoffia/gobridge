@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestParseTraceparent validates ParseTraceparent for valid W3C traceparent values and common invalid inputs.
 func TestParseTraceparent(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -88,6 +89,7 @@ func TestParseTraceparent(t *testing.T) {
 	}
 }
 
+// TestFormatTraceparent verifies FormatTraceparent round-trips with ParseTraceparent and formats sampled and unsampled flags.
 func TestFormatTraceparent(t *testing.T) {
 	t.Run("round trip", func(t *testing.T) {
 		original := "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
@@ -115,6 +117,7 @@ func TestFormatTraceparent(t *testing.T) {
 	})
 }
 
+// TestExtractTraceContext verifies ExtractTraceContext reads traceparent and optional tracestate and rejects nil or incomplete headers.
 func TestExtractTraceContext(t *testing.T) {
 	t.Run("with traceparent and tracestate", func(t *testing.T) {
 		headers := map[string]any{
@@ -153,6 +156,7 @@ func TestExtractTraceContext(t *testing.T) {
 	})
 }
 
+// TestInjectTraceContext verifies InjectTraceContext on nil and existing maps, omits empty tracestate, and round-trips with ExtractTraceContext.
 func TestInjectTraceContext(t *testing.T) {
 	tc := domain.TraceContext{
 		TraceID: "4bf92f3577b34da6a3ce929d0e0e4736",

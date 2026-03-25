@@ -78,7 +78,7 @@ func (b *Builder) Build(ctx context.Context) (_ *runtime.Runtime, retErr error) 
 		return nil, fmt.Errorf("bridge: config validation: %w", err)
 	}
 
-	leaseStore, outboxStore, dlqStore, err := b.buildStores(ctx)
+	stores, err := b.buildStores(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -108,9 +108,9 @@ func (b *Builder) Build(ctx context.Context) (_ *runtime.Runtime, retErr error) 
 	}
 
 	rtOpts := []runtime.Option{
-		runtime.WithLeaseStore(leaseStore),
-		runtime.WithOutboxStore(outboxStore),
-		runtime.WithDLQStore(dlqStore),
+		runtime.WithLeaseStore(stores.lease),
+		runtime.WithOutboxStore(stores.outbox),
+		runtime.WithDLQStore(stores.dlq),
 	}
 	if b.cfg.Bridge.InstanceID != "" {
 		rtOpts = append(rtOpts, runtime.WithInstanceID(b.cfg.Bridge.InstanceID))
@@ -220,46 +220,75 @@ func (b *Builder) Build(ctx context.Context) (_ *runtime.Runtime, retErr error) 
 	return rt, nil
 }
 
-func (b *Builder) buildStores(ctx context.Context) (ports.LeaseStore, ports.OutboxStore, ports.DLQStore, error) {
-	var leaseStore ports.LeaseStore
-	var outboxStore ports.OutboxStore
-	var dlqStore ports.DLQStore
+type storeResult struct {
+	lease   ports.LeaseStore
+	outbox  ports.OutboxStore
+	dlq     ports.DLQStore
+	leaseDist  bool
+	outboxDist bool
+	dlqDist    bool
+}
+
+func isDistributedFactory(sf StoreFactory) bool {
+	if df, ok := sf.(DistributedStoreFactory); ok {
+		return df.IsDistributed()
+	}
+	return false
+}
+
+func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
+	res := &storeResult{}
 
 	if sc := b.cfg.Stores.Lease; sc != nil {
 		sf, ok := b.storeFactories[sc.Type]
 		if !ok {
-			return nil, nil, nil, fmt.Errorf("bridge: no store factory registered for lease type %q", sc.Type)
+			return nil, fmt.Errorf("bridge: no store factory registered for lease type %q", sc.Type)
 		}
 		s, err := sf.NewLeaseStore(ctx, *sc)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("bridge: create lease store: %w", err)
+			return nil, fmt.Errorf("bridge: create lease store: %w", err)
 		}
-		leaseStore = s
+		res.lease = s
+		res.leaseDist = isDistributedFactory(sf)
 	}
 	if sc := b.cfg.Stores.Outbox; sc != nil {
 		sf, ok := b.storeFactories[sc.Type]
 		if !ok {
-			return nil, nil, nil, fmt.Errorf("bridge: no store factory registered for outbox type %q", sc.Type)
+			return nil, fmt.Errorf("bridge: no store factory registered for outbox type %q", sc.Type)
 		}
 		s, err := sf.NewOutboxStore(ctx, *sc)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("bridge: create outbox store: %w", err)
+			return nil, fmt.Errorf("bridge: create outbox store: %w", err)
 		}
-		outboxStore = s
+		res.outbox = s
+		res.outboxDist = isDistributedFactory(sf)
 	}
 	if sc := b.cfg.Stores.DLQ; sc != nil {
 		sf, ok := b.storeFactories[sc.Type]
 		if !ok {
-			return nil, nil, nil, fmt.Errorf("bridge: no store factory registered for dlq type %q", sc.Type)
+			return nil, fmt.Errorf("bridge: no store factory registered for dlq type %q", sc.Type)
 		}
 		s, err := sf.NewDLQStore(ctx, *sc)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("bridge: create dlq store: %w", err)
+			return nil, fmt.Errorf("bridge: create dlq store: %w", err)
 		}
-		dlqStore = s
+		res.dlq = s
+		res.dlqDist = isDistributedFactory(sf)
 	}
 
-	return leaseStore, outboxStore, dlqStore, nil
+	if b.cfg.Bridge.DeploymentMode == "clustered" {
+		if res.lease != nil && !res.leaseDist {
+			return nil, fmt.Errorf("bridge: clustered deployment requires a distributed LeaseStore; the configured store is process-local")
+		}
+		if res.outbox != nil && !res.outboxDist {
+			return nil, fmt.Errorf("bridge: clustered deployment requires a distributed OutboxStore; the configured store is process-local")
+		}
+		if res.dlq != nil && !res.dlqDist {
+			return nil, fmt.Errorf("bridge: clustered deployment requires a distributed DLQStore; the configured store is process-local")
+		}
+	}
+
+	return res, nil
 }
 
 func (b *Builder) buildSessions(ctx context.Context) (map[string]ports.Session, error) {

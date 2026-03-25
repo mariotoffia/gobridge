@@ -10,6 +10,8 @@ import "github.com/mariotoffia/gobridge/domain"
 func Validate(cfg BridgeConfig) error {
 	var errs ValidationErrors
 
+	validateStoreBackends(&cfg, &errs)
+
 	for i := range cfg.Routes {
 		r := &cfg.Routes[i]
 

@@ -7,6 +7,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
+// TestRoutePolicy_WithDefaults verifies WithDefaults applies package defaults to all zero-valued RoutePolicy fields.
 func TestRoutePolicy_WithDefaults(t *testing.T) {
 	p := domain.RoutePolicy{}.WithDefaults()
 
@@ -42,6 +43,7 @@ func TestRoutePolicy_WithDefaults(t *testing.T) {
 	}
 }
 
+// TestRoutePolicy_WithDefaults_PreservesExplicit verifies WithDefaults does not overwrite explicitly set RoutePolicy and BackoffPolicy fields.
 func TestRoutePolicy_WithDefaults_PreservesExplicit(t *testing.T) {
 	p := domain.RoutePolicy{
 		MaxInFlight:        50,

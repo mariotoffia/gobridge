@@ -10,6 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
+// Verifies RunChain succeeds with a nil or empty processor slice.
 func TestRunChain_Empty(t *testing.T) {
 	env := &domain.Envelope{ID: "msg-1"}
 	if err := runtime.RunChain(context.Background(), nil, env); err != nil {
@@ -17,6 +18,7 @@ func TestRunChain_Empty(t *testing.T) {
 	}
 }
 
+// Verifies a single processor in the chain is invoked once.
 func TestRunChain_Single(t *testing.T) {
 	p := &FakeProcessor{NameVal: "p1"}
 	env := &domain.Envelope{ID: "msg-1"}
@@ -29,6 +31,7 @@ func TestRunChain_Single(t *testing.T) {
 	}
 }
 
+// Verifies processors run in slice order when each calls next.
 func TestRunChain_Order(t *testing.T) {
 	var order []string
 	makeProcessor := func(name string) ports.Processor {
@@ -57,6 +60,7 @@ func TestRunChain_Order(t *testing.T) {
 	}
 }
 
+// Verifies envelope mutations performed in a processor are visible to later steps and after the chain completes.
 func TestRunChain_Mutation(t *testing.T) {
 	p := &FakeProcessor{
 		NameVal: "mutator",
@@ -75,6 +79,7 @@ func TestRunChain_Mutation(t *testing.T) {
 	}
 }
 
+// Verifies RunChain returns the first processor error.
 func TestRunChain_Error(t *testing.T) {
 	p := &FakeProcessor{
 		NameVal:    "failing",
@@ -88,6 +93,7 @@ func TestRunChain_Error(t *testing.T) {
 	}
 }
 
+// Verifies a failing processor prevents subsequent processors from running.
 func TestRunChain_ShortCircuit(t *testing.T) {
 	p1 := &FakeProcessor{
 		NameVal:    "blocker",

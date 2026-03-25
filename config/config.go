@@ -18,6 +18,7 @@ type BridgeConfig struct {
 type BridgeSettings struct {
 	ID              string `yaml:"id" json:"id"`
 	InstanceID      string `yaml:"instance_id,omitempty" json:"instance_id,omitempty"`
+	DeploymentMode  string `yaml:"deployment_mode,omitempty" json:"deployment_mode,omitempty"`
 	ShutdownTimeout string `yaml:"shutdown_timeout,omitempty" json:"shutdown_timeout,omitempty"`
 	DrainTimeout    string `yaml:"drain_timeout,omitempty" json:"drain_timeout,omitempty"`
 	LogLevel        string `yaml:"log_level,omitempty" json:"log_level,omitempty"`

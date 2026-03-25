@@ -26,6 +26,14 @@ type TransportFactory interface {
 	Capabilities() []ports.Capability
 }
 
+// DistributedStoreFactory is an optional interface that StoreFactory
+// implementations may satisfy to declare whether the underlying store
+// provides cross-process coordination. Factories that do not implement
+// this interface are assumed to be process-local (not distributed).
+type DistributedStoreFactory interface {
+	IsDistributed() bool
+}
+
 // StoreFactory creates backing store instances from declarative
 // configuration. Implementations wrap a specific store technology
 // (e.g. DynamoDB, memory, SQLite).
