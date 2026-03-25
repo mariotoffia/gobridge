@@ -25,6 +25,7 @@ type OutboxDrainer struct {
 	policy        domain.RoutePolicy
 	drainInterval time.Duration
 	batchSize     int
+	metrics       ports.MetricsExporter
 	logger        *slog.Logger
 
 	// tokenFn returns the current lease token and whether the caller
@@ -46,6 +47,7 @@ type OutboxDrainerConfig struct {
 	Policy        domain.RoutePolicy
 	DrainInterval time.Duration
 	BatchSize     int
+	Metrics       ports.MetricsExporter
 	Logger        *slog.Logger
 	TokenFn       func() (domain.LeaseToken, bool)
 }
@@ -72,6 +74,10 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 	if leaseID == "" {
 		leaseID = cfg.PartitionKey
 	}
+	m := cfg.Metrics
+	if m == nil {
+		m = &ports.NoopExporter{}
+	}
 	return &OutboxDrainer{
 		outboxStore:   cfg.OutboxStore,
 		leaseStore:    cfg.LeaseStore,
@@ -84,6 +90,7 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 		policy:        cfg.Policy,
 		drainInterval: cfg.DrainInterval,
 		batchSize:     cfg.BatchSize,
+		metrics:       m,
 		logger:        cfg.Logger,
 		tokenFn:       cfg.TokenFn,
 	}
@@ -116,6 +123,10 @@ func (d *OutboxDrainer) Run(ctx context.Context) error {
 }
 
 func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken) error {
+	start := time.Now()
+	sessionTag := domain.Tag{Key: domain.TagKeySessionID, Value: d.partitionKey}
+	routeTag := domain.Tag{Key: domain.TagKeyRouteID, Value: d.routeID}
+
 	if d.leaseStore != nil {
 		info, err := d.leaseStore.Current(ctx, d.leaseID)
 		if err != nil {
@@ -135,18 +146,26 @@ func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken)
 	}
 
 	for i := range records {
-		if err := d.processRecord(ctx, &records[i], token); err != nil {
+		rec := &records[i]
+		if rec.ReplayCount > 1 {
+			d.metrics.Counter(domain.MetricOutboxReplayCount, 1, routeTag)
+		}
+		if err := d.processRecord(ctx, rec, token); err != nil {
 			d.log(ctx, slog.LevelWarn, "record processing failed",
-				"record_id", records[i].ID, "error", err)
+				"record_id", rec.ID, "error", err)
 		}
 	}
+
+	d.metrics.Timer(domain.MetricOutboxDrainLatency, time.Since(start), sessionTag)
 	return nil
 }
 
 func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRecord, token domain.LeaseToken) error {
 	env := &rec.Envelope
+	routeTag := domain.Tag{Key: domain.TagKeyRouteID, Value: d.routeID}
 
 	if env.HasExpiry() && env.IsExpired() {
+		d.metrics.Counter(domain.MetricOutboxExpiredBeforeSend, 1, routeTag)
 		return d.handleExpired(ctx, rec, token)
 	}
 
@@ -163,6 +182,7 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRec
 
 	sendErr := d.sender.Send(ctx, env)
 	if sendErr == nil {
+		d.metrics.Counter(domain.MetricOutboxCompletions, 1, routeTag)
 		return d.outboxStore.Complete(ctx, []string{rec.ID}, token)
 	}
 

@@ -20,6 +20,7 @@ type Runtime struct {
 	leaseStore  ports.LeaseStore
 	outboxStore ports.OutboxStore
 	dlqStore    ports.DLQStore
+	metrics     ports.MetricsExporter
 	logger      *slog.Logger
 
 	mu              sync.Mutex
@@ -74,6 +75,13 @@ func WithOutboxStore(store ports.OutboxStore) Option {
 // WithDLQStore sets the dead-letter queue store.
 func WithDLQStore(store ports.DLQStore) Option {
 	return func(rt *Runtime) { rt.dlqStore = store }
+}
+
+// WithMetrics sets the metrics exporter for the runtime. When set,
+// the runtime emits latency, counter, and gauge metrics for leases,
+// outbox operations, delivery, and DLQ events.
+func WithMetrics(m ports.MetricsExporter) Option {
+	return func(rt *Runtime) { rt.metrics = m }
 }
 
 // WithLogger sets the structured logger.
@@ -182,6 +190,10 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	ctx, rt.cancel = context.WithCancel(ctx)
 
 	dlq := NewDLQRouter(rt.dlqStore)
+	m := rt.metrics
+	if m == nil {
+		m = &ports.NoopExporter{}
+	}
 
 	drainerSessions := make(map[string]bool)
 
@@ -197,13 +209,14 @@ func (rt *Runtime) Start(ctx context.Context) error {
 			Processors:  entry.config.Processors,
 			Bindings:    entry.config.Bindings,
 			InstanceID:  rt.instanceID,
+			Metrics:     m,
 			Logger:      rt.logger,
 		})
 
 		if entry.session != nil && entry.sessCfg != nil {
 			sid := entry.sessCfg.SessionID
 			if _, exists := rt.sessionMgrs[sid]; !exists {
-				mgr := newSessionManager(*entry.sessCfg, entry.session, rt.leaseStore, rt.instanceID, rt.logger)
+				mgr := newSessionManagerWithMetrics(*entry.sessCfg, entry.session, rt.leaseStore, rt.instanceID, rt.logger, m)
 				rt.sessionMgrs[sid] = mgr
 			}
 
@@ -222,6 +235,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					Policy:        entry.config.Policy.WithDefaults(),
 					DrainInterval: entry.sessCfg.DrainInterval,
 					BatchSize:     entry.sessCfg.DrainBatchSize,
+					Metrics:       m,
 					Logger:        rt.logger,
 					TokenFn:       mgr.Token,
 				})
@@ -245,7 +259,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				}
 
 				if _, exists := rt.sessionMgrs[sid]; !exists {
-					mgr := newSessionManager(sse.config, sse.session, rt.leaseStore, rt.instanceID, rt.logger)
+					mgr := newSessionManagerWithMetrics(sse.config, sse.session, rt.leaseStore, rt.instanceID, rt.logger, m)
 					rt.sessionMgrs[sid] = mgr
 				}
 
@@ -263,6 +277,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					Policy:        entry.config.Policy.WithDefaults(),
 					DrainInterval: sse.config.DrainInterval,
 					BatchSize:     sse.config.DrainBatchSize,
+					Metrics:       m,
 					Logger:        rt.logger,
 					TokenFn:       mgr.Token,
 				})
@@ -331,7 +346,14 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
+	metrics := rt.metrics
 	rt.mu.Unlock()
+
+	if metrics != nil {
+		if err := metrics.Flush(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
 
 	return errors.Join(errs...)
 }

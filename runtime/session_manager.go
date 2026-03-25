@@ -27,16 +27,24 @@ type SessionManager struct {
 	renewJitter       time.Duration
 	maxRenewFails     int
 	stepDownGrace     time.Duration
+	metrics           ports.MetricsExporter
 	logger            *slog.Logger
 
-	mu       sync.Mutex
-	token    domain.LeaseToken
-	hasLease bool
+	mu              sync.Mutex
+	token           domain.LeaseToken
+	hasLease        bool
+	connectedOnce   bool
 }
 
 // NewSessionManagerFromConfig creates a SessionManager from a config struct.
 func NewSessionManagerFromConfig(cfg SessionConfig, session ports.Session, leaseStore ports.LeaseStore, ownerID string, logger *slog.Logger) *SessionManager {
 	return newSessionManager(cfg, session, leaseStore, ownerID, logger)
+}
+
+func newSessionManagerWithMetrics(cfg SessionConfig, session ports.Session, leaseStore ports.LeaseStore, ownerID string, logger *slog.Logger, metrics ports.MetricsExporter) *SessionManager {
+	mgr := newSessionManager(cfg, session, leaseStore, ownerID, logger)
+	mgr.metrics = metrics
+	return mgr
 }
 
 func newSessionManager(cfg SessionConfig, session ports.Session, leaseStore ports.LeaseStore, ownerID string, logger *slog.Logger) *SessionManager {
@@ -70,6 +78,7 @@ func newSessionManager(cfg SessionConfig, session ports.Session, leaseStore port
 		renewJitter:       cfg.RenewJitter,
 		maxRenewFails:     cfg.MaxRenewFails,
 		stepDownGrace:     cfg.StepDownGrace,
+		metrics:           &ports.NoopExporter{},
 		logger:            logger,
 	}
 }
@@ -101,6 +110,12 @@ func (m *SessionManager) Run(ctx context.Context) error {
 	return m.handleEvents(ctx)
 }
 
+// SetMetrics sets the metrics exporter on the session manager.
+// Must be called before Run; not safe for concurrent use with Run.
+func (m *SessionManager) SetMetrics(metrics ports.MetricsExporter) {
+	m.metrics = metrics
+}
+
 // Token returns the current lease token and whether the manager holds the lease.
 func (m *SessionManager) Token() (domain.LeaseToken, bool) {
 	m.mu.Lock()
@@ -124,12 +139,19 @@ func (m *SessionManager) Close(ctx context.Context) error {
 
 func (m *SessionManager) runExclusiveDeferred(ctx context.Context) error {
 	sessionStarted := false
+	iteration := 0
 	for {
 		token, err := m.acquireLeaseWithRetry(ctx)
 		if err != nil {
 			return err
 		}
 		m.setToken(token)
+
+		if iteration > 0 {
+			m.metrics.Counter(domain.MetricLeaseTransfers, 1,
+				domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID})
+		}
+		iteration++
 
 		m.log(ctx, slog.LevelInfo, "lease acquired (deferred connect)", "version", token.Version)
 
@@ -156,12 +178,19 @@ func (m *SessionManager) runExclusiveDeferred(ctx context.Context) error {
 }
 
 func (m *SessionManager) runExclusive(ctx context.Context) error {
+	iteration := 0
 	for {
 		token, err := m.acquireLeaseWithRetry(ctx)
 		if err != nil {
 			return err
 		}
 		m.setToken(token)
+
+		if iteration > 0 {
+			m.metrics.Counter(domain.MetricLeaseTransfers, 1,
+				domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID})
+		}
+		iteration++
 
 		m.log(ctx, slog.LevelInfo, "lease acquired", "version", token.Version)
 
@@ -181,11 +210,15 @@ func (m *SessionManager) runExclusive(ctx context.Context) error {
 }
 
 func (m *SessionManager) acquireLeaseWithRetry(ctx context.Context) (domain.LeaseToken, error) {
+	leaseTag := domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID}
 	for {
+		start := time.Now()
 		token, err := m.leaseStore.Acquire(ctx, m.sessionID, m.ownerID, m.leaseTTL)
+		m.metrics.Timer(domain.MetricLeaseAcquireLatency, time.Since(start), leaseTag)
 		if err == nil {
 			return token, nil
 		}
+		m.metrics.Counter(domain.MetricLeaseAcquireFailures, 1, leaseTag)
 		m.log(ctx, slog.LevelDebug, "lease acquisition failed, retrying", "error", err)
 
 		select {
@@ -219,13 +252,18 @@ func (m *SessionManager) renewLoop(ctx context.Context) error {
 			token := m.token
 			m.mu.Unlock()
 
+			leaseTag := domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID}
+			start := time.Now()
 			newToken, err := m.leaseStore.Renew(ctx, m.sessionID, token, m.leaseTTL)
+			m.metrics.Timer(domain.MetricLeaseRenewLatency, time.Since(start), leaseTag)
+
 			if err != nil {
 				consecutiveFailures++
 				m.log(ctx, slog.LevelWarn, "lease renewal failed",
 					"failures", consecutiveFailures, "error", err)
 
 				if consecutiveFailures >= m.maxRenewFails {
+					m.metrics.Counter(domain.MetricLeaseExpiries, 1, leaseTag)
 					return m.stepDown(ctx)
 				}
 			} else {
@@ -285,9 +323,14 @@ func (m *SessionManager) handleEvents(ctx context.Context) error {
 }
 
 func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.SessionEvent) {
+	sessionTag := domain.Tag{Key: domain.TagKeySessionID, Value: m.sessionID}
 	switch ev.Type {
 	case ports.SessionConnected:
 		m.log(ctx, slog.LevelInfo, "session connected")
+		if m.connectedOnce {
+			m.metrics.Counter(domain.MetricMQTTReconnects, 1, sessionTag)
+		}
+		m.connectedOnce = true
 		_ = m.session.Reconcile(ctx, m.plan)
 
 	case ports.SessionDisconnected:

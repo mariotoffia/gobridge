@@ -1,0 +1,172 @@
+package cloudwatch
+
+import (
+	"sync"
+	"time"
+
+	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
+	"github.com/mariotoffia/gobridge/domain"
+)
+
+type metricType int
+
+const (
+	metricTypeCounter metricType = iota
+	metricTypeGauge
+	metricTypeHistogram
+)
+
+type metricData struct {
+	name       string
+	value      float64
+	unit       cwtypes.StandardUnit
+	tags       []domain.Tag
+	timestamp  time.Time
+	metricType metricType
+}
+
+type aggregate struct {
+	count float64
+	sum   float64
+	min   float64
+	max   float64
+	unit  cwtypes.StandardUnit
+	tags  []domain.Tag
+}
+
+type batcher struct {
+	namespace   string
+	defaultTags []domain.Tag
+	buffer      []metricData
+	maxSize     int
+	mu          sync.Mutex
+	aggregates  map[string]*aggregate
+}
+
+func newBatcher(namespace string, defaultTags []domain.Tag, maxSize int) *batcher {
+	return &batcher{
+		namespace:   namespace,
+		defaultTags: defaultTags,
+		buffer:      make([]metricData, 0, maxSize),
+		maxSize:     maxSize,
+		aggregates:  make(map[string]*aggregate),
+	}
+}
+
+// add buffers a metric datum. Returns true when the non-histogram buffer is full.
+func (b *batcher) add(md metricData) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if md.metricType == metricTypeHistogram {
+		key := aggregateKey(md.name, md.tags)
+		if agg, ok := b.aggregates[key]; ok {
+			agg.count++
+			agg.sum += md.value
+			if md.value < agg.min {
+				agg.min = md.value
+			}
+			if md.value > agg.max {
+				agg.max = md.value
+			}
+		} else {
+			b.aggregates[key] = &aggregate{
+				count: 1,
+				sum:   md.value,
+				min:   md.value,
+				max:   md.value,
+				unit:  md.unit,
+				tags:  md.tags,
+			}
+		}
+		return len(b.buffer) >= b.maxSize
+	}
+
+	md.timestamp = time.Now()
+	b.buffer = append(b.buffer, md)
+	return len(b.buffer) >= b.maxSize
+}
+
+// drain removes and converts all buffered metrics to CloudWatch format.
+func (b *batcher) drain() []cwtypes.MetricDatum {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	var result []cwtypes.MetricDatum
+
+	for _, md := range b.buffer {
+		dims := b.buildDimensions(md.tags)
+		name := md.name
+		val := md.value
+		ts := md.timestamp
+		result = append(result, cwtypes.MetricDatum{
+			MetricName: &name,
+			Value:      &val,
+			Unit:       md.unit,
+			Timestamp:  &ts,
+			Dimensions: dims,
+		})
+	}
+
+	now := time.Now()
+	for key, agg := range b.aggregates {
+		name := metricNameFromKey(key)
+		dims := b.buildDimensions(agg.tags)
+		result = append(result, cwtypes.MetricDatum{
+			MetricName: &name,
+			StatisticValues: &cwtypes.StatisticSet{
+				SampleCount: &agg.count,
+				Sum:         &agg.sum,
+				Minimum:     &agg.min,
+				Maximum:     &agg.max,
+			},
+			Unit:       agg.unit,
+			Timestamp:  &now,
+			Dimensions: dims,
+		})
+	}
+
+	b.buffer = make([]metricData, 0, b.maxSize)
+	b.aggregates = make(map[string]*aggregate)
+	return result
+}
+
+func (b *batcher) isEmpty() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.buffer) == 0 && len(b.aggregates) == 0
+}
+
+func (b *batcher) buildDimensions(tags []domain.Tag) []cwtypes.Dimension {
+	all := append(b.defaultTags, tags...)
+	if len(all) == 0 {
+		return nil
+	}
+	if len(all) > 30 {
+		all = all[:30]
+	}
+	dims := make([]cwtypes.Dimension, len(all))
+	for i, tag := range all {
+		k := tag.Key
+		v := tag.Value
+		dims[i] = cwtypes.Dimension{Name: &k, Value: &v}
+	}
+	return dims
+}
+
+func aggregateKey(name string, tags []domain.Tag) string {
+	key := name
+	for _, t := range tags {
+		key += "|" + t.Key + "=" + t.Value
+	}
+	return key
+}
+
+func metricNameFromKey(key string) string {
+	for i, c := range key {
+		if c == '|' {
+			return key[:i]
+		}
+	}
+	return key
+}

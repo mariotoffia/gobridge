@@ -62,15 +62,8 @@ lint-fix: ## Lint and auto-fix all workspace modules
 # Maintenance targets
 # ============================================================================
 
-tidy: ## Tidy all module dependencies
-	@echo "Tidying core module..."
-	go mod tidy
-	@echo "Tidying MQTT module..."
-	cd transport/mqtt && go mod tidy
-	@echo "Tidying AWS module..."
-	cd transport/aws && go mod tidy
-	@echo "Tidying Azure module..."
-	cd transport/azure && go mod tidy
+tidy: ## Tidy all module dependencies (discovers all go.mod files recursively)
+	@find . -name go.mod -not -path '*/vendor/*' -execdir sh -c 'echo "Tidying $$(pwd)..." && go mod tidy' \;
 
 sync: ## Sync workspace and update dependencies
 	@echo "Syncing workspace..."

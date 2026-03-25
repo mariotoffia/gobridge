@@ -24,6 +24,7 @@ type RouteRunner struct {
 	processors  []ports.Processor
 	bindings    []domain.DestinationBinding
 	instanceID  string
+	metrics     ports.MetricsExporter
 	logger      *slog.Logger
 	sem         chan struct{}
 }
@@ -40,6 +41,7 @@ type RouteRunnerConfig struct {
 	Processors  []ports.Processor
 	Bindings    []domain.DestinationBinding
 	InstanceID  string
+	Metrics     ports.MetricsExporter
 	Logger      *slog.Logger
 }
 
@@ -53,6 +55,10 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 	if dlq == nil {
 		dlq = NewDLQRouter(nil)
 	}
+	m := cfg.Metrics
+	if m == nil {
+		m = &ports.NoopExporter{}
+	}
 	r := &RouteRunner{
 		routeID:     cfg.RouteID,
 		policy:      cfg.Policy.WithDefaults(),
@@ -64,6 +70,7 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 		processors:  cfg.Processors,
 		bindings:    cfg.Bindings,
 		instanceID:  cfg.InstanceID,
+		metrics:     m,
 		logger:      cfg.Logger,
 	}
 	if r.policy.MaxInFlight > 0 {
@@ -84,6 +91,8 @@ func (r *RouteRunner) handleDelivery(ctx context.Context, del ports.Delivery) er
 	}
 	defer r.releaseSlot()
 
+	start := time.Now()
+
 	env := del.Envelope()
 
 	env.Headers = domain.StripReservedHeaders(env.Headers)
@@ -97,12 +106,18 @@ func (r *RouteRunner) handleDelivery(ctx context.Context, del ports.Delivery) er
 		return r.handleProcessorError(ctx, del, env, err)
 	}
 
+	var deliveryErr error
 	switch r.policy.DeliveryMode {
 	case domain.DeliverySharedOutbox:
-		return r.sharedOutbox(ctx, del, env)
+		deliveryErr = r.sharedOutbox(ctx, del, env)
 	default:
-		return r.directHold(ctx, del, env)
+		deliveryErr = r.directHold(ctx, del, env)
 	}
+
+	routeTag := domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID}
+	r.metrics.Timer(domain.MetricDeliveryE2ELatency, time.Since(start), routeTag)
+
+	return deliveryErr
 }
 
 func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *domain.Envelope) error {
@@ -132,6 +147,7 @@ func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *d
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, plan.BindingID, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
 		return del.Retry(ctx, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
 	}
+	r.emitDLQ("permanent")
 	return del.Ack(ctx)
 }
 
@@ -223,6 +239,7 @@ func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env
 		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", domain.ErrMessageExpired, 0); dlqErr != nil {
 			return del.Retry(ctx, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
 		}
+		r.emitDLQ("expired")
 	}
 	return del.Ack(ctx)
 }
@@ -235,6 +252,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", err, 0); dlqErr != nil {
 		return del.Retry(ctx, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
 	}
+	r.emitDLQ("permanent")
 	return del.Ack(ctx)
 }
 
@@ -244,9 +262,17 @@ func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery
 		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", err, 0); dlqErr != nil {
 			return del.Retry(ctx, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
 		}
+		r.emitDLQ("rejected")
 		return del.Ack(ctx)
 	}
 	return del.Retry(ctx, 0, err)
+}
+
+func (r *RouteRunner) emitDLQ(category string) {
+	r.metrics.Counter(domain.MetricDLQEntries, 1,
+		domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID},
+		domain.Tag{Key: domain.TagKeyCategory, Value: category},
+	)
 }
 
 func (r *RouteRunner) injectHeaders(env *domain.Envelope) {
