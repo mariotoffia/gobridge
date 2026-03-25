@@ -3,7 +3,6 @@ package cloudwatch
 import (
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/mariotoffia/gobridge/domain"
 )
 
@@ -48,8 +47,8 @@ func WithBufferSize(size int) Option {
 }
 
 // WithClient sets a pre-configured CloudWatch client, bypassing automatic
-// credential resolution. Useful for testing with LocalStack.
-func WithClient(client *cloudwatch.Client) Option {
+// credential resolution. Useful for testing with LocalStack or mocks.
+func WithClient(client cloudWatchAPI) Option {
 	return func(e *Exporter) {
 		e.client = client
 	}

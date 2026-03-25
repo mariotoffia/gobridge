@@ -17,7 +17,7 @@ import (
 // Exporter implements [ports.MetricsExporter] for AWS CloudWatch.
 type Exporter struct {
 	config    Config
-	client    *cloudwatch.Client
+	client    cloudWatchAPI
 	batcher   *batcher
 	stopCh    chan struct{}
 	wg        sync.WaitGroup

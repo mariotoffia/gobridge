@@ -137,6 +137,7 @@ docker-clean: ## Remove ALL orphaned gobridge containers from any test run
 	-docker rm -f $$(docker ps -aq --filter name=gobridge-ddblocal-) 2>/dev/null
 	-docker rm -f $$(docker ps -aq --filter name=gobridge-sqslocal-) 2>/dev/null
 	-docker rm -f $$(docker ps -aq --filter name=gobridge-s3local-) 2>/dev/null
+	-docker rm -f $$(docker ps -aq --filter name=gobridge-localstack-) 2>/dev/null
 	-docker rm -f $$(docker ps -aq --filter name=gobridge-mqtt-) 2>/dev/null
 	-docker rm -f gobridge-ddb gobridge-sqs gobridge-mqtt 2>/dev/null
 	@echo "Done."

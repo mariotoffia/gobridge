@@ -117,7 +117,7 @@ func DefaultAlarms(namespace, snsTopicARN string) []AlarmDefinition {
 
 // EnsureAlarms creates or updates CloudWatch alarms matching the given
 // definitions. Existing alarms with the same name are updated in place.
-func EnsureAlarms(ctx context.Context, client *cloudwatch.Client, alarms []AlarmDefinition) error {
+func EnsureAlarms(ctx context.Context, client cloudWatchAPI, alarms []AlarmDefinition) error {
 	for _, a := range alarms {
 		input := &cloudwatch.PutMetricAlarmInput{
 			AlarmName:          aws.String(a.Name),

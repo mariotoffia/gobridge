@@ -45,10 +45,7 @@ func New(ctx context.Context, opts ...Option) (*Exporter, error) {
 
 	applyDefaults(&e.config)
 
-	e.defaultAttrs = make([]attribute.KeyValue, len(e.config.DefaultTags))
-	for i, tag := range e.config.DefaultTags {
-		e.defaultAttrs[i] = attribute.String(tag.Key, tag.Value)
-	}
+	e.defaultAttrs = buildDefaultAttrs(e.config.DefaultTags)
 
 	exporterOpts := []otlpmetrichttp.Option{
 		otlpmetrichttp.WithEndpointURL(e.config.Endpoint),
@@ -224,5 +221,13 @@ func (e *Exporter) buildAttributes(tags []domain.Tag) []attribute.KeyValue {
 		attrs = append(attrs, attribute.String(tag.Key, tag.Value))
 	}
 
+	return attrs
+}
+
+func buildDefaultAttrs(tags []domain.Tag) []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, len(tags))
+	for i, tag := range tags {
+		attrs[i] = attribute.String(tag.Key, tag.Value)
+	}
 	return attrs
 }
