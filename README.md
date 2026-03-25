@@ -1,49 +1,18 @@
 # gobridge
 
-A message bridge framework for connecting different transport technologies. Route messages between MQTT, SQS, Azure Service Bus, and more with middleware support for transformation, filtering, and retry handling.
+A hexagonal message-bridge framework for Go. Route messages between MQTT, AWS SQS, Azure Service Bus, and other transports with pluggable processors, durable outbox delivery, dead-letter queue management, and production-grade observability.
 
 ## Features
 
-- **Multi-transport support**: MQTT v5, AWS SQS, Azure Service Bus
-- **Shared connections**: Multiple sources/targets on single transport connection
-- **Middleware chains**: Transform, filter, log, and retry messages
-- **Pluggable architecture**: Easy to add new transports and middlewares
-- **Dynamic configuration**: Runtime updates from DynamoDB, files, etc.
-- **Clusterable**: External retry backing (e.g., SQS) for HA deployments
-- **Credential management**: Inline or URI-based (AWS Parameter Store, files)
-- **HTTP Admin API**: Manage connections, pipelines, DLQ, and inject test messages
-- **HTTP Monitor API**: Prometheus metrics, health checks, OpenTelemetry tracing
-
-## Documentation
-
-| Document | Description |
-|----------|-------------|
-| [Architecture Overview](bridge/types/ARCHITECTURE.md) | System design, core concepts, and component interactions |
-| [Transport Guide](bridge/types/ARCHITECTURE-TRANSPORTS.md) | Transport implementations and how to add new ones |
-| [Middleware Guide](bridge/types/ARCHITECTURE-MIDDLEWARE.md) | Middleware chains, retry system, and error handling |
-| [HTTP APIs](apis/README.md) | Admin and Monitor HTTP API documentation |
-| [Admin API Spec](apis/http/admin/admin-api.yaml) | OpenAPI 3.1 spec for administration |
-| [Monitor API Spec](apis/http/monitor/monitor-api.yaml) | OpenAPI 3.1 spec for monitoring |
-| [Missing Features](bridge/types/MISSING.md) | Roadmap for production readiness |
-
-## Installation
-
-gobridge uses a multi-module workspace to keep SDK dependencies separate.
-The core module has **zero external dependencies** - only install what you need:
-
-```bash
-# Core module (types, interfaces, runtime) - no external deps
-go get github.com/mariotoffia/gobridge
-
-# MQTT transport (paho.golang)
-go get github.com/mariotoffia/gobridge/transport/mqtt
-
-# AWS transports (SQS)
-go get github.com/mariotoffia/gobridge/transport/aws
-
-# Azure transports (Service Bus)
-go get github.com/mariotoffia/gobridge/transport/azure
-```
+- **Multi-transport routing**: MQTT v5, AWS SQS, Azure Service Bus with a clean port/adapter model
+- **Delivery guarantees**: DirectHold (send-then-ack) and SharedOutbox (persist-then-ack with durable outbox drainer)
+- **Processor chain**: Onion-model middleware for filtering, transformation, circuit breaking, and tenant isolation
+- **Pluggable stores**: LeaseStore, OutboxStore, DLQStore with Memory, SQLite, and DynamoDB implementations
+- **Credential management**: URI-based resolution (file://, pms://) with scheme dispatch and caching
+- **HTTP APIs**: Admin server for bridge lifecycle, route injection, and DLQ management; Monitor server for health probes and topology
+- **Observability**: OpenTelemetry metrics and tracing, CloudWatch metrics, correlation-aware structured logging via slog
+- **Zero-dependency core**: The root module has no external dependencies -- only import the adapters you need
+- **Multi-module workspace**: Each adapter is a separate Go module; consumers cherry-pick dependencies
 
 ## Quick Start
 
@@ -52,161 +21,127 @@ package main
 
 import (
     "context"
-    "log"
+    "log/slog"
+    "os"
 
-    "github.com/mariotoffia/gobridge/bridge/core"
-    "github.com/mariotoffia/gobridge/transport/mqtt"
-    "github.com/mariotoffia/gobridge/transport/aws/sqs"
+    "github.com/mariotoffia/gobridge/bridge"
+    "github.com/mariotoffia/gobridge/config"
+    "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
+    nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
 )
 
 func main() {
-    ctx := context.Background()
-
-    // Create bridge
-    bridge := core.NewBridge("my-bridge")
-
-    // Register transport factories
-    bridge.SourceRegistry().RegisterFactory(sqs.NewSourceFactory())
-    bridge.TargetRegistry().RegisterFactory(mqtt.NewTargetFactory())
-
-    // Create pipeline: SQS → MQTT
-    pipeline, err := bridge.CreatePipeline(ctx, "sqs-to-mqtt",
-        &sqs.SourceConfigImpl{
-            ID: "sqs-source",
-            Connection: sqs.ConnectionConfig{Region: "us-east-1"},
-            QueueName: "my-queue",
-        },
-        &mqtt.TargetConfigImpl{
-            ID: "mqtt-target",
-            Connection: mqtt.ConnectionConfig{BrokerURL: "tcp://localhost:1883"},
-            DefaultTopic: "events",
-            QoS: 1, // At-least-once delivery
-        },
-        nil, // No middlewares
-    )
+    cfg, err := config.ParseFile("bridge.yaml", config.FormatAuto)
     if err != nil {
-        log.Fatal(err)
+        slog.Error("config error", "error", err)
+        os.Exit(1)
     }
 
-    // Add and start
-    bridge.AddPipeline(pipeline)
-    if err := bridge.Start(ctx); err != nil {
-        log.Fatal(err)
+    ctx := context.Background()
+    logger := slog.Default()
+
+    rt, err := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
+        RegisterTransport("mqtt", paho.NewBridgeFactory(logger)).
+        RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).
+        Build(ctx)
+    if err != nil {
+        slog.Error("build error", "error", err)
+        os.Exit(1)
     }
 
-    // Wait for shutdown signal...
-    defer bridge.Close()
+    if err := rt.Start(ctx); err != nil {
+        slog.Error("start error", "error", err)
+        os.Exit(1)
+    }
+    defer rt.Stop(context.Background())
+
+    slog.Info("bridge running", "instance_id", rt.InstanceID())
+    // ... wait for shutdown signal ...
 }
 ```
+
+## Installation
+
+```bash
+# Core module (domain, ports, runtime, config, bridge) -- zero external deps
+go get github.com/mariotoffia/gobridge
+
+# MQTT transport adapter
+go get github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho
+
+# AWS SQS transport adapter
+go get github.com/mariotoffia/gobridge/adapters/aws/transport/sqs
+
+# Azure Service Bus transport adapter
+go get github.com/mariotoffia/gobridge/adapters/azure/transport/servicebus
+
+# Native stores (memory, SQLite)
+go get github.com/mariotoffia/gobridge/adapters/native/store
+
+# DynamoDB stores
+go get github.com/mariotoffia/gobridge/adapters/aws/store
+```
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Architecture](ARCHITECTURE.md) | System design, hexagonal layers, core concepts, message flow |
+| [Development](DEVELOPMENT.md) | Prerequisites, workspace setup, building, testing, CI |
+| [Plugins](PLUGIN.md) | How to write transport, store, credential, and processor plugins |
+| [Testing](TESTS.md) | Unit tests, conformance suites, integration tests, test utilities |
 
 ## Project Structure
 
 ```
 gobridge/
-├── bridge/                 # Core abstractions
-│   ├── core/               # Bridge runtime, Pipeline, Route
-│   ├── credentials/        # Credential resolution and builders
-│   └── types/              # Interfaces and documentation
-├── config/                 # Configuration sources (DynamoDB, file)
-├── credentials/            # Credential repositories (AWS PMS, file)
-├── middleware/             # Filter, transform, retry
-├── metrics/                # CloudWatch, OpenTelemetry exporters
-└── transport/              # MQTT, SQS, Azure Service Bus
-```
-
-See [Architecture Overview](bridge/types/ARCHITECTURE.md) for detailed package documentation.
-
-## Development
-
-### Prerequisites
-
-- Go 1.24 or later
-- Docker (for integration tests)
-- Make (optional, for convenience commands)
-
-### Building
-
-```bash
-# Build all modules (using workspace)
-make build
-
-# Or manually
-go build ./...
-```
-
-### Testing
-
-```bash
-# Run unit tests for all modules
-make test
-
-# Run integration tests (requires Docker)
-make test-integration
-
-# Run everything
-make test-all
-```
-
-### Linting
-
-```bash
-# Install golangci-lint
-make dev-deps
-
-# Lint all modules
-make lint
-```
-
-### Updating Dependencies
-
-```bash
-# Update all modules and sync workspace
-make update
-
-# Just tidy modules
-make tidy
+├── domain/           Core value types (Envelope, RoutePolicy, errors)
+├── ports/            Port interfaces (Receiver, Sender, stores, Processor)
+├── runtime/          Route execution engine (Runtime, RouteRunner)
+├── bridge/           Composition root (Builder wires config to runtime)
+├── config/           Declarative YAML/JSON configuration model
+├── httpapi/          Admin and monitor HTTP servers
+├── observability/    Context helpers and correlation slog handler
+├── adapters/
+│   ├── mqtt/         MQTT v5 via Paho
+│   ├── aws/          SQS, DynamoDB stores, SSM credentials, CloudWatch
+│   ├── azure/        Azure Service Bus
+│   ├── native/       Memory and SQLite stores, file credentials
+│   └── otel/         OpenTelemetry metrics and tracing
+├── processors/       Filter, transform, circuit breaker, tenant
+├── cmd/gobridge/     Example binary
+└── testutil/         Docker test helpers (DynamoDB, SQS, ASB, S3)
 ```
 
 ## Transports
 
 | Transport | Module | Features |
 |-----------|--------|----------|
-| **MQTT v5** | `transport/mqtt` | Shared connections, QoS 0/1/2, wildcards |
-| **AWS SQS** | `transport/aws/sqs` | Long polling, batching, DLQ |
-| **Azure Service Bus** | `transport/azure/servicebus` | Queues, topics, subscriptions |
+| MQTT v5 | `adapters/mqtt/transport/paho` | Shared sessions, QoS 0/1/2, topic wildcards, autopaho reconnect |
+| AWS SQS | `adapters/aws/transport/sqs` | Long polling, batch send, visibility extension, FIFO support |
+| Azure Service Bus | `adapters/azure/transport/servicebus` | Queues, topics/subscriptions, batch send, auto-extend lock |
 
-See [Transport Guide](bridge/types/ARCHITECTURE-TRANSPORTS.md) for configuration examples and implementation details.
+## Stores
 
-## Delivery Guarantees
+| Store | Module | Use Case |
+|-------|--------|----------|
+| Memory | `adapters/native/store/memory*` | Development and testing |
+| SQLite | `adapters/native/store/sqlite*` | Single-process deployments |
+| DynamoDB | `adapters/aws/store/dynamodb*` | Production, clustered deployments |
 
-### MQTT QoS and External Retry
+## Building and Testing
 
-When using MQTT as a target with an external retry manager (e.g., SQS-backed):
+```bash
+make build            # Build all modules
+make test             # Unit tests (no Docker)
+make test-integration # All tests (Docker required)
+make docker-up        # Start persistent test containers
+make lint             # Lint all modules
+make check            # Build + lint + unit tests
+```
 
-- **Use QoS 1 or 2** - provides delivery confirmation via PUBACK/PUBCOMP
-- When `Send()` returns `nil`, the broker has accepted the message
-- Do NOT retry externally after successful send - the broker owns delivery
-
-**Important**: QoS 0 should NOT be used with external retry managers because there's no confirmation that the broker received the message.
-
-### SQS as Retry Backing Store
-
-SQS provides durable, clusterable retry support:
-
-1. Pipeline receives message from SQS
-2. Sends to target (e.g., MQTT with QoS 1)
-3. On success (PUBACK received): Ack SQS message
-4. On failure: Nack SQS message for retry or send to DLQ
-
-## Versioning
-
-Each module is versioned independently:
-
-- Core: `v1.x.x` (tags like `v1.0.0`)
-- MQTT: `transport/mqtt/v1.x.x` (tags like `transport/mqtt/v1.0.0`)
-- AWS: `transport/aws/v1.x.x` (tags like `transport/aws/v1.0.0`)
-- Azure: `transport/azure/v1.x.x` (tags like `transport/azure/v1.0.0`)
+See [DEVELOPMENT.md](DEVELOPMENT.md) for full setup instructions.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE)
+MIT License -- see [LICENSE](LICENSE)
