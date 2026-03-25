@@ -14,19 +14,19 @@ import (
 // them through the target sender. It validates fencing tokens to prevent
 // stale owners from sending after a lease transfer.
 type OutboxDrainer struct {
-	outboxStore   ports.OutboxStore
-	leaseStore    ports.LeaseStore
-	sender        ports.Sender
-	dlq           *DLQRouter
-	routeID       string
-	partitionKey  string
-	leaseID       string
-	ownerID       string
-	policy        domain.RoutePolicy
-	drainInterval time.Duration
-	batchSize     int
-	metrics       ports.MetricsExporter
-	logger        *slog.Logger
+	outboxStore  ports.OutboxStore
+	leaseStore   ports.LeaseStore
+	sender       ports.Sender
+	dlq          *DLQRouter
+	routeID      string
+	partitionKey string
+	leaseID      string
+	ownerID      string
+	policy       domain.RoutePolicy
+	strategy     domain.DrainStrategy
+	batchSize    int
+	metrics      ports.MetricsExporter
+	logger       *slog.Logger
 
 	// tokenFn returns the current lease token and whether the caller
 	// still holds the lease. The OutboxDrainer only processes when
@@ -36,20 +36,20 @@ type OutboxDrainer struct {
 
 // OutboxDrainerConfig holds the configuration for an OutboxDrainer.
 type OutboxDrainerConfig struct {
-	OutboxStore   ports.OutboxStore
-	LeaseStore    ports.LeaseStore
-	Sender        ports.Sender
-	DLQ           *DLQRouter
-	RouteID       string
-	PartitionKey  string
-	LeaseID       string
-	OwnerID       string
-	Policy        domain.RoutePolicy
-	DrainInterval time.Duration
-	BatchSize     int
-	Metrics       ports.MetricsExporter
-	Logger        *slog.Logger
-	TokenFn       func() (domain.LeaseToken, bool)
+	OutboxStore  ports.OutboxStore
+	LeaseStore   ports.LeaseStore
+	Sender       ports.Sender
+	DLQ          *DLQRouter
+	RouteID      string
+	PartitionKey string
+	LeaseID      string
+	OwnerID      string
+	Policy       domain.RoutePolicy
+	Strategy     domain.DrainStrategy
+	BatchSize    int
+	Metrics      ports.MetricsExporter
+	Logger       *slog.Logger
+	TokenFn      func() (domain.LeaseToken, bool)
 }
 
 // NewOutboxDrainerFromConfig creates an OutboxDrainer from a config struct.
@@ -58,8 +58,8 @@ func NewOutboxDrainerFromConfig(cfg OutboxDrainerConfig) *OutboxDrainer {
 }
 
 func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
-	if cfg.DrainInterval == 0 {
-		cfg.DrainInterval = time.Second
+	if cfg.Strategy == nil {
+		cfg.Strategy = domain.NewFixedPoll(domain.DefaultFixedPollInterval)
 	}
 	if cfg.BatchSize == 0 {
 		cfg.BatchSize = 100
@@ -79,50 +79,54 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 		m = &ports.NoopExporter{}
 	}
 	return &OutboxDrainer{
-		outboxStore:   cfg.OutboxStore,
-		leaseStore:    cfg.LeaseStore,
-		sender:        cfg.Sender,
-		dlq:           cfg.DLQ,
-		routeID:       cfg.RouteID,
-		partitionKey:  cfg.PartitionKey,
-		leaseID:       leaseID,
-		ownerID:       cfg.OwnerID,
-		policy:        cfg.Policy,
-		drainInterval: cfg.DrainInterval,
-		batchSize:     cfg.BatchSize,
-		metrics:       m,
-		logger:        cfg.Logger,
-		tokenFn:       cfg.TokenFn,
+		outboxStore:  cfg.OutboxStore,
+		leaseStore:   cfg.LeaseStore,
+		sender:       cfg.Sender,
+		dlq:          cfg.DLQ,
+		routeID:      cfg.RouteID,
+		partitionKey: cfg.PartitionKey,
+		leaseID:      leaseID,
+		ownerID:      cfg.OwnerID,
+		policy:       cfg.Policy,
+		strategy:     cfg.Strategy,
+		batchSize:    cfg.BatchSize,
+		metrics:      m,
+		logger:       cfg.Logger,
+		tokenFn:      cfg.TokenFn,
 	}
 }
 
 // Run polls the outbox for pending records and sends them. It blocks
-// until the context is cancelled or a fencing error occurs.
+// until the context is cancelled or a fencing error occurs. The polling
+// interval is determined by the configured DrainStrategy.
 func (d *OutboxDrainer) Run(ctx context.Context) error {
-	ticker := time.NewTicker(d.drainInterval)
-	defer ticker.Stop()
+	timer := time.NewTimer(d.strategy.NextInterval(0))
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
+		case <-timer.C:
 			token, hasLease := d.tokenFn()
 			if !hasLease {
+				timer.Reset(d.strategy.NextInterval(0))
 				continue
 			}
-			if err := d.drainBatch(ctx, token); err != nil {
+			n, err := d.drainBatch(ctx, token)
+			if err != nil {
 				if errors.Is(err, domain.ErrStaleFencingToken) {
 					d.log(ctx, slog.LevelError, "stale fencing token, stopping drain")
 					return err
 				}
 				d.log(ctx, slog.LevelWarn, "drain batch error", "error", err)
 			}
+			timer.Reset(d.strategy.NextInterval(n))
 		}
 	}
 }
 
-func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken) error {
+func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken) (int, error) {
 	start := time.Now()
 	sessionTag := domain.Tag{Key: domain.TagKeySessionID, Value: d.partitionKey}
 	routeTag := domain.Tag{Key: domain.TagKeyRouteID, Value: d.routeID}
@@ -130,19 +134,19 @@ func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken)
 	if d.leaseStore != nil {
 		info, err := d.leaseStore.Current(ctx, d.leaseID)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if info.Version != token.Version || info.Owner != token.Owner {
-			return domain.ErrStaleFencingToken
+			return 0, domain.ErrStaleFencingToken
 		}
 	}
 
 	records, err := d.outboxStore.Claim(ctx, d.partitionKey, d.ownerID, token, d.batchSize)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(records) == 0 {
-		return nil
+		return 0, nil
 	}
 
 	for i := range records {
@@ -157,7 +161,7 @@ func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken)
 	}
 
 	d.metrics.Timer(domain.MetricOutboxDrainLatency, time.Since(start), sessionTag)
-	return nil
+	return len(records), nil
 }
 
 func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRecord, token domain.LeaseToken) error {

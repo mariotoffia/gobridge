@@ -50,16 +50,45 @@ func toSessionConfig(rs *config.RouteSessionDef) *runtime.SessionConfig {
 			sc.RenewInterval = d
 		}
 	}
-	if rs.DrainInterval != "" {
-		if d, err := time.ParseDuration(rs.DrainInterval); err == nil {
-			sc.DrainInterval = d
-		}
-	}
+	sc.DrainStrategy = toDrainStrategy(rs)
 	if rs.DrainBatchSize > 0 {
 		sc.DrainBatchSize = rs.DrainBatchSize
 	}
 
 	return &sc
+}
+
+func toDrainStrategy(rs *config.RouteSessionDef) domain.DrainStrategy {
+	if rs.DrainStrategy != nil {
+		return buildDrainStrategy(rs.DrainStrategy)
+	}
+	if rs.DrainInterval != "" {
+		if d, err := time.ParseDuration(rs.DrainInterval); err == nil {
+			return domain.NewFixedPoll(d)
+		}
+	}
+	return domain.NewFixedPoll(domain.DefaultFixedPollInterval)
+}
+
+func buildDrainStrategy(ds *config.DrainStrategyDef) domain.DrainStrategy {
+	switch ds.Type {
+	case "adaptive_backoff":
+		var minD, maxD time.Duration
+		if ds.MinInterval != "" {
+			minD, _ = time.ParseDuration(ds.MinInterval)
+		}
+		if ds.MaxInterval != "" {
+			maxD, _ = time.ParseDuration(ds.MaxInterval)
+		}
+		return domain.NewAdaptiveBackoff(minD, maxD, ds.Multiplier)
+
+	default:
+		var interval time.Duration
+		if ds.Interval != "" {
+			interval, _ = time.ParseDuration(ds.Interval)
+		}
+		return domain.NewFixedPoll(interval)
+	}
 }
 
 func toBindings(cfg *config.BridgeConfig, bindingIDs []string) []domain.DestinationBinding {

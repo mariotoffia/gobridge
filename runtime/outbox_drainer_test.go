@@ -29,8 +29,8 @@ func makeDrainer(t *testing.T, token domain.LeaseToken, opts ...func(*goruntime.
 		LeaseID:       "sess-1",
 		OwnerID:       token.Owner,
 		Policy:        domain.RoutePolicy{}.WithDefaults(),
-		DrainInterval: 50 * time.Millisecond,
-		BatchSize:     100,
+		Strategy:  domain.NewFixedPoll(50 * time.Millisecond),
+		BatchSize: 100,
 		TokenFn: func() (domain.LeaseToken, bool) {
 			return token, true
 		},
@@ -171,8 +171,8 @@ func TestOutboxDrainer_NoLease(t *testing.T) {
 		RouteID:       "route-1",
 		PartitionKey:  domain.OutboxPartitionKey("sess-1", ""),
 		OwnerID:       "bridge-1",
-		Policy:        domain.RoutePolicy{}.WithDefaults(),
-		DrainInterval: 50 * time.Millisecond,
+		Policy:   domain.RoutePolicy{}.WithDefaults(),
+		Strategy: domain.NewFixedPoll(50 * time.Millisecond),
 		TokenFn: func() (domain.LeaseToken, bool) {
 			return domain.LeaseToken{}, false
 		},

@@ -224,7 +224,7 @@ func TestE2E_S4_SQSToMQTT_BridgeCrashAndRestart(t *testing.T) {
 	sqsReceiverA := newSQSReceiver(t, queueURL)
 
 	sessCfgA := e2eFastSessionConfig(sessionID)
-	sessCfgA.DrainInterval = 30 * time.Second
+	sessCfgA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
 
 	rtA := goruntime.New(
 		goruntime.WithInstanceID("s4-bridge-A"),

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ValidationError collects multiple validation problems.
@@ -132,16 +133,18 @@ func Validate(cfg *BridgeConfig) error {
 		}
 
 		if r.Session != nil {
+			prefix := fmt.Sprintf("routes[%d] (%s)", i, r.ID)
 			if r.Session.SessionID == "" {
-				ve.addf("routes[%d] (%s): session.session_id is required", i, r.ID)
+				ve.addf("%s: session.session_id is required", prefix)
 			} else if _, ok := sessionIDs[r.Session.SessionID]; !ok {
-				ve.addf("routes[%d] (%s): session.session_id %q not found in sessions", i, r.ID, r.Session.SessionID)
+				ve.addf("%s: session.session_id %q not found in sessions", prefix, r.Session.SessionID)
 			}
 			if r.Session.SenderID == "" {
-				ve.addf("routes[%d] (%s): session.sender_id is required", i, r.ID)
+				ve.addf("%s: session.sender_id is required", prefix)
 			} else if _, ok := senderIDs[r.Session.SenderID]; !ok {
-				ve.addf("routes[%d] (%s): session.sender_id %q not found in senders", i, r.ID, r.Session.SenderID)
+				ve.addf("%s: session.sender_id %q not found in senders", prefix, r.Session.SenderID)
 			}
+			validateDrainStrategy(ve, prefix, r.Session)
 		}
 
 		if r.DeliveryMode == "shared_outbox" {
@@ -197,4 +200,52 @@ func validateEnum(ve *ValidationError, field, value string, allowed ...string) {
 		}
 	}
 	ve.addf("%s: invalid value %q, must be one of: %s", field, value, strings.Join(allowed, ", "))
+}
+
+func validateDrainStrategy(ve *ValidationError, prefix string, sess *RouteSessionDef) {
+	ds := sess.DrainStrategy
+	if ds == nil {
+		return
+	}
+
+	if sess.DrainInterval != "" {
+		ve.addf("%s: session.drain_strategy and session.drain_interval are mutually exclusive", prefix)
+	}
+
+	field := prefix + ": session.drain_strategy"
+
+	switch ds.Type {
+	case "fixed_poll":
+		if ds.Interval != "" {
+			if _, err := time.ParseDuration(ds.Interval); err != nil {
+				ve.addf("%s: invalid interval %q: %v", field, ds.Interval, err)
+			}
+		}
+
+	case "adaptive_backoff":
+		var minD, maxD time.Duration
+		if ds.MinInterval != "" {
+			d, err := time.ParseDuration(ds.MinInterval)
+			if err != nil {
+				ve.addf("%s: invalid min_interval %q: %v", field, ds.MinInterval, err)
+			}
+			minD = d
+		}
+		if ds.MaxInterval != "" {
+			d, err := time.ParseDuration(ds.MaxInterval)
+			if err != nil {
+				ve.addf("%s: invalid max_interval %q: %v", field, ds.MaxInterval, err)
+			}
+			maxD = d
+		}
+		if minD > 0 && maxD > 0 && maxD < minD {
+			ve.addf("%s: max_interval (%s) must be >= min_interval (%s)", field, ds.MaxInterval, ds.MinInterval)
+		}
+		if ds.Multiplier != 0 && ds.Multiplier <= 1.0 {
+			ve.addf("%s: multiplier must be > 1.0, got %v", field, ds.Multiplier)
+		}
+
+	default:
+		ve.addf("%s: invalid type %q, must be one of: fixed_poll, adaptive_backoff", field, ds.Type)
+	}
 }

@@ -217,7 +217,7 @@ func TestE2E_MQTTToSQS_RoundTripWithFailover(t *testing.T) {
 	sqsRxA := newSQSReceiver(t, queueA)
 
 	sessCfgA := e2eFastSessionConfig(sessionID)
-	sessCfgA.DrainInterval = 30 * time.Second
+	sessCfgA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
 
 	rtA := goruntime.New(
 		goruntime.WithInstanceID("m4-bridge-A"),

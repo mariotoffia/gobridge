@@ -103,11 +103,11 @@ func TestOutboxDrainer_EmitsDrainLatency(t *testing.T) {
 		PartitionKey:  domain.OutboxPartitionKey("session-1", "b1"),
 		LeaseID:       "session-1",
 		OwnerID:       "owner-1",
-		Policy:        domain.RoutePolicy{}.WithDefaults(),
-		DrainInterval: 50 * time.Millisecond,
-		BatchSize:     10,
-		Metrics:       rec,
-		TokenFn:       func() (domain.LeaseToken, bool) { return token, true },
+		Policy:    domain.RoutePolicy{}.WithDefaults(),
+		Strategy:  domain.NewFixedPoll(50 * time.Millisecond),
+		BatchSize: 10,
+		Metrics:   rec,
+		TokenFn:   func() (domain.LeaseToken, bool) { return token, true },
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -153,11 +153,11 @@ func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 		PartitionKey:  domain.OutboxPartitionKey("s1", "b1"),
 		LeaseID:       "s1",
 		OwnerID:       "owner-1",
-		Policy:        domain.RoutePolicy{OnExpired: domain.ExpiredDLQ}.WithDefaults(),
-		DrainInterval: 50 * time.Millisecond,
-		BatchSize:     10,
-		Metrics:       rec,
-		TokenFn:       func() (domain.LeaseToken, bool) { return token, true },
+		Policy:    domain.RoutePolicy{OnExpired: domain.ExpiredDLQ}.WithDefaults(),
+		Strategy:  domain.NewFixedPoll(50 * time.Millisecond),
+		BatchSize: 10,
+		Metrics:   rec,
+		TokenFn:   func() (domain.LeaseToken, bool) { return token, true },
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)

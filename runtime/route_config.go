@@ -30,7 +30,7 @@ type SessionConfig struct {
 	RenewJitter     time.Duration
 	MaxRenewFails   int
 	StepDownGrace   time.Duration
-	DrainInterval   time.Duration
+	DrainStrategy   domain.DrainStrategy
 	DrainBatchSize  int
 
 	// ConnectAfterLease defers session.Start until the lease is acquired.
@@ -50,7 +50,7 @@ func DefaultSessionConfig(sessionID string, exclusive bool) SessionConfig {
 		RenewJitter:    2 * time.Second,
 		MaxRenewFails:  3,
 		StepDownGrace:  10 * time.Second,
-		DrainInterval:  1 * time.Second,
+		DrainStrategy:  domain.NewFixedPoll(domain.DefaultFixedPollInterval),
 		DrainBatchSize: 100,
 	}
 }

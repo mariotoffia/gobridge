@@ -111,13 +111,24 @@ type RouteDef struct {
 // RouteSessionDef configures session management for a route that targets
 // an exclusive MQTT session or similar stateful transport.
 type RouteSessionDef struct {
-	SessionID         string `yaml:"session_id" json:"session_id"`
-	SenderID          string `yaml:"sender_id" json:"sender_id"`
-	LeaseTTL          string `yaml:"lease_ttl,omitempty" json:"lease_ttl,omitempty"`
-	RenewInterval     string `yaml:"renew_interval,omitempty" json:"renew_interval,omitempty"`
-	DrainInterval     string `yaml:"drain_interval,omitempty" json:"drain_interval,omitempty"`
-	DrainBatchSize    int    `yaml:"drain_batch_size,omitempty" json:"drain_batch_size,omitempty"`
-	ConnectAfterLease bool   `yaml:"connect_after_lease,omitempty" json:"connect_after_lease,omitempty"`
+	SessionID         string            `yaml:"session_id" json:"session_id"`
+	SenderID          string            `yaml:"sender_id" json:"sender_id"`
+	LeaseTTL          string            `yaml:"lease_ttl,omitempty" json:"lease_ttl,omitempty"`
+	RenewInterval     string            `yaml:"renew_interval,omitempty" json:"renew_interval,omitempty"`
+	DrainInterval     string            `yaml:"drain_interval,omitempty" json:"drain_interval,omitempty"`
+	DrainBatchSize    int               `yaml:"drain_batch_size,omitempty" json:"drain_batch_size,omitempty"`
+	DrainStrategy     *DrainStrategyDef `yaml:"drain_strategy,omitempty" json:"drain_strategy,omitempty"`
+	ConnectAfterLease bool              `yaml:"connect_after_lease,omitempty" json:"connect_after_lease,omitempty"`
+}
+
+// DrainStrategyDef configures the outbox drain polling strategy.
+// Type must be "fixed_poll" or "adaptive_backoff".
+type DrainStrategyDef struct {
+	Type        string  `yaml:"type" json:"type"`
+	Interval    string  `yaml:"interval,omitempty" json:"interval,omitempty"`
+	MinInterval string  `yaml:"min_interval,omitempty" json:"min_interval,omitempty"`
+	MaxInterval string  `yaml:"max_interval,omitempty" json:"max_interval,omitempty"`
+	Multiplier  float64 `yaml:"multiplier,omitempty" json:"multiplier,omitempty"`
 }
 
 // PolicyDef defines per-route delivery, retry, and backpressure

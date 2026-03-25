@@ -279,7 +279,7 @@ func TestRuntime_SharedOutboxEndToEnd(t *testing.T) {
 	sessCfg := goruntime.DefaultSessionConfig("sess-e2e", true)
 	sessCfg.LeaseTTL = 500 * time.Millisecond
 	sessCfg.RenewInterval = 100 * time.Millisecond
-	sessCfg.DrainInterval = 50 * time.Millisecond
+	sessCfg.DrainStrategy = domain.NewFixedPoll(50 * time.Millisecond)
 
 	cfg := goruntime.RouteConfig{
 		ID: "outbox-route",

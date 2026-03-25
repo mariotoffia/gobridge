@@ -69,7 +69,7 @@ func TestE2E_F1_Failover_SingleInstance_CrashBeforeDrain(t *testing.T) {
 
 	sessA := setupMQTTSession(t, sessionID+"-a", domain.SessionEphemeral)
 	scA := e2eFastSessionConfig(sessionID)
-	scA.DrainInterval = 30 * time.Second
+	scA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
 	rtA := goruntime.New(goruntime.WithInstanceID("f1-A"),
 		goruntime.WithLeaseStore(leaseStore), goruntime.WithOutboxStore(outboxStore), goruntime.WithDLQStore(dlq))
 	_ = rtA.AddRoute(cfg, newSQSReceiver(t, queueURL), setupMQTTSender(t, sessA), sessA, &scA)
@@ -103,7 +103,7 @@ func TestE2E_F2_Failover_TwoInstances_LeaseTransfer(t *testing.T) {
 	rxA := newFakeReceiver()
 	sessA := newFakeSession()
 	scA := e2eFastSessionConfig(sessionID)
-	scA.DrainInterval = 30 * time.Second
+	scA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
 	_ = rtA.AddRoute(cfg, rxA, newFakeSender(), sessA, &scA)
 	_ = rtA.Start(ctxA)
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
@@ -142,7 +142,7 @@ func TestE2E_F3_Failover_ThreeInstances_CascadingFailure(t *testing.T) {
 	rxA := newFakeReceiver()
 	sessA := newFakeSession()
 	scA := e2eFastSessionConfig(sessionID)
-	scA.DrainInterval = 30 * time.Second
+	scA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
 	_ = rtA.AddRoute(cfg, rxA, newFakeSender(), sessA, &scA)
 	_ = rtA.Start(ctxA)
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
@@ -373,7 +373,7 @@ func TestE2E_F7_Failover_FanOutSessionOwnerCrash(t *testing.T) {
 	ctxB, cancelB := context.WithCancel(context.Background())
 	sessB := setupMQTTSession(t, sessionIDs[1]+"-b", domain.SessionEphemeral)
 	scB := e2eFastSessionConfig(sessionIDs[1])
-	scB.DrainInterval = 30 * time.Second
+	scB.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
 	rtB := mkRT("f7-B")
 	_ = rtB.AddRoute(routeCfg, newFakeReceiver(), setupMQTTSender(t, sessB), sessB, &scB)
 	_ = rtB.Start(ctxB)
@@ -442,7 +442,7 @@ func TestE2E_F9_Failover_MultiMessage_ThreeInstances(t *testing.T) {
 	rxA := newFakeReceiver()
 	sessA := newFakeSession()
 	scA := e2eFastSessionConfig(sessionID)
-	scA.DrainInterval = 30 * time.Second
+	scA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
 	_ = rtA.AddRoute(cfg, rxA, newFakeSender(), sessA, &scA)
 	_ = rtA.Start(ctxA)
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })

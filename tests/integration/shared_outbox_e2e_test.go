@@ -211,7 +211,7 @@ func fastSessionConfig(sessionID string) goruntime.SessionConfig {
 	cfg.RenewInterval = 80 * time.Millisecond
 	cfg.RenewJitter = 10 * time.Millisecond
 	cfg.StepDownGrace = 100 * time.Millisecond
-	cfg.DrainInterval = 50 * time.Millisecond
+	cfg.DrainStrategy = domain.NewFixedPoll(50 * time.Millisecond)
 	cfg.DrainBatchSize = 50
 	return cfg
 }
@@ -373,7 +373,7 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 	sessCfgA := fastSessionConfig(sessionID)
 	sessCfgA.LeaseTTL = 400 * time.Millisecond
 	sessCfgA.RenewInterval = 80 * time.Millisecond
-	sessCfgA.DrainInterval = 10 * time.Second // Long interval so A doesn't drain.
+	sessCfgA.DrainStrategy = domain.NewFixedPoll(10 * time.Second) // Long interval so A doesn't drain.
 
 	cfgA := goruntime.RouteConfig{
 		ID: "transfer-route",
@@ -552,7 +552,7 @@ func TestE2E_DynamoDB_CrashRecovery(t *testing.T) {
 	sessCfgA := fastSessionConfig(sessionID)
 	sessCfgA.LeaseTTL = 400 * time.Millisecond
 	sessCfgA.RenewInterval = 80 * time.Millisecond
-	sessCfgA.DrainInterval = 30 * time.Second
+	sessCfgA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
 
 	cfgA := goruntime.RouteConfig{
 		ID: "crash-recovery-route",
@@ -781,7 +781,7 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 
 	session := newFakeSession()
 	sessCfg := fastSessionConfig(sessionID)
-	sessCfg.DrainInterval = 50 * time.Millisecond
+	sessCfg.DrainStrategy = domain.NewFixedPoll(50 * time.Millisecond)
 
 	cfg := goruntime.RouteConfig{
 		ID: "poison-route",

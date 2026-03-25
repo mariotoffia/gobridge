@@ -270,7 +270,7 @@ func e2eFastSessionConfig(sessionID string) goruntime.SessionConfig {
 	cfg.RenewInterval = 150 * time.Millisecond
 	cfg.RenewJitter = 20 * time.Millisecond
 	cfg.StepDownGrace = 200 * time.Millisecond
-	cfg.DrainInterval = 100 * time.Millisecond
+	cfg.DrainStrategy = domain.NewFixedPoll(100 * time.Millisecond)
 	cfg.DrainBatchSize = 50
 	return cfg
 }

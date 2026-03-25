@@ -508,7 +508,7 @@ func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 	sessCfgA.LeaseTTL = 300 * time.Millisecond
 	sessCfgA.RenewInterval = 60 * time.Millisecond
 	// Long drain interval so A won't drain before crash.
-	sessCfgA.DrainInterval = 10 * time.Second
+	sessCfgA.DrainStrategy = domain.NewFixedPoll(10 * time.Second)
 
 	cfgA := goruntime.RouteConfig{
 		ID: "crash-ack-route",

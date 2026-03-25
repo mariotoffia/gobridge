@@ -50,7 +50,7 @@ func fastSessionConfig(sessionID string) goruntime.SessionConfig {
 	cfg.RenewInterval = 80 * time.Millisecond
 	cfg.RenewJitter = 10 * time.Millisecond
 	cfg.StepDownGrace = 100 * time.Millisecond
-	cfg.DrainInterval = 30 * time.Millisecond
+	cfg.DrainStrategy = domain.NewFixedPoll(30 * time.Millisecond)
 	cfg.DrainBatchSize = 50
 	return cfg
 }

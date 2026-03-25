@@ -246,20 +246,20 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				drainerSessions[sid] = true
 				mgr := rt.sessionMgrs[sid]
 				drainer := newOutboxDrainer(OutboxDrainerConfig{
-					OutboxStore:   rt.outboxStore,
-					LeaseStore:    rt.leaseStore,
-					Sender:        entry.sender,
-					DLQ:           dlq,
-					RouteID:       entry.config.ID,
-					PartitionKey:  domain.OutboxPartitionKey(sid, ""),
-					LeaseID:       sid,
-					OwnerID:       rt.instanceID,
-					Policy:        entry.config.Policy.WithDefaults(),
-					DrainInterval: entry.sessCfg.DrainInterval,
-					BatchSize:     entry.sessCfg.DrainBatchSize,
-					Metrics:       m,
-					Logger:        rt.logger,
-					TokenFn:       mgr.Token,
+					OutboxStore:  rt.outboxStore,
+					LeaseStore:   rt.leaseStore,
+					Sender:       entry.sender,
+					DLQ:          dlq,
+					RouteID:      entry.config.ID,
+					PartitionKey: domain.OutboxPartitionKey(sid, ""),
+					LeaseID:      sid,
+					OwnerID:      rt.instanceID,
+					Policy:       entry.config.Policy.WithDefaults(),
+					Strategy:     entry.sessCfg.DrainStrategy,
+					BatchSize:    entry.sessCfg.DrainBatchSize,
+					Metrics:      m,
+					Logger:       rt.logger,
+					TokenFn:      mgr.Token,
 				})
 				rt.drainers = append(rt.drainers, drainer)
 			}
@@ -289,20 +289,20 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				drainerSessions[sid] = true
 				mgr := rt.sessionMgrs[sid]
 				drainer := newOutboxDrainer(OutboxDrainerConfig{
-					OutboxStore:   rt.outboxStore,
-					LeaseStore:    rt.leaseStore,
-					Sender:        sse.sender,
-					DLQ:           dlq,
-					RouteID:       entry.config.ID,
-					PartitionKey:  domain.OutboxPartitionKey(sid, ""),
-					LeaseID:       sid,
-					OwnerID:       rt.instanceID,
-					Policy:        entry.config.Policy.WithDefaults(),
-					DrainInterval: sse.config.DrainInterval,
-					BatchSize:     sse.config.DrainBatchSize,
-					Metrics:       m,
-					Logger:        rt.logger,
-					TokenFn:       mgr.Token,
+					OutboxStore:  rt.outboxStore,
+					LeaseStore:   rt.leaseStore,
+					Sender:       sse.sender,
+					DLQ:          dlq,
+					RouteID:      entry.config.ID,
+					PartitionKey: domain.OutboxPartitionKey(sid, ""),
+					LeaseID:      sid,
+					OwnerID:      rt.instanceID,
+					Policy:       entry.config.Policy.WithDefaults(),
+					Strategy:     sse.config.DrainStrategy,
+					BatchSize:    sse.config.DrainBatchSize,
+					Metrics:      m,
+					Logger:       rt.logger,
+					TokenFn:      mgr.Token,
 				})
 				rt.drainers = append(rt.drainers, drainer)
 			}

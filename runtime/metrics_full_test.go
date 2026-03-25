@@ -92,7 +92,7 @@ func TestMetrics_FullPipeline_SharedOutbox(t *testing.T) {
 	err := rt.AddRoute(cfg, receiver, sender, session, &runtime.SessionConfig{
 		SessionID:      "s1",
 		Exclusive:      true,
-		DrainInterval:  50 * time.Millisecond,
+		DrainStrategy:  domain.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		LeaseTTL:       30 * time.Second,
 		RenewInterval:  100 * time.Millisecond,
