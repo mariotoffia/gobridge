@@ -268,28 +268,28 @@ jobs:
           go-version: '1.24'
 
       - name: golangci-lint (core)
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: latest
           working-directory: .
           args: --timeout=5m
 
       - name: golangci-lint (mqtt)
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: latest
           working-directory: transport/mqtt
           args: --timeout=5m
 
       - name: golangci-lint (aws)
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: latest
           working-directory: transport/aws
           args: --timeout=5m
 
       - name: golangci-lint (azure)
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: latest
           working-directory: transport/azure

@@ -100,7 +100,7 @@ clean: ## Clean build cache and test cache
 
 install: ## Install all development and CI tools
 	@echo "Installing development tools..."
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 	go install golang.org/x/vuln/cmd/govulncheck@latest
 	go install github.com/icholy/gomajor@latest
 	go install github.com/psampaz/go-mod-outdated@latest
