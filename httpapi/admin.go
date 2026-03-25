@@ -7,21 +7,22 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	const prefix = "/api/v1/admin"
 
-	mux.HandleFunc(prefix+"/bridge", s.requireAuth(s.handleBridge))
-	mux.HandleFunc(prefix+"/bridge/start", s.requireAuth(s.handleStart))
-	mux.HandleFunc(prefix+"/bridge/stop", s.requireAuth(s.handleStop))
+	mux.HandleFunc(prefix+"/bridge", s.requireAdminAuth(s.handleBridge))
+	mux.HandleFunc(prefix+"/bridge/start", s.requireAdminAuth(s.handleStart))
+	mux.HandleFunc(prefix+"/bridge/stop", s.requireAdminAuth(s.handleStop))
 
-	mux.HandleFunc(prefix+"/routes", s.requireAuth(s.handleRoutes))
+	mux.HandleFunc(prefix+"/routes", s.requireAdminAuth(s.handleRoutes))
 
-	mux.HandleFunc(prefix+"/dlq", s.requireAuth(s.handleDLQ))
-	mux.HandleFunc(prefix+"/dlq/messages", s.requireAuth(s.handleDLQMessages))
-	mux.HandleFunc(prefix+"/dlq/replay", s.requireAuth(s.handleDLQReplay))
-	mux.HandleFunc(prefix+"/dlq/purge", s.requireAuth(s.handleDLQPurge))
+	mux.HandleFunc(prefix+"/dlq", s.requireAdminAuth(s.handleDLQ))
+	mux.HandleFunc(prefix+"/dlq/messages", s.requireAdminAuth(s.handleDLQMessages))
+	mux.HandleFunc(prefix+"/dlq/replay", s.requireAdminAuth(s.handleDLQReplay))
+	mux.HandleFunc(prefix+"/dlq/purge", s.requireAdminAuth(s.handleDLQPurge))
 }
 
 func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
@@ -29,6 +30,7 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	s.emitAudit(r, "bridge.status", "bridge", "", "success", nil)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"instance_id": s.rt.InstanceID(),
 		"running":     s.rt.IsRunning(),
@@ -44,9 +46,11 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := s.rt.Start(ctx); err != nil {
+		s.emitAudit(r, "bridge.start", "bridge", "", "failure", map[string]any{"error": err.Error()})
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
+	s.emitAudit(r, "bridge.start", "bridge", "", "success", nil)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "started"})
 }
 
@@ -58,9 +62,11 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := s.rt.Stop(ctx); err != nil {
+		s.emitAudit(r, "bridge.stop", "bridge", "", "failure", map[string]any{"error": err.Error()})
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.emitAudit(r, "bridge.stop", "bridge", "", "success", nil)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
 }
 
@@ -152,9 +158,17 @@ func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := store.Replay(r.Context(), body.IDs); err != nil {
+		s.emitAudit(r, "dlq.replay", "dlq", "", "failure", map[string]any{
+			"ids":   body.IDs,
+			"error": err.Error(),
+		})
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.emitAudit(r, "dlq.replay", "dlq", "", "success", map[string]any{
+		"count": len(body.IDs),
+		"ids":   body.IDs,
+	})
 	writeJSON(w, http.StatusOK, map[string]int{"replayed": len(body.IDs)})
 }
 
@@ -170,8 +184,29 @@ func (s *Server) handleDLQPurge(w http.ResponseWriter, r *http.Request) {
 	}
 	count, err := store.Purge(r.Context(), time.Now())
 	if err != nil {
+		s.emitAudit(r, "dlq.purge", "dlq", "", "failure", map[string]any{"error": err.Error()})
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.emitAudit(r, "dlq.purge", "dlq", "", "success", map[string]any{"purged": count})
 	writeJSON(w, http.StatusOK, map[string]int{"purged": count})
+}
+
+func (s *Server) emitAudit(r *http.Request, action, resource, resourceID, outcome string, detail map[string]any) {
+	s.audit.Log(r.Context(), ports.AuditEvent{
+		Timestamp:  time.Now().UTC(),
+		Action:     action,
+		Actor:      actorFromRequest(r),
+		Resource:   resource,
+		ResourceID: resourceID,
+		Outcome:    outcome,
+		Detail:     detail,
+	})
+}
+
+func actorFromRequest(r *http.Request) string {
+	if r == nil {
+		return "unknown"
+	}
+	return r.RemoteAddr
 }

@@ -1,4 +1,4 @@
-module github.com/mariotoffia/gobridge/adapters/native/store/memorylease
+module github.com/mariotoffia/gobridge/adapters/native/store/memorydlq
 
 go 1.25.0
 

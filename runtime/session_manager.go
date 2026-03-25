@@ -28,6 +28,7 @@ type SessionManager struct {
 	maxRenewFails     int
 	stepDownGrace     time.Duration
 	metrics           ports.MetricsExporter
+	audit             ports.AuditLogger
 	logger            *slog.Logger
 
 	mu              sync.Mutex
@@ -79,6 +80,7 @@ func newSessionManager(cfg SessionConfig, session ports.Session, leaseStore port
 		maxRenewFails:     cfg.MaxRenewFails,
 		stepDownGrace:     cfg.StepDownGrace,
 		metrics:           &ports.NoopExporter{},
+		audit:             ports.NoopAuditLogger{},
 		logger:            logger,
 	}
 }
@@ -116,6 +118,12 @@ func (m *SessionManager) SetMetrics(metrics ports.MetricsExporter) {
 	m.metrics = metrics
 }
 
+// SetAudit sets the audit logger on the session manager.
+// Must be called before Run; not safe for concurrent use with Run.
+func (m *SessionManager) SetAudit(audit ports.AuditLogger) {
+	m.audit = audit
+}
+
 // Token returns the current lease token and whether the manager holds the lease.
 func (m *SessionManager) Token() (domain.LeaseToken, bool) {
 	m.mu.Lock()
@@ -147,11 +155,14 @@ func (m *SessionManager) runExclusiveDeferred(ctx context.Context) error {
 		}
 		m.setToken(token)
 
+		action := "lease.acquired"
 		if iteration > 0 {
+			action = "lease.reacquired"
 			m.metrics.Counter(domain.MetricLeaseTransfers, 1,
 				domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID})
 		}
 		iteration++
+		m.emitLeaseAudit(ctx, action, "success", token, nil)
 
 		m.log(ctx, slog.LevelInfo, "lease acquired (deferred connect)", "version", token.Version)
 
@@ -170,6 +181,7 @@ func (m *SessionManager) runExclusiveDeferred(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		m.emitLeaseAudit(ctx, "lease.lost", "failure", token, err)
 		m.log(ctx, slog.LevelWarn, "lease lost, will re-acquire", "error", err)
 		m.mu.Lock()
 		m.hasLease = false
@@ -186,11 +198,14 @@ func (m *SessionManager) runExclusive(ctx context.Context) error {
 		}
 		m.setToken(token)
 
+		action := "lease.acquired"
 		if iteration > 0 {
+			action = "lease.reacquired"
 			m.metrics.Counter(domain.MetricLeaseTransfers, 1,
 				domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID})
 		}
 		iteration++
+		m.emitLeaseAudit(ctx, action, "success", token, nil)
 
 		m.log(ctx, slog.LevelInfo, "lease acquired", "version", token.Version)
 
@@ -202,6 +217,7 @@ func (m *SessionManager) runExclusive(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		m.emitLeaseAudit(ctx, "lease.lost", "failure", token, err)
 		m.log(ctx, slog.LevelWarn, "lease lost, will re-acquire", "error", err)
 		m.mu.Lock()
 		m.hasLease = false
@@ -288,6 +304,8 @@ func (m *SessionManager) stepDown(ctx context.Context) error {
 	m.hasLease = false
 	m.mu.Unlock()
 
+	m.emitLeaseAudit(ctx, "lease.stepdown", "success", token, nil)
+
 	graceCtx, graceCancel := context.WithTimeout(context.Background(), m.stepDownGrace)
 	defer graceCancel()
 
@@ -300,7 +318,10 @@ func (m *SessionManager) stepDown(ctx context.Context) error {
 		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer releaseCancel()
 		if err := m.leaseStore.Release(releaseCtx, m.sessionID, token); err != nil {
+			m.emitLeaseAudit(ctx, "lease.release", "failure", token, err)
 			m.log(ctx, slog.LevelWarn, "lease release failed during step-down", "error", err)
+		} else {
+			m.emitLeaseAudit(ctx, "lease.release", "success", token, nil)
 		}
 	}
 
@@ -365,4 +386,23 @@ func (m *SessionManager) log(ctx context.Context, level slog.Level, msg string, 
 	}
 	allArgs := append([]any{"session_id", m.sessionID}, args...)
 	m.logger.Log(ctx, level, msg, allArgs...)
+}
+
+func (m *SessionManager) emitLeaseAudit(ctx context.Context, action, outcome string, token domain.LeaseToken, err error) {
+	detail := map[string]any{
+		"owner_id": m.ownerID,
+		"version":  token.Version,
+	}
+	if err != nil {
+		detail["error"] = err.Error()
+	}
+	m.audit.Log(ctx, ports.AuditEvent{
+		Timestamp:  time.Now().UTC(),
+		Action:     action,
+		Actor:      m.ownerID,
+		Resource:   "lease",
+		ResourceID: m.sessionID,
+		Outcome:    outcome,
+		Detail:     detail,
+	})
 }

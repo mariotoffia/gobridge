@@ -12,18 +12,23 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
 // Config holds HTTP server configuration.
 type Config struct {
-	AdminAddr   string `json:"admin_addr"`
-	MonitorAddr string `json:"monitor_addr"`
-	APIKey      string `json:"-"`
-	CORSOrigins string `json:"cors_origins"`
+	AdminAddr     string `json:"admin_addr"`
+	MonitorAddr   string `json:"monitor_addr"`
+	AdminAPIKey   string `json:"-"`
+	MonitorAPIKey string `json:"-"`
+	CORSOrigins   string `json:"cors_origins"`
 }
 
-// DefaultConfig returns a Config with sensible defaults.
+// DefaultConfig returns a Config with security-first defaults.
+// CORS is disabled (empty origins) and must be explicitly configured.
+// API keys must be set before starting; the server rejects startup
+// without an AdminAPIKey.
 func DefaultConfig() Config {
 	return Config{
 		AdminAddr:   ":8080",
@@ -36,6 +41,7 @@ type Server struct {
 	rt     *runtime.Runtime
 	cfg    Config
 	logger *slog.Logger
+	audit  ports.AuditLogger
 
 	admin   *http.Server
 	monitor *http.Server
@@ -52,23 +58,36 @@ func WithServerLogger(l *slog.Logger) Option {
 	return func(s *Server) { s.logger = l }
 }
 
+// WithAuditLogger sets the audit logger for security-relevant operations.
+func WithAuditLogger(a ports.AuditLogger) Option {
+	return func(s *Server) { s.audit = a }
+}
+
 // New creates an HTTP Server bound to the given runtime.
 func New(rt *runtime.Runtime, cfg Config, opts ...Option) *Server {
 	s := &Server{rt: rt, cfg: cfg}
 	for _, o := range opts {
 		o(s)
 	}
+	if s.audit == nil {
+		s.audit = ports.NoopAuditLogger{}
+	}
 	return s
 }
 
-// Start starts both HTTP servers. It binds listeners synchronously so
-// port conflicts are detected immediately, then serves in background.
+// Start starts both HTTP servers. It validates configuration, binds
+// listeners synchronously so port conflicts are detected immediately,
+// then serves in background.
 func (s *Server) Start(_ context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.running {
 		return fmt.Errorf("httpapi: already running")
+	}
+
+	if err := s.validateConfig(); err != nil {
+		return err
 	}
 
 	adminMux := http.NewServeMux()
@@ -148,11 +167,27 @@ func (s *Server) Stop(ctx context.Context) error {
 	return nil
 }
 
+func (s *Server) validateConfig() error {
+	if s.cfg.AdminAPIKey == "" {
+		return fmt.Errorf("httpapi: admin API key is required; set AdminAPIKey in Config")
+	}
+	if s.cfg.CORSOrigins == "*" {
+		return fmt.Errorf("httpapi: wildcard CORS origin '*' is not allowed; specify explicit origins or leave empty to disable CORS")
+	}
+	for _, o := range strings.Split(s.cfg.CORSOrigins, ",") {
+		if strings.TrimSpace(o) == "*" {
+			return fmt.Errorf("httpapi: wildcard CORS origin '*' is not allowed; specify explicit origins or leave empty to disable CORS")
+		}
+	}
+	return nil
+}
+
 func (s *Server) wrap(h http.Handler) http.Handler {
 	h = s.recoverMW(h)
 	if s.cfg.CORSOrigins != "" {
 		h = s.corsMW(h)
 	}
+	h = s.requestLogMW(h)
 	return h
 }
 
@@ -170,6 +205,23 @@ func (s *Server) recoverMW(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) requestLogMW(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rw, r)
+		if s.logger != nil {
+			s.logger.Debug("http request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", rw.status,
+				"duration_ms", time.Since(start).Milliseconds(),
+				"remote", r.RemoteAddr,
+			)
+		}
+	})
+}
+
 func (s *Server) corsMW(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
@@ -177,6 +229,7 @@ func (s *Server) corsMW(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization")
+			w.Header().Set("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -187,9 +240,6 @@ func (s *Server) corsMW(next http.Handler) http.Handler {
 }
 
 func (s *Server) isAllowedOrigin(origin string) bool {
-	if s.cfg.CORSOrigins == "*" {
-		return true
-	}
 	for _, allowed := range strings.Split(s.cfg.CORSOrigins, ",") {
 		if strings.TrimSpace(allowed) == origin {
 			return true
@@ -198,26 +248,56 @@ func (s *Server) isAllowedOrigin(origin string) bool {
 	return false
 }
 
-func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+func (s *Server) requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.APIKey == "" {
-			next(w, r)
+		if !s.checkAPIKey(r, s.cfg.AdminAPIKey) {
+			writeErr(w, http.StatusUnauthorized, "invalid or missing API key")
 			return
 		}
-		expected := []byte(s.cfg.APIKey)
-		if k := r.Header.Get("X-API-Key"); subtle.ConstantTimeCompare([]byte(k), expected) == 1 {
-			next(w, r)
-			return
-		}
-		if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-			token := strings.TrimPrefix(auth, "Bearer ")
-			if subtle.ConstantTimeCompare([]byte(token), expected) == 1 {
-				next(w, r)
-				return
-			}
-		}
-		writeErr(w, http.StatusUnauthorized, "invalid or missing API key")
+		next(w, r)
 	}
+}
+
+func (s *Server) requireMonitorAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		key := s.cfg.MonitorAPIKey
+		if key == "" {
+			key = s.cfg.AdminAPIKey
+		}
+		if !s.checkAPIKey(r, key) {
+			writeErr(w, http.StatusUnauthorized, "invalid or missing API key")
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (s *Server) checkAPIKey(r *http.Request, expected string) bool {
+	if expected == "" {
+		return false
+	}
+	exp := []byte(expected)
+	if k := r.Header.Get("X-API-Key"); subtle.ConstantTimeCompare([]byte(k), exp) == 1 {
+		return true
+	}
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if subtle.ConstantTimeCompare([]byte(token), exp) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// statusRecorder captures the HTTP status code for logging.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

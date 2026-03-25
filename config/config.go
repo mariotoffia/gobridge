@@ -140,9 +140,14 @@ type BackoffDef struct {
 }
 
 // HTTPConfig configures the optional HTTP admin and monitor servers.
+// AdminAPIKey is mandatory when the HTTP block is present; the server
+// refuses to start without it. MonitorAPIKey is optional; when empty
+// the admin key is used for authenticated monitor endpoints. CORS is
+// disabled by default and wildcard '*' is rejected.
 type HTTPConfig struct {
-	AdminAddr   string `yaml:"admin_addr,omitempty" json:"admin_addr,omitempty"`
-	MonitorAddr string `yaml:"monitor_addr,omitempty" json:"monitor_addr,omitempty"`
-	APIKey      string `yaml:"api_key,omitempty" json:"api_key,omitempty"`
-	CORSOrigins string `yaml:"cors_origins,omitempty" json:"cors_origins,omitempty"`
+	AdminAddr     string `yaml:"admin_addr,omitempty" json:"admin_addr,omitempty"`
+	MonitorAddr   string `yaml:"monitor_addr,omitempty" json:"monitor_addr,omitempty"`
+	AdminAPIKey   string `yaml:"admin_api_key,omitempty" json:"admin_api_key,omitempty"`
+	MonitorAPIKey string `yaml:"monitor_api_key,omitempty" json:"monitor_api_key,omitempty"`
+	CORSOrigins   string `yaml:"cors_origins,omitempty" json:"cors_origins,omitempty"`
 }

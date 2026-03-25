@@ -53,10 +53,11 @@ func main() {
 
 	if cfg.HTTP != nil {
 		apiCfg := httpapi.Config{
-			AdminAddr:   cfg.HTTP.AdminAddr,
-			MonitorAddr: cfg.HTTP.MonitorAddr,
-			APIKey:      cfg.HTTP.APIKey,
-			CORSOrigins: cfg.HTTP.CORSOrigins,
+			AdminAddr:     cfg.HTTP.AdminAddr,
+			MonitorAddr:   cfg.HTTP.MonitorAddr,
+			AdminAPIKey:   cfg.HTTP.AdminAPIKey,
+			MonitorAPIKey: cfg.HTTP.MonitorAPIKey,
+			CORSOrigins:   cfg.HTTP.CORSOrigins,
 		}
 		if apiCfg.AdminAddr == "" {
 			apiCfg.AdminAddr = ":8080"
@@ -64,7 +65,11 @@ func main() {
 		if apiCfg.MonitorAddr == "" {
 			apiCfg.MonitorAddr = ":8081"
 		}
-		srv := httpapi.New(rt, apiCfg, httpapi.WithServerLogger(logger))
+		auditLogger := httpapi.NewSlogAuditLogger(logger)
+		srv := httpapi.New(rt, apiCfg,
+			httpapi.WithServerLogger(logger),
+			httpapi.WithAuditLogger(auditLogger),
+		)
 		if err := srv.Start(ctx); err != nil {
 			logger.Error("failed to start HTTP server", "error", err)
 			os.Exit(1)

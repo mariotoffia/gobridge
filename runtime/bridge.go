@@ -21,6 +21,7 @@ type Runtime struct {
 	outboxStore ports.OutboxStore
 	dlqStore    ports.DLQStore
 	metrics     ports.MetricsExporter
+	audit       ports.AuditLogger
 	logger      *slog.Logger
 
 	mu              sync.Mutex
@@ -84,6 +85,13 @@ func WithMetrics(m ports.MetricsExporter) Option {
 	return func(rt *Runtime) { rt.metrics = m }
 }
 
+// WithAuditLogger sets the audit logger for the runtime. When set,
+// the runtime emits structured audit events for lease transitions,
+// DLQ operations, and other security-relevant actions.
+func WithAuditLogger(a ports.AuditLogger) Option {
+	return func(rt *Runtime) { rt.audit = a }
+}
+
 // WithLogger sets the structured logger.
 func WithLogger(logger *slog.Logger) Option {
 	return func(rt *Runtime) { rt.logger = logger }
@@ -96,6 +104,7 @@ func New(opts ...Option) *Runtime {
 		sessionSenders: make(map[string]*sessionSenderEntry),
 		sessionMgrs:    make(map[string]*SessionManager),
 		healthy:        true,
+		audit:          ports.NoopAuditLogger{},
 	}
 	for _, opt := range opts {
 		opt(rt)
@@ -217,6 +226,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 			sid := entry.sessCfg.SessionID
 			if _, exists := rt.sessionMgrs[sid]; !exists {
 				mgr := newSessionManagerWithMetrics(*entry.sessCfg, entry.session, rt.leaseStore, rt.instanceID, rt.logger, m)
+				mgr.SetAudit(rt.audit)
 				rt.sessionMgrs[sid] = mgr
 			}
 
@@ -260,6 +270,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 				if _, exists := rt.sessionMgrs[sid]; !exists {
 					mgr := newSessionManagerWithMetrics(sse.config, sse.session, rt.leaseStore, rt.instanceID, rt.logger, m)
+					mgr.SetAudit(rt.audit)
 					rt.sessionMgrs[sid] = mgr
 				}
 
