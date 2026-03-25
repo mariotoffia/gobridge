@@ -310,6 +310,44 @@ func TestValidator_SharedOutbox_NonExclusiveNoLeaseStore(t *testing.T) {
 	}
 }
 
+// TestValidationError_Errors_ReturnsAllErrors validates that Errors() returns a copy
+// of all collected error messages and that mutating the copy does not affect the original.
+func TestValidationError_Errors_ReturnsAllErrors(t *testing.T) {
+	rt := runtime.New(runtime.WithInstanceID("test-verr"))
+
+	cfg1 := runtime.RouteConfig{
+		ID: "bad-1",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliveryDirectHold,
+			DispatchMode: domain.DispatchFanOut,
+		},
+	}
+	_ = rt.AddRoute(cfg1, NewFakeReceiver(), NewFakeSender(), nil, nil)
+
+	err := rt.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+
+	ve, ok := err.(*runtime.ValidationError)
+	if !ok {
+		t.Fatalf("expected *ValidationError, got %T", err)
+	}
+
+	errs := ve.Errors()
+	if len(errs) == 0 {
+		t.Fatal("expected at least one error message")
+	}
+
+	original := errs[0]
+	errs[0] = "mutated"
+
+	errs2 := ve.Errors()
+	if errs2[0] != original {
+		t.Fatalf("Errors() did not return a copy; mutation was visible: %q vs %q", errs2[0], original)
+	}
+}
+
 // TestValidator_SharedOutbox_RejectsMissingLeaseStoreForExclusive verifies exclusive shared_outbox requires LeaseStore.
 func TestValidator_SharedOutbox_RejectsMissingLeaseStoreForExclusive(t *testing.T) {
 	outbox := NewFakeOutboxStore()

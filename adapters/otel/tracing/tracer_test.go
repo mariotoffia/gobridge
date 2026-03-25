@@ -136,6 +136,28 @@ func TestSpan_AddEvent(t *testing.T) {
 	assert.Equal(t, "my-event", spans[0].Events[0].Name)
 }
 
+// Verifies Close shuts down the provider without error and that spans
+// recorded before Close are visible in the exporter.
+func TestTracer_Close_FlushesPendingSpans(t *testing.T) {
+	t.Parallel()
+
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+
+	tr := oteltracing.NewFromProvider(tp)
+	ctx := context.Background()
+
+	_, span := tr.StartSpan(ctx, "close-test-span")
+	span.End()
+
+	spans := exp.GetSpans()
+	require.Len(t, spans, 1)
+	assert.Equal(t, "close-test-span", spans[0].Name)
+
+	err := tr.Close(context.Background())
+	require.NoError(t, err)
+}
+
 // Verifies SetAttributes adds later domain tags to the exported span attributes.
 func TestSpan_SetAttributes(t *testing.T) {
 	t.Parallel()

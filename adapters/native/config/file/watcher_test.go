@@ -164,6 +164,99 @@ func TestWatcher_AlreadyRunning(t *testing.T) {
 	w.Stop()
 }
 
+// TestWatcher_DebounceCoalesces validates that multiple rapid writes produce
+// a single config event rather than one per write.
+func TestWatcher_DebounceCoalesces(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bridge.yaml")
+	writeYAML(t, path, "initial")
+
+	w := NewWatcher(path, WithDebounce(200*time.Millisecond))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch, err := w.Watch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	for i := 0; i < 5; i++ {
+		writeYAML(t, path, "rapid-"+string(rune('0'+i)))
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	var received int
+	timeout := time.After(2 * time.Second)
+loop:
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				break loop
+			}
+			received++
+		case <-timeout:
+			break loop
+		}
+	}
+
+	if received < 1 {
+		t.Fatal("expected at least one coalesced event")
+	}
+	if received > 2 {
+		t.Fatalf("expected debounce to coalesce writes, got %d events from 5 writes", received)
+	}
+
+	w.Stop()
+}
+
+// TestWatcher_InvalidContent validates that corrupt YAML is handled gracefully
+// (no config emitted, no crash, error logged).
+func TestWatcher_InvalidContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bridge.yaml")
+	writeYAML(t, path, "valid")
+
+	w := NewWatcher(path,
+		WithMode(ModePoll),
+		WithPollInterval(100*time.Millisecond),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch, err := w.Watch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if err := os.WriteFile(path, []byte("{{broken yaml"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case cfg := <-ch:
+		t.Fatalf("should not emit config for corrupt content, got: %+v", cfg)
+	case <-time.After(500 * time.Millisecond):
+		// Expected: no event emitted for invalid content.
+	}
+
+	w.Stop()
+}
+
+// TestWatcher_WithFormat validates that WithFormat overrides the auto-detected
+// format so a .yaml file can be parsed as JSON when explicitly told to.
+func TestWatcher_WithFormat(t *testing.T) {
+	w := NewWatcher("/tmp/fake.yaml", WithFormat(config.FormatJSON))
+	if w.format != config.FormatJSON {
+		t.Fatalf("expected FormatJSON, got %v", w.format)
+	}
+}
+
 func TestWatcher_StopClosesChannel(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bridge.yaml")

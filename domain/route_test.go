@@ -84,3 +84,126 @@ func TestRoutePolicy_WithDefaults_PreservesExplicit(t *testing.T) {
 		t.Fatal("explicit Backoff.Multiplier should be preserved")
 	}
 }
+
+// TestDefaultBackoffPolicy_Values validates the package-level DefaultBackoffPolicy variable.
+func TestDefaultBackoffPolicy_Values(t *testing.T) {
+	bp := domain.DefaultBackoffPolicy
+	if bp.InitialInterval != 1*time.Second {
+		t.Fatalf("InitialInterval: got %v, want 1s", bp.InitialInterval)
+	}
+	if bp.MaxInterval != 30*time.Second {
+		t.Fatalf("MaxInterval: got %v, want 30s", bp.MaxInterval)
+	}
+	if bp.Multiplier != 2.0 {
+		t.Fatalf("Multiplier: got %v, want 2.0", bp.Multiplier)
+	}
+}
+
+// TestDeliveryMode_Constants validates that DeliveryMode enum values are distinct and non-empty.
+func TestDeliveryMode_Constants(t *testing.T) {
+	modes := []domain.DeliveryMode{
+		domain.DeliveryDirectHold,
+		domain.DeliverySharedOutbox,
+	}
+	seen := make(map[domain.DeliveryMode]bool, len(modes))
+	for _, m := range modes {
+		if m == "" {
+			t.Fatal("DeliveryMode constant must not be empty")
+		}
+		if seen[m] {
+			t.Fatalf("duplicate DeliveryMode: %q", m)
+		}
+		seen[m] = true
+	}
+}
+
+// TestDispatchMode_Constants validates that DispatchMode enum values are distinct and non-empty.
+func TestDispatchMode_Constants(t *testing.T) {
+	modes := []domain.DispatchMode{
+		domain.DispatchSingle,
+		domain.DispatchFanOut,
+	}
+	seen := make(map[domain.DispatchMode]bool, len(modes))
+	for _, m := range modes {
+		if m == "" {
+			t.Fatal("DispatchMode constant must not be empty")
+		}
+		if seen[m] {
+			t.Fatalf("duplicate DispatchMode: %q", m)
+		}
+		seen[m] = true
+	}
+}
+
+// TestSessionMode_Constants validates that SessionMode enum values are distinct and non-empty.
+func TestSessionMode_Constants(t *testing.T) {
+	modes := []domain.SessionMode{
+		domain.SessionEphemeral,
+		domain.SessionPersistent,
+		domain.SessionExclusive,
+	}
+	seen := make(map[domain.SessionMode]bool, len(modes))
+	for _, m := range modes {
+		if m == "" {
+			t.Fatal("SessionMode constant must not be empty")
+		}
+		if seen[m] {
+			t.Fatalf("duplicate SessionMode: %q", m)
+		}
+		seen[m] = true
+	}
+}
+
+// TestAckBoundary_Constants validates that AckBoundary enum values are distinct and non-empty.
+func TestAckBoundary_Constants(t *testing.T) {
+	values := []domain.AckBoundary{
+		domain.AckAfterTargetAccept,
+		domain.AckAfterOutboxPersist,
+	}
+	seen := make(map[domain.AckBoundary]bool, len(values))
+	for _, v := range values {
+		if v == "" {
+			t.Fatal("AckBoundary constant must not be empty")
+		}
+		if seen[v] {
+			t.Fatalf("duplicate AckBoundary: %q", v)
+		}
+		seen[v] = true
+	}
+}
+
+// TestExpiredAction_Constants validates that ExpiredAction enum values are distinct and non-empty.
+func TestExpiredAction_Constants(t *testing.T) {
+	values := []domain.ExpiredAction{
+		domain.ExpiredDrop,
+		domain.ExpiredDLQ,
+	}
+	seen := make(map[domain.ExpiredAction]bool, len(values))
+	for _, v := range values {
+		if v == "" {
+			t.Fatal("ExpiredAction constant must not be empty")
+		}
+		if seen[v] {
+			t.Fatalf("duplicate ExpiredAction: %q", v)
+		}
+		seen[v] = true
+	}
+}
+
+// TestFailureAction_Constants validates that FailureAction enum values are distinct and non-empty.
+func TestFailureAction_Constants(t *testing.T) {
+	values := []domain.FailureAction{
+		domain.FailureDLQ,
+		domain.FailureDrop,
+	}
+	seen := make(map[domain.FailureAction]bool, len(values))
+	for _, v := range values {
+		if v == "" {
+			t.Fatal("FailureAction constant must not be empty")
+		}
+		if seen[v] {
+			t.Fatalf("duplicate FailureAction: %q", v)
+		}
+		seen[v] = true
+	}
+}

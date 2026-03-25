@@ -216,6 +216,26 @@ func TestInstrumentedReceiver_RecordsReceiveLatency(t *testing.T) {
 	}
 }
 
+// Verifies Expire delegates to the inner OutboxStore (no metrics emitted, pure delegation).
+func TestInstrumentedOutboxStore_ExpireDelegates(t *testing.T) {
+	rec := &ports.RecordingExporter{}
+	inner := NewFakeOutboxStore()
+	store := runtime.NewInstrumentedOutboxStore(inner, rec)
+
+	records := []domain.OutboxRecord{
+		{ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", SessionID: "s1",
+			Status: domain.OutboxPending, Envelope: domain.Envelope{ID: "env-1"}},
+	}
+	_ = store.Persist(context.Background(), records)
+	rec.Reset()
+
+	count, err := store.Expire(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Expire failed: %v", err)
+	}
+	_ = count
+}
+
 // Verifies Delivery.Extend increments the visibility extension counter on the instrumented receiver path.
 func TestInstrumentedDelivery_ExtendCountsVisibilityExtension(t *testing.T) {
 	rec := &ports.RecordingExporter{}

@@ -114,6 +114,42 @@ func pollSQS(t *testing.T, client *awssqs.Client, queueURL string, count int, ti
 	return bodies
 }
 
+func newSQSSenderFIFO(t *testing.T, queueURL, groupID string) *sqsadapter.Sender {
+	t.Helper()
+	ep := sqslocal.Endpoint(t)
+	s, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
+		QueueURL:       queueURL,
+		Endpoint:       ep,
+		Region:         "us-east-1",
+		Timeout:        5 * time.Second,
+		FIFO:           true,
+		MessageGroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("newSQSSenderFIFO: %v", err)
+	}
+	return s
+}
+
+func newSQSReceiverWithVisibility(t *testing.T, queueURL string, visibilityTimeout int32) *sqsadapter.Receiver {
+	t.Helper()
+	ep := sqslocal.Endpoint(t)
+	autoExtend := false
+	r, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
+		QueueURL:          queueURL,
+		Endpoint:          ep,
+		Region:            "us-east-1",
+		MaxMessages:       1,
+		WaitTimeSeconds:   1,
+		VisibilityTimeout: visibilityTimeout,
+		AutoExtend:        &autoExtend,
+	}, slog.Default())
+	if err != nil {
+		t.Fatalf("newSQSReceiverWithVisibility: %v", err)
+	}
+	return r
+}
+
 func strPtr(s string) *string { return &s }
 
 // ---------------------------------------------------------------------------

@@ -806,3 +806,74 @@ Catalog of all test functions in the gobridge repository.
 | TestE2E_MQTTToSQS_HeaderBasedRouting | validates E2E MQTT to SQS header routing | e2e | e2e_mqtt_to_sqs | pass |
 | TestE2E_MQTTToSQS_RoundTripWithFailover | validates E2E MQTT to SQS round trip failover | e2e | e2e_mqtt_to_sqs | pass |
 | TestE2E_MQTTToSQS_BackpressureSQSSlow | validates E2E MQTT to SQS backpressure | e2e | e2e_mqtt_to_sqs | pass |
+| TestLeaseToken_ZeroValue | validates zero-value LeaseToken semantics | unit | domain | pass |
+| TestLeaseInfo_ZeroValue | validates zero-value LeaseInfo semantics | unit | domain | pass |
+| TestLeaseInfo_Fields | validates LeaseInfo field assignment | unit | domain | pass |
+| TestCredentialKind_Constants | validates credential kind constants are distinct | unit | domain | pass |
+| TestCredentialSet_ZeroValue | validates zero-value CredentialSet has nil fields | unit | domain | pass |
+| TestPasswordCredential_Fields | validates PasswordCredential field assignment | unit | domain | pass |
+| TestTLSMaterial_Fields | validates TLSMaterial field assignment | unit | domain | pass |
+| TestMetricNamespace_NonEmpty | validates MetricNamespace is non-empty | unit | domain | pass |
+| TestMetricConstants_NonEmpty | validates all Metric constants are non-empty and unique | unit | domain | pass |
+| TestTagKeyConstants_NonEmpty | validates all TagKey constants are non-empty and unique | unit | domain | pass |
+| TestTag_Construction | validates Tag struct creation | unit | domain | pass |
+| TestOutboxPartitionKey_WithSession | validates SESSION# partition key format | unit | domain | pass |
+| TestOutboxPartitionKey_WithBinding | validates BINDING# partition key format | unit | domain | pass |
+| TestOutboxPartitionKey_Deterministic | validates partition key determinism | unit | domain | pass |
+| TestDefaultBackoffPolicy_Values | validates default backoff configuration | unit | domain | pass |
+| TestDeliveryMode_Constants | validates DeliveryMode enum values are distinct | unit | domain | pass |
+| TestDispatchMode_Constants | validates DispatchMode enum values are distinct | unit | domain | pass |
+| TestSessionMode_Constants | validates SessionMode enum values are distinct | unit | domain | pass |
+| TestAckBoundary_Constants | validates AckBoundary enum values are distinct | unit | domain | pass |
+| TestExpiredAction_Constants | validates ExpiredAction enum values are distinct | unit | domain | pass |
+| TestFailureAction_Constants | validates FailureAction enum values are distinct | unit | domain | pass |
+| TestReceiverConfigFromOptions_Defaults | validates SQS receiver config defaults | unit | sqs_config | pass |
+| TestReceiverConfigFromOptions_AllFields | validates SQS receiver config all fields | unit | sqs_config | pass |
+| TestSenderConfigFromOptions_Defaults | validates SQS sender config defaults | unit | sqs_config | pass |
+| TestSenderConfigFromOptions_AllFields | validates SQS sender config all fields | unit | sqs_config | pass |
+| TestSenderConfigFromOptions_FIFODetection | validates SQS FIFO detection logic | unit | sqs_config | pass |
+| TestReceiverFactory_NewReceiver_OptionsPassthrough | validates SQS receiver factory options passthrough | unit | sqs_factory | pass |
+| TestSenderFactory_NewSender_OptionsPassthrough | validates SQS sender factory options passthrough | unit | sqs_factory | pass |
+| TestFactory_NewSession_MissingClientID | validates MQTT factory rejects missing client_id | unit | mqtt_factory | pass |
+| TestFactory_NewSession_MissingBrokerURLs | validates MQTT factory rejects missing broker URLs | unit | mqtt_factory | pass |
+| TestFactory_NewSession_ValidOptions | validates MQTT factory creates session with valid options | unit | mqtt_factory | pass |
+| TestFactory_NewReceiver_WrongSessionType | validates MQTT factory rejects wrong session type | unit | mqtt_factory | pass |
+| TestFactory_NewSender_WrongSessionType | validates MQTT factory rejects wrong session type | unit | mqtt_factory | pass |
+| TestReceiverOptionsFromMap_Defaults | validates MQTT receiver options defaults | unit | mqtt_config | pass |
+| TestReceiverOptionsFromMap_NonNilMap | validates MQTT receiver options with map | unit | mqtt_config | pass |
+| TestHandleStart_StartsRuntime | validates admin start handler starts bridge | unit | httpapi_admin | pass |
+| TestHandleStart_AlreadyRunning | validates admin start handler when already running | unit | httpapi_admin | pass |
+| TestHandleStop_StopsRuntime | validates admin stop handler stops bridge | unit | httpapi_admin | pass |
+| TestHandleStop_NotRunning | validates admin stop handler when not running | unit | httpapi_admin | pass |
+| TestHandleDLQMessages_NoStore | validates DLQ messages returns 404 without store | unit | httpapi_admin | pass |
+| TestHandleStart_MethodNotAllowed | validates admin start rejects GET method | unit | httpapi_admin | pass |
+| TestHandleHealth_WithComponentErrors | validates health endpoint with component errors | unit | httpapi_monitor | pass |
+| TestHandleLogs_ReturnsNotImplemented | validates logs endpoint returns stub response | unit | httpapi_monitor | pass |
+| TestHandleLive_ReturnsAlive | validates liveness probe returns alive | unit | httpapi_monitor | pass |
+| TestMonitorHandleReady_NotRunning | validates readiness probe when not running | unit | httpapi_monitor | pass |
+| TestRecoverMW_PanicsReturn500 | validates panic recovery returns HTTP 500 | unit | httpapi_server | pass |
+| TestRequestLogMW_LogsRequestDetails | validates request logging middleware output | unit | httpapi_server | pass |
+| TestServer_Stop_GracefulShutdown | validates server graceful shutdown | unit | httpapi_server | pass |
+| TestServer_Stop_NotRunning | validates server stop when not running | unit | httpapi_server | pass |
+| TestInstrumentedOutboxStore_ExpireDelegates | validates Expire delegates to inner store | unit | runtime_instrumented | pass |
+| TestValidationError_Errors_ReturnsAllErrors | validates Errors returns copy of all messages | unit | runtime_validator | pass |
+| TestBuildTLSConfig_Nil | validates nil TLS config when no settings | unit | servicebus_client | pass |
+| TestBuildTLSConfig_InsecureSkipVerify | validates InsecureSkipVerify propagation | unit | servicebus_client | pass |
+| TestBuildTLSConfig_WithCACert | validates CA PEM loading into RootCAs | unit | servicebus_client | pass |
+| TestBuildClientOptions_NoTLS | validates nil client options without TLS | unit | servicebus_client | pass |
+| TestBuildClientOptions_WithTLSConfig | validates client options with explicit TLS | unit | servicebus_client | pass |
+| TestWatcher_DebounceCoalesces | validates rapid writes produce single event | unit | file_watcher | pass |
+| TestWatcher_InvalidContent | validates corrupt YAML is handled gracefully | unit | file_watcher | pass |
+| TestWatcher_WithFormat | validates explicit format override | unit | file_watcher | pass |
+| TestTracer_Close_FlushesPendingSpans | validates Close shuts down provider cleanly | unit | otel_tracing | pass |
+| TestToRoutePolicy_FieldMapping | validates RouteDef to RoutePolicy field mapping | unit | bridge_convert | pass |
+| TestToRoutePolicy_BackoffDurations | validates backoff duration string parsing | unit | bridge_convert | pass |
+| TestToSessionConfig_FromRouteSessionDef | validates session config field mapping | unit | bridge_convert | pass |
+| TestToSessionConfig_NilReturnsNil | validates nil input returns nil | unit | bridge_convert | pass |
+| TestToDrainStrategy_FixedPoll | validates fixed poll drain strategy | unit | bridge_convert | pass |
+| TestToDrainStrategy_AdaptiveBackoff | validates adaptive backoff drain strategy | unit | bridge_convert | pass |
+| TestIntegration_SQS_Receiver_ReceivesMessages | validates SQS receiver emits deliveries | integration | sqs_integration | pass |
+| TestIntegration_SQS_Sender_SendsMessage | validates SQS sender sends message to queue | integration | sqs_integration | pass |
+| TestIntegration_SQS_Sender_FIFO | validates SQS FIFO queue message ordering | integration | sqs_integration | pass |
+| TestIntegration_SQS_Receiver_VisibilityTimeout | validates SQS message redelivery after timeout | integration | sqs_integration | pass |
+| TestIntegration_SQS_Receiver_ContextCancel | validates SQS receiver stops on context cancel | integration | sqs_integration | pass |

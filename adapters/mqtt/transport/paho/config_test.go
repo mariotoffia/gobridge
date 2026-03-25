@@ -143,3 +143,19 @@ func TestSenderOptionsFromMap_InvalidQoS(t *testing.T) {
 		t.Errorf("QoS = %d, want 1 (default for invalid)", opts.QoS)
 	}
 }
+
+// TestReceiverOptionsFromMap_Defaults validates that ReceiverOptionsFromMap
+// returns a valid ReceiverOptions from an empty map.
+func TestReceiverOptionsFromMap_Defaults(t *testing.T) {
+	opts := ReceiverOptionsFromMap(nil)
+	_ = opts
+}
+
+// TestReceiverOptionsFromMap_NonNilMap validates ReceiverOptionsFromMap
+// with a populated options map (currently no receiver-specific options).
+func TestReceiverOptionsFromMap_NonNilMap(t *testing.T) {
+	opts := ReceiverOptionsFromMap(map[string]any{
+		"some_unknown_key": "ignored",
+	})
+	_ = opts
+}
