@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/mariotoffia/gobridge v0.0.0
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0
+	github.com/mariotoffia/gobridge/adapters/native/config/file v0.0.0
 	github.com/mariotoffia/gobridge/adapters/native/store v0.0.0
 )
 
@@ -34,6 +35,7 @@ require (
 replace (
 	github.com/mariotoffia/gobridge => ../..
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho => ../../adapters/mqtt/transport/paho
+	github.com/mariotoffia/gobridge/adapters/native/config/file => ../../adapters/native/config/file
 	github.com/mariotoffia/gobridge/adapters/native/store => ../../adapters/native/store
 	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq => ../../adapters/native/store/memorydlq
 	github.com/mariotoffia/gobridge/adapters/native/store/memorylease => ../../adapters/native/store/memorylease

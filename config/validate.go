@@ -42,6 +42,22 @@ func Validate(cfg *BridgeConfig) error {
 			"standalone", "clustered")
 	}
 
+	if cw := cfg.ConfigWatch; cw != nil {
+		if cw.Mode != "" {
+			validateEnum(ve, "config_watch.mode", cw.Mode, "notify", "poll")
+		}
+		if cw.PollInterval != "" {
+			if _, err := time.ParseDuration(cw.PollInterval); err != nil {
+				ve.addf("config_watch.poll_interval: invalid duration %q: %v", cw.PollInterval, err)
+			}
+		}
+		if cw.Debounce != "" {
+			if _, err := time.ParseDuration(cw.Debounce); err != nil {
+				ve.addf("config_watch.debounce: invalid duration %q: %v", cw.Debounce, err)
+			}
+		}
+	}
+
 	sessionIDs := collectIDs(ve, "sessions", len(cfg.Sessions), func(i int) (string, string) {
 		s := cfg.Sessions[i]
 		if s.Transport == "" {

@@ -4,14 +4,25 @@ import "time"
 
 // BridgeConfig is the root configuration for a GoBridge instance.
 type BridgeConfig struct {
-	Bridge    BridgeSettings `yaml:"bridge" json:"bridge"`
-	Stores    StoresConfig   `yaml:"stores,omitempty" json:"stores,omitempty"`
-	Sessions  []SessionDef   `yaml:"sessions,omitempty" json:"sessions,omitempty"`
-	Receivers []ReceiverDef  `yaml:"receivers,omitempty" json:"receivers,omitempty"`
-	Senders   []SenderDef    `yaml:"senders,omitempty" json:"senders,omitempty"`
-	Bindings  []BindingDef   `yaml:"bindings,omitempty" json:"bindings,omitempty"`
-	Routes    []RouteDef     `yaml:"routes,omitempty" json:"routes,omitempty"`
-	HTTP      *HTTPConfig    `yaml:"http,omitempty" json:"http,omitempty"`
+	Bridge      BridgeSettings  `yaml:"bridge" json:"bridge"`
+	ConfigWatch *ConfigWatchDef `yaml:"config_watch,omitempty" json:"config_watch,omitempty"`
+	Stores      StoresConfig    `yaml:"stores,omitempty" json:"stores,omitempty"`
+	Sessions    []SessionDef    `yaml:"sessions,omitempty" json:"sessions,omitempty"`
+	Receivers   []ReceiverDef   `yaml:"receivers,omitempty" json:"receivers,omitempty"`
+	Senders     []SenderDef     `yaml:"senders,omitempty" json:"senders,omitempty"`
+	Bindings    []BindingDef    `yaml:"bindings,omitempty" json:"bindings,omitempty"`
+	Routes      []RouteDef      `yaml:"routes,omitempty" json:"routes,omitempty"`
+	HTTP        *HTTPConfig     `yaml:"http,omitempty" json:"http,omitempty"`
+}
+
+// ConfigWatchDef configures how the configuration source is watched
+// for changes. Mode selects the detection mechanism:
+//   - "notify" (default): filesystem event notifications, debounced by Debounce
+//   - "poll": periodic file reads with content comparison, at PollInterval
+type ConfigWatchDef struct {
+	Mode         string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	PollInterval string `yaml:"poll_interval,omitempty" json:"poll_interval,omitempty"`
+	Debounce     string `yaml:"debounce,omitempty" json:"debounce,omitempty"`
 }
 
 // BridgeSettings holds bridge-level operational settings.

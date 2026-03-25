@@ -12,6 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/httpapi"
 
+	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
 )
@@ -23,18 +24,31 @@ func main() {
 
 	logger := newLogger(*logLevel)
 
-	cfg, err := config.ParseFile(*configPath, config.FormatAuto)
+	fileSource := fileconfig.NewSource(*configPath)
+	baseCfg, err := fileSource.Load(context.Background())
 	if err != nil {
-		logger.Error("failed to parse config", "path", *configPath, "error", err)
-		os.Exit(1)
-	}
-	if err := config.Validate(cfg); err != nil {
-		logger.Error("invalid config", "error", err)
+		logger.Error("failed to load config", "path", *configPath, "error", err)
 		os.Exit(1)
 	}
 
+	fileWatcher := fileconfig.NewWatcher(*configPath,
+		fileconfig.WithWatchConfig(baseCfg.ConfigWatch),
+		fileconfig.WithLogger(logger),
+	)
+
+	mgr := config.NewManager(
+		config.Layer{Name: "file", Loader: fileSource, Watcher: fileWatcher},
+		config.WithManagerLogger(logger),
+	)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	cfg, err := mgr.Load(ctx)
+	if err != nil {
+		logger.Error("invalid config", "error", err)
+		os.Exit(1)
+	}
 
 	builder := bridge.NewBuilder(cfg, bridge.WithLogger(logger))
 

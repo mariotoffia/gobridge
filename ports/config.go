@@ -12,11 +12,17 @@ type ConfigLoader interface {
 	Load(ctx context.Context) (*config.BridgeConfig, error)
 }
 
+// ConfigWatcher watches for configuration changes from a source.
+// Implementations may use file-system watches, polling, or push-based
+// mechanisms depending on the backing store. The initial configuration
+// is NOT emitted; callers should use ConfigLoader for the first load.
+type ConfigWatcher interface {
+	Watch(ctx context.Context) (<-chan *config.BridgeConfig, error)
+}
+
 // ConfigReloader extends ConfigLoader with the ability to watch for
 // configuration changes and emit updated configurations on a channel.
-// Implementations may use file-system watches, polling, or push-based
-// mechanisms depending on the backing store.
 type ConfigReloader interface {
 	ConfigLoader
-	Watch(ctx context.Context) (<-chan *config.BridgeConfig, error)
+	ConfigWatcher
 }
