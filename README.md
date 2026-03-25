@@ -129,14 +129,19 @@ gobridge/
 | SQLite | `adapters/native/store/sqlite*` | Single-process deployments |
 | DynamoDB | `adapters/aws/store/dynamodb*` | Production, clustered deployments |
 
-## Building and Testing
+## Development
 
 ```bash
+make install          # Install all dev tools (golangci-lint, govulncheck, gomajor, etc.)
 make build            # Build all modules
 make test             # Unit tests (no Docker)
 make test-integration # All tests (Docker required)
 make docker-up        # Start persistent test containers
 make lint             # Lint all modules
+make tidy             # Sync workspace + tidy all module deps
+make update           # Upgrade deps to latest minor/patch
+make update-major     # Show available major version upgrades
+make vulncheck        # Scan for known vulnerabilities
 make check            # Build + lint + unit tests
 ```
 

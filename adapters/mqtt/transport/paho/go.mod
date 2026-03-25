@@ -13,7 +13,7 @@ require (
 require (
 	github.com/eclipse/paho.golang v0.23.0
 	github.com/gorilla/websocket v1.5.3 // indirect
-	golang.org/x/net v0.51.0 // indirect
+	golang.org/x/net v0.52.0 // indirect
 )
 
 replace github.com/mariotoffia/gobridge => ../../../..

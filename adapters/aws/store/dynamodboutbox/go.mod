@@ -10,7 +10,7 @@ replace (
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.4
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.57.0
-	github.com/mariotoffia/gobridge v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge v0.0.0-20260323112336-b482fe636793
 	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-00010101000000-000000000000
 )
 

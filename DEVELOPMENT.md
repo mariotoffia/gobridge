@@ -7,7 +7,7 @@ This guide covers everything you need to set up a development environment, build
 - **Go 1.25+** -- gobridge uses a Go workspace (`go.work`)
 - **Docker** -- required for integration tests (DynamoDB Local, ElasticMQ, Mosquitto, Azure Service Bus emulator)
 - **Make** -- optional, provides convenient commands
-- **golangci-lint** -- for linting (`make dev-deps` to install)
+- **Dev tools** -- run `make install` to install all required tools
 
 ## Repository Structure
 
@@ -139,15 +139,25 @@ When an environment variable is set, the test utility uses the existing service 
 ## Linting
 
 ```bash
-# Install golangci-lint (first time)
-make dev-deps
-
-# Lint all modules
-make lint
-
-# Lint with auto-fix
-make lint-fix
+make lint         # Lint all workspace modules
+make lint-fix     # Lint with auto-fix
 ```
+
+## Dependency Management
+
+```bash
+make tidy         # Sync workspace versions + tidy all modules (removes unused, adds missing)
+make update       # Upgrade all deps to latest minor/patch versions, then tidy
+make update-major # Show available major version upgrades (review before applying)
+make outdated     # Pretty-print table of outdated direct dependencies
+make vulncheck    # Scan all modules for known vulnerabilities
+```
+
+`make update-major` uses [gomajor](https://github.com/icholy/gomajor) to detect dependencies with newer major versions available. Major version upgrades require import path changes in Go, so review the output and apply selectively with `gomajor get <module>`.
+
+`make outdated` uses [go-mod-outdated](https://github.com/psampaz/go-mod-outdated) to display a formatted table of direct dependencies that have newer versions.
+
+`make vulncheck` uses [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) (by the Go team) to check all modules against the Go vulnerability database.
 
 ## CI Workflow
 

@@ -5,6 +5,8 @@
 
 .PHONY: all build test test-integration lint lint-fix clean tidy sync help
 .PHONY: build-core build-mqtt build-aws build-azure
+.PHONY: install vulncheck update update-major outdated
+.PHONY: docker-up docker-down docker-clean
 
 # Default target
 all: build test
@@ -62,40 +64,47 @@ lint-fix: ## Lint and auto-fix all workspace modules
 # Maintenance targets
 # ============================================================================
 
-tidy: ## Tidy all module dependencies (discovers all go.mod files recursively)
-	@find . -name go.mod -not -path '*/vendor/*' -execdir sh -c 'echo "Tidying $$(pwd)..." && go mod tidy' \;
-
-sync: ## Sync workspace and update dependencies
+tidy: ## Sync workspace and tidy all module dependencies
 	@echo "Syncing workspace..."
 	go work sync
+	@echo "Tidying all modules..."
+	@find . -name go.mod -not -path '*/vendor/*' -execdir sh -c 'echo "Tidying $$(pwd)..." && go mod tidy' \;
+
+sync: tidy ## Alias for tidy (workspace sync is included)
+
+update: ## Update all dependencies to latest minor/patch versions
+	@find . -name go.mod -not -path '*/vendor/*' -not -path '*/legacy/*' \
+		-execdir sh -c 'echo "Updating $$(pwd)..." && go get -u ./... && go mod tidy' \;
 	@$(MAKE) tidy
 
-update: ## Update all dependencies to latest versions
-	@echo "Updating core dependencies..."
-	go get -u ./...
-	go mod tidy
-	@echo "Updating MQTT dependencies..."
-	cd transport/mqtt && go get -u ./... && go mod tidy
-	@echo "Updating AWS dependencies..."
-	cd transport/aws && go get -u ./... && go mod tidy
-	@echo "Updating Azure dependencies..."
-	cd transport/azure && go get -u ./... && go mod tidy
-	@$(MAKE) sync
+update-major: ## Show available major version upgrades (requires gomajor)
+	@find . -name go.mod -not -path '*/vendor/*' -not -path '*/legacy/*' \
+		-execdir sh -c 'echo "=== Major versions in $$(pwd) ===" && gomajor list' \;
+
+outdated: ## Show outdated direct dependencies (requires go-mod-outdated)
+	@find . -name go.mod -not -path '*/vendor/*' -not -path '*/legacy/*' \
+		-execdir sh -c 'echo "=== Outdated in $$(pwd) ===" && go list -m -u -json all | go-mod-outdated -direct -update' \;
+
+vulncheck: ## Check all modules for known vulnerabilities (requires govulncheck)
+	@echo "Running vulnerability check..."
+	@find . -name go.mod -not -path '*/vendor/*' -not -path '*/legacy/*' \
+		-execdir sh -c 'echo "=== Checking $$(pwd) ===" && govulncheck ./...' \;
 
 clean: ## Clean build cache and test cache
 	@echo "Cleaning build cache..."
 	go clean -cache -testcache ./...
-	cd transport/mqtt && go clean -cache -testcache ./...
-	cd transport/aws && go clean -cache -testcache ./...
-	cd transport/azure && go clean -cache -testcache ./...
 
 # ============================================================================
 # Development helpers
 # ============================================================================
 
-dev-deps: ## Install development dependencies
-	@echo "Installing development dependencies..."
+install: ## Install all development and CI tools
+	@echo "Installing development tools..."
 	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	go install golang.org/x/vuln/cmd/govulncheck@latest
+	go install github.com/icholy/gomajor@latest
+	go install github.com/psampaz/go-mod-outdated@latest
+	go install github.com/loov/goda@latest
 
 check: build lint test ## Run full CI check (no Docker, integration skipped)
 
