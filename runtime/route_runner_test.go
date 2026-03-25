@@ -2,10 +2,12 @@ package runtime_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/observability"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -233,6 +235,222 @@ func TestRouteRunner_ProcessorError_MessageFiltered(t *testing.T) {
 	}
 	if sender.SentCount() != 0 {
 		t.Fatalf("filtered message should not be sent, got %d", sender.SentCount())
+	}
+}
+
+func TestRouteRunner_Tracer_SpanLifecycle(t *testing.T) {
+	tracer := &FakeTracer{}
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+		cfg.Tracer = tracer
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = runner.Run(ctx) }()
+
+	env := &domain.Envelope{ID: "msg-traced", Payload: []byte("hello")}
+	del := NewFakeDelivery(env)
+	_ = receiver.Emit(ctx, del)
+	time.Sleep(50 * time.Millisecond)
+
+	if tracer.SpanCount() != 1 {
+		t.Fatalf("expected 1 span, got %d", tracer.SpanCount())
+	}
+
+	span := tracer.LastSpan()
+	if span.Name != "bridge.handleDelivery" {
+		t.Fatalf("expected span name bridge.handleDelivery, got %q", span.Name)
+	}
+	if !span.Ended {
+		t.Fatal("span should be ended after delivery completes")
+	}
+	if span.Err != nil {
+		t.Fatalf("span should not have error on happy path, got %v", span.Err)
+	}
+
+	hasRouteTag := false
+	hasEnvelopeTag := false
+	for _, a := range span.Attrs {
+		if a.Key == domain.TagKeyRouteID && a.Value == "test-route" {
+			hasRouteTag = true
+		}
+		if a.Key == "envelope_id" && a.Value == "msg-traced" {
+			hasEnvelopeTag = true
+		}
+	}
+	if !hasRouteTag {
+		t.Fatal("span should have route_id attribute")
+	}
+	if !hasEnvelopeTag {
+		t.Fatal("span should have envelope_id attribute")
+	}
+}
+
+func TestRouteRunner_Tracer_TraceContextExtraction(t *testing.T) {
+	tracer := &FakeTracer{}
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+		cfg.Tracer = tracer
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = runner.Run(ctx) }()
+
+	env := &domain.Envelope{
+		ID: "msg-w3c",
+		Headers: map[string]any{
+			"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+		},
+	}
+	del := NewFakeDelivery(env)
+	_ = receiver.Emit(ctx, del)
+	time.Sleep(50 * time.Millisecond)
+
+	span := tracer.LastSpan()
+	if span == nil {
+		t.Fatal("expected a span")
+	}
+
+	hasTraceID := false
+	for _, a := range span.Attrs {
+		if a.Key == "trace_id" && a.Value == "0af7651916cd43dd8448eb211c80319c" {
+			hasTraceID = true
+		}
+	}
+	if !hasTraceID {
+		t.Fatal("span should have trace_id attribute from traceparent header")
+	}
+}
+
+func TestRouteRunner_Tracer_ContextEnrichment(t *testing.T) {
+	tracer := &FakeTracer{}
+	var capturedCorrID, capturedTraceID, capturedSpanID string
+
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+		cfg.Tracer = tracer
+		cfg.Processors = []ports.Processor{
+			&FakeProcessor{
+				NameVal: "capture-ctx",
+				ProcessFn: func(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+					capturedCorrID = observability.CorrelationIDFromContext(ctx)
+					capturedTraceID = observability.TraceIDFromContext(ctx)
+					capturedSpanID = observability.SpanIDFromContext(ctx)
+					return next(ctx, env)
+				},
+			},
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = runner.Run(ctx) }()
+
+	env := &domain.Envelope{
+		ID: "msg-ctx",
+		Headers: map[string]any{
+			"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+		},
+	}
+	del := NewFakeDelivery(env)
+	_ = receiver.Emit(ctx, del)
+	time.Sleep(50 * time.Millisecond)
+
+	if capturedCorrID == "" {
+		t.Fatal("correlation ID should be set in context")
+	}
+	if capturedTraceID != "0af7651916cd43dd8448eb211c80319c" {
+		t.Fatalf("expected trace ID from traceparent, got %q", capturedTraceID)
+	}
+	if capturedSpanID != "b7ad6b7169203331" {
+		t.Fatalf("expected span ID from traceparent, got %q", capturedSpanID)
+	}
+}
+
+func TestRouteRunner_Tracer_ErrorRecording(t *testing.T) {
+	tracer := &FakeTracer{}
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+		cfg.Tracer = tracer
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = runner.Run(ctx) }()
+
+	del := NewFakeDelivery(&domain.Envelope{ID: "msg-err"})
+	del.AckErr = fmt.Errorf("ack transport failure")
+	_ = receiver.Emit(ctx, del)
+	time.Sleep(50 * time.Millisecond)
+
+	span := tracer.LastSpan()
+	if span == nil {
+		t.Fatal("expected a span")
+	}
+	if !span.Ended {
+		t.Fatal("span should be ended")
+	}
+	if span.Err == nil {
+		t.Fatal("span should record error on delivery failure")
+	}
+}
+
+func TestRouteRunner_Tracer_ProcessorErrorRecording(t *testing.T) {
+	tracer := &FakeTracer{}
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+		cfg.Tracer = tracer
+		cfg.Processors = []ports.Processor{
+			&FakeProcessor{NameVal: "fail", ProcessErr: domain.ErrInvalidPayload},
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = runner.Run(ctx) }()
+
+	del := NewFakeDelivery(&domain.Envelope{ID: "msg-proc-err"})
+	_ = receiver.Emit(ctx, del)
+	time.Sleep(50 * time.Millisecond)
+
+	span := tracer.LastSpan()
+	if span == nil {
+		t.Fatal("expected a span")
+	}
+	if span.Err == nil {
+		t.Fatal("span should record processor error")
+	}
+}
+
+func TestRouteRunner_Tracer_FilteredNoError(t *testing.T) {
+	tracer := &FakeTracer{}
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+		cfg.Tracer = tracer
+		cfg.Processors = []ports.Processor{
+			&FakeProcessor{NameVal: "filter", ProcessErr: domain.ErrMessageFiltered},
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = runner.Run(ctx) }()
+
+	del := NewFakeDelivery(&domain.Envelope{ID: "msg-filtered-trace"})
+	_ = receiver.Emit(ctx, del)
+	time.Sleep(50 * time.Millisecond)
+
+	span := tracer.LastSpan()
+	if span == nil {
+		t.Fatal("expected a span")
+	}
+	if !span.Ended {
+		t.Fatal("span should be ended")
+	}
+	if span.Err != nil {
+		t.Fatalf("filtered messages should NOT record error on span, got %v", span.Err)
 	}
 }
 

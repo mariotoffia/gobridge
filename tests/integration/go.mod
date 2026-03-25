@@ -20,7 +20,7 @@ require (
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0-00010101000000-000000000000
-	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0
 	github.com/mariotoffia/gobridge/adapters/native/store/memorylease v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/testutil/sqslocal v0.0.0-00010101000000-000000000000
@@ -44,6 +44,9 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.9 // indirect
 	github.com/aws/smithy-go v1.24.2 // indirect
 	github.com/eclipse/paho.golang v0.23.0 // indirect
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
-	golang.org/x/net v0.43.0 // indirect
+	golang.org/x/net v0.51.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

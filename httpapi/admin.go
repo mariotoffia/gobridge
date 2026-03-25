@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -18,6 +20,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(prefix+"/bridge/stop", s.requireAdminAuth(s.handleStop))
 
 	mux.HandleFunc(prefix+"/routes", s.requireAdminAuth(s.handleRoutes))
+	mux.HandleFunc("POST "+prefix+"/routes/{routeID}/inject", s.requireAdminAuth(s.handleInject))
 
 	mux.HandleFunc(prefix+"/dlq", s.requireAdminAuth(s.handleDLQ))
 	mux.HandleFunc(prefix+"/dlq/messages", s.requireAdminAuth(s.handleDLQMessages))
@@ -190,6 +193,59 @@ func (s *Server) handleDLQPurge(w http.ResponseWriter, r *http.Request) {
 	}
 	s.emitAudit(r, "dlq.purge", "dlq", "", "success", map[string]any{"purged": count})
 	writeJSON(w, http.StatusOK, map[string]int{"purged": count})
+}
+
+type injectRequest struct {
+	Subject string         `json:"subject"`
+	Payload string         `json:"payload"` // base64-encoded
+	Headers map[string]any `json:"headers"`
+}
+
+func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
+	routeID := r.PathValue("routeID")
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body injectRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	var payload []byte
+	if body.Payload != "" {
+		var err error
+		payload, err = base64.StdEncoding.DecodeString(body.Payload)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "payload must be base64-encoded")
+			return
+		}
+	}
+
+	env := &domain.Envelope{
+		Subject: body.Subject,
+		Payload: payload,
+		Headers: body.Headers,
+	}
+
+	if err := s.rt.Inject(r.Context(), routeID, env); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			s.emitAudit(r, "route.inject", "route", routeID, "failure", map[string]any{
+				"error": "route not found",
+			})
+			writeErr(w, http.StatusNotFound, "route not found: "+routeID)
+			return
+		}
+		s.emitAudit(r, "route.inject", "route", routeID, "failure", map[string]any{
+			"error": err.Error(),
+		})
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.emitAudit(r, "route.inject", "route", routeID, "success", map[string]any{
+		"subject": body.Subject,
+	})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "injected"})
 }
 
 func (s *Server) emitAudit(r *http.Request, action, resource, resourceID, outcome string, detail map[string]any) {

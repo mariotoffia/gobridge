@@ -111,6 +111,155 @@ func TestRuntime_DirectHoldEndToEnd(t *testing.T) {
 	_ = rt.Stop(stopCtx)
 }
 
+func TestRuntime_Inject_HappyPath(t *testing.T) {
+	dlqStore := NewFakeDLQStore()
+	rt := goruntime.New(
+		goruntime.WithInstanceID("inject-test"),
+		goruntime.WithDLQStore(dlqStore),
+	)
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+
+	cfg := goruntime.RouteConfig{
+		ID: "inject-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliveryDirectHold,
+		},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+	}
+
+	_ = rt.AddRoute(cfg, receiver, sender, nil, nil)
+	ctx := context.Background()
+	_ = rt.Start(ctx)
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	time.Sleep(50 * time.Millisecond)
+
+	env := &domain.Envelope{
+		ID:      "injected-1",
+		Subject: "test/inject",
+		Payload: []byte(`{"injected":true}`),
+		Headers: map[string]any{"custom": "value"},
+	}
+	if err := rt.Inject(ctx, "inject-route", env); err != nil {
+		t.Fatalf("Inject failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	if sender.SentCount() != 1 {
+		t.Fatalf("expected 1 sent message from injection, got %d", sender.SentCount())
+	}
+	sent := sender.Sent[0]
+	if string(sent.Payload) != `{"injected":true}` {
+		t.Fatalf("unexpected payload: %s", sent.Payload)
+	}
+}
+
+func TestRuntime_Inject_UnknownRoute(t *testing.T) {
+	rt := goruntime.New(goruntime.WithInstanceID("inject-unknown"))
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+
+	cfg := goruntime.RouteConfig{
+		ID:                 "existing-route",
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+	}
+	_ = rt.AddRoute(cfg, receiver, sender, nil, nil)
+	_ = rt.Start(context.Background())
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	time.Sleep(50 * time.Millisecond)
+
+	err := rt.Inject(context.Background(), "nonexistent", &domain.Envelope{ID: "x"})
+	if err == nil {
+		t.Fatal("expected error for unknown route")
+	}
+}
+
+func TestRuntime_Inject_NotRunning(t *testing.T) {
+	rt := goruntime.New(goruntime.WithInstanceID("inject-stopped"))
+
+	err := rt.Inject(context.Background(), "any-route", &domain.Envelope{ID: "x"})
+	if err == nil {
+		t.Fatal("expected error when runtime is not running")
+	}
+}
+
+func TestRuntime_Inject_AssignsIDWhenEmpty(t *testing.T) {
+	rt := goruntime.New(goruntime.WithInstanceID("inject-id"))
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+
+	cfg := goruntime.RouteConfig{
+		ID: "id-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliveryDirectHold,
+		},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+	}
+	_ = rt.AddRoute(cfg, receiver, sender, nil, nil)
+	_ = rt.Start(context.Background())
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	time.Sleep(50 * time.Millisecond)
+
+	env := &domain.Envelope{Payload: []byte("no-id")}
+	if err := rt.Inject(context.Background(), "id-route", env); err != nil {
+		t.Fatalf("Inject failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	if sender.SentCount() != 1 {
+		t.Fatalf("expected 1 sent, got %d", sender.SentCount())
+	}
+	if sender.Sent[0].ID == "" {
+		t.Fatal("injected envelope should have an auto-assigned ID")
+	}
+	if env.ID != "" {
+		t.Fatal("original envelope should not be mutated (clone)")
+	}
+}
+
+func TestRuntime_Inject_DoesNotMutateOriginal(t *testing.T) {
+	rt := goruntime.New(goruntime.WithInstanceID("inject-clone"))
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+
+	cfg := goruntime.RouteConfig{
+		ID: "clone-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliveryDirectHold,
+		},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+	}
+	_ = rt.AddRoute(cfg, receiver, sender, nil, nil)
+	_ = rt.Start(context.Background())
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	time.Sleep(50 * time.Millisecond)
+
+	env := &domain.Envelope{
+		ID:      "orig-id",
+		Headers: map[string]any{"keep": "this"},
+	}
+	_ = rt.Inject(context.Background(), "clone-route", env)
+
+	time.Sleep(50 * time.Millisecond)
+
+	if len(env.Headers) != 1 {
+		t.Fatalf("original headers should not be modified, got %d entries", len(env.Headers))
+	}
+	if env.Headers["keep"] != "this" {
+		t.Fatal("original header value should be preserved")
+	}
+}
+
 func TestRuntime_SharedOutboxEndToEnd(t *testing.T) {
 	dlqStore := NewFakeDLQStore()
 	outbox := NewFakeOutboxStore()

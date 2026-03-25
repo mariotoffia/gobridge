@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/observability"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -25,6 +26,7 @@ type RouteRunner struct {
 	bindings    []domain.DestinationBinding
 	instanceID  string
 	metrics     ports.MetricsExporter
+	tracer      ports.Tracer
 	logger      *slog.Logger
 	sem         chan struct{}
 }
@@ -42,6 +44,7 @@ type RouteRunnerConfig struct {
 	Bindings    []domain.DestinationBinding
 	InstanceID  string
 	Metrics     ports.MetricsExporter
+	Tracer      ports.Tracer
 	Logger      *slog.Logger
 }
 
@@ -59,6 +62,10 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 	if m == nil {
 		m = &ports.NoopExporter{}
 	}
+	t := cfg.Tracer
+	if t == nil {
+		t = &ports.NoopTracer{}
+	}
 	r := &RouteRunner{
 		routeID:     cfg.RouteID,
 		policy:      cfg.Policy.WithDefaults(),
@@ -71,6 +78,7 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 		bindings:    cfg.Bindings,
 		instanceID:  cfg.InstanceID,
 		metrics:     m,
+		tracer:      t,
 		logger:      cfg.Logger,
 	}
 	if r.policy.MaxInFlight > 0 {
@@ -98,12 +106,41 @@ func (r *RouteRunner) handleDelivery(ctx context.Context, del ports.Delivery) er
 	env.Headers = domain.StripReservedHeaders(env.Headers)
 	r.injectHeaders(env)
 
+	tc, hasTrace := domain.ExtractTraceContext(env.Headers)
+
+	attrs := []domain.Tag{
+		{Key: domain.TagKeyRouteID, Value: r.routeID},
+		{Key: "envelope_id", Value: env.ID},
+	}
+	if hasTrace {
+		attrs = append(attrs, domain.Tag{Key: "trace_id", Value: tc.TraceID})
+	}
+
+	ctx, span := r.tracer.StartSpan(ctx, "bridge.handleDelivery", attrs...)
+	defer span.End()
+
+	if corrID, ok := domain.GetHeaderString(env.Headers, domain.HeaderCorrelationID); ok {
+		ctx = observability.WithCorrelationID(ctx, corrID)
+	}
+	if hasTrace {
+		ctx = observability.WithTraceID(ctx, tc.TraceID)
+		ctx = observability.WithSpanID(ctx, tc.SpanID)
+	}
+
 	if env.IsExpired() {
-		return r.handleExpired(ctx, del, env)
+		err := r.handleExpired(ctx, del, env)
+		if err != nil {
+			span.SetError(err)
+		}
+		return err
 	}
 
 	if err := RunChain(ctx, r.processors, env); err != nil {
-		return r.handleProcessorError(ctx, del, env, err)
+		pErr := r.handleProcessorError(ctx, del, env, err)
+		if !errors.Is(err, domain.ErrMessageFiltered) {
+			span.SetError(err)
+		}
+		return pErr
 	}
 
 	var deliveryErr error
@@ -112,6 +149,10 @@ func (r *RouteRunner) handleDelivery(ctx context.Context, del ports.Delivery) er
 		deliveryErr = r.sharedOutbox(ctx, del, env)
 	default:
 		deliveryErr = r.directHold(ctx, del, env)
+	}
+
+	if deliveryErr != nil {
+		span.SetError(deliveryErr)
 	}
 
 	routeTag := domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID}

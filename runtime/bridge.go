@@ -3,8 +3,10 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -22,6 +24,7 @@ type Runtime struct {
 	dlqStore    ports.DLQStore
 	metrics     ports.MetricsExporter
 	audit       ports.AuditLogger
+	tracer      ports.Tracer
 	logger      *slog.Logger
 
 	mu              sync.Mutex
@@ -92,6 +95,13 @@ func WithAuditLogger(a ports.AuditLogger) Option {
 	return func(rt *Runtime) { rt.audit = a }
 }
 
+// WithTracer sets the distributed tracer for the runtime. When set,
+// the runtime starts spans around message delivery and records errors.
+// Defaults to NoopTracer if not configured.
+func WithTracer(t ports.Tracer) Option {
+	return func(rt *Runtime) { rt.tracer = t }
+}
+
 // WithLogger sets the structured logger.
 func WithLogger(logger *slog.Logger) Option {
 	return func(rt *Runtime) { rt.logger = logger }
@@ -105,6 +115,7 @@ func New(opts ...Option) *Runtime {
 		sessionMgrs:    make(map[string]*SessionManager),
 		healthy:        true,
 		audit:          ports.NoopAuditLogger{},
+		tracer:         &ports.NoopTracer{},
 	}
 	for _, opt := range opts {
 		opt(rt)
@@ -219,6 +230,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 			Bindings:    entry.config.Bindings,
 			InstanceID:  rt.instanceID,
 			Metrics:     m,
+			Tracer:      rt.tracer,
 			Logger:      rt.logger,
 		})
 
@@ -429,6 +441,48 @@ func (rt *Runtime) Routes() []RouteInfo {
 func (rt *Runtime) DLQStore() ports.DLQStore {
 	return rt.dlqStore
 }
+
+// Inject sends a synthetic message through the named route's delivery
+// pipeline (processors, destination resolution, send/outbox). The
+// envelope is cloned to prevent caller mutation. An ID is assigned if
+// the envelope's ID field is empty.
+func (rt *Runtime) Inject(ctx context.Context, routeID string, env *domain.Envelope) error {
+	rt.mu.Lock()
+	if !rt.running {
+		rt.mu.Unlock()
+		return fmt.Errorf("runtime is not running")
+	}
+	var entry *routeEntry
+	for _, e := range rt.entries {
+		if e.config.ID == routeID {
+			entry = e
+			break
+		}
+	}
+	rt.mu.Unlock()
+
+	if entry == nil {
+		return domain.ErrNotFound
+	}
+
+	env = env.Clone()
+	if env.ID == "" {
+		env.ID = generateID()
+	}
+
+	return entry.runner.handleDelivery(ctx, &syntheticDelivery{env: env})
+}
+
+// syntheticDelivery implements ports.Delivery for programmatically
+// injected messages that have no underlying transport.
+type syntheticDelivery struct {
+	env *domain.Envelope
+}
+
+func (d *syntheticDelivery) Envelope() *domain.Envelope                              { return d.env }
+func (d *syntheticDelivery) Ack(_ context.Context) error                             { return nil }
+func (d *syntheticDelivery) Retry(_ context.Context, _ time.Duration, reason error) error { return reason }
+func (d *syntheticDelivery) Extend(_ context.Context, _ time.Time) error             { return nil }
 
 func (rt *Runtime) startBackground(ctx context.Context, name string, fn func(context.Context) error) {
 	rt.wg.Add(1)

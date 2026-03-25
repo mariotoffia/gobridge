@@ -530,6 +530,72 @@ func (s *FakeDLQStore) Count() int {
 }
 
 // ---------------------------------------------------------------------------
+// FakeTracer / FakeSpan
+// ---------------------------------------------------------------------------
+
+type FakeSpan struct {
+	mu       sync.Mutex
+	Name     string
+	Attrs    []domain.Tag
+	Ended    bool
+	Err      error
+	Events   []string
+	SetAttrs []domain.Tag
+}
+
+func (s *FakeSpan) End() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Ended = true
+}
+
+func (s *FakeSpan) SetError(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Err = err
+}
+
+func (s *FakeSpan) AddEvent(name string, _ ...domain.Tag) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Events = append(s.Events, name)
+}
+
+func (s *FakeSpan) SetAttributes(attrs ...domain.Tag) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.SetAttrs = append(s.SetAttrs, attrs...)
+}
+
+type FakeTracer struct {
+	mu    sync.Mutex
+	Spans []*FakeSpan
+}
+
+func (t *FakeTracer) StartSpan(ctx context.Context, name string, attrs ...domain.Tag) (context.Context, ports.Span) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	span := &FakeSpan{Name: name, Attrs: append([]domain.Tag{}, attrs...)}
+	t.Spans = append(t.Spans, span)
+	return ctx, span
+}
+
+func (t *FakeTracer) SpanCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.Spans)
+}
+
+func (t *FakeTracer) LastSpan() *FakeSpan {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.Spans) == 0 {
+		return nil
+	}
+	return t.Spans[len(t.Spans)-1]
+}
+
+// ---------------------------------------------------------------------------
 // FakeResolver
 // ---------------------------------------------------------------------------
 

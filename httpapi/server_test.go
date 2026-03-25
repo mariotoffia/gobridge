@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/stretchr/testify/assert"
@@ -478,6 +480,162 @@ func TestAuditLogging_DLQReplay(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// --- Inject endpoint tests ---
+
+type stubReceiver struct {
+	ready chan struct{}
+}
+
+func newStubReceiver() *stubReceiver { return &stubReceiver{ready: make(chan struct{})} }
+
+func (r *stubReceiver) Run(ctx context.Context, _ func(context.Context, ports.Delivery) error) error {
+	close(r.ready)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type stubSender struct {
+	mu   sync.Mutex
+	sent []*domain.Envelope
+}
+
+func (s *stubSender) Send(_ context.Context, env *domain.Envelope) error {
+	s.mu.Lock()
+	s.sent = append(s.sent, env.Clone())
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *stubSender) sentCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.sent)
+}
+
+func injectRuntime(t *testing.T) (*runtime.Runtime, *stubSender) {
+	t.Helper()
+	sender := &stubSender{}
+	rt := runtime.New(runtime.WithInstanceID("inject-http-test"))
+	cfg := runtime.RouteConfig{
+		ID: "test-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliveryDirectHold,
+		},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+	}
+	err := rt.AddRoute(cfg, newStubReceiver(), sender, nil, nil)
+	require.NoError(t, err)
+	err = rt.Start(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
+	time.Sleep(50 * time.Millisecond)
+	return rt, sender
+}
+
+func TestInject_RequiresAuth(t *testing.T) {
+	rt := testRuntime()
+	cfg := testConfig()
+	s := New(rt, cfg)
+
+	mux := http.NewServeMux()
+	s.registerAdminRoutes(mux)
+
+	body := `{"subject":"test"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/routes/any/inject", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestInject_UnknownRoute(t *testing.T) {
+	rt, _ := injectRuntime(t)
+	cfg := testConfig()
+	s := New(rt, cfg)
+
+	mux := http.NewServeMux()
+	s.registerAdminRoutes(mux)
+
+	body := `{"subject":"test"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/routes/nonexistent/inject", strings.NewReader(body))
+	req.Header.Set("X-API-Key", "test-secret")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestInject_InvalidBody(t *testing.T) {
+	rt, _ := injectRuntime(t)
+	cfg := testConfig()
+	s := New(rt, cfg)
+
+	mux := http.NewServeMux()
+	s.registerAdminRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/routes/test-route/inject", strings.NewReader("not json"))
+	req.Header.Set("X-API-Key", "test-secret")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestInject_InvalidBase64(t *testing.T) {
+	rt, _ := injectRuntime(t)
+	cfg := testConfig()
+	s := New(rt, cfg)
+
+	mux := http.NewServeMux()
+	s.registerAdminRoutes(mux)
+
+	body := `{"subject":"test","payload":"not-valid-base64!!!"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/routes/test-route/inject", strings.NewReader(body))
+	req.Header.Set("X-API-Key", "test-secret")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	var resp map[string]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	assert.Contains(t, resp["error"], "base64")
+}
+
+func TestInject_HappyPath(t *testing.T) {
+	rt, sender := injectRuntime(t)
+	cfg := testConfig()
+	audit := &recordingAuditLogger{}
+	s := New(rt, cfg, WithAuditLogger(audit))
+
+	mux := http.NewServeMux()
+	s.registerAdminRoutes(mux)
+
+	payload := base64.StdEncoding.EncodeToString([]byte(`{"temp":22.5}`))
+	body := `{"subject":"sensors/temp","payload":"` + payload + `","headers":{"source":"api"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/routes/test-route/inject", strings.NewReader(body))
+	req.Header.Set("X-API-Key", "test-secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]string
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "injected", resp["status"])
+
+	time.Sleep(50 * time.Millisecond)
+
+	assert.Equal(t, 1, sender.sentCount(), "message should have been sent through the route")
+
+	events := audit.Events()
+	require.NotEmpty(t, events)
+	last := events[len(events)-1]
+	assert.Equal(t, "route.inject", last.Action)
+	assert.Equal(t, "success", last.Outcome)
+	assert.Equal(t, "test-route", last.ResourceID)
 }
 
 // --- Topology endpoint test ---

@@ -183,6 +183,7 @@ func (s *Server) validateConfig() error {
 }
 
 func (s *Server) wrap(h http.Handler) http.Handler {
+	h = s.correlationMW(h)
 	h = s.recoverMW(h)
 	if s.cfg.CORSOrigins != "" {
 		h = s.corsMW(h)
