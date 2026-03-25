@@ -18,6 +18,8 @@
 //   - CredentialStore: URI-based credential resolution
 //   - CredentialRepository: per-backend credential adapter
 //   - CredentialAdmin: credential lifecycle management (CRUD)
+//   - ConfigLoader: bridge configuration loading from external sources
+//   - ConfigReloader: configuration loading with change-watching
 //
 // Adapter modules under adapters/ implement these interfaces.
 // The bridge/runtime package (future) depends on these interfaces.

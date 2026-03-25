@@ -2,13 +2,17 @@ module github.com/mariotoffia/gobridge/adapters/azure/transport/servicebus
 
 go 1.25.0
 
-replace github.com/mariotoffia/gobridge => ../../../..
+replace (
+	github.com/mariotoffia/gobridge => ../../../..
+	github.com/mariotoffia/gobridge/testutil/asblocal => ../../../../testutil/asblocal
+)
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.18.2
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.11.0
 	github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus v1.10.0
 	github.com/mariotoffia/gobridge v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge/testutil/asblocal v0.0.0-00010101000000-000000000000
 )
 
 require (
