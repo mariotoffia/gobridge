@@ -1,0 +1,136 @@
+package paho
+
+import (
+	"testing"
+	"time"
+)
+
+func TestSessionOptionsFromMap_Defaults(t *testing.T) {
+	opts := SessionOptionsFromMap(nil)
+	if opts.KeepAlive != 30 {
+		t.Errorf("KeepAlive = %d, want 30", opts.KeepAlive)
+	}
+	if opts.ConnectTimeout != 30*time.Second {
+		t.Errorf("ConnectTimeout = %v, want 30s", opts.ConnectTimeout)
+	}
+	if !opts.CleanStart {
+		t.Error("CleanStart should default to true")
+	}
+}
+
+func TestSessionOptionsFromMap_BrokerURLs(t *testing.T) {
+	m := map[string]any{
+		"broker_urls": []string{"tcp://a:1883", "tcp://b:1883"},
+		"client_id":   "test-client",
+	}
+	opts := SessionOptionsFromMap(m)
+
+	if len(opts.BrokerURLs) != 2 {
+		t.Fatalf("BrokerURLs len = %d, want 2", len(opts.BrokerURLs))
+	}
+	if opts.ClientID != "test-client" {
+		t.Errorf("ClientID = %q, want %q", opts.ClientID, "test-client")
+	}
+}
+
+func TestSessionOptionsFromMap_SingleBrokerURL(t *testing.T) {
+	m := map[string]any{
+		"broker_url": "tcp://single:1883",
+	}
+	opts := SessionOptionsFromMap(m)
+
+	if len(opts.BrokerURLs) != 1 || opts.BrokerURLs[0] != "tcp://single:1883" {
+		t.Errorf("BrokerURLs = %v, want [tcp://single:1883]", opts.BrokerURLs)
+	}
+}
+
+func TestSessionOptionsFromMap_Auth(t *testing.T) {
+	m := map[string]any{
+		"username": "user",
+		"password": "pass",
+	}
+	opts := SessionOptionsFromMap(m)
+
+	if opts.Username != "user" {
+		t.Errorf("Username = %q, want %q", opts.Username, "user")
+	}
+	if opts.Password != "pass" {
+		t.Errorf("Password = %q, want %q", opts.Password, "pass")
+	}
+}
+
+func TestSessionOptionsFromMap_TLSFromMap(t *testing.T) {
+	m := map[string]any{
+		"tls": map[string]any{
+			"enable":               true,
+			"insecure_skip_verify": true,
+		},
+	}
+	opts := SessionOptionsFromMap(m)
+
+	if opts.TLS == nil {
+		t.Fatal("TLS should be set")
+	}
+	if !opts.TLS.Enable {
+		t.Error("TLS.Enable should be true")
+	}
+	if !opts.TLS.InsecureSkipVerify {
+		t.Error("TLS.InsecureSkipVerify should be true")
+	}
+}
+
+func TestSessionOptionsFromMap_SessionExpiry(t *testing.T) {
+	m := map[string]any{
+		"session_expiry_interval": 3600,
+		"clean_start":            false,
+	}
+	opts := SessionOptionsFromMap(m)
+
+	if opts.SessionExpiryInterval != 3600 {
+		t.Errorf("SessionExpiryInterval = %d, want 3600", opts.SessionExpiryInterval)
+	}
+	if opts.CleanStart {
+		t.Error("CleanStart should be false")
+	}
+}
+
+func TestSenderOptionsFromMap_Defaults(t *testing.T) {
+	opts := SenderOptionsFromMap(nil)
+	if opts.QoS != 1 {
+		t.Errorf("QoS = %d, want 1", opts.QoS)
+	}
+	if opts.Timeout != 30*time.Second {
+		t.Errorf("Timeout = %v, want 30s", opts.Timeout)
+	}
+}
+
+func TestSenderOptionsFromMap_AllFields(t *testing.T) {
+	m := map[string]any{
+		"default_topic": "my/topic",
+		"qos":           2,
+		"retain":        true,
+		"timeout":       10 * time.Second,
+	}
+	opts := SenderOptionsFromMap(m)
+
+	if opts.DefaultTopic != "my/topic" {
+		t.Errorf("DefaultTopic = %q, want %q", opts.DefaultTopic, "my/topic")
+	}
+	if opts.QoS != 2 {
+		t.Errorf("QoS = %d, want 2", opts.QoS)
+	}
+	if !opts.Retain {
+		t.Error("Retain should be true")
+	}
+	if opts.Timeout != 10*time.Second {
+		t.Errorf("Timeout = %v, want 10s", opts.Timeout)
+	}
+}
+
+func TestSenderOptionsFromMap_InvalidQoS(t *testing.T) {
+	m := map[string]any{"qos": 5}
+	opts := SenderOptionsFromMap(m)
+	if opts.QoS != 1 {
+		t.Errorf("QoS = %d, want 1 (default for invalid)", opts.QoS)
+	}
+}

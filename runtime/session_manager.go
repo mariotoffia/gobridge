@@ -1,0 +1,325 @@
+package runtime
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"math/rand/v2"
+	"sync"
+	"time"
+
+	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/ports"
+)
+
+// SessionManager manages the lifecycle of a single session, including
+// lease acquisition, renewal, three-phase step-down, and reconciliation.
+type SessionManager struct {
+	sessionID         string
+	session           ports.Session
+	leaseStore        ports.LeaseStore
+	ownerID           string
+	exclusive         bool
+	connectAfterLease bool
+	plan              domain.SessionPlan
+	leaseTTL          time.Duration
+	renewInterval     time.Duration
+	renewJitter       time.Duration
+	maxRenewFails     int
+	stepDownGrace     time.Duration
+	logger            *slog.Logger
+
+	mu       sync.Mutex
+	token    domain.LeaseToken
+	hasLease bool
+}
+
+// NewSessionManagerFromConfig creates a SessionManager from a config struct.
+func NewSessionManagerFromConfig(cfg SessionConfig, session ports.Session, leaseStore ports.LeaseStore, ownerID string, logger *slog.Logger) *SessionManager {
+	return newSessionManager(cfg, session, leaseStore, ownerID, logger)
+}
+
+func newSessionManager(cfg SessionConfig, session ports.Session, leaseStore ports.LeaseStore, ownerID string, logger *slog.Logger) *SessionManager {
+	defaults := DefaultSessionConfig(cfg.SessionID, cfg.Exclusive)
+	if cfg.LeaseTTL == 0 {
+		cfg.LeaseTTL = defaults.LeaseTTL
+	}
+	if cfg.RenewInterval == 0 {
+		cfg.RenewInterval = defaults.RenewInterval
+	}
+	if cfg.RenewJitter == 0 {
+		cfg.RenewJitter = defaults.RenewJitter
+	}
+	if cfg.MaxRenewFails == 0 {
+		cfg.MaxRenewFails = defaults.MaxRenewFails
+	}
+	if cfg.StepDownGrace == 0 {
+		cfg.StepDownGrace = defaults.StepDownGrace
+	}
+
+	return &SessionManager{
+		sessionID:         cfg.SessionID,
+		session:           session,
+		leaseStore:        leaseStore,
+		ownerID:           ownerID,
+		exclusive:         cfg.Exclusive,
+		connectAfterLease: cfg.ConnectAfterLease,
+		plan:              cfg.Plan,
+		leaseTTL:          cfg.LeaseTTL,
+		renewInterval:     cfg.RenewInterval,
+		renewJitter:       cfg.RenewJitter,
+		maxRenewFails:     cfg.MaxRenewFails,
+		stepDownGrace:     cfg.StepDownGrace,
+		logger:            logger,
+	}
+}
+
+// Run starts the session and manages its lifecycle. For exclusive sessions,
+// it acquires the lease and runs the renewal loop. It blocks until ctx is
+// cancelled or an unrecoverable error occurs.
+//
+// When ConnectAfterLease is set, the session is not started until the
+// lease has been acquired, preventing premature broker connections that
+// would displace the current owner.
+func (m *SessionManager) Run(ctx context.Context) error {
+	if m.exclusive && m.leaseStore != nil && m.connectAfterLease {
+		return m.runExclusiveDeferred(ctx)
+	}
+
+	if err := m.session.Start(ctx); err != nil {
+		return err
+	}
+
+	if m.exclusive && m.leaseStore != nil {
+		return m.runExclusive(ctx)
+	}
+
+	if err := m.session.Reconcile(ctx, m.plan); err != nil {
+		return err
+	}
+
+	return m.handleEvents(ctx)
+}
+
+// Token returns the current lease token and whether the manager holds the lease.
+func (m *SessionManager) Token() (domain.LeaseToken, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.token, m.hasLease
+}
+
+// Close closes the underlying session.
+func (m *SessionManager) Close(ctx context.Context) error {
+	m.mu.Lock()
+	hadLease := m.hasLease
+	token := m.token
+	m.hasLease = false
+	m.mu.Unlock()
+
+	if hadLease && m.leaseStore != nil {
+		_ = m.leaseStore.Release(ctx, m.sessionID, token)
+	}
+	return m.session.Close(ctx)
+}
+
+func (m *SessionManager) runExclusiveDeferred(ctx context.Context) error {
+	sessionStarted := false
+	for {
+		token, err := m.acquireLeaseWithRetry(ctx)
+		if err != nil {
+			return err
+		}
+		m.setToken(token)
+
+		m.log(ctx, slog.LevelInfo, "lease acquired (deferred connect)", "version", token.Version)
+
+		if !sessionStarted {
+			if err := m.session.Start(ctx); err != nil {
+				return err
+			}
+			sessionStarted = true
+		}
+
+		if err := m.session.Reconcile(ctx, m.plan); err != nil {
+			return err
+		}
+
+		err = m.renewLoop(ctx)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		m.log(ctx, slog.LevelWarn, "lease lost, will re-acquire", "error", err)
+		m.mu.Lock()
+		m.hasLease = false
+		m.mu.Unlock()
+	}
+}
+
+func (m *SessionManager) runExclusive(ctx context.Context) error {
+	for {
+		token, err := m.acquireLeaseWithRetry(ctx)
+		if err != nil {
+			return err
+		}
+		m.setToken(token)
+
+		m.log(ctx, slog.LevelInfo, "lease acquired", "version", token.Version)
+
+		if err := m.session.Reconcile(ctx, m.plan); err != nil {
+			return err
+		}
+
+		err = m.renewLoop(ctx)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		m.log(ctx, slog.LevelWarn, "lease lost, will re-acquire", "error", err)
+		m.mu.Lock()
+		m.hasLease = false
+		m.mu.Unlock()
+	}
+}
+
+func (m *SessionManager) acquireLeaseWithRetry(ctx context.Context) (domain.LeaseToken, error) {
+	for {
+		token, err := m.leaseStore.Acquire(ctx, m.sessionID, m.ownerID, m.leaseTTL)
+		if err == nil {
+			return token, nil
+		}
+		m.log(ctx, slog.LevelDebug, "lease acquisition failed, retrying", "error", err)
+
+		select {
+		case <-ctx.Done():
+			return domain.LeaseToken{}, ctx.Err()
+		case <-time.After(m.renewInterval + m.jitter()):
+		}
+	}
+}
+
+func (m *SessionManager) renewLoop(ctx context.Context) error {
+	consecutiveFailures := 0
+	events := m.session.Events()
+
+	timer := time.NewTimer(m.renewInterval + m.jitter())
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case ev, ok := <-events:
+			if !ok {
+				return nil
+			}
+			m.handleSessionEvent(ctx, ev)
+
+		case <-timer.C:
+			m.mu.Lock()
+			token := m.token
+			m.mu.Unlock()
+
+			newToken, err := m.leaseStore.Renew(ctx, m.sessionID, token, m.leaseTTL)
+			if err != nil {
+				consecutiveFailures++
+				m.log(ctx, slog.LevelWarn, "lease renewal failed",
+					"failures", consecutiveFailures, "error", err)
+
+				if consecutiveFailures >= m.maxRenewFails {
+					return m.stepDown(ctx)
+				}
+			} else {
+				consecutiveFailures = 0
+				m.setToken(newToken)
+			}
+
+			timer.Reset(m.renewInterval + m.jitter())
+		}
+	}
+}
+
+// stepDown implements the three-phase step-down protocol:
+// 1. Stop claiming new outbox entries (clear hasLease)
+// 2. Wait grace period for in-flight completions
+// 3. Release the lease
+func (m *SessionManager) stepDown(ctx context.Context) error {
+	m.log(ctx, slog.LevelWarn, "stepping down from lease")
+
+	m.mu.Lock()
+	token := m.token
+	m.hasLease = false
+	m.mu.Unlock()
+
+	graceCtx, graceCancel := context.WithTimeout(context.Background(), m.stepDownGrace)
+	defer graceCancel()
+
+	select {
+	case <-graceCtx.Done():
+	case <-ctx.Done():
+	}
+
+	if m.leaseStore != nil {
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer releaseCancel()
+		if err := m.leaseStore.Release(releaseCtx, m.sessionID, token); err != nil {
+			m.log(ctx, slog.LevelWarn, "lease release failed during step-down", "error", err)
+		}
+	}
+
+	return errors.New("lease lost after renewal failures")
+}
+
+func (m *SessionManager) handleEvents(ctx context.Context) error {
+	events := m.session.Events()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case ev, ok := <-events:
+			if !ok {
+				return nil
+			}
+			m.handleSessionEvent(ctx, ev)
+		}
+	}
+}
+
+func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.SessionEvent) {
+	switch ev.Type {
+	case ports.SessionConnected:
+		m.log(ctx, slog.LevelInfo, "session connected")
+		_ = m.session.Reconcile(ctx, m.plan)
+
+	case ports.SessionDisconnected:
+		m.log(ctx, slog.LevelWarn, "session disconnected", "error", ev.Err)
+
+	case ports.SessionReconnecting:
+		m.log(ctx, slog.LevelInfo, "session reconnecting")
+
+	case ports.SessionError:
+		m.log(ctx, slog.LevelError, "session error", "error", ev.Err)
+	}
+}
+
+func (m *SessionManager) setToken(token domain.LeaseToken) {
+	m.mu.Lock()
+	m.token = token
+	m.hasLease = true
+	m.mu.Unlock()
+}
+
+func (m *SessionManager) jitter() time.Duration {
+	if m.renewJitter <= 0 {
+		return 0
+	}
+	half := m.renewJitter / 2
+	return time.Duration(rand.Int64N(int64(m.renewJitter))) - half
+}
+
+func (m *SessionManager) log(ctx context.Context, level slog.Level, msg string, args ...any) {
+	if m.logger == nil {
+		return
+	}
+	allArgs := append([]any{"session_id", m.sessionID}, args...)
+	m.logger.Log(ctx, level, msg, allArgs...)
+}

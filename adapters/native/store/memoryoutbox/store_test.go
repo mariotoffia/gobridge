@@ -1,0 +1,13 @@
+package memoryoutbox_test
+
+import (
+	"testing"
+
+	"github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox"
+	"github.com/mariotoffia/gobridge/ports/storetest"
+)
+
+func TestOutboxStoreConformance(t *testing.T) {
+	store := memoryoutbox.NewStore()
+	storetest.RunOutboxStoreTests(t, store)
+}

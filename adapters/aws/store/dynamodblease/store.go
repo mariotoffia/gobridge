@@ -1,0 +1,363 @@
+package dynamodblease
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
+	"github.com/mariotoffia/gobridge/domain"
+)
+
+const (
+	defaultTableName   = "gobridge-leases"
+	defaultGracePeriod = 1 * time.Hour
+
+	attrPK         = "PK"
+	attrOwner      = "owner"
+	attrVersion    = "version"
+	attrAcquiredAt = "acquired_at"
+	attrExpiresAt  = "expires_at"
+	attrRenewedAt  = "renewed_at"
+	attrTTL        = "ttl"
+)
+
+// Store implements ports.LeaseStore using DynamoDB conditional writes
+// for fencing-safe lease management.
+//
+// Table schema (configurable via WithTableName):
+//
+//	PK (String): "LEASE#<lease_id>" -- partition key, no sort key
+//	owner, version, acquired_at, expires_at, renewed_at, ttl
+type Store struct {
+	client      *dynamodb.Client
+	tableName   string
+	gracePeriod time.Duration
+	now         func() time.Time
+}
+
+// Option configures a Store.
+type Option func(*Store)
+
+// WithTableName overrides the DynamoDB table name (default: "gobridge-leases").
+func WithTableName(name string) Option {
+	return func(s *Store) { s.tableName = name }
+}
+
+// WithGracePeriod sets the TTL grace period added to expires_at for DynamoDB
+// TTL-based item deletion (default: 1 hour).
+func WithGracePeriod(d time.Duration) Option {
+	return func(s *Store) { s.gracePeriod = d }
+}
+
+// WithClock overrides the time source (defaults to time.Now).
+func WithClock(fn func() time.Time) Option {
+	return func(s *Store) { s.now = fn }
+}
+
+// NewStore creates a new DynamoDB-backed LeaseStore.
+func NewStore(client *dynamodb.Client, opts ...Option) *Store {
+	s := &Store{
+		client:      client,
+		tableName:   defaultTableName,
+		gracePeriod: defaultGracePeriod,
+		now:         time.Now,
+	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
+}
+
+// Acquire attempts to obtain a lease. It first tries a fresh acquire via PutItem
+// with attribute_not_exists. If the item already exists, it attempts an expired
+// takeover via UpdateItem with an expires_at < :now condition, atomically
+// incrementing the version.
+func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration) (domain.LeaseToken, error) {
+	now := s.now()
+	expiresAt := now.Add(ttl)
+	pk := leaseKey(leaseID)
+
+	item := map[string]ddbtypes.AttributeValue{
+		attrPK:         &ddbtypes.AttributeValueMemberS{Value: pk},
+		attrOwner:      &ddbtypes.AttributeValueMemberS{Value: ownerID},
+		attrVersion:    &ddbtypes.AttributeValueMemberN{Value: "1"},
+		attrAcquiredAt: &ddbtypes.AttributeValueMemberN{Value: millisStr(now)},
+		attrExpiresAt:  &ddbtypes.AttributeValueMemberN{Value: millisStr(expiresAt)},
+		attrRenewedAt:  &ddbtypes.AttributeValueMemberN{Value: millisStr(now)},
+		attrTTL:        &ddbtypes.AttributeValueMemberN{Value: epochStr(expiresAt.Add(s.gracePeriod))},
+	}
+
+	_, err := s.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           &s.tableName,
+		Item:                item,
+		ConditionExpression: aws.String("attribute_not_exists(#pk)"),
+		ExpressionAttributeNames: map[string]string{
+			"#pk": attrPK,
+		},
+	})
+	if err == nil {
+		return domain.LeaseToken{Version: 1, Owner: ownerID}, nil
+	}
+	if !isConditionFailed(err) {
+		return domain.LeaseToken{}, err
+	}
+
+	// Item exists -- attempt expired takeover with atomic version increment.
+	result, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &s.tableName,
+		Key: map[string]ddbtypes.AttributeValue{
+			attrPK: &ddbtypes.AttributeValueMemberS{Value: pk},
+		},
+		ConditionExpression: aws.String("#exp < :now_ms"),
+		UpdateExpression: aws.String(
+			"SET #own = :owner, #ver = #ver + :one, " +
+				"#acq = :now_ms, #exp = :exp_ms, " +
+				"#ren = :now_ms, #ttl_a = :ttl_epoch"),
+		ExpressionAttributeNames: map[string]string{
+			"#own":   attrOwner,
+			"#ver":   attrVersion,
+			"#acq":   attrAcquiredAt,
+			"#exp":   attrExpiresAt,
+			"#ren":   attrRenewedAt,
+			"#ttl_a": attrTTL,
+		},
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":owner":     &ddbtypes.AttributeValueMemberS{Value: ownerID},
+			":one":       &ddbtypes.AttributeValueMemberN{Value: "1"},
+			":now_ms":    &ddbtypes.AttributeValueMemberN{Value: millisStr(now)},
+			":exp_ms":    &ddbtypes.AttributeValueMemberN{Value: millisStr(expiresAt)},
+			":ttl_epoch": &ddbtypes.AttributeValueMemberN{Value: epochStr(expiresAt.Add(s.gracePeriod))},
+		},
+		ReturnValues: ddbtypes.ReturnValueAllNew,
+	})
+	if err != nil {
+		if isConditionFailed(err) {
+			return domain.LeaseToken{}, domain.ErrAlreadyExists.
+				WithMessage("lease already held").
+				With("leaseID", leaseID)
+		}
+		return domain.LeaseToken{}, err
+	}
+
+	ver, err := numAttr(result.Attributes, attrVersion)
+	if err != nil {
+		return domain.LeaseToken{}, fmt.Errorf("dynamodblease: parse version from takeover result: %w", err)
+	}
+	return domain.LeaseToken{Version: ver, Owner: ownerID}, nil
+}
+
+// Renew extends the lease TTL. The caller's token must match the stored
+// owner and version. The returned token keeps the same version.
+func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration) (domain.LeaseToken, error) {
+	now := s.now()
+	expiresAt := now.Add(ttl)
+	pk := leaseKey(leaseID)
+
+	_, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &s.tableName,
+		Key: map[string]ddbtypes.AttributeValue{
+			attrPK: &ddbtypes.AttributeValueMemberS{Value: pk},
+		},
+		ConditionExpression: aws.String("#own = :owner AND #ver = :ver"),
+		UpdateExpression: aws.String(
+			"SET #exp = :exp_ms, #ren = :now_ms, #ttl_a = :ttl_epoch"),
+		ExpressionAttributeNames: map[string]string{
+			"#own":   attrOwner,
+			"#ver":   attrVersion,
+			"#exp":   attrExpiresAt,
+			"#ren":   attrRenewedAt,
+			"#ttl_a": attrTTL,
+		},
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":owner":     &ddbtypes.AttributeValueMemberS{Value: token.Owner},
+			":ver":       &ddbtypes.AttributeValueMemberN{Value: uintStr(token.Version)},
+			":exp_ms":    &ddbtypes.AttributeValueMemberN{Value: millisStr(expiresAt)},
+			":now_ms":    &ddbtypes.AttributeValueMemberN{Value: millisStr(now)},
+			":ttl_epoch": &ddbtypes.AttributeValueMemberN{Value: epochStr(expiresAt.Add(s.gracePeriod))},
+		},
+	})
+	if err != nil {
+		if isConditionFailed(err) {
+			return domain.LeaseToken{}, s.classifyConditionFailure(ctx, leaseID)
+		}
+		return domain.LeaseToken{}, err
+	}
+	return token, nil
+}
+
+// Release marks the lease as released by clearing the owner and setting
+// expires_at to zero. The item is preserved so that the version counter
+// remains available for monotonic increments on subsequent acquires.
+// DynamoDB TTL will eventually remove the item after the grace period.
+func (s *Store) Release(ctx context.Context, leaseID string, token domain.LeaseToken) error {
+	pk := leaseKey(leaseID)
+	now := s.now()
+
+	_, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &s.tableName,
+		Key: map[string]ddbtypes.AttributeValue{
+			attrPK: &ddbtypes.AttributeValueMemberS{Value: pk},
+		},
+		ConditionExpression: aws.String("#own = :owner AND #ver = :ver"),
+		UpdateExpression: aws.String(
+			"SET #own = :empty, #exp = :zero, #ttl_a = :ttl_epoch"),
+		ExpressionAttributeNames: map[string]string{
+			"#own":   attrOwner,
+			"#ver":   attrVersion,
+			"#exp":   attrExpiresAt,
+			"#ttl_a": attrTTL,
+		},
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":owner":     &ddbtypes.AttributeValueMemberS{Value: token.Owner},
+			":ver":       &ddbtypes.AttributeValueMemberN{Value: uintStr(token.Version)},
+			":empty":     &ddbtypes.AttributeValueMemberS{Value: ""},
+			":zero":      &ddbtypes.AttributeValueMemberN{Value: "0"},
+			":ttl_epoch": &ddbtypes.AttributeValueMemberN{Value: epochStr(now.Add(s.gracePeriod))},
+		},
+	})
+	if err != nil {
+		if isConditionFailed(err) {
+			return s.classifyConditionFailure(ctx, leaseID)
+		}
+		return err
+	}
+	return nil
+}
+
+// Current reads the lease state with a strongly consistent read.
+func (s *Store) Current(ctx context.Context, leaseID string) (domain.LeaseInfo, error) {
+	pk := leaseKey(leaseID)
+
+	result, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: &s.tableName,
+		Key: map[string]ddbtypes.AttributeValue{
+			attrPK: &ddbtypes.AttributeValueMemberS{Value: pk},
+		},
+		ConsistentRead: aws.Bool(true),
+	})
+	if err != nil {
+		return domain.LeaseInfo{}, err
+	}
+	owner := strAttr(result.Item, attrOwner)
+	if len(result.Item) == 0 || owner == "" {
+		return domain.LeaseInfo{}, domain.ErrNotFound.
+			WithMessage("lease not found").
+			With("leaseID", leaseID)
+	}
+
+	version, _ := numAttr(result.Item, attrVersion)
+	expiresAtMillis, _ := numAttr(result.Item, attrExpiresAt)
+
+	return domain.LeaseInfo{
+		LeaseID:   leaseID,
+		Owner:     owner,
+		Version:   version,
+		ExpiresAt: time.UnixMilli(int64(expiresAtMillis)),
+	}, nil
+}
+
+// EnsureTable creates the DynamoDB table if it does not already exist.
+// Intended for test setup and local development.
+func (s *Store) EnsureTable(ctx context.Context) error {
+	_, err := s.client.CreateTable(ctx, &dynamodb.CreateTableInput{
+		TableName: &s.tableName,
+		KeySchema: []ddbtypes.KeySchemaElement{
+			{AttributeName: aws.String(attrPK), KeyType: ddbtypes.KeyTypeHash},
+		},
+		AttributeDefinitions: []ddbtypes.AttributeDefinition{
+			{AttributeName: aws.String(attrPK), AttributeType: ddbtypes.ScalarAttributeTypeS},
+		},
+		BillingMode: ddbtypes.BillingModePayPerRequest,
+	})
+	if err != nil {
+		var inUse *ddbtypes.ResourceInUseException
+		if errors.As(err, &inUse) {
+			return nil
+		}
+		return err
+	}
+
+	waiter := dynamodb.NewTableExistsWaiter(s.client)
+	return waiter.Wait(ctx, &dynamodb.DescribeTableInput{
+		TableName: &s.tableName,
+	}, 30*time.Second)
+}
+
+// classifyConditionFailure distinguishes between "item not found" and
+// "item exists but token doesn't match" after a ConditionalCheckFailedException.
+func (s *Store) classifyConditionFailure(ctx context.Context, leaseID string) error {
+	pk := leaseKey(leaseID)
+	result, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: &s.tableName,
+		Key: map[string]ddbtypes.AttributeValue{
+			attrPK: &ddbtypes.AttributeValueMemberS{Value: pk},
+		},
+		ConsistentRead: aws.Bool(true),
+	})
+	if err != nil {
+		return domain.ErrStaleFencingToken.
+			WithMessage("lease token mismatch (follow-up read failed)").
+			With("leaseID", leaseID).
+			Wrap(err)
+	}
+	// Treat missing items and released items (empty owner) as not found.
+	if len(result.Item) == 0 || strAttr(result.Item, attrOwner) == "" {
+		return domain.ErrNotFound.
+			WithMessage("lease not found").
+			With("leaseID", leaseID)
+	}
+	return domain.ErrStaleFencingToken.
+		WithMessage("lease token mismatch").
+		With("leaseID", leaseID)
+}
+
+func leaseKey(leaseID string) string {
+	return "LEASE#" + leaseID
+}
+
+func isConditionFailed(err error) bool {
+	var ccf *ddbtypes.ConditionalCheckFailedException
+	return errors.As(err, &ccf)
+}
+
+func millisStr(t time.Time) string {
+	return strconv.FormatInt(t.UnixMilli(), 10)
+}
+
+func epochStr(t time.Time) string {
+	return strconv.FormatInt(t.Unix(), 10)
+}
+
+func uintStr(n uint64) string {
+	return strconv.FormatUint(n, 10)
+}
+
+func numAttr(attrs map[string]ddbtypes.AttributeValue, key string) (uint64, error) {
+	v, ok := attrs[key]
+	if !ok {
+		return 0, fmt.Errorf("attribute %q not found", key)
+	}
+	n, ok := v.(*ddbtypes.AttributeValueMemberN)
+	if !ok {
+		return 0, fmt.Errorf("attribute %q is not a number", key)
+	}
+	return strconv.ParseUint(n.Value, 10, 64)
+}
+
+func strAttr(attrs map[string]ddbtypes.AttributeValue, key string) string {
+	v, ok := attrs[key]
+	if !ok {
+		return ""
+	}
+	sv, ok := v.(*ddbtypes.AttributeValueMemberS)
+	if !ok {
+		return ""
+	}
+	return sv.Value
+}

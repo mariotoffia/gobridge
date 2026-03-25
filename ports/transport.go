@@ -1,0 +1,90 @@
+package ports
+
+import (
+	"context"
+	"time"
+
+	"github.com/mariotoffia/gobridge/domain"
+)
+
+// Delivery is a source-owned unit of work. Transport adapters create
+// concrete implementations that map Ack/Retry/Extend to transport-native
+// operations (e.g., SQS DeleteMessage, ChangeMessageVisibility).
+type Delivery interface {
+	Envelope() *domain.Envelope
+	Ack(ctx context.Context) error
+	Retry(ctx context.Context, after time.Duration, reason error) error
+	Extend(ctx context.Context, until time.Time) error
+}
+
+// Receiver reads deliveries from a transport. The emit callback is invoked
+// for each received delivery; Run blocks until the context is cancelled or
+// an unrecoverable error occurs.
+type Receiver interface {
+	Run(ctx context.Context, emit func(context.Context, Delivery) error) error
+}
+
+// Sender submits envelopes to a transport.
+type Sender interface {
+	Send(ctx context.Context, env *domain.Envelope) error
+}
+
+// BatchSender extends Sender with batch send capability for transports
+// that support it (e.g., SQS SendMessageBatch).
+type BatchSender interface {
+	Sender
+	SendBatch(ctx context.Context, envs []*domain.Envelope) (int, error)
+}
+
+// SessionEventType classifies session lifecycle events.
+type SessionEventType int
+
+const (
+	SessionConnected    SessionEventType = iota
+	SessionDisconnected
+	SessionReconnecting
+	SessionError
+)
+
+// SessionEvent is a lifecycle notification from a stateful session.
+type SessionEvent struct {
+	Type      SessionEventType
+	Err       error
+	Timestamp time.Time
+}
+
+// SessionHealth describes the current health state of a session.
+type SessionHealth struct {
+	Connected bool
+	LastError error
+}
+
+// Session owns network identity and remote state for stateful transports.
+// Stateless transports do not require a Session.
+type Session interface {
+	Start(ctx context.Context) error
+	Reconcile(ctx context.Context, plan domain.SessionPlan) error
+	Health(ctx context.Context) SessionHealth
+	Events() <-chan SessionEvent
+	Close(ctx context.Context) error
+}
+
+// Lease manages cluster ownership for single-active scenarios.
+type Lease interface {
+	Acquire(ctx context.Context) (domain.LeaseToken, error)
+	Renew(ctx context.Context, token domain.LeaseToken) (domain.LeaseToken, error)
+	Release(ctx context.Context, token domain.LeaseToken) error
+	Owner() string
+}
+
+// Capability describes a routing-relevant transport feature.
+type Capability string
+
+const (
+	CapStatefulSession     Capability = "stateful_session"
+	CapSourceRedelivery    Capability = "source_redelivery"
+	CapVisibilityExtension Capability = "visibility_extension"
+	CapDelayedSend         Capability = "delayed_send"
+	CapSharedConsumer      Capability = "shared_consumer"
+	CapExclusiveIdentity   Capability = "exclusive_identity"
+)

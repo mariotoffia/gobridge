@@ -1,0 +1,173 @@
+package paho
+
+import (
+	"context"
+	"errors"
+	"net"
+	"testing"
+
+	"github.com/mariotoffia/gobridge/domain"
+)
+
+func TestMapError_Nil(t *testing.T) {
+	if got := MapError(nil); got != nil {
+		t.Fatalf("expected nil, got %v", got)
+	}
+}
+
+func TestMapError_DeadlineExceeded(t *testing.T) {
+	be := MapError(context.DeadlineExceeded)
+	if be == nil {
+		t.Fatal("expected BridgeError")
+	}
+	if !errors.Is(be, domain.ErrTimeout) {
+		t.Fatalf("expected ErrTimeout, got code %s", be.Code)
+	}
+}
+
+func TestMapError_Canceled(t *testing.T) {
+	be := MapError(context.Canceled)
+	if be == nil {
+		t.Fatal("expected BridgeError")
+	}
+	if !errors.Is(be, domain.ErrUnavailable) {
+		t.Fatalf("expected ErrUnavailable, got code %s", be.Code)
+	}
+}
+
+type fakeNetError struct{ timeout bool }
+
+func (e *fakeNetError) Error() string   { return "net error" }
+func (e *fakeNetError) Timeout() bool   { return e.timeout }
+func (e *fakeNetError) Temporary() bool { return false }
+
+var _ net.Error = (*fakeNetError)(nil)
+
+func TestMapError_NetTimeout(t *testing.T) {
+	be := MapError(&fakeNetError{timeout: true})
+	if !errors.Is(be, domain.ErrTimeout) {
+		t.Fatalf("expected ErrTimeout, got code %s", be.Code)
+	}
+}
+
+func TestMapError_NetNonTimeout(t *testing.T) {
+	be := MapError(&fakeNetError{timeout: false})
+	if !errors.Is(be, domain.ErrConnectionLost) {
+		t.Fatalf("expected ErrConnectionLost, got code %s", be.Code)
+	}
+}
+
+func TestMapError_ConnectionRefused(t *testing.T) {
+	be := MapError(errors.New("connection refused"))
+	if !errors.Is(be, domain.ErrConnectionLost) {
+		t.Fatalf("expected ErrConnectionLost, got code %s", be.Code)
+	}
+}
+
+func TestMapError_UnknownFallsToUnavailable(t *testing.T) {
+	be := MapError(errors.New("something weird"))
+	if !errors.Is(be, domain.ErrUnavailable) {
+		t.Fatalf("expected ErrUnavailable, got code %s", be.Code)
+	}
+}
+
+func TestMapDisconnectReasonCode(t *testing.T) {
+	tests := []struct {
+		code     byte
+		wantNil  bool
+		wantCode domain.ErrorCode
+	}{
+		{0x00, true, ""},
+		{0x89, false, domain.ErrCodeBrokerBusy},
+		{0x8F, false, domain.ErrCodeConnectionLost},
+		{0x93, false, domain.ErrCodeThrottled},
+		{0x87, false, domain.ErrCodeNotAuthorized},
+		{0x90, false, domain.ErrCodeInvalidTopic},
+		{0x95, false, domain.ErrCodePayloadTooLarge},
+		{0x81, false, domain.ErrCodeProtocolError},
+		{0x9B, false, domain.ErrCodeQoSNotSupported},
+		{0xFF, false, domain.ErrCodeUnavailable},
+	}
+
+	for _, tt := range tests {
+		be := MapDisconnectReasonCode(tt.code)
+		if tt.wantNil {
+			if be != nil {
+				t.Errorf("code 0x%02X: expected nil, got %v", tt.code, be)
+			}
+			continue
+		}
+		if be == nil {
+			t.Errorf("code 0x%02X: expected error, got nil", tt.code)
+			continue
+		}
+		if be.Code != tt.wantCode {
+			t.Errorf("code 0x%02X: expected code %s, got %s", tt.code, tt.wantCode, be.Code)
+		}
+	}
+}
+
+func TestMapPublishReasonCode(t *testing.T) {
+	tests := []struct {
+		code     byte
+		wantNil  bool
+		wantCode domain.ErrorCode
+	}{
+		{0x00, true, ""},
+		{0x10, true, ""},
+		{0x87, false, domain.ErrCodeForbidden},
+		{0x90, false, domain.ErrCodeInvalidTopic},
+		{0x97, false, domain.ErrCodeThrottled},
+		{0x99, false, domain.ErrCodeInvalidPayload},
+		{0x80, false, domain.ErrCodeUnavailable},
+		{0xFE, false, domain.ErrCodeUnavailable},
+	}
+
+	for _, tt := range tests {
+		be := MapPublishReasonCode(tt.code)
+		if tt.wantNil {
+			if be != nil {
+				t.Errorf("code 0x%02X: expected nil, got %v", tt.code, be)
+			}
+			continue
+		}
+		if be == nil {
+			t.Errorf("code 0x%02X: expected error, got nil", tt.code)
+			continue
+		}
+		if be.Code != tt.wantCode {
+			t.Errorf("code 0x%02X: expected code %s, got %s", tt.code, tt.wantCode, be.Code)
+		}
+	}
+}
+
+func TestMapSubscribeReasonCode(t *testing.T) {
+	tests := []struct {
+		code     byte
+		wantNil  bool
+		wantCode domain.ErrorCode
+	}{
+		{0x00, true, ""},
+		{0x01, true, ""},
+		{0x02, true, ""},
+		{0x87, false, domain.ErrCodeForbidden},
+		{0x80, false, domain.ErrCodeUnavailable},
+	}
+
+	for _, tt := range tests {
+		be := MapSubscribeReasonCode(tt.code)
+		if tt.wantNil {
+			if be != nil {
+				t.Errorf("code 0x%02X: expected nil, got %v", tt.code, be)
+			}
+			continue
+		}
+		if be == nil {
+			t.Errorf("code 0x%02X: expected error, got nil", tt.code)
+			continue
+		}
+		if be.Code != tt.wantCode {
+			t.Errorf("code 0x%02X: expected code %s, got %s", tt.code, tt.wantCode, be.Code)
+		}
+	}
+}

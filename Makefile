@@ -3,9 +3,8 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test lint clean tidy sync help
+.PHONY: all build test test-integration lint lint-fix clean tidy sync help
 .PHONY: build-core build-mqtt build-aws build-azure
-.PHONY: lint-core lint-mqtt lint-aws lint-azure
 
 # Default target
 all: build test
@@ -38,30 +37,26 @@ build-azure: ## Build Azure module only
 # Test targets
 # ============================================================================
 
-test: ## Test core module
-	go test -v -race ./...
+test: ## Run unit tests only (no Docker, integration tests skipped)
+	@echo "Running unit tests..."
+	go test -short -race -timeout 120s ./...
+
+test-integration: ## Run all tests including integration (requires Docker)
+	@echo "Running all tests (unit + integration)..."
+	AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+		go test -race -timeout 600s -v ./...
 
 # ============================================================================
 # Lint targets
 # ============================================================================
 
-lint: lint-core lint-mqtt lint-aws lint-azure ## Lint all modules
-
-lint-core: ## Lint core module
-	@echo "Linting core module..."
+lint: ## Lint all workspace modules
+	@echo "Linting..."
 	golangci-lint run ./...
 
-lint-mqtt: ## Lint MQTT module
-	@echo "Linting MQTT module..."
-	cd transport/mqtt && golangci-lint run ./...
-
-lint-aws: ## Lint AWS module
-	@echo "Linting AWS module..."
-	cd transport/aws && golangci-lint run ./...
-
-lint-azure: ## Lint Azure module
-	@echo "Linting Azure module..."
-	cd transport/azure && golangci-lint run ./...
+lint-fix: ## Lint and auto-fix all workspace modules
+	@echo "Linting with auto-fix..."
+	golangci-lint run --fix ./...
 
 # ============================================================================
 # Maintenance targets
@@ -109,20 +104,38 @@ dev-deps: ## Install development dependencies
 	@echo "Installing development dependencies..."
 	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
-check: build lint test ## Run full CI check locally
+check: build lint test ## Run full CI check (no Docker, integration skipped)
+
+check-all: build lint test-integration ## Run full CI check including integration (Docker required)
 
 # ============================================================================
 # Docker test containers
 # ============================================================================
 
-docker-up: ## Start test containers (Mosquitto, LocalStack)
+docker-up: ## Start persistent test containers for local development
 	@echo "Starting test containers..."
-	docker run -d --name gobridge-mosquitto -p 1883:1883 eclipse-mosquitto:latest
-	docker run -d --name gobridge-localstack -p 4566:4566 localstack/localstack:latest
+	@cat /tmp/gobridge-mqtt.conf 2>/dev/null || printf 'listener 1883 0.0.0.0\nprotocol mqtt\nallow_anonymous true\npersistence false\nlog_dest stdout\n' > /tmp/gobridge-mqtt.conf
+	-docker rm -f gobridge-ddb gobridge-sqs gobridge-mqtt 2>/dev/null
+	docker run -d --name gobridge-ddb -p 127.0.0.1:8000:8000 amazon/dynamodb-local:latest -jar DynamoDBLocal.jar -sharedDb -inMemory
+	docker run -d --name gobridge-sqs -p 127.0.0.1:9324:9324 softwaremill/elasticmq-native:latest
+	docker run -d --name gobridge-mqtt -p 127.0.0.1:1883:1883 -v /tmp/gobridge-mqtt.conf:/mosquitto/config/mosquitto.conf:ro eclipse-mosquitto:latest
+	@echo "Waiting for containers..."
+	@sleep 3
+	@echo "Containers ready. Run tests with:"
+	@echo "  DYNAMODB_ENDPOINT=http://127.0.0.1:8000 SQS_ENDPOINT=http://127.0.0.1:9324 MQTT_BROKER_URL=tcp://127.0.0.1:1883 make test-integration"
 
-docker-down: ## Stop and remove test containers
+docker-down: ## Stop and remove all gobridge test containers
 	@echo "Stopping test containers..."
-	-docker rm -f gobridge-mosquitto gobridge-localstack
+	-docker rm -f gobridge-ddb gobridge-sqs gobridge-mqtt 2>/dev/null
+
+docker-clean: ## Remove ALL orphaned gobridge containers from any test run
+	@echo "Cleaning orphaned containers..."
+	-docker rm -f $$(docker ps -aq --filter name=gobridge-ddblocal-) 2>/dev/null
+	-docker rm -f $$(docker ps -aq --filter name=gobridge-sqslocal-) 2>/dev/null
+	-docker rm -f $$(docker ps -aq --filter name=gobridge-s3local-) 2>/dev/null
+	-docker rm -f $$(docker ps -aq --filter name=gobridge-mqtt-) 2>/dev/null
+	-docker rm -f gobridge-ddb gobridge-sqs gobridge-mqtt 2>/dev/null
+	@echo "Done."
 
 # ============================================================================
 # Help

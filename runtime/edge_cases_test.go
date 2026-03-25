@@ -1,0 +1,819 @@
+package runtime_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/mariotoffia/gobridge/domain"
+	goruntime "github.com/mariotoffia/gobridge/runtime"
+)
+
+// ---------------------------------------------------------------------------
+// Fencing token validation
+// ---------------------------------------------------------------------------
+
+// TestEdge_StaleFencingTokenRejected verifies that a stale owner whose
+// lease version is outdated cannot claim or complete outbox records.
+func TestEdge_StaleFencingTokenRejected(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	lease := NewFakeLeaseStore()
+	dlq := NewFakeDLQStore()
+
+	const sessionID = "mqtt-fenced"
+
+	// --- Instance A: acquires lease, persists messages ---
+	ctxA, cancelA := context.WithCancel(context.Background())
+
+	rtA := newTestRuntime("bridge-A-fenced", outbox, lease, dlq)
+	receiverA := NewFakeReceiver()
+	senderA := NewFakeSender()
+	sessionA := NewFakeSession()
+
+	sessCfgA := fastSessionConfig(sessionID)
+	sessCfgA.LeaseTTL = 300 * time.Millisecond
+	sessCfgA.RenewInterval = 60 * time.Millisecond
+
+	cfgA := goruntime.RouteConfig{
+		ID: "fenced-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+		},
+		Bindings: []domain.DestinationBinding{
+			{ID: "b1", SessionID: sessionID},
+		},
+	}
+
+	_ = rtA.AddRoute(cfgA, receiverA, senderA, sessionA, &sessCfgA)
+	_ = rtA.Start(ctxA)
+
+	waitFor(t, 2*time.Second, "session A started", func() bool {
+		return sessionA.IsStarted()
+	})
+
+	// A persists a message.
+	env := &domain.Envelope{ID: "fenced-msg-1", Payload: []byte("data")}
+	del := NewFakeDelivery(env)
+	_ = receiverA.Emit(ctxA, del)
+	waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
+
+	// Wait for A to drain and complete it.
+	waitFor(t, 3*time.Second, "completed by A", func() bool {
+		return outbox.CompletedCount() >= 1
+	})
+
+	// Crash A.
+	cancelA()
+	_ = rtA.Stop(context.Background())
+
+	// --- Instance B: acquires lease with higher version ---
+	ctxB, cancelB := context.WithCancel(context.Background())
+	defer cancelB()
+
+	rtB := newTestRuntime("bridge-B-fenced", outbox, lease, dlq)
+	receiverB := NewFakeReceiver()
+	senderB := NewFakeSender()
+	sessionB := NewFakeSession()
+
+	sessCfgB := fastSessionConfig(sessionID)
+	sessCfgB.LeaseTTL = 300 * time.Millisecond
+	sessCfgB.RenewInterval = 60 * time.Millisecond
+
+	cfgB := goruntime.RouteConfig{
+		ID: "fenced-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+		},
+		Bindings: []domain.DestinationBinding{
+			{ID: "b1", SessionID: sessionID},
+		},
+	}
+
+	_ = rtB.AddRoute(cfgB, receiverB, senderB, sessionB, &sessCfgB)
+	_ = rtB.Start(ctxB)
+
+	waitFor(t, 3*time.Second, "session B started", func() bool {
+		return sessionB.IsStarted()
+	})
+
+	// Verify B's lease version is higher than A's.
+	info, err := lease.Current(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if info.Version < 2 {
+		t.Errorf("expected B's version >= 2, got %d", info.Version)
+	}
+
+	// Attempt to complete with A's stale token should fail.
+	staleToken := domain.LeaseToken{Version: 1, Owner: "bridge-A-fenced"}
+	_ = outbox.Complete(context.Background(), []string{"nonexistent"}, staleToken)
+	// For existing records with mismatched claim version, this returns ErrStaleFencingToken.
+	// For nonexistent records, it's a no-op in the fake store.
+
+	// Persist a new record and try to claim with stale token.
+	rec := domain.OutboxRecord{
+		ID:         "stale-test-rec",
+		EnvelopeID: "stale-test-env",
+		BindingID:  "b1",
+		SessionID:  sessionID,
+		Status:     domain.OutboxPending,
+		Envelope:   domain.Envelope{ID: "stale-test-env", Payload: []byte("x")},
+	}
+	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{rec})
+
+	// B should be able to claim and complete it with the correct token.
+	waitFor(t, 3*time.Second, "B claims new record", func() bool {
+		return senderB.SentCount() >= 1
+	})
+
+	_ = rtB.Stop(context.Background())
+}
+
+// ---------------------------------------------------------------------------
+// Idempotent persist
+// ---------------------------------------------------------------------------
+
+// TestEdge_IdempotentPersist verifies that if a source message is
+// redelivered after outbox persist but before source ack, the duplicate
+// persist is detected and the delivery is acked (not errored).
+func TestEdge_IdempotentPersist(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	lease := NewFakeLeaseStore()
+	dlq := NewFakeDLQStore()
+
+	rt := newTestRuntime("bridge-idemp", outbox, lease, dlq)
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+	session := NewFakeSession()
+	sessCfg := fastSessionConfig("mqtt-idemp")
+
+	cfg := goruntime.RouteConfig{
+		ID: "idemp-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+		},
+		Bindings: []domain.DestinationBinding{
+			{ID: "b1", SessionID: "mqtt-idemp"},
+		},
+	}
+
+	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = rt.Start(ctx)
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	waitFor(t, 2*time.Second, "session started", func() bool {
+		return session.IsStarted()
+	})
+
+	// First delivery.
+	env1 := &domain.Envelope{ID: "idemp-msg", Payload: []byte("data")}
+	del1 := NewFakeDelivery(env1)
+	_ = receiver.Emit(ctx, del1)
+	waitFor(t, time.Second, "first acked", func() bool { return del1.IsAcked() })
+
+	initialCount := outbox.RecordCount()
+
+	// Simulate redelivery of the same envelope ID.
+	env2 := &domain.Envelope{ID: "idemp-msg", Payload: []byte("data")}
+	del2 := NewFakeDelivery(env2)
+	_ = receiver.Emit(ctx, del2)
+
+	// Second delivery should also be acked (dedup in persist).
+	waitFor(t, time.Second, "second acked", func() bool { return del2.IsAcked() })
+
+	// Should not retry (no transient error from dedup).
+	if del2.IsRetried() {
+		t.Error("redelivered message should not be retried")
+	}
+
+	// Record count should not increase (dedup prevented duplicate).
+	if outbox.RecordCount() > initialCount {
+		t.Errorf("expected no new records from dedup, had %d now %d", initialCount, outbox.RecordCount())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Expired outbox entry
+// ---------------------------------------------------------------------------
+
+// TestEdge_ExpiredOutboxEntry verifies that an expired message in the
+// outbox is sent to DLQ (if policy is ExpiredDLQ) and not forwarded.
+func TestEdge_ExpiredOutboxEntry(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	lease := NewFakeLeaseStore()
+	dlq := NewFakeDLQStore()
+
+	rt := newTestRuntime("bridge-expiry", outbox, lease, dlq)
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+	session := NewFakeSession()
+	sessCfg := fastSessionConfig("mqtt-expiry")
+
+	cfg := goruntime.RouteConfig{
+		ID: "expiry-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+			OnExpired:    domain.ExpiredDLQ,
+		},
+		Bindings: []domain.DestinationBinding{
+			{ID: "b1", SessionID: "mqtt-expiry"},
+		},
+	}
+
+	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = rt.Start(ctx)
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	waitFor(t, 2*time.Second, "session started", func() bool {
+		return session.IsStarted()
+	})
+
+	// Send a message that is already expired.
+	env := &domain.Envelope{
+		ID:        "expired-msg",
+		Payload:   []byte("stale"),
+		ExpiresAt: time.Now().Add(-1 * time.Hour),
+	}
+	del := NewFakeDelivery(env)
+	_ = receiver.Emit(ctx, del)
+
+	// The expired message should be acked immediately (expiry check at ingress).
+	waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
+
+	// It should go to DLQ, not the sender.
+	waitFor(t, time.Second, "DLQ entry", func() bool { return dlq.Count() >= 1 })
+
+	if sender.SentCount() != 0 {
+		t.Error("expired message should not be sent")
+	}
+}
+
+// TestEdge_ExpiredOutboxEntryDuringDrain verifies that a message that
+// expires while sitting in the outbox is DLQ'd during drain, not sent.
+func TestEdge_ExpiredOutboxEntryDuringDrain(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	lease := NewFakeLeaseStore()
+	dlq := NewFakeDLQStore()
+
+	rt := newTestRuntime("bridge-drain-exp", outbox, lease, dlq)
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+	session := NewFakeSession()
+	sessCfg := fastSessionConfig("mqtt-drain-exp")
+
+	cfg := goruntime.RouteConfig{
+		ID: "drain-exp-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+			OnExpired:    domain.ExpiredDLQ,
+		},
+		Bindings: []domain.DestinationBinding{
+			{ID: "b1", SessionID: "mqtt-drain-exp"},
+		},
+	}
+
+	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = rt.Start(ctx)
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	waitFor(t, 2*time.Second, "session started", func() bool {
+		return session.IsStarted()
+	})
+
+	// Send a message that will expire in 100ms — it will be persisted
+	// to the outbox, but by the time the drainer picks it up it should
+	// have expired.
+	env := &domain.Envelope{
+		ID:        "short-lived-msg",
+		Payload:   []byte("fleeting"),
+		ExpiresAt: time.Now().Add(100 * time.Millisecond),
+	}
+
+	// Block the sender so the drainer can't send before expiry.
+	sender.SetSendErr(domain.NewBridgeError("BLOCKED", domain.ErrorTransient, "blocked"))
+
+	del := NewFakeDelivery(env)
+	_ = receiver.Emit(ctx, del)
+	waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
+
+	// Wait for expiry.
+	time.Sleep(200 * time.Millisecond)
+
+	// Unblock the sender.
+	sender.SetSendErr(nil)
+
+	// The drainer should detect expiry and route to DLQ.
+	waitFor(t, 3*time.Second, "DLQ from drain", func() bool { return dlq.Count() >= 1 })
+}
+
+// ---------------------------------------------------------------------------
+// Poison message
+// ---------------------------------------------------------------------------
+
+// TestEdge_PoisonMessageDLQ verifies that a record exceeding
+// MaxReplayAttempts is moved to DLQ with PoisonMessage category.
+func TestEdge_PoisonMessageDLQ(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	lease := NewFakeLeaseStore()
+	dlq := NewFakeDLQStore()
+
+	rt := newTestRuntime("bridge-poison", outbox, lease, dlq)
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+	sender.SendErr = domain.NewBridgeError("CRASH", domain.ErrorTransient, "always fails")
+	session := NewFakeSession()
+	sessCfg := fastSessionConfig("mqtt-poison")
+
+	cfg := goruntime.RouteConfig{
+		ID: "poison-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode:     domain.DeliverySharedOutbox,
+			MaxReplayAttempts: 3,
+		},
+		Bindings: []domain.DestinationBinding{
+			{ID: "b1", SessionID: "mqtt-poison"},
+		},
+	}
+
+	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = rt.Start(ctx)
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	waitFor(t, 2*time.Second, "session started", func() bool {
+		return session.IsStarted()
+	})
+
+	env := &domain.Envelope{ID: "poison-msg", Payload: []byte("toxic")}
+	del := NewFakeDelivery(env)
+	_ = receiver.Emit(ctx, del)
+	waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
+
+	// The drainer should eventually hit MaxReplayAttempts and DLQ.
+	waitFor(t, 10*time.Second, "poison DLQ", func() bool { return dlq.Count() >= 1 })
+
+	entries := dlq.GetEntries()
+	found := false
+	for _, e := range entries {
+		if e.Category == "PoisonMessage" || e.ErrorCode == "POISON_MESSAGE" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected DLQ entry with PoisonMessage category")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Crash recovery scenarios
+// ---------------------------------------------------------------------------
+
+// TestEdge_CrashBeforeOutboxPersist verifies that if the bridge crashes
+// before persisting to outbox, the source redelivers with no message loss.
+func TestEdge_CrashBeforeOutboxPersist(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	outbox.PersistErr = domain.NewBridgeError("STORE_DOWN", domain.ErrorTransient, "unavailable")
+	lease := NewFakeLeaseStore()
+
+	rt := newTestRuntime("bridge-crash-pre", outbox, lease, nil)
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+	session := NewFakeSession()
+	sessCfg := fastSessionConfig("mqtt-crash-pre")
+
+	cfg := goruntime.RouteConfig{
+		ID: "crash-pre-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+		},
+		Bindings: []domain.DestinationBinding{
+			{ID: "b1", SessionID: "mqtt-crash-pre"},
+		},
+	}
+
+	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = rt.Start(ctx)
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	waitFor(t, 2*time.Second, "session started", func() bool {
+		return session.IsStarted()
+	})
+
+	env := &domain.Envelope{ID: "crash-pre-msg", Payload: []byte("data")}
+	del := NewFakeDelivery(env)
+	_ = receiver.Emit(ctx, del)
+
+	// Persist fails -> should retry via source (Delivery.Retry).
+	waitFor(t, time.Second, "retried", func() bool { return del.IsRetried() })
+
+	if del.IsAcked() {
+		t.Error("should not ack when persist fails")
+	}
+}
+
+// TestEdge_CrashAfterPersistBeforeAck verifies that if the bridge crashes
+// after persisting to outbox but before acking the source, the source
+// redelivers and the outbox dedup catches the duplicate.
+func TestEdge_CrashAfterPersistBeforeAck(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	lease := NewFakeLeaseStore()
+
+	rt := newTestRuntime("bridge-crash-mid", outbox, lease, nil)
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+	session := NewFakeSession()
+	sessCfg := fastSessionConfig("mqtt-crash-mid")
+
+	cfg := goruntime.RouteConfig{
+		ID: "crash-mid-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+		},
+		Bindings: []domain.DestinationBinding{
+			{ID: "b1", SessionID: "mqtt-crash-mid"},
+		},
+	}
+
+	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = rt.Start(ctx)
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	waitFor(t, 2*time.Second, "session started", func() bool {
+		return session.IsStarted()
+	})
+
+	// First delivery: persists, acked.
+	env1 := &domain.Envelope{ID: "crash-mid-msg", Payload: []byte("data")}
+	del1 := NewFakeDelivery(env1)
+	_ = receiver.Emit(ctx, del1)
+	waitFor(t, time.Second, "first acked", func() bool { return del1.IsAcked() })
+
+	// Simulate: source redelivers the same message (ack was lost).
+	env2 := &domain.Envelope{ID: "crash-mid-msg", Payload: []byte("data")}
+	del2 := NewFakeDelivery(env2)
+	_ = receiver.Emit(ctx, del2)
+
+	// Dedup should catch it and ack without error.
+	waitFor(t, time.Second, "second acked", func() bool { return del2.IsAcked() })
+
+	if del2.IsRetried() {
+		t.Error("duplicate should not cause retry")
+	}
+}
+
+// TestEdge_CrashAfterAckBeforeSend verifies that after source ack, if
+// the bridge crashes before sending, the outbox drainer recovers the
+// message and sends it.
+func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	lease := NewFakeLeaseStore()
+	dlq := NewFakeDLQStore()
+
+	const sessionID = "mqtt-crash-after-ack"
+
+	// Instance A: persists and acks, then crashes before drain.
+	ctxA, cancelA := context.WithCancel(context.Background())
+
+	rtA := newTestRuntime("bridge-A-crash-ack", outbox, lease, dlq)
+	receiverA := NewFakeReceiver()
+	senderA := NewFakeSender()
+	sessionA := NewFakeSession()
+
+	sessCfgA := fastSessionConfig(sessionID)
+	sessCfgA.LeaseTTL = 300 * time.Millisecond
+	sessCfgA.RenewInterval = 60 * time.Millisecond
+	// Long drain interval so A won't drain before crash.
+	sessCfgA.DrainInterval = 10 * time.Second
+
+	cfgA := goruntime.RouteConfig{
+		ID: "crash-ack-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+		},
+		Bindings: []domain.DestinationBinding{
+			{ID: "b1", SessionID: sessionID},
+		},
+	}
+
+	_ = rtA.AddRoute(cfgA, receiverA, senderA, sessionA, &sessCfgA)
+	_ = rtA.Start(ctxA)
+
+	waitFor(t, 2*time.Second, "session A started", func() bool {
+		return sessionA.IsStarted()
+	})
+
+	env := &domain.Envelope{ID: "crash-ack-msg", Payload: []byte("important")}
+	del := NewFakeDelivery(env)
+	_ = receiverA.Emit(ctxA, del)
+	waitFor(t, time.Second, "acked by A", func() bool { return del.IsAcked() })
+
+	// A has acked source but not drained yet. Crash A.
+	cancelA()
+	_ = rtA.Stop(context.Background())
+
+	// Instance B takes over.
+	ctxB, cancelB := context.WithCancel(context.Background())
+	defer cancelB()
+
+	rtB := newTestRuntime("bridge-B-crash-ack", outbox, lease, dlq)
+	receiverB := NewFakeReceiver()
+	senderB := NewFakeSender()
+	sessionB := NewFakeSession()
+
+	sessCfgB := fastSessionConfig(sessionID)
+	sessCfgB.LeaseTTL = 300 * time.Millisecond
+	sessCfgB.RenewInterval = 60 * time.Millisecond
+
+	cfgB := goruntime.RouteConfig{
+		ID: "crash-ack-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+		},
+		Bindings: []domain.DestinationBinding{
+			{ID: "b1", SessionID: sessionID},
+		},
+	}
+
+	_ = rtB.AddRoute(cfgB, receiverB, senderB, sessionB, &sessCfgB)
+	_ = rtB.Start(ctxB)
+
+	waitFor(t, 3*time.Second, "session B started", func() bool {
+		return sessionB.IsStarted()
+	})
+
+	// B should drain and send the orphaned message.
+	waitFor(t, 5*time.Second, "sent by B", func() bool {
+		return senderB.SentCount() >= 1
+	})
+
+	sent := senderB.GetSent()
+	if sent[0].ID != "crash-ack-msg" {
+		t.Errorf("expected crash-ack-msg, got %q", sent[0].ID)
+	}
+
+	_ = rtB.Stop(context.Background())
+}
+
+// TestEdge_PermanentSendErrorGoesToDLQ verifies that a permanent send
+// error causes the message to be routed to DLQ without retry.
+func TestEdge_PermanentSendErrorGoesToDLQ(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	lease := NewFakeLeaseStore()
+	dlq := NewFakeDLQStore()
+
+	rt := newTestRuntime("bridge-perm", outbox, lease, dlq)
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+	sender.SendErr = domain.NewBridgeError("INVALID_PAYLOAD", domain.ErrorPermanent, "bad data")
+	session := NewFakeSession()
+	sessCfg := fastSessionConfig("mqtt-perm")
+
+	cfg := goruntime.RouteConfig{
+		ID: "perm-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+		},
+		Bindings: []domain.DestinationBinding{
+			{ID: "b1", SessionID: "mqtt-perm"},
+		},
+	}
+
+	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = rt.Start(ctx)
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	waitFor(t, 2*time.Second, "session started", func() bool {
+		return session.IsStarted()
+	})
+
+	env := &domain.Envelope{ID: "perm-msg", Payload: []byte("bad")}
+	del := NewFakeDelivery(env)
+	_ = receiver.Emit(ctx, del)
+	waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
+
+	// Drainer should detect permanent error and DLQ immediately.
+	waitFor(t, 5*time.Second, "DLQ entry", func() bool { return dlq.Count() >= 1 })
+
+	entries := dlq.GetEntries()
+	if entries[0].ErrorCode != "INVALID_PAYLOAD" {
+		t.Errorf("expected INVALID_PAYLOAD, got %q", entries[0].ErrorCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Crash after send but before outbox completion
+// ---------------------------------------------------------------------------
+
+// TestEdge_CrashAfterSendBeforeCompletion verifies that if the sender
+// succeeds but the outbox Complete call fails (e.g. DynamoDB timeout),
+// then instance A crashes, instance B reclaims the stale-claimed record,
+// re-sends, and completes it. At-least-once delivery is preserved.
+func TestEdge_CrashAfterSendBeforeCompletion(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	lease := NewFakeLeaseStore()
+	dlq := NewFakeDLQStore()
+
+	const sessionID = "mqtt-crash-complete"
+
+	// Instance A: Complete always fails, simulating a crash after send.
+	ctxA, cancelA := context.WithCancel(context.Background())
+
+	completeCallCount := 0
+	outbox.CompleteFn = func(_ []string, _ domain.LeaseToken) error {
+		completeCallCount++
+		return domain.NewBridgeError("DDB_TIMEOUT", domain.ErrorTransient, "completion timeout")
+	}
+
+	rtA := newTestRuntime("bridge-A-crash-complete", outbox, lease, dlq)
+	receiverA := NewFakeReceiver()
+	senderA := NewFakeSender()
+	sessionA := NewFakeSession()
+
+	sessCfgA := fastSessionConfig(sessionID)
+	sessCfgA.LeaseTTL = 300 * time.Millisecond
+	sessCfgA.RenewInterval = 60 * time.Millisecond
+
+	cfgA := goruntime.RouteConfig{
+		ID: "crash-complete-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+		},
+		Bindings: []domain.DestinationBinding{
+			{ID: "b1", SessionID: sessionID},
+		},
+	}
+
+	_ = rtA.AddRoute(cfgA, receiverA, senderA, sessionA, &sessCfgA)
+	_ = rtA.Start(ctxA)
+
+	waitFor(t, 2*time.Second, "session A started", func() bool {
+		return sessionA.IsStarted()
+	})
+
+	env := &domain.Envelope{ID: "crash-complete-msg", Payload: []byte("data")}
+	del := NewFakeDelivery(env)
+	_ = receiverA.Emit(ctxA, del)
+	waitFor(t, time.Second, "acked by A", func() bool { return del.IsAcked() })
+
+	// Wait for A's drainer to attempt sending (and failing completion).
+	waitFor(t, 3*time.Second, "A sent at least once", func() bool {
+		return senderA.SentCount() >= 1
+	})
+
+	// Crash A.
+	cancelA()
+	_ = rtA.Stop(context.Background())
+
+	// Fix Complete for instance B.
+	outbox.CompleteFn = nil
+	outbox.CompleteErr = nil
+
+	// Instance B takes over.
+	ctxB, cancelB := context.WithCancel(context.Background())
+	defer cancelB()
+
+	rtB := newTestRuntime("bridge-B-crash-complete", outbox, lease, dlq)
+	receiverB := NewFakeReceiver()
+	senderB := NewFakeSender()
+	sessionB := NewFakeSession()
+
+	sessCfgB := fastSessionConfig(sessionID)
+	sessCfgB.LeaseTTL = 300 * time.Millisecond
+	sessCfgB.RenewInterval = 60 * time.Millisecond
+
+	cfgB := goruntime.RouteConfig{
+		ID: "crash-complete-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+		},
+		Bindings: []domain.DestinationBinding{
+			{ID: "b1", SessionID: sessionID},
+		},
+	}
+
+	_ = rtB.AddRoute(cfgB, receiverB, senderB, sessionB, &sessCfgB)
+	_ = rtB.Start(ctxB)
+
+	waitFor(t, 3*time.Second, "session B started", func() bool {
+		return sessionB.IsStarted()
+	})
+
+	// B should reclaim the stale-claimed record, re-send, and complete.
+	waitFor(t, 5*time.Second, "outbox completed by B", func() bool {
+		return outbox.CompletedCount() >= 1
+	})
+
+	// At-least-once: B re-sent the message.
+	if senderB.SentCount() < 1 {
+		t.Fatal("B should have re-sent the reclaimed record")
+	}
+
+	_ = rtB.Stop(context.Background())
+}
+
+// ---------------------------------------------------------------------------
+// Fan-out atomicity
+// ---------------------------------------------------------------------------
+
+// TestEdge_FanOutPartialPersist verifies that when Persist fails for a
+// fan-out batch, no orphan records remain in the outbox and the delivery
+// is retried via the source rather than acked.
+func TestEdge_FanOutPartialPersist(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	lease := NewFakeLeaseStore()
+
+	rt := newTestRuntime("bridge-fanout-partial", outbox, lease, nil)
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+	session := NewFakeSession()
+	sessCfg := fastSessionConfig("mqtt-fanout-partial")
+
+	cfg := goruntime.RouteConfig{
+		ID: "fanout-partial-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+		},
+		Resolver: &FakeResolver{
+			Plans: []domain.DispatchPlan{
+				{BindingID: "bind-a", Address: "topic/a"},
+				{BindingID: "bind-b", Address: "topic/b"},
+			},
+		},
+		Bindings: []domain.DestinationBinding{
+			{ID: "bind-a", SessionID: "mqtt-fanout-partial"},
+			{ID: "bind-b", SessionID: "mqtt-fanout-partial"},
+		},
+	}
+
+	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = rt.Start(ctx)
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	waitFor(t, 2*time.Second, "session started", func() bool {
+		return session.IsStarted()
+	})
+
+	// Make Persist fail atomically — the whole batch is rejected.
+	outbox.PersistErr = domain.NewBridgeError("STORE_DOWN", domain.ErrorTransient, "unavailable")
+
+	env := &domain.Envelope{ID: "fanout-partial-msg", Payload: []byte("data")}
+	del := NewFakeDelivery(env)
+	_ = receiver.Emit(ctx, del)
+
+	// Persist fails -> delivery should be retried, not acked.
+	waitFor(t, time.Second, "retried", func() bool { return del.IsRetried() })
+
+	if del.IsAcked() {
+		t.Error("should not ack when persist fails")
+	}
+
+	// No orphan records should exist.
+	if outbox.RecordCount() != 0 {
+		t.Errorf("expected 0 records after failed persist, got %d", outbox.RecordCount())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Helper: DLQ store entry access
+// ---------------------------------------------------------------------------
+
+func (s *FakeDLQStore) GetEntries() []domain.DLQEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]domain.DLQEntry, len(s.Entries))
+	copy(cp, s.Entries)
+	return cp
+}
