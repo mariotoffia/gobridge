@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
+// Verifies Envelope returns the underlying domain envelope.
 func TestDelivery_Envelope(t *testing.T) {
 	env := &domain.Envelope{ID: "msg-1", Subject: "test"}
 	mock := &mockSQSClient{}
@@ -23,6 +24,7 @@ func TestDelivery_Envelope(t *testing.T) {
 	}
 }
 
+// Verifies Ack deletes the message using the correct queue URL and receipt handle.
 func TestDelivery_Ack_DeletesMessage(t *testing.T) {
 	mock := &mockSQSClient{}
 	env := &domain.Envelope{ID: "msg-1"}
@@ -43,6 +45,7 @@ func TestDelivery_Ack_DeletesMessage(t *testing.T) {
 	}
 }
 
+// Verifies Ack maps SQS delete failures to a domain bridge error with NOT_AUTHORIZED when appropriate.
 func TestDelivery_Ack_Error(t *testing.T) {
 	mock := &mockSQSClient{
 		DeleteMessageFn: func(_ context.Context, _ *awssqs.DeleteMessageInput, _ ...func(*awssqs.Options)) (*awssqs.DeleteMessageOutput, error) {
@@ -65,6 +68,7 @@ func TestDelivery_Ack_Error(t *testing.T) {
 	}
 }
 
+// Verifies Retry with zero delay sets visibility timeout to zero for immediate redelivery.
 func TestDelivery_Retry_ZeroDelay(t *testing.T) {
 	mock := &mockSQSClient{}
 	env := &domain.Envelope{ID: "msg-1"}
@@ -82,6 +86,7 @@ func TestDelivery_Retry_ZeroDelay(t *testing.T) {
 	}
 }
 
+// Verifies Retry translates a delay into the expected visibility timeout seconds.
 func TestDelivery_Retry_WithDelay(t *testing.T) {
 	mock := &mockSQSClient{}
 	env := &domain.Envelope{ID: "msg-1"}
@@ -96,6 +101,7 @@ func TestDelivery_Retry_WithDelay(t *testing.T) {
 	}
 }
 
+// Verifies Extend issues ChangeMessageVisibility with a timeout derived from the target time.
 func TestDelivery_Extend(t *testing.T) {
 	mock := &mockSQSClient{}
 	env := &domain.Envelope{ID: "msg-1"}
@@ -115,6 +121,7 @@ func TestDelivery_Extend(t *testing.T) {
 	}
 }
 
+// Verifies Extend clamps visibility timeout to the SQS maximum (12 hours).
 func TestDelivery_Extend_ClampsMax(t *testing.T) {
 	mock := &mockSQSClient{}
 	env := &domain.Envelope{ID: "msg-1"}
@@ -130,6 +137,7 @@ func TestDelivery_Extend_ClampsMax(t *testing.T) {
 	}
 }
 
+// Verifies auto-extend periodically calls ChangeMessageVisibility while the delivery is active.
 func TestDelivery_AutoExtend_CallsChangeVisibility(t *testing.T) {
 	var extendCount atomic.Int32
 	mock := &mockSQSClient{
@@ -155,6 +163,7 @@ func TestDelivery_AutoExtend_CallsChangeVisibility(t *testing.T) {
 	}
 }
 
+// Verifies auto-extend stops after Ack so no further visibility changes occur.
 func TestDelivery_AutoExtend_StopsOnAck(t *testing.T) {
 	var extendCount atomic.Int32
 	mock := &mockSQSClient{
@@ -181,6 +190,7 @@ func TestDelivery_AutoExtend_StopsOnAck(t *testing.T) {
 	}
 }
 
+// Verifies auto-extend does not continue after Retry beyond the Retry visibility call.
 func TestDelivery_AutoExtend_StopsOnRetry(t *testing.T) {
 	var extendCount atomic.Int32
 	mock := &mockSQSClient{
@@ -208,6 +218,7 @@ func TestDelivery_AutoExtend_StopsOnRetry(t *testing.T) {
 	}
 }
 
+// Verifies ChangeMessageVisibility is not invoked for background extension when auto-extend is disabled.
 func TestDelivery_NoAutoExtend(t *testing.T) {
 	var extendCount atomic.Int32
 	mock := &mockSQSClient{
@@ -228,6 +239,7 @@ func TestDelivery_NoAutoExtend(t *testing.T) {
 	}
 }
 
+// Verifies auto-extend stops after a single failed ChangeMessageVisibility attempt.
 func TestDelivery_AutoExtend_StopsOnError(t *testing.T) {
 	var callCount atomic.Int32
 	mock := &mockSQSClient{
@@ -249,6 +261,7 @@ func TestDelivery_AutoExtend_StopsOnError(t *testing.T) {
 	}
 }
 
+// Verifies auto-extend uses the full visibility timeout value in ChangeMessageVisibility.
 func TestDelivery_AutoExtend_UsesCorrectTimeout(t *testing.T) {
 	mock := &mockSQSClient{
 		ChangeMessageVisibilityFn: func(_ context.Context, in *awssqs.ChangeMessageVisibilityInput, _ ...func(*awssqs.Options)) (*awssqs.ChangeMessageVisibilityOutput, error) {
@@ -267,6 +280,7 @@ func TestDelivery_AutoExtend_UsesCorrectTimeout(t *testing.T) {
 	d.stop()
 }
 
+// Verifies calling stop multiple times leaves Ack working without panic or failure.
 func TestDelivery_MultipleStopsAreSafe(t *testing.T) {
 	mock := &mockSQSClient{}
 	env := &domain.Envelope{ID: "msg-1"}
@@ -281,6 +295,7 @@ func TestDelivery_MultipleStopsAreSafe(t *testing.T) {
 	}
 }
 
+// Verifies delivery operations use the configured queue URL and receipt handle.
 func TestNewDelivery_WithQueueURLAndHandle(t *testing.T) {
 	mock := &mockSQSClient{}
 	env := &domain.Envelope{ID: "msg-1"}
@@ -296,6 +311,7 @@ func TestNewDelivery_WithQueueURLAndHandle(t *testing.T) {
 	}
 }
 
+// Verifies Ack deletes the message after stopping auto-extend without extra spurious calls.
 func TestDelivery_Ack_StopsAutoExtendThenDeletes(t *testing.T) {
 	callOrder := make([]string, 0, 3)
 	mock := &mockSQSClient{

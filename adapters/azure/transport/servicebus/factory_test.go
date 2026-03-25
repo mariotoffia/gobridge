@@ -8,6 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+// verifies NewSession returns a nil session with no error for stateless Service Bus transport.
 func TestBridgeFactory_NewSession_ReturnsNilNil(t *testing.T) {
 	bf := NewBridgeFactory(nil)
 
@@ -24,6 +25,7 @@ func TestBridgeFactory_NewSession_ReturnsNilNil(t *testing.T) {
 	}
 }
 
+// verifies BridgeFactory reports visibility extension capability.
 func TestBridgeFactory_Capabilities(t *testing.T) {
 	bf := NewBridgeFactory(nil)
 	caps := bf.Capabilities()
@@ -36,6 +38,7 @@ func TestBridgeFactory_Capabilities(t *testing.T) {
 	}
 }
 
+// verifies NewReceiver builds a queue receiver from ReceiverDef options.
 func TestBridgeFactory_NewReceiver(t *testing.T) {
 	bf := NewBridgeFactory(nil)
 
@@ -57,6 +60,7 @@ func TestBridgeFactory_NewReceiver(t *testing.T) {
 	}
 }
 
+// verifies NewSender builds a queue sender from SenderDef options.
 func TestBridgeFactory_NewSender(t *testing.T) {
 	bf := NewBridgeFactory(nil)
 
@@ -78,6 +82,7 @@ func TestBridgeFactory_NewSender(t *testing.T) {
 	}
 }
 
+// verifies NewReceiver builds a topic subscription receiver from options.
 func TestBridgeFactory_NewReceiver_TopicSubscription(t *testing.T) {
 	bf := NewBridgeFactory(nil)
 
@@ -100,6 +105,7 @@ func TestBridgeFactory_NewReceiver_TopicSubscription(t *testing.T) {
 	}
 }
 
+// verifies NewSender builds a topic sender from options.
 func TestBridgeFactory_NewSender_Topic(t *testing.T) {
 	bf := NewBridgeFactory(nil)
 
@@ -121,6 +127,7 @@ func TestBridgeFactory_NewSender_Topic(t *testing.T) {
 	}
 }
 
+// verifies ReceiverFactory.NewReceiver from a ports.ReceiverSpec.
 func TestReceiverFactory_NewReceiver(t *testing.T) {
 	rf := NewReceiverFactory(nil)
 
@@ -141,6 +148,7 @@ func TestReceiverFactory_NewReceiver(t *testing.T) {
 	}
 }
 
+// verifies SenderFactory.NewSender from a ports.SenderSpec.
 func TestSenderFactory_NewSender(t *testing.T) {
 	sf := NewSenderFactory()
 

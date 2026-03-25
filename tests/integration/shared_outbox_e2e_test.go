@@ -14,8 +14,8 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
+	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
 
 func TestMain(m *testing.M) {
@@ -186,7 +186,7 @@ func (s *fakeDLQStore) List(_ context.Context, _ domain.DLQFilter) ([]domain.DLQ
 	return nil, nil
 }
 
-func (s *fakeDLQStore) Replay(_ context.Context, _ []string) error   { return nil }
+func (s *fakeDLQStore) Replay(_ context.Context, _ []string) error        { return nil }
 func (s *fakeDLQStore) Purge(_ context.Context, _ time.Time) (int, error) { return 0, nil }
 
 // ---------------------------------------------------------------------------
@@ -220,8 +220,7 @@ func fastSessionConfig(sessionID string) goruntime.SessionConfig {
 // Tests with DynamoDB outbox + lease stores
 // ---------------------------------------------------------------------------
 
-// TestE2E_DynamoDB_SharedOutboxFlow uses real DynamoDB Local tables for
-// both LeaseStore and OutboxStore with fake SQS/MQTT transports.
+// validates shared_outbox with DynamoDB lease and outbox stores: ingress persists and egress drains five fake deliveries.
 func TestE2E_DynamoDB_SharedOutboxFlow(t *testing.T) {
 	client := ddblocal.Client(t)
 
@@ -340,8 +339,7 @@ func TestE2E_DynamoDB_SharedOutboxFlow(t *testing.T) {
 	t.Logf("DynamoDB e2e: %d messages sent via outbox", senderB.sentCount())
 }
 
-// TestE2E_DynamoDB_LeaseTransfer uses DynamoDB lease and outbox stores
-// to verify cross-instance lease transfer and drain continuation.
+// validates cross-instance lease transfer on DynamoDB: secondary drains the persisted message after primary stops.
 func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 	client := ddblocal.Client(t)
 
@@ -450,8 +448,7 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 	t.Logf("DynamoDB lease transfer: message recovered by B")
 }
 
-// TestE2E_MemoryLease_DynamoOutbox uses an in-memory lease store with
-// DynamoDB outbox to verify the stores are independent.
+// validates combining in-memory lease store with DynamoDB outbox (independent store backends).
 func TestE2E_MemoryLease_DynamoOutbox(t *testing.T) {
 	client := ddblocal.Client(t)
 	outboxTable := ddblocal.UniqueTable("outbox")
@@ -509,9 +506,7 @@ func TestE2E_MemoryLease_DynamoOutbox(t *testing.T) {
 // G4: Crash recovery with DynamoDB stores
 // ---------------------------------------------------------------------------
 
-// TestE2E_DynamoDB_CrashRecovery verifies that when instance A persists to
-// DynamoDB outbox and acks the source but crashes before draining, instance B
-// acquires the lease and drains the orphaned records to completion.
+// validates crash recovery: primary persists and acks then stops before drain; secondary acquires the lease and sends the orphaned record.
 func TestE2E_DynamoDB_CrashRecovery(t *testing.T) {
 	client := ddblocal.Client(t)
 
@@ -642,8 +637,7 @@ func TestE2E_DynamoDB_CrashRecovery(t *testing.T) {
 // G5: Fencing token validation with DynamoDB
 // ---------------------------------------------------------------------------
 
-// TestE2E_DynamoDB_FencingValidation verifies that DynamoDB conditional writes
-// reject outbox operations with stale lease tokens after a lease transfer.
+// validates DynamoDB conditional writes reject Complete with a stale token after another owner reclaims the record.
 func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 	client := ddblocal.Client(t)
 
@@ -737,8 +731,7 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 // G6: Poison message with DynamoDB
 // ---------------------------------------------------------------------------
 
-// TestE2E_DynamoDB_PoisonMessage verifies that a record exceeding
-// MaxReplayAttempts during drain is routed to the DLQ and not sent.
+// validates poison handling: repeated send failure exceeds MaxReplayAttempts and the record moves to the DLQ.
 func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 	client := ddblocal.Client(t)
 
@@ -824,8 +817,7 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 // G7: Fan-out atomicity with DynamoDB
 // ---------------------------------------------------------------------------
 
-// TestE2E_DynamoDB_FanOutAtomicity verifies that fan-out records are persisted
-// atomically via TransactWriteItems: all records succeed or none do.
+// validates fan-out persist and drain to two sessions; idempotent re-emit of the same envelope does not duplicate sends.
 func TestE2E_DynamoDB_FanOutAtomicity(t *testing.T) {
 	client := ddblocal.Client(t)
 

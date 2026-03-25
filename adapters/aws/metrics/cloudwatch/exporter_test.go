@@ -8,6 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
+// Verifies batcher add stores a counter datum with correct name, value, unit, and dimensions.
 func TestBatcher_AddCounter(t *testing.T) {
 	b := newBatcher("Test", nil, 100)
 
@@ -37,6 +38,7 @@ func TestBatcher_AddCounter(t *testing.T) {
 	}
 }
 
+// Verifies histogram samples aggregate into StatisticValues on drain.
 func TestBatcher_AddHistogram(t *testing.T) {
 	b := newBatcher("Test", nil, 100)
 
@@ -72,6 +74,7 @@ func TestBatcher_AddHistogram(t *testing.T) {
 	}
 }
 
+// Verifies default tags merge with per-metric tags in CloudWatch dimensions.
 func TestBatcher_DefaultTags(t *testing.T) {
 	defaults := []domain.Tag{
 		{Key: "service", Value: "bridge"},
@@ -105,6 +108,7 @@ func TestBatcher_DefaultTags(t *testing.T) {
 	}
 }
 
+// Verifies add returns full once the batcher reaches its capacity.
 func TestBatcher_BufferFull(t *testing.T) {
 	b := newBatcher("Test", nil, 5)
 
@@ -118,6 +122,7 @@ func TestBatcher_BufferFull(t *testing.T) {
 	}
 }
 
+// Verifies drain empties mixed counter and histogram state.
 func TestBatcher_DrainClears(t *testing.T) {
 	b := newBatcher("Test", nil, 100)
 	b.add(metricData{name: "c", value: 1, metricType: metricTypeCounter})
@@ -132,6 +137,7 @@ func TestBatcher_DrainClears(t *testing.T) {
 	}
 }
 
+// Verifies dimensions are capped at CloudWatch's maximum count.
 func TestBatcher_DimensionLimit(t *testing.T) {
 	var tags []domain.Tag
 	for i := 0; i < 35; i++ {
@@ -146,6 +152,7 @@ func TestBatcher_DimensionLimit(t *testing.T) {
 	}
 }
 
+// Verifies histograms with different tag sets produce separate aggregated datums.
 func TestBatcher_MultipleHistogramKeys(t *testing.T) {
 	b := newBatcher("Test", nil, 100)
 
@@ -159,6 +166,7 @@ func TestBatcher_MultipleHistogramKeys(t *testing.T) {
 	}
 }
 
+// Verifies applyDefaults sets flush interval, buffer size, and max batch size.
 func TestConfig_Defaults(t *testing.T) {
 	cfg := &Config{Namespace: "Test"}
 	applyDefaults(cfg)
@@ -174,6 +182,7 @@ func TestConfig_Defaults(t *testing.T) {
 	}
 }
 
+// Verifies functional options mutate Exporter configuration fields as expected.
 func TestOptions(t *testing.T) {
 	e := &Exporter{config: Config{}}
 
@@ -208,6 +217,7 @@ func TestOptions(t *testing.T) {
 	}
 }
 
+// Verifies metricNameFromKey strips tag suffixes from composite metric keys.
 func TestMetricNameFromKey(t *testing.T) {
 	tests := []struct {
 		key  string
@@ -225,6 +235,7 @@ func TestMetricNameFromKey(t *testing.T) {
 	}
 }
 
+// Verifies histogram datums preserve the configured standard unit on drain.
 func TestBatcher_HistogramUnit(t *testing.T) {
 	b := newBatcher("Test", nil, 100)
 	b.add(metricData{

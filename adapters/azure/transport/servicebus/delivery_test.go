@@ -12,6 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
+// verifies Delivery.Envelope returns the wrapped domain envelope.
 func TestDelivery_Envelope(t *testing.T) {
 	env := &domain.Envelope{ID: "msg-1", Subject: "test"}
 	mock := &mockASBClient{}
@@ -23,6 +24,7 @@ func TestDelivery_Envelope(t *testing.T) {
 	}
 }
 
+// verifies Ack completes the underlying Service Bus message.
 func TestDelivery_Ack_CompletesMessage(t *testing.T) {
 	mock := &mockASBClient{}
 	env := &domain.Envelope{ID: "msg-1"}
@@ -45,6 +47,7 @@ func TestDelivery_Ack_CompletesMessage(t *testing.T) {
 	}
 }
 
+// verifies Ack maps CompleteMessage failures to a BridgeError.
 func TestDelivery_Ack_Error(t *testing.T) {
 	mock := &mockASBClient{
 		CompleteMessageFn: func(context.Context, *azservicebus.ReceivedMessage, *azservicebus.CompleteMessageOptions) error {
@@ -65,6 +68,7 @@ func TestDelivery_Ack_Error(t *testing.T) {
 	}
 }
 
+// verifies Retry abandons the message for redelivery.
 func TestDelivery_Retry_AbandonsMessage(t *testing.T) {
 	mock := &mockASBClient{}
 	env := &domain.Envelope{ID: "msg-1"}
@@ -87,6 +91,7 @@ func TestDelivery_Retry_AbandonsMessage(t *testing.T) {
 	}
 }
 
+// verifies Retry maps AbandonMessage failures to a BridgeError.
 func TestDelivery_Retry_Error(t *testing.T) {
 	mock := &mockASBClient{
 		AbandonMessageFn: func(context.Context, *azservicebus.ReceivedMessage, *azservicebus.AbandonMessageOptions) error {
@@ -107,6 +112,7 @@ func TestDelivery_Retry_Error(t *testing.T) {
 	}
 }
 
+// verifies Extend renews the message lock.
 func TestDelivery_Extend_RenewsLock(t *testing.T) {
 	mock := &mockASBClient{}
 	env := &domain.Envelope{ID: "msg-1"}
@@ -129,6 +135,7 @@ func TestDelivery_Extend_RenewsLock(t *testing.T) {
 	}
 }
 
+// verifies Extend maps RenewMessageLock failures to a BridgeError.
 func TestDelivery_Extend_Error(t *testing.T) {
 	mock := &mockASBClient{
 		RenewMessageLockFn: func(context.Context, *azservicebus.ReceivedMessage, *azservicebus.RenewMessageLockOptions) error {
@@ -149,6 +156,7 @@ func TestDelivery_Extend_Error(t *testing.T) {
 	}
 }
 
+// verifies auto-extend periodically renews the lock while the delivery is active.
 func TestDelivery_AutoExtend_CallsRenew(t *testing.T) {
 	var renewCount atomic.Int32
 	mock := &mockASBClient{
@@ -172,6 +180,7 @@ func TestDelivery_AutoExtend_CallsRenew(t *testing.T) {
 	}
 }
 
+// verifies auto-extend stops after Ack.
 func TestDelivery_AutoExtend_StopsOnAck(t *testing.T) {
 	var renewCount atomic.Int32
 	mock := &mockASBClient{
@@ -197,6 +206,7 @@ func TestDelivery_AutoExtend_StopsOnAck(t *testing.T) {
 	}
 }
 
+// verifies auto-extend stops after Retry.
 func TestDelivery_AutoExtend_StopsOnRetry(t *testing.T) {
 	var renewCount atomic.Int32
 	mock := &mockASBClient{
@@ -222,6 +232,7 @@ func TestDelivery_AutoExtend_StopsOnRetry(t *testing.T) {
 	}
 }
 
+// verifies auto-extend stops after a renew error.
 func TestDelivery_AutoExtend_StopsOnError(t *testing.T) {
 	var callCount atomic.Int32
 	mock := &mockASBClient{
@@ -243,6 +254,7 @@ func TestDelivery_AutoExtend_StopsOnError(t *testing.T) {
 	}
 }
 
+// verifies renew is not called when auto-extend is disabled.
 func TestDelivery_NoAutoExtend(t *testing.T) {
 	var renewCount atomic.Int32
 	mock := &mockASBClient{
@@ -264,6 +276,7 @@ func TestDelivery_NoAutoExtend(t *testing.T) {
 	}
 }
 
+// verifies calling stop multiple times is safe and Ack still succeeds.
 func TestDelivery_MultipleStopsAreSafe(t *testing.T) {
 	mock := &mockASBClient{}
 	env := &domain.Envelope{ID: "msg-1"}
@@ -279,6 +292,7 @@ func TestDelivery_MultipleStopsAreSafe(t *testing.T) {
 	}
 }
 
+// verifies auto-extend scheduling respects ReceivedMessage.LockedUntil when set.
 func TestDelivery_AutoExtend_UsesLockedUntil(t *testing.T) {
 	var renewCount atomic.Int32
 	mock := &mockASBClient{

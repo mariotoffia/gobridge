@@ -70,6 +70,7 @@ func (m *mockSenderAPI) lastMessage() *azservicebus.Message {
 	return m.sentMessages[len(m.sentMessages)-1]
 }
 
+// validates NewSender rejects invalid SenderConfig and accepts queue or topic with a client.
 func TestNewSender_Validation(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -112,6 +113,7 @@ func TestNewSender_Validation(t *testing.T) {
 	}
 }
 
+// verifies Send maps envelope ID, subject, and payload onto the azservicebus.Message.
 func TestSender_Send_Success(t *testing.T) {
 	mock := &mockSenderAPI{}
 	sender, err := NewSender(SenderConfig{
@@ -147,6 +149,7 @@ func TestSender_Send_Success(t *testing.T) {
 	}
 }
 
+// verifies Send maps ASB headers to message fields and passes other keys to ApplicationProperties.
 func TestSender_Send_HeaderMapping(t *testing.T) {
 	mock := &mockSenderAPI{}
 	sender, err := NewSender(SenderConfig{
@@ -207,6 +210,7 @@ func TestSender_Send_HeaderMapping(t *testing.T) {
 	}
 }
 
+// verifies DefaultSessionID is applied when the envelope has no session header.
 func TestSender_Send_DefaultSessionID(t *testing.T) {
 	mock := &mockSenderAPI{}
 	sender, err := NewSender(SenderConfig{
@@ -235,6 +239,7 @@ func TestSender_Send_DefaultSessionID(t *testing.T) {
 	}
 }
 
+// verifies asb.session-id in headers overrides DefaultSessionID.
 func TestSender_Send_HeaderSessionOverride(t *testing.T) {
 	mock := &mockSenderAPI{}
 	sender, err := NewSender(SenderConfig{
@@ -266,6 +271,7 @@ func TestSender_Send_HeaderSessionOverride(t *testing.T) {
 	}
 }
 
+// verifies Send wraps SendMessage failures as a BridgeError.
 func TestSender_Send_Error(t *testing.T) {
 	mock := &mockSenderAPI{
 		sendMessageFn: func(context.Context, *azservicebus.Message, *azservicebus.SendMessageOptions) error {
@@ -292,6 +298,7 @@ func TestSender_Send_Error(t *testing.T) {
 	}
 }
 
+// verifies envelope Subject maps to the outgoing message Subject.
 func TestSender_Send_SubjectMapping(t *testing.T) {
 	mock := &mockSenderAPI{}
 	sender, err := NewSender(SenderConfig{
@@ -320,6 +327,7 @@ func TestSender_Send_SubjectMapping(t *testing.T) {
 	}
 }
 
+// verifies Send does not set MessageID when the envelope has no ID.
 func TestSender_Send_EmptyID(t *testing.T) {
 	mock := &mockSenderAPI{}
 	sender, err := NewSender(SenderConfig{
@@ -347,6 +355,7 @@ func TestSender_Send_EmptyID(t *testing.T) {
 	}
 }
 
+// verifies Send succeeds with nil envelope headers and sends the payload.
 func TestSender_Send_NilHeaders(t *testing.T) {
 	mock := &mockSenderAPI{}
 	sender, err := NewSender(SenderConfig{
@@ -375,6 +384,7 @@ func TestSender_Send_NilHeaders(t *testing.T) {
 	}
 }
 
+// verifies SendBatch returns zero sent and no error for nil or empty input.
 func TestSender_SendBatch_EmptySlice(t *testing.T) {
 	mock := &mockSenderAPI{}
 	sender, err := NewSender(SenderConfig{
@@ -402,6 +412,7 @@ func TestSender_SendBatch_EmptySlice(t *testing.T) {
 	}
 }
 
+// verifies SendBatch propagates NewMessageBatch errors and reports zero sent.
 func TestSender_SendBatch_NewBatchError(t *testing.T) {
 	batchErr := fmt.Errorf("cannot create batch")
 	mock := &mockSenderAPI{
@@ -431,6 +442,7 @@ func TestSender_SendBatch_NewBatchError(t *testing.T) {
 	}
 }
 
+// verifies SendBatch propagates SendMessageBatch failures.
 func TestSender_SendBatch_SendBatchError(t *testing.T) {
 	mock := &mockSenderAPI{
 		newMessageBatchFn: func(context.Context, *azservicebus.MessageBatchOptions) (*azservicebus.MessageBatch, error) {
@@ -462,6 +474,7 @@ func TestSender_SendBatch_SendBatchError(t *testing.T) {
 	}
 }
 
+// verifies Close invokes the underlying sender client Close.
 func TestSender_Close(t *testing.T) {
 	closeCalled := false
 	mock := &mockSenderAPI{
@@ -486,6 +499,7 @@ func TestSender_Close(t *testing.T) {
 	}
 }
 
+// verifies Close returns errors from the underlying client.
 func TestSender_Close_Error(t *testing.T) {
 	mock := &mockSenderAPI{
 		closeFn: func(context.Context) error {
@@ -505,6 +519,7 @@ func TestSender_Close_Error(t *testing.T) {
 	}
 }
 
+// verifies Send surfaces context cancellation from the client layer.
 func TestSender_Send_ContextCanceled(t *testing.T) {
 	mock := &mockSenderAPI{
 		sendMessageFn: func(ctx context.Context, _ *azservicebus.Message, _ *azservicebus.SendMessageOptions) error {
@@ -529,6 +544,7 @@ func TestSender_Send_ContextCanceled(t *testing.T) {
 	}
 }
 
+// verifies Send delivers payload when envelope CreatedAt and ExpiresAt are set.
 func TestSender_Send_Timestamps(t *testing.T) {
 	mock := &mockSenderAPI{}
 	sender, err := NewSender(SenderConfig{
@@ -560,6 +576,7 @@ func TestSender_Send_Timestamps(t *testing.T) {
 	}
 }
 
+// verifies multiple sequential Send calls append distinct messages on the mock client.
 func TestSender_Send_MultipleMessages(t *testing.T) {
 	mock := &mockSenderAPI{}
 	sender, err := NewSender(SenderConfig{

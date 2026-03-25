@@ -59,6 +59,7 @@ var _ ssmAPI = (*mockSSM)(nil)
 // Parser tests
 // ---------------------------------------------------------------------------
 
+// Verifies JSON credential payloads parse into username/password credential sets.
 func TestParseCredentials_JSONUsernamePassword(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -98,6 +99,7 @@ func TestParseCredentials_JSONUsernamePassword(t *testing.T) {
 	}
 }
 
+// Verifies colon-separated user:password strings parse correctly.
 func TestParseCredentials_SimpleFormat(t *testing.T) {
 	creds, err := parseCredentials("myuser:mypassword")
 	require.NoError(t, err)
@@ -106,6 +108,7 @@ func TestParseCredentials_SimpleFormat(t *testing.T) {
 	assert.Equal(t, "mypassword", creds.Password.Password)
 }
 
+// Verifies simple format keeps colons in the password portion after the first separator.
 func TestParseCredentials_SimpleFormat_PasswordWithColon(t *testing.T) {
 	creds, err := parseCredentials("admin:pass:word:123")
 	require.NoError(t, err)
@@ -114,6 +117,7 @@ func TestParseCredentials_SimpleFormat_PasswordWithColon(t *testing.T) {
 	assert.Equal(t, "pass:word:123", creds.Password.Password)
 }
 
+// Verifies JSON TLS material parses into CertPEM, KeyPEM, CA PEMs, and insecure flag.
 func TestParseCredentials_TLS(t *testing.T) {
 	input := `{
 		"certPem": "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----",
@@ -132,6 +136,7 @@ func TestParseCredentials_TLS(t *testing.T) {
 	assert.False(t, creds.TLS.InsecureSkipVerify)
 }
 
+// Verifies TLS JSON sets InsecureSkipVerify when insecure is true.
 func TestParseCredentials_TLS_InsecureSkipVerify(t *testing.T) {
 	input := `{"certPem":"cert","keyPem":"key","insecure":true}`
 	creds, err := parseCredentials(input)
@@ -140,6 +145,7 @@ func TestParseCredentials_TLS_InsecureSkipVerify(t *testing.T) {
 	assert.True(t, creds.TLS.InsecureSkipVerify)
 }
 
+// Verifies a single ca string field is accepted as one CA PEM entry.
 func TestParseCredentials_TLS_SingleCAPem(t *testing.T) {
 	input := `{"certPem":"cert","keyPem":"key","ca":"single-ca"}`
 	creds, err := parseCredentials(input)
@@ -148,21 +154,25 @@ func TestParseCredentials_TLS_SingleCAPem(t *testing.T) {
 	assert.Equal(t, []string{"single-ca"}, creds.TLS.CAPEMs)
 }
 
+// Verifies non-JSON, non-colon input returns an error from parseCredentials.
 func TestParseCredentials_UnsupportedFormat(t *testing.T) {
 	_, err := parseCredentials("no-colon-no-json")
 	assert.Error(t, err)
 }
 
+// Verifies invalid JSON input returns an error from parseCredentials.
 func TestParseCredentials_InvalidJSON(t *testing.T) {
 	_, err := parseCredentials(`{invalid}`)
 	assert.Error(t, err)
 }
 
+// Verifies JSON without recognizable credential fields returns an error.
 func TestParseCredentials_UnknownJSONType(t *testing.T) {
 	_, err := parseCredentials(`{"foo":"bar"}`)
 	assert.Error(t, err)
 }
 
+// Verifies password-only JSON without a username returns an error.
 func TestParseCredentials_MissingUsername(t *testing.T) {
 	_, err := parseCredentials(`{"type":"password","password":"nouser"}`)
 	assert.Error(t, err)
@@ -172,6 +182,7 @@ func TestParseCredentials_MissingUsername(t *testing.T) {
 // Serialization round-trip
 // ---------------------------------------------------------------------------
 
+// Verifies serializeCredentialSet and parseCredentials round-trip password credentials.
 func TestSerializeAndParseRoundTrip_Password(t *testing.T) {
 	original := &domain.CredentialSet{
 		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
@@ -186,6 +197,7 @@ func TestSerializeAndParseRoundTrip_Password(t *testing.T) {
 	assert.Equal(t, "p", parsed.Password.Password)
 }
 
+// Verifies serializeCredentialSet and parseCredentials round-trip TLS material.
 func TestSerializeAndParseRoundTrip_TLS(t *testing.T) {
 	original := &domain.CredentialSet{
 		TLS: &domain.TLSMaterial{
@@ -211,6 +223,7 @@ func TestSerializeAndParseRoundTrip_TLS(t *testing.T) {
 // URI parsing
 // ---------------------------------------------------------------------------
 
+// Verifies pms:// URIs map to SSM paths and invalid schemes error.
 func TestParseURI(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -253,6 +266,7 @@ func TestParseURI(t *testing.T) {
 	}
 }
 
+// Verifies pathToURI produces stable pms:// URIs for absolute paths.
 func TestPathToURI(t *testing.T) {
 	assert.Equal(t, "pms://prod/db/password", pathToURI("/prod/db/password"))
 	assert.Equal(t, "pms://single", pathToURI("/single"))
@@ -262,16 +276,19 @@ func TestPathToURI(t *testing.T) {
 // Scheme and Namespace
 // ---------------------------------------------------------------------------
 
+// Verifies default repository scheme is pms.
 func TestRepository_Scheme(t *testing.T) {
 	r := New()
 	assert.Equal(t, "pms", r.Scheme())
 }
 
+// Verifies WithNamespace sets the repository namespace returned by Namespace().
 func TestRepository_Namespace(t *testing.T) {
 	r := New(WithNamespace("myapp/prod"))
 	assert.Equal(t, "myapp/prod", r.Namespace())
 }
 
+// Verifies default repository has an empty namespace.
 func TestRepository_Namespace_Empty(t *testing.T) {
 	r := New()
 	assert.Equal(t, "", r.Namespace())
@@ -281,6 +298,7 @@ func TestRepository_Namespace_Empty(t *testing.T) {
 // Repository CRUD (mock-based)
 // ---------------------------------------------------------------------------
 
+// Verifies Get decrypts and parses a SecureString parameter into credentials.
 func TestRepository_Get(t *testing.T) {
 	mock := &mockSSM{
 		getParameterFn: func(_ context.Context, input *awsssm.GetParameterInput) (*awsssm.GetParameterOutput, error) {
@@ -304,6 +322,7 @@ func TestRepository_Get(t *testing.T) {
 	assert.Equal(t, "s3cret", creds.Password.Password)
 }
 
+// Verifies Get maps ParameterNotFound to ErrNotFound.
 func TestRepository_Get_NotFound(t *testing.T) {
 	mock := &mockSSM{
 		getParameterFn: func(_ context.Context, _ *awsssm.GetParameterInput) (*awsssm.GetParameterOutput, error) {
@@ -317,6 +336,7 @@ func TestRepository_Get_NotFound(t *testing.T) {
 	assert.True(t, errors.Is(err, domain.ErrNotFound))
 }
 
+// Verifies Get treats a nil parameter value as ErrNotFound.
 func TestRepository_Get_NilValue(t *testing.T) {
 	mock := &mockSSM{
 		getParameterFn: func(_ context.Context, _ *awsssm.GetParameterInput) (*awsssm.GetParameterOutput, error) {
@@ -332,6 +352,7 @@ func TestRepository_Get_NilValue(t *testing.T) {
 	assert.True(t, errors.Is(err, domain.ErrNotFound))
 }
 
+// Verifies Create writes a SecureString parameter without overwrite.
 func TestRepository_Create(t *testing.T) {
 	var capturedInput *awsssm.PutParameterInput
 	mock := &mockSSM{
@@ -352,6 +373,7 @@ func TestRepository_Create(t *testing.T) {
 	assert.False(t, *capturedInput.Overwrite)
 }
 
+// Verifies Create maps ParameterAlreadyExists to ErrAlreadyExists.
 func TestRepository_Create_AlreadyExists(t *testing.T) {
 	mock := &mockSSM{
 		putParameterFn: func(_ context.Context, _ *awsssm.PutParameterInput) (*awsssm.PutParameterOutput, error) {
@@ -367,6 +389,7 @@ func TestRepository_Create_AlreadyExists(t *testing.T) {
 	assert.True(t, errors.Is(err, domain.ErrAlreadyExists))
 }
 
+// Verifies Update overwrites the parameter with serialized credentials.
 func TestRepository_Update(t *testing.T) {
 	var capturedInput *awsssm.PutParameterInput
 	mock := &mockSSM{
@@ -386,6 +409,7 @@ func TestRepository_Update(t *testing.T) {
 	assert.Equal(t, ssmtypes.ParameterTypeSecureString, capturedInput.Type)
 }
 
+// Verifies Update rejects a stale expected version with ErrVersionMismatch.
 func TestRepository_Update_VersionMismatch(t *testing.T) {
 	mock := &mockSSM{
 		getParameterFn: func(_ context.Context, _ *awsssm.GetParameterInput) (*awsssm.GetParameterOutput, error) {
@@ -403,6 +427,7 @@ func TestRepository_Update_VersionMismatch(t *testing.T) {
 	assert.True(t, errors.Is(err, domain.ErrVersionMismatch))
 }
 
+// Verifies Delete removes the parameter at the resolved path.
 func TestRepository_Delete(t *testing.T) {
 	var deleteCalled bool
 	mock := &mockSSM{
@@ -419,6 +444,7 @@ func TestRepository_Delete(t *testing.T) {
 	assert.True(t, deleteCalled)
 }
 
+// Verifies Delete with version checking succeeds only when the version matches.
 func TestRepository_Delete_VersionCheck(t *testing.T) {
 	mock := &mockSSM{
 		getParameterFn: func(_ context.Context, _ *awsssm.GetParameterInput) (*awsssm.GetParameterOutput, error) {
@@ -440,6 +466,7 @@ func TestRepository_Delete_VersionCheck(t *testing.T) {
 	assert.True(t, errors.Is(err, domain.ErrVersionMismatch))
 }
 
+// Verifies List returns pms:// URIs for parameters under the namespace.
 func TestRepository_List(t *testing.T) {
 	mock := &mockSSM{
 		getParametersByPathFn: func(_ context.Context, input *awsssm.GetParametersByPathInput) (*awsssm.GetParametersByPathOutput, error) {
@@ -460,6 +487,7 @@ func TestRepository_List(t *testing.T) {
 	assert.Equal(t, []string{"pms://myns/db/creds", "pms://myns/api/key"}, uris)
 }
 
+// Verifies List restricts the path prefix when a relative prefix is supplied.
 func TestRepository_List_WithPrefix(t *testing.T) {
 	mock := &mockSSM{
 		getParametersByPathFn: func(_ context.Context, input *awsssm.GetParametersByPathInput) (*awsssm.GetParametersByPathOutput, error) {
@@ -478,6 +506,7 @@ func TestRepository_List_WithPrefix(t *testing.T) {
 	assert.Equal(t, []string{"pms://myns/db/creds"}, uris)
 }
 
+// Verifies List follows NextToken until all parameters are collected.
 func TestRepository_List_Pagination(t *testing.T) {
 	callCount := 0
 	mock := &mockSSM{
@@ -507,20 +536,24 @@ func TestRepository_List_Pagination(t *testing.T) {
 // Error mapping
 // ---------------------------------------------------------------------------
 
+// Verifies mapAWSError returns nil for a nil input.
 func TestMapAWSError_Nil(t *testing.T) {
 	assert.Nil(t, mapAWSError(nil))
 }
 
+// Verifies ParameterNotFound maps to ErrNotFound.
 func TestMapAWSError_ParameterNotFound(t *testing.T) {
 	err := mapAWSError(&ssmtypes.ParameterNotFound{})
 	assert.True(t, errors.Is(err, domain.ErrNotFound))
 }
 
+// Verifies ParameterAlreadyExists maps to ErrAlreadyExists.
 func TestMapAWSError_ParameterAlreadyExists(t *testing.T) {
 	err := mapAWSError(&ssmtypes.ParameterAlreadyExists{})
 	assert.True(t, errors.Is(err, domain.ErrAlreadyExists))
 }
 
+// Verifies unknown AWS errors map to ErrUnavailable.
 func TestMapAWSError_GenericError(t *testing.T) {
 	err := mapAWSError(fmt.Errorf("some AWS error"))
 	assert.True(t, errors.Is(err, domain.ErrUnavailable))
@@ -530,12 +563,14 @@ func TestMapAWSError_GenericError(t *testing.T) {
 // URI error in CRUD operations
 // ---------------------------------------------------------------------------
 
+// Verifies Get rejects non-pms URIs.
 func TestRepository_Get_InvalidURI(t *testing.T) {
 	r := New(WithClient(&mockSSM{}))
 	_, err := r.Get(context.Background(), "vault://wrong/scheme")
 	assert.Error(t, err)
 }
 
+// Verifies Create rejects invalid URIs before calling SSM.
 func TestRepository_Create_InvalidURI(t *testing.T) {
 	r := New(WithClient(&mockSSM{}))
 	err := r.Create(context.Background(), "bad://uri", &domain.CredentialSet{

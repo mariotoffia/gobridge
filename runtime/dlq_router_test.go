@@ -8,6 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
+// Verifies routing with a nil DLQ store is a no-op and returns no error.
 func TestDLQRouter_NilStore(t *testing.T) {
 	dlq := runtime.NewDLQRouter(nil)
 	env := &domain.Envelope{ID: "msg-1"}
@@ -18,6 +19,7 @@ func TestDLQRouter_NilStore(t *testing.T) {
 	}
 }
 
+// Verifies Route persists one entry with route, correlation, permanent category, and attempt count.
 func TestDLQRouter_WritesEntry(t *testing.T) {
 	store := NewFakeDLQStore()
 	dlq := runtime.NewDLQRouter(store)
@@ -50,6 +52,7 @@ func TestDLQRouter_WritesEntry(t *testing.T) {
 	}
 }
 
+// Verifies non-domain errors are categorized as unknown in the DLQ entry.
 func TestDLQRouter_UnknownError(t *testing.T) {
 	store := NewFakeDLQStore()
 	dlq := runtime.NewDLQRouter(store)

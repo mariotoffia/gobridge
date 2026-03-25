@@ -15,9 +15,7 @@ import (
 // R1–R10: Multi-client routing E2E tests
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestE2E_Routing_FanOutMatchAll_ThreeClients sends 1 SQS message that fans
-// out to 3 MQTT clients via MatchAll. Each client has its own exclusive
-// session, binding, and topic. SharedOutbox delivery.
+// verifies MatchAll fan-out: one SQS message reaches three MQTT clients with separate sessions, bindings, and topics via shared_outbox.
 func TestE2E_Routing_FanOutMatchAll_ThreeClients(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "r1")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -85,8 +83,7 @@ func TestE2E_Routing_FanOutMatchAll_ThreeClients(t *testing.T) {
 	}
 }
 
-// TestE2E_Routing_MatchByHeader_SelectsCorrectClient sends an SQS message
-// with header factory=B. Only client-b should receive the message.
+// verifies MatchByHeader delivers only to the binding whose header value matches (factory=B → client B only).
 func TestE2E_Routing_MatchByHeader_SelectsCorrectClient(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "r2")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -160,8 +157,7 @@ func TestE2E_Routing_MatchByHeader_SelectsCorrectClient(t *testing.T) {
 	}
 }
 
-// TestE2E_Routing_MatchByHeader_EachClientGetsOwnMessage sends 3 SQS
-// messages with factory headers A, B, C. Each client receives exactly 1.
+// verifies three SQS messages with distinct factory headers each reach exactly one intended client.
 func TestE2E_Routing_MatchByHeader_EachClientGetsOwnMessage(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "r3")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -239,9 +235,7 @@ func TestE2E_Routing_MatchByHeader_EachClientGetsOwnMessage(t *testing.T) {
 	}
 }
 
-// TestE2E_Routing_AddressTemplate_DynamicTopic verifies address template
-// rendering: SQS message with device_id header routes to
-// devices/{device_id}/telemetry.
+// verifies address templates render the MQTT topic from headers (devices/{device_id}/telemetry).
 func TestE2E_Routing_AddressTemplate_DynamicTopic(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "r4")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -292,8 +286,7 @@ func TestE2E_Routing_AddressTemplate_DynamicTopic(t *testing.T) {
 	}
 }
 
-// TestE2E_Routing_AddressTemplate_MultiPlaceholder renders an address
-// template with two placeholders: {region}/{device_id}/status.
+// verifies address templates with two placeholders render the expected topic path.
 func TestE2E_Routing_AddressTemplate_MultiPlaceholder(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "r5")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -345,8 +338,7 @@ func TestE2E_Routing_AddressTemplate_MultiPlaceholder(t *testing.T) {
 	}
 }
 
-// TestE2E_Routing_FanOutSameSession_DifferentTopics verifies fan-out within
-// a single session: 1 session, 2 bindings with different MQTT topics, MatchAll.
+// verifies MatchAll fan-out on one session delivers to two distinct MQTT topics.
 func TestE2E_Routing_FanOutSameSession_DifferentTopics(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "r6")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -398,9 +390,7 @@ func TestE2E_Routing_FanOutSameSession_DifferentTopics(t *testing.T) {
 	}
 }
 
-// TestE2E_Routing_FanOutPartialAvailability validates that when one of two
-// sessions is unavailable at send time, the outbox retains the record and
-// a second runtime drains it once the session becomes available.
+// verifies partial fan-out availability: undelivered bindings stay in the outbox until a second runtime registers the missing session and drains.
 func TestE2E_Routing_FanOutPartialAvailability(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "r7")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -486,9 +476,7 @@ func TestE2E_Routing_FanOutPartialAvailability(t *testing.T) {
 	})
 }
 
-// TestE2E_Routing_NoMatchingBinding_DLQ sends an SQS message whose factory
-// header does not match any binding. The message should land in the DLQ
-// with no MQTT delivery.
+// verifies unmatched header routing sends the message to the DLQ with no downstream send.
 func TestE2E_Routing_NoMatchingBinding_DLQ(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "r8")
 	dlq := &e2eDLQStore{}
@@ -532,9 +520,7 @@ func TestE2E_Routing_NoMatchingBinding_DLQ(t *testing.T) {
 	}
 }
 
-// TestE2E_Routing_MissingTemplatePlaceholder_DLQ sends an SQS message
-// that lacks the header required by the address template. The resolver
-// error routes the message to the DLQ.
+// verifies missing template placeholder headers route the message to the DLQ.
 func TestE2E_Routing_MissingTemplatePlaceholder_DLQ(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "r9")
 	dlq := &e2eDLQStore{}
@@ -574,8 +560,7 @@ func TestE2E_Routing_MissingTemplatePlaceholder_DLQ(t *testing.T) {
 	}
 }
 
-// TestE2E_Routing_FanOutToFiveClients_TenMessages sends 10 SQS messages
-// that fan out to 5 MQTT clients via MatchAll, producing 50 total deliveries.
+// verifies sustained MatchAll fan-out: ten SQS messages multiply to five clients (fifty deliveries).
 func TestE2E_Routing_FanOutToFiveClients_TenMessages(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "r10")
 	leaseStore, outboxStore := setupDynamoStores(t)

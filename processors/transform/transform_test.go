@@ -8,7 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
-// TestJSONTransform_SimpleMapping validates basic field renaming.
+// Validates basic field renaming for simple JSON path mappings.
 func TestJSONTransform_SimpleMapping(t *testing.T) {
 	transform, err := New(Config{
 		Mappings: []FieldMapping{
@@ -54,7 +54,7 @@ func TestJSONTransform_SimpleMapping(t *testing.T) {
 	}
 }
 
-// TestJSONTransform_NestedExtraction validates nested field extraction.
+// Validates nested field extraction with DropUnmapped.
 func TestJSONTransform_NestedExtraction(t *testing.T) {
 	transform, err := New(Config{
 		Mappings: []FieldMapping{
@@ -104,7 +104,7 @@ func TestJSONTransform_NestedExtraction(t *testing.T) {
 	}
 }
 
-// TestJSONTransform_NestedTarget validates creating nested target structures.
+// Validates building nested target objects from flat source fields.
 func TestJSONTransform_NestedTarget(t *testing.T) {
 	transform, err := New(Config{
 		Mappings: []FieldMapping{
@@ -153,7 +153,7 @@ func TestJSONTransform_NestedTarget(t *testing.T) {
 	}
 }
 
-// TestJSONTransform_TypeTransformation validates type conversions.
+// Validates string, int, and bool transform mappings.
 func TestJSONTransform_TypeTransformation(t *testing.T) {
 	transform, err := New(Config{
 		Mappings: []FieldMapping{
@@ -199,7 +199,7 @@ func TestJSONTransform_TypeTransformation(t *testing.T) {
 	}
 }
 
-// TestJSONTransform_DefaultValue validates default values for missing fields.
+// Validates default values when source paths are missing.
 func TestJSONTransform_DefaultValue(t *testing.T) {
 	transform, err := New(Config{
 		Mappings: []FieldMapping{
@@ -247,7 +247,7 @@ func TestJSONTransform_DefaultValue(t *testing.T) {
 	}
 }
 
-// TestJSONTransform_RequiredField validates required field handling.
+// Validates error when a required mapping source is absent.
 func TestJSONTransform_RequiredField(t *testing.T) {
 	transform, err := New(Config{
 		Mappings: []FieldMapping{
@@ -274,7 +274,7 @@ func TestJSONTransform_RequiredField(t *testing.T) {
 	}
 }
 
-// TestJSONTransform_Base64Encoding validates base64 encoding/decoding.
+// Validates base64 encode and decode transforms.
 func TestJSONTransform_Base64Encoding(t *testing.T) {
 	transform, err := New(Config{
 		Mappings: []FieldMapping{
@@ -315,7 +315,7 @@ func TestJSONTransform_Base64Encoding(t *testing.T) {
 	}
 }
 
-// TestJSONTransform_ArrayAccess validates array element access.
+// Validates array index access in JSONPath sources.
 func TestJSONTransform_ArrayAccess(t *testing.T) {
 	transform, err := New(Config{
 		Mappings: []FieldMapping{
@@ -358,7 +358,7 @@ func TestJSONTransform_ArrayAccess(t *testing.T) {
 	}
 }
 
-// TestJSONTransform_EmptyPayload validates handling of empty payloads.
+// Validates Process with nil payload still invokes next.
 func TestJSONTransform_EmptyPayload(t *testing.T) {
 	transform, err := New(Config{
 		Mappings: []FieldMapping{
@@ -385,7 +385,7 @@ func TestJSONTransform_EmptyPayload(t *testing.T) {
 	}
 }
 
-// TestJSONTransform_InvalidJSONPath validates error handling for invalid JSONPath.
+// Validates New rejects invalid JSONPath in mappings.
 func TestJSONTransform_InvalidJSONPath(t *testing.T) {
 	_, err := New(Config{
 		Mappings: []FieldMapping{

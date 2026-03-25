@@ -16,6 +16,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+// Verifies Run receives SQS messages and invokes the handler with mapped envelope and headers.
 func TestReceiver_RunEmitsDeliveries(t *testing.T) {
 	callCount := 0
 	mock := &mockSQSClient{
@@ -88,6 +89,7 @@ func TestReceiver_RunEmitsDeliveries(t *testing.T) {
 	}
 }
 
+// Verifies reserved bridge headers from message attributes are stripped before delivery.
 func TestReceiver_RunStripsReservedHeaders(t *testing.T) {
 	callCount := 0
 	mock := &mockSQSClient{
@@ -146,6 +148,7 @@ func TestReceiver_RunStripsReservedHeaders(t *testing.T) {
 	}
 }
 
+// Verifies SNS-wrapped bodies are unwrapped into subject, payload, and topic metadata.
 func TestReceiver_RunSNSUnwrap(t *testing.T) {
 	snsMsg := map[string]string{
 		"TopicArn": "arn:aws:sns:us-east-1:123:my-topic",
@@ -207,6 +210,7 @@ func TestReceiver_RunSNSUnwrap(t *testing.T) {
 	}
 }
 
+// Verifies Run retries ReceiveMessage after a transient error and eventually delivers.
 func TestReceiver_RunRetriesOnReceiveError(t *testing.T) {
 	var callCount int
 	mock := &mockSQSClient{
@@ -260,6 +264,7 @@ func TestReceiver_RunRetriesOnReceiveError(t *testing.T) {
 	}
 }
 
+// Verifies Run returns the handler error and stops when the emit callback fails.
 func TestReceiver_RunStopsOnEmitError(t *testing.T) {
 	callCount := 0
 	mock := &mockSQSClient{
@@ -298,6 +303,7 @@ func TestReceiver_RunStopsOnEmitError(t *testing.T) {
 	}
 }
 
+// Verifies NewReceiver rejects configuration without a queue URL.
 func TestReceiver_Validate_RequiresQueue(t *testing.T) {
 	_, err := NewReceiver(ReceiverConfig{}, nil)
 	if err == nil {
@@ -305,6 +311,7 @@ func TestReceiver_Validate_RequiresQueue(t *testing.T) {
 	}
 }
 
+// Verifies Ack on a delivery deletes using the message's receipt handle.
 func TestReceiver_DeliveryAck_DeletesCorrectHandle(t *testing.T) {
 	callCount := 0
 	mock := &mockSQSClient{

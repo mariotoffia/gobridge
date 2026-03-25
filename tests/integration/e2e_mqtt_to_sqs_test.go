@@ -12,7 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
 
-// M1: Single MQTT topic -> bridge (direct_hold) -> SQS queue.
+// verifies single-topic MQTT ingress delivers all published messages to one SQS queue using direct_hold.
 func TestE2E_MQTTToSQS_SingleTopic(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "m1")
 	topic := "sensors/temp"
@@ -69,9 +69,9 @@ func TestE2E_MQTTToSQS_SingleTopic(t *testing.T) {
 	}
 }
 
-// M2: 3 MQTT topics merged into 1 SQS queue via 3 routes sharing one session.
-// The session router fans out every message to all registered receivers,
-// so 3 published messages × 3 receivers = at least 3 arrivals in SQS.
+// verifies three MQTT topics merge into one SQS queue when three routes share one session.
+//
+// The session router fans out each message to every receiver, so three publishes yield at least three SQS arrivals.
 func TestE2E_MQTTToSQS_MultiTopicMerge(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "m2")
 	topics := []string{"devices/temp", "devices/humid", "devices/press"}
@@ -132,8 +132,7 @@ func TestE2E_MQTTToSQS_MultiTopicMerge(t *testing.T) {
 	}
 }
 
-// M3: 2 MQTT topics routed to 2 different SQS queues using separate sessions
-// per topic so that each receiver only handles its own topic.
+// verifies two MQTT topics on separate sessions deliver to distinct SQS queues without cross-routing.
 func TestE2E_MQTTToSQS_HeaderBasedRouting(t *testing.T) {
 	ordersQueue, ordersClient := setupSQSQueue(t, "m3-orders")
 	alertsQueue, alertsClient := setupSQSQueue(t, "m3-alerts")
@@ -201,9 +200,9 @@ func TestE2E_MQTTToSQS_HeaderBasedRouting(t *testing.T) {
 	}
 }
 
-// M4: SQS-A -> shared_outbox -> MQTT -> SQS-B with crash and recovery.
-// Bridge A persists to outbox then crashes. Bridge B drains orphaned records
-// to MQTT, where route 2 forwards them to SQS-B.
+// verifies shared-outbox failover from SQS through MQTT to a second SQS queue.
+//
+// Bridge A persists to the outbox and stops before drain; bridge B drains to MQTT and a second route forwards to SQS-B.
 func TestE2E_MQTTToSQS_RoundTripWithFailover(t *testing.T) {
 	queueA, sqsClientA := setupSQSQueue(t, "m4-a")
 	queueB, sqsClientB := setupSQSQueue(t, "m4-b")
@@ -292,7 +291,7 @@ func TestE2E_MQTTToSQS_RoundTripWithFailover(t *testing.T) {
 	}
 }
 
-// M5: Publish 10 MQTT messages rapidly and assert all arrive in SQS (no drops).
+// verifies ten rapid MQTT publishes all arrive in SQS without drops.
 func TestE2E_MQTTToSQS_BackpressureSQSSlow(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "m5")
 	topic := "e2e/m5/pressure"

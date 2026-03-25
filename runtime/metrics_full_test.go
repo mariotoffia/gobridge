@@ -152,8 +152,7 @@ func TestMetrics_FullPipeline_SharedOutbox(t *testing.T) {
 	}
 }
 
-// TestMetrics_AllMetricNamesDocumented checks that every constant from
-// domain/metrics.go is exercised somewhere in the test suite by name.
+// TestMetrics_AllMetricNamesDocumented verifies every domain metric name constant is listed for documentation coverage.
 func TestMetrics_AllMetricNamesDocumented(t *testing.T) {
 	all := []string{
 		domain.MetricLeaseAcquireLatency,

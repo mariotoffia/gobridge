@@ -13,6 +13,7 @@ import (
 // RenderAddress
 // ---------------------------------------------------------------------------
 
+// Verifies RenderAddress substitutes a single placeholder from vars.
 func TestRenderAddress_HappyPath(t *testing.T) {
 	vars := map[string]any{"device_id": "42", "zone": "north"}
 
@@ -25,6 +26,7 @@ func TestRenderAddress_HappyPath(t *testing.T) {
 	}
 }
 
+// Verifies RenderAddress substitutes multiple distinct placeholders in one template.
 func TestRenderAddress_MultiplePlaceholders(t *testing.T) {
 	vars := map[string]any{"zone": "north", "device": "sensor-3"}
 
@@ -37,6 +39,7 @@ func TestRenderAddress_MultiplePlaceholders(t *testing.T) {
 	}
 }
 
+// Verifies RenderAddress returns the template unchanged when it has no placeholders.
 func TestRenderAddress_NoPlaceholders(t *testing.T) {
 	got, err := runtime.RenderAddress("static/topic", nil)
 	if err != nil {
@@ -47,6 +50,7 @@ func TestRenderAddress_NoPlaceholders(t *testing.T) {
 	}
 }
 
+// Verifies RenderAddress accepts an empty template and returns an empty string.
 func TestRenderAddress_EmptyTemplate(t *testing.T) {
 	got, err := runtime.RenderAddress("", nil)
 	if err != nil {
@@ -57,6 +61,7 @@ func TestRenderAddress_EmptyTemplate(t *testing.T) {
 	}
 }
 
+// Verifies RenderAddress errors when a placeholder key is missing from vars.
 func TestRenderAddress_MissingPlaceholder(t *testing.T) {
 	vars := map[string]any{"zone": "north"}
 
@@ -66,6 +71,7 @@ func TestRenderAddress_MissingPlaceholder(t *testing.T) {
 	}
 }
 
+// Verifies RenderAddress rejects a template with an empty placeholder name.
 func TestRenderAddress_EmptyPlaceholderKey(t *testing.T) {
 	_, err := runtime.RenderAddress("factory/{}/data", nil)
 	if err == nil {
@@ -73,6 +79,7 @@ func TestRenderAddress_EmptyPlaceholderKey(t *testing.T) {
 	}
 }
 
+// Verifies RenderAddress errors when substitution yields an empty result.
 func TestRenderAddress_RendersToEmpty(t *testing.T) {
 	vars := map[string]any{"val": ""}
 
@@ -86,6 +93,7 @@ func TestRenderAddress_RendersToEmpty(t *testing.T) {
 // ValidateMQTTTopic
 // ---------------------------------------------------------------------------
 
+// Verifies ValidateMQTTTopic accepts common valid MQTT topic strings.
 func TestValidateMQTTTopic_ValidTopics(t *testing.T) {
 	valid := []string{
 		"devices/sensor-1/data",
@@ -100,42 +108,49 @@ func TestValidateMQTTTopic_ValidTopics(t *testing.T) {
 	}
 }
 
+// Verifies ValidateMQTTTopic rejects an empty topic.
 func TestValidateMQTTTopic_Empty(t *testing.T) {
 	if err := runtime.ValidateMQTTTopic(""); err == nil {
 		t.Fatal("empty topic should be rejected")
 	}
 }
 
+// Verifies ValidateMQTTTopic rejects single-level wildcards in the topic.
 func TestValidateMQTTTopic_PlusWildcard(t *testing.T) {
 	if err := runtime.ValidateMQTTTopic("devices/+/data"); err == nil {
 		t.Fatal("plus wildcard should be rejected")
 	}
 }
 
+// Verifies ValidateMQTTTopic rejects multi-level wildcards in the topic.
 func TestValidateMQTTTopic_HashWildcard(t *testing.T) {
 	if err := runtime.ValidateMQTTTopic("devices/#"); err == nil {
 		t.Fatal("hash wildcard should be rejected")
 	}
 }
 
+// Verifies ValidateMQTTTopic rejects embedded null bytes.
 func TestValidateMQTTTopic_NullCharacter(t *testing.T) {
 	if err := runtime.ValidateMQTTTopic("devices/\x00/data"); err == nil {
 		t.Fatal("null character should be rejected")
 	}
 }
 
+// Verifies ValidateMQTTTopic rejects consecutive slashes producing empty segments.
 func TestValidateMQTTTopic_EmptySegment(t *testing.T) {
 	if err := runtime.ValidateMQTTTopic("devices//data"); err == nil {
 		t.Fatal("empty segment should be rejected")
 	}
 }
 
+// Verifies ValidateMQTTTopic rejects a leading slash.
 func TestValidateMQTTTopic_LeadingSlash(t *testing.T) {
 	if err := runtime.ValidateMQTTTopic("/devices/data"); err == nil {
 		t.Fatal("leading slash (empty first segment) should be rejected")
 	}
 }
 
+// Verifies ValidateMQTTTopic rejects a trailing slash.
 func TestValidateMQTTTopic_TrailingSlash(t *testing.T) {
 	if err := runtime.ValidateMQTTTopic("devices/data/"); err == nil {
 		t.Fatal("trailing slash (empty last segment) should be rejected")
@@ -146,6 +161,7 @@ func TestValidateMQTTTopic_TrailingSlash(t *testing.T) {
 // BindingResolver + MatchByHeader
 // ---------------------------------------------------------------------------
 
+// Verifies MatchByHeader selects one binding from a header map and renders the address template.
 func TestBindingResolver_MatchByHeader_SingleMatch(t *testing.T) {
 	bindings := []domain.DestinationBinding{
 		{ID: "bind-a", Transport: "mqtt", SessionID: "sess-a", Address: "factory/a/orders/{device_id}"},
@@ -174,6 +190,7 @@ func TestBindingResolver_MatchByHeader_SingleMatch(t *testing.T) {
 	}
 }
 
+// Verifies MatchByHeader returns a rejected BridgeError when the header value maps to no binding.
 func TestBindingResolver_MatchByHeader_NoMatch(t *testing.T) {
 	bindings := []domain.DestinationBinding{
 		{ID: "bind-a", Transport: "mqtt", Address: "topic/a"},
@@ -199,6 +216,7 @@ func TestBindingResolver_MatchByHeader_NoMatch(t *testing.T) {
 	}
 }
 
+// Verifies MatchByHeader errors when the selector header is absent from the envelope.
 func TestBindingResolver_MatchByHeader_MissingHeader(t *testing.T) {
 	bindings := []domain.DestinationBinding{
 		{ID: "bind-a", Transport: "mqtt", Address: "topic/a"},
@@ -218,6 +236,7 @@ func TestBindingResolver_MatchByHeader_MissingHeader(t *testing.T) {
 // BindingResolver + MatchAll (fan-out)
 // ---------------------------------------------------------------------------
 
+// Verifies MatchAll returns one dispatch plan per binding including mixed transports.
 func TestBindingResolver_MatchAll_FanOut(t *testing.T) {
 	bindings := []domain.DestinationBinding{
 		{ID: "bind-a", Transport: "mqtt", Address: "topic/a"},
@@ -251,6 +270,7 @@ func TestBindingResolver_MatchAll_FanOut(t *testing.T) {
 // BindingResolver + MatchByID
 // ---------------------------------------------------------------------------
 
+// Verifies MatchByID resolves only the binding with the configured ID.
 func TestBindingResolver_MatchByID(t *testing.T) {
 	bindings := []domain.DestinationBinding{
 		{ID: "bind-a", Address: "topic/a"},
@@ -275,6 +295,7 @@ func TestBindingResolver_MatchByID(t *testing.T) {
 	}
 }
 
+// Verifies MatchByID errors when the binding ID is not in the list.
 func TestBindingResolver_MatchByID_NotFound(t *testing.T) {
 	bindings := []domain.DestinationBinding{
 		{ID: "bind-a", Address: "topic/a"},
@@ -291,6 +312,7 @@ func TestBindingResolver_MatchByID_NotFound(t *testing.T) {
 // BindingResolver -- MQTT topic validation
 // ---------------------------------------------------------------------------
 
+// Verifies rendered MQTT addresses are validated and wildcard characters in values yield ErrInvalidTopic.
 func TestBindingResolver_MQTTTopicValidation(t *testing.T) {
 	bindings := []domain.DestinationBinding{
 		{ID: "bind-bad", Transport: "mqtt", Address: "devices/{wildcard}/data"},
@@ -311,6 +333,7 @@ func TestBindingResolver_MQTTTopicValidation(t *testing.T) {
 	}
 }
 
+// Verifies non-MQTT transports skip MQTT topic validation so plus signs in addresses are allowed.
 func TestBindingResolver_NonMQTTSkipsTopicValidation(t *testing.T) {
 	bindings := []domain.DestinationBinding{
 		{ID: "bind-sqs", Transport: "sqs", Address: "queue+name"},
@@ -332,6 +355,7 @@ func TestBindingResolver_NonMQTTSkipsTopicValidation(t *testing.T) {
 // BindingResolver -- address template errors
 // ---------------------------------------------------------------------------
 
+// Verifies Resolve errors when a template variable is missing from the envelope headers.
 func TestBindingResolver_AddressTemplateError(t *testing.T) {
 	bindings := []domain.DestinationBinding{
 		{ID: "bind-tmpl", Transport: "mqtt", Address: "factory/{missing}/data"},
@@ -350,6 +374,7 @@ func TestBindingResolver_AddressTemplateError(t *testing.T) {
 // BindingResolver -- Options propagated as dispatch headers
 // ---------------------------------------------------------------------------
 
+// Verifies binding Options are copied into dispatch plan headers with correct values.
 func TestBindingResolver_OptionsAsDispatchHeaders(t *testing.T) {
 	bindings := []domain.DestinationBinding{
 		{
@@ -377,6 +402,7 @@ func TestBindingResolver_OptionsAsDispatchHeaders(t *testing.T) {
 	}
 }
 
+// Verifies mutating returned dispatch headers does not alter the original binding Options map.
 func TestBindingResolver_OptionsNotShared(t *testing.T) {
 	opts := map[string]any{"qos": 1}
 	bindings := []domain.DestinationBinding{
@@ -396,6 +422,7 @@ func TestBindingResolver_OptionsNotShared(t *testing.T) {
 // StaticResolver
 // ---------------------------------------------------------------------------
 
+// Verifies StaticResolver returns all configured plans unchanged.
 func TestStaticResolver_ReturnsSamePlans(t *testing.T) {
 	plans := []domain.DispatchPlan{
 		{BindingID: "bind-1", Address: "topic/1"},
@@ -415,6 +442,7 @@ func TestStaticResolver_ReturnsSamePlans(t *testing.T) {
 	}
 }
 
+// Verifies StaticResolver yields identical plans for different envelope IDs.
 func TestStaticResolver_IndependentOfEnvelope(t *testing.T) {
 	resolver := runtime.NewStaticResolver(domain.DispatchPlan{BindingID: "b", Address: "t"})
 

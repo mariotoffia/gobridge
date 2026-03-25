@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// validates ReceiverConfig.validate for queue, topic, subscription, and connection rules.
 func TestReceiverConfig_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -56,6 +57,7 @@ func TestReceiverConfig_Validate(t *testing.T) {
 	}
 }
 
+// verifies ReceiverConfig.applyDefaults for MaxMessages, MaxWaitTime, AutoExtend, and the 100-message cap.
 func TestReceiverConfig_ApplyDefaults(t *testing.T) {
 	cfg := ReceiverConfig{}
 	cfg.applyDefaults()
@@ -78,6 +80,7 @@ func TestReceiverConfig_ApplyDefaults(t *testing.T) {
 	}
 }
 
+// verifies ReceiverConfig.autoExtendEnabled for nil, true, and false AutoExtend.
 func TestReceiverConfig_AutoExtendEnabled(t *testing.T) {
 	tests := []struct {
 		name string
@@ -99,6 +102,7 @@ func TestReceiverConfig_AutoExtendEnabled(t *testing.T) {
 	}
 }
 
+// validates SenderConfig.validate for queue, topic, and connection rules.
 func TestSenderConfig_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -141,6 +145,7 @@ func TestSenderConfig_Validate(t *testing.T) {
 	}
 }
 
+// verifies SenderConfig.applyDefaults for BatchSize and Timeout.
 func TestSenderConfig_ApplyDefaults(t *testing.T) {
 	cfg := SenderConfig{}
 	cfg.applyDefaults()
@@ -153,6 +158,7 @@ func TestSenderConfig_ApplyDefaults(t *testing.T) {
 	}
 }
 
+// verifies ReceiverConfigFromOptions maps option keys into ReceiverConfig and ConnectionConfig.
 func TestReceiverConfigFromOptions(t *testing.T) {
 	ae := true
 	opts := map[string]any{
@@ -208,6 +214,7 @@ func TestReceiverConfigFromOptions(t *testing.T) {
 	}
 }
 
+// verifies SenderConfigFromOptions maps option keys into SenderConfig and ConnectionConfig.
 func TestSenderConfigFromOptions(t *testing.T) {
 	opts := map[string]any{
 		"queue_name":         "send-queue",

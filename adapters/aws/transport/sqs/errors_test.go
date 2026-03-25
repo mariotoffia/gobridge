@@ -11,12 +11,14 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
+// Verifies MapError returns nil for a nil input error.
 func TestMapError_Nil(t *testing.T) {
 	if got := MapError(nil); got != nil {
 		t.Fatalf("expected nil, got %v", got)
 	}
 }
 
+// Verifies context deadline exceeded maps to ErrTimeout.
 func TestMapError_ContextDeadline(t *testing.T) {
 	err := MapError(context.DeadlineExceeded)
 	if !errors.Is(err, domain.ErrTimeout) {
@@ -24,6 +26,7 @@ func TestMapError_ContextDeadline(t *testing.T) {
 	}
 }
 
+// Verifies context canceled maps to ErrUnavailable.
 func TestMapError_ContextCanceled(t *testing.T) {
 	err := MapError(context.Canceled)
 	if !errors.Is(err, domain.ErrUnavailable) {
@@ -31,6 +34,7 @@ func TestMapError_ContextCanceled(t *testing.T) {
 	}
 }
 
+// Verifies QueueDoesNotExist maps to ErrNotFound with a stable message.
 func TestMapError_QueueDoesNotExist(t *testing.T) {
 	err := MapError(&sqstypes.QueueDoesNotExist{Message: strPtr("gone")})
 	if !errors.Is(err, domain.ErrNotFound) {
@@ -41,6 +45,7 @@ func TestMapError_QueueDoesNotExist(t *testing.T) {
 	}
 }
 
+// Verifies MessageNotInflight maps to ErrInvalidPayload.
 func TestMapError_MessageNotInflight(t *testing.T) {
 	err := MapError(&sqstypes.MessageNotInflight{Message: strPtr("nope")})
 	if !errors.Is(err, domain.ErrInvalidPayload) {
@@ -48,6 +53,7 @@ func TestMapError_MessageNotInflight(t *testing.T) {
 	}
 }
 
+// Verifies ReceiptHandleIsInvalid maps to ErrInvalidPayload.
 func TestMapError_ReceiptHandleIsInvalid(t *testing.T) {
 	err := MapError(&sqstypes.ReceiptHandleIsInvalid{Message: strPtr("bad")})
 	if !errors.Is(err, domain.ErrInvalidPayload) {
@@ -55,6 +61,7 @@ func TestMapError_ReceiptHandleIsInvalid(t *testing.T) {
 	}
 }
 
+// Verifies OverLimit maps to ErrThrottled.
 func TestMapError_OverLimit(t *testing.T) {
 	err := MapError(&sqstypes.OverLimit{Message: strPtr("too much")})
 	if !errors.Is(err, domain.ErrThrottled) {
@@ -62,6 +69,7 @@ func TestMapError_OverLimit(t *testing.T) {
 	}
 }
 
+// Verifies BatchRequestTooLong maps to ErrPayloadTooLarge.
 func TestMapError_BatchRequestTooLong(t *testing.T) {
 	err := MapError(&sqstypes.BatchRequestTooLong{Message: strPtr("big")})
 	if !errors.Is(err, domain.ErrPayloadTooLarge) {
@@ -69,6 +77,7 @@ func TestMapError_BatchRequestTooLong(t *testing.T) {
 	}
 }
 
+// Verifies UnsupportedOperation maps to ErrProtocolError.
 func TestMapError_UnsupportedOperation(t *testing.T) {
 	err := MapError(&sqstypes.UnsupportedOperation{Message: strPtr("nah")})
 	if !errors.Is(err, domain.ErrProtocolError) {
@@ -76,6 +85,7 @@ func TestMapError_UnsupportedOperation(t *testing.T) {
 	}
 }
 
+// Verifies string-based error messages map to the expected domain error codes.
 func TestMapError_StringPatterns(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -100,6 +110,7 @@ func TestMapError_StringPatterns(t *testing.T) {
 	}
 }
 
+// Verifies IsRecoverableError classifies mapped SQS-related errors as expected.
 func TestMapError_IsRecoverable(t *testing.T) {
 	tests := []struct {
 		name        string

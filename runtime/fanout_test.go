@@ -10,10 +10,7 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
-// TestFanOut_SingleRouteMultipleSessions verifies that one source message
-// resolved to multiple dispatch plans targeting different MQTT sessions is
-// persisted to the outbox and drained by the correct session-specific
-// drainer using RegisterSessionSender.
+// Verifies one source message fanning out to multiple sessions persists per-plan outbox rows and each session drainer sends the correct address via RegisterSessionSender.
 func TestFanOut_SingleRouteMultipleSessions(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	lease := NewFakeLeaseStore()
@@ -116,9 +113,7 @@ func TestFanOut_SingleRouteMultipleSessions(t *testing.T) {
 	})
 }
 
-// TestFanOut_PartialSessionAvailability verifies that if one session's
-// drainer sends successfully but another session is unavailable, only
-// the successful record is completed. The pending one remains for later.
+// Verifies partial fan-out: one failing session leaves its outbox record incomplete until the sender recovers, while the other completes first.
 func TestFanOut_PartialSessionAvailability(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	lease := NewFakeLeaseStore()
@@ -200,8 +195,7 @@ func TestFanOut_PartialSessionAvailability(t *testing.T) {
 	})
 }
 
-// TestFanOut_RegisterSessionSenderWhileRunning verifies that
-// RegisterSessionSender returns an error if called after Start.
+// Verifies RegisterSessionSender returns an error when invoked after the runtime has started.
 func TestFanOut_RegisterSessionSenderWhileRunning(t *testing.T) {
 	rt := newTestRuntime("bridge-regfail", nil, nil, nil)
 

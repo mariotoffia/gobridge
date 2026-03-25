@@ -28,6 +28,7 @@ func (c *captureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// Verifies X-Correlation-ID from the request is applied to context and echoed on the response.
 func TestCorrelationMW_ExtractsExistingCorrelationID(t *testing.T) {
 	s := newTestServer()
 	cap := &captureHandler{}
@@ -42,6 +43,7 @@ func TestCorrelationMW_ExtractsExistingCorrelationID(t *testing.T) {
 	assert.Equal(t, "incoming-corr-id", rec.Header().Get("X-Correlation-ID"))
 }
 
+// Verifies correlation ID falls back to X-Request-ID when X-Correlation-ID is absent.
 func TestCorrelationMW_FallsBackToXRequestID(t *testing.T) {
 	s := newTestServer()
 	cap := &captureHandler{}
@@ -56,6 +58,7 @@ func TestCorrelationMW_FallsBackToXRequestID(t *testing.T) {
 	assert.Equal(t, "request-id-fallback", rec.Header().Get("X-Correlation-ID"))
 }
 
+// Verifies X-Correlation-ID takes precedence over X-Request-ID when both are present.
 func TestCorrelationMW_PrefersCorrelationIDOverRequestID(t *testing.T) {
 	s := newTestServer()
 	cap := &captureHandler{}
@@ -70,6 +73,7 @@ func TestCorrelationMW_PrefersCorrelationIDOverRequestID(t *testing.T) {
 	assert.Equal(t, "corr-wins", cap.correlationID)
 }
 
+// Verifies a 32-character hex correlation ID is generated and returned when no incoming ID headers exist.
 func TestCorrelationMW_GeneratesCorrelationIDWhenMissing(t *testing.T) {
 	s := newTestServer()
 	cap := &captureHandler{}
@@ -84,6 +88,7 @@ func TestCorrelationMW_GeneratesCorrelationIDWhenMissing(t *testing.T) {
 	assert.Equal(t, cap.correlationID, rec.Header().Get("X-Correlation-ID"))
 }
 
+// Verifies a valid W3C traceparent populates trace and span IDs in context and response headers.
 func TestCorrelationMW_ParsesValidTraceparent(t *testing.T) {
 	s := newTestServer()
 	cap := &captureHandler{}
@@ -103,6 +108,7 @@ func TestCorrelationMW_ParsesValidTraceparent(t *testing.T) {
 	assert.Equal(t, spanID, rec.Header().Get("X-Span-ID"))
 }
 
+// Verifies an invalid traceparent is ignored and new trace/span IDs are generated.
 func TestCorrelationMW_InvalidTraceparentIgnored(t *testing.T) {
 	s := newTestServer()
 	cap := &captureHandler{}
@@ -119,6 +125,7 @@ func TestCorrelationMW_InvalidTraceparentIgnored(t *testing.T) {
 	assert.Len(t, cap.spanID, 16)
 }
 
+// Verifies X-Trace-ID and X-Span-ID are used when traceparent is not provided.
 func TestCorrelationMW_FallsBackToXTraceIDAndXSpanID(t *testing.T) {
 	s := newTestServer()
 	cap := &captureHandler{}
@@ -136,6 +143,7 @@ func TestCorrelationMW_FallsBackToXTraceIDAndXSpanID(t *testing.T) {
 	assert.Equal(t, "legacy-span-id", rec.Header().Get("X-Span-ID"))
 }
 
+// Verifies traceparent wins over legacy X-Trace-ID and X-Span-ID when all are sent.
 func TestCorrelationMW_TraceparentOverridesLegacyHeaders(t *testing.T) {
 	s := newTestServer()
 	cap := &captureHandler{}
@@ -155,6 +163,7 @@ func TestCorrelationMW_TraceparentOverridesLegacyHeaders(t *testing.T) {
 	assert.Equal(t, spanID, cap.spanID)
 }
 
+// Verifies trace and span IDs are generated and reflected on the response when no tracing headers are present.
 func TestCorrelationMW_GeneratesTraceAndSpanIDsWhenMissing(t *testing.T) {
 	s := newTestServer()
 	cap := &captureHandler{}
@@ -173,6 +182,7 @@ func TestCorrelationMW_GeneratesTraceAndSpanIDsWhenMissing(t *testing.T) {
 	assert.Equal(t, cap.spanID, rec.Header().Get("X-Span-ID"))
 }
 
+// Verifies correlation, trace, and span IDs from headers all appear together in the handler context.
 func TestCorrelationMW_AllIDsInContext(t *testing.T) {
 	s := newTestServer()
 	cap := &captureHandler{}
@@ -192,6 +202,7 @@ func TestCorrelationMW_AllIDsInContext(t *testing.T) {
 	assert.Equal(t, spanID, cap.spanID)
 }
 
+// Verifies generated middleware always sets X-Correlation-ID, X-Trace-ID, and X-Span-ID on the response.
 func TestCorrelationMW_ResponseHeadersPresent(t *testing.T) {
 	s := newTestServer()
 	cap := &captureHandler{}
@@ -206,6 +217,7 @@ func TestCorrelationMW_ResponseHeadersPresent(t *testing.T) {
 	assert.NotEmpty(t, rec.Header().Get("X-Span-ID"))
 }
 
+// Verifies many consecutive requests each get a distinct generated correlation ID.
 func TestCorrelationMW_GeneratedIDsAreUnique(t *testing.T) {
 	s := newTestServer()
 
@@ -224,6 +236,7 @@ func TestCorrelationMW_GeneratedIDsAreUnique(t *testing.T) {
 	}
 }
 
+// Verifies only X-Span-ID present still yields a generated trace ID while preserving the span ID.
 func TestCorrelationMW_OnlySpanIDFromLegacy(t *testing.T) {
 	s := newTestServer()
 	cap := &captureHandler{}
@@ -238,6 +251,7 @@ func TestCorrelationMW_OnlySpanIDFromLegacy(t *testing.T) {
 	assert.Equal(t, "span-only", cap.spanID)
 }
 
+// Verifies Server.wrap applies correlation middleware so IDs propagate like correlationMW alone.
 func TestCorrelationMW_IntegrationWithWrap(t *testing.T) {
 	s := newTestServer()
 	cap := &captureHandler{}

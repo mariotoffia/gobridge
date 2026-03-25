@@ -21,6 +21,7 @@ func envelope(subject string, headers map[string]any) *domain.Envelope {
 	return &domain.Envelope{Subject: subject, Headers: headers}
 }
 
+// Verifies closed-to-open-to-half-open-to-closed transitions under failures and reset timeout.
 func TestStateTransitions_ClosedToOpenToHalfOpenToClosed(t *testing.T) {
 	cfg := Config{FailureThreshold: 3, SuccessThreshold: 2, ResetTimeout: 50 * time.Millisecond}
 	p := New("cb", cfg)
@@ -65,6 +66,7 @@ func TestStateTransitions_ClosedToOpenToHalfOpenToClosed(t *testing.T) {
 	}
 }
 
+// Verifies a failure in half-open reopens the circuit.
 func TestHalfOpen_FailureReopens(t *testing.T) {
 	cfg := Config{FailureThreshold: 2, SuccessThreshold: 2, ResetTimeout: 50 * time.Millisecond}
 	p := New("cb", cfg)
@@ -93,6 +95,7 @@ func TestHalfOpen_FailureReopens(t *testing.T) {
 	}
 }
 
+// Verifies circuit state is isolated per extracted key.
 func TestPerKeyIsolation(t *testing.T) {
 	cfg := Config{FailureThreshold: 2, SuccessThreshold: 1, ResetTimeout: 1 * time.Second}
 	p := New("cb", cfg, WithKeyExtractor(SubjectKey))
@@ -126,6 +129,7 @@ func TestPerKeyIsolation(t *testing.T) {
 	}
 }
 
+// Verifies ErrUnavailable carries RetryAfter bounded by reset timeout.
 func TestRetryAfterPropagation(t *testing.T) {
 	cfg := Config{FailureThreshold: 1, SuccessThreshold: 1, ResetTimeout: 200 * time.Millisecond}
 	p := New("cb", cfg)
@@ -151,6 +155,7 @@ func TestRetryAfterPropagation(t *testing.T) {
 	}
 }
 
+// Verifies Process is safe under concurrent load and metrics count requests.
 func TestConcurrentSafety(t *testing.T) {
 	cfg := Config{FailureThreshold: 100, SuccessThreshold: 1, ResetTimeout: 1 * time.Second}
 	p := New("cb", cfg)
@@ -188,6 +193,7 @@ func TestConcurrentSafety(t *testing.T) {
 	}
 }
 
+// Verifies GlobalKey, SubjectKey, and HeaderKey extractors.
 func TestKeyExtractors(t *testing.T) {
 	ctx := context.Background()
 
@@ -220,6 +226,7 @@ func TestKeyExtractors(t *testing.T) {
 	})
 }
 
+// Validates default failure threshold opens the circuit after five consecutive failures.
 func TestConfigDefaults(t *testing.T) {
 	p := New("", Config{})
 	ctx := context.Background()
@@ -244,6 +251,7 @@ func TestConfigDefaults(t *testing.T) {
 	}
 }
 
+// Verifies Name returns the configured value or the default circuitbreaker.
 func TestProcessorName(t *testing.T) {
 	t.Run("custom name", func(t *testing.T) {
 		p := New("my-cb", DefaultConfig())
@@ -260,6 +268,7 @@ func TestProcessorName(t *testing.T) {
 	})
 }
 
+// Verifies metrics reflect successes, failures, and open state.
 func TestMetrics(t *testing.T) {
 	cfg := Config{FailureThreshold: 3, SuccessThreshold: 1, ResetTimeout: 1 * time.Second}
 	p := New("cb", cfg)
@@ -299,6 +308,7 @@ func TestMetrics(t *testing.T) {
 	}
 }
 
+// Verifies OnStateChange receives closed-to-open, open-to-half-open, and half-open-to-closed transitions.
 func TestOnStateChangeCallback(t *testing.T) {
 	cfg := Config{FailureThreshold: 2, SuccessThreshold: 1, ResetTimeout: 50 * time.Millisecond}
 
@@ -347,6 +357,7 @@ func TestOnStateChangeCallback(t *testing.T) {
 	mu.Unlock()
 }
 
+// Verifies next-handler errors propagate and count as failures while the circuit stays closed.
 func TestNextErrorPropagation(t *testing.T) {
 	cfg := Config{FailureThreshold: 10, SuccessThreshold: 1, ResetTimeout: 1 * time.Second}
 	p := New("cb", cfg)

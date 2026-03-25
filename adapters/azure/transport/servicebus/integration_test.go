@@ -91,6 +91,7 @@ func collectMessages(ctx context.Context, recv *servicebus.Receiver, count int, 
 // Send / Receive
 // ---------------------------------------------------------------------------
 
+// validates end-to-end send and receive on a queue with payload, subject, and custom headers.
 func TestIntegration_SendReceive(t *testing.T) {
 	ctx := context.Background()
 	sender := newTestSender(t, asblocal.TestQueue)
@@ -144,6 +145,7 @@ func TestIntegration_SendReceive(t *testing.T) {
 // Ack / Retry / Extend
 // ---------------------------------------------------------------------------
 
+// validates Extend, Retry (abandon), and re-receive of the same message on a queue.
 func TestIntegration_AckRetryExtend(t *testing.T) {
 	ctx := context.Background()
 	sender := newTestSender(t, asblocal.TestQueue)
@@ -217,6 +219,7 @@ func TestIntegration_AckRetryExtend(t *testing.T) {
 // Batch Send
 // ---------------------------------------------------------------------------
 
+// validates SendBatch against a queue and receiving all batched messages.
 func TestIntegration_BatchSend(t *testing.T) {
 	ctx := context.Background()
 	sender := newTestSender(t, asblocal.TestQueue)
@@ -258,6 +261,7 @@ func TestIntegration_BatchSend(t *testing.T) {
 // Error Mapping
 // ---------------------------------------------------------------------------
 
+// validates send failures map to a domain BridgeError when the queue does not exist.
 func TestIntegration_ErrorMapping(t *testing.T) {
 	cs := asblocal.ConnectionString(t)
 
@@ -300,6 +304,7 @@ func TestIntegration_ErrorMapping(t *testing.T) {
 // Auto-Extend Lock
 // ---------------------------------------------------------------------------
 
+// validates lock auto-renewal allows Ack after holding a message longer than the lock duration.
 func TestIntegration_AutoExtend(t *testing.T) {
 	ctx := context.Background()
 	sender := newTestSender(t, asblocal.TestQueue)
@@ -357,6 +362,7 @@ func TestIntegration_AutoExtend(t *testing.T) {
 // Topic + Subscription
 // ---------------------------------------------------------------------------
 
+// validates topic publish delivery to catch-all and SQL-filtered subscriptions.
 func TestIntegration_TopicSubscription(t *testing.T) {
 	ctx := context.Background()
 	cs := asblocal.ConnectionString(t)

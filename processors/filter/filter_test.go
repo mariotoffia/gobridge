@@ -23,6 +23,7 @@ func envelope(subject string, headers map[string]any, payload any) *domain.Envel
 	return env
 }
 
+// Verifies drop filter drops matching messages and passes others to next.
 func TestDropFilter_MatchingMessages(t *testing.T) {
 	p, err := NewDropFilter("drop-test",
 		Condition{Field: "subject", Operator: OperatorEquals, Value: "orders.new"},
@@ -48,6 +49,7 @@ func TestDropFilter_MatchingMessages(t *testing.T) {
 	})
 }
 
+// Verifies pass filter forwards matching messages and drops non-matching.
 func TestPassFilter_MatchingMessages(t *testing.T) {
 	p, err := NewPassFilter("pass-test",
 		Condition{Field: "subject", Operator: OperatorEquals, Value: "orders.new"},
@@ -73,6 +75,7 @@ func TestPassFilter_MatchingMessages(t *testing.T) {
 	})
 }
 
+// Verifies route filter sets route header for matches and initialises nil headers.
 func TestRouteFilter_SetsHeaderAndCallsNext(t *testing.T) {
 	p, err := NewRouteFilter("route-test", "audit-queue",
 		Condition{Field: "subject", Operator: OperatorEquals, Value: "orders.new"},
@@ -131,6 +134,7 @@ func TestRouteFilter_SetsHeaderAndCallsNext(t *testing.T) {
 	})
 }
 
+// Verifies all condition operators for drop matching against field values.
 func TestCondition_AllOperators(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -294,6 +298,7 @@ func TestCondition_AllOperators(t *testing.T) {
 	}
 }
 
+// Verifies JSONPath fields evaluate against payload.
 func TestCondition_JSONPath(t *testing.T) {
 	payload := map[string]any{
 		"order": map[string]any{
@@ -333,6 +338,7 @@ func TestCondition_JSONPath(t *testing.T) {
 	}
 }
 
+// Verifies subject field matching in conditions.
 func TestCondition_SubjectField(t *testing.T) {
 	p, err := NewDropFilter("subject-test",
 		Condition{Field: "subject", Operator: OperatorContains, Value: "orders"},
@@ -354,6 +360,7 @@ func TestCondition_SubjectField(t *testing.T) {
 	}
 }
 
+// Verifies header.x field syntax matches envelope headers.
 func TestCondition_HeaderField(t *testing.T) {
 	p, err := NewDropFilter("header-test",
 		Condition{Field: "header.x-custom", Operator: OperatorEquals, Value: "secret"},
@@ -375,6 +382,7 @@ func TestCondition_HeaderField(t *testing.T) {
 	}
 }
 
+// Verifies bare field names fall back to header lookup.
 func TestCondition_BareFieldFallback(t *testing.T) {
 	p, err := NewDropFilter("bare-test",
 		Condition{Field: "tenant", Operator: OperatorEquals, Value: "acme"},
@@ -396,6 +404,7 @@ func TestCondition_BareFieldFallback(t *testing.T) {
 	}
 }
 
+// Verifies AND semantics: all conditions must match for drop.
 func TestFilter_MultipleConditions(t *testing.T) {
 	p, err := NewDropFilter("multi-test",
 		Condition{Field: "subject", Operator: OperatorEquals, Value: "orders.new"},
@@ -430,6 +439,7 @@ func TestFilter_MultipleConditions(t *testing.T) {
 	})
 }
 
+// Verifies Invert flips match semantics for the filter action.
 func TestFilter_Inversion(t *testing.T) {
 	p, err := New(Config{
 		Name:       "invert-test",
@@ -458,6 +468,7 @@ func TestFilter_Inversion(t *testing.T) {
 	})
 }
 
+// Verifies errors from next propagate when the message passes the filter.
 func TestFilter_NextErrorPropagation(t *testing.T) {
 	p, err := New(Config{
 		Name:   "propagation-test",
@@ -478,6 +489,7 @@ func TestFilter_NextErrorPropagation(t *testing.T) {
 	}
 }
 
+// Verifies New rejects invalid regex patterns.
 func TestFilter_InvalidRegex(t *testing.T) {
 	_, err := New(Config{
 		Conditions: []Condition{
@@ -490,6 +502,7 @@ func TestFilter_InvalidRegex(t *testing.T) {
 	}
 }
 
+// Verifies route action requires RouteTo.
 func TestFilter_RouteRequiresRouteTo(t *testing.T) {
 	_, err := New(Config{
 		Conditions: []Condition{
@@ -502,6 +515,7 @@ func TestFilter_RouteRequiresRouteTo(t *testing.T) {
 	}
 }
 
+// Verifies processor Name default and override.
 func TestProcessor_Name(t *testing.T) {
 	t.Run("configured name", func(t *testing.T) {
 		p, err := New(Config{Name: "my-filter", Action: ActionPass})
@@ -524,6 +538,7 @@ func TestProcessor_Name(t *testing.T) {
 	})
 }
 
+// Verifies an empty condition list always matches.
 func TestFilter_NoConditionsAlwaysMatches(t *testing.T) {
 	p, err := New(Config{Action: ActionDrop})
 	if err != nil {
@@ -537,6 +552,7 @@ func TestFilter_NoConditionsAlwaysMatches(t *testing.T) {
 	}
 }
 
+// Verifies nil headers do not panic for header-prefixed and bare fields.
 func TestFilter_NilHeaders(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -564,6 +580,7 @@ func TestFilter_NilHeaders(t *testing.T) {
 	}
 }
 
+// Verifies JSONPath conditions do not match on nil or empty payload.
 func TestFilter_EmptyPayload(t *testing.T) {
 	p, err := NewDropFilter("empty-payload",
 		Condition{Field: "$.order.id", Operator: OperatorEquals, Value: "123"},

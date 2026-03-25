@@ -8,6 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
+// verifies EnvelopeFromPublish maps topic, payload, subject, and CreatedAt.
 func TestEnvelopeFromPublish_BasicFields(t *testing.T) {
 	pub := &pahov5.Publish{
 		Topic:   "test/topic",
@@ -27,6 +28,7 @@ func TestEnvelopeFromPublish_BasicFields(t *testing.T) {
 	}
 }
 
+// verifies EnvelopeFromPublish maps correlation data and content type into headers.
 func TestEnvelopeFromPublish_CorrelationAndContentType(t *testing.T) {
 	pub := &pahov5.Publish{
 		Topic: "t",
@@ -48,6 +50,7 @@ func TestEnvelopeFromPublish_CorrelationAndContentType(t *testing.T) {
 	}
 }
 
+// verifies EnvelopeFromPublish sets ExpiresAt from MessageExpiry seconds.
 func TestEnvelopeFromPublish_MessageExpiry(t *testing.T) {
 	expiry := uint32(60)
 	pub := &pahov5.Publish{
@@ -71,6 +74,7 @@ func TestEnvelopeFromPublish_MessageExpiry(t *testing.T) {
 	}
 }
 
+// verifies EnvelopeFromPublish copies MQTT user properties into envelope headers.
 func TestEnvelopeFromPublish_UserProperties(t *testing.T) {
 	pub := &pahov5.Publish{
 		Topic: "t",
@@ -92,6 +96,7 @@ func TestEnvelopeFromPublish_UserProperties(t *testing.T) {
 	}
 }
 
+// verifies EnvelopeFromPublish strips injected bridge route and source headers.
 func TestEnvelopeFromPublish_StripsReservedHeaders(t *testing.T) {
 	pub := &pahov5.Publish{
 		Topic: "t",
@@ -117,6 +122,7 @@ func TestEnvelopeFromPublish_StripsReservedHeaders(t *testing.T) {
 	}
 }
 
+// verifies EnvelopeFromPublish maps ResponseTopic to mqtt.response-topic.
 func TestEnvelopeFromPublish_ResponseTopic(t *testing.T) {
 	pub := &pahov5.Publish{
 		Topic: "t",
@@ -132,6 +138,7 @@ func TestEnvelopeFromPublish_ResponseTopic(t *testing.T) {
 	}
 }
 
+// verifies PublishFromEnvelope maps subject, payload, QoS, and retain.
 func TestPublishFromEnvelope_BasicFields(t *testing.T) {
 	env := &domain.Envelope{
 		Subject: "out/topic",
@@ -155,6 +162,7 @@ func TestPublishFromEnvelope_BasicFields(t *testing.T) {
 	}
 }
 
+// verifies PublishFromEnvelope uses DefaultTopic when the envelope has no subject.
 func TestPublishFromEnvelope_DefaultTopic(t *testing.T) {
 	env := &domain.Envelope{Payload: []byte("x")}
 	opts := SenderOptions{DefaultTopic: "fallback/topic", QoS: 0}
@@ -166,6 +174,7 @@ func TestPublishFromEnvelope_DefaultTopic(t *testing.T) {
 	}
 }
 
+// verifies PublishFromEnvelope maps correlation, content-type, response topic, and user props.
 func TestPublishFromEnvelope_Headers(t *testing.T) {
 	env := &domain.Envelope{
 		Subject: "t",
@@ -205,6 +214,7 @@ func TestPublishFromEnvelope_Headers(t *testing.T) {
 	}
 }
 
+// verifies PublishFromEnvelope sets MessageExpiry from envelope ExpiresAt.
 func TestPublishFromEnvelope_MessageExpiry(t *testing.T) {
 	env := &domain.Envelope{
 		Subject:   "t",
@@ -223,6 +233,7 @@ func TestPublishFromEnvelope_MessageExpiry(t *testing.T) {
 	}
 }
 
+// verifies PublishFromEnvelope omits Properties when no header-derived fields are needed.
 func TestPublishFromEnvelope_NoProperties(t *testing.T) {
 	env := &domain.Envelope{
 		Subject: "t",
@@ -239,6 +250,7 @@ func TestPublishFromEnvelope_NoProperties(t *testing.T) {
 	}
 }
 
+// verifies PublishFromEnvelope followed by EnvelopeFromPublish preserves key fields and headers.
 func TestRoundTrip_EnvelopePublishEnvelope(t *testing.T) {
 	original := &domain.Envelope{
 		Subject: "round/trip",

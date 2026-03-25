@@ -25,8 +25,7 @@ func TestMain(m *testing.M) {
 // Session lifecycle tests
 // ---------------------------------------------------------------------------
 
-// TestIntegration_SessionStartAndClose validates that a session can connect
-// to Mosquitto and disconnect cleanly.
+// validates end-to-end session connect and clean disconnect against Mosquitto.
 func TestIntegration_SessionStartAndClose(t *testing.T) {
 	url := mqttlocal.BrokerURL(t)
 	ctx := context.Background()
@@ -53,8 +52,7 @@ func TestIntegration_SessionStartAndClose(t *testing.T) {
 	}
 }
 
-// TestIntegration_SessionCloseIdempotent validates that Close can be
-// called multiple times without error.
+// verifies Session.Close is idempotent when invoked repeatedly.
 func TestIntegration_SessionCloseIdempotent(t *testing.T) {
 	url := mqttlocal.BrokerURL(t)
 	ctx := context.Background()
@@ -79,8 +77,7 @@ func TestIntegration_SessionCloseIdempotent(t *testing.T) {
 	}
 }
 
-// TestIntegration_SessionEvents validates that a SessionConnected event
-// is emitted after successful connection.
+// verifies a SessionConnected event is emitted after successful connection.
 func TestIntegration_SessionEvents(t *testing.T) {
 	url := mqttlocal.BrokerURL(t)
 	ctx := context.Background()
@@ -108,8 +105,7 @@ func TestIntegration_SessionEvents(t *testing.T) {
 	}
 }
 
-// TestIntegration_SessionReconcile validates that Reconcile subscribes
-// and unsubscribes topics correctly, including updates.
+// verifies Reconcile applies subscription plans and updates topic sets.
 func TestIntegration_SessionReconcile(t *testing.T) {
 	url := mqttlocal.BrokerURL(t)
 	ctx := context.Background()
@@ -159,8 +155,7 @@ func TestIntegration_SessionReconcile(t *testing.T) {
 // Pub/Sub round-trip tests
 // ---------------------------------------------------------------------------
 
-// TestIntegration_PubSubRoundTrip validates end-to-end publish/subscribe
-// through Session, Receiver, and Sender with header round-tripping.
+// validates publish/subscribe through Session, Receiver, and Sender with header round-tripping.
 func TestIntegration_PubSubRoundTrip(t *testing.T) {
 	url := mqttlocal.BrokerURL(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -268,9 +263,7 @@ func TestIntegration_PubSubRoundTrip(t *testing.T) {
 // Backpressure test
 // ---------------------------------------------------------------------------
 
-// TestIntegration_BackpressureNoDrops validates that when the emit
-// callback is slow, messages are buffered (backpressure) rather than
-// dropped.
+// verifies slow emit callbacks do not drop messages under backpressure buffering.
 func TestIntegration_BackpressureNoDrops(t *testing.T) {
 	url := mqttlocal.BrokerURL(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -355,8 +348,7 @@ func TestIntegration_BackpressureNoDrops(t *testing.T) {
 // QoS completion test
 // ---------------------------------------------------------------------------
 
-// TestIntegration_QoS1Completion validates that QoS 1 Send blocks until
-// PUBACK (broker confirmation).
+// verifies QoS 1 Send completes after broker PUBACK.
 func TestIntegration_QoS1Completion(t *testing.T) {
 	url := mqttlocal.BrokerURL(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -397,8 +389,7 @@ func TestIntegration_QoS1Completion(t *testing.T) {
 // Factory tests
 // ---------------------------------------------------------------------------
 
-// TestIntegration_Factory validates that the Factory correctly creates
-// Session, Receiver, and Sender from port specs.
+// verifies Factory wires NewSession, NewReceiver, and NewSender from port specs.
 func TestIntegration_Factory(t *testing.T) {
 	url := mqttlocal.BrokerURL(t)
 	ctx := context.Background()

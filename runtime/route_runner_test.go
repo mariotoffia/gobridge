@@ -246,6 +246,7 @@ func TestRouteRunner_ProcessorError_MessageFiltered(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_Tracer_SpanLifecycle verifies span name, completion, success state, and route/envelope attributes.
 func TestRouteRunner_Tracer_SpanLifecycle(t *testing.T) {
 	tracer := &FakeTracer{}
 	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
@@ -295,6 +296,7 @@ func TestRouteRunner_Tracer_SpanLifecycle(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_Tracer_TraceContextExtraction verifies W3C traceparent is parsed into trace_id span attributes.
 func TestRouteRunner_Tracer_TraceContextExtraction(t *testing.T) {
 	tracer := &FakeTracer{}
 	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
@@ -332,6 +334,7 @@ func TestRouteRunner_Tracer_TraceContextExtraction(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_Tracer_ContextEnrichment verifies correlation, trace, and span IDs reach processors from traceparent.
 func TestRouteRunner_Tracer_ContextEnrichment(t *testing.T) {
 	tracer := &FakeTracer{}
 	var capturedCorrID, capturedTraceID, capturedSpanID string
@@ -377,6 +380,7 @@ func TestRouteRunner_Tracer_ContextEnrichment(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_Tracer_ErrorRecording verifies delivery ack failures are recorded on the span.
 func TestRouteRunner_Tracer_ErrorRecording(t *testing.T) {
 	tracer := &FakeTracer{}
 	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
@@ -405,6 +409,7 @@ func TestRouteRunner_Tracer_ErrorRecording(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_Tracer_ProcessorErrorRecording verifies permanent processor errors are recorded on the span.
 func TestRouteRunner_Tracer_ProcessorErrorRecording(t *testing.T) {
 	tracer := &FakeTracer{}
 	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
@@ -432,6 +437,7 @@ func TestRouteRunner_Tracer_ProcessorErrorRecording(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_Tracer_FilteredNoError verifies filtered deliveries end the span without an error.
 func TestRouteRunner_Tracer_FilteredNoError(t *testing.T) {
 	tracer := &FakeTracer{}
 	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
@@ -462,6 +468,7 @@ func TestRouteRunner_Tracer_FilteredNoError(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_SharedOutbox_HappyPath verifies shared outbox persists one record and acks the source delivery.
 func TestRouteRunner_SharedOutbox_HappyPath(t *testing.T) {
 	receiver, _, _, outbox, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = domain.DeliverySharedOutbox
@@ -489,6 +496,7 @@ func TestRouteRunner_SharedOutbox_HappyPath(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_SharedOutbox_DuplicatePersist verifies a second delivery for the same envelope id is still acked after duplicate persist.
 func TestRouteRunner_SharedOutbox_DuplicatePersist(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
@@ -520,6 +528,7 @@ func TestRouteRunner_SharedOutbox_DuplicatePersist(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_DirectHold_WithResolver verifies header-driven resolver output becomes the outbound subject.
 func TestRouteRunner_DirectHold_WithResolver(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
@@ -557,6 +566,7 @@ func TestRouteRunner_DirectHold_WithResolver(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_DirectHold_ResolverError_Rejected verifies rejected resolve skips send, DLQs, and acks.
 func TestRouteRunner_DirectHold_ResolverError_Rejected(t *testing.T) {
 	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
@@ -585,6 +595,7 @@ func TestRouteRunner_DirectHold_ResolverError_Rejected(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_DirectHold_ResolverError_Transient verifies transient resolve errors retry without sending.
 func TestRouteRunner_DirectHold_ResolverError_Transient(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
@@ -610,6 +621,7 @@ func TestRouteRunner_DirectHold_ResolverError_Transient(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_DirectHold_ResolverHeaders verifies dispatch plan headers merge with envelope headers on send.
 func TestRouteRunner_DirectHold_ResolverHeaders(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
@@ -649,6 +661,7 @@ func TestRouteRunner_DirectHold_ResolverHeaders(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_SharedOutbox_FanOut verifies resolver fan-out writes one outbox record per plan and acks.
 func TestRouteRunner_SharedOutbox_FanOut(t *testing.T) {
 	receiver, _, _, outbox, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = domain.DeliverySharedOutbox
@@ -681,6 +694,7 @@ func TestRouteRunner_SharedOutbox_FanOut(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_SharedOutbox_ResolverError_Rejected verifies rejected resolve with shared outbox DLQs and acks.
 func TestRouteRunner_SharedOutbox_ResolverError_Rejected(t *testing.T) {
 	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = domain.DeliverySharedOutbox
@@ -706,6 +720,9 @@ func TestRouteRunner_SharedOutbox_ResolverError_Rejected(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_Backpressure verifies MaxInFlight blocks a second emit until the in-flight send completes.
+//
+// Scenario: first send blocks on a hook; second emit must not finish until the first is released.
 func TestRouteRunner_Backpressure(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.MaxInFlight = 1

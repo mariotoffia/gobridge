@@ -55,6 +55,7 @@ func (s *stubTracker) IncrementInFlight(_ context.Context, _ string, delta int64
 	return nil
 }
 
+// Verifies processing succeeds when tenant header is absent and not required.
 func TestProcess_NoTenantHeader_NotRequired(t *testing.T) {
 	p := New(Config{})
 	env := &domain.Envelope{Subject: "test"}
@@ -63,6 +64,7 @@ func TestProcess_NoTenantHeader_NotRequired(t *testing.T) {
 	}
 }
 
+// Verifies missing tenant returns ErrInvalidPayload when required.
 func TestProcess_NoTenantHeader_Required(t *testing.T) {
 	p := New(Config{RequireTenant: true})
 	env := &domain.Envelope{Subject: "test"}
@@ -75,6 +77,7 @@ func TestProcess_NoTenantHeader_Required(t *testing.T) {
 	}
 }
 
+// Verifies an active validated tenant invokes next.
 func TestProcess_ValidTenant_PassesThrough(t *testing.T) {
 	v := &stubValidator{info: ports.TenantInfo{ID: "acme", Active: true}}
 	p := New(Config{}, WithValidator(v))
@@ -93,6 +96,7 @@ func TestProcess_ValidTenant_PassesThrough(t *testing.T) {
 	}
 }
 
+// Verifies inactive tenant is rejected with ErrInvalidPayload.
 func TestProcess_InactiveTenant_Rejected(t *testing.T) {
 	v := &stubValidator{info: ports.TenantInfo{ID: "acme", Active: false}}
 	p := New(Config{}, WithValidator(v))
@@ -104,6 +108,7 @@ func TestProcess_InactiveTenant_Rejected(t *testing.T) {
 	}
 }
 
+// Verifies validator errors propagate.
 func TestProcess_ValidationError_Propagated(t *testing.T) {
 	sentinel := errors.New("db connection lost")
 	v := &stubValidator{err: sentinel}
@@ -119,6 +124,7 @@ func TestProcess_ValidationError_Propagated(t *testing.T) {
 	}
 }
 
+// Verifies oversized payload is rejected against tenant quota.
 func TestProcess_MessageSizeExceedsQuota(t *testing.T) {
 	v := &stubValidator{info: ports.TenantInfo{
 		ID: "acme", Active: true, MaxMessageSizeBytes: 100,
@@ -132,6 +138,7 @@ func TestProcess_MessageSizeExceedsQuota(t *testing.T) {
 	}
 }
 
+// Verifies payload within MaxMessageSizeBytes passes.
 func TestProcess_MessageSizeWithinQuota(t *testing.T) {
 	v := &stubValidator{info: ports.TenantInfo{
 		ID: "acme", Active: true, MaxMessageSizeBytes: 100,
@@ -144,6 +151,7 @@ func TestProcess_MessageSizeWithinQuota(t *testing.T) {
 	}
 }
 
+// Verifies zero quota skips size enforcement.
 func TestProcess_ZeroQuota_NoSizeCheck(t *testing.T) {
 	v := &stubValidator{info: ports.TenantInfo{
 		ID: "acme", Active: true, MaxMessageSizeBytes: 0,
@@ -156,6 +164,7 @@ func TestProcess_ZeroQuota_NoSizeCheck(t *testing.T) {
 	}
 }
 
+// Verifies usage tracker increments messages and balances in-flight.
 func TestProcess_UsageTracker_InFlightAndMessages(t *testing.T) {
 	tracker := &stubTracker{}
 	p := New(Config{}, WithUsageTracker(tracker))
@@ -173,6 +182,7 @@ func TestProcess_UsageTracker_InFlightAndMessages(t *testing.T) {
 	}
 }
 
+// Verifies message count is skipped on next error but in-flight is decremented.
 func TestProcess_UsageTracker_NoMessageCountOnError(t *testing.T) {
 	tracker := &stubTracker{}
 	p := New(Config{}, WithUsageTracker(tracker))
@@ -194,6 +204,7 @@ func TestProcess_UsageTracker_NoMessageCountOnError(t *testing.T) {
 	}
 }
 
+// Verifies in-flight increment failure prevents calling next.
 func TestProcess_InFlightTrackingError_ReturnedBeforeNext(t *testing.T) {
 	tracker := &stubTracker{failOnIF: true}
 	p := New(Config{}, WithUsageTracker(tracker))
@@ -212,6 +223,7 @@ func TestProcess_InFlightTrackingError_ReturnedBeforeNext(t *testing.T) {
 	}
 }
 
+// Verifies custom tenant header name is read for validation.
 func TestProcess_CustomTenantHeader(t *testing.T) {
 	v := &stubValidator{info: ports.TenantInfo{ID: "custom-tenant", Active: true}}
 	p := New(Config{TenantHeader: "x-custom-tenant"}, WithValidator(v))
@@ -225,6 +237,7 @@ func TestProcess_CustomTenantHeader(t *testing.T) {
 	}
 }
 
+// Verifies next-handler errors propagate.
 func TestProcess_NextErrorPropagation(t *testing.T) {
 	p := New(Config{})
 	env := envelope("acme", 0)
@@ -238,6 +251,7 @@ func TestProcess_NextErrorPropagation(t *testing.T) {
 	}
 }
 
+// Verifies Name default and configured value.
 func TestProcessor_Name(t *testing.T) {
 	t.Run("configured name", func(t *testing.T) {
 		p := New(Config{Name: "my-tenant"})
@@ -253,6 +267,7 @@ func TestProcessor_Name(t *testing.T) {
 	})
 }
 
+// Verifies next runs without validator when tenant header is present.
 func TestProcess_NoValidator_SkipsValidation(t *testing.T) {
 	p := New(Config{})
 	env := envelope("acme", 0)
@@ -270,6 +285,7 @@ func TestProcess_NoValidator_SkipsValidation(t *testing.T) {
 	}
 }
 
+// Verifies nil headers succeed when tenant is not required.
 func TestProcess_NilHeaders_NotRequired(t *testing.T) {
 	p := New(Config{})
 	env := &domain.Envelope{Subject: "test"}
@@ -279,6 +295,7 @@ func TestProcess_NilHeaders_NotRequired(t *testing.T) {
 	}
 }
 
+// Verifies validator and usage tracker together on a successful path.
 func TestProcess_ValidatorAndTracker_FullFlow(t *testing.T) {
 	v := &stubValidator{info: ports.TenantInfo{
 		ID: "acme", Active: true, MaxMessageSizeBytes: 1024,

@@ -17,6 +17,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// Verifies the DynamoDB lease store passes the shared lease store conformance suite.
 func TestConformanceSuite(t *testing.T) {
 	client := ddblocal.Client(t)
 	tableName := ddblocal.UniqueTable("leases-conf")
@@ -32,8 +33,7 @@ func TestConformanceSuite(t *testing.T) {
 	})
 }
 
-// TestDynamoDBSpecificErrorMapping verifies DynamoDB-specific error
-// conditions are mapped to the correct domain errors.
+// Verifies DynamoDB-specific lease store behavior including idempotent EnsureTable, renew/release cycles, and expired takeover versioning.
 func TestDynamoDBSpecificErrorMapping(t *testing.T) {
 	client := ddblocal.Client(t)
 	tableName := ddblocal.UniqueTable("leases-errmap")

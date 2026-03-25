@@ -11,12 +11,14 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
+// verifies MapError returns nil for a nil input error.
 func TestMapError_Nil(t *testing.T) {
 	if got := MapError(nil); got != nil {
 		t.Fatalf("expected nil, got %v", got)
 	}
 }
 
+// verifies MapError maps context deadline exceeded to ErrTimeout.
 func TestMapError_ContextDeadline(t *testing.T) {
 	err := MapError(context.DeadlineExceeded)
 	if !errors.Is(err, domain.ErrTimeout) {
@@ -24,6 +26,7 @@ func TestMapError_ContextDeadline(t *testing.T) {
 	}
 }
 
+// verifies MapError maps context canceled to ErrUnavailable.
 func TestMapError_ContextCanceled(t *testing.T) {
 	err := MapError(context.Canceled)
 	if !errors.Is(err, domain.ErrUnavailable) {
@@ -31,6 +34,7 @@ func TestMapError_ContextCanceled(t *testing.T) {
 	}
 }
 
+// verifies MapError maps ErrMessageTooLarge to ErrPayloadTooLarge with the expected message.
 func TestMapError_MessageTooLarge(t *testing.T) {
 	err := MapError(azservicebus.ErrMessageTooLarge)
 	if !errors.Is(err, domain.ErrPayloadTooLarge) {
@@ -41,6 +45,7 @@ func TestMapError_MessageTooLarge(t *testing.T) {
 	}
 }
 
+// verifies MapError maps Service Bus CodeTimeout to ErrTimeout.
 func TestMapError_ServiceBusCodeTimeout(t *testing.T) {
 	err := MapError(&azservicebus.Error{Code: azservicebus.CodeTimeout})
 	if !errors.Is(err, domain.ErrTimeout) {
@@ -51,6 +56,7 @@ func TestMapError_ServiceBusCodeTimeout(t *testing.T) {
 	}
 }
 
+// verifies MapError maps CodeConnectionLost to ErrConnectionLost.
 func TestMapError_ServiceBusCodeConnectionLost(t *testing.T) {
 	err := MapError(&azservicebus.Error{Code: azservicebus.CodeConnectionLost})
 	if !errors.Is(err, domain.ErrConnectionLost) {
@@ -58,6 +64,7 @@ func TestMapError_ServiceBusCodeConnectionLost(t *testing.T) {
 	}
 }
 
+// verifies MapError maps CodeLockLost to ErrUnavailable with a lock-lost message.
 func TestMapError_ServiceBusCodeLockLost(t *testing.T) {
 	err := MapError(&azservicebus.Error{Code: azservicebus.CodeLockLost})
 	if !errors.Is(err, domain.ErrUnavailable) {
@@ -68,6 +75,7 @@ func TestMapError_ServiceBusCodeLockLost(t *testing.T) {
 	}
 }
 
+// verifies MapError maps CodeUnauthorizedAccess to ErrNotAuthorized.
 func TestMapError_ServiceBusCodeUnauthorizedAccess(t *testing.T) {
 	err := MapError(&azservicebus.Error{Code: azservicebus.CodeUnauthorizedAccess})
 	if !errors.Is(err, domain.ErrNotAuthorized) {
@@ -75,6 +83,7 @@ func TestMapError_ServiceBusCodeUnauthorizedAccess(t *testing.T) {
 	}
 }
 
+// verifies MapError classifies generic errors by substring patterns.
 func TestMapError_StringPatterns(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -100,6 +109,7 @@ func TestMapError_StringPatterns(t *testing.T) {
 	}
 }
 
+// verifies domain.IsRecoverableError for errors produced by MapError.
 func TestMapError_IsRecoverable(t *testing.T) {
 	tests := []struct {
 		name        string

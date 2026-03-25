@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports/storetest"
 )
 
+// Validates the SQLite DLQ store against the shared conformance suite.
 func TestDLQStoreConformance(t *testing.T) {
 	s := newTempStore(t)
 	storetest.RunDLQStoreTests(t, s)
@@ -53,6 +54,7 @@ func makeEntry(id, routeID, category string, failedAt time.Time) domain.DLQEntry
 	}
 }
 
+// Verifies Write persists a full entry and List returns matching fields.
 func TestWriteAndList(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
@@ -123,6 +125,7 @@ func TestWriteAndList(t *testing.T) {
 	}
 }
 
+// Verifies List filters entries by route ID.
 func TestListFilterByRouteID(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
@@ -146,6 +149,7 @@ func TestListFilterByRouteID(t *testing.T) {
 	}
 }
 
+// Verifies List filters entries by category.
 func TestListFilterByCategory(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
@@ -169,6 +173,7 @@ func TestListFilterByCategory(t *testing.T) {
 	}
 }
 
+// Verifies List respects the Since lower bound on FailedAt.
 func TestListFilterBySince(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
@@ -196,6 +201,7 @@ func TestListFilterBySince(t *testing.T) {
 	}
 }
 
+// Verifies List respects the Before upper bound on FailedAt.
 func TestListFilterByBefore(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
@@ -223,6 +229,7 @@ func TestListFilterByBefore(t *testing.T) {
 	}
 }
 
+// Verifies List caps results when Limit is set.
 func TestListRespectsLimit(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
@@ -242,6 +249,7 @@ func TestListRespectsLimit(t *testing.T) {
 	}
 }
 
+// Verifies duplicate writes return ErrDuplicateRecord and do not create extra rows.
 func TestWriteIdempotent(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
@@ -270,6 +278,7 @@ func TestWriteIdempotent(t *testing.T) {
 	}
 }
 
+// Verifies first Replay succeeds and re-replaying the same ID returns ErrNotFound.
 func TestReplayMarksEntries(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
@@ -299,6 +308,7 @@ func TestReplayMarksEntries(t *testing.T) {
 	}
 }
 
+// Verifies Purge deletes older entries and leaves newer ones.
 func TestPurgeRemovesOld(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
@@ -332,6 +342,7 @@ func TestPurgeRemovesOld(t *testing.T) {
 	}
 }
 
+// Verifies Purge does not remove entries newer than the cutoff.
 func TestPurgeSkipsRecent(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
@@ -357,6 +368,7 @@ func TestPurgeSkipsRecent(t *testing.T) {
 	}
 }
 
+// Demonstrates write, list, replay idempotency, and purge clearing persisted rows.
 func TestFullLifecycle(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
@@ -403,6 +415,7 @@ func TestFullLifecycle(t *testing.T) {
 	}
 }
 
+// Verifies the store works with an in-memory SQLite database path.
 func TestInMemoryMode(t *testing.T) {
 	s, err := sqlitedlq.NewStore(":memory:")
 	if err != nil {
@@ -429,6 +442,7 @@ func TestInMemoryMode(t *testing.T) {
 	}
 }
 
+// Verifies data survives closing the database and opening the same file again.
 func TestDurability_CloseAndReopen(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "durable.db")
@@ -471,6 +485,7 @@ func TestDurability_CloseAndReopen(t *testing.T) {
 	}
 }
 
+// Verifies the database file remains on disk after Close.
 func TestFileExistsAfterClose(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "exists.db")
@@ -492,6 +507,7 @@ func TestFileExistsAfterClose(t *testing.T) {
 	}
 }
 
+// Verifies List returns entries ordered by FailedAt descending.
 func TestListOrderByFailedAtDesc(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
@@ -531,6 +547,7 @@ func TestListOrderByFailedAtDesc(t *testing.T) {
 	}
 }
 
+// Verifies Replay returns ErrNotFound for unknown IDs.
 func TestReplayNonExistentEntry(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
@@ -544,6 +561,7 @@ func TestReplayNonExistentEntry(t *testing.T) {
 	}
 }
 
+// Verifies List on a new store returns an empty non-nil slice.
 func TestListEmptyStore(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()

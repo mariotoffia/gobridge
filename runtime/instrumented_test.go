@@ -10,6 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
+// Verifies successful Acquire emits lease acquire latency with lease tags and no failure counter.
 func TestInstrumentedLeaseStore_AcquireRecordsLatency(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeLeaseStore()
@@ -34,6 +35,7 @@ func TestInstrumentedLeaseStore_AcquireRecordsLatency(t *testing.T) {
 	}
 }
 
+// Verifies failed Acquire increments the lease acquire failure metric.
 func TestInstrumentedLeaseStore_AcquireFailureRecordsCounter(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeLeaseStore()
@@ -50,6 +52,7 @@ func TestInstrumentedLeaseStore_AcquireFailureRecordsCounter(t *testing.T) {
 	}
 }
 
+// Verifies successful Renew emits lease renew latency.
 func TestInstrumentedLeaseStore_RenewRecordsLatency(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeLeaseStore()
@@ -69,6 +72,7 @@ func TestInstrumentedLeaseStore_RenewRecordsLatency(t *testing.T) {
 	}
 }
 
+// Verifies Persist emits outbox persist latency tagged by route.
 func TestInstrumentedOutboxStore_PersistRecordsLatency(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeOutboxStore()
@@ -93,6 +97,7 @@ func TestInstrumentedOutboxStore_PersistRecordsLatency(t *testing.T) {
 	}
 }
 
+// Verifies Complete does not emit outbox completion metrics (those come from the drainer, not the store wrapper).
 func TestInstrumentedOutboxStore_CompleteDelegates(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeOutboxStore()
@@ -128,6 +133,7 @@ func TestInstrumentedOutboxStore_CompleteDelegates(t *testing.T) {
 	}
 }
 
+// Verifies QueryPending records outbox depth gauge matching pending result count.
 func TestInstrumentedOutboxStore_QueryPendingRecordsDepth(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeOutboxStore()
@@ -162,6 +168,7 @@ func TestInstrumentedOutboxStore_QueryPendingRecordsDepth(t *testing.T) {
 	}
 }
 
+// Verifies Send records publish latency with the configured tag key and value.
 func TestInstrumentedSender_RecordsSendLatency(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeSender()
@@ -183,6 +190,7 @@ func TestInstrumentedSender_RecordsSendLatency(t *testing.T) {
 	}
 }
 
+// Verifies Run records receive latency when a delivery is processed.
 func TestInstrumentedReceiver_RecordsReceiveLatency(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeReceiver()
@@ -208,6 +216,7 @@ func TestInstrumentedReceiver_RecordsReceiveLatency(t *testing.T) {
 	}
 }
 
+// Verifies Delivery.Extend increments the visibility extension counter on the instrumented receiver path.
 func TestInstrumentedDelivery_ExtendCountsVisibilityExtension(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeReceiver()

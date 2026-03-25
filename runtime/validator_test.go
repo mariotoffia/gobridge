@@ -26,6 +26,7 @@ func validDirectHoldEntry() (runtime.RouteConfig, ports.Receiver, ports.Sender, 
 	return cfg, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &sessCfg
 }
 
+// TestValidator_DirectHold_Valid verifies a well-formed direct_hold route passes start validation.
 func TestValidator_DirectHold_Valid(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
@@ -42,6 +43,7 @@ func TestValidator_DirectHold_Valid(t *testing.T) {
 	}
 }
 
+// TestValidator_DirectHold_RejectsFanOut verifies fan-out dispatch is rejected for direct_hold.
 func TestValidator_DirectHold_RejectsFanOut(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
@@ -60,6 +62,7 @@ func TestValidator_DirectHold_RejectsFanOut(t *testing.T) {
 	}
 }
 
+// TestValidator_DirectHold_RejectsExclusiveSession verifies exclusive target sessions are rejected for direct_hold.
 func TestValidator_DirectHold_RejectsExclusiveSession(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, _ := validDirectHoldEntry()
@@ -78,6 +81,7 @@ func TestValidator_DirectHold_RejectsExclusiveSession(t *testing.T) {
 	}
 }
 
+// TestValidator_DirectHold_RejectsMissingVisibilityExtension verifies direct_hold requires visibility extension on the source.
 func TestValidator_DirectHold_RejectsMissingVisibilityExtension(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
@@ -96,6 +100,7 @@ func TestValidator_DirectHold_RejectsMissingVisibilityExtension(t *testing.T) {
 	}
 }
 
+// TestValidator_DirectHold_RejectsMultipleBindings verifies more than one binding is rejected for direct_hold.
 func TestValidator_DirectHold_RejectsMultipleBindings(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
@@ -117,6 +122,7 @@ func TestValidator_DirectHold_RejectsMultipleBindings(t *testing.T) {
 	}
 }
 
+// TestValidator_DirectHold_CollectsMultipleErrors verifies several direct_hold violations appear together in the start error.
 func TestValidator_DirectHold_CollectsMultipleErrors(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, _ := validDirectHoldEntry()
@@ -145,6 +151,7 @@ func TestValidator_DirectHold_CollectsMultipleErrors(t *testing.T) {
 	}
 }
 
+// TestValidator_DirectHold_NoSession verifies direct_hold is valid when no session is configured.
 func TestValidator_DirectHold_NoSession(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, _, _ := validDirectHoldEntry()
@@ -161,6 +168,7 @@ func TestValidator_DirectHold_NoSession(t *testing.T) {
 	}
 }
 
+// TestValidator_SharedOutbox_Valid verifies a well-formed shared_outbox route with outbox and lease stores passes validation.
 func TestValidator_SharedOutbox_Valid(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	lease := NewFakeLeaseStore()
@@ -193,6 +201,7 @@ func TestValidator_SharedOutbox_Valid(t *testing.T) {
 	}
 }
 
+// TestValidator_SharedOutbox_RejectsMissingOutboxStore verifies shared_outbox without OutboxStore fails validation.
 func TestValidator_SharedOutbox_RejectsMissingOutboxStore(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 
@@ -216,6 +225,7 @@ func TestValidator_SharedOutbox_RejectsMissingOutboxStore(t *testing.T) {
 	}
 }
 
+// TestValidator_DirectHold_DefaultDeliveryMode verifies default policy implies direct_hold and passes when capabilities match.
 func TestValidator_DirectHold_DefaultDeliveryMode(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 
@@ -237,6 +247,7 @@ func TestValidator_DirectHold_DefaultDeliveryMode(t *testing.T) {
 	}
 }
 
+// TestValidator_MultipleRouteErrors verifies start aggregates validation failures from multiple routes.
 func TestValidator_MultipleRouteErrors(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 
@@ -271,6 +282,7 @@ func TestValidator_MultipleRouteErrors(t *testing.T) {
 	}
 }
 
+// TestValidator_SharedOutbox_NonExclusiveNoLeaseStore verifies non-exclusive session allows missing LeaseStore.
 func TestValidator_SharedOutbox_NonExclusiveNoLeaseStore(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	rt := runtime.New(
@@ -298,6 +310,7 @@ func TestValidator_SharedOutbox_NonExclusiveNoLeaseStore(t *testing.T) {
 	}
 }
 
+// TestValidator_SharedOutbox_RejectsMissingLeaseStoreForExclusive verifies exclusive shared_outbox requires LeaseStore.
 func TestValidator_SharedOutbox_RejectsMissingLeaseStoreForExclusive(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	rt := runtime.New(

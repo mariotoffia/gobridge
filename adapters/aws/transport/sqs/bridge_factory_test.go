@@ -8,6 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+// Verifies NewSession returns a nil session without error for stateless SQS transport.
 func TestBridgeFactory_NewSession_ReturnsNilNil(t *testing.T) {
 	bf := NewBridgeFactory(nil)
 
@@ -24,6 +25,7 @@ func TestBridgeFactory_NewSession_ReturnsNilNil(t *testing.T) {
 	}
 }
 
+// Verifies the bridge factory reports the expected SQS transport capabilities.
 func TestBridgeFactory_Capabilities(t *testing.T) {
 	bf := NewBridgeFactory(nil)
 	caps := bf.Capabilities()
@@ -49,6 +51,7 @@ func TestBridgeFactory_Capabilities(t *testing.T) {
 	}
 }
 
+// Verifies NewReceiver constructs a receiver from valid SQS receiver configuration.
 func TestBridgeFactory_NewReceiver(t *testing.T) {
 	bf := NewBridgeFactory(nil)
 
@@ -73,6 +76,7 @@ func TestBridgeFactory_NewReceiver(t *testing.T) {
 	}
 }
 
+// Verifies NewSender constructs a sender from valid SQS sender configuration.
 func TestBridgeFactory_NewSender(t *testing.T) {
 	bf := NewBridgeFactory(nil)
 
@@ -96,6 +100,7 @@ func TestBridgeFactory_NewSender(t *testing.T) {
 	}
 }
 
+// Verifies receiver options from configuration are accepted when constructing a receiver.
 func TestBridgeFactory_NewReceiver_OptionsPassthrough(t *testing.T) {
 	bf := NewBridgeFactory(nil)
 
@@ -119,6 +124,7 @@ func TestBridgeFactory_NewReceiver_OptionsPassthrough(t *testing.T) {
 	}
 }
 
+// Verifies sender options from configuration are accepted when constructing a sender.
 func TestBridgeFactory_NewSender_OptionsPassthrough(t *testing.T) {
 	bf := NewBridgeFactory(nil)
 

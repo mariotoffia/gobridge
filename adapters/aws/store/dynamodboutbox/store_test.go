@@ -41,6 +41,7 @@ func newTestStore(t *testing.T) *dynamodboutbox.Store {
 
 // --- Conformance Suite ---
 
+// Verifies the DynamoDB outbox store passes the shared outbox store conformance suite.
 func TestOutboxStoreConformance(t *testing.T) {
 	store := newTestStore(t)
 	storetest.RunOutboxStoreTests(t, store)
@@ -48,6 +49,7 @@ func TestOutboxStoreConformance(t *testing.T) {
 
 // --- DynamoDB-Specific Tests ---
 
+// Verifies duplicate persist for the same envelope ID returns ErrDuplicateRecord without altering the first record.
 func TestIdempotentPersistAfterRedelivery(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -91,6 +93,7 @@ func TestIdempotentPersistAfterRedelivery(t *testing.T) {
 	}
 }
 
+// Verifies a single Persist call can atomically write multiple fan-out records for one session.
 func TestFanOutAtomicity(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -129,6 +132,7 @@ func TestFanOutAtomicity(t *testing.T) {
 	}
 }
 
+// Verifies partial duplicate fan-out persist rolls back and returns ErrDuplicateRecord.
 func TestFanOutDuplicateRejection(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -173,6 +177,7 @@ func TestFanOutDuplicateRejection(t *testing.T) {
 	}
 }
 
+// Verifies concurrent Claim calls do not corrupt state and at least one succeeds.
 func TestConcurrentClaimSafety(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -215,6 +220,7 @@ func TestConcurrentClaimSafety(t *testing.T) {
 	}
 }
 
+// Verifies ReplayCount increments when a session is claimed again after a prior claim.
 func TestReplayCountIncrementsOnReclaim(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -250,6 +256,7 @@ func TestReplayCountIncrementsOnReclaim(t *testing.T) {
 	}
 }
 
+// Verifies Complete with a stale fencing token returns ErrStaleFencingToken.
 func TestCompleteWithStaleTokenRejected(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -276,6 +283,7 @@ func TestCompleteWithStaleTokenRejected(t *testing.T) {
 	}
 }
 
+// Verifies Expire does not remove records that have no expiry timestamp set.
 func TestExpireWithNoExpirySetSkips(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -307,6 +315,7 @@ func TestExpireWithNoExpirySetSkips(t *testing.T) {
 	}
 }
 
+// Verifies DispatchHeaders persist and round-trip through QueryPending.
 func TestDispatchHeadersRoundTrip(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -337,6 +346,7 @@ func TestDispatchHeadersRoundTrip(t *testing.T) {
 	}
 }
 
+// Verifies envelope payload and standard headers round-trip through persist and query.
 func TestEnvelopePayloadRoundTrip(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -379,6 +389,7 @@ func TestEnvelopePayloadRoundTrip(t *testing.T) {
 	}
 }
 
+// Verifies CreateTable succeeds when invoked repeatedly for the same store.
 func TestCreateTableIdempotent(t *testing.T) {
 	client := ddblocal.Client(t)
 	tableName := ddblocal.UniqueTable("outbox-idem")
@@ -395,6 +406,7 @@ func TestCreateTableIdempotent(t *testing.T) {
 	}
 }
 
+// Verifies expired outbox records are removed by Expire and no longer appear as pending.
 func TestFullLifecycleWithExpiry(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

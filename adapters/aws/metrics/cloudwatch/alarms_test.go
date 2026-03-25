@@ -6,6 +6,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
+// Verifies DefaultAlarms returns the expected number of predefined alarms.
 func TestDefaultAlarms_Count(t *testing.T) {
 	alarms := DefaultAlarms("", "")
 	if len(alarms) != 6 {
@@ -13,6 +14,7 @@ func TestDefaultAlarms_Count(t *testing.T) {
 	}
 }
 
+// Verifies alarm namespace defaults to the bridge metric namespace or a custom override.
 func TestDefaultAlarms_Namespace(t *testing.T) {
 	alarms := DefaultAlarms("", "")
 	for _, a := range alarms {
@@ -29,6 +31,7 @@ func TestDefaultAlarms_Namespace(t *testing.T) {
 	}
 }
 
+// Verifies each alarm carries the configured SNS topic ARN for notifications.
 func TestDefaultAlarms_SNSTopic(t *testing.T) {
 	arn := "arn:aws:sns:eu-west-1:123456:alarms"
 	alarms := DefaultAlarms("", arn)
@@ -39,6 +42,7 @@ func TestDefaultAlarms_SNSTopic(t *testing.T) {
 	}
 }
 
+// Verifies default alarms cover each required bridge metric name.
 func TestDefaultAlarms_MetricNames(t *testing.T) {
 	alarms := DefaultAlarms("", "")
 	want := map[string]bool{
@@ -58,6 +62,7 @@ func TestDefaultAlarms_MetricNames(t *testing.T) {
 	}
 }
 
+// Verifies default alarms use the expected warning versus critical severity split.
 func TestDefaultAlarms_Severities(t *testing.T) {
 	alarms := DefaultAlarms("", "")
 	warnings := 0

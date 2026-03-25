@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
+// Verifies Send maps envelope body, subject, and headers to SendMessage input.
 func TestSender_Send_Basic(t *testing.T) {
 	mock := &mockSQSClient{}
 	sender, err := NewSender(SenderConfig{
@@ -55,6 +56,7 @@ func TestSender_Send_Basic(t *testing.T) {
 	}
 }
 
+// Verifies FIFO sends set MessageGroupId and MessageDeduplicationId from headers.
 func TestSender_Send_FIFO_WithHeaders(t *testing.T) {
 	mock := &mockSQSClient{}
 	sender, err := NewSender(SenderConfig{
@@ -88,6 +90,7 @@ func TestSender_Send_FIFO_WithHeaders(t *testing.T) {
 	}
 }
 
+// Verifies FIFO sends use configured default group ID and auto-generated deduplication ID.
 func TestSender_Send_FIFO_DefaultGroup(t *testing.T) {
 	mock := &mockSQSClient{}
 	sender, err := NewSender(SenderConfig{
@@ -117,6 +120,7 @@ func TestSender_Send_FIFO_DefaultGroup(t *testing.T) {
 	}
 }
 
+// Verifies header ordering key overrides the configured default MessageGroupID.
 func TestSender_Send_FIFO_HeaderOverridesDefault(t *testing.T) {
 	mock := &mockSQSClient{}
 	sender, err := NewSender(SenderConfig{
@@ -145,6 +149,7 @@ func TestSender_Send_FIFO_HeaderOverridesDefault(t *testing.T) {
 	}
 }
 
+// Verifies configured delay seconds are applied on SendMessage.
 func TestSender_Send_WithDelay(t *testing.T) {
 	mock := &mockSQSClient{}
 	sender, err := NewSender(SenderConfig{
@@ -166,6 +171,7 @@ func TestSender_Send_WithDelay(t *testing.T) {
 	}
 }
 
+// Verifies Send maps ServiceUnavailable-style failures to recoverable domain errors.
 func TestSender_Send_Error(t *testing.T) {
 	mock := &mockSQSClient{
 		SendMessageFn: func(_ context.Context, _ *awssqs.SendMessageInput, _ ...func(*awssqs.Options)) (*awssqs.SendMessageOutput, error) {
@@ -190,6 +196,7 @@ func TestSender_Send_Error(t *testing.T) {
 	}
 }
 
+// Verifies SendBatch sends all envelopes in one batch when under the limit.
 func TestSender_SendBatch_Basic(t *testing.T) {
 	mock := &mockSQSClient{
 		SendMessageBatchFn: func(_ context.Context, in *awssqs.SendMessageBatchInput, _ ...func(*awssqs.Options)) (*awssqs.SendMessageBatchOutput, error) {
@@ -228,6 +235,7 @@ func TestSender_SendBatch_Basic(t *testing.T) {
 	}
 }
 
+// Verifies partial batch failures return an error while reporting successful entry count.
 func TestSender_SendBatch_PartialFailure(t *testing.T) {
 	mock := &mockSQSClient{
 		SendMessageBatchFn: func(_ context.Context, in *awssqs.SendMessageBatchInput, _ ...func(*awssqs.Options)) (*awssqs.SendMessageBatchOutput, error) {
@@ -264,6 +272,7 @@ func TestSender_SendBatch_PartialFailure(t *testing.T) {
 	}
 }
 
+// Verifies SendBatch splits sends across multiple API calls according to BatchSize.
 func TestSender_SendBatch_LargeBatch(t *testing.T) {
 	batchCalls := 0
 	mock := &mockSQSClient{
@@ -303,6 +312,7 @@ func TestSender_SendBatch_LargeBatch(t *testing.T) {
 	}
 }
 
+// Verifies NewSender rejects configuration without a queue URL.
 func TestSender_Validate_RequiresQueue(t *testing.T) {
 	_, err := NewSender(SenderConfig{})
 	if err == nil {
@@ -310,6 +320,7 @@ func TestSender_Validate_RequiresQueue(t *testing.T) {
 	}
 }
 
+// Verifies applyDefaults sets expected batch size and timeout.
 func TestSender_ConfigDefaults(t *testing.T) {
 	cfg := SenderConfig{QueueURL: "https://q"}
 	cfg.applyDefaults()
@@ -322,6 +333,7 @@ func TestSender_ConfigDefaults(t *testing.T) {
 	}
 }
 
+// Verifies applyDefaults clamps invalid delay and batch size to supported ranges.
 func TestSender_ConfigDefaults_Clamps(t *testing.T) {
 	cfg := SenderConfig{QueueURL: "https://q", DelaySeconds: -5, BatchSize: 50}
 	cfg.applyDefaults()
@@ -334,6 +346,7 @@ func TestSender_ConfigDefaults_Clamps(t *testing.T) {
 	}
 }
 
+// Verifies generateDeduplicationID is stable for the same envelope content.
 func TestGenerateDeduplicationID_Deterministic(t *testing.T) {
 	env := &domain.Envelope{
 		ID:      "msg-1",
@@ -349,6 +362,7 @@ func TestGenerateDeduplicationID_Deterministic(t *testing.T) {
 	}
 }
 
+// Verifies generateDeduplicationID changes when the payload differs.
 func TestGenerateDeduplicationID_DiffersOnPayload(t *testing.T) {
 	env1 := &domain.Envelope{ID: "msg-1", Payload: []byte("a")}
 	env2 := &domain.Envelope{ID: "msg-1", Payload: []byte("b")}

@@ -9,12 +9,14 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
+// verifies MapError returns nil for a nil input error.
 func TestMapError_Nil(t *testing.T) {
 	if got := MapError(nil); got != nil {
 		t.Fatalf("expected nil, got %v", got)
 	}
 }
 
+// verifies MapError maps context.DeadlineExceeded to ErrTimeout.
 func TestMapError_DeadlineExceeded(t *testing.T) {
 	be := MapError(context.DeadlineExceeded)
 	if be == nil {
@@ -25,6 +27,7 @@ func TestMapError_DeadlineExceeded(t *testing.T) {
 	}
 }
 
+// verifies MapError maps context.Canceled to ErrUnavailable.
 func TestMapError_Canceled(t *testing.T) {
 	be := MapError(context.Canceled)
 	if be == nil {
@@ -43,6 +46,7 @@ func (e *fakeNetError) Temporary() bool { return false }
 
 var _ net.Error = (*fakeNetError)(nil)
 
+// verifies MapError maps net errors with Timeout() true to ErrTimeout.
 func TestMapError_NetTimeout(t *testing.T) {
 	be := MapError(&fakeNetError{timeout: true})
 	if !errors.Is(be, domain.ErrTimeout) {
@@ -50,6 +54,7 @@ func TestMapError_NetTimeout(t *testing.T) {
 	}
 }
 
+// verifies MapError maps non-timeout net errors to ErrConnectionLost.
 func TestMapError_NetNonTimeout(t *testing.T) {
 	be := MapError(&fakeNetError{timeout: false})
 	if !errors.Is(be, domain.ErrConnectionLost) {
@@ -57,6 +62,7 @@ func TestMapError_NetNonTimeout(t *testing.T) {
 	}
 }
 
+// verifies MapError maps connection refused strings to ErrConnectionLost.
 func TestMapError_ConnectionRefused(t *testing.T) {
 	be := MapError(errors.New("connection refused"))
 	if !errors.Is(be, domain.ErrConnectionLost) {
@@ -64,6 +70,7 @@ func TestMapError_ConnectionRefused(t *testing.T) {
 	}
 }
 
+// verifies MapError maps unrecognized errors to ErrUnavailable.
 func TestMapError_UnknownFallsToUnavailable(t *testing.T) {
 	be := MapError(errors.New("something weird"))
 	if !errors.Is(be, domain.ErrUnavailable) {
@@ -71,6 +78,7 @@ func TestMapError_UnknownFallsToUnavailable(t *testing.T) {
 	}
 }
 
+// verifies MapDisconnectReasonCode for MQTT disconnect reason bytes.
 func TestMapDisconnectReasonCode(t *testing.T) {
 	tests := []struct {
 		code     byte
@@ -107,6 +115,7 @@ func TestMapDisconnectReasonCode(t *testing.T) {
 	}
 }
 
+// verifies MapPublishReasonCode for MQTT publish acknowledgment reason bytes.
 func TestMapPublishReasonCode(t *testing.T) {
 	tests := []struct {
 		code     byte
@@ -141,6 +150,7 @@ func TestMapPublishReasonCode(t *testing.T) {
 	}
 }
 
+// verifies MapSubscribeReasonCode for MQTT subscribe acknowledgment reason bytes.
 func TestMapSubscribeReasonCode(t *testing.T) {
 	tests := []struct {
 		code     byte

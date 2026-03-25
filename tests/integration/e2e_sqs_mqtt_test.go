@@ -17,15 +17,9 @@ import (
 // S1-S8: Basic E2E scenarios with real SQS, MQTT, and DynamoDB adapters
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestE2E_S1_SQSToMQTT_DirectHold validates the basic SQS -> MQTT flow
-// using direct_hold delivery mode.
+// validates basic SQS to MQTT delivery using direct_hold.
 //
-// Flow:
-//   SQS (ElasticMQ) -> Bridge (direct_hold) -> MQTT (Mosquitto)
-//
-// Assertions:
-//   - MQTT subscriber receives the message
-//   - Message body matches
+// ElasticMQ to Mosquitto; the subscriber receives the same payload as sent to the queue.
 func TestE2E_S1_SQSToMQTT_DirectHold(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "s1")
 	sessionID := mqttlocal.UniqueClientID("s1-mqtt")
@@ -79,8 +73,7 @@ func TestE2E_S1_SQSToMQTT_DirectHold(t *testing.T) {
 	}
 }
 
-// TestE2E_S2_SQSToMQTT_SharedOutbox validates the SQS -> shared_outbox ->
-// MQTT flow using DynamoDB stores.
+// validates SQS to MQTT via shared_outbox using DynamoDB lease and outbox stores.
 func TestE2E_S2_SQSToMQTT_SharedOutbox(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "s2")
 	sessionID := mqttlocal.UniqueClientID("s2-mqtt")
@@ -139,8 +132,7 @@ func TestE2E_S2_SQSToMQTT_SharedOutbox(t *testing.T) {
 	}
 }
 
-// TestE2E_S3_MQTTToSQS_DirectHold validates the MQTT -> SQS flow using
-// direct_hold delivery mode.
+// validates MQTT to SQS delivery using direct_hold.
 func TestE2E_S3_MQTTToSQS_DirectHold(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "s3")
 	sessionID := mqttlocal.UniqueClientID("s3-mqtt")
@@ -207,8 +199,7 @@ func TestE2E_S3_MQTTToSQS_DirectHold(t *testing.T) {
 	}
 }
 
-// TestE2E_S4_SQSToMQTT_BridgeCrashAndRestart validates that after a bridge
-// crash and restart, SQS redelivers messages and they reach MQTT.
+// validates recovery after bridge crash: shared-outbox records drain to MQTT once a new instance runs with a fast drain.
 func TestE2E_S4_SQSToMQTT_BridgeCrashAndRestart(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "s4")
 	sessionID := mqttlocal.UniqueClientID("s4-mqtt")
@@ -299,8 +290,7 @@ func TestE2E_S4_SQSToMQTT_BridgeCrashAndRestart(t *testing.T) {
 	t.Log("S4: Bridge crash-restart delivered message to MQTT")
 }
 
-// TestE2E_S5_SQSToMQTT_SecondaryBridgeTakeover validates that when bridge A
-// crashes, bridge B acquires the lease and drains the outbox.
+// validates secondary bridge takeover: instance A persists without MQTT drain; instance B acquires the lease and delivers to MQTT.
 func TestE2E_S5_SQSToMQTT_SecondaryBridgeTakeover(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "s5")
 	sessionID := mqttlocal.UniqueClientID("s5-mqtt")
@@ -387,8 +377,7 @@ func TestE2E_S5_SQSToMQTT_SecondaryBridgeTakeover(t *testing.T) {
 	t.Log("S5: Secondary bridge took over and delivered to MQTT")
 }
 
-// TestE2E_S6_SQSToMQTT_RoundTrip validates a full round-trip:
-// SQS queue A -> MQTT topic X -> SQS queue B.
+// validates end-to-end round-trip from SQS queue A through MQTT to SQS queue B.
 func TestE2E_S6_SQSToMQTT_RoundTrip(t *testing.T) {
 	queueA, sqsClientA := setupSQSQueue(t, "s6-a")
 	queueB, sqsClientB := setupSQSQueue(t, "s6-b")
@@ -458,8 +447,7 @@ func TestE2E_S6_SQSToMQTT_RoundTrip(t *testing.T) {
 	t.Logf("S6: Round-trip complete, body = %s", bodies[0])
 }
 
-// TestE2E_S7_SQSToMQTT_MultipleMessages validates that 20 messages flow
-// through the shared outbox path.
+// validates twenty messages flow through shared_outbox to MQTT without loss.
 func TestE2E_S7_SQSToMQTT_MultipleMessages(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "s7")
 	sessionID := mqttlocal.UniqueClientID("s7-mqtt")
@@ -515,8 +503,7 @@ func TestE2E_S7_SQSToMQTT_MultipleMessages(t *testing.T) {
 	t.Logf("S7: Received %d messages on MQTT", collector.count())
 }
 
-// TestE2E_S8_SQSToMQTT_ProcessorChain validates that processors enrich
-// envelopes before delivery to MQTT.
+// validates route processors enrich envelopes before MQTT delivery under direct_hold.
 func TestE2E_S8_SQSToMQTT_ProcessorChain(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "s8")
 	sessionID := mqttlocal.UniqueClientID("s8-mqtt")

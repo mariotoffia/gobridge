@@ -23,6 +23,7 @@ var (
 	_ ports.Tracer = (*oteltracing.Tracer)(nil)
 )
 
+// Verifies default tracer configuration uses the expected endpoint, service name, and sampler ratio.
 func TestConfig_Defaults(t *testing.T) {
 	t.Parallel()
 
@@ -34,6 +35,7 @@ func TestConfig_Defaults(t *testing.T) {
 	assert.Equal(t, 1.0, cfg.SamplerRatio)
 }
 
+// Verifies functional options populate the exported test configuration snapshot.
 func TestOptions(t *testing.T) {
 	t.Parallel()
 
@@ -59,6 +61,7 @@ func TestOptions(t *testing.T) {
 	assert.Equal(t, map[string]string{"X-Token": "abc"}, cfg.Headers)
 }
 
+// Verifies StartSpan records a span with the given name and domain tags in the SDK exporter.
 func TestStartSpan_CreatesSpan(t *testing.T) {
 	t.Parallel()
 
@@ -83,6 +86,7 @@ func TestStartSpan_CreatesSpan(t *testing.T) {
 	assert.Len(t, spans[0].Attributes, 2)
 }
 
+// Verifies SetError marks the span as error with status and an exception event.
 func TestSpan_SetError(t *testing.T) {
 	t.Parallel()
 
@@ -109,6 +113,7 @@ func TestSpan_SetError(t *testing.T) {
 	assert.Equal(t, "exception", spans[0].Events[0].Name)
 }
 
+// Verifies AddEvent appends a named event with attributes to the span.
 func TestSpan_AddEvent(t *testing.T) {
 	t.Parallel()
 
@@ -131,6 +136,7 @@ func TestSpan_AddEvent(t *testing.T) {
 	assert.Equal(t, "my-event", spans[0].Events[0].Name)
 }
 
+// Verifies SetAttributes adds later domain tags to the exported span attributes.
 func TestSpan_SetAttributes(t *testing.T) {
 	t.Parallel()
 

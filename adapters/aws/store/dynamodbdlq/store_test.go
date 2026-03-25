@@ -15,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
 
+// Verifies the DynamoDB DLQ store passes the shared DLQ store conformance suite.
 func TestDLQStoreConformance(t *testing.T) {
 	store := newStore(t, "dlq-conf")
 	storetest.RunDLQStoreTests(t, store)
@@ -61,6 +62,7 @@ func newStore(t *testing.T, prefix string) *dynamodbdlq.Store {
 	return store
 }
 
+// Verifies Write persists a DLQ entry and List returns equivalent fields and envelope data.
 func TestWriteAndList(t *testing.T) {
 	store := newStore(t, "dlq-wal")
 	ctx := context.Background()
@@ -135,6 +137,7 @@ func TestWriteAndList(t *testing.T) {
 	}
 }
 
+// Verifies List filters results by RouteID.
 func TestListFilterByRouteID(t *testing.T) {
 	store := newStore(t, "dlq-frid")
 	ctx := context.Background()
@@ -164,6 +167,7 @@ func TestListFilterByRouteID(t *testing.T) {
 	}
 }
 
+// Verifies List filters results by Category.
 func TestListFilterByCategory(t *testing.T) {
 	store := newStore(t, "dlq-fcat")
 	ctx := context.Background()
@@ -191,6 +195,7 @@ func TestListFilterByCategory(t *testing.T) {
 	}
 }
 
+// Verifies List includes only entries with FailedAt on or after Since.
 func TestListFilterBySince(t *testing.T) {
 	store := newStore(t, "dlq-since")
 	ctx := context.Background()
@@ -223,6 +228,7 @@ func TestListFilterBySince(t *testing.T) {
 	}
 }
 
+// Verifies List includes only entries with FailedAt strictly before Before.
 func TestListFilterByBefore(t *testing.T) {
 	store := newStore(t, "dlq-before")
 	ctx := context.Background()
@@ -253,6 +259,7 @@ func TestListFilterByBefore(t *testing.T) {
 	}
 }
 
+// Verifies List honors the Limit field on the filter.
 func TestListRespectsLimit(t *testing.T) {
 	store := newStore(t, "dlq-limit")
 	ctx := context.Background()
@@ -277,6 +284,7 @@ func TestListRespectsLimit(t *testing.T) {
 	}
 }
 
+// Verifies writing the same entry ID twice returns ErrDuplicateRecord.
 func TestWriteIdempotent(t *testing.T) {
 	store := newStore(t, "dlq-idem")
 	ctx := context.Background()
@@ -294,6 +302,7 @@ func TestWriteIdempotent(t *testing.T) {
 	}
 }
 
+// Verifies Replay succeeds for multiple IDs and entries remain listable.
 func TestReplayMarksEntries(t *testing.T) {
 	store := newStore(t, "dlq-replay")
 	ctx := context.Background()
@@ -321,6 +330,7 @@ func TestReplayMarksEntries(t *testing.T) {
 	}
 }
 
+// Verifies Purge removes entries older than the cutoff and reports the count removed.
 func TestPurgeRemovesOld(t *testing.T) {
 	store := newStore(t, "dlq-purgeold")
 	ctx := context.Background()
@@ -360,6 +370,7 @@ func TestPurgeRemovesOld(t *testing.T) {
 	}
 }
 
+// Verifies Purge only deletes entries before the cutoff while leaving newer rows.
 func TestPurgeSkipsRecent(t *testing.T) {
 	store := newStore(t, "dlq-purgerec")
 	ctx := context.Background()
@@ -396,6 +407,7 @@ func TestPurgeSkipsRecent(t *testing.T) {
 	}
 }
 
+// Verifies write, list, replay, and purge interact correctly in a combined scenario.
 func TestFullLifecycle(t *testing.T) {
 	store := newStore(t, "dlq-lifecycle")
 	ctx := context.Background()
@@ -457,6 +469,7 @@ func TestFullLifecycle(t *testing.T) {
 	}
 }
 
+// Verifies EnsureTable succeeds when invoked repeatedly for the same store.
 func TestEnsureTableIdempotent(t *testing.T) {
 	client := ddblocal.Client(t)
 	tableName := ddblocal.UniqueTable("dlq-etable")
@@ -473,6 +486,7 @@ func TestEnsureTableIdempotent(t *testing.T) {
 	}
 }
 
+// Verifies List applies RouteID and Category filters together.
 func TestListBothRouteAndCategory(t *testing.T) {
 	store := newStore(t, "dlq-both")
 	ctx := context.Background()

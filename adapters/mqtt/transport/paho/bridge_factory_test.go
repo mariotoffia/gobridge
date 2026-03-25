@@ -18,6 +18,7 @@ func (fakeSession) Health(context.Context) ports.SessionHealth          { return
 func (fakeSession) Events() <-chan ports.SessionEvent                   { return nil }
 func (fakeSession) Close(context.Context) error                        { return nil }
 
+// verifies BridgeFactory advertises stateful session and exclusive identity capabilities.
 func TestBridgeFactory_Capabilities(t *testing.T) {
 	bf := NewBridgeFactory(slog.Default())
 	caps := bf.Capabilities()
@@ -39,6 +40,7 @@ func TestBridgeFactory_Capabilities(t *testing.T) {
 	}
 }
 
+// verifies NewSession returns a non-nil session when broker URLs and client_id are set.
 func TestBridgeFactory_NewSession_Success(t *testing.T) {
 	bf := NewBridgeFactory(slog.Default())
 
@@ -58,6 +60,7 @@ func TestBridgeFactory_NewSession_Success(t *testing.T) {
 	}
 }
 
+// verifies NewSession fails when client_id is missing.
 func TestBridgeFactory_NewSession_MissingClientID(t *testing.T) {
 	bf := NewBridgeFactory(slog.Default())
 
@@ -73,6 +76,7 @@ func TestBridgeFactory_NewSession_MissingClientID(t *testing.T) {
 	}
 }
 
+// verifies NewSession fails when broker_urls is missing.
 func TestBridgeFactory_NewSession_MissingBrokerURLs(t *testing.T) {
 	bf := NewBridgeFactory(slog.Default())
 
@@ -95,6 +99,7 @@ func validSession() *Session {
 	return NewSession(opts, "", slog.Default())
 }
 
+// verifies NewReceiver with a paho session and topic subscriptions.
 func TestBridgeFactory_NewReceiver_Success(t *testing.T) {
 	bf := NewBridgeFactory(slog.Default())
 	sess := validSession()
@@ -114,6 +119,7 @@ func TestBridgeFactory_NewReceiver_Success(t *testing.T) {
 	}
 }
 
+// verifies NewReceiver rejects a non-paho session handle.
 func TestBridgeFactory_NewReceiver_WrongSessionType(t *testing.T) {
 	bf := NewBridgeFactory(slog.Default())
 
@@ -126,6 +132,7 @@ func TestBridgeFactory_NewReceiver_WrongSessionType(t *testing.T) {
 	}
 }
 
+// verifies NewSender with a paho session and default_topic options.
 func TestBridgeFactory_NewSender_Success(t *testing.T) {
 	bf := NewBridgeFactory(slog.Default())
 	sess := validSession()
@@ -145,6 +152,7 @@ func TestBridgeFactory_NewSender_Success(t *testing.T) {
 	}
 }
 
+// verifies NewSender rejects a non-paho session handle.
 func TestBridgeFactory_NewSender_WrongSessionType(t *testing.T) {
 	bf := NewBridgeFactory(slog.Default())
 

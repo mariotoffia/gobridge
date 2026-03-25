@@ -14,6 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports/storetest"
 )
 
+// Validates the in-memory lease store against the shared conformance suite with a fake clock.
 func TestConformanceSuite(t *testing.T) {
 	now := time.Now()
 	clock := &atomic.Value{}
@@ -32,6 +33,7 @@ func TestConformanceSuite(t *testing.T) {
 	})
 }
 
+// Verifies Acquire grants a new lease with a positive version and expected owner.
 func TestAcquireFreshLease(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
@@ -48,6 +50,7 @@ func TestAcquireFreshLease(t *testing.T) {
 	}
 }
 
+// Verifies Acquire returns ErrAlreadyExists when the lease is held by another owner.
 func TestAcquireAlreadyHeldLease(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
@@ -63,6 +66,7 @@ func TestAcquireAlreadyHeldLease(t *testing.T) {
 	}
 }
 
+// Verifies a new owner can Acquire after the previous lease expires with an increased version.
 func TestAcquireExpiredLease(t *testing.T) {
 	now := time.Now()
 	clock := &atomic.Value{}
@@ -93,6 +97,7 @@ func TestAcquireExpiredLease(t *testing.T) {
 	}
 }
 
+// Verifies Renew extends expiry without changing the fencing version when the token matches.
 func TestRenewSuccess(t *testing.T) {
 	now := time.Now()
 	clock := &atomic.Value{}
@@ -127,6 +132,7 @@ func TestRenewSuccess(t *testing.T) {
 	}
 }
 
+// Verifies Renew returns ErrStaleFencingToken when the version does not match.
 func TestRenewStaleToken(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
@@ -143,6 +149,7 @@ func TestRenewStaleToken(t *testing.T) {
 	}
 }
 
+// Verifies Renew returns ErrStaleFencingToken when the owner does not match the lease.
 func TestRenewWrongOwner(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
@@ -159,6 +166,7 @@ func TestRenewWrongOwner(t *testing.T) {
 	}
 }
 
+// Verifies Renew returns ErrNotFound for an unknown lease ID.
 func TestRenewNonExistent(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
@@ -169,6 +177,7 @@ func TestRenewNonExistent(t *testing.T) {
 	}
 }
 
+// Verifies Release removes the lease so Current returns ErrNotFound.
 func TestReleaseSuccess(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
@@ -188,6 +197,7 @@ func TestReleaseSuccess(t *testing.T) {
 	}
 }
 
+// Verifies Release returns ErrStaleFencingToken when the token version is stale.
 func TestReleaseStaleToken(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
@@ -204,6 +214,7 @@ func TestReleaseStaleToken(t *testing.T) {
 	}
 }
 
+// Verifies Release returns ErrNotFound for an unknown lease ID.
 func TestReleaseNonExistent(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
@@ -214,6 +225,7 @@ func TestReleaseNonExistent(t *testing.T) {
 	}
 }
 
+// Verifies Current returns lease metadata consistent with the active token.
 func TestCurrentReturnsInfo(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
@@ -241,6 +253,7 @@ func TestCurrentReturnsInfo(t *testing.T) {
 	}
 }
 
+// Verifies Current returns ErrNotFound when no lease exists.
 func TestCurrentNonExistent(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
@@ -251,6 +264,7 @@ func TestCurrentNonExistent(t *testing.T) {
 	}
 }
 
+// Verifies exactly one goroutine wins a contested Acquire and the rest get ErrAlreadyExists.
 func TestConcurrentAcquire(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
@@ -283,6 +297,7 @@ func TestConcurrentAcquire(t *testing.T) {
 	}
 }
 
+// Verifies fencing versions increase across repeated acquire-release cycles on the same lease.
 func TestVersionMonotonicallyIncreases(t *testing.T) {
 	now := time.Now()
 	clock := &atomic.Value{}

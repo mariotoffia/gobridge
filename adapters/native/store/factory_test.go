@@ -8,6 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/config"
 )
 
+// Verifies the memory store factory returns a non-nil lease store.
 func TestMemoryStoreFactory_NewLeaseStore(t *testing.T) {
 	f := nativestore.NewMemoryStoreFactory()
 	s, err := f.NewLeaseStore(context.Background(), config.StoreConfig{})
@@ -19,6 +20,7 @@ func TestMemoryStoreFactory_NewLeaseStore(t *testing.T) {
 	}
 }
 
+// Verifies the memory store factory returns a non-nil outbox store.
 func TestMemoryStoreFactory_NewOutboxStore(t *testing.T) {
 	f := nativestore.NewMemoryStoreFactory()
 	s, err := f.NewOutboxStore(context.Background(), config.StoreConfig{})
@@ -30,6 +32,7 @@ func TestMemoryStoreFactory_NewOutboxStore(t *testing.T) {
 	}
 }
 
+// Verifies the memory store factory returns a non-nil DLQ store.
 func TestMemoryStoreFactory_NewDLQStore(t *testing.T) {
 	f := nativestore.NewMemoryStoreFactory()
 	s, err := f.NewDLQStore(context.Background(), config.StoreConfig{})
@@ -41,6 +44,7 @@ func TestMemoryStoreFactory_NewDLQStore(t *testing.T) {
 	}
 }
 
+// Verifies the SQLite store factory returns a nil lease store.
 func TestSQLiteStoreFactory_NewLeaseStore_ReturnsNil(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
 	s, err := f.NewLeaseStore(context.Background(), config.StoreConfig{})
@@ -52,6 +56,7 @@ func TestSQLiteStoreFactory_NewLeaseStore_ReturnsNil(t *testing.T) {
 	}
 }
 
+// Verifies the SQLite factory builds an outbox store when a database path is configured.
 func TestSQLiteStoreFactory_NewOutboxStore(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
 	cfg := config.StoreConfig{
@@ -67,6 +72,7 @@ func TestSQLiteStoreFactory_NewOutboxStore(t *testing.T) {
 	}
 }
 
+// Verifies the SQLite factory builds a DLQ store when a database path is configured.
 func TestSQLiteStoreFactory_NewDLQStore(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
 	cfg := config.StoreConfig{
@@ -82,6 +88,7 @@ func TestSQLiteStoreFactory_NewDLQStore(t *testing.T) {
 	}
 }
 
+// Verifies SQLite outbox and DLQ construction fail when the path option is missing.
 func TestSQLiteStoreFactory_MissingPath(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
 

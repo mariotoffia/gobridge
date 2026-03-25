@@ -10,7 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
-// Verifies RunChain succeeds with a nil or empty processor slice.
+// Verifies RunChain succeeds when the processor list is nil.
 func TestRunChain_Empty(t *testing.T) {
 	env := &domain.Envelope{ID: "msg-1"}
 	if err := runtime.RunChain(context.Background(), nil, env); err != nil {

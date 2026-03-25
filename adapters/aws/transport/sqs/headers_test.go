@@ -10,6 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
+// Verifies reserved bridge headers are stripped while custom and trace headers remain.
 func TestAttributesToHeaders_StripsReservedPrefix(t *testing.T) {
 	attrs := map[string]sqstypes.MessageAttributeValue{
 		domain.HeaderCorrelationID: {DataType: aws.String("String"), StringValue: aws.String("injected")},
@@ -34,6 +35,7 @@ func TestAttributesToHeaders_StripsReservedPrefix(t *testing.T) {
 	}
 }
 
+// Verifies binary message attributes decode to byte slices in the header map.
 func TestAttributesToHeaders_BinaryValue(t *testing.T) {
 	data := []byte{0x01, 0x02, 0x03}
 	attrs := map[string]sqstypes.MessageAttributeValue{
@@ -50,6 +52,7 @@ func TestAttributesToHeaders_BinaryValue(t *testing.T) {
 	}
 }
 
+// Verifies system attributes are converted to typed header values with an sqs. prefix.
 func TestAttributesToHeaders_SystemAttributes(t *testing.T) {
 	sysAttrs := map[string]string{
 		"SentTimestamp":          "1700000000000",
@@ -70,6 +73,7 @@ func TestAttributesToHeaders_SystemAttributes(t *testing.T) {
 	}
 }
 
+// Verifies headers map to SQS message attributes for string, number, binary, and time values.
 func TestHeadersToAttributes_Basic(t *testing.T) {
 	headers := map[string]any{
 		"custom":    "value",
@@ -94,6 +98,7 @@ func TestHeadersToAttributes_Basic(t *testing.T) {
 	}
 }
 
+// Verifies FIFO-specific headers are omitted from message attributes.
 func TestHeadersToAttributes_ExcludesFIFOFields(t *testing.T) {
 	headers := map[string]any{
 		domain.HeaderOrderingKey:     "group-1",
@@ -114,12 +119,14 @@ func TestHeadersToAttributes_ExcludesFIFOFields(t *testing.T) {
 	}
 }
 
+// Verifies nil headers produce nil attributes.
 func TestHeadersToAttributes_Nil(t *testing.T) {
 	if attrs := headersToAttributes(nil); attrs != nil {
 		t.Fatal("nil headers should return nil attrs")
 	}
 }
 
+// Verifies unsupported header value types yield nil attributes when nothing mappable remains.
 func TestHeadersToAttributes_EmptyValues(t *testing.T) {
 	headers := map[string]any{
 		"unsupported": struct{}{},
@@ -129,6 +136,7 @@ func TestHeadersToAttributes_EmptyValues(t *testing.T) {
 	}
 }
 
+// Verifies extractFIFOFields reads ordering key and deduplication ID from headers.
 func TestExtractFIFOFields(t *testing.T) {
 	headers := map[string]any{
 		domain.HeaderOrderingKey:     "my-group",
@@ -144,6 +152,7 @@ func TestExtractFIFOFields(t *testing.T) {
 	}
 }
 
+// Verifies extractFIFOFields returns empty strings when FIFO headers are absent.
 func TestExtractFIFOFields_Missing(t *testing.T) {
 	groupID, dedupID := extractFIFOFields(map[string]any{"other": "val"})
 	if groupID != "" || dedupID != "" {
@@ -151,6 +160,7 @@ func TestExtractFIFOFields_Missing(t *testing.T) {
 	}
 }
 
+// Verifies extractFIFOFields returns empty strings for nil headers.
 func TestExtractFIFOFields_Nil(t *testing.T) {
 	groupID, dedupID := extractFIFOFields(nil)
 	if groupID != "" || dedupID != "" {

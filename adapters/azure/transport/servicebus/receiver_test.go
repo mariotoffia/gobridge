@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+// verifies Receiver.Run emits a delivery with payload, ID, and queue subject from a mock client.
 func TestReceiver_RunEmitsDeliveries(t *testing.T) {
 	callCount := 0
 	mock := &mockASBClient{
@@ -80,6 +81,7 @@ func TestReceiver_RunEmitsDeliveries(t *testing.T) {
 	}
 }
 
+// verifies ingress strips bridge correlation headers while preserving other application properties.
 func TestReceiver_RunStripsReservedHeaders(t *testing.T) {
 	callCount := 0
 	mock := &mockASBClient{
@@ -129,6 +131,7 @@ func TestReceiver_RunStripsReservedHeaders(t *testing.T) {
 	}
 }
 
+// verifies Run retries receive after a transient error and eventually delivers a message.
 func TestReceiver_RunRetriesOnReceiveError(t *testing.T) {
 	var callCount int
 	mock := &mockASBClient{
@@ -177,6 +180,7 @@ func TestReceiver_RunRetriesOnReceiveError(t *testing.T) {
 	}
 }
 
+// verifies Run returns the handler error and stops when the emit callback fails.
 func TestReceiver_RunStopsOnEmitError(t *testing.T) {
 	mock := &mockASBClient{
 		ReceiveMessagesFn: func(ctx context.Context, count int, options *azservicebus.ReceiveMessagesOptions) ([]*azservicebus.ReceivedMessage, error) {
@@ -208,6 +212,7 @@ func TestReceiver_RunStopsOnEmitError(t *testing.T) {
 	}
 }
 
+// verifies NewReceiver rejects configuration with neither queue nor topic.
 func TestReceiver_Validate_RequiresQueue(t *testing.T) {
 	_, err := NewReceiver(ReceiverConfig{}, nil)
 	if err == nil {
@@ -215,6 +220,7 @@ func TestReceiver_Validate_RequiresQueue(t *testing.T) {
 	}
 }
 
+// verifies envelope Subject defaults to the configured topic name for topic receivers.
 func TestReceiver_SubjectFromTopic(t *testing.T) {
 	callCount := 0
 	mock := &mockASBClient{
@@ -258,6 +264,7 @@ func TestReceiver_SubjectFromTopic(t *testing.T) {
 	}
 }
 
+// verifies the message Subject property overrides the queue-based default subject.
 func TestReceiver_SubjectOverrideFromMessage(t *testing.T) {
 	callCount := 0
 	mock := &mockASBClient{
@@ -301,6 +308,7 @@ func TestReceiver_SubjectOverrideFromMessage(t *testing.T) {
 	}
 }
 
+// verifies Ack on a Run-emitted delivery completes the correct underlying message.
 func TestReceiver_DeliveryAck_CompletesCorrectMessage(t *testing.T) {
 	callCount := 0
 	mock := &mockASBClient{

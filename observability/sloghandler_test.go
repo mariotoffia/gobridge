@@ -24,6 +24,7 @@ func parseJSON(t *testing.T, buf *bytes.Buffer) map[string]any {
 	return m
 }
 
+// Verifies correlation_id, trace_id, and span_id are emitted when all are present on the log context.
 func TestCorrelationHandler_AllFields(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newTestLogger(&buf)
@@ -42,6 +43,7 @@ func TestCorrelationHandler_AllFields(t *testing.T) {
 	assert.Equal(t, "all fields present", m["msg"])
 }
 
+// Verifies only correlation_id appears when trace and span IDs are not set on the context.
 func TestCorrelationHandler_PartialFields(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newTestLogger(&buf)
@@ -56,6 +58,7 @@ func TestCorrelationHandler_PartialFields(t *testing.T) {
 	assert.NotContains(t, m, "span_id")
 }
 
+// Verifies no correlation or trace fields are added when the context carries no IDs.
 func TestCorrelationHandler_NoFields(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newTestLogger(&buf)
@@ -69,6 +72,7 @@ func TestCorrelationHandler_NoFields(t *testing.T) {
 	assert.Equal(t, "no ids", m["msg"])
 }
 
+// Verifies WithAttrs on the handler still merges correlation_id from context with fixed handler attributes.
 func TestCorrelationHandler_WithAttrs(t *testing.T) {
 	var buf bytes.Buffer
 	inner := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
@@ -85,6 +89,7 @@ func TestCorrelationHandler_WithAttrs(t *testing.T) {
 	assert.Equal(t, "test-svc", m["service"])
 }
 
+// Verifies correlation_id is placed inside a slog group when the handler uses WithGroup.
 func TestCorrelationHandler_WithGroup(t *testing.T) {
 	var buf bytes.Buffer
 	inner := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
@@ -105,6 +110,7 @@ func TestCorrelationHandler_WithGroup(t *testing.T) {
 	assert.Equal(t, "corr-grp", group["correlation_id"])
 }
 
+// Verifies Enabled reflects the wrapped handler's minimum level.
 func TestCorrelationHandler_Enabled(t *testing.T) {
 	var buf bytes.Buffer
 	inner := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})

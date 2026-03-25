@@ -26,6 +26,7 @@ func (s *stubRepo) Get(_ context.Context, _ string) (*domain.CredentialSet, erro
 	return s.creds, nil
 }
 
+// Verifies Resolve dispatches to the registered repository for the URI scheme and returns credentials.
 func TestCredentialResolver_SingleSchemeDispatch(t *testing.T) {
 	creds := &domain.CredentialSet{
 		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
@@ -41,6 +42,7 @@ func TestCredentialResolver_SingleSchemeDispatch(t *testing.T) {
 	assert.Equal(t, int32(1), repo.callCount.Load())
 }
 
+// Verifies Resolve selects the correct repository per scheme without cross-calling other schemes.
 func TestCredentialResolver_MultiSchemeDispatch(t *testing.T) {
 	fileCreds := &domain.CredentialSet{
 		Password: &domain.PasswordCredential{Username: "file-user", Password: "fp"},
@@ -67,6 +69,7 @@ func TestCredentialResolver_MultiSchemeDispatch(t *testing.T) {
 	assert.Equal(t, int32(1), pmsRepo.callCount.Load())
 }
 
+// Verifies namespace matching picks the longest registered prefix for the same scheme.
 func TestCredentialResolver_NamespaceLongestPrefix(t *testing.T) {
 	rootCreds := &domain.CredentialSet{
 		Password: &domain.PasswordCredential{Username: "root"},
@@ -122,6 +125,7 @@ func TestCredentialResolver_NamespaceLongestPrefix(t *testing.T) {
 	}
 }
 
+// Verifies Resolve returns ErrNotFound when no repository is registered for the URI scheme.
 func TestCredentialResolver_NotFoundError(t *testing.T) {
 	r := NewCredentialResolver()
 
@@ -130,6 +134,7 @@ func TestCredentialResolver_NotFoundError(t *testing.T) {
 	assert.True(t, errors.Is(err, domain.ErrNotFound), "expected ErrNotFound, got: %v", err)
 }
 
+// Verifies a second Resolve for the same URI with TTL cache hits the store only once.
 func TestCredentialResolver_CacheHitMiss(t *testing.T) {
 	creds := &domain.CredentialSet{
 		Password: &domain.PasswordCredential{Username: "cached"},
@@ -150,6 +155,7 @@ func TestCredentialResolver_CacheHitMiss(t *testing.T) {
 	assert.Equal(t, int32(1), repo.callCount.Load(), "second call should be served from cache")
 }
 
+// Verifies after cache TTL elapses Resolve fetches credentials from the repository again.
 func TestCredentialResolver_CacheExpiry(t *testing.T) {
 	creds := &domain.CredentialSet{
 		Password: &domain.PasswordCredential{Username: "expiring"},
@@ -170,6 +176,7 @@ func TestCredentialResolver_CacheExpiry(t *testing.T) {
 	assert.Equal(t, int32(2), repo.callCount.Load(), "expired cache entry should cause re-fetch")
 }
 
+// Verifies WithCredentialCacheDisabled causes every Resolve to call the underlying repository.
 func TestCredentialResolver_CacheDisabled(t *testing.T) {
 	creds := &domain.CredentialSet{
 		Password: &domain.PasswordCredential{Username: "nocache"},
@@ -187,6 +194,7 @@ func TestCredentialResolver_CacheDisabled(t *testing.T) {
 	assert.Equal(t, int32(3), repo.callCount.Load(), "all calls should hit the repo directly")
 }
 
+// Verifies InvalidateCache forces the next Resolve for that URI to refetch from the repository.
 func TestCredentialResolver_InvalidateCache(t *testing.T) {
 	creds := &domain.CredentialSet{
 		Password: &domain.PasswordCredential{Username: "inv"},
@@ -207,6 +215,7 @@ func TestCredentialResolver_InvalidateCache(t *testing.T) {
 	assert.Equal(t, int32(2), repo.callCount.Load(), "invalidated entry should cause re-fetch")
 }
 
+// Verifies ClearCache empties all cached entries as reflected by cache stats size.
 func TestCredentialResolver_ClearCache(t *testing.T) {
 	creds := &domain.CredentialSet{
 		Password: &domain.PasswordCredential{Username: "clear"},

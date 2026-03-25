@@ -10,6 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
+// TestRouteRunner_EmitsE2ELatency verifies DeliveryE2ELatency is recorded with route_id for a direct_hold runner.
 func TestRouteRunner_EmitsE2ELatency(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	sender := NewFakeSender()
@@ -48,6 +49,7 @@ func TestRouteRunner_EmitsE2ELatency(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_EmitsDLQEntries verifies DLQEntries is emitted when send fails with a permanent error.
 func TestRouteRunner_EmitsDLQEntries(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	sender := NewFakeSender()
@@ -80,6 +82,7 @@ func TestRouteRunner_EmitsDLQEntries(t *testing.T) {
 	}
 }
 
+// TestOutboxDrainer_EmitsDrainLatency verifies OutboxDrainLatency and OutboxCompletions are emitted after a drain cycle.
 func TestOutboxDrainer_EmitsDrainLatency(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	outbox := NewFakeOutboxStore()
@@ -125,6 +128,7 @@ func TestOutboxDrainer_EmitsDrainLatency(t *testing.T) {
 	}
 }
 
+// TestOutboxDrainer_EmitsExpiredBeforeSend verifies OutboxExpiredBeforeSend is emitted for expired records.
 func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	outbox := NewFakeOutboxStore()
@@ -170,6 +174,7 @@ func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 	}
 }
 
+// TestSessionManager_EmitsLeaseMetrics verifies lease acquire and renew latency metrics during an exclusive session run.
 func TestSessionManager_EmitsLeaseMetrics(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	lease := NewFakeLeaseStore()
@@ -209,6 +214,7 @@ func TestSessionManager_EmitsLeaseMetrics(t *testing.T) {
 	<-done
 }
 
+// TestSessionManager_EmitsReconnectMetric verifies MQTTReconnects counts a second SessionConnected after the first.
 func TestSessionManager_EmitsReconnectMetric(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	session := NewFakeSession()

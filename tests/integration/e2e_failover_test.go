@@ -57,7 +57,7 @@ func outboxRoute(id, sessionID, addr string) goruntime.RouteConfig {
 	}
 }
 
-// F1: Single instance crash before drain; restart recovers pending record.
+// verifies pending shared-outbox records reach MQTT after crash-before-drain and restart on a second instance.
 func TestE2E_F1_Failover_SingleInstance_CrashBeforeDrain(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "f1")
 	sessionID := mqttlocal.UniqueClientID("f1-mqtt")
@@ -91,7 +91,7 @@ func TestE2E_F1_Failover_SingleInstance_CrashBeforeDrain(t *testing.T) {
 	e2eWaitFor(t, 20*time.Second, "MQTT after restart drain", func() bool { return collector.count() >= 1 })
 }
 
-// F2: Two instances – A persists, crashes; B acquires lease and drains.
+// verifies lease transfer: instance B drains the outbox after instance A persists and stops.
 func TestE2E_F2_Failover_TwoInstances_LeaseTransfer(t *testing.T) {
 	leaseStore, outboxStore := setupDynamoStores(t)
 	sessionID := uniqueID("f2-sess")
@@ -130,7 +130,7 @@ func TestE2E_F2_Failover_TwoInstances_LeaseTransfer(t *testing.T) {
 	_ = rtB.Stop(context.Background())
 }
 
-// F3: A persists 3, crashes. B drains 1 then crashes. C drains remaining 2.
+// verifies cascading failover: three instances with a send limit on the middle hop still deliver all three envelope IDs across B and C.
 func TestE2E_F3_Failover_ThreeInstances_CascadingFailure(t *testing.T) {
 	leaseStore, outboxStore := setupDynamoStores(t)
 	sessionID := uniqueID("f3-sess")
@@ -193,7 +193,7 @@ func TestE2E_F3_Failover_ThreeInstances_CascadingFailure(t *testing.T) {
 	_ = rtC.Stop(context.Background())
 }
 
-// F4: Stale fencing token (direct store-level, no runtime).
+// verifies stale lease fencing: Complete with an old token fails after another owner reclaims the outbox record (store-level).
 func TestE2E_F4_Failover_ThreeInstances_StaleFencingToken(t *testing.T) {
 	leaseStore, outboxStore := setupDynamoStores(t)
 	ctx := context.Background()
@@ -246,7 +246,7 @@ func TestE2E_F4_Failover_ThreeInstances_StaleFencingToken(t *testing.T) {
 	}
 }
 
-// F5: ConnectAfterLease – session deferred until lease is acquired.
+// verifies ConnectAfterLease defers session start until the competing lease holder's lease expires.
 func TestE2E_F5_Failover_ConnectAfterLease(t *testing.T) {
 	leaseStore, outboxStore := setupDynamoStores(t)
 	sessionID := uniqueID("f5-sess")
@@ -278,7 +278,7 @@ func TestE2E_F5_Failover_ConnectAfterLease(t *testing.T) {
 	e2eWaitFor(t, 10*time.Second, "drained", func() bool { return sender.sentCount() >= 1 })
 }
 
-// F6: Fan-out cross-instance – 3 sessions on 3 instances, all receive.
+// verifies fan-out across three bridge instances: one SQS message reaches all three MQTT sessions.
 func TestE2E_F6_Failover_FanOutCrossInstance_ThreeSessions(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "f6")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -334,7 +334,7 @@ func TestE2E_F6_Failover_FanOutCrossInstance_ThreeSessions(t *testing.T) {
 	}
 }
 
-// F7: Fan-out session owner crash – B crashes, D takes over session-1.
+// verifies fan-out recovery when a session owner crashes: a replacement instance resumes delivery for that session.
 func TestE2E_F7_Failover_FanOutSessionOwnerCrash(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "f7")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -400,7 +400,7 @@ func TestE2E_F7_Failover_FanOutSessionOwnerCrash(t *testing.T) {
 	e2eWaitFor(t, 20*time.Second, "collector-1 via D", func() bool { return collectors[1].count() >= 1 })
 }
 
-// F8: Ingress crash – SQS redelivery to second consumer via direct_hold.
+// verifies SQS redelivery after ingress stall: a second bridge delivers to MQTT using direct_hold.
 func TestE2E_F8_Failover_IngressCrashSQSRedelivery(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "f8")
 	topic := "e2e/f8/data"
@@ -430,7 +430,7 @@ func TestE2E_F8_Failover_IngressCrashSQSRedelivery(t *testing.T) {
 	e2eWaitFor(t, 20*time.Second, "MQTT via B after redelivery", func() bool { return collector.count() >= 1 })
 }
 
-// F9: A persists 5 messages, crashes; B takes over and drains all 5.
+// verifies a takeover instance drains all five persisted messages after the primary crashes before drain.
 func TestE2E_F9_Failover_MultiMessage_ThreeInstances(t *testing.T) {
 	leaseStore, outboxStore := setupDynamoStores(t)
 	sessionID := uniqueID("f9-sess")
@@ -469,7 +469,7 @@ func TestE2E_F9_Failover_MultiMessage_ThreeInstances(t *testing.T) {
 	_ = rtB.Stop(context.Background())
 }
 
-// F10: Crash A, then B takes over cleanly – verify full operational handoff.
+// verifies graceful handoff: first instance drains then stops; second instance processes new ingress after takeover.
 func TestE2E_F10_Failover_GracefulStepDown(t *testing.T) {
 	leaseStore, outboxStore := setupDynamoStores(t)
 	sessionID := uniqueID("f10-sess")

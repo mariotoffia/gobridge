@@ -9,6 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
+// verifies Delivery.Envelope returns the same envelope pointer passed to NewDelivery.
 func TestDelivery_Envelope(t *testing.T) {
 	env := &domain.Envelope{ID: "e1", Subject: "t", Payload: []byte("p")}
 	del := NewDelivery(env)
@@ -19,6 +20,7 @@ func TestDelivery_Envelope(t *testing.T) {
 	}
 }
 
+// verifies Ack is a no-op and returns nil for MQTT at-most-once semantics.
 func TestDelivery_AckIsNoop(t *testing.T) {
 	del := NewDelivery(&domain.Envelope{})
 	if err := del.Ack(context.Background()); err != nil {
@@ -26,6 +28,7 @@ func TestDelivery_AckIsNoop(t *testing.T) {
 	}
 }
 
+// verifies Retry returns ErrNotSupported.
 func TestDelivery_RetryNotSupported(t *testing.T) {
 	del := NewDelivery(&domain.Envelope{})
 	err := del.Retry(context.Background(), time.Second, errors.New("reason"))
@@ -34,6 +37,7 @@ func TestDelivery_RetryNotSupported(t *testing.T) {
 	}
 }
 
+// verifies Extend returns ErrNotSupported.
 func TestDelivery_ExtendNotSupported(t *testing.T) {
 	del := NewDelivery(&domain.Envelope{})
 	err := del.Extend(context.Background(), time.Now().Add(time.Minute))

@@ -52,6 +52,7 @@ func combinedCreds() *domain.CredentialSet {
 
 // --- Constructor tests ---
 
+// Verifies New succeeds for an existing temporary directory.
 func TestNew_ValidPath(t *testing.T) {
 	dir := t.TempDir()
 	repo, err := New(dir)
@@ -59,11 +60,13 @@ func TestNew_ValidPath(t *testing.T) {
 	assert.NotNil(t, repo)
 }
 
+// Verifies New rejects an empty root path.
 func TestNew_EmptyPath(t *testing.T) {
 	_, err := New("")
 	require.Error(t, err)
 }
 
+// Verifies New creates missing parent directories under the given root.
 func TestNew_AutoCreatesDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "creds")
 	repo, err := New(dir)
@@ -75,6 +78,7 @@ func TestNew_AutoCreatesDirectory(t *testing.T) {
 	assert.True(t, info.IsDir())
 }
 
+// Verifies WithNamespace sets the repository namespace.
 func TestNew_WithNamespace(t *testing.T) {
 	dir := t.TempDir()
 	repo, err := New(dir, WithNamespace("prod"))
@@ -84,18 +88,21 @@ func TestNew_WithNamespace(t *testing.T) {
 
 // --- Scheme / Namespace ---
 
+// Verifies Scheme returns the file credential scheme constant.
 func TestScheme(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
 	assert.Equal(t, Scheme, repo.Scheme())
 }
 
+// Verifies Namespace defaults to empty when not configured.
 func TestNamespace_Default(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
 	assert.Equal(t, "", repo.Namespace())
 }
 
+// Verifies Namespace reflects the configured value from WithNamespace.
 func TestNamespace_Configured(t *testing.T) {
 	repo, err := New(t.TempDir(), WithNamespace("staging"))
 	require.NoError(t, err)
@@ -104,6 +111,7 @@ func TestNamespace_Configured(t *testing.T) {
 
 // --- URI-to-path / path-to-URI ---
 
+// Verifies uriToPath maps well-formed file URIs to expected filesystem paths.
 func TestURIToPath_ValidURIs(t *testing.T) {
 	dir := t.TempDir()
 	repo, err := New(dir)
@@ -145,6 +153,7 @@ func TestURIToPath_ValidURIs(t *testing.T) {
 	}
 }
 
+// Verifies uriToPath rejects malformed or non-file URIs.
 func TestURIToPath_Invalid(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -166,6 +175,7 @@ func TestURIToPath_Invalid(t *testing.T) {
 	}
 }
 
+// Verifies uriToPath rejects path traversal attempts in the URI authority and segments.
 func TestURIToPath_PathTraversal(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -185,6 +195,7 @@ func TestURIToPath_PathTraversal(t *testing.T) {
 	}
 }
 
+// Verifies List rejects prefix values that escape the repository root.
 func TestList_PathTraversal(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -193,6 +204,7 @@ func TestList_PathTraversal(t *testing.T) {
 	assert.Error(t, err, "list prefix traversal should be rejected")
 }
 
+// Verifies pathToURI inverts uriToPath for a representative URI.
 func TestURIToPath_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	repo, err := New(dir)
@@ -209,6 +221,7 @@ func TestURIToPath_RoundTrip(t *testing.T) {
 
 // --- Create ---
 
+// Verifies Create writes versioned credentials with expected timestamps and password fields.
 func TestCreate_Success(t *testing.T) {
 	dir := t.TempDir()
 	repo, err := New(dir)
@@ -242,6 +255,7 @@ func TestCreate_Success(t *testing.T) {
 	assert.Equal(t, "pass1", stored.Credentials.Password.Password)
 }
 
+// Verifies a second Create for the same URI returns ErrAlreadyExists.
 func TestCreate_DuplicateRejectsWithAlreadyExists(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -255,6 +269,7 @@ func TestCreate_DuplicateRejectsWithAlreadyExists(t *testing.T) {
 	assert.True(t, errors.Is(err, domain.ErrAlreadyExists))
 }
 
+// Verifies Create creates intermediate directories for nested URI paths.
 func TestCreate_NestedDirectoryCreation(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -271,6 +286,7 @@ func TestCreate_NestedDirectoryCreation(t *testing.T) {
 
 // --- Get ---
 
+// Verifies Get returns stored password credentials for an existing URI.
 func TestGet_Success(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -286,6 +302,7 @@ func TestGet_Success(t *testing.T) {
 	assert.Equal(t, "wonderland", got.Password.Password)
 }
 
+// Verifies Get returns ErrNotFound when the credential file is absent.
 func TestGet_NotFound(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -295,6 +312,7 @@ func TestGet_NotFound(t *testing.T) {
 	assert.True(t, errors.Is(err, domain.ErrNotFound))
 }
 
+// Verifies Get surfaces parse errors for invalid JSON without mapping them to ErrNotFound.
 func TestGet_CorruptedJSON(t *testing.T) {
 	dir := t.TempDir()
 	repo, err := New(dir)
@@ -310,6 +328,7 @@ func TestGet_CorruptedJSON(t *testing.T) {
 
 // --- Update ---
 
+// Verifies Update replaces stored credentials when the expected version matches.
 func TestUpdate_Success(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -327,6 +346,7 @@ func TestUpdate_Success(t *testing.T) {
 	assert.Equal(t, "v2pass", got.Password.Password)
 }
 
+// Verifies Update bumps the persisted version in the on-disk JSON.
 func TestUpdate_VersionIncremented(t *testing.T) {
 	dir := t.TempDir()
 	repo, err := New(dir)
@@ -348,6 +368,7 @@ func TestUpdate_VersionIncremented(t *testing.T) {
 	assert.Equal(t, int64(2), stored.Version)
 }
 
+// Verifies Update returns ErrNotFound for a missing credential file.
 func TestUpdate_NotFound(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -357,6 +378,7 @@ func TestUpdate_NotFound(t *testing.T) {
 	assert.True(t, errors.Is(err, domain.ErrNotFound))
 }
 
+// Verifies Update returns ErrVersionMismatch when the supplied version is wrong.
 func TestUpdate_VersionMismatch(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -370,6 +392,7 @@ func TestUpdate_VersionMismatch(t *testing.T) {
 	assert.True(t, errors.Is(err, domain.ErrVersionMismatch))
 }
 
+// Verifies Update with version zero skips optimistic locking and applies the change.
 func TestUpdate_NoVersionCheck(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -388,6 +411,7 @@ func TestUpdate_NoVersionCheck(t *testing.T) {
 
 // --- Delete ---
 
+// Verifies Delete removes the file when the version matches and Get then returns ErrNotFound.
 func TestDelete_Success(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -403,6 +427,7 @@ func TestDelete_Success(t *testing.T) {
 	assert.True(t, errors.Is(err, domain.ErrNotFound))
 }
 
+// Verifies Delete returns ErrNotFound when the credential file does not exist.
 func TestDelete_NotFound(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -412,6 +437,7 @@ func TestDelete_NotFound(t *testing.T) {
 	assert.True(t, errors.Is(err, domain.ErrNotFound))
 }
 
+// Verifies Delete returns ErrVersionMismatch when the supplied version is wrong.
 func TestDelete_VersionMismatch(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -425,6 +451,7 @@ func TestDelete_VersionMismatch(t *testing.T) {
 	assert.True(t, errors.Is(err, domain.ErrVersionMismatch))
 }
 
+// Verifies Delete with version zero skips optimistic locking and removes the file.
 func TestDelete_NoVersionCheck(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -442,6 +469,7 @@ func TestDelete_NoVersionCheck(t *testing.T) {
 
 // --- List ---
 
+// Verifies List returns no URIs for an empty repository.
 func TestList_EmptyRepo(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -451,6 +479,7 @@ func TestList_EmptyRepo(t *testing.T) {
 	assert.Empty(t, uris)
 }
 
+// Verifies List returns all stored URIs when the prefix is empty.
 func TestList_WithFiles(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -468,6 +497,7 @@ func TestList_WithFiles(t *testing.T) {
 	assert.Contains(t, uris, "file://other")
 }
 
+// Verifies List filters URIs by hierarchical prefix.
 func TestList_PrefixFiltering(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -486,6 +516,7 @@ func TestList_PrefixFiltering(t *testing.T) {
 	}
 }
 
+// Verifies List returns an empty result when no URIs match the prefix.
 func TestList_NonexistentPrefix(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -500,6 +531,7 @@ func TestList_NonexistentPrefix(t *testing.T) {
 
 // --- Version / Timestamp ---
 
+// Verifies sequential updates with version zero monotonically increase the stored version.
 func TestVersion_IncrementsOnUpdate(t *testing.T) {
 	dir := t.TempDir()
 	repo, err := New(dir)
@@ -530,6 +562,7 @@ func TestVersion_IncrementsOnUpdate(t *testing.T) {
 	assert.Equal(t, int64(3), readVersion())
 }
 
+// Verifies CreatedAt is preserved while UpdatedAt advances across updates.
 func TestCreatedAt_PreservedAcrossUpdates(t *testing.T) {
 	dir := t.TempDir()
 	repo, err := New(dir)
@@ -566,6 +599,7 @@ func TestCreatedAt_PreservedAcrossUpdates(t *testing.T) {
 
 // --- Concurrency ---
 
+// Verifies concurrent Get calls succeed for the same URI.
 func TestConcurrent_Reads(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -591,6 +625,7 @@ func TestConcurrent_Reads(t *testing.T) {
 	wg.Wait()
 }
 
+// Verifies concurrent Update calls with version zero all succeed and leave consistent state.
 func TestConcurrent_Writes(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -623,6 +658,7 @@ func TestConcurrent_Writes(t *testing.T) {
 
 // --- TLS material round-trip ---
 
+// Verifies TLS PEM material round-trips through Create and Get.
 func TestTLSMaterial_RoundTrip(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -645,6 +681,7 @@ func TestTLSMaterial_RoundTrip(t *testing.T) {
 
 // --- Combined credential round-trip ---
 
+// Verifies password and TLS fields round-trip together through Create and Get.
 func TestCombinedCredentials_RoundTrip(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)

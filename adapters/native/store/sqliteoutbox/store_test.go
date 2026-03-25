@@ -24,11 +24,13 @@ func newTempStore(t *testing.T) *sqliteoutbox.Store {
 	return s
 }
 
+// Validates the SQLite outbox store against the shared conformance suite.
 func TestOutboxStoreConformance(t *testing.T) {
 	store := newTempStore(t)
 	storetest.RunOutboxStoreTests(t, store)
 }
 
+// Validates the in-memory SQLite outbox store against the shared conformance suite.
 func TestInMemoryMode(t *testing.T) {
 	s, err := sqliteoutbox.NewStore(":memory:")
 	if err != nil {
@@ -38,6 +40,7 @@ func TestInMemoryMode(t *testing.T) {
 	storetest.RunOutboxStoreTests(t, s)
 }
 
+// Verifies persisted outbox records survive closing and reopening the database file.
 func TestDurability_CloseAndReopen(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "durable.db")
@@ -87,6 +90,7 @@ func TestDurability_CloseAndReopen(t *testing.T) {
 	}
 }
 
+// Verifies the database file remains after Close following a persist.
 func TestTempFileCleanup(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "cleanup.db")
@@ -115,6 +119,7 @@ func TestTempFileCleanup(t *testing.T) {
 	}
 }
 
+// Verifies dispatch headers round-trip through persist and query.
 func TestDispatchHeadersRoundTrip(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
@@ -147,6 +152,7 @@ func TestDispatchHeadersRoundTrip(t *testing.T) {
 	}
 }
 
+// Verifies ExpiresAt round-trips through persist and query.
 func TestExpiresAtRoundTrip(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()

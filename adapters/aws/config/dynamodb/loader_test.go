@@ -77,6 +77,7 @@ func sampleConfig() *config.BridgeConfig {
 	}
 }
 
+// Verifies Save followed by Load returns an equivalent bridge configuration.
 func TestLoadSuccess(t *testing.T) {
 	loader := newLoader(t, "cfg-load")
 	ctx := context.Background()
@@ -117,6 +118,7 @@ func TestLoadSuccess(t *testing.T) {
 	}
 }
 
+// Verifies Load returns ErrNotFound when no configuration row exists.
 func TestLoadNotFound(t *testing.T) {
 	loader := newLoader(t, "cfg-nf")
 	ctx := context.Background()
@@ -130,6 +132,7 @@ func TestLoadNotFound(t *testing.T) {
 	}
 }
 
+// Verifies Watch emits updated configuration after a subsequent Save changes the stored version.
 func TestWatchDetectsChanges(t *testing.T) {
 	loader := newLoader(t, "cfg-watch")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -187,6 +190,7 @@ func TestWatchDetectsChanges(t *testing.T) {
 	}
 }
 
+// Verifies Watch does not emit when the stored configuration version is unchanged across polls.
 func TestWatchNoDuplicates(t *testing.T) {
 	client := ddblocal.Client(t)
 	tableName := ddblocal.UniqueTable("cfg-nodup")
@@ -229,6 +233,7 @@ func TestWatchNoDuplicates(t *testing.T) {
 	}
 }
 
+// Verifies repeated Save calls advance the stored version so the latest fields are visible on Load.
 func TestSaveIncrementsVersion(t *testing.T) {
 	loader := newLoader(t, "cfg-ver")
 	ctx := context.Background()
@@ -257,6 +262,7 @@ func TestSaveIncrementsVersion(t *testing.T) {
 	}
 }
 
+// Verifies EnsureTable succeeds when invoked repeatedly for the same loader.
 func TestEnsureTableIdempotent(t *testing.T) {
 	client := ddblocal.Client(t)
 	tableName := ddblocal.UniqueTable("cfg-etable")

@@ -14,6 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports/storetest"
 )
 
+// Validates the in-memory DLQ store against the shared conformance suite.
 func TestDLQStoreConformance(t *testing.T) {
 	s := memorydlq.NewStore()
 	storetest.RunDLQStoreTests(t, s)
@@ -41,6 +42,7 @@ func makeEntry(id, routeID, category string, failedAt time.Time) domain.DLQEntry
 	}
 }
 
+// Verifies Write persists an entry and List returns matching fields.
 func TestWriteAndList(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
@@ -81,6 +83,7 @@ func TestWriteAndList(t *testing.T) {
 	}
 }
 
+// Verifies List filters entries by route ID.
 func TestListFilterByRouteID(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
@@ -104,6 +107,7 @@ func TestListFilterByRouteID(t *testing.T) {
 	}
 }
 
+// Verifies List filters entries by category.
 func TestListFilterByCategory(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
@@ -125,6 +129,7 @@ func TestListFilterByCategory(t *testing.T) {
 	}
 }
 
+// Verifies List includes only entries with FailedAt on or after Since.
 func TestListFilterBySince(t *testing.T) {
 	now := time.Now()
 	clock := &atomic.Value{}
@@ -157,6 +162,7 @@ func TestListFilterBySince(t *testing.T) {
 	}
 }
 
+// Verifies List includes only entries with FailedAt strictly before Before.
 func TestListFilterByBefore(t *testing.T) {
 	now := time.Now()
 	clock := &atomic.Value{}
@@ -187,6 +193,7 @@ func TestListFilterByBefore(t *testing.T) {
 	}
 }
 
+// Verifies List caps the number of returned entries when Limit is set.
 func TestListRespectsLimit(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
@@ -205,6 +212,7 @@ func TestListRespectsLimit(t *testing.T) {
 	}
 }
 
+// Verifies List orders entries by FailedAt descending.
 func TestListSortedByFailedAtDescending(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
@@ -232,6 +240,7 @@ func TestListSortedByFailedAtDescending(t *testing.T) {
 	}
 }
 
+// Verifies duplicate writes for the same entry ID return ErrDuplicateRecord.
 func TestWriteIdempotent(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
@@ -249,6 +258,7 @@ func TestWriteIdempotent(t *testing.T) {
 	}
 }
 
+// Verifies Replay succeeds for existing entry IDs.
 func TestReplayMarksEntries(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
@@ -262,6 +272,7 @@ func TestReplayMarksEntries(t *testing.T) {
 	}
 }
 
+// Verifies Replay returns ErrNotFound when no matching entries exist.
 func TestReplayNotFound(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
@@ -272,6 +283,7 @@ func TestReplayNotFound(t *testing.T) {
 	}
 }
 
+// Verifies Replay returns ErrNotFound when any requested ID is missing.
 func TestReplayPartialNotFound(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
@@ -285,6 +297,7 @@ func TestReplayPartialNotFound(t *testing.T) {
 	}
 }
 
+// Verifies Purge deletes entries older than the cutoff and reports the count removed.
 func TestPurgeRemovesOld(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
@@ -315,6 +328,7 @@ func TestPurgeRemovesOld(t *testing.T) {
 	}
 }
 
+// Verifies Purge only removes entries strictly older than the cutoff.
 func TestPurgeSkipsRecent(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
@@ -342,6 +356,7 @@ func TestPurgeSkipsRecent(t *testing.T) {
 	}
 }
 
+// Verifies Purge on an empty store returns zero without error.
 func TestPurgeReturnsZeroWhenEmpty(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
@@ -355,6 +370,7 @@ func TestPurgeReturnsZeroWhenEmpty(t *testing.T) {
 	}
 }
 
+// Demonstrates list, replay, and purge behavior across multiple entries and filters.
 func TestFullLifecycle(t *testing.T) {
 	now := time.Now()
 	clock := &atomic.Value{}
@@ -411,6 +427,7 @@ func TestFullLifecycle(t *testing.T) {
 	}
 }
 
+// Verifies concurrent writes produce distinct entries without data races.
 func TestConcurrentWrite(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
@@ -440,6 +457,7 @@ func TestConcurrentWrite(t *testing.T) {
 	}
 }
 
+// Verifies List on an empty store returns an empty result.
 func TestListEmptyStore(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()

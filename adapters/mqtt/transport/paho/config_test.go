@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// verifies SessionOptionsFromMap applies defaults when the input map is nil.
 func TestSessionOptionsFromMap_Defaults(t *testing.T) {
 	opts := SessionOptionsFromMap(nil)
 	if opts.KeepAlive != 30 {
@@ -18,6 +19,7 @@ func TestSessionOptionsFromMap_Defaults(t *testing.T) {
 	}
 }
 
+// verifies SessionOptionsFromMap reads broker_urls and client_id.
 func TestSessionOptionsFromMap_BrokerURLs(t *testing.T) {
 	m := map[string]any{
 		"broker_urls": []string{"tcp://a:1883", "tcp://b:1883"},
@@ -33,6 +35,7 @@ func TestSessionOptionsFromMap_BrokerURLs(t *testing.T) {
 	}
 }
 
+// verifies SessionOptionsFromMap accepts a single broker_url string.
 func TestSessionOptionsFromMap_SingleBrokerURL(t *testing.T) {
 	m := map[string]any{
 		"broker_url": "tcp://single:1883",
@@ -44,6 +47,7 @@ func TestSessionOptionsFromMap_SingleBrokerURL(t *testing.T) {
 	}
 }
 
+// verifies SessionOptionsFromMap maps username and password.
 func TestSessionOptionsFromMap_Auth(t *testing.T) {
 	m := map[string]any{
 		"username": "user",
@@ -59,6 +63,7 @@ func TestSessionOptionsFromMap_Auth(t *testing.T) {
 	}
 }
 
+// verifies SessionOptionsFromMap builds TLS options from a nested tls map.
 func TestSessionOptionsFromMap_TLSFromMap(t *testing.T) {
 	m := map[string]any{
 		"tls": map[string]any{
@@ -79,6 +84,7 @@ func TestSessionOptionsFromMap_TLSFromMap(t *testing.T) {
 	}
 }
 
+// verifies SessionOptionsFromMap maps session_expiry_interval and clean_start.
 func TestSessionOptionsFromMap_SessionExpiry(t *testing.T) {
 	m := map[string]any{
 		"session_expiry_interval": 3600,
@@ -94,6 +100,7 @@ func TestSessionOptionsFromMap_SessionExpiry(t *testing.T) {
 	}
 }
 
+// verifies SenderOptionsFromMap applies defaults when the input map is nil.
 func TestSenderOptionsFromMap_Defaults(t *testing.T) {
 	opts := SenderOptionsFromMap(nil)
 	if opts.QoS != 1 {
@@ -104,6 +111,7 @@ func TestSenderOptionsFromMap_Defaults(t *testing.T) {
 	}
 }
 
+// verifies SenderOptionsFromMap maps default_topic, qos, retain, and timeout.
 func TestSenderOptionsFromMap_AllFields(t *testing.T) {
 	m := map[string]any{
 		"default_topic": "my/topic",
@@ -127,6 +135,7 @@ func TestSenderOptionsFromMap_AllFields(t *testing.T) {
 	}
 }
 
+// verifies SenderOptionsFromMap falls back to default QoS when qos is out of range.
 func TestSenderOptionsFromMap_InvalidQoS(t *testing.T) {
 	m := map[string]any{"qos": 5}
 	opts := SenderOptionsFromMap(m)

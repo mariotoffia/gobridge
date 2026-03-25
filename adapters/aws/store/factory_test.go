@@ -8,6 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/config"
 )
 
+// Verifies NewLeaseStore returns a non-nil lease store for dynamodb configuration.
 func TestDynamoDBStoreFactory_NewLeaseStore(t *testing.T) {
 	f := awsstore.NewDynamoDBStoreFactory(nil)
 	store, err := f.NewLeaseStore(context.Background(), config.StoreConfig{Type: "dynamodb"})
@@ -19,6 +20,7 @@ func TestDynamoDBStoreFactory_NewLeaseStore(t *testing.T) {
 	}
 }
 
+// Verifies NewOutboxStore returns a non-nil outbox store for dynamodb configuration.
 func TestDynamoDBStoreFactory_NewOutboxStore(t *testing.T) {
 	f := awsstore.NewDynamoDBStoreFactory(nil)
 	store, err := f.NewOutboxStore(context.Background(), config.StoreConfig{Type: "dynamodb"})
@@ -30,6 +32,7 @@ func TestDynamoDBStoreFactory_NewOutboxStore(t *testing.T) {
 	}
 }
 
+// Verifies NewDLQStore returns a non-nil DLQ store for dynamodb configuration.
 func TestDynamoDBStoreFactory_NewDLQStore(t *testing.T) {
 	f := awsstore.NewDynamoDBStoreFactory(nil)
 	store, err := f.NewDLQStore(context.Background(), config.StoreConfig{Type: "dynamodb"})
@@ -41,6 +44,7 @@ func TestDynamoDBStoreFactory_NewDLQStore(t *testing.T) {
 	}
 }
 
+// Verifies optional table_name in store options is accepted for lease, outbox, and DLQ stores.
 func TestDynamoDBStoreFactory_WithTableName(t *testing.T) {
 	f := awsstore.NewDynamoDBStoreFactory(nil)
 	cfg := config.StoreConfig{

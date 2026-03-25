@@ -28,6 +28,7 @@ func requireAbsent(t *testing.T, headers map[string]any, key string) {
 	}
 }
 
+// verifies messageToHeaders maps Service Bus system properties to header keys.
 func TestMessageToHeaders_SystemProperties(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	ttl := 30 * time.Second
@@ -64,6 +65,7 @@ func TestMessageToHeaders_SystemProperties(t *testing.T) {
 	requireEqual(t, asbHeaderDeliveryCount, h[asbHeaderDeliveryCount], deliveryCount)
 }
 
+// verifies messageToHeaders omits headers when optional system properties are nil.
 func TestMessageToHeaders_NilPointers(t *testing.T) {
 	msg := &azservicebus.ReceivedMessage{
 		MessageID: "msg-002",
@@ -89,6 +91,7 @@ func TestMessageToHeaders_NilPointers(t *testing.T) {
 	}
 }
 
+// verifies messageToHeaders copies application properties into the header map.
 func TestMessageToHeaders_ApplicationProperties(t *testing.T) {
 	msg := &azservicebus.ReceivedMessage{
 		MessageID: "msg-003",
@@ -104,6 +107,7 @@ func TestMessageToHeaders_ApplicationProperties(t *testing.T) {
 	requireEqual(t, "version", h["version"], 2)
 }
 
+// verifies messageToHeaders strips bridge-reserved keys from application properties.
 func TestMessageToHeaders_StripsReservedHeaders(t *testing.T) {
 	msg := &azservicebus.ReceivedMessage{
 		MessageID: "msg-004",
@@ -121,6 +125,7 @@ func TestMessageToHeaders_StripsReservedHeaders(t *testing.T) {
 	requireEqual(t, "safe-key", h["safe-key"], "keep-me")
 }
 
+// verifies messageToHeaders combines system properties, delivery metadata, and custom properties.
 func TestMessageToHeaders_MixedProperties(t *testing.T) {
 	msg := &azservicebus.ReceivedMessage{
 		MessageID:     "msg-005",
@@ -146,6 +151,7 @@ func TestMessageToHeaders_MixedProperties(t *testing.T) {
 	requireAbsent(t, h, asbHeaderTo)
 }
 
+// verifies headersToMessage maps ASB header keys onto azservicebus.Message system fields.
 func TestHeadersToMessage_SystemProperties(t *testing.T) {
 	ttl := 60 * time.Second
 	headers := map[string]any{
@@ -187,6 +193,7 @@ func TestHeadersToMessage_SystemProperties(t *testing.T) {
 	}
 }
 
+// verifies headersToMessage places non-ASB keys in ApplicationProperties.
 func TestHeadersToMessage_ApplicationProperties(t *testing.T) {
 	headers := map[string]any{
 		"tenant": "acme",
@@ -206,6 +213,7 @@ func TestHeadersToMessage_ApplicationProperties(t *testing.T) {
 	}
 }
 
+// verifies headersToMessage does not duplicate ASB-prefixed keys in ApplicationProperties.
 func TestHeadersToMessage_ExcludesASBHeaders(t *testing.T) {
 	headers := map[string]any{
 		asbHeaderMessageID:     "msg-200",
@@ -233,6 +241,7 @@ func TestHeadersToMessage_ExcludesASBHeaders(t *testing.T) {
 	}
 }
 
+// verifies headersToMessage handles nil and empty header maps without setting IDs or application props.
 func TestHeadersToMessage_NilHeaders(t *testing.T) {
 	msg := headersToMessage(nil)
 
@@ -253,6 +262,7 @@ func TestHeadersToMessage_NilHeaders(t *testing.T) {
 	}
 }
 
+// verifies headersToMessage sets TimeToLive from the ASB TTL header.
 func TestHeadersToMessage_TTLRoundTrip(t *testing.T) {
 	ttl := 5 * time.Minute
 

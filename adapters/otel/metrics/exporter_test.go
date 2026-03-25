@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+// Verifies applyDefaults fills zero Config fields with documented defaults.
 func TestConfig_Defaults(t *testing.T) {
 	cfg := &Config{}
 	applyDefaults(cfg)
@@ -23,6 +24,7 @@ func TestConfig_Defaults(t *testing.T) {
 	}
 }
 
+// Verifies applyDefaults leaves explicitly set Config fields unchanged.
 func TestConfig_DefaultsPreserveExplicit(t *testing.T) {
 	cfg := &Config{
 		Endpoint:      "http://collector:4318",
@@ -42,6 +44,7 @@ func TestConfig_DefaultsPreserveExplicit(t *testing.T) {
 	}
 }
 
+// Verifies functional options mutate Exporter configuration as expected.
 func TestOptions(t *testing.T) {
 	e := &Exporter{config: Config{}}
 
@@ -88,6 +91,7 @@ func TestOptions(t *testing.T) {
 	}
 }
 
+// Verifies buildAttributes merges default and per-metric tags into OTel attributes.
 func TestExporter_BuildAttributes(t *testing.T) {
 	e := &Exporter{}
 
@@ -106,6 +110,7 @@ func TestExporter_BuildAttributes(t *testing.T) {
 	}
 }
 
+// Verifies buildAttributes returns an empty slice when no tags are provided.
 func TestExporter_BuildAttributesEmpty(t *testing.T) {
 	e := &Exporter{}
 	attrs := e.buildAttributes(nil)

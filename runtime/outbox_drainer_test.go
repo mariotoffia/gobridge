@@ -42,6 +42,7 @@ func makeDrainer(t *testing.T, token domain.LeaseToken, opts ...func(*goruntime.
 	return outbox, sender, dlqStore, drainer
 }
 
+// TestOutboxDrainer_HappyPath verifies a pending outbox record is sent and marked completed.
 func TestOutboxDrainer_HappyPath(t *testing.T) {
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token)
@@ -70,6 +71,7 @@ func TestOutboxDrainer_HappyPath(t *testing.T) {
 	}
 }
 
+// TestOutboxDrainer_ExpiredRecord verifies expired records skip send and are DLQed.
 func TestOutboxDrainer_ExpiredRecord(t *testing.T) {
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, dlqStore, drainer := makeDrainer(t, token)
@@ -98,6 +100,7 @@ func TestOutboxDrainer_ExpiredRecord(t *testing.T) {
 	}
 }
 
+// TestOutboxDrainer_PoisonMessage verifies replay count above max sends to DLQ without sending.
 func TestOutboxDrainer_PoisonMessage(t *testing.T) {
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, dlqStore, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
@@ -129,6 +132,7 @@ func TestOutboxDrainer_PoisonMessage(t *testing.T) {
 	}
 }
 
+// TestOutboxDrainer_StaleFencingToken verifies Run returns an error when the lease token is stale.
 func TestOutboxDrainer_StaleFencingToken(t *testing.T) {
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
@@ -159,6 +163,7 @@ func TestOutboxDrainer_StaleFencingToken(t *testing.T) {
 	}
 }
 
+// TestOutboxDrainer_NoLease verifies draining does not send when no lease token is available.
 func TestOutboxDrainer_NoLease(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	sender := NewFakeSender()
@@ -196,6 +201,7 @@ func TestOutboxDrainer_NoLease(t *testing.T) {
 	}
 }
 
+// TestOutboxDrainer_AppliesAddress verifies the record address overrides the envelope subject on send.
 func TestOutboxDrainer_AppliesAddress(t *testing.T) {
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token)
@@ -225,6 +231,7 @@ func TestOutboxDrainer_AppliesAddress(t *testing.T) {
 	}
 }
 
+// TestOutboxDrainer_EmptyAddressPreservesSubject verifies an empty record address keeps the original subject.
 func TestOutboxDrainer_EmptyAddressPreservesSubject(t *testing.T) {
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token)
@@ -254,6 +261,7 @@ func TestOutboxDrainer_EmptyAddressPreservesSubject(t *testing.T) {
 	}
 }
 
+// TestOutboxDrainer_PermanentSendError verifies permanent send failure produces a DLQ entry.
 func TestOutboxDrainer_PermanentSendError(t *testing.T) {
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, dlqStore, drainer := makeDrainer(t, token)

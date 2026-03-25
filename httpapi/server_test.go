@@ -387,6 +387,7 @@ func TestHandleReady_NotRunning(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
 
+// Verifies unsupported HTTP methods on admin routes return 405 Method Not Allowed.
 func TestMethodNotAllowed(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -402,6 +403,7 @@ func TestMethodNotAllowed(t *testing.T) {
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 }
 
+// Verifies GET /api/v1/admin/dlq succeeds with a status indicating no DLQ when no store is configured.
 func TestDLQ_NoStore(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -442,6 +444,7 @@ func (r *recordingAuditLogger) Events() []ports.AuditEvent {
 	return cp
 }
 
+// Verifies a successful admin bridge status call emits one audit event with expected action and outcome.
 func TestAuditLogging_AdminCalls(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -464,6 +467,7 @@ func TestAuditLogging_AdminCalls(t *testing.T) {
 	assert.Equal(t, "success", events[0].Outcome)
 }
 
+// Verifies POST /api/v1/admin/dlq/purge returns 404 when no DLQ store is configured.
 func TestAuditLogging_DLQPurge(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -481,6 +485,7 @@ func TestAuditLogging_DLQPurge(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// Verifies POST /api/v1/admin/dlq/replay returns 404 when no DLQ store is configured.
 func TestAuditLogging_DLQReplay(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -552,6 +557,7 @@ func injectRuntime(t *testing.T) (*runtime.Runtime, *stubSender) {
 	return rt, sender
 }
 
+// Verifies the inject endpoint returns 401 without authentication.
 func TestInject_RequiresAuth(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -568,6 +574,7 @@ func TestInject_RequiresAuth(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
+// Verifies inject returns 404 for a route ID that does not exist.
 func TestInject_UnknownRoute(t *testing.T) {
 	rt, _ := injectRuntime(t)
 	cfg := testConfig()
@@ -585,6 +592,7 @@ func TestInject_UnknownRoute(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// Verifies inject rejects a non-JSON body with 400 Bad Request.
 func TestInject_InvalidBody(t *testing.T) {
 	rt, _ := injectRuntime(t)
 	cfg := testConfig()
@@ -601,6 +609,7 @@ func TestInject_InvalidBody(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// Verifies inject rejects invalid base64 payload with an error mentioning base64.
 func TestInject_InvalidBase64(t *testing.T) {
 	rt, _ := injectRuntime(t)
 	cfg := testConfig()
@@ -621,6 +630,7 @@ func TestInject_InvalidBase64(t *testing.T) {
 	assert.Contains(t, resp["error"], "base64")
 }
 
+// Verifies a valid inject request returns 200, delivers through the route sender, and records a successful route.inject audit event.
 func TestInject_HappyPath(t *testing.T) {
 	rt, sender := injectRuntime(t)
 	cfg := testConfig()
@@ -658,6 +668,7 @@ func TestInject_HappyPath(t *testing.T) {
 
 // --- Topology endpoint test ---
 
+// Verifies GET /api/v1/monitor/topology returns instance_id when authenticated.
 func TestHandleTopology(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -679,6 +690,7 @@ func TestHandleTopology(t *testing.T) {
 
 // --- SlogAuditLogger test ---
 
+// Verifies SlogAuditLogger writes audit fields including action, actor, and audit marker to the slog output.
 func TestSlogAuditLogger_LogsEvent(t *testing.T) {
 	var buf strings.Builder
 	h := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
