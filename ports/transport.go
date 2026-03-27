@@ -87,4 +87,5 @@ const (
 	CapDelayedSend         Capability = "delayed_send"
 	CapSharedConsumer      Capability = "shared_consumer"
 	CapExclusiveIdentity   Capability = "exclusive_identity"
+	CapHTTPEndpoint        Capability = "http_endpoint"
 )

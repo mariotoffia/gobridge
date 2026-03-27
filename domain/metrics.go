@@ -61,6 +61,15 @@ const (
 	MetricReconcileFailures = "ReconcileFailures"
 )
 
+// HTTP transport metric names.
+const (
+	MetricHTTPIngressLatency  = "HTTPIngressLatency"
+	MetricHTTPForwardLatency  = "HTTPForwardLatency"
+	MetricSSEClients          = "SSEClients"
+	MetricSSEBroadcastLatency = "SSEBroadcastLatency"
+	MetricClusterForwards     = "ClusterForwards"
+)
+
 // Standard dimension key names for metric tags.
 const (
 	TagKeyLeaseID   = "lease_id"

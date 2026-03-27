@@ -252,7 +252,7 @@ func TestCrossInstance_ConnectAfterLease(t *testing.T) {
 	sessCfg.ConnectAfterLease = true
 
 	// Pre-acquire the lease so this instance cannot get it immediately.
-	_, _ = lease.Acquire(context.Background(), "mqtt-deferred", "other-owner", 500*time.Millisecond)
+	_, _ = lease.Acquire(context.Background(), "mqtt-deferred", "other-owner", 500*time.Millisecond, nil)
 
 	cfg := goruntime.RouteConfig{
 		ID: "deferred-route",

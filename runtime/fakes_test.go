@@ -241,9 +241,10 @@ func (s *FakeSession) SetReconcileErr(err error) {
 // ---------------------------------------------------------------------------
 
 type fakeLeaseEntry struct {
-	owner   string
-	version uint64
-	expires time.Time
+	owner     string
+	version   uint64
+	expires   time.Time
+	endpoints map[string]string
 }
 
 type FakeLeaseStore struct {
@@ -280,7 +281,7 @@ func (s *FakeLeaseStore) SetReleaseErr(err error) {
 	s.releaseErr = err
 }
 
-func (s *FakeLeaseStore) Acquire(_ context.Context, leaseID, ownerID string, ttl time.Duration) (domain.LeaseToken, error) {
+func (s *FakeLeaseStore) Acquire(_ context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -297,15 +298,16 @@ func (s *FakeLeaseStore) Acquire(_ context.Context, leaseID, ownerID string, ttl
 	s.maxVersions[leaseID] = version
 
 	s.leases[leaseID] = &fakeLeaseEntry{
-		owner:   ownerID,
-		version: version,
-		expires: time.Now().Add(ttl),
+		owner:     ownerID,
+		version:   version,
+		expires:   time.Now().Add(ttl),
+		endpoints: endpoints,
 	}
 
 	return domain.LeaseToken{Version: version, Owner: ownerID}, nil
 }
 
-func (s *FakeLeaseStore) Renew(_ context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration) (domain.LeaseToken, error) {
+func (s *FakeLeaseStore) Renew(_ context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -319,6 +321,9 @@ func (s *FakeLeaseStore) Renew(_ context.Context, leaseID string, token domain.L
 	}
 
 	entry.expires = time.Now().Add(ttl)
+	if endpoints != nil {
+		entry.endpoints = endpoints
+	}
 	return token, nil
 }
 
@@ -353,6 +358,7 @@ func (s *FakeLeaseStore) Current(_ context.Context, leaseID string) (domain.Leas
 		Owner:     entry.owner,
 		Version:   entry.version,
 		ExpiresAt: entry.expires,
+		Endpoints: entry.endpoints,
 	}, nil
 }
 

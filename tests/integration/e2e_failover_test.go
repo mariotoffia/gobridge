@@ -198,7 +198,7 @@ func TestE2E_F4_Failover_ThreeInstances_StaleFencingToken(t *testing.T) {
 	leaseStore, outboxStore := setupDynamoStores(t)
 	ctx := context.Background()
 	leaseID := uniqueID("f4-sess")
-	tokenA, err := leaseStore.Acquire(ctx, leaseID, "owner-A", 300*time.Millisecond)
+	tokenA, err := leaseStore.Acquire(ctx, leaseID, "owner-A", 300*time.Millisecond, nil)
 	if err != nil {
 		t.Fatalf("A acquire: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestE2E_F4_Failover_ThreeInstances_StaleFencingToken(t *testing.T) {
 		t.Fatalf("claimed=%d, want 1", len(claimed))
 	}
 	time.Sleep(400 * time.Millisecond)
-	tokenB, err := leaseStore.Acquire(ctx, leaseID, "owner-B", 5*time.Second)
+	tokenB, err := leaseStore.Acquire(ctx, leaseID, "owner-B", 5*time.Second, nil)
 	if err != nil {
 		t.Fatalf("B acquire: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestE2E_F4_Failover_ThreeInstances_StaleFencingToken(t *testing.T) {
 func TestE2E_F5_Failover_ConnectAfterLease(t *testing.T) {
 	leaseStore, outboxStore := setupDynamoStores(t)
 	sessionID := uniqueID("f5-sess")
-	if _, err := leaseStore.Acquire(context.Background(), sessionID, "other", 800*time.Millisecond); err != nil {
+	if _, err := leaseStore.Acquire(context.Background(), sessionID, "other", 800*time.Millisecond, nil); err != nil {
 		t.Fatalf("pre-acquire: %v", err)
 	}
 	rt := goruntime.New(goruntime.WithInstanceID("f5-inst"),

@@ -297,7 +297,7 @@ func TestAbsoluteMaxBatchSize_Clamps(t *testing.T) {
 	sender := NewFakeSender()
 	lease := NewFakeLeaseStore()
 	pk := domain.OutboxPartitionKey("sess-1", "")
-	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second)
+	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
 		OutboxStore:         outbox,
@@ -358,7 +358,7 @@ func TestOutboxDrainer_EmitsRecordFailureMetric(t *testing.T) {
 
 	lease := NewFakeLeaseStore()
 	pk := domain.OutboxPartitionKey("sess-1", "")
-	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second)
+	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
 		OutboxStore:    outbox,

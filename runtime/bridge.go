@@ -28,7 +28,9 @@ type Runtime struct {
 	audit             ports.AuditLogger
 	tracer            ports.Tracer
 	logger            *slog.Logger
-	globalMaxInFlight int
+	globalMaxInFlight  int
+	clusterEndpoints   map[string]string
+	locator            *routeLocator
 
 	mu              sync.Mutex
 	entries         []*routeEntry
@@ -109,6 +111,13 @@ func WithTracer(t ports.Tracer) Option {
 // WithLogger sets the structured logger.
 func WithLogger(logger *slog.Logger) Option {
 	return func(rt *Runtime) { rt.logger = logger }
+}
+
+// WithClusterEndpoints sets the endpoints that identify this instance in the
+// cluster. These are passed to LeaseStore.Acquire and LeaseStore.Renew so
+// other instances can discover how to reach this one.
+func WithClusterEndpoints(endpoints map[string]string) Option {
+	return func(rt *Runtime) { rt.clusterEndpoints = endpoints }
 }
 
 // WithGlobalMaxInFlight sets a host-level concurrency limit that is shared
@@ -237,6 +246,10 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		rt.globalSem = make(chan struct{}, rt.globalMaxInFlight)
 	}
 
+	if rt.leaseStore != nil {
+		rt.locator = newRouteLocator(rt.instanceID, rt.leaseStore)
+	}
+
 	drainerSessions := make(map[string]bool)
 
 	for _, entry := range rt.entries {
@@ -263,7 +276,12 @@ func (rt *Runtime) Start(ctx context.Context) error {
 			if _, exists := rt.sessionMgrs[sid]; !exists {
 				mgr := newSessionManagerWithMetrics(*entry.sessCfg, entry.session, rt.leaseStore, rt.instanceID, rt.logger, m)
 				mgr.SetAudit(rt.audit)
+				mgr.endpoints = rt.clusterEndpoints
 				rt.sessionMgrs[sid] = mgr
+			}
+
+			if entry.sessCfg.Exclusive && rt.locator != nil {
+				rt.locator.RegisterRoute(entry.config.ID, sid)
 			}
 
 			if entry.config.Policy.DeliveryMode == domain.DeliverySharedOutbox && rt.outboxStore != nil && !drainerSessions[sid] {
@@ -309,6 +327,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				if _, exists := rt.sessionMgrs[sid]; !exists {
 					mgr := newSessionManagerWithMetrics(sse.config, sse.session, rt.leaseStore, rt.instanceID, rt.logger, m)
 					mgr.SetAudit(rt.audit)
+					mgr.endpoints = rt.clusterEndpoints
 					rt.sessionMgrs[sid] = mgr
 				}
 
@@ -425,6 +444,15 @@ type RouteInfo struct {
 // InstanceID returns the bridge instance identifier.
 func (rt *Runtime) InstanceID() string {
 	return rt.instanceID
+}
+
+// RouteLocator returns the cluster-aware route locator.
+// Returns nil if no lease store is configured (standalone mode).
+func (rt *Runtime) RouteLocator() ports.RouteLocator {
+	if rt.locator == nil {
+		return nil
+	}
+	return rt.locator
 }
 
 // IsRunning reports whether the runtime is currently running and healthy.

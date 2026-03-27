@@ -25,6 +25,7 @@ const (
 	attrExpiresAt  = "expires_at"
 	attrRenewedAt  = "renewed_at"
 	attrTTL        = "ttl"
+	attrEndpoints  = "endpoints"
 )
 
 // Store implements ports.LeaseStore using DynamoDB conditional writes
@@ -78,7 +79,7 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 // with attribute_not_exists. If the item already exists, it attempts an expired
 // takeover via UpdateItem with an expires_at < :now condition, atomically
 // incrementing the version.
-func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration) (domain.LeaseToken, error) {
+func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
 	now := s.now()
 	expiresAt := now.Add(ttl)
 	pk := leaseKey(leaseID)
@@ -91,6 +92,9 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 		attrExpiresAt:  &ddbtypes.AttributeValueMemberN{Value: millisStr(expiresAt)},
 		attrRenewedAt:  &ddbtypes.AttributeValueMemberN{Value: millisStr(now)},
 		attrTTL:        &ddbtypes.AttributeValueMemberN{Value: epochStr(expiresAt.Add(s.gracePeriod))},
+	}
+	if len(endpoints) > 0 {
+		item[attrEndpoints] = marshalEndpoints(endpoints)
 	}
 
 	_, err := s.client.PutItem(ctx, &dynamodb.PutItemInput{
@@ -109,32 +113,40 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 	}
 
 	// Item exists -- attempt expired takeover with atomic version increment.
+	updateExpr := "SET #own = :owner, #ver = #ver + :one, " +
+		"#acq = :now_ms, #exp = :exp_ms, " +
+		"#ren = :now_ms, #ttl_a = :ttl_epoch"
+	exprNames := map[string]string{
+		"#own":   attrOwner,
+		"#ver":   attrVersion,
+		"#acq":   attrAcquiredAt,
+		"#exp":   attrExpiresAt,
+		"#ren":   attrRenewedAt,
+		"#ttl_a": attrTTL,
+	}
+	exprValues := map[string]ddbtypes.AttributeValue{
+		":owner":     &ddbtypes.AttributeValueMemberS{Value: ownerID},
+		":one":       &ddbtypes.AttributeValueMemberN{Value: "1"},
+		":now_ms":    &ddbtypes.AttributeValueMemberN{Value: millisStr(now)},
+		":exp_ms":    &ddbtypes.AttributeValueMemberN{Value: millisStr(expiresAt)},
+		":ttl_epoch": &ddbtypes.AttributeValueMemberN{Value: epochStr(expiresAt.Add(s.gracePeriod))},
+	}
+	if len(endpoints) > 0 {
+		updateExpr += ", #ep = :ep"
+		exprNames["#ep"] = attrEndpoints
+		exprValues[":ep"] = marshalEndpoints(endpoints)
+	}
+
 	result, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.tableName,
 		Key: map[string]ddbtypes.AttributeValue{
 			attrPK: &ddbtypes.AttributeValueMemberS{Value: pk},
 		},
-		ConditionExpression: aws.String("#exp < :now_ms"),
-		UpdateExpression: aws.String(
-			"SET #own = :owner, #ver = #ver + :one, " +
-				"#acq = :now_ms, #exp = :exp_ms, " +
-				"#ren = :now_ms, #ttl_a = :ttl_epoch"),
-		ExpressionAttributeNames: map[string]string{
-			"#own":   attrOwner,
-			"#ver":   attrVersion,
-			"#acq":   attrAcquiredAt,
-			"#exp":   attrExpiresAt,
-			"#ren":   attrRenewedAt,
-			"#ttl_a": attrTTL,
-		},
-		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
-			":owner":     &ddbtypes.AttributeValueMemberS{Value: ownerID},
-			":one":       &ddbtypes.AttributeValueMemberN{Value: "1"},
-			":now_ms":    &ddbtypes.AttributeValueMemberN{Value: millisStr(now)},
-			":exp_ms":    &ddbtypes.AttributeValueMemberN{Value: millisStr(expiresAt)},
-			":ttl_epoch": &ddbtypes.AttributeValueMemberN{Value: epochStr(expiresAt.Add(s.gracePeriod))},
-		},
-		ReturnValues: ddbtypes.ReturnValueAllNew,
+		ConditionExpression:       aws.String("#exp < :now_ms"),
+		UpdateExpression:          aws.String(updateExpr),
+		ExpressionAttributeNames:  exprNames,
+		ExpressionAttributeValues: exprValues,
+		ReturnValues:              ddbtypes.ReturnValueAllNew,
 	})
 	if err != nil {
 		if isConditionFailed(err) {
@@ -154,33 +166,41 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 
 // Renew extends the lease TTL. The caller's token must match the stored
 // owner and version. The returned token keeps the same version.
-func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration) (domain.LeaseToken, error) {
+func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
 	now := s.now()
 	expiresAt := now.Add(ttl)
 	pk := leaseKey(leaseID)
+
+	updateExpr := "SET #exp = :exp_ms, #ren = :now_ms, #ttl_a = :ttl_epoch"
+	exprNames := map[string]string{
+		"#own":   attrOwner,
+		"#ver":   attrVersion,
+		"#exp":   attrExpiresAt,
+		"#ren":   attrRenewedAt,
+		"#ttl_a": attrTTL,
+	}
+	exprValues := map[string]ddbtypes.AttributeValue{
+		":owner":     &ddbtypes.AttributeValueMemberS{Value: token.Owner},
+		":ver":       &ddbtypes.AttributeValueMemberN{Value: uintStr(token.Version)},
+		":exp_ms":    &ddbtypes.AttributeValueMemberN{Value: millisStr(expiresAt)},
+		":now_ms":    &ddbtypes.AttributeValueMemberN{Value: millisStr(now)},
+		":ttl_epoch": &ddbtypes.AttributeValueMemberN{Value: epochStr(expiresAt.Add(s.gracePeriod))},
+	}
+	if len(endpoints) > 0 {
+		updateExpr += ", #ep = :ep"
+		exprNames["#ep"] = attrEndpoints
+		exprValues[":ep"] = marshalEndpoints(endpoints)
+	}
 
 	_, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.tableName,
 		Key: map[string]ddbtypes.AttributeValue{
 			attrPK: &ddbtypes.AttributeValueMemberS{Value: pk},
 		},
-		ConditionExpression: aws.String("#own = :owner AND #ver = :ver"),
-		UpdateExpression: aws.String(
-			"SET #exp = :exp_ms, #ren = :now_ms, #ttl_a = :ttl_epoch"),
-		ExpressionAttributeNames: map[string]string{
-			"#own":   attrOwner,
-			"#ver":   attrVersion,
-			"#exp":   attrExpiresAt,
-			"#ren":   attrRenewedAt,
-			"#ttl_a": attrTTL,
-		},
-		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
-			":owner":     &ddbtypes.AttributeValueMemberS{Value: token.Owner},
-			":ver":       &ddbtypes.AttributeValueMemberN{Value: uintStr(token.Version)},
-			":exp_ms":    &ddbtypes.AttributeValueMemberN{Value: millisStr(expiresAt)},
-			":now_ms":    &ddbtypes.AttributeValueMemberN{Value: millisStr(now)},
-			":ttl_epoch": &ddbtypes.AttributeValueMemberN{Value: epochStr(expiresAt.Add(s.gracePeriod))},
-		},
+		ConditionExpression:       aws.String("#own = :owner AND #ver = :ver"),
+		UpdateExpression:          aws.String(updateExpr),
+		ExpressionAttributeNames:  exprNames,
+		ExpressionAttributeValues: exprValues,
 	})
 	if err != nil {
 		if isConditionFailed(err) {
@@ -259,6 +279,7 @@ func (s *Store) Current(ctx context.Context, leaseID string) (domain.LeaseInfo, 
 		Owner:     owner,
 		Version:   version,
 		ExpiresAt: time.UnixMilli(int64(expiresAtMillis)),
+		Endpoints: unmarshalEndpoints(result.Item),
 	}, nil
 }
 
@@ -360,4 +381,30 @@ func strAttr(attrs map[string]ddbtypes.AttributeValue, key string) string {
 		return ""
 	}
 	return sv.Value
+}
+
+func marshalEndpoints(endpoints map[string]string) *ddbtypes.AttributeValueMemberM {
+	m := make(map[string]ddbtypes.AttributeValue, len(endpoints))
+	for k, v := range endpoints {
+		m[k] = &ddbtypes.AttributeValueMemberS{Value: v}
+	}
+	return &ddbtypes.AttributeValueMemberM{Value: m}
+}
+
+func unmarshalEndpoints(attrs map[string]ddbtypes.AttributeValue) map[string]string {
+	v, ok := attrs[attrEndpoints]
+	if !ok {
+		return nil
+	}
+	mv, ok := v.(*ddbtypes.AttributeValueMemberM)
+	if !ok || len(mv.Value) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(mv.Value))
+	for k, av := range mv.Value {
+		if sv, ok := av.(*ddbtypes.AttributeValueMemberS); ok {
+			result[k] = sv.Value
+		}
+	}
+	return result
 }

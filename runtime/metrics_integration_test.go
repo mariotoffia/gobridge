@@ -93,7 +93,7 @@ func TestOutboxDrainer_EmitsDrainLatency(t *testing.T) {
 	lease := NewFakeLeaseStore()
 	sender := NewFakeSender()
 
-	token, _ := lease.Acquire(context.Background(), "session-1", "owner-1", 30*time.Second)
+	token, _ := lease.Acquire(context.Background(), "session-1", "owner-1", 30*time.Second, nil)
 
 	records := []domain.OutboxRecord{{
 		ID: "r1", RouteID: "route-drain", EnvelopeID: "e1", BindingID: "b1",
@@ -139,7 +139,7 @@ func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 	lease := NewFakeLeaseStore()
 	sender := NewFakeSender()
 
-	token, _ := lease.Acquire(context.Background(), "s1", "owner-1", 30*time.Second)
+	token, _ := lease.Acquire(context.Background(), "s1", "owner-1", 30*time.Second, nil)
 
 	records := []domain.OutboxRecord{{
 		ID: "r-exp", RouteID: "route-exp", EnvelopeID: "e-exp", BindingID: "b1",

@@ -22,12 +22,12 @@ func NewContextTrackingLeaseStore() *ContextTrackingLeaseStore {
 	return &ContextTrackingLeaseStore{inner: NewFakeLeaseStore()}
 }
 
-func (s *ContextTrackingLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration) (domain.LeaseToken, error) {
-	return s.inner.Acquire(ctx, leaseID, ownerID, ttl)
+func (s *ContextTrackingLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+	return s.inner.Acquire(ctx, leaseID, ownerID, ttl, endpoints)
 }
 
-func (s *ContextTrackingLeaseStore) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration) (domain.LeaseToken, error) {
-	return s.inner.Renew(ctx, leaseID, token, ttl)
+func (s *ContextTrackingLeaseStore) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+	return s.inner.Renew(ctx, leaseID, token, ttl, endpoints)
 }
 
 func (s *ContextTrackingLeaseStore) Release(ctx context.Context, leaseID string, token domain.LeaseToken) error {
@@ -65,12 +65,12 @@ func NewCountingLeaseStore() *CountingLeaseStore {
 	return &CountingLeaseStore{inner: NewFakeLeaseStore()}
 }
 
-func (s *CountingLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration) (domain.LeaseToken, error) {
-	return s.inner.Acquire(ctx, leaseID, ownerID, ttl)
+func (s *CountingLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+	return s.inner.Acquire(ctx, leaseID, ownerID, ttl, endpoints)
 }
 
-func (s *CountingLeaseStore) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration) (domain.LeaseToken, error) {
-	return s.inner.Renew(ctx, leaseID, token, ttl)
+func (s *CountingLeaseStore) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+	return s.inner.Renew(ctx, leaseID, token, ttl, endpoints)
 }
 
 func (s *CountingLeaseStore) Release(ctx context.Context, leaseID string, token domain.LeaseToken) error {

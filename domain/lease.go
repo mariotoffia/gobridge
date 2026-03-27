@@ -16,4 +16,11 @@ type LeaseInfo struct {
 	Owner     string
 	Version   uint64
 	ExpiresAt time.Time
+	Endpoints map[string]string
+}
+
+// PeerInfo describes a remote gobridge instance derived from lease ownership.
+type PeerInfo struct {
+	InstanceID string
+	Endpoints  map[string]string
 }

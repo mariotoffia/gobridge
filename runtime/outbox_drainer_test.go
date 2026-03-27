@@ -20,7 +20,7 @@ func makeDrainer(t *testing.T, token domain.LeaseToken, opts ...func(*goruntime.
 	leaseStore := NewFakeLeaseStore()
 
 	pk := domain.OutboxPartitionKey("sess-1", "")
-	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second)
+	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	cfg := goruntime.OutboxDrainerConfig{
 		OutboxStore:    outbox,

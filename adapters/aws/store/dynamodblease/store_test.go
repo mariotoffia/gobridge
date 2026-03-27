@@ -52,7 +52,7 @@ func TestDynamoDBSpecificErrorMapping(t *testing.T) {
 	})
 
 	t.Run("AcquireRenewReleaseCycle", func(t *testing.T) {
-		tok, err := store.Acquire(ctx, "em-cycle", "bridge-1", 30*time.Second)
+		tok, err := store.Acquire(ctx, "em-cycle", "bridge-1", 30*time.Second, nil)
 		if err != nil {
 			t.Fatalf("acquire: %v", err)
 		}
@@ -60,7 +60,7 @@ func TestDynamoDBSpecificErrorMapping(t *testing.T) {
 			t.Fatalf("fresh acquire version: got %d, want 1", tok.Version)
 		}
 
-		renewed, err := store.Renew(ctx, "em-cycle", tok, 30*time.Second)
+		renewed, err := store.Renew(ctx, "em-cycle", tok, 30*time.Second, nil)
 		if err != nil {
 			t.Fatalf("renew: %v", err)
 		}
@@ -72,7 +72,7 @@ func TestDynamoDBSpecificErrorMapping(t *testing.T) {
 			t.Fatalf("release: %v", err)
 		}
 
-		tok2, err := store.Acquire(ctx, "em-cycle", "bridge-2", 30*time.Second)
+		tok2, err := store.Acquire(ctx, "em-cycle", "bridge-2", 30*time.Second, nil)
 		if err != nil {
 			t.Fatalf("re-acquire after release: %v", err)
 		}
@@ -82,14 +82,14 @@ func TestDynamoDBSpecificErrorMapping(t *testing.T) {
 	})
 
 	t.Run("ExpiredTakeoverIncrementsVersion", func(t *testing.T) {
-		tok, err := store.Acquire(ctx, "em-exp", "bridge-1", 1*time.Second)
+		tok, err := store.Acquire(ctx, "em-exp", "bridge-1", 1*time.Second, nil)
 		if err != nil {
 			t.Fatalf("acquire: %v", err)
 		}
 
 		time.Sleep(2 * time.Second)
 
-		tok2, err := store.Acquire(ctx, "em-exp", "bridge-2", 30*time.Second)
+		tok2, err := store.Acquire(ctx, "em-exp", "bridge-2", 30*time.Second, nil)
 		if err != nil {
 			t.Fatalf("expired takeover: %v", err)
 		}

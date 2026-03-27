@@ -229,7 +229,7 @@ func TestF4_DirectHoldAllowUnfenced(t *testing.T) {
 func TestF5_DrainBatchSkipsTOCTOUCheck(t *testing.T) {
 	countLease := NewCountingLeaseStore()
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
-	_, _ = countLease.inner.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second)
+	_, _ = countLease.inner.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	outbox := NewFakeOutboxStore()
 	sender := NewFakeSender()

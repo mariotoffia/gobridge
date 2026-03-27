@@ -46,11 +46,17 @@ const (
 
 // Infrastructure and fencing error codes.
 const (
-	ErrCodeNotSupported     ErrorCode = "NOT_SUPPORTED"
-	ErrCodeVersionMismatch  ErrorCode = "VERSION_MISMATCH"
-	ErrCodeAlreadyExists    ErrorCode = "ALREADY_EXISTS"
+	ErrCodeNotSupported      ErrorCode = "NOT_SUPPORTED"
+	ErrCodeVersionMismatch   ErrorCode = "VERSION_MISMATCH"
+	ErrCodeAlreadyExists     ErrorCode = "ALREADY_EXISTS"
 	ErrCodeStaleFencingToken ErrorCode = "STALE_FENCING_TOKEN"
-	ErrCodeDuplicateRecord  ErrorCode = "DUPLICATE_RECORD"
+	ErrCodeDuplicateRecord   ErrorCode = "DUPLICATE_RECORD"
+)
+
+// Cluster routing error codes.
+const (
+	ErrCodeNoRouteOwner ErrorCode = "NO_ROUTE_OWNER"
+	ErrCodeForwardFailed ErrorCode = "FORWARD_FAILED"
 )
 
 // BridgeError is the structured error type for the bridge.
@@ -224,6 +230,18 @@ var (
 	ErrDuplicateRecord = &BridgeError{
 		Code: ErrCodeDuplicateRecord, Class: ErrorPermanent,
 		Message: "duplicate record",
+	}
+)
+
+// Sentinel errors -- cluster routing.
+var (
+	ErrNoRouteOwner = &BridgeError{
+		Code: ErrCodeNoRouteOwner, Class: ErrorTransient,
+		Message: "no instance owns this route",
+	}
+	ErrForwardFailed = &BridgeError{
+		Code: ErrCodeForwardFailed, Class: ErrorTransient,
+		Message: "cluster forward failed",
 	}
 )
 

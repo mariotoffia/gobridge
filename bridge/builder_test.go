@@ -51,10 +51,10 @@ func (f *fakeTransportFactory) Capabilities() []ports.Capability {
 
 type fakeLeaseStore struct{}
 
-func (f *fakeLeaseStore) Acquire(_ context.Context, _ string, _ string, _ time.Duration) (domain.LeaseToken, error) {
+func (f *fakeLeaseStore) Acquire(_ context.Context, _ string, _ string, _ time.Duration, _ map[string]string) (domain.LeaseToken, error) {
 	return domain.LeaseToken{}, nil
 }
-func (f *fakeLeaseStore) Renew(_ context.Context, _ string, _ domain.LeaseToken, _ time.Duration) (domain.LeaseToken, error) {
+func (f *fakeLeaseStore) Renew(_ context.Context, _ string, _ domain.LeaseToken, _ time.Duration, _ map[string]string) (domain.LeaseToken, error) {
 	return domain.LeaseToken{}, nil
 }
 func (f *fakeLeaseStore) Release(_ context.Context, _ string, _ domain.LeaseToken) error { return nil }

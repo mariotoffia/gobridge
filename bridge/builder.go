@@ -13,12 +13,13 @@ import (
 
 // Builder constructs a runtime.Runtime from a declarative BridgeConfig.
 type Builder struct {
-	cfg            *config.BridgeConfig
-	transports     map[string]TransportFactory
-	storeFactories map[string]StoreFactory
-	processors     map[string]ports.Processor
-	logger         *slog.Logger
-	credStore      ports.CredentialStore
+	cfg              *config.BridgeConfig
+	transports       map[string]TransportFactory
+	storeFactories   map[string]StoreFactory
+	processors       map[string]ports.Processor
+	logger           *slog.Logger
+	credStore        ports.CredentialStore
+	endpointResolver ports.EndpointResolver
 }
 
 // BuilderOption configures a Builder.
@@ -70,6 +71,26 @@ func (b *Builder) RegisterProcessor(name string, proc ports.Processor) *Builder 
 	return b
 }
 
+// RegisterEndpointResolver sets a custom EndpointResolver for cluster
+// endpoint discovery. When not set, the builder auto-detects the resolver
+// based on the runtime environment.
+func (b *Builder) RegisterEndpointResolver(r ports.EndpointResolver) *Builder {
+	b.endpointResolver = r
+	return b
+}
+
+// TransportHandlers returns HTTP handlers from transport factories that
+// implement HTTPMountable. The map keys are transport names.
+func (b *Builder) TransportHandlers() map[string]HTTPMountable {
+	handlers := make(map[string]HTTPMountable)
+	for name, tf := range b.transports {
+		if m, ok := tf.(HTTPMountable); ok {
+			handlers[name] = m
+		}
+	}
+	return handlers
+}
+
 // PreparedBuild holds pre-validated state from the prepare phase.
 // No transport sessions, receivers, or senders have been created yet,
 // making it safe to call Prepare while an old runtime still holds
@@ -103,6 +124,11 @@ func (b *Builder) Prepare(ctx context.Context) (*PreparedBuild, error) {
 	}
 	if b.logger != nil {
 		rtOpts = append(rtOpts, runtime.WithLogger(b.logger))
+	}
+
+	endpoints := b.resolveClusterEndpoints(ctx)
+	if len(endpoints) > 0 {
+		rtOpts = append(rtOpts, runtime.WithClusterEndpoints(endpoints))
 	}
 
 	return &PreparedBuild{
@@ -529,6 +555,29 @@ func (b *Builder) resolveCredentials(ctx context.Context, opts map[string]any, l
 	}
 
 	return resolved, nil
+}
+
+func (b *Builder) resolveClusterEndpoints(ctx context.Context) map[string]string {
+	if b.cfg.Bridge.Cluster != nil && len(b.cfg.Bridge.Cluster.Endpoints) > 0 {
+		return b.cfg.Bridge.Cluster.Endpoints
+	}
+
+	if b.endpointResolver != nil {
+		listenAddr := ":8080"
+		if b.cfg.HTTP != nil && b.cfg.HTTP.AdminAddr != "" {
+			listenAddr = b.cfg.HTTP.AdminAddr
+		}
+		endpoints, err := b.endpointResolver.Resolve(ctx, listenAddr)
+		if err != nil {
+			if b.logger != nil {
+				b.logger.Warn("endpoint resolution failed, cluster routing may be unavailable", "error", err)
+			}
+			return nil
+		}
+		return endpoints
+	}
+
+	return nil
 }
 
 // staleClaimBuffer is the safety margin added on top of StepDownGrace

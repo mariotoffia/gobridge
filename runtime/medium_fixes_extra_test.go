@@ -56,7 +56,7 @@ func TestAdaptBatchSize_HalvesOnConsecutiveZeroSuccess(t *testing.T) {
 
 	lease := NewFakeLeaseStore()
 	pk := domain.OutboxPartitionKey("sess-1", "")
-	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second)
+	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	ctx := context.Background()
 	for i := 0; i < 20; i++ {
@@ -281,7 +281,7 @@ func TestNormalMaxBatchSize_NotClamped(t *testing.T) {
 	sender := NewFakeSender()
 	lease := NewFakeLeaseStore()
 	pk := domain.OutboxPartitionKey("sess-1", "")
-	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second)
+	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
@@ -337,7 +337,7 @@ func TestOutboxDrainer_SuccessEmitsCompletion(t *testing.T) {
 	sender := NewFakeSender()
 	lease := NewFakeLeaseStore()
 	pk := domain.OutboxPartitionKey("sess-1", "")
-	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second)
+	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
 		OutboxStore:    outbox,
@@ -395,7 +395,7 @@ func TestBatchSizeClamped_PreventsAbsoluteMaxBypass(t *testing.T) {
 	sender := NewFakeSender()
 	lease := NewFakeLeaseStore()
 	pk := domain.OutboxPartitionKey("sess-1", "")
-	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second)
+	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
@@ -454,7 +454,7 @@ func TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric(t *testing.T) {
 
 	lease := NewFakeLeaseStore()
 	pk := domain.OutboxPartitionKey("sess-1", "")
-	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second)
+	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
 		OutboxStore:    outbox,

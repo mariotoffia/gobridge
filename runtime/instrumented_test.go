@@ -16,7 +16,7 @@ func TestInstrumentedLeaseStore_AcquireRecordsLatency(t *testing.T) {
 	inner := NewFakeLeaseStore()
 	store := runtime.NewInstrumentedLeaseStore(inner, rec)
 
-	_, err := store.Acquire(context.Background(), "lease-1", "owner-1", 30*time.Second)
+	_, err := store.Acquire(context.Background(), "lease-1", "owner-1", 30*time.Second, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,11 +40,11 @@ func TestInstrumentedLeaseStore_AcquireFailureRecordsCounter(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeLeaseStore()
 
-	tok, _ := inner.Acquire(context.Background(), "lease-1", "other", 30*time.Second)
+	tok, _ := inner.Acquire(context.Background(), "lease-1", "other", 30*time.Second, nil)
 	_ = tok
 
 	store := runtime.NewInstrumentedLeaseStore(inner, rec)
-	_, _ = store.Acquire(context.Background(), "lease-1", "me", 30*time.Second)
+	_, _ = store.Acquire(context.Background(), "lease-1", "me", 30*time.Second, nil)
 
 	failures := rec.FindEntries(domain.MetricLeaseAcquireFailures)
 	if len(failures) != 1 {
@@ -58,10 +58,10 @@ func TestInstrumentedLeaseStore_RenewRecordsLatency(t *testing.T) {
 	inner := NewFakeLeaseStore()
 	store := runtime.NewInstrumentedLeaseStore(inner, rec)
 
-	tok, _ := store.Acquire(context.Background(), "lease-1", "owner-1", 30*time.Second)
+	tok, _ := store.Acquire(context.Background(), "lease-1", "owner-1", 30*time.Second, nil)
 	rec.Reset()
 
-	_, err := store.Renew(context.Background(), "lease-1", tok, 30*time.Second)
+	_, err := store.Renew(context.Background(), "lease-1", tok, 30*time.Second, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

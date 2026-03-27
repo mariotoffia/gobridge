@@ -2,10 +2,19 @@ package bridge
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+// HTTPMountable is implemented by transport factories that expose HTTP
+// handlers. The composition root extracts the handler and mounts it on
+// an HTTP server alongside the admin/monitor APIs.
+type HTTPMountable interface {
+	Handler() http.Handler
+	PathPrefix() string
+}
 
 // TransportFactory creates transport-specific sessions, receivers, and senders
 // from declarative configuration definitions. A transport that does not

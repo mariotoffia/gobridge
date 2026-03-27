@@ -57,7 +57,7 @@ func TestOutboxDrainer_WorkCtxNotCappedBySendTimeout(t *testing.T) {
 	leaseStore := NewFakeLeaseStore()
 
 	pk := domain.OutboxPartitionKey("sess-1", "")
-	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second)
+	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	var tokenCalls atomic.Int32
 	cfg := goruntime.OutboxDrainerConfig{
@@ -132,7 +132,7 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 	sender := NewFakeSender()
 
 	pk := domain.OutboxPartitionKey("sess-1", "")
-	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second)
+	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	outbox.CompleteFn = func(_ []string, _ domain.LeaseToken) error {
 		return domain.ErrStaleFencingToken

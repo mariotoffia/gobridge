@@ -9,9 +9,13 @@ import (
 
 // LeaseStore manages distributed lease ownership for single-active scenarios.
 // Implementations must use conditional writes to enforce fencing semantics.
+//
+// The endpoints parameter on Acquire and Renew stores the owner's reachable
+// addresses alongside the lease record. Other instances retrieve these via
+// Current to discover how to reach the lease owner for cluster-aware routing.
 type LeaseStore interface {
-	Acquire(ctx context.Context, leaseID string, ownerID string, ttl time.Duration) (domain.LeaseToken, error)
-	Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration) (domain.LeaseToken, error)
+	Acquire(ctx context.Context, leaseID string, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error)
+	Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error)
 	Release(ctx context.Context, leaseID string, token domain.LeaseToken) error
 	Current(ctx context.Context, leaseID string) (domain.LeaseInfo, error)
 }

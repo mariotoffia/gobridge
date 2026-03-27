@@ -13,6 +13,7 @@ type leaseEntry struct {
 	owner     string
 	version   uint64
 	expiresAt time.Time
+	endpoints map[string]string
 }
 
 // Store implements ports.LeaseStore in memory for tests and
@@ -44,7 +45,7 @@ func NewStore(opts ...Option) *Store {
 	return s
 }
 
-func (s *Store) Acquire(_ context.Context, leaseID, ownerID string, ttl time.Duration) (domain.LeaseToken, error) {
+func (s *Store) Acquire(_ context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -61,12 +62,13 @@ func (s *Store) Acquire(_ context.Context, leaseID, ownerID string, ttl time.Dur
 		owner:     ownerID,
 		version:   ver,
 		expiresAt: now.Add(ttl),
+		endpoints: endpoints,
 	}
 
 	return domain.LeaseToken{Version: ver, Owner: ownerID}, nil
 }
 
-func (s *Store) Renew(_ context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration) (domain.LeaseToken, error) {
+func (s *Store) Renew(_ context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -86,6 +88,9 @@ func (s *Store) Renew(_ context.Context, leaseID string, token domain.LeaseToken
 	}
 
 	e.expiresAt = s.now().Add(ttl)
+	if endpoints != nil {
+		e.endpoints = endpoints
+	}
 	return token, nil
 }
 
@@ -128,5 +133,6 @@ func (s *Store) Current(_ context.Context, leaseID string) (domain.LeaseInfo, er
 		Owner:     e.owner,
 		Version:   e.version,
 		ExpiresAt: e.expiresAt,
+		Endpoints: e.endpoints,
 	}, nil
 }

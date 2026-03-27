@@ -28,6 +28,7 @@ type SessionManager struct {
 	renewJitter       time.Duration
 	maxRenewFails     int
 	stepDownGrace     time.Duration
+	endpoints         map[string]string
 	metrics           ports.MetricsExporter
 	audit             ports.AuditLogger
 	logger            *slog.Logger
@@ -249,7 +250,7 @@ func (m *SessionManager) acquireLeaseWithRetry(ctx context.Context) (domain.Leas
 	leaseTag := domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID}
 	for {
 		start := time.Now()
-		token, err := m.leaseStore.Acquire(ctx, m.sessionID, m.ownerID, m.leaseTTL)
+		token, err := m.leaseStore.Acquire(ctx, m.sessionID, m.ownerID, m.leaseTTL, m.endpoints)
 		m.metrics.Timer(domain.MetricLeaseAcquireLatency, time.Since(start), leaseTag)
 		if err == nil {
 			return token, nil
@@ -292,7 +293,7 @@ func (m *SessionManager) renewLoop(ctx context.Context) error {
 
 			leaseTag := domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID}
 			start := time.Now()
-			newToken, err := m.leaseStore.Renew(ctx, m.sessionID, token, m.leaseTTL)
+			newToken, err := m.leaseStore.Renew(ctx, m.sessionID, token, m.leaseTTL, m.endpoints)
 			m.metrics.Timer(domain.MetricLeaseRenewLatency, time.Since(start), leaseTag)
 
 			if err != nil {

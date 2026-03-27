@@ -94,7 +94,7 @@ func RunLeaseStoreTests(t *testing.T, store ports.LeaseStore, opts *LeaseTestOpt
 
 func leaseAcquireFresh(t *testing.T, store ports.LeaseStore) {
 	ctx := context.Background()
-	tok, err := store.Acquire(ctx, "lt-af-1", "owner-A", 30*time.Second)
+	tok, err := store.Acquire(ctx, "lt-af-1", "owner-A", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -108,12 +108,12 @@ func leaseAcquireFresh(t *testing.T, store ports.LeaseStore) {
 
 func leaseAcquireAlreadyHeld(t *testing.T, store ports.LeaseStore) {
 	ctx := context.Background()
-	_, err := store.Acquire(ctx, "lt-ah-1", "owner-A", 30*time.Second)
+	_, err := store.Acquire(ctx, "lt-ah-1", "owner-A", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("first acquire: %v", err)
 	}
 
-	_, err = store.Acquire(ctx, "lt-ah-1", "owner-B", 30*time.Second)
+	_, err = store.Acquire(ctx, "lt-ah-1", "owner-B", 30*time.Second, nil)
 	if !errors.Is(err, domain.ErrAlreadyExists) {
 		t.Fatalf("expected ErrAlreadyExists, got %v", err)
 	}
@@ -123,14 +123,14 @@ func leaseAcquireExpiredTakeover(t *testing.T, store ports.LeaseStore, opts *Lea
 	ctx := context.Background()
 	ttl := opts.leaseTTL()
 
-	tok1, err := store.Acquire(ctx, "lt-aet-1", "owner-A", ttl)
+	tok1, err := store.Acquire(ctx, "lt-aet-1", "owner-A", ttl, nil)
 	if err != nil {
 		t.Fatalf("first acquire: %v", err)
 	}
 
 	opts.waitForExpiry(ttl)
 
-	tok2, err := store.Acquire(ctx, "lt-aet-1", "owner-B", 30*time.Second)
+	tok2, err := store.Acquire(ctx, "lt-aet-1", "owner-B", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("takeover acquire: %v", err)
 	}
@@ -144,12 +144,12 @@ func leaseAcquireExpiredTakeover(t *testing.T, store ports.LeaseStore, opts *Lea
 
 func leaseRenewSuccess(t *testing.T, store ports.LeaseStore) {
 	ctx := context.Background()
-	tok, err := store.Acquire(ctx, "lt-rs-1", "owner-A", 30*time.Second)
+	tok, err := store.Acquire(ctx, "lt-rs-1", "owner-A", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
-	renewed, err := store.Renew(ctx, "lt-rs-1", tok, 30*time.Second)
+	renewed, err := store.Renew(ctx, "lt-rs-1", tok, 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("renew: %v", err)
 	}
@@ -163,13 +163,13 @@ func leaseRenewSuccess(t *testing.T, store ports.LeaseStore) {
 
 func leaseRenewStaleToken(t *testing.T, store ports.LeaseStore) {
 	ctx := context.Background()
-	tok, err := store.Acquire(ctx, "lt-rst-1", "owner-A", 30*time.Second)
+	tok, err := store.Acquire(ctx, "lt-rst-1", "owner-A", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
 	stale := domain.LeaseToken{Version: tok.Version + 999, Owner: "owner-A"}
-	_, err = store.Renew(ctx, "lt-rst-1", stale, 30*time.Second)
+	_, err = store.Renew(ctx, "lt-rst-1", stale, 30*time.Second, nil)
 	if !errors.Is(err, domain.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
 	}
@@ -177,13 +177,13 @@ func leaseRenewStaleToken(t *testing.T, store ports.LeaseStore) {
 
 func leaseRenewWrongOwner(t *testing.T, store ports.LeaseStore) {
 	ctx := context.Background()
-	tok, err := store.Acquire(ctx, "lt-rwo-1", "owner-A", 30*time.Second)
+	tok, err := store.Acquire(ctx, "lt-rwo-1", "owner-A", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
 	wrong := domain.LeaseToken{Version: tok.Version, Owner: "owner-B"}
-	_, err = store.Renew(ctx, "lt-rwo-1", wrong, 30*time.Second)
+	_, err = store.Renew(ctx, "lt-rwo-1", wrong, 30*time.Second, nil)
 	if !errors.Is(err, domain.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
 	}
@@ -191,7 +191,7 @@ func leaseRenewWrongOwner(t *testing.T, store ports.LeaseStore) {
 
 func leaseRenewNonExistent(t *testing.T, store ports.LeaseStore) {
 	ctx := context.Background()
-	_, err := store.Renew(ctx, "lt-rne-no-such-lease", domain.LeaseToken{Version: 1, Owner: "x"}, 30*time.Second)
+	_, err := store.Renew(ctx, "lt-rne-no-such-lease", domain.LeaseToken{Version: 1, Owner: "x"}, 30*time.Second, nil)
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
@@ -199,7 +199,7 @@ func leaseRenewNonExistent(t *testing.T, store ports.LeaseStore) {
 
 func leaseReleaseSuccess(t *testing.T, store ports.LeaseStore) {
 	ctx := context.Background()
-	tok, err := store.Acquire(ctx, "lt-rels-1", "owner-A", 30*time.Second)
+	tok, err := store.Acquire(ctx, "lt-rels-1", "owner-A", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -216,7 +216,7 @@ func leaseReleaseSuccess(t *testing.T, store ports.LeaseStore) {
 
 func leaseReleaseStaleToken(t *testing.T, store ports.LeaseStore) {
 	ctx := context.Background()
-	tok, err := store.Acquire(ctx, "lt-relst-1", "owner-A", 30*time.Second)
+	tok, err := store.Acquire(ctx, "lt-relst-1", "owner-A", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -238,7 +238,7 @@ func leaseReleaseNonExistent(t *testing.T, store ports.LeaseStore) {
 
 func leaseCurrentReturnsInfo(t *testing.T, store ports.LeaseStore) {
 	ctx := context.Background()
-	tok, err := store.Acquire(ctx, "lt-cri-1", "owner-A", 30*time.Second)
+	tok, err := store.Acquire(ctx, "lt-cri-1", "owner-A", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -274,7 +274,7 @@ func leaseVersionMonotonicallyIncreases(t *testing.T, store ports.LeaseStore) {
 
 	var versions []uint64
 	for i := 0; i < 5; i++ {
-		tok, err := store.Acquire(ctx, "lt-vmi-1", fmt.Sprintf("owner-%d", i), 30*time.Second)
+		tok, err := store.Acquire(ctx, "lt-vmi-1", fmt.Sprintf("owner-%d", i), 30*time.Second, nil)
 		if err != nil {
 			t.Fatalf("acquire cycle %d: %v", i, err)
 		}
@@ -303,7 +303,7 @@ func leaseConcurrentAcquire(t *testing.T, store ports.LeaseStore) {
 	for i := 0; i < goroutines; i++ {
 		go func(owner string) {
 			defer wg.Done()
-			_, err := store.Acquire(ctx, "lt-ca-contested", owner, 30*time.Second)
+			_, err := store.Acquire(ctx, "lt-ca-contested", owner, 30*time.Second, nil)
 			if err == nil {
 				wins.Add(1)
 			} else if errors.Is(err, domain.ErrAlreadyExists) {
@@ -326,12 +326,12 @@ func leaseConcurrentAcquire(t *testing.T, store ports.LeaseStore) {
 func leaseFullLifecycle(t *testing.T, store ports.LeaseStore, opts *LeaseTestOptions) {
 	ctx := context.Background()
 
-	tok1, err := store.Acquire(ctx, "lt-fl-1", "owner-A", 30*time.Second)
+	tok1, err := store.Acquire(ctx, "lt-fl-1", "owner-A", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
-	renewed, err := store.Renew(ctx, "lt-fl-1", tok1, 30*time.Second)
+	renewed, err := store.Renew(ctx, "lt-fl-1", tok1, 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("renew: %v", err)
 	}
@@ -356,7 +356,7 @@ func leaseFullLifecycle(t *testing.T, store ports.LeaseStore, opts *LeaseTestOpt
 		t.Fatalf("expected ErrNotFound after release, got %v", err)
 	}
 
-	tok2, err := store.Acquire(ctx, "lt-fl-1", "owner-B", 30*time.Second)
+	tok2, err := store.Acquire(ctx, "lt-fl-1", "owner-B", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("re-acquire: %v", err)
 	}

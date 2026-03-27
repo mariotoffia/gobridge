@@ -22,9 +22,9 @@ func NewInstrumentedLeaseStore(inner ports.LeaseStore, metrics ports.MetricsExpo
 	return &InstrumentedLeaseStore{inner: inner, metrics: metrics}
 }
 
-func (s *InstrumentedLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration) (domain.LeaseToken, error) {
+func (s *InstrumentedLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
 	start := time.Now()
-	tok, err := s.inner.Acquire(ctx, leaseID, ownerID, ttl)
+	tok, err := s.inner.Acquire(ctx, leaseID, ownerID, ttl, endpoints)
 	tags := []domain.Tag{{Key: domain.TagKeyLeaseID, Value: leaseID}}
 
 	s.metrics.Timer(domain.MetricLeaseAcquireLatency, time.Since(start), tags...)
@@ -34,9 +34,9 @@ func (s *InstrumentedLeaseStore) Acquire(ctx context.Context, leaseID, ownerID s
 	return tok, err
 }
 
-func (s *InstrumentedLeaseStore) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration) (domain.LeaseToken, error) {
+func (s *InstrumentedLeaseStore) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
 	start := time.Now()
-	tok, err := s.inner.Renew(ctx, leaseID, token, ttl)
+	tok, err := s.inner.Renew(ctx, leaseID, token, ttl, endpoints)
 	tags := []domain.Tag{{Key: domain.TagKeyLeaseID, Value: leaseID}}
 	s.metrics.Timer(domain.MetricLeaseRenewLatency, time.Since(start), tags...)
 	return tok, err

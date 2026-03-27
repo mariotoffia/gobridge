@@ -38,7 +38,7 @@ func TestAcquireFreshLease(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
 
-	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 30*time.Second)
+	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -55,12 +55,12 @@ func TestAcquireAlreadyHeldLease(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
 
-	_, err := s.Acquire(ctx, "lease-1", "owner-A", 30*time.Second)
+	_, err := s.Acquire(ctx, "lease-1", "owner-A", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("first acquire: %v", err)
 	}
 
-	_, err = s.Acquire(ctx, "lease-1", "owner-B", 30*time.Second)
+	_, err = s.Acquire(ctx, "lease-1", "owner-B", 30*time.Second, nil)
 	if !errors.Is(err, domain.ErrAlreadyExists) {
 		t.Fatalf("expected ErrAlreadyExists, got %v", err)
 	}
@@ -77,7 +77,7 @@ func TestAcquireExpiredLease(t *testing.T) {
 	}))
 	ctx := context.Background()
 
-	tok1, err := s.Acquire(ctx, "lease-1", "owner-A", 10*time.Second)
+	tok1, err := s.Acquire(ctx, "lease-1", "owner-A", 10*time.Second, nil)
 	if err != nil {
 		t.Fatalf("first acquire: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestAcquireExpiredLease(t *testing.T) {
 	// Advance past expiry.
 	clock.Store(now.Add(11 * time.Second))
 
-	tok2, err := s.Acquire(ctx, "lease-1", "owner-B", 30*time.Second)
+	tok2, err := s.Acquire(ctx, "lease-1", "owner-B", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("takeover acquire: %v", err)
 	}
@@ -108,13 +108,13 @@ func TestRenewSuccess(t *testing.T) {
 	}))
 	ctx := context.Background()
 
-	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 10*time.Second)
+	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 10*time.Second, nil)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
 	clock.Store(now.Add(5 * time.Second))
-	renewed, err := s.Renew(ctx, "lease-1", tok, 10*time.Second)
+	renewed, err := s.Renew(ctx, "lease-1", tok, 10*time.Second, nil)
 	if err != nil {
 		t.Fatalf("renew: %v", err)
 	}
@@ -137,13 +137,13 @@ func TestRenewStaleToken(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
 
-	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 30*time.Second)
+	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
 	stale := domain.LeaseToken{Version: tok.Version + 999, Owner: "owner-A"}
-	_, err = s.Renew(ctx, "lease-1", stale, 30*time.Second)
+	_, err = s.Renew(ctx, "lease-1", stale, 30*time.Second, nil)
 	if !errors.Is(err, domain.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
 	}
@@ -154,13 +154,13 @@ func TestRenewWrongOwner(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
 
-	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 30*time.Second)
+	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
 	wrong := domain.LeaseToken{Version: tok.Version, Owner: "owner-B"}
-	_, err = s.Renew(ctx, "lease-1", wrong, 30*time.Second)
+	_, err = s.Renew(ctx, "lease-1", wrong, 30*time.Second, nil)
 	if !errors.Is(err, domain.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
 	}
@@ -171,7 +171,7 @@ func TestRenewNonExistent(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
 
-	_, err := s.Renew(ctx, "no-such-lease", domain.LeaseToken{Version: 1, Owner: "x"}, 30*time.Second)
+	_, err := s.Renew(ctx, "no-such-lease", domain.LeaseToken{Version: 1, Owner: "x"}, 30*time.Second, nil)
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
@@ -182,7 +182,7 @@ func TestReleaseSuccess(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
 
-	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 30*time.Second)
+	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestReleaseStaleToken(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
 
-	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 30*time.Second)
+	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestCurrentReturnsInfo(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
 
-	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 30*time.Second)
+	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestConcurrentAcquire(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func(owner string) {
 			defer wg.Done()
-			_, err := s.Acquire(ctx, "contested-lease", owner, 30*time.Second)
+			_, err := s.Acquire(ctx, "contested-lease", owner, 30*time.Second, nil)
 			if err == nil {
 				wins.Add(1)
 			} else if errors.Is(err, domain.ErrAlreadyExists) {
@@ -310,7 +310,7 @@ func TestVersionMonotonicallyIncreases(t *testing.T) {
 
 	var versions []uint64
 	for i := 0; i < 5; i++ {
-		tok, err := s.Acquire(ctx, "lease-cycling", fmt.Sprintf("owner-%d", i), 5*time.Second)
+		tok, err := s.Acquire(ctx, "lease-cycling", fmt.Sprintf("owner-%d", i), 5*time.Second, nil)
 		if err != nil {
 			t.Fatalf("acquire cycle %d: %v", i, err)
 		}
