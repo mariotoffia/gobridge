@@ -116,9 +116,15 @@ func toBool(v any) (bool, error) {
 	switch val := v.(type) {
 	case bool:
 		return val, nil
-	case int, int64, int32:
+	case int:
 		return val != 0, nil
-	case float64, float32:
+	case int64:
+		return val != 0, nil
+	case int32:
+		return val != 0, nil
+	case float64:
+		return val != 0, nil
+	case float32:
 		return val != 0, nil
 	case string:
 		return strconv.ParseBool(val)

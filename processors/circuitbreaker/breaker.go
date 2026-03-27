@@ -44,29 +44,36 @@ func newBreaker(key string, cfg Config, onStateChange func(string, State, State)
 
 func (b *breaker) beforeRequest() error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 
 	switch b.state {
 	case StateClosed:
+		b.mu.Unlock()
 		return nil
 	case StateOpen:
 		if time.Since(b.openedAt) >= b.config.ResetTimeout {
-			b.transitionTo(StateHalfOpen)
+			notify := b.transitionTo(StateHalfOpen)
+			b.mu.Unlock()
+			if notify != nil {
+				notify()
+			}
 			return nil
 		}
 		remaining := b.config.ResetTimeout - time.Since(b.openedAt)
+		b.mu.Unlock()
 		return domain.ErrUnavailable.WithRetryAfter(remaining)
 	case StateHalfOpen:
+		b.mu.Unlock()
 		return nil
 	default:
+		b.mu.Unlock()
 		return nil
 	}
 }
 
 func (b *breaker) afterRequest(err error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	var notify func()
 
+	b.mu.Lock()
 	b.totalRequests++
 
 	if err != nil {
@@ -76,9 +83,13 @@ func (b *breaker) afterRequest(err error) {
 		b.lastFailureTime = time.Now()
 
 		if b.state == StateClosed && b.consecutiveFailures >= b.config.FailureThreshold {
-			b.transitionTo(StateOpen)
+			notify = b.transitionTo(StateOpen)
 		} else if b.state == StateHalfOpen {
-			b.transitionTo(StateOpen)
+			notify = b.transitionTo(StateOpen)
+		}
+		b.mu.Unlock()
+		if notify != nil {
+			notify()
 		}
 		return
 	}
@@ -88,13 +99,19 @@ func (b *breaker) afterRequest(err error) {
 	b.consecutiveFailures = 0
 
 	if b.state == StateHalfOpen && b.consecutiveSuccesses >= b.config.SuccessThreshold {
-		b.transitionTo(StateClosed)
+		notify = b.transitionTo(StateClosed)
+	}
+	b.mu.Unlock()
+	if notify != nil {
+		notify()
 	}
 }
 
-func (b *breaker) transitionTo(newState State) {
+// transitionTo changes state and returns a callback to invoke AFTER releasing
+// the lock. Must be called with b.mu held.
+func (b *breaker) transitionTo(newState State) func() {
 	if b.state == newState {
-		return
+		return nil
 	}
 
 	old := b.state
@@ -111,8 +128,11 @@ func (b *breaker) transitionTo(newState State) {
 	}
 
 	if b.onStateChange != nil {
-		b.onStateChange(b.key, old, newState)
+		key := b.key
+		cb := b.onStateChange
+		return func() { cb(key, old, newState) }
 	}
+	return nil
 }
 
 func (b *breaker) metrics() BreakerMetrics {

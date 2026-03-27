@@ -327,6 +327,21 @@ func (s *Supervisor) buildRuntime(ctx context.Context, cfg *config.BridgeConfig)
 }
 
 func (s *Supervisor) newBuilder(cfg *config.BridgeConfig) *Builder {
+	s.mu.RLock()
+	transports := make(map[string]TransportFactory, len(s.transports))
+	for k, v := range s.transports {
+		transports[k] = v
+	}
+	stores := make(map[string]StoreFactory, len(s.stores))
+	for k, v := range s.stores {
+		stores[k] = v
+	}
+	procs := make(map[string]ports.Processor, len(s.processors))
+	for k, v := range s.processors {
+		procs[k] = v
+	}
+	s.mu.RUnlock()
+
 	var opts []BuilderOption
 	if s.logger != nil {
 		opts = append(opts, WithLogger(s.logger))
@@ -335,13 +350,13 @@ func (s *Supervisor) newBuilder(cfg *config.BridgeConfig) *Builder {
 		opts = append(opts, WithCredentialStore(s.credStore))
 	}
 	b := NewBuilder(cfg, opts...)
-	for name, tf := range s.transports {
+	for name, tf := range transports {
 		b.RegisterTransport(name, tf)
 	}
-	for name, sf := range s.stores {
+	for name, sf := range stores {
 		b.RegisterStoreFactory(name, sf)
 	}
-	for name, p := range s.processors {
+	for name, p := range procs {
 		b.RegisterProcessor(name, p)
 	}
 	return b
@@ -351,8 +366,15 @@ func (s *Supervisor) detectSwapMode(cfg *config.BridgeConfig) SwapMode {
 	if s.swapMode != SwapAuto {
 		return s.swapMode
 	}
+	s.mu.RLock()
+	transports := make(map[string]TransportFactory, len(s.transports))
+	for k, v := range s.transports {
+		transports[k] = v
+	}
+	s.mu.RUnlock()
+
 	for _, sess := range cfg.Sessions {
-		tf, ok := s.transports[sess.Transport]
+		tf, ok := transports[sess.Transport]
 		if !ok {
 			continue
 		}

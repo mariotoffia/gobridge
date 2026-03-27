@@ -43,6 +43,9 @@ func (f *FixedPoll) NextInterval(_ int) time.Duration {
 // the outbox is empty and resets to MinInterval when records are found.
 // This reduces DynamoDB read cost during idle periods while maintaining
 // low latency when messages are flowing.
+//
+// AdaptiveBackoff is NOT safe for concurrent use. It is intended to be
+// called from a single goroutine (the OutboxDrainer.Run loop).
 type AdaptiveBackoff struct {
 	MinInterval time.Duration
 	MaxInterval time.Duration

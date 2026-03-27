@@ -115,11 +115,6 @@ func toDrainStrategyE(rs *config.RouteSessionDef) (domain.DrainStrategy, error) 
 	return domain.NewFixedPoll(domain.DefaultFixedPollInterval), nil
 }
 
-func buildDrainStrategy(ds *config.DrainStrategyDef) domain.DrainStrategy {
-	s, _ := buildDrainStrategyE(ds)
-	return s
-}
-
 func buildDrainStrategyE(ds *config.DrainStrategyDef) (domain.DrainStrategy, error) {
 	switch ds.Type {
 	case "adaptive_backoff":

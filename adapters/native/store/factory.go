@@ -70,6 +70,9 @@ func (f *SQLiteStoreFactory) NewDLQStore(_ context.Context, cfg config.StoreConf
 }
 
 func requiredPath(cfg config.StoreConfig) (string, error) {
+	if cfg.Options == nil {
+		return "", fmt.Errorf("nativestore: missing required option \"path\" in store config (options is nil)")
+	}
 	v, ok := cfg.Options["path"]
 	if !ok {
 		return "", fmt.Errorf("nativestore: missing required option \"path\" in store config")
