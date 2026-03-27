@@ -39,7 +39,7 @@ func (s *Server) correlationMW(next http.Handler) http.Handler {
 		}
 
 		if traceID == "" {
-			traceID = r.Header.Get("X-Trace-ID")
+			traceID = sanitizePropagatedID(r.Header.Get("X-Trace-ID"))
 		}
 		if traceID == "" {
 			traceID = generateHexID(16)
@@ -47,7 +47,7 @@ func (s *Server) correlationMW(next http.Handler) http.Handler {
 		ctx = observability.WithTraceID(ctx, traceID)
 
 		if spanID == "" {
-			spanID = r.Header.Get("X-Span-ID")
+			spanID = sanitizePropagatedID(r.Header.Get("X-Span-ID"))
 		}
 		if spanID == "" {
 			spanID = generateHexID(8)
@@ -71,10 +71,19 @@ func generateHexID(n int) string {
 	return hex.EncodeToString(buf)
 }
 
+const maxPropagatedIDLen = 256
+
+func sanitizePropagatedID(s string) string {
+	if len(s) > maxPropagatedIDLen {
+		return s[:maxPropagatedIDLen]
+	}
+	return s
+}
+
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
 		if v != "" {
-			return v
+			return sanitizePropagatedID(v)
 		}
 	}
 	return ""

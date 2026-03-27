@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -234,4 +235,85 @@ func TestCredentialResolver_ClearCache(t *testing.T) {
 
 	r.ClearCache()
 	assert.Equal(t, 0, r.CacheStats().Size)
+}
+
+// Verifies the credential cache never holds more than maxCredentialCacheEntries (1000) after many distinct URIs.
+func TestCredentialResolver_CacheMaxSize(t *testing.T) {
+	creds := &domain.CredentialSet{
+		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	}
+	repo := &stubRepo{scheme: "file", creds: creds}
+
+	r := NewCredentialResolver(WithCredentialCacheTTL(time.Hour))
+	r.Register(repo)
+
+	for i := range 1005 {
+		uri := fmt.Sprintf("file://entry-%d", i)
+		_, err := r.Resolve(context.Background(), uri)
+		require.NoError(t, err)
+		stats := r.CacheStats()
+		assert.LessOrEqual(t, stats.Size, maxCredentialCacheEntries,
+			"cache size after resolve %d", i)
+	}
+	assert.Equal(t, maxCredentialCacheEntries, r.CacheStats().Size)
+}
+
+// Verifies when over capacity, expired entries are evicted before LRU-by-expiry eviction runs.
+func TestCredentialResolver_CacheEvictsExpired(t *testing.T) {
+	creds := &domain.CredentialSet{
+		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	}
+	repo := &stubRepo{scheme: "file", creds: creds}
+
+	r := NewCredentialResolver(WithCredentialCacheTTL(time.Millisecond))
+	r.Register(repo)
+
+	for i := range maxCredentialCacheEntries {
+		uri := fmt.Sprintf("file://old-%d", i)
+		_, err := r.Resolve(context.Background(), uri)
+		require.NoError(t, err)
+	}
+	assert.Equal(t, maxCredentialCacheEntries, r.CacheStats().Size)
+
+	time.Sleep(20 * time.Millisecond)
+
+	_, err := r.Resolve(context.Background(), "file://fresh-after-expiry")
+	require.NoError(t, err)
+
+	stats := r.CacheStats()
+	assert.Equal(t, 1, stats.Size, "expired bulk should be dropped when inserting past max size")
+	assert.Equal(t, 0, stats.Expired, "remaining entry should be active")
+	assert.Equal(t, int32(maxCredentialCacheEntries+1), repo.callCount.Load())
+}
+
+// Verifies when still over capacity after removing expired entries, the entry closest to expiry (earliest expiresAt) is evicted.
+func TestCredentialResolver_CacheEvictsOldestWhenFull(t *testing.T) {
+	creds := &domain.CredentialSet{
+		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	}
+	repo := &stubRepo{scheme: "file", creds: creds}
+
+	r := NewCredentialResolver(WithCredentialCacheTTL(time.Hour))
+	r.Register(repo)
+
+	firstURI := "file://first-evict-candidate"
+	_, err := r.Resolve(context.Background(), firstURI)
+	require.NoError(t, err)
+
+	for i := 1; i < maxCredentialCacheEntries; i++ {
+		uri := fmt.Sprintf("file://fill-%d", i)
+		_, err := r.Resolve(context.Background(), uri)
+		require.NoError(t, err)
+	}
+	assert.Equal(t, maxCredentialCacheEntries, r.CacheStats().Size)
+
+	overflowURI := "file://overflow"
+	_, err = r.Resolve(context.Background(), overflowURI)
+	require.NoError(t, err)
+	assert.Equal(t, maxCredentialCacheEntries, r.CacheStats().Size)
+
+	_, err = r.Resolve(context.Background(), firstURI)
+	require.NoError(t, err)
+	assert.Equal(t, int32(maxCredentialCacheEntries+2), repo.callCount.Load(),
+		"first URI should miss cache after it was evicted as oldest-by-expiry")
 }

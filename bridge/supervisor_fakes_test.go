@@ -60,11 +60,11 @@ func (s *failingSession) Close(_ context.Context) error {
 
 type countingTransportFactory struct {
 	fakeTransportFactory
-	mu           sync.Mutex
-	SessionCalls int
+	mu            sync.Mutex
+	SessionCalls  int
 	ReceiverCalls int
-	SenderCalls  int
-	SessionFn    func(context.Context, config.SessionDef) (ports.Session, error)
+	SenderCalls   int
+	SessionFn     func(context.Context, config.SessionDef) (ports.Session, error)
 }
 
 func (f *countingTransportFactory) NewSession(ctx context.Context, sd config.SessionDef) (ports.Session, error) {
@@ -323,18 +323,6 @@ func waitForRouteID(s *Supervisor, routeID string, timeout time.Duration) bool {
 			if len(routes) > 0 && routes[0].ID == routeID {
 				return true
 			}
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	return false
-}
-
-// waitForNilRuntime polls until s.Runtime() returns nil or timeout.
-func waitForNilRuntime(s *Supervisor, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if s.Runtime() == nil {
-			return true
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

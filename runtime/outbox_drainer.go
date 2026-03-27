@@ -353,7 +353,7 @@ func (d *OutboxDrainer) handleExpired(ctx context.Context, rec *domain.OutboxRec
 
 func (d *OutboxDrainer) handlePoison(ctx context.Context, rec *domain.OutboxRecord, token domain.LeaseToken) error {
 	env := &rec.Envelope
-	poisonErr := domain.NewBridgeError("POISON_MESSAGE", domain.ErrorPermanent, "replay count exceeded")
+	poisonErr := domain.NewBridgeError(domain.ErrCodePoisonMessage, domain.ErrorPermanent, "replay count exceeded")
 	if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID, rec.SessionID, "", poisonErr, rec.ReplayCount); dlqErr != nil {
 		return dlqErr
 	}

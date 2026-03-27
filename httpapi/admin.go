@@ -47,11 +47,11 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if err := s.rt.Start(ctx); err != nil {
 		s.emitAudit(r, "bridge.start", "bridge", "", "failure", map[string]any{"error": err.Error()})
-		writeErr(w, http.StatusConflict, err.Error())
+		writeErr(w, http.StatusConflict, "bridge start failed")
 		return
 	}
 	s.emitAudit(r, "bridge.start", "bridge", "", "success", nil)
@@ -63,11 +63,11 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if err := s.rt.Stop(ctx); err != nil {
 		s.emitAudit(r, "bridge.stop", "bridge", "", "failure", map[string]any{"error": err.Error()})
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, "bridge stop failed")
 		return
 	}
 	s.emitAudit(r, "bridge.stop", "bridge", "", "success", nil)
@@ -111,7 +111,7 @@ func (s *Server) handleDLQ(w http.ResponseWriter, r *http.Request) {
 	}
 	entries, err := store.List(r.Context(), domain.DLQFilter{Limit: 100})
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, "failed to list DLQ entries")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -137,7 +137,7 @@ func (s *Server) handleDLQMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	entries, err := store.List(r.Context(), filter)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, "failed to list DLQ messages")
 		return
 	}
 	writeJSON(w, http.StatusOK, entries)
@@ -175,7 +175,7 @@ func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
 			"ids":   body.IDs,
 			"error": err.Error(),
 		})
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, "DLQ replay failed")
 		return
 	}
 	s.emitAudit(r, "dlq.replay", "dlq", "", "success", map[string]any{
@@ -198,7 +198,7 @@ func (s *Server) handleDLQPurge(w http.ResponseWriter, r *http.Request) {
 	count, err := store.Purge(r.Context(), time.Now())
 	if err != nil {
 		s.emitAudit(r, "dlq.purge", "dlq", "", "failure", map[string]any{"error": err.Error()})
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, "DLQ purge failed")
 		return
 	}
 	s.emitAudit(r, "dlq.purge", "dlq", "", "success", map[string]any{"purged": count})
@@ -234,7 +234,7 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 	env := &domain.Envelope{
 		Subject: body.Subject,
 		Payload: payload,
-		Headers: body.Headers,
+		Headers: domain.StripReservedHeaders(body.Headers),
 	}
 
 	if err := s.rt.Inject(r.Context(), routeID, env); err != nil {
@@ -242,13 +242,13 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 			s.emitAudit(r, "route.inject", "route", routeID, "failure", map[string]any{
 				"error": "route not found",
 			})
-			writeErr(w, http.StatusNotFound, "route not found: "+routeID)
+			writeErr(w, http.StatusNotFound, "route not found")
 			return
 		}
 		s.emitAudit(r, "route.inject", "route", routeID, "failure", map[string]any{
 			"error": err.Error(),
 		})
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, "message injection failed")
 		return
 	}
 

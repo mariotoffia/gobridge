@@ -120,7 +120,9 @@ func TestSupervisor_PrepareFailure_NextValidConfigWorks(t *testing.T) {
 	require.True(t, waitForRouteID(s, "r3", swapTimeout))
 }
 
-// TestSupervisor_CompleteFailure_AfterStop validates that when Complete fails after the old runtime was stopped, the bridge is down.
+// TestSupervisor_CompleteFailure_AfterStop validates that when Complete
+// fails after the old runtime was stopped, the supervisor recovers
+// with the old config.
 func TestSupervisor_CompleteFailure_AfterStop(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, ef := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
@@ -132,7 +134,7 @@ func TestSupervisor_CompleteFailure_AfterStop(t *testing.T) {
 	}
 	require.True(t, sendConfig(ch, supervisorTestConfigWithSession("r2", "s1"), time.Second))
 	awaitSwap(t, swaps)
-	require.True(t, waitForNilRuntime(s, swapTimeout))
+	require.True(t, waitForRouteID(s, "r1", swapTimeout), "supervisor should recover with old config after Complete failure")
 }
 
 // TestSupervisor_CompleteFailure_SwapEventReportsDegraded validates the swap event carries the error when Complete fails.
@@ -170,8 +172,8 @@ func TestSupervisor_CompleteFailure_NextConfigRecovers(t *testing.T) {
 	require.True(t, waitForRouteID(s, "r3", swapTimeout))
 }
 
-// TestSupervisor_StartFailure_Overlap validates that when Start fails in overlap mode the bridge goes down
-// because the old runtime was already stopped before Start was attempted on the new one.
+// TestSupervisor_StartFailure_Overlap validates that when Start fails in
+// overlap mode the supervisor recovers by rebuilding with the old config.
 func TestSupervisor_StartFailure_Overlap(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, _ := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
@@ -190,10 +192,12 @@ func TestSupervisor_StartFailure_Overlap(t *testing.T) {
 	ev := awaitSwap(t, swaps)
 	require.Error(t, ev.Error)
 	assert.Contains(t, ev.Error.Error(), "start")
-	assert.True(t, waitForNilRuntime(s, 2*time.Second), "runtime should be nil after overlap start failure")
+	assert.True(t, waitForRouteID(s, "r1", 2*time.Second), "supervisor should recover with old config after start failure")
+	require.NotNil(t, s.Runtime(), "overlap start failure must recover a non-nil runtime (old config), not leave rt nil")
 }
 
-// TestSupervisor_StartFailure_PrepareCommit validates that when Start fails in PrepareCommit mode the bridge goes down.
+// TestSupervisor_StartFailure_PrepareCommit validates that when Start
+// fails in PrepareCommit mode the supervisor recovers with the old config.
 func TestSupervisor_StartFailure_PrepareCommit(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, _ := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
@@ -209,7 +213,8 @@ func TestSupervisor_StartFailure_PrepareCommit(t *testing.T) {
 	ev := awaitSwap(t, swaps)
 	require.Error(t, ev.Error)
 	assert.Contains(t, ev.Error.Error(), "start")
-	require.True(t, waitForNilRuntime(s, swapTimeout))
+	require.True(t, waitForRouteID(s, "r1", swapTimeout), "supervisor should recover with old config")
+	require.NotNil(t, s.Runtime(), "prepare-commit start failure must recover a non-nil runtime (old config), not leave rt nil")
 }
 
 // TestSupervisor_StartFailure_NextConfigRecovers validates recovery after a Start failure by sending a valid config.
@@ -317,7 +322,8 @@ func TestSupervisor_BrokerUnreachable_Overlap(t *testing.T) {
 	assert.Equal(t, oldRt, s.Runtime())
 }
 
-// TestSupervisor_BrokerUnreachable_PrepareCommit validates that session creation failure during Complete brings the bridge down.
+// TestSupervisor_BrokerUnreachable_PrepareCommit validates that session
+// creation failure during Complete triggers recovery with old config.
 func TestSupervisor_BrokerUnreachable_PrepareCommit(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, ef := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
@@ -330,7 +336,7 @@ func TestSupervisor_BrokerUnreachable_PrepareCommit(t *testing.T) {
 	require.True(t, sendConfig(ch, supervisorTestConfigWithSession("r2", "s1"), time.Second))
 	ev := awaitSwap(t, swaps)
 	require.Error(t, ev.Error)
-	require.True(t, waitForNilRuntime(s, swapTimeout))
+	require.True(t, waitForRouteID(s, "r1", swapTimeout), "supervisor should recover with old config")
 }
 
 // TestSupervisor_NoTransportsRegistered validates that a config with an unregistered transport fails while old runtime survives.

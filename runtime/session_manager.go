@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
@@ -36,7 +37,7 @@ type SessionManager struct {
 	mu            sync.Mutex
 	token         domain.LeaseToken
 	hasLease      bool
-	connectedOnce bool
+	connectedOnce atomic.Bool
 }
 
 // NewSessionManagerFromConfig creates a SessionManager from a config struct.
@@ -373,10 +374,9 @@ func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.Sessio
 	switch ev.Type {
 	case ports.SessionConnected:
 		m.log(ctx, slog.LevelInfo, "session connected")
-		if m.connectedOnce {
+		if m.connectedOnce.Swap(true) {
 			m.metrics.Counter(domain.MetricMQTTReconnects, 1, sessionTag)
 		}
-		m.connectedOnce = true
 		if err := m.session.Reconcile(ctx, m.plan); err != nil {
 			m.log(ctx, slog.LevelError, "reconcile failed on reconnect", "error", err)
 			m.metrics.Counter(domain.MetricReconcileFailures, 1, sessionTag)

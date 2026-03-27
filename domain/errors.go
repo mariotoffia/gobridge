@@ -55,8 +55,14 @@ const (
 
 // Cluster routing error codes.
 const (
-	ErrCodeNoRouteOwner ErrorCode = "NO_ROUTE_OWNER"
+	ErrCodeNoRouteOwner  ErrorCode = "NO_ROUTE_OWNER"
 	ErrCodeForwardFailed ErrorCode = "FORWARD_FAILED"
+)
+
+// Runtime error codes for pipeline classification.
+const (
+	ErrCodeNoBindingMatch ErrorCode = "NO_BINDING_MATCH"
+	ErrCodePoisonMessage  ErrorCode = "POISON_MESSAGE"
 )
 
 // BridgeError is the structured error type for the bridge.

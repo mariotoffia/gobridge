@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -167,9 +168,17 @@ func (s *Server) Stop(ctx context.Context) error {
 	return nil
 }
 
+const minAPIKeyLen = 16
+
 func (s *Server) validateConfig() error {
 	if s.cfg.AdminAPIKey == "" {
 		return fmt.Errorf("httpapi: admin API key is required; set AdminAPIKey in Config")
+	}
+	if len(s.cfg.AdminAPIKey) < minAPIKeyLen {
+		return fmt.Errorf("httpapi: admin API key must be at least %d characters", minAPIKeyLen)
+	}
+	if s.cfg.MonitorAPIKey != "" && len(s.cfg.MonitorAPIKey) < minAPIKeyLen {
+		return fmt.Errorf("httpapi: monitor API key must be at least %d characters when set", minAPIKeyLen)
 	}
 	if s.cfg.CORSOrigins == "*" {
 		return fmt.Errorf("httpapi: wildcard CORS origin '*' is not allowed; specify explicit origins or leave empty to disable CORS")
@@ -188,8 +197,18 @@ func (s *Server) wrap(h http.Handler) http.Handler {
 	if s.cfg.CORSOrigins != "" {
 		h = s.corsMW(h)
 	}
+	h = s.securityHeadersMW(h)
 	h = s.requestLogMW(h)
 	return h
+}
+
+func (s *Server) securityHeadersMW(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) recoverMW(next http.Handler) http.Handler {
@@ -277,20 +296,25 @@ func (s *Server) checkAPIKey(r *http.Request, expected string) bool {
 	if expected == "" {
 		return false
 	}
-	exp := []byte(expected)
-	if k := r.Header.Get("X-API-Key"); subtle.ConstantTimeCompare([]byte(k), exp) == 1 {
-		return true
+	expHash := sha256.Sum256([]byte(expected))
+	if k := r.Header.Get("X-API-Key"); k != "" {
+		kHash := sha256.Sum256([]byte(k))
+		if subtle.ConstantTimeCompare(kHash[:], expHash[:]) == 1 {
+			return true
+		}
 	}
 	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
 		token := strings.TrimPrefix(auth, "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(token), exp) == 1 {
+		tHash := sha256.Sum256([]byte(token))
+		if subtle.ConstantTimeCompare(tHash[:], expHash[:]) == 1 {
 			return true
 		}
 	}
 	return false
 }
 
-// statusRecorder captures the HTTP status code for logging.
+// statusRecorder captures the HTTP status code for logging while
+// preserving optional http.ResponseWriter interfaces.
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
@@ -299,6 +323,16 @@ type statusRecorder struct {
 func (r *statusRecorder) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

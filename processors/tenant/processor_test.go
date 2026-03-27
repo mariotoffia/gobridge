@@ -3,11 +3,14 @@ package tenant
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func nextOK(_ context.Context, _ *domain.Envelope) error { return nil }
@@ -53,6 +56,51 @@ func (s *stubTracker) IncrementInFlight(_ context.Context, _ string, delta int64
 	}
 	s.inFlight.Add(delta)
 	return nil
+}
+
+// mockTracker records TenantUsageTracker calls for assertions (optional errors per method).
+type mockTracker struct {
+	incrementInFlightCalls []struct {
+		tenantID string
+		delta    int64
+	}
+	incrementMessagesCalls []struct {
+		tenantID string
+		count    int64
+	}
+	incrementInFlightErr   error
+	incrementMessagesErr   error
+	mu                     sync.Mutex
+}
+
+func (m *mockTracker) IncrementMessages(_ context.Context, tenantID string, count int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.incrementMessagesCalls = append(m.incrementMessagesCalls, struct {
+		tenantID string
+		count    int64
+	}{tenantID, count})
+	return m.incrementMessagesErr
+}
+
+func (m *mockTracker) IncrementInFlight(_ context.Context, tenantID string, delta int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.incrementInFlightCalls = append(m.incrementInFlightCalls, struct {
+		tenantID string
+		delta    int64
+	}{tenantID, delta})
+	return m.incrementInFlightErr
+}
+
+func (m *mockTracker) inFlightDeltas() []int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]int64, 0, len(m.incrementInFlightCalls))
+	for _, c := range m.incrementInFlightCalls {
+		out = append(out, c.delta)
+	}
+	return out
 }
 
 // Verifies processing succeeds when tenant header is absent and not required.
@@ -314,4 +362,53 @@ func TestProcess_ValidatorAndTracker_FullFlow(t *testing.T) {
 	if got := tracker.inFlight.Load(); got != 0 {
 		t.Errorf("in-flight = %d, want 0", got)
 	}
+}
+
+// TestProcessor_DecrementUsesBackgroundContext verifies deferred in-flight
+// decrement runs after next returns even when the request context was cancelled.
+func TestProcessor_DecrementUsesBackgroundContext(t *testing.T) {
+	tracker := &mockTracker{}
+	p := New(Config{}, WithUsageTracker(tracker))
+	env := envelope("acme", 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	err := p.Process(ctx, env, func(_ context.Context, _ *domain.Envelope) error {
+		cancel()
+		return nil
+	})
+	require.NoError(t, err)
+
+	deltas := tracker.inFlightDeltas()
+	require.Contains(t, deltas, int64(1))
+	require.Contains(t, deltas, int64(-1))
+}
+
+// TestProcessor_IncrementMessagesSilentlyIgnoresError verifies IncrementMessages
+// errors are ignored on the success path (no panic, Process returns nil).
+func TestProcessor_IncrementMessagesSilentlyIgnoresError(t *testing.T) {
+	tracker := &mockTracker{incrementMessagesErr: errors.New("tracker unavailable")}
+	p := New(Config{}, WithUsageTracker(tracker))
+	env := envelope("acme", 0)
+
+	require.NotPanics(t, func() {
+		err := p.Process(context.Background(), env, nextOK)
+		require.NoError(t, err)
+	})
+
+	tracker.mu.Lock()
+	msgs := len(tracker.incrementMessagesCalls)
+	tracker.mu.Unlock()
+	require.Equal(t, 1, msgs)
+}
+
+// TestProcessor_RequireTenant_EmptyHeader verifies ErrInvalidPayload when
+// RequireTenant is true and the tenant header is absent.
+func TestProcessor_RequireTenant_EmptyHeader(t *testing.T) {
+	p := New(Config{RequireTenant: true})
+	env := &domain.Envelope{Subject: "test", Headers: map[string]any{}}
+
+	err := p.Process(context.Background(), env, nextOK)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, domain.ErrInvalidPayload)
 }

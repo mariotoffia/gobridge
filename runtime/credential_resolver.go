@@ -159,12 +159,37 @@ func (r *CredentialResolver) getCached(uri string) *domain.CredentialSet {
 	return entry.creds
 }
 
+const maxCredentialCacheEntries = 1000
+
 func (r *CredentialResolver) setCached(uri string, creds *domain.CredentialSet) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cache[uri] = &credCacheEntry{
 		creds:     creds,
 		expiresAt: time.Now().Add(r.cacheTTL),
+	}
+	if len(r.cache) > maxCredentialCacheEntries {
+		now := time.Now()
+		for k, e := range r.cache {
+			if now.After(e.expiresAt) {
+				delete(r.cache, k)
+			}
+		}
+		if len(r.cache) > maxCredentialCacheEntries {
+			var oldest string
+			var oldestTime time.Time
+			first := true
+			for k, e := range r.cache {
+				if first || e.expiresAt.Before(oldestTime) {
+					oldest = k
+					oldestTime = e.expiresAt
+					first = false
+				}
+			}
+			if oldest != "" {
+				delete(r.cache, oldest)
+			}
+		}
 	}
 }
 

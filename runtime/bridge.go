@@ -449,6 +449,8 @@ func (rt *Runtime) InstanceID() string {
 // RouteLocator returns the cluster-aware route locator.
 // Returns nil if no lease store is configured (standalone mode).
 func (rt *Runtime) RouteLocator() ports.RouteLocator {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
 	if rt.locator == nil {
 		return nil
 	}
@@ -578,8 +580,8 @@ type syntheticDelivery struct {
 
 func (d *syntheticDelivery) Envelope() *domain.Envelope  { return d.env }
 func (d *syntheticDelivery) Ack(_ context.Context) error { return nil }
-func (d *syntheticDelivery) Retry(_ context.Context, _ time.Duration, reason error) error {
-	return reason
+func (d *syntheticDelivery) Retry(_ context.Context, _ time.Duration, _ error) error {
+	return domain.ErrNotSupported
 }
 func (d *syntheticDelivery) Extend(_ context.Context, _ time.Time) error { return nil }
 

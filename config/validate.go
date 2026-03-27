@@ -70,18 +70,37 @@ func validate(cfg *BridgeConfig) *ValidationError {
 			"standalone", "clustered")
 	}
 
+	if cfg.Bridge.ShutdownTimeout != "" {
+		if d, err := time.ParseDuration(cfg.Bridge.ShutdownTimeout); err != nil {
+			ve.addf("bridge.shutdown_timeout: invalid duration %q: %v", cfg.Bridge.ShutdownTimeout, err)
+		} else if d <= 0 {
+			ve.addf("bridge.shutdown_timeout: must be positive, got %s", cfg.Bridge.ShutdownTimeout)
+		}
+	}
+	if cfg.Bridge.DrainTimeout != "" {
+		if d, err := time.ParseDuration(cfg.Bridge.DrainTimeout); err != nil {
+			ve.addf("bridge.drain_timeout: invalid duration %q: %v", cfg.Bridge.DrainTimeout, err)
+		} else if d <= 0 {
+			ve.addf("bridge.drain_timeout: must be positive, got %s", cfg.Bridge.DrainTimeout)
+		}
+	}
+
 	if cw := cfg.ConfigWatch; cw != nil {
 		if cw.Mode != "" {
 			validateEnum(ve, "config_watch.mode", cw.Mode, "notify", "poll")
 		}
 		if cw.PollInterval != "" {
-			if _, err := time.ParseDuration(cw.PollInterval); err != nil {
+			if d, err := time.ParseDuration(cw.PollInterval); err != nil {
 				ve.addf("config_watch.poll_interval: invalid duration %q: %v", cw.PollInterval, err)
+			} else if d <= 0 {
+				ve.addf("config_watch.poll_interval: must be positive, got %s", cw.PollInterval)
 			}
 		}
 		if cw.Debounce != "" {
-			if _, err := time.ParseDuration(cw.Debounce); err != nil {
+			if d, err := time.ParseDuration(cw.Debounce); err != nil {
 				ve.addf("config_watch.debounce: invalid duration %q: %v", cw.Debounce, err)
+			} else if d <= 0 {
+				ve.addf("config_watch.debounce: must be positive, got %s", cw.Debounce)
 			}
 		}
 	}
@@ -345,6 +364,11 @@ func validateStaleClaimDuration(ve *ValidationError, cfg *BridgeConfig) {
 		return
 	}
 
+	if stale <= 0 {
+		ve.addf("stores.outbox.options.stale_claim_duration: must be positive, got %v", stale)
+		return
+	}
+
 	maxGrace := defaultStepDownGrace
 	for _, r := range cfg.Routes {
 		if r.Session == nil {
@@ -406,8 +430,10 @@ func validateDrainStrategy(ve *ValidationError, prefix string, sess *RouteSessio
 	switch ds.Type {
 	case "fixed_poll":
 		if ds.Interval != "" {
-			if _, err := time.ParseDuration(ds.Interval); err != nil {
+			if d, err := time.ParseDuration(ds.Interval); err != nil {
 				ve.addf("%s: invalid interval %q: %v", field, ds.Interval, err)
+			} else if d <= 0 {
+				ve.addf("%s: interval must be positive, got %s", field, ds.Interval)
 			}
 		}
 

@@ -1,10 +1,12 @@
 package domain_test
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/stretchr/testify/assert"
 )
 
 // TestEnvelope_HasExpiry verifies HasExpiry is false for zero ExpiresAt and true when expiry is set.
@@ -125,4 +127,78 @@ func TestOutboxPartitionKey_Deterministic(t *testing.T) {
 			t.Fatalf("iteration %d: keys diverged: %q vs %q", i, a, b)
 		}
 	}
+}
+
+func TestEnvelope_Clone_DeepCopiesSliceHeaders(t *testing.T) {
+	orig := &domain.Envelope{
+		Headers: map[string]any{"tags": []string{"a", "b"}},
+	}
+	clone := orig.Clone()
+
+	cloneSlice := clone.Headers["tags"].([]string)
+	cloneSlice[0] = "mutated"
+
+	assert.Equal(t, []string{"a", "b"}, orig.Headers["tags"])
+}
+
+func TestEnvelope_Clone_DeepCopiesMapHeaders(t *testing.T) {
+	orig := &domain.Envelope{
+		Headers: map[string]any{"nested": map[string]any{"k": "val"}},
+	}
+	clone := orig.Clone()
+
+	nested := clone.Headers["nested"].(map[string]any)
+	nested["k"] = "changed"
+
+	assert.Equal(t, "val", orig.Headers["nested"].(map[string]any)["k"])
+}
+
+func TestEnvelope_Clone_DeepCopiesNestedMaps(t *testing.T) {
+	orig := &domain.Envelope{
+		Headers: map[string]any{
+			"lvl1": map[string]any{
+				"lvl2": map[string]any{"deep": "original"},
+			},
+		},
+	}
+	clone := orig.Clone()
+
+	deep := clone.Headers["lvl1"].(map[string]any)["lvl2"].(map[string]any)
+	deep["deep"] = "mutated"
+
+	assert.Equal(t, "original", orig.Headers["lvl1"].(map[string]any)["lvl2"].(map[string]any)["deep"])
+}
+
+func TestEnvelope_Clone_DeepCopiesAnySlice(t *testing.T) {
+	orig := &domain.Envelope{
+		Headers: map[string]any{"mix": []any{1, "two", 3}},
+	}
+	clone := orig.Clone()
+
+	s := clone.Headers["mix"].([]any)
+	s[0] = 999
+
+	assert.Equal(t, []any{1, "two", 3}, orig.Headers["mix"])
+}
+
+func TestEnvelope_Clone_NilHeaders(t *testing.T) {
+	orig := &domain.Envelope{Headers: nil}
+	clone := orig.Clone()
+	assert.Nil(t, clone.Headers)
+}
+
+func TestEnvelope_Clone_EmptyHeaders(t *testing.T) {
+	orig := &domain.Envelope{Headers: map[string]any{}}
+	clone := orig.Clone()
+
+	assert.NotNil(t, clone.Headers)
+	assert.Empty(t, clone.Headers)
+	origPtr := reflect.ValueOf(orig.Headers).Pointer()
+	clonePtr := reflect.ValueOf(clone.Headers).Pointer()
+	assert.NotEqual(t, origPtr, clonePtr, "clone should own a distinct headers map")
+
+	clone.Headers["x"] = 1
+	_, ok := orig.Headers["x"]
+	assert.False(t, ok)
+	assert.Empty(t, orig.Headers)
 }

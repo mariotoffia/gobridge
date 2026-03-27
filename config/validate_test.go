@@ -237,3 +237,71 @@ func TestValidate_DirectHold(t *testing.T) {
 	err := Validate(cfg)
 	assert.NoError(t, err)
 }
+
+// Verifies Validate rejects invalid shutdown_timeout duration strings.
+func TestValidate_InvalidShutdownTimeout(t *testing.T) {
+	cfg := validConfigForDurationTests()
+	cfg.Bridge.ShutdownTimeout = "30sm"
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "shutdown_timeout")
+}
+
+// Verifies Validate rejects negative shutdown_timeout.
+func TestValidate_NegativeShutdownTimeout(t *testing.T) {
+	cfg := validConfigForDurationTests()
+	cfg.Bridge.ShutdownTimeout = "-5s"
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be positive")
+}
+
+// Verifies Validate rejects invalid drain_timeout duration strings.
+func TestValidate_InvalidDrainTimeout(t *testing.T) {
+	cfg := validConfigForDurationTests()
+	cfg.Bridge.DrainTimeout = "invalid"
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "drain_timeout")
+}
+
+// Verifies Validate rejects negative drain_timeout.
+func TestValidate_NegativeDrainTimeout(t *testing.T) {
+	cfg := validConfigForDurationTests()
+	cfg.Bridge.DrainTimeout = "-5s"
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be positive")
+}
+
+// Verifies Validate accepts valid positive duration strings.
+func TestValidate_ValidDurations(t *testing.T) {
+	cfg := validConfigForDurationTests()
+	cfg.Bridge.ShutdownTimeout = "30s"
+	cfg.Bridge.DrainTimeout = "1m"
+	err := Validate(cfg)
+	assert.NoError(t, err)
+}
+
+func validConfigForDurationTests() *BridgeConfig {
+	return &BridgeConfig{
+		Bridge: BridgeSettings{ID: "test"},
+		Receivers: []ReceiverDef{
+			{ID: "rx1", Transport: "mqtt"},
+		},
+		Senders: []SenderDef{
+			{ID: "tx1", Transport: "mqtt"},
+		},
+		Bindings: []BindingDef{
+			{ID: "b1", SenderID: "tx1", Address: "topic/x"},
+		},
+		Routes: []RouteDef{
+			{
+				ID:           "r1",
+				ReceiverID:   "rx1",
+				DeliveryMode: "direct_hold",
+				Bindings:     []string{"b1"},
+			},
+		},
+	}
+}

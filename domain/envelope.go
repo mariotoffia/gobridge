@@ -35,7 +35,9 @@ func (e *Envelope) RemainingTTL() time.Duration {
 	return rem
 }
 
-// Clone returns a deep copy of the envelope, including a cloned Headers map.
+// Clone returns a deep copy of the envelope, including a recursively
+// cloned Headers map so reference-type values (slices, maps) are not
+// shared between original and clone.
 func (e *Envelope) Clone() *Envelope {
 	c := *e
 	if e.Payload != nil {
@@ -43,12 +45,36 @@ func (e *Envelope) Clone() *Envelope {
 		copy(c.Payload, e.Payload)
 	}
 	if e.Headers != nil {
-		c.Headers = make(map[string]any, len(e.Headers))
-		for k, v := range e.Headers {
-			c.Headers[k] = v
-		}
+		c.Headers = deepCopyHeaders(e.Headers)
 	}
 	return &c
+}
+
+func deepCopyHeaders(m map[string]any) map[string]any {
+	cp := make(map[string]any, len(m))
+	for k, v := range m {
+		cp[k] = deepCopyValue(v)
+	}
+	return cp
+}
+
+func deepCopyValue(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		return deepCopyHeaders(val)
+	case []any:
+		s := make([]any, len(val))
+		for i, elem := range val {
+			s[i] = deepCopyValue(elem)
+		}
+		return s
+	case []string:
+		s := make([]string, len(val))
+		copy(s, val)
+		return s
+	default:
+		return v
+	}
 }
 
 // OutboxStatus represents the state of an outbox record in the state machine.

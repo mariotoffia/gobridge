@@ -3,6 +3,7 @@ package tenant
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -72,13 +73,17 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 		if err := p.tracker.IncrementInFlight(ctx, tenantID, 1); err != nil {
 			return fmt.Errorf("tenant in-flight tracking failed: %w", err)
 		}
-		defer p.tracker.IncrementInFlight(ctx, tenantID, -1)
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = p.tracker.IncrementInFlight(cleanupCtx, tenantID, -1)
+		}()
 	}
 
 	err := next(ctx, env)
 
 	if p.tracker != nil && err == nil {
-		p.tracker.IncrementMessages(ctx, tenantID, 1)
+		_ = p.tracker.IncrementMessages(ctx, tenantID, 1)
 	}
 
 	return err

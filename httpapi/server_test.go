@@ -27,8 +27,55 @@ func testConfig() Config {
 	return Config{
 		AdminAddr:   ":0",
 		MonitorAddr: ":0",
-		AdminAPIKey: "test-secret",
+		AdminAPIKey: "test-secret-key-0123456789",
 	}
+}
+
+// --- statusRecorder (Flush / Unwrap) tests ---
+
+type responseWriterSpy struct {
+	header     http.Header
+	flushCalls int
+}
+
+func (r *responseWriterSpy) Header() http.Header {
+	if r.header == nil {
+		r.header = make(http.Header)
+	}
+	return r.header
+}
+
+func (r *responseWriterSpy) WriteHeader(int) {}
+
+func (r *responseWriterSpy) Write(b []byte) (int, error) { return len(b), nil }
+
+type flusherSpy struct {
+	responseWriterSpy
+}
+
+func (f *flusherSpy) Flush() { f.flushCalls++ }
+
+// Verifies statusRecorder.Flush delegates to the underlying http.Flusher.
+func TestStatusRecorder_Flush_DelegatesToUnderlying(t *testing.T) {
+	under := &flusherSpy{}
+	rw := &statusRecorder{ResponseWriter: under, status: http.StatusOK}
+	rw.Flush()
+	assert.Equal(t, 1, under.flushCalls)
+}
+
+// Verifies statusRecorder.Flush is a no-op when the underlying writer is not an http.Flusher.
+func TestStatusRecorder_Flush_NoopOnNonFlusher(t *testing.T) {
+	under := &responseWriterSpy{}
+	rw := &statusRecorder{ResponseWriter: under, status: http.StatusOK}
+	assert.NotPanics(t, func() { rw.Flush() })
+	assert.Equal(t, 0, under.flushCalls)
+}
+
+// Verifies statusRecorder.Unwrap returns the original ResponseWriter.
+func TestStatusRecorder_Unwrap_ReturnsOriginal(t *testing.T) {
+	under := &responseWriterSpy{}
+	rw := &statusRecorder{ResponseWriter: under, status: http.StatusOK}
+	assert.Same(t, under, rw.Unwrap())
 }
 
 // --- Config validation tests ---
@@ -84,6 +131,47 @@ func TestValidateConfig_EmptyCORSAllowed(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// Verifies validateConfig rejects an admin API key shorter than minAPIKeyLen.
+func TestValidateConfig_AdminAPIKeyTooShort(t *testing.T) {
+	rt := testRuntime()
+	cfg := DefaultConfig()
+	cfg.AdminAPIKey = "short"
+	s := New(rt, cfg)
+	err := s.validateConfig()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "at least")
+}
+
+// Verifies validateConfig rejects a monitor API key shorter than minAPIKeyLen.
+func TestValidateConfig_MonitorAPIKeyTooShort(t *testing.T) {
+	rt := testRuntime()
+	cfg := testConfig()
+	cfg.MonitorAPIKey = "short"
+	s := New(rt, cfg)
+	err := s.validateConfig()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "monitor API key")
+}
+
+// Verifies security headers are set on responses through the wrap middleware.
+func TestSecurityHeaders_SetOnResponse(t *testing.T) {
+	rt := testRuntime()
+	cfg := testConfig()
+	s := New(rt, cfg)
+
+	mux := http.NewServeMux()
+	s.registerMonitorRoutes(mux)
+	handler := s.wrap(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/live", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
+	assert.Equal(t, "DENY", rec.Header().Get("X-Frame-Options"))
+	assert.Equal(t, "no-referrer", rec.Header().Get("Referrer-Policy"))
+}
+
 // --- Admin auth tests ---
 
 // Verifies admin routes require authentication when an API key is set: missing or wrong keys yield 401; valid X-API-Key or Bearer succeeds.
@@ -112,7 +200,7 @@ func TestAdminAuth_RequiredWhenKeySet(t *testing.T) {
 
 	t.Run("valid X-API-Key returns 200", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/bridge", nil)
-		req.Header.Set("X-API-Key", "test-secret")
+		req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		assert.Equal(t, http.StatusOK, rec.Code)
@@ -120,7 +208,7 @@ func TestAdminAuth_RequiredWhenKeySet(t *testing.T) {
 
 	t.Run("valid Bearer returns 200", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/bridge", nil)
-		req.Header.Set("Authorization", "Bearer test-secret")
+		req.Header.Set("Authorization", "Bearer test-secret-key-0123456789")
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		assert.Equal(t, http.StatusOK, rec.Code)
@@ -175,7 +263,7 @@ func TestMonitorSensitive_RequiresAuth(t *testing.T) {
 
 		t.Run("with admin key "+path, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, path, nil)
-			req.Header.Set("X-API-Key", "test-secret")
+			req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, req)
 			if path == "/api/v1/monitor/logs" {
@@ -191,7 +279,7 @@ func TestMonitorSensitive_RequiresAuth(t *testing.T) {
 func TestMonitorSensitive_SeparateMonitorKey(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
-	cfg.MonitorAPIKey = "monitor-key"
+	cfg.MonitorAPIKey = "monitor-key-0123456789ab"
 	s := New(rt, cfg)
 
 	mux := http.NewServeMux()
@@ -199,7 +287,7 @@ func TestMonitorSensitive_SeparateMonitorKey(t *testing.T) {
 
 	t.Run("admin key rejected for monitor", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/topology", nil)
-		req.Header.Set("X-API-Key", "test-secret")
+		req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		assert.Equal(t, http.StatusUnauthorized, rec.Code)
@@ -207,7 +295,7 @@ func TestMonitorSensitive_SeparateMonitorKey(t *testing.T) {
 
 	t.Run("monitor key accepted", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/topology", nil)
-		req.Header.Set("X-API-Key", "monitor-key")
+		req.Header.Set("X-API-Key", "monitor-key-0123456789ab")
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		assert.Equal(t, http.StatusOK, rec.Code)
@@ -306,7 +394,7 @@ func TestHandleBridge(t *testing.T) {
 	s.registerAdminRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/bridge", nil)
-	req.Header.Set("X-API-Key", "test-secret")
+	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -328,7 +416,7 @@ func TestHandleRoutes_Empty(t *testing.T) {
 	s.registerAdminRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/routes", nil)
-	req.Header.Set("X-API-Key", "test-secret")
+	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -401,7 +489,7 @@ func TestMethodNotAllowed(t *testing.T) {
 	s.registerAdminRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/bridge", nil)
-	req.Header.Set("X-API-Key", "test-secret")
+	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
@@ -417,7 +505,7 @@ func TestDLQ_NoStore(t *testing.T) {
 	s.registerAdminRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/dlq", nil)
-	req.Header.Set("X-API-Key", "test-secret")
+	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -459,7 +547,7 @@ func TestAuditLogging_AdminCalls(t *testing.T) {
 	s.registerAdminRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/bridge", nil)
-	req.Header.Set("X-API-Key", "test-secret")
+	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -482,7 +570,7 @@ func TestAuditLogging_DLQPurge(t *testing.T) {
 	s.registerAdminRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/dlq/purge", nil)
-	req.Header.Set("X-API-Key", "test-secret")
+	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -501,7 +589,7 @@ func TestAuditLogging_DLQReplay(t *testing.T) {
 
 	body := `{"ids":["id-1","id-2"]}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/dlq/replay", strings.NewReader(body))
-	req.Header.Set("X-API-Key", "test-secret")
+	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -589,7 +677,7 @@ func TestInject_UnknownRoute(t *testing.T) {
 
 	body := `{"subject":"test"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/routes/nonexistent/inject", strings.NewReader(body))
-	req.Header.Set("X-API-Key", "test-secret")
+	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -606,7 +694,7 @@ func TestInject_InvalidBody(t *testing.T) {
 	s.registerAdminRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/routes/test-route/inject", strings.NewReader("not json"))
-	req.Header.Set("X-API-Key", "test-secret")
+	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -624,7 +712,7 @@ func TestInject_InvalidBase64(t *testing.T) {
 
 	body := `{"subject":"test","payload":"not-valid-base64!!!"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/routes/test-route/inject", strings.NewReader(body))
-	req.Header.Set("X-API-Key", "test-secret")
+	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -647,7 +735,7 @@ func TestInject_HappyPath(t *testing.T) {
 	payload := base64.StdEncoding.EncodeToString([]byte(`{"temp":22.5}`))
 	body := `{"subject":"sensors/temp","payload":"` + payload + `","headers":{"source":"api"}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/routes/test-route/inject", strings.NewReader(body))
-	req.Header.Set("X-API-Key", "test-secret")
+	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -682,7 +770,7 @@ func TestHandleTopology(t *testing.T) {
 	s.registerMonitorRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/topology", nil)
-	req.Header.Set("X-API-Key", "test-secret")
+	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 

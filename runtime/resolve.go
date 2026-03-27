@@ -62,7 +62,7 @@ func (r *BindingResolver) Resolve(_ context.Context, env *domain.Envelope) ([]do
 
 	if len(plans) == 0 {
 		return nil, domain.NewBridgeError(
-			"NO_BINDING_MATCH", domain.ErrorRejected,
+			domain.ErrCodeNoBindingMatch, domain.ErrorRejected,
 			"no binding matched the envelope",
 		)
 	}

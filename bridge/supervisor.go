@@ -261,7 +261,7 @@ func (s *Supervisor) applyOverlap(
 
 	if oldRt != nil {
 		drainTimeout := drainTimeoutFrom(oldCfg)
-		stopCtx, cancel := context.WithTimeout(ctx, drainTimeout)
+		stopCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 		if stopErr := oldRt.Stop(stopCtx); stopErr != nil && s.logger != nil {
 			s.logger.Warn("supervisor: old runtime stop error", "error", stopErr)
 		}
@@ -269,8 +269,22 @@ func (s *Supervisor) applyOverlap(
 	}
 
 	if err := newRt.Start(ctx); err != nil {
+		if s.logger != nil {
+			s.logger.Error("supervisor: new runtime start failed, attempting recovery with old config", "error", err)
+		}
+		recoveredRt, recoverErr := s.buildRuntime(ctx, oldCfg)
+		if recoverErr == nil {
+			recoverErr = recoveredRt.Start(ctx)
+		}
 		s.mu.Lock()
-		s.rt = nil
+		if recoverErr == nil {
+			s.rt = recoveredRt
+		} else {
+			s.rt = nil
+			if s.logger != nil {
+				s.logger.Error("supervisor: recovery with old config also failed", "error", recoverErr)
+			}
+		}
 		s.cfg = oldCfg
 		s.mu.Unlock()
 		return nil, fmt.Errorf("start: %w", err)
@@ -294,7 +308,7 @@ func (s *Supervisor) applyPrepareCommit(
 
 	if oldRt != nil {
 		drainTimeout := drainTimeoutFrom(oldCfg)
-		stopCtx, cancel := context.WithTimeout(ctx, drainTimeout)
+		stopCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 		if stopErr := oldRt.Stop(stopCtx); stopErr != nil && s.logger != nil {
 			s.logger.Warn("supervisor: old runtime stop error", "error", stopErr)
 		}
@@ -303,16 +317,44 @@ func (s *Supervisor) applyPrepareCommit(
 
 	newRt, err := builder.Complete(ctx, prep)
 	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("supervisor: Complete failed, attempting recovery with old config", "error", err)
+		}
+		recoveredRt, recoverErr := s.buildRuntime(ctx, oldCfg)
+		if recoverErr == nil {
+			recoverErr = recoveredRt.Start(ctx)
+		}
 		s.mu.Lock()
-		s.rt = nil
+		if recoverErr == nil {
+			s.rt = recoveredRt
+		} else {
+			s.rt = nil
+			if s.logger != nil {
+				s.logger.Error("supervisor: recovery with old config also failed", "error", recoverErr)
+			}
+		}
 		s.cfg = oldCfg
 		s.mu.Unlock()
 		return nil, fmt.Errorf("complete: %w", err)
 	}
 
 	if err := newRt.Start(ctx); err != nil {
+		if s.logger != nil {
+			s.logger.Error("supervisor: new runtime start failed (prepare-commit), attempting recovery", "error", err)
+		}
+		recoveredRt, recoverErr := s.buildRuntime(ctx, oldCfg)
+		if recoverErr == nil {
+			recoverErr = recoveredRt.Start(ctx)
+		}
 		s.mu.Lock()
-		s.rt = nil
+		if recoverErr == nil {
+			s.rt = recoveredRt
+		} else {
+			s.rt = nil
+			if s.logger != nil {
+				s.logger.Error("supervisor: recovery with old config also failed", "error", recoverErr)
+			}
+		}
 		s.cfg = oldCfg
 		s.mu.Unlock()
 		return nil, fmt.Errorf("start: %w", err)

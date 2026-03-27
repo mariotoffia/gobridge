@@ -37,7 +37,7 @@ func TestHandleLogs_ReturnsNotImplemented(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/logs", nil)
-	req.Header.Set("X-API-Key", "test-secret")
+	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	s.handleLogs(rec, req)
 
 	assert.Equal(t, http.StatusNotImplemented, rec.Code)
