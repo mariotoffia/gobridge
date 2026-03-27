@@ -1,18 +1,17 @@
 # gobridge
 
-A hexagonal message-bridge framework for Go. Route messages between MQTT, AWS SQS, Azure Service Bus, and other transports with pluggable processors, durable outbox delivery, dead-letter queue management, and production-grade observability.
+A message-bridge framework for Go. Route messages between MQTT, AWS SQS, Azure Service Bus, and other transports with pluggable processors, durable outbox delivery, dead-letter queue management, and observability.
 
 ## Features
 
 - **Multi-transport routing**: MQTT v5, AWS SQS, Azure Service Bus with a clean port/adapter model
 - **Delivery guarantees**: DirectHold (send-then-ack) and SharedOutbox (persist-then-ack with durable outbox drainer)
-- **Processor chain**: Onion-model middleware for filtering, transformation, circuit breaking, and tenant isolation
+- **Processor chain**: Middleware for filtering, transformation, circuit breaking, and tenant isolation
 - **Pluggable stores**: LeaseStore, OutboxStore, DLQStore with Memory, SQLite, and DynamoDB implementations
 - **Credential management**: URI-based resolution (file://, pms://) with scheme dispatch and caching
 - **HTTP APIs**: Admin server for bridge lifecycle, route injection, and DLQ management; Monitor server for health probes and topology
 - **Observability**: OpenTelemetry metrics and tracing, CloudWatch metrics, correlation-aware structured logging via slog
 - **Zero-dependency core**: The root module has no external dependencies -- only import the adapters you need
-- **Multi-module workspace**: Each adapter is a separate Go module; consumers cherry-pick dependencies
 
 ## Quick Start
 
