@@ -26,8 +26,9 @@ const (
 )
 
 // IsReservedHeader returns true if the key uses the reserved x-bridge. prefix.
+// The check is case-insensitive to prevent bypass via mixed-case keys.
 func IsReservedHeader(key string) bool {
-	return strings.HasPrefix(key, HeaderPrefix)
+	return strings.HasPrefix(strings.ToLower(key), HeaderPrefix)
 }
 
 // StripReservedHeaders returns a new map with all reserved-prefix headers removed.

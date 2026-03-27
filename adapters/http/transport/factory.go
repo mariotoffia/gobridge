@@ -8,8 +8,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
+)
+
+var (
+	_ bridge.TransportFactory = (*BridgeFactory)(nil)
+	_ bridge.HTTPMountable    = (*BridgeFactory)(nil)
 )
 
 // BridgeFactory implements bridge.TransportFactory for the HTTP transport.
@@ -111,10 +117,15 @@ func (f *BridgeFactory) NewSender(_ context.Context, def config.SenderDef, _ por
 
 	heartbeat := optDuration(def.Options, "heartbeat_interval", 30*time.Second)
 
+	apiKey := optStr(def.Options, "api_key", "")
+	maxClients := int(optInt64(def.Options, "max_clients", 0))
+
 	sender := newSSESender(sseSenderConfig{
 		id:                def.ID,
 		path:              path,
 		heartbeatInterval: heartbeat,
+		maxClients:        maxClients,
+		apiKey:            apiKey,
 		locator:           f.locator,
 		metrics:           f.metrics,
 		logger:            f.logger,

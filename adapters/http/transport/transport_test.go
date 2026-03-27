@@ -97,10 +97,12 @@ func TestHTTPDelivery_AckSignalsCompletion(t *testing.T) {
 
 	deliveryCh := make(chan ports.Delivery, 1)
 
-	go recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
-		deliveryCh <- d
-		return nil
-	})
+	go func() {
+		_ = recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
+			deliveryCh <- d
+			return nil
+		})
+	}()
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -160,10 +162,12 @@ func TestHTTPDelivery_RetrySignalsError(t *testing.T) {
 	retryErr := errors.New("processing failed")
 	deliveryCh := make(chan ports.Delivery, 1)
 
-	go recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
-		deliveryCh <- d
-		return nil
-	})
+	go func() {
+		_ = recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
+			deliveryCh <- d
+			return nil
+		})
+	}()
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -217,17 +221,25 @@ func TestHTTPDelivery_ExtendReturnsNotSupported(t *testing.T) {
 
 	deliveryCh := make(chan ports.Delivery, 1)
 
-	go recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
-		deliveryCh <- d
-		return nil
-	})
+	go func() {
+		_ = recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
+			deliveryCh <- d
+			return nil
+		})
+	}()
 
 	time.Sleep(20 * time.Millisecond)
 
-	go postJSON(t, factory.Handler(), "/transport/http/receivers/extend-test/messages", map[string]any{
-		"subject": "test.extend",
-		"payload": json.RawMessage(`{}`),
-	}, nil)
+	go func() {
+		data, _ := json.Marshal(map[string]any{
+			"subject": "test.extend",
+			"payload": json.RawMessage(`{}`),
+		})
+		req := httptest.NewRequest("POST", "/transport/http/receivers/extend-test/messages", bytes.NewReader(data))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		factory.Handler().ServeHTTP(rec, req)
+	}()
 
 	select {
 	case d := <-deliveryCh:
@@ -259,11 +271,13 @@ func TestReceiver_LocalProcessing(t *testing.T) {
 	var gotEnvelope *domain.Envelope
 	deliveryCh := make(chan ports.Delivery, 1)
 
-	go recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
-		gotEnvelope = d.Envelope()
-		deliveryCh <- d
-		return nil
-	})
+	go func() {
+		_ = recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
+			gotEnvelope = d.Envelope()
+			deliveryCh <- d
+			return nil
+		})
+	}()
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -337,10 +351,12 @@ func TestReceiver_ClusterForward(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
-		t.Error("emit should not be called when forwarding")
-		return nil
-	})
+	go func() {
+		_ = recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
+			t.Error("emit should not be called when forwarding")
+			return nil
+		})
+	}()
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -357,8 +373,8 @@ func TestReceiver_ClusterForward(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp["forwarded_to"] != "remote-1" {
-		t.Fatalf("expected forwarded_to=remote-1, got %q", resp["forwarded_to"])
+	if resp["status"] != "accepted" {
+		t.Fatalf("expected status=accepted, got %q", resp["status"])
 	}
 
 	calls := fwd.getCalls()
@@ -400,10 +416,12 @@ func TestReceiver_ForwardedRequestNotReforwarded(t *testing.T) {
 
 	deliveryCh := make(chan ports.Delivery, 1)
 
-	go recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
-		deliveryCh <- d
-		return nil
-	})
+	go func() {
+		_ = recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
+			deliveryCh <- d
+			return nil
+		})
+	}()
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -465,7 +483,7 @@ func TestSSESender_BroadcastToClients(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET SSE: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 from SSE endpoint, got %d", resp.StatusCode)
@@ -565,7 +583,7 @@ func TestSSESender_RedirectWhenRemote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.StatusCode != http.StatusTemporaryRedirect {
 		t.Fatalf("expected 307, got %d", resp.StatusCode)
@@ -592,7 +610,7 @@ func TestHTTPForwarder_ForwardSuccess(t *testing.T) {
 		receivedBody = body
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
 	}))
 	defer remote.Close()
 
@@ -622,7 +640,7 @@ func TestHTTPForwarder_ForwardSuccess(t *testing.T) {
 		t.Fatalf("unmarshal forwarded body: %v", err)
 	}
 	var subject string
-	json.Unmarshal(reqBody["subject"], &subject)
+	_ = json.Unmarshal(reqBody["subject"], &subject)
 	if subject != "orders.shipped" {
 		t.Fatalf("expected subject orders.shipped, got %q", subject)
 	}

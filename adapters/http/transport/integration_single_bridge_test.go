@@ -105,7 +105,7 @@ func TestIntegration_HTTPPost_RuntimePipeline_FakeSender(t *testing.T) {
 	if err := rt.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer rt.Stop(context.Background())
+	defer func() { _ = rt.Stop(context.Background()) }()
 
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
@@ -118,7 +118,7 @@ func TestIntegration_HTTPPost_RuntimePipeline_FakeSender(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -165,7 +165,7 @@ func TestIntegration_HTTPPost_FilterDrop_NoSend(t *testing.T) {
 	if err := rt.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer rt.Stop(context.Background())
+	defer func() { _ = rt.Stop(context.Background()) }()
 
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
@@ -179,12 +179,12 @@ func TestIntegration_HTTPPost_FilterDrop_NoSend(t *testing.T) {
 		return resp
 	}
 	resp := post("spam.phish")
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("filtered POST: expected 200, got %d", resp.StatusCode)
 	}
 	resp = post("order.created")
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("valid POST: expected 200, got %d", resp.StatusCode)
 	}
@@ -219,7 +219,7 @@ func TestIntegration_SSEClient_ReceivesMultipleEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET SSE: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("SSE connect: expected 200, got %d", resp.StatusCode)
 	}
@@ -270,7 +270,7 @@ func TestIntegration_SSEClient_ReceivesMultipleEvents(t *testing.T) {
 		}
 	}
 
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if err := sender.Send(context.Background(), &domain.Envelope{
 		ID: "after-close", Subject: "evt.four", Payload: []byte(`{}`),
@@ -309,10 +309,12 @@ func TestIntegration_HTTPPost_APIKeyAuth(t *testing.T) {
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			go recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
-				d.Ack(context.Background())
-				return nil
-			})
+			go func() {
+				_ = recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
+					_ = d.Ack(context.Background())
+					return nil
+				})
+			}()
 			time.Sleep(20 * time.Millisecond)
 
 			rec := postJSON(t, factory.Handler(), "/transport/http/receivers/auth-"+tc.name+"/messages",
@@ -340,10 +342,12 @@ func TestIntegration_HTTPPost_BodyTooLarge(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
-		d.Ack(context.Background())
-		return nil
-	})
+	go func() {
+		_ = recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
+			_ = d.Ack(context.Background())
+			return nil
+		})
+	}()
 	time.Sleep(20 * time.Millisecond)
 
 	bigPayload := strings.Repeat("x", 1024)
@@ -381,10 +385,12 @@ func TestIntegration_HTTPPost_InvalidJSON(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
-		d.Ack(context.Background())
-		return nil
-	})
+	go func() {
+		_ = recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
+			_ = d.Ack(context.Background())
+			return nil
+		})
+	}()
 	time.Sleep(20 * time.Millisecond)
 
 	for _, tc := range cases {
@@ -425,7 +431,7 @@ func TestIntegration_HTTPPost_HeaderProcessing(t *testing.T) {
 	if err := rt.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer rt.Stop(context.Background())
+	defer func() { _ = rt.Stop(context.Background()) }()
 
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
@@ -442,7 +448,7 @@ func TestIntegration_HTTPPost_HeaderProcessing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	waitFor(t, 2*time.Second, "sender receives 1 message", func() bool {
 		return len(sender.getSent()) >= 1

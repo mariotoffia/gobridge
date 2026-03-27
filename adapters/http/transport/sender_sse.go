@@ -13,10 +13,16 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+var _ ports.Sender = (*SSESender)(nil)
+
+const defaultMaxSSEClients = 10000
+
 type sseSenderConfig struct {
 	id                string
 	path              string
 	heartbeatInterval time.Duration
+	maxClients        int
+	apiKey            string
 	locator           ports.RouteLocator
 	metrics           ports.MetricsExporter
 	logger            *slog.Logger
@@ -25,7 +31,6 @@ type sseSenderConfig struct {
 type sseClient struct {
 	id     string
 	events chan []byte
-	done   chan struct{}
 }
 
 // SSESender implements ports.Sender by broadcasting envelopes to connected SSE clients.
@@ -40,6 +45,9 @@ func newSSESender(cfg sseSenderConfig) *SSESender {
 	if cfg.heartbeatInterval == 0 {
 		cfg.heartbeatInterval = 30 * time.Second
 	}
+	if cfg.maxClients == 0 {
+		cfg.maxClients = defaultMaxSSEClients
+	}
 	if cfg.metrics == nil {
 		cfg.metrics = &ports.NoopExporter{}
 	}
@@ -51,7 +59,9 @@ func newSSESender(cfg sseSenderConfig) *SSESender {
 
 // SetRouteID associates this sender with a route for cross-cluster SSE redirect.
 func (s *SSESender) SetRouteID(routeID string) {
+	s.mu.Lock()
 	s.routeID = routeID
+	s.mu.Unlock()
 }
 
 // Send broadcasts an envelope to all connected SSE clients.
@@ -100,8 +110,20 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.routeID != "" && s.cfg.locator != nil {
-		node, local, err := s.cfg.locator.Locate(r.Context(), s.routeID)
+	if s.cfg.apiKey != "" && !checkAPIKey(r, s.cfg.apiKey) {
+		writeError(w, http.StatusUnauthorized, "invalid or missing API key")
+		return
+	}
+
+	s.mu.RLock()
+	rid := s.routeID
+	s.mu.RUnlock()
+
+	if rid != "" && s.cfg.locator != nil {
+		node, local, err := s.cfg.locator.Locate(r.Context(), rid)
+		if err != nil && s.cfg.logger != nil {
+			s.cfg.logger.Warn("sse: route location failed, serving locally", "route", rid, "error", err)
+		}
 		if err == nil && !local && node != nil {
 			httpEndpoint, ok := node.Endpoints["http"]
 			if ok {
@@ -111,21 +133,18 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-
 	clientID := generateClientID()
 	client := &sseClient{
 		id:     clientID,
 		events: make(chan []byte, 256),
-		done:   make(chan struct{}),
 	}
 
 	s.mu.Lock()
+	if len(s.clients) >= s.cfg.maxClients {
+		s.mu.Unlock()
+		writeError(w, http.StatusServiceUnavailable, "connection limit reached")
+		return
+	}
 	s.clients[clientID] = client
 	count := len(s.clients)
 	s.mu.Unlock()
@@ -137,8 +156,14 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		count := len(s.clients)
 		s.mu.Unlock()
 		s.cfg.metrics.Gauge(domain.MetricSSEClients, float64(count))
-		close(client.done)
 	}()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
 
 	ctx := r.Context()
 	heartbeat := time.NewTicker(s.cfg.heartbeatInterval)
@@ -170,7 +195,12 @@ type sseEvent struct {
 }
 
 func formatSSE(event, id string, data []byte) []byte {
-	var buf []byte
+	id = sanitizeSSEField(id)
+	event = sanitizeSSEField(event)
+	size := len("id: ") + len(id) + 1 +
+		len("event: ") + len(event) + 1 +
+		len("data: ") + len(data) + 2
+	buf := make([]byte, 0, size)
 	buf = append(buf, "id: "...)
 	buf = append(buf, id...)
 	buf = append(buf, '\n')

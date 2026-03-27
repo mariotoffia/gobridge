@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -55,10 +56,17 @@ func (r *EcsEndpointResolver) Resolve(ctx context.Context, listenAddr string) (m
 	if err != nil {
 		return nil, fmt.Errorf("ecs: query metadata endpoint: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ecs: metadata endpoint returned %d", resp.StatusCode)
+	}
 
 	var meta containerMetadata
-	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&meta); err != nil {
 		return nil, fmt.Errorf("ecs: decode metadata: %w", err)
 	}
 

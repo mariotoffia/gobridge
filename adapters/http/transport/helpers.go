@@ -2,9 +2,11 @@ package transport
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -18,10 +20,11 @@ func writeError(w http.ResponseWriter, status int, message string) {
 }
 
 func checkAPIKey(r *http.Request, key string) bool {
-	if got := r.Header.Get("X-API-Key"); got == key {
+	if got := r.Header.Get("X-API-Key"); len(got) > 0 && subtle.ConstantTimeCompare([]byte(got), []byte(key)) == 1 {
 		return true
 	}
-	if got := r.Header.Get("Authorization"); got == "Bearer "+key {
+	bearer := "Bearer " + key
+	if got := r.Header.Get("Authorization"); len(got) > 0 && subtle.ConstantTimeCompare([]byte(got), []byte(bearer)) == 1 {
 		return true
 	}
 	return false
@@ -29,6 +32,17 @@ func checkAPIKey(r *http.Request, key string) bool {
 
 func generateClientID() string {
 	b := make([]byte, 8)
-	rand.Read(b) //nolint:errcheck
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand unavailable: " + err.Error())
+	}
 	return hex.EncodeToString(b)
+}
+
+func sanitizeSSEField(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' {
+			return -1
+		}
+		return r
+	}, s)
 }

@@ -12,6 +12,8 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+var _ ports.Receiver = (*Receiver)(nil)
+
 type receiverConfig struct {
 	id          string
 	path        string
@@ -25,11 +27,12 @@ type receiverConfig struct {
 
 // Receiver implements ports.Receiver for HTTP ingress.
 type Receiver struct {
-	cfg     receiverConfig
-	mu      sync.Mutex
-	emit    func(context.Context, ports.Delivery) error
-	ready   chan struct{}
-	routeID string
+	cfg       receiverConfig
+	mu        sync.Mutex
+	emit      func(context.Context, ports.Delivery) error
+	ready     chan struct{}
+	readyOnce sync.Once
+	routeID   string
 }
 
 func newReceiver(cfg receiverConfig) *Receiver {
@@ -47,14 +50,17 @@ func newReceiver(cfg receiverConfig) *Receiver {
 
 // SetRouteID associates this receiver with a route for cluster-aware routing.
 func (r *Receiver) SetRouteID(routeID string) {
+	r.mu.Lock()
 	r.routeID = routeID
+	r.mu.Unlock()
 }
 
 // Run stores the emit callback and blocks until ctx is cancelled.
+// Safe to call multiple times (idempotent ready signal).
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
 	r.mu.Lock()
 	r.emit = emit
-	close(r.ready)
+	r.readyOnce.Do(func() { close(r.ready) })
 	r.mu.Unlock()
 
 	<-ctx.Done()
@@ -87,34 +93,51 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	env := body.toEnvelope()
+	if body.Subject == "" {
+		writeError(w, http.StatusBadRequest, "subject is required")
+		return
+	}
 
-	if !forwarded && r.routeID != "" && r.cfg.locator != nil {
-		node, local, err := r.cfg.locator.Locate(ctx, r.routeID)
+	env := body.toEnvelope()
+	env.Headers = domain.StripReservedHeaders(env.Headers)
+
+	r.mu.Lock()
+	routeID := r.routeID
+	emit := r.emit
+	r.mu.Unlock()
+
+	if !forwarded && routeID != "" && r.cfg.locator != nil {
+		node, local, err := r.cfg.locator.Locate(ctx, routeID)
 		if err != nil {
-			writeError(w, http.StatusBadGateway, "route location failed: "+err.Error())
+			if r.cfg.logger != nil {
+				r.cfg.logger.Error("route location failed", "route", routeID, "error", err)
+			}
+			writeError(w, http.StatusBadGateway, "route location failed")
 			return
 		}
 		if !local && node != nil && r.cfg.forwarder != nil {
 			r.cfg.metrics.Counter(domain.MetricClusterForwards, 1)
 			fwdStart := time.Now()
-			if err := r.cfg.forwarder.Forward(ctx, node, r.routeID, env); err != nil {
+			if err := r.cfg.forwarder.Forward(ctx, node, routeID, env); err != nil {
 				r.cfg.metrics.Timer(domain.MetricHTTPForwardLatency, time.Since(fwdStart))
-				writeError(w, http.StatusBadGateway, "forward failed: "+err.Error())
+				if r.cfg.logger != nil {
+					r.cfg.logger.Error("forward failed", "route", routeID, "peer", node.InstanceID, "error", err)
+				}
+				writeError(w, http.StatusBadGateway, "forward failed")
 				return
 			}
 			r.cfg.metrics.Timer(domain.MetricHTTPForwardLatency, time.Since(fwdStart))
-			writeJSON(w, http.StatusOK, map[string]string{
-				"status":       "accepted",
-				"forwarded_to": node.InstanceID,
-			})
+			writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
 			return
 		}
 	}
 
 	del := newHTTPDelivery(env)
-	if err := r.emit(ctx, del); err != nil {
-		writeError(w, http.StatusInternalServerError, "emit failed: "+err.Error())
+	if err := emit(ctx, del); err != nil {
+		if r.cfg.logger != nil {
+			r.cfg.logger.Error("emit failed", "error", err)
+		}
+		writeError(w, http.StatusInternalServerError, "processing failed")
 		return
 	}
 
@@ -122,7 +145,7 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	case result := <-del.done:
 		r.cfg.metrics.Timer(domain.MetricHTTPIngressLatency, time.Since(start))
 		if result.err != nil {
-			writeError(w, http.StatusInternalServerError, result.err.Error())
+			writeError(w, http.StatusInternalServerError, "processing failed")
 		} else {
 			writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
 		}

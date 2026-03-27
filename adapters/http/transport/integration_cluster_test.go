@@ -70,7 +70,7 @@ func TestIntegration_Cluster_ForwardToBridge(t *testing.T) {
 	if err := rtB.Start(ctx); err != nil {
 		t.Fatalf("Start B: %v", err)
 	}
-	defer rtB.Stop(context.Background())
+	defer func() { _ = rtB.Stop(context.Background()) }()
 	time.Sleep(50 * time.Millisecond)
 
 	serverB := httptest.NewServer(factoryB.Handler())
@@ -91,10 +91,12 @@ func TestIntegration_Cluster_ForwardToBridge(t *testing.T) {
 		t.Fatalf("NewReceiver A: %v", err)
 	}
 	setRouteID(t, recvA, "route-cluster")
-	go recvA.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
-		t.Error("Bridge A emit must not be called when forwarding")
-		return nil
-	})
+	go func() {
+		_ = recvA.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
+			t.Error("Bridge A emit must not be called when forwarding")
+			return nil
+		})
+	}()
 	time.Sleep(50 * time.Millisecond)
 
 	serverA := httptest.NewServer(factoryA.Handler())
@@ -104,7 +106,7 @@ func TestIntegration_Cluster_ForwardToBridge(t *testing.T) {
 		"subject": "orders.created",
 		"payload": json.RawMessage(`{"order":"123"}`),
 	})
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -113,8 +115,8 @@ func TestIntegration_Cluster_ForwardToBridge(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body["forwarded_to"] != "bridge-b" {
-		t.Fatalf("expected forwarded_to=bridge-b, got %q", body["forwarded_to"])
+	if body["status"] != "accepted" {
+		t.Fatalf("expected status=accepted, got %q", body["status"])
 	}
 
 	waitFor(t, 2*time.Second, "Bridge B sender receives 1 message", func() bool {
@@ -176,7 +178,7 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GET: %v", err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		if resp.StatusCode != http.StatusTemporaryRedirect {
 			t.Fatalf("expected 307, got %d", resp.StatusCode)
@@ -193,7 +195,7 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GET: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("expected 200 after redirect, got %d", resp.StatusCode)
@@ -269,12 +271,14 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 
 	var delivered []*domain.Envelope
 	var mu sync.Mutex
-	go recvB.Run(ctx, func(_ context.Context, d ports.Delivery) error {
-		mu.Lock()
-		delivered = append(delivered, d.Envelope())
-		mu.Unlock()
-		return d.Ack(context.Background())
-	})
+	go func() {
+		_ = recvB.Run(ctx, func(_ context.Context, d ports.Delivery) error {
+			mu.Lock()
+			delivered = append(delivered, d.Envelope())
+			mu.Unlock()
+			return d.Ack(context.Background())
+		})
+	}()
 	time.Sleep(50 * time.Millisecond)
 
 	serverB := httptest.NewServer(factoryB.Handler())
@@ -292,10 +296,12 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 		t.Fatalf("NewReceiver A: %v", err)
 	}
 	setRouteID(t, recvA, "route-loop")
-	go recvA.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
-		t.Error("Bridge A emit must not be called")
-		return nil
-	})
+	go func() {
+		_ = recvA.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
+			t.Error("Bridge A emit must not be called")
+			return nil
+		})
+	}()
 	time.Sleep(50 * time.Millisecond)
 
 	serverA := httptest.NewServer(factoryA.Handler())
@@ -309,7 +315,7 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 		"subject": "loop.test",
 		"payload": json.RawMessage(`{"key":"val"}`),
 	})
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -355,10 +361,12 @@ func TestIntegration_Cluster_ForwardToDeadPeer(t *testing.T) {
 		t.Fatalf("NewReceiver: %v", err)
 	}
 	setRouteID(t, recv, "route-dead")
-	go recv.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
-		t.Error("emit must not be called for dead peer")
-		return nil
-	})
+	go func() {
+		_ = recv.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
+			t.Error("emit must not be called for dead peer")
+			return nil
+		})
+	}()
 	time.Sleep(50 * time.Millisecond)
 
 	server := httptest.NewServer(factory.Handler())
@@ -368,7 +376,7 @@ func TestIntegration_Cluster_ForwardToDeadPeer(t *testing.T) {
 		"subject": "dead.test",
 		"payload": json.RawMessage(`{}`),
 	})
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d", resp.StatusCode)
@@ -399,7 +407,7 @@ func TestIntegration_Cluster_ForwardPreservesEnvelope(t *testing.T) {
 	if err := rtB.Start(ctx); err != nil {
 		t.Fatalf("Start B: %v", err)
 	}
-	defer rtB.Stop(context.Background())
+	defer func() { _ = rtB.Stop(context.Background()) }()
 	time.Sleep(50 * time.Millisecond)
 
 	serverB := httptest.NewServer(factoryB.Handler())
@@ -420,10 +428,12 @@ func TestIntegration_Cluster_ForwardPreservesEnvelope(t *testing.T) {
 		t.Fatalf("NewReceiver A: %v", err)
 	}
 	setRouteID(t, recvA, "route-preserve")
-	go recvA.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
-		t.Error("Bridge A emit must not be called")
-		return nil
-	})
+	go func() {
+		_ = recvA.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
+			t.Error("Bridge A emit must not be called")
+			return nil
+		})
+	}()
 	time.Sleep(50 * time.Millisecond)
 
 	serverA := httptest.NewServer(factoryA.Handler())
@@ -438,7 +448,7 @@ func TestIntegration_Cluster_ForwardPreservesEnvelope(t *testing.T) {
 			"x-priority": "high",
 		},
 	})
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)

@@ -37,7 +37,9 @@ func TestInjectStaleClaimDuration_DefaultDerivation(t *testing.T) {
 	})
 
 	sc := &config.StoreConfig{Type: "memory"}
-	b.injectStaleClaimDuration(sc)
+	if err := b.injectStaleClaimDuration(sc); err != nil {
+		t.Fatalf("injectStaleClaimDuration: %v", err)
+	}
 
 	got, ok := sc.Options["stale_claim_duration"].(time.Duration)
 	if !ok {
@@ -74,7 +76,9 @@ func TestInjectStaleClaimDuration_MaxAcrossRoutes(t *testing.T) {
 	})
 
 	sc := &config.StoreConfig{Type: "memory"}
-	b.injectStaleClaimDuration(sc)
+	if err := b.injectStaleClaimDuration(sc); err != nil {
+		t.Fatalf("injectStaleClaimDuration: %v", err)
+	}
 
 	got, ok := sc.Options["stale_claim_duration"].(time.Duration)
 	if !ok {
@@ -102,7 +106,9 @@ func TestInjectStaleClaimDuration_ExplicitSkipped(t *testing.T) {
 		Type:    "memory",
 		Options: map[string]any{"stale_claim_duration": "2m"},
 	}
-	b.injectStaleClaimDuration(sc)
+	if err := b.injectStaleClaimDuration(sc); err != nil {
+		t.Fatalf("injectStaleClaimDuration: %v", err)
+	}
 
 	got := sc.Options["stale_claim_duration"]
 	if got != "2m" {
@@ -121,7 +127,9 @@ func TestInjectStaleClaimDuration_NoRouteSession(t *testing.T) {
 	})
 
 	sc := &config.StoreConfig{Type: "memory"}
-	b.injectStaleClaimDuration(sc)
+	if err := b.injectStaleClaimDuration(sc); err != nil {
+		t.Fatalf("injectStaleClaimDuration: %v", err)
+	}
 
 	got, ok := sc.Options["stale_claim_duration"].(time.Duration)
 	if !ok {
@@ -150,7 +158,9 @@ func TestInjectStaleClaimDuration_DoesNotMutateOriginalOptions(t *testing.T) {
 		}},
 	})
 
-	b.injectStaleClaimDuration(sc)
+	if err := b.injectStaleClaimDuration(sc); err != nil {
+		t.Fatalf("injectStaleClaimDuration: %v", err)
+	}
 
 	if _, exists := original["stale_claim_duration"]; exists {
 		t.Error("original options map was mutated — stale_claim_duration should not be in the original")
