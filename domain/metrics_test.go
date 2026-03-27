@@ -33,6 +33,8 @@ func TestMetricConstants_NonEmpty(t *testing.T) {
 		domain.MetricSQSReceiveLatency,
 		domain.MetricSQSDeleteLatency,
 		domain.MetricSQSVisibilityExtensions,
+		domain.MetricAckLatency,
+		domain.MetricVisibilityExtensions,
 		domain.MetricDeliveryE2ELatency,
 		domain.MetricDLQEntries,
 		domain.MetricDeliveryPanics,

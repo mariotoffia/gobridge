@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/mariotoffia/gobridge/config"
@@ -10,6 +11,11 @@ import (
 )
 
 func toRoutePolicy(r config.RouteDef) domain.RoutePolicy {
+	p, _ := toRoutePolicyE(r)
+	return p
+}
+
+func toRoutePolicyE(r config.RouteDef) (domain.RoutePolicy, error) {
 	p := domain.RoutePolicy{
 		DeliveryMode:       domain.DeliveryMode(r.DeliveryMode),
 		DispatchMode:       domain.DispatchMode(r.DispatchMode),
@@ -21,81 +27,129 @@ func toRoutePolicy(r config.RouteDef) domain.RoutePolicy {
 		OnPermanentFailure: domain.FailureAction(r.Policy.OnPermanentFailure),
 	}
 	if r.Policy.Backoff.InitialInterval != "" {
-		p.Backoff.InitialInterval, _ = time.ParseDuration(r.Policy.Backoff.InitialInterval)
+		d, err := time.ParseDuration(r.Policy.Backoff.InitialInterval)
+		if err != nil {
+			return p, fmt.Errorf("invalid backoff initial_interval %q: %w", r.Policy.Backoff.InitialInterval, err)
+		}
+		p.Backoff.InitialInterval = d
 	}
 	if r.Policy.Backoff.MaxInterval != "" {
-		p.Backoff.MaxInterval, _ = time.ParseDuration(r.Policy.Backoff.MaxInterval)
+		d, err := time.ParseDuration(r.Policy.Backoff.MaxInterval)
+		if err != nil {
+			return p, fmt.Errorf("invalid backoff max_interval %q: %w", r.Policy.Backoff.MaxInterval, err)
+		}
+		p.Backoff.MaxInterval = d
 	}
 	if r.Policy.Backoff.Multiplier != 0 {
 		p.Backoff.Multiplier = r.Policy.Backoff.Multiplier
 	}
-	return p
+	return p, nil
 }
 
 func toSessionConfig(rs *config.RouteSessionDef) *runtime.SessionConfig {
+	sc, _ := toSessionConfigE(rs)
+	return sc
+}
+
+func toSessionConfigE(rs *config.RouteSessionDef) (*runtime.SessionConfig, error) {
 	if rs == nil {
-		return nil
+		return nil, nil
 	}
 
 	sc := runtime.DefaultSessionConfig(rs.SessionID, true)
 	sc.ConnectAfterLease = rs.ConnectAfterLease
 
 	if rs.LeaseTTL != "" {
-		if d, err := time.ParseDuration(rs.LeaseTTL); err == nil {
-			sc.LeaseTTL = d
+		d, err := time.ParseDuration(rs.LeaseTTL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid lease_ttl %q: %w", rs.LeaseTTL, err)
 		}
+		sc.LeaseTTL = d
 	}
 	if rs.RenewInterval != "" {
-		if d, err := time.ParseDuration(rs.RenewInterval); err == nil {
-			sc.RenewInterval = d
+		d, err := time.ParseDuration(rs.RenewInterval)
+		if err != nil {
+			return nil, fmt.Errorf("invalid renew_interval %q: %w", rs.RenewInterval, err)
 		}
+		sc.RenewInterval = d
 	}
 	if rs.MaxRenewFails > 0 {
 		sc.MaxRenewFails = rs.MaxRenewFails
 	}
 	if rs.StepDownGrace != "" {
-		if d, err := time.ParseDuration(rs.StepDownGrace); err == nil {
-			sc.StepDownGrace = d
+		d, err := time.ParseDuration(rs.StepDownGrace)
+		if err != nil {
+			return nil, fmt.Errorf("invalid step_down_grace %q: %w", rs.StepDownGrace, err)
 		}
+		sc.StepDownGrace = d
 	}
-	sc.DrainStrategy = toDrainStrategy(rs)
+
+	ds, err := toDrainStrategyE(rs)
+	if err != nil {
+		return nil, err
+	}
+	sc.DrainStrategy = ds
 	if rs.DrainBatchSize > 0 {
 		sc.DrainBatchSize = rs.DrainBatchSize
 	}
 
-	return &sc
+	return &sc, nil
 }
 
 func toDrainStrategy(rs *config.RouteSessionDef) domain.DrainStrategy {
+	ds, _ := toDrainStrategyE(rs)
+	return ds
+}
+
+func toDrainStrategyE(rs *config.RouteSessionDef) (domain.DrainStrategy, error) {
 	if rs.DrainStrategy != nil {
-		return buildDrainStrategy(rs.DrainStrategy)
+		return buildDrainStrategyE(rs.DrainStrategy)
 	}
 	if rs.DrainInterval != "" {
-		if d, err := time.ParseDuration(rs.DrainInterval); err == nil {
-			return domain.NewFixedPoll(d)
+		d, err := time.ParseDuration(rs.DrainInterval)
+		if err != nil {
+			return nil, fmt.Errorf("invalid drain_interval %q: %w", rs.DrainInterval, err)
 		}
+		return domain.NewFixedPoll(d), nil
 	}
-	return domain.NewFixedPoll(domain.DefaultFixedPollInterval)
+	return domain.NewFixedPoll(domain.DefaultFixedPollInterval), nil
 }
 
 func buildDrainStrategy(ds *config.DrainStrategyDef) domain.DrainStrategy {
+	s, _ := buildDrainStrategyE(ds)
+	return s
+}
+
+func buildDrainStrategyE(ds *config.DrainStrategyDef) (domain.DrainStrategy, error) {
 	switch ds.Type {
 	case "adaptive_backoff":
 		var minD, maxD time.Duration
 		if ds.MinInterval != "" {
-			minD, _ = time.ParseDuration(ds.MinInterval)
+			d, err := time.ParseDuration(ds.MinInterval)
+			if err != nil {
+				return nil, fmt.Errorf("invalid adaptive_backoff min_interval %q: %w", ds.MinInterval, err)
+			}
+			minD = d
 		}
 		if ds.MaxInterval != "" {
-			maxD, _ = time.ParseDuration(ds.MaxInterval)
+			d, err := time.ParseDuration(ds.MaxInterval)
+			if err != nil {
+				return nil, fmt.Errorf("invalid adaptive_backoff max_interval %q: %w", ds.MaxInterval, err)
+			}
+			maxD = d
 		}
-		return domain.NewAdaptiveBackoff(minD, maxD, ds.Multiplier)
+		return domain.NewAdaptiveBackoff(minD, maxD, ds.Multiplier), nil
 
 	default:
 		var interval time.Duration
 		if ds.Interval != "" {
-			interval, _ = time.ParseDuration(ds.Interval)
+			d, err := time.ParseDuration(ds.Interval)
+			if err != nil {
+				return nil, fmt.Errorf("invalid fixed_poll interval %q: %w", ds.Interval, err)
+			}
+			interval = d
 		}
-		return domain.NewFixedPoll(interval)
+		return domain.NewFixedPoll(interval), nil
 	}
 }
 

@@ -108,23 +108,29 @@ func NewSupervisor(opts ...SupervisorOption) *Supervisor {
 }
 
 // RegisterTransport registers a transport factory for reuse across
-// rebuilds. Returns the supervisor for chaining.
+// rebuilds. Returns the supervisor for chaining. Safe for concurrent use.
 func (s *Supervisor) RegisterTransport(name string, factory TransportFactory) *Supervisor {
+	s.mu.Lock()
 	s.transports[name] = factory
+	s.mu.Unlock()
 	return s
 }
 
 // RegisterStoreFactory registers a store factory for reuse across
-// rebuilds. Returns the supervisor for chaining.
+// rebuilds. Returns the supervisor for chaining. Safe for concurrent use.
 func (s *Supervisor) RegisterStoreFactory(name string, factory StoreFactory) *Supervisor {
+	s.mu.Lock()
 	s.stores[name] = factory
+	s.mu.Unlock()
 	return s
 }
 
 // RegisterProcessor registers a named processor for reuse across
-// rebuilds. Returns the supervisor for chaining.
+// rebuilds. Returns the supervisor for chaining. Safe for concurrent use.
 func (s *Supervisor) RegisterProcessor(name string, proc ports.Processor) *Supervisor {
+	s.mu.Lock()
 	s.processors[name] = proc
+	s.mu.Unlock()
 	return s
 }
 

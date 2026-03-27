@@ -40,14 +40,11 @@ func TestHandleLogs_ReturnsNotImplemented(t *testing.T) {
 	req.Header.Set("X-API-Key", "test-secret")
 	s.handleLogs(rec, req)
 
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusNotImplemented, rec.Code)
 
 	var body map[string]any
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
-	assert.Equal(t, "log streaming not yet implemented", body["message"])
-	entries, ok := body["entries"].([]any)
-	require.True(t, ok, "entries should be a JSON array")
-	assert.Empty(t, entries)
+	assert.Equal(t, "log streaming not yet implemented", body["error"])
 }
 
 // TestHandleLive_ReturnsAlive validates the liveness probe returns "alive".

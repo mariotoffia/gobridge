@@ -181,8 +181,14 @@ func (b *Builder) wireRoutes(
 		}
 
 		bindings := toBindings(b.cfg, routeDef.Bindings)
-		policy := toRoutePolicy(routeDef)
-		sessCfg := toSessionConfig(routeDef.Session)
+		policy, policyErr := toRoutePolicyE(routeDef)
+		if policyErr != nil {
+			return fmt.Errorf("bridge: route %q: %w", routeDef.ID, policyErr)
+		}
+		sessCfg, sessCfgErr := toSessionConfigE(routeDef.Session)
+		if sessCfgErr != nil {
+			return fmt.Errorf("bridge: route %q: %w", routeDef.ID, sessCfgErr)
+		}
 
 		var routeSession ports.Session
 		var routeSender ports.Sender
@@ -308,7 +314,9 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		if !ok {
 			return nil, fmt.Errorf("bridge: no store factory registered for outbox type %q", sc.Type)
 		}
-		b.injectStaleClaimDuration(sc)
+		if err := b.injectStaleClaimDuration(sc); err != nil {
+			return nil, err
+		}
 		s, err := sf.NewOutboxStore(ctx, *sc)
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create outbox store: %w", err)
@@ -400,6 +408,9 @@ func (b *Builder) buildReceivers(ctx context.Context, sessions map[string]ports.
 		var sess ports.Session
 		if rd.SessionID != "" {
 			sess = sessions[rd.SessionID]
+			if sess == nil {
+				return nil, fmt.Errorf("bridge: receiver %q references unknown session %q", rd.ID, rd.SessionID)
+			}
 		}
 		if rd.Options != nil {
 			opts, err := b.resolveCredentials(ctx, rd.Options, fmt.Sprintf("receiver %q", rd.ID))
@@ -433,6 +444,9 @@ func (b *Builder) buildSenders(ctx context.Context, sessions map[string]ports.Se
 		var sess ports.Session
 		if sd.SessionID != "" {
 			sess = sessions[sd.SessionID]
+			if sess == nil {
+				return nil, fmt.Errorf("bridge: sender %q references unknown session %q", sd.ID, sd.SessionID)
+			}
 		}
 		if sd.Options != nil {
 			opts, err := b.resolveCredentials(ctx, sd.Options, fmt.Sprintf("sender %q", sd.ID))
@@ -531,10 +545,10 @@ const staleClaimBuffer = 15 * time.Second
 // The method works on a shallow copy of sc.Options so that the
 // original config is not mutated, allowing safe re-derivation on
 // subsequent Build() calls with the same config.
-func (b *Builder) injectStaleClaimDuration(sc *config.StoreConfig) {
+func (b *Builder) injectStaleClaimDuration(sc *config.StoreConfig) error {
 	if sc.Options != nil {
 		if _, explicit := sc.Options["stale_claim_duration"]; explicit {
-			return
+			return nil
 		}
 	}
 
@@ -543,8 +557,11 @@ func (b *Builder) injectStaleClaimDuration(sc *config.StoreConfig) {
 		if r.Session == nil {
 			continue
 		}
-		sessCfg := toSessionConfig(r.Session)
-		if sessCfg.StepDownGrace > maxGrace {
+		sessCfg, err := toSessionConfigE(r.Session)
+		if err != nil {
+			return fmt.Errorf("bridge: route %q: %w", r.ID, err)
+		}
+		if sessCfg != nil && sessCfg.StepDownGrace > maxGrace {
 			maxGrace = sessCfg.StepDownGrace
 		}
 	}
@@ -555,4 +572,5 @@ func (b *Builder) injectStaleClaimDuration(sc *config.StoreConfig) {
 	}
 	opts["stale_claim_duration"] = maxGrace + staleClaimBuffer
 	sc.Options = opts
+	return nil
 }

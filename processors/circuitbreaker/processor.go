@@ -3,6 +3,7 @@ package circuitbreaker
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -41,12 +42,17 @@ func (p *Processor) Name() string {
 	return p.name
 }
 
+const maxBreakers = 10000
+
 func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
 	key := p.keyExtractor(ctx, env)
 
 	p.mu.Lock()
 	b, ok := p.breakers[key]
 	if !ok {
+		if len(p.breakers) >= maxBreakers {
+			p.evictOldest()
+		}
 		b = newBreaker(key, p.config, p.onStateChange)
 		p.breakers[key] = b
 	}
@@ -59,6 +65,30 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 	err := next(ctx, env)
 	b.afterRequest(err)
 	return err
+}
+
+func (p *Processor) evictOldest() {
+	var oldestKey string
+	var oldestTime time.Time
+	first := true
+	for k, b := range p.breakers {
+		m := b.metrics()
+		if m.State == StateClosed.String() {
+			if first || m.LastFailureTime.Before(oldestTime) {
+				oldestKey = k
+				oldestTime = m.LastFailureTime
+				first = false
+			}
+		}
+	}
+	if oldestKey != "" {
+		delete(p.breakers, oldestKey)
+		return
+	}
+	for k := range p.breakers {
+		delete(p.breakers, k)
+		return
+	}
 }
 
 func (p *Processor) Metrics() map[string]BreakerMetrics {

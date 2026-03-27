@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -158,6 +159,15 @@ func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(body.IDs) == 0 {
+		writeErr(w, http.StatusBadRequest, "ids must not be empty")
+		return
+	}
+	const maxReplayIDs = 1000
+	if len(body.IDs) > maxReplayIDs {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("ids exceeds maximum of %d", maxReplayIDs))
 		return
 	}
 	if err := store.Replay(r.Context(), body.IDs); err != nil {

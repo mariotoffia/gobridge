@@ -178,7 +178,11 @@ func TestMonitorSensitive_RequiresAuth(t *testing.T) {
 			req.Header.Set("X-API-Key", "test-secret")
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, req)
-			assert.Equal(t, http.StatusOK, rec.Code)
+			if path == "/api/v1/monitor/logs" {
+				assert.Equal(t, http.StatusNotImplemented, rec.Code)
+			} else {
+				assert.Equal(t, http.StatusOK, rec.Code)
+			}
 		})
 	}
 }

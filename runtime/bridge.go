@@ -404,7 +404,9 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	rt.mu.Unlock()
 
 	if metrics != nil {
-		if err := metrics.Flush(closeCtx); err != nil {
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer flushCancel()
+		if err := metrics.Flush(flushCtx); err != nil {
 			errs = append(errs, err)
 		}
 	}

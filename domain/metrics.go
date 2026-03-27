@@ -37,6 +37,12 @@ const (
 	MetricSQSVisibilityExtensions = "SQSVisibilityExtensions"
 )
 
+// Generic transport-agnostic delivery metric names.
+const (
+	MetricAckLatency           = "AckLatency"
+	MetricVisibilityExtensions = "VisibilityExtensions"
+)
+
 // Delivery metric names.
 const (
 	MetricDeliveryE2ELatency = "DeliveryE2ELatency"

@@ -103,7 +103,7 @@ type instrumentedDelivery struct {
 func (d *instrumentedDelivery) Ack(ctx context.Context) error {
 	start := time.Now()
 	err := d.Delivery.Ack(ctx)
-	d.metrics.Timer(domain.MetricSQSDeleteLatency, time.Since(start),
+	d.metrics.Timer(domain.MetricAckLatency, time.Since(start),
 		domain.Tag{Key: d.tagKey, Value: d.tagValue})
 	return err
 }
@@ -111,7 +111,7 @@ func (d *instrumentedDelivery) Ack(ctx context.Context) error {
 func (d *instrumentedDelivery) Extend(ctx context.Context, until time.Time) error {
 	err := d.Delivery.Extend(ctx, until)
 	if err == nil {
-		d.metrics.Counter(domain.MetricSQSVisibilityExtensions, 1,
+		d.metrics.Counter(domain.MetricVisibilityExtensions, 1,
 			domain.Tag{Key: d.tagKey, Value: d.tagValue})
 	}
 	return err

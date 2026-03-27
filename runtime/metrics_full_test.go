@@ -170,6 +170,8 @@ func TestMetrics_AllMetricNamesDocumented(t *testing.T) {
 		domain.MetricSQSReceiveLatency,
 		domain.MetricSQSDeleteLatency,
 		domain.MetricSQSVisibilityExtensions,
+		domain.MetricAckLatency,
+		domain.MetricVisibilityExtensions,
 		domain.MetricDeliveryE2ELatency,
 		domain.MetricDLQEntries,
 		domain.MetricMQTTPublishLatency,
@@ -180,8 +182,8 @@ func TestMetrics_AllMetricNamesDocumented(t *testing.T) {
 			t.Error("metric name constant is empty")
 		}
 	}
-	if len(all) != 19 {
-		t.Errorf("expected 19 metric name constants, got %d", len(all))
+	if len(all) != 21 {
+		t.Errorf("expected 21 metric name constants, got %d", len(all))
 	}
 }
 

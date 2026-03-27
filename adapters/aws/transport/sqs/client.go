@@ -2,6 +2,7 @@ package sqs
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -52,6 +53,9 @@ func resolveQueueURL(ctx context.Context, client sqsAPI, queueURL, queueName str
 	})
 	if err != nil {
 		return "", MapError(err)
+	}
+	if out.QueueUrl == nil {
+		return "", fmt.Errorf("GetQueueUrl returned nil QueueUrl for queue %q", queueName)
 	}
 	return *out.QueueUrl, nil
 }

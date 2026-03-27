@@ -127,8 +127,5 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"entries": []any{},
-		"message": "log streaming not yet implemented",
-	})
+	writeErr(w, http.StatusNotImplemented, "log streaming not yet implemented")
 }

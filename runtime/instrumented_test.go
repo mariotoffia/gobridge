@@ -256,7 +256,7 @@ func TestInstrumentedDelivery_ExtendCountsVisibilityExtension(t *testing.T) {
 		return del.Extend(ctx, time.Now().Add(30*time.Second))
 	})
 
-	extensions := rec.FindEntries(domain.MetricSQSVisibilityExtensions)
+	extensions := rec.FindEntries(domain.MetricVisibilityExtensions)
 	if len(extensions) != 1 {
 		t.Fatalf("expected 1 visibility extension counter, got %d", len(extensions))
 	}

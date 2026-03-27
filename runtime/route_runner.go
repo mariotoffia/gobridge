@@ -261,6 +261,10 @@ func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *d
 		return r.handleResolveError(ctx, del, env, resolveErr)
 	}
 
+	if len(plans) == 0 {
+		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("resolver returned no dispatch plans for route %s", r.routeID))
+	}
+
 	plan := plans[0]
 	if plan.Address != "" {
 		env.Subject = plan.Address
@@ -295,11 +299,15 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 		return r.handleResolveError(ctx, del, env, err)
 	}
 
+	if r.outboxStore == nil {
+		return r.retryOrFallback(ctx, del, env, time.Second, fmt.Errorf("shared_outbox route %q: no OutboxStore configured", r.routeID))
+	}
+
 	// Depth check is advisory: concurrent goroutines may each see under-capacity
 	// and collectively exceed MaxOutboxDepth. This is acceptable because the
 	// outbox drainer will eventually process excess entries, and QueryPending
 	// errors now fail the delivery (fail-closed) rather than silently bypassing.
-	if r.policy.MaxOutboxDepth > 0 && r.outboxStore != nil && r.depthCache != nil {
+	if r.policy.MaxOutboxDepth > 0 && r.depthCache != nil {
 		partitionKey := r.outboxPartitionKey(plans)
 		if partitionKey != "" && !r.depthCache.isUnderCapacity(partitionKey) {
 			pending, qErr := r.outboxStore.QueryPending(ctx, partitionKey, r.policy.MaxOutboxDepth+1)
@@ -312,10 +320,6 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 				return r.retryOrFallback(ctx, del, env, 5*time.Second, fmt.Errorf("outbox at capacity (%d pending)", len(pending)))
 			}
 		}
-	}
-
-	if r.outboxStore == nil {
-		return r.retryOrFallback(ctx, del, env, time.Second, fmt.Errorf("shared_outbox route %q: no OutboxStore configured", r.routeID))
 	}
 
 	records := r.buildOutboxRecords(env, plans)
