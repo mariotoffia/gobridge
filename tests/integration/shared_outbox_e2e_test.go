@@ -659,7 +659,7 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 	const leaseID = "mqtt-fencing-session"
 
 	// Owner A acquires the lease.
-	tokenA, err := leaseStore.Acquire(ctx, leaseID, "owner-A", 300*time.Millisecond)
+	tokenA, err := leaseStore.Acquire(ctx, leaseID, "owner-A", 300*time.Millisecond, nil)
 	if err != nil {
 		t.Fatalf("A acquire: %v", err)
 	}
@@ -690,7 +690,7 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 
 	// Let A's lease expire, then B acquires.
 	time.Sleep(400 * time.Millisecond)
-	tokenB, err := leaseStore.Acquire(ctx, leaseID, "owner-B", 5*time.Second)
+	tokenB, err := leaseStore.Acquire(ctx, leaseID, "owner-B", 5*time.Second, nil)
 	if err != nil {
 		t.Fatalf("B acquire: %v", err)
 	}
