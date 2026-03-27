@@ -517,12 +517,20 @@ func (b *Builder) resolveCredentials(ctx context.Context, opts map[string]any, l
 	return resolved, nil
 }
 
+// staleClaimBuffer is the safety margin added on top of StepDownGrace
+// when deriving the outbox stale claim duration.
+const staleClaimBuffer = 15 * time.Second
+
 // injectStaleClaimDuration derives stale_claim_duration from the
 // session StepDownGrace values across all routes and injects it into
 // the outbox store config options. This keeps the outbox reclaim
 // timeout aligned with the lease lifecycle rather than being an
 // independent hardcoded value. The derivation is skipped when the
 // user has explicitly set stale_claim_duration in YAML.
+//
+// The method works on a shallow copy of sc.Options so that the
+// original config is not mutated, allowing safe re-derivation on
+// subsequent Build() calls with the same config.
 func (b *Builder) injectStaleClaimDuration(sc *config.StoreConfig) {
 	if sc.Options != nil {
 		if _, explicit := sc.Options["stale_claim_duration"]; explicit {
@@ -541,8 +549,10 @@ func (b *Builder) injectStaleClaimDuration(sc *config.StoreConfig) {
 		}
 	}
 
-	if sc.Options == nil {
-		sc.Options = make(map[string]any)
+	opts := make(map[string]any, len(sc.Options)+1)
+	for k, v := range sc.Options {
+		opts[k] = v
 	}
-	sc.Options["stale_claim_duration"] = maxGrace + 15*time.Second
+	opts["stale_claim_duration"] = maxGrace + staleClaimBuffer
+	sc.Options = opts
 }

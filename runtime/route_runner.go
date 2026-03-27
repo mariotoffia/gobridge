@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	goruntime "runtime/debug"
 	"sync"
 	"time"
 
@@ -132,6 +133,34 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 		go func() {
 			defer wg.Done()
 			defer r.releaseSlots()
+			defer func() {
+				if rec := recover(); rec != nil {
+					stack := goruntime.Stack()
+					if r.logger != nil {
+						r.logger.Error("panic in delivery goroutine",
+							"route", r.routeID,
+							"panic", rec,
+							"stack", string(stack),
+						)
+					}
+					func() {
+						defer func() {
+							if r2 := recover(); r2 != nil && r.logger != nil {
+								r.logger.Error("panic in recovery handler",
+									"route", r.routeID, "panic", r2)
+							}
+						}()
+						r.metrics.Counter(domain.MetricDeliveryPanics, 1,
+							domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID},
+						)
+						retryErr := del.Retry(context.Background(), 0, fmt.Errorf("panic recovered in route %s: %v", r.routeID, rec))
+						if retryErr != nil && r.logger != nil {
+							r.logger.Error("retry after panic failed",
+								"route", r.routeID, "error", retryErr)
+						}
+					}()
+				}
+			}()
 			r.processDelivery(ctx, del)
 		}()
 		return nil

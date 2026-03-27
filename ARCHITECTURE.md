@@ -802,3 +802,104 @@ err := domain.ErrUnavailable.WithRetryAfter(30 * time.Second)
 ```
 
 Unknown error types (non-`BridgeError`) are treated as recoverable by default, ensuring safe retry behavior when interfacing with third-party code.
+
+---
+
+## 16. Clustered Deployment
+
+GoBridge supports multi-instance clustered deployment for high availability. The clustering model uses lease-based coordination via a shared `LeaseStore` (typically DynamoDB) to ensure single-active ownership of outbox drain operations.
+
+### Deployment Model
+
+```mermaid
+graph TB
+    subgraph instance_a ["Instance A (active)"]
+        RCV_A[Receiver]
+        PROC_A[Processor Chain]
+        OBX_W_A[Outbox Persist]
+        DRN_A["Drainer (active)"]
+        SND_A[Sender]
+    end
+
+    subgraph instance_b ["Instance B (standby)"]
+        RCV_B[Receiver]
+        PROC_B[Processor Chain]
+        OBX_W_B[Outbox Persist]
+        DRN_B["Drainer (standby)"]
+    end
+
+    subgraph shared [Shared Infrastructure]
+        SRC[Source Queue]
+        DDB_L[LeaseStore]
+        DDB_O[OutboxStore]
+        DST[Destination Broker]
+    end
+
+    SRC --> RCV_A
+    SRC --> RCV_B
+    RCV_A --> PROC_A --> OBX_W_A --> DDB_O
+    RCV_B --> PROC_B --> OBX_W_B --> DDB_O
+    DDB_L -->|"lease held"| DRN_A
+    DDB_L -->|"no lease"| DRN_B
+    DRN_A --> DDB_O
+    DRN_A --> SND_A --> DST
+```
+
+All instances run all routes identically. The `LeaseStore` determines which instance's `OutboxDrainer` actively drains and sends. The active instance holds the lease; standby instances persist to the outbox but do not drain until they acquire the lease.
+
+### Instance Identity
+
+Each runtime instance is assigned a unique identifier used as the lease owner ID:
+
+- **Default (recommended):** Auto-generated 128-bit cryptographically random hex string via `crypto/rand`. Collision probability is astronomically small (~2^-64 for birthday attack at 2^32 instances).
+- **Static:** Set via `WithInstanceID("my-id")` or `bridge.id` in config.
+
+> **Important:** When using static instance IDs (e.g. for log correlation or operational clarity), each instance in the cluster **must** have a unique ID. Duplicate instance IDs cause two instances to claim the same lease owner identity, breaking fencing guarantees. The runtime does not validate uniqueness at startup. Use deployment-specific mechanisms (hostname, pod name, task ARN) to ensure uniqueness.
+
+### Lease Lifecycle
+
+The `SessionManager` manages the lease lifecycle for exclusive sessions:
+
+1. **Acquire** -- Attempt to acquire the lease with the configured TTL (default 360s).
+2. **Renew** -- Periodically renew with fencing token validation (default interval: TTL / MaxRenewFails).
+3. **Step-down** -- After MaxRenewFails consecutive failures: clear lease ownership, wait StepDownGrace for in-flight completions, then release.
+4. **Re-acquire** -- After step-down, loop back to acquire and resume on success.
+
+The lease fencing token (monotonically increasing version) propagates through the entire outbox lifecycle: `Claim` and `Complete` operations validate the token, preventing stale owners from sending duplicates.
+
+### Timeout Alignment
+
+All clustered timing parameters are derived from `LeaseTTL` to avoid dead zones:
+
+| Parameter | Default | Derivation |
+|---|---|---|
+| `LeaseTTL` | 360s | Base parameter; network-interruption tolerance |
+| `RenewInterval` | 120s | `LeaseTTL / MaxRenewFails` (auto-derived when 0) |
+| `RenewJitter` | 5s | Proportional to interval |
+| `MaxRenewFails` | 3 | Consecutive failures before step-down |
+| `StepDownGrace` | 15s | Grace for in-flight I/O completions |
+| `staleClaimAge` | ~30s | `max(StepDownGrace) + 15s` (injected by builder) |
+
+### Readiness and Role
+
+The HTTP readiness probe (`/api/v1/monitor/ready`) returns a `role` field indicating the instance's operational state:
+
+| Role | Meaning |
+|---|---|
+| `standalone` | No exclusive sessions configured; instance operates independently |
+| `active` | At least one exclusive session holds the lease; drainers are active |
+| `standby` | Exclusive sessions configured but no lease held; waiting to take over |
+
+All roles return HTTP 200 (the instance is healthy and ready to serve). Load balancers should use the role to make routing decisions when appropriate.
+
+### Design Trade-offs
+
+The following are inherent characteristics of the chosen design, not bugs to be fixed:
+
+**Failover Window (F1)** -- The failover window equals `LeaseTTL` (default 360s). This is fundamental to any lease-based system without active heartbeats. The 360s default prioritizes network-interruption tolerance over fast failover. Reducing the TTL increases store write costs and risk of spurious failovers under transient network issues.
+
+**No Route Distribution (G1)** -- All instances run all routes identically. The system uses per-session lease fencing rather than route sharding. This simplifies deployment (every instance is identical) at the cost of redundant ingress work on standby instances.
+
+**Standby Ingress Work (S1)** -- Standby instances poll, process, persist to outbox, and ack source deliveries -- all before the drainer (which is lease-gated) can drain. This is a direct consequence of the identical-instance design. A lease-aware receiver that pauses ingress on standby would add significant complexity and coupling between the ingress and lease layers.
+
+**Single Backing Store (S11)** -- DynamoDB (or equivalent) is the sole distributed backing store for lease, outbox, and DLQ. DynamoDB's 99.999% availability SLA with global tables makes this a reasonable infrastructure choice. Adding a fallback store would require dual-write consistency, which is harder than the problem it solves.

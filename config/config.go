@@ -123,12 +123,25 @@ type RouteDef struct {
 // RouteSessionDef configures session management for a route that targets
 // an exclusive MQTT session or similar stateful transport.
 type RouteSessionDef struct {
-	SessionID         string            `yaml:"session_id" json:"session_id"`
-	SenderID          string            `yaml:"sender_id" json:"sender_id"`
-	LeaseTTL          string            `yaml:"lease_ttl,omitempty" json:"lease_ttl,omitempty"`
-	RenewInterval     string            `yaml:"renew_interval,omitempty" json:"renew_interval,omitempty"`
-	MaxRenewFails     int               `yaml:"max_renew_fails,omitempty" json:"max_renew_fails,omitempty"`
-	StepDownGrace     string            `yaml:"step_down_grace,omitempty" json:"step_down_grace,omitempty"`
+	SessionID string `yaml:"session_id" json:"session_id"`
+	SenderID  string `yaml:"sender_id" json:"sender_id"`
+
+	// LeaseTTL is how long the lease is valid (duration string, e.g. "360s").
+	// Empty means use the runtime default.
+	LeaseTTL string `yaml:"lease_ttl,omitempty" json:"lease_ttl,omitempty"`
+
+	// RenewInterval is how often the lease is renewed (e.g. "120s").
+	// Empty means derive as LeaseTTL / MaxRenewFails.
+	RenewInterval string `yaml:"renew_interval,omitempty" json:"renew_interval,omitempty"`
+
+	// MaxRenewFails is consecutive renewal failures before step-down.
+	// Zero means use the runtime default (3).
+	MaxRenewFails int `yaml:"max_renew_fails,omitempty" json:"max_renew_fails,omitempty"`
+
+	// StepDownGrace is how long to wait for in-flight operations before
+	// releasing the lease (e.g. "15s"). Empty means use the runtime default.
+	StepDownGrace string `yaml:"step_down_grace,omitempty" json:"step_down_grace,omitempty"`
+
 	DrainInterval     string            `yaml:"drain_interval,omitempty" json:"drain_interval,omitempty"`
 	DrainBatchSize    int               `yaml:"drain_batch_size,omitempty" json:"drain_batch_size,omitempty"`
 	DrainStrategy     *DrainStrategyDef `yaml:"drain_strategy,omitempty" json:"drain_strategy,omitempty"`

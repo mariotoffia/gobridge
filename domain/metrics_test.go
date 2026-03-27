@@ -29,13 +29,16 @@ func TestMetricConstants_NonEmpty(t *testing.T) {
 		domain.MetricOutboxCompletions,
 		domain.MetricOutboxExpiredBeforeSend,
 		domain.MetricOutboxReplayCount,
+		domain.MetricOutboxRecordFailures,
 		domain.MetricSQSReceiveLatency,
 		domain.MetricSQSDeleteLatency,
 		domain.MetricSQSVisibilityExtensions,
 		domain.MetricDeliveryE2ELatency,
 		domain.MetricDLQEntries,
+		domain.MetricDeliveryPanics,
 		domain.MetricMQTTPublishLatency,
 		domain.MetricMQTTReconnects,
+		domain.MetricReconcileFailures,
 	}
 
 	seen := make(map[string]bool, len(metrics))

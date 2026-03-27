@@ -41,6 +41,7 @@ const (
 const (
 	MetricDeliveryE2ELatency = "DeliveryE2ELatency"
 	MetricDLQEntries         = "DLQEntries"
+	MetricDeliveryPanics     = "DeliveryPanics"
 )
 
 // MQTT metric names.

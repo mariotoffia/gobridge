@@ -245,7 +245,7 @@ func TestBuilder_CompleteCreatesSessionsAndRoutes(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, rt)
 
-	sessions, receivers, senders = ct.Counts()
+	_, receivers, senders = ct.Counts()
 	assert.Greater(t, receivers, 0, "Complete must call NewReceiver")
 	assert.Greater(t, senders, 0, "Complete must call NewSender")
 

@@ -54,15 +54,20 @@ func newSessionManager(cfg SessionConfig, session ports.Session, leaseStore port
 	if cfg.LeaseTTL == 0 {
 		cfg.LeaseTTL = defaults.LeaseTTL
 	}
-	if cfg.RenewInterval == 0 {
-		if cfg.MaxRenewFails > 0 {
-			cfg.RenewInterval = cfg.LeaseTTL / time.Duration(cfg.MaxRenewFails)
-		} else {
-			cfg.RenewInterval = cfg.LeaseTTL / 3
-		}
-	}
 	if cfg.MaxRenewFails == 0 {
 		cfg.MaxRenewFails = defaults.MaxRenewFails
+	}
+	if cfg.RenewInterval == 0 {
+		cfg.RenewInterval = cfg.LeaseTTL / time.Duration(cfg.MaxRenewFails)
+		if cfg.RenewInterval < time.Millisecond {
+			cfg.RenewInterval = time.Millisecond
+		}
+		if cfg.RenewInterval >= cfg.LeaseTTL {
+			cfg.RenewInterval = cfg.LeaseTTL / 2
+			if cfg.RenewInterval < time.Millisecond {
+				cfg.RenewInterval = time.Millisecond
+			}
+		}
 	}
 	if cfg.StepDownGrace == 0 {
 		cfg.StepDownGrace = defaults.StepDownGrace

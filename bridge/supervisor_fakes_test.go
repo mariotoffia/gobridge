@@ -128,7 +128,6 @@ func (f *failingTransportFactory) NewSession(_ context.Context, _ config.Session
 // ---------------------------------------------------------------------------
 
 type failingStoreFactory struct {
-	fakeStoreFactory
 	leaseErr  error
 	outboxErr error
 	dlqErr    error
@@ -182,10 +181,6 @@ type trackingTransportFactory struct {
 	mu       sync.Mutex
 	sessions []*trackingSession
 	failAt   int // -1 = never fail; 0-based index of session that fails
-}
-
-func newTrackingTransportFactory() *trackingTransportFactory {
-	return &trackingTransportFactory{failAt: -1}
 }
 
 func (f *trackingTransportFactory) NewSession(_ context.Context, _ config.SessionDef) (ports.Session, error) {
@@ -315,20 +310,6 @@ func waitForRuntime(s *Supervisor, timeout time.Duration) *goruntime.Runtime {
 		time.Sleep(5 * time.Millisecond)
 	}
 	return nil
-}
-
-// waitForRouteCount polls s.Runtime().Routes() until the count
-// matches or timeout is reached.
-func waitForRouteCount(s *Supervisor, count int, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		rt := s.Runtime()
-		if rt != nil && len(rt.Routes()) == count {
-			return true
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	return false
 }
 
 // waitForRouteID polls until the first route has the given ID or

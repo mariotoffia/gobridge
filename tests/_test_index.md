@@ -1049,3 +1049,12 @@ Catalog of all test functions in the gobridge repository.
 | TestSessionManager_ReconnectReconcileError_EmitsMetric | validates MetricReconcileFailures emitted on reconnect Reconcile failure (S9) | unit | session_reconnect | pass |
 | TestSessionManager_ReconnectReconcileOK_NoError | validates successful reconnect Reconcile does not emit failure metric (S9) | unit | session_reconnect | pass |
 | TestSessionManager_RenewLoop_ReconnectReconcileError_Exits | validates renewLoop exits when Reconcile fails on reconnect (S9) | unit | session_reconnect | pass |
+| TestRouteRunner_ProcessorPanic_DoesNotCrash | validates panicking processor does not crash process (S13) | unit | s13_delivery_panic | pass |
+| TestRouteRunner_ProcessorPanic_RetriesDelivery | validates delivery retried after processor panic with reason (S13) | unit | s13_delivery_panic | pass |
+| TestRouteRunner_SenderPanic_DoesNotCrash | validates panicking sender does not crash process (S13) | unit | s13_delivery_panic | pass |
+| TestRouteRunner_SenderPanic_RetriesDelivery | validates delivery retried after sender panic (S13) | unit | s13_delivery_panic | pass |
+| TestRouteRunner_DeliveryPanic_EmitsMetric | validates DeliveryPanics counter emitted with route_id tag (S13) | unit | s13_delivery_panic | pass |
+| TestRouteRunner_DeliveryPanic_SlotsReleased | validates semaphore slot released after panic so next msg proceeds (S13) | unit | s13_delivery_panic | pass |
+| TestRouteRunner_DeliveryPanic_OtherMessagesUnaffected | validates concurrent deliveries unaffected by one panic (S13) | unit | s13_delivery_panic | pass |
+| TestRouteRunner_DeliveryPanic_RetryFails_NoSecondPanic | validates retry error after panic does not crash (S13) | unit | s13_delivery_panic | pass |
+| TestRouteRunner_DeliveryPanic_RetryPanics_NoProcessCrash | validates nested panic in retry handler caught by inner recover (S13) | unit | s13_delivery_panic | pass |

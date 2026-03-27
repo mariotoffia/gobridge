@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+// defaultStepDownGrace must match runtime.DefaultSessionConfig().StepDownGrace.
+// It is duplicated here because config cannot import runtime (circular dep).
+const defaultStepDownGrace = 15 * time.Second
+
 // ValidationError collects multiple validation problems.
 type ValidationError struct {
 	Errors   []string
@@ -26,10 +30,6 @@ func (e *ValidationError) addf(format string, args ...any) {
 
 func (e *ValidationError) hasErrors() bool {
 	return len(e.Errors) > 0
-}
-
-func (e *ValidationError) warn(msg string) {
-	e.Warnings = append(e.Warnings, msg)
 }
 
 func (e *ValidationError) warnf(format string, args ...any) {
@@ -198,6 +198,7 @@ func validate(cfg *BridgeConfig) *ValidationError {
 			} else if _, ok := senderIDs[r.Session.SenderID]; !ok {
 				ve.addf("%s: session.sender_id %q not found in senders", prefix, r.Session.SenderID)
 			}
+			validateSessionDurations(ve, prefix, r.Session)
 			validateDrainStrategy(ve, prefix, r.Session)
 		}
 
@@ -340,24 +341,24 @@ func validateStaleClaimDuration(ve *ValidationError, cfg *BridgeConfig) {
 	case time.Duration:
 		stale = v
 	default:
+		ve.addf("stores.outbox.options.stale_claim_duration: must be a duration string (e.g. \"30s\"), got %T", raw)
 		return
 	}
 
-	var maxGrace time.Duration
+	maxGrace := defaultStepDownGrace
 	for _, r := range cfg.Routes {
-		if r.Session == nil || r.Session.StepDownGrace == "" {
+		if r.Session == nil {
 			continue
 		}
-		d, err := time.ParseDuration(r.Session.StepDownGrace)
-		if err != nil {
-			continue
+		grace := defaultStepDownGrace
+		if r.Session.StepDownGrace != "" {
+			if d, err := time.ParseDuration(r.Session.StepDownGrace); err == nil {
+				grace = d
+			}
 		}
-		if d > maxGrace {
-			maxGrace = d
+		if grace > maxGrace {
+			maxGrace = grace
 		}
-	}
-	if maxGrace == 0 {
-		maxGrace = 15 * time.Second
 	}
 
 	if stale > 2*maxGrace {
@@ -366,6 +367,27 @@ func validateStaleClaimDuration(ve *ValidationError, cfg *BridgeConfig) {
 			"without reducing duplicate sends — consider a value closer to "+
 			"step_down_grace + 15s (%s)",
 			stale, maxGrace, maxGrace+15*time.Second)
+	}
+}
+
+func validateSessionDurations(ve *ValidationError, prefix string, sess *RouteSessionDef) {
+	for _, f := range []struct{ name, val string }{
+		{"lease_ttl", sess.LeaseTTL},
+		{"renew_interval", sess.RenewInterval},
+		{"step_down_grace", sess.StepDownGrace},
+	} {
+		if f.val == "" {
+			continue
+		}
+		d, err := time.ParseDuration(f.val)
+		if err != nil {
+			ve.addf("%s: session.%s: invalid duration %q: %v", prefix, f.name, f.val, err)
+		} else if d <= 0 {
+			ve.addf("%s: session.%s: must be positive, got %s", prefix, f.name, f.val)
+		}
+	}
+	if sess.MaxRenewFails < 0 {
+		ve.addf("%s: session.max_renew_fails: must be non-negative, got %d", prefix, sess.MaxRenewFails)
 	}
 }
 

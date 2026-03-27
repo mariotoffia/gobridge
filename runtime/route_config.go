@@ -22,14 +22,32 @@ type RouteConfig struct {
 
 // SessionConfig configures session management for exclusive sessions.
 type SessionConfig struct {
-	SessionID           string
-	Exclusive           bool
-	Plan                domain.SessionPlan
-	LeaseTTL            time.Duration
-	RenewInterval       time.Duration
-	RenewJitter         time.Duration
-	MaxRenewFails       int
-	StepDownGrace       time.Duration
+	SessionID string
+	Exclusive bool
+	Plan      domain.SessionPlan
+
+	// LeaseTTL is how long a lease is valid before it expires in the
+	// backing store. Longer values tolerate network interruptions but
+	// increase failover time. Default: 360s.
+	LeaseTTL time.Duration
+
+	// RenewInterval is how often the lease is renewed. Zero means
+	// "derive as LeaseTTL / MaxRenewFails" at construction time.
+	RenewInterval time.Duration
+
+	// RenewJitter adds random jitter to each renewal timer to avoid
+	// thundering-herd effects. Default: 5s.
+	RenewJitter time.Duration
+
+	// MaxRenewFails is the consecutive renewal failures tolerated
+	// before the session manager initiates step-down. Default: 3.
+	MaxRenewFails int
+
+	// StepDownGrace is how long the session waits for in-flight
+	// outbox Send+Complete operations to finish before releasing
+	// the lease. This is I/O-bound, not lease-bound. Default: 15s.
+	StepDownGrace time.Duration
+
 	DrainStrategy       domain.DrainStrategy
 	DrainBatchSize      int
 	DrainMaxBatchSize   int
