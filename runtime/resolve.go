@@ -83,9 +83,12 @@ func NewStaticResolver(plans ...domain.DispatchPlan) *StaticResolver {
 	return &StaticResolver{plans: cp}
 }
 
-// Resolve returns the pre-configured plans.
+// Resolve returns a copy of the pre-configured plans to prevent callers
+// from mutating the resolver's internal state.
 func (r *StaticResolver) Resolve(_ context.Context, _ *domain.Envelope) ([]domain.DispatchPlan, error) {
-	return r.plans, nil
+	cp := make([]domain.DispatchPlan, len(r.plans))
+	copy(cp, r.plans)
+	return cp, nil
 }
 
 // MatchByHeader returns a MatchFunc that selects a binding when the envelope
@@ -119,25 +122,29 @@ func MatchByID(bindingID string) MatchFunc {
 
 // RenderAddress replaces {key} placeholders in template with values from vars.
 // Returns an error if a placeholder references a missing key or if the rendered
-// result is empty.
+// result is empty. Substituted values are never re-expanded, preventing
+// infinite loops and header-value injection.
 func RenderAddress(template string, vars map[string]any) (string, error) {
 	if template == "" {
 		return "", nil
 	}
 
-	result := template
-	for {
-		start := strings.Index(result, "{")
+	var b strings.Builder
+	remaining := template
+	for remaining != "" {
+		start := strings.Index(remaining, "{")
 		if start < 0 {
+			b.WriteString(remaining)
 			break
 		}
-		end := strings.Index(result[start:], "}")
+		end := strings.Index(remaining[start:], "}")
 		if end < 0 {
+			b.WriteString(remaining)
 			break
 		}
 		end += start
 
-		key := result[start+1 : end]
+		key := remaining[start+1 : end]
 		if key == "" {
 			return "", fmt.Errorf("empty placeholder in address template %q", template)
 		}
@@ -147,9 +154,12 @@ func RenderAddress(template string, vars map[string]any) (string, error) {
 			return "", fmt.Errorf("address template placeholder {%s} not found in headers", key)
 		}
 
-		result = result[:start] + val + result[end+1:]
+		b.WriteString(remaining[:start])
+		b.WriteString(val)
+		remaining = remaining[end+1:]
 	}
 
+	result := b.String()
 	if result == "" {
 		return "", fmt.Errorf("address template %q rendered to empty string", template)
 	}

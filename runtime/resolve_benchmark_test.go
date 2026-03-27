@@ -1,0 +1,40 @@
+package runtime
+
+import (
+	"testing"
+)
+
+func BenchmarkRenderAddress_Simple(b *testing.B) {
+	vars := map[string]any{"id": "device-42"}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = RenderAddress("devices/{id}/commands", vars)
+	}
+}
+
+func BenchmarkRenderAddress_Multiple(b *testing.B) {
+	vars := map[string]any{
+		"region":  "eu-west-1",
+		"factory": "factory-A",
+		"line":    "line-3",
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = RenderAddress("{region}/{factory}/{line}/orders", vars)
+	}
+}
+
+func BenchmarkRenderAddress_NoPlaceholders(b *testing.B) {
+	vars := map[string]any{"x": "y"}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = RenderAddress("static/path/no/vars", vars)
+	}
+}
+
+func BenchmarkValidateMQTTTopic(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ValidateMQTTTopic("devices/sensor-1/temperature/readings")
+	}
+}

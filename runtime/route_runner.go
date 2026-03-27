@@ -126,7 +126,10 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 		if closed {
 			mu.Unlock()
 			r.releaseSlots()
-			return ctx.Err()
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return errors.New("route runner: callback invoked after receiver stopped")
 		}
 		wg.Add(1)
 		mu.Unlock()
@@ -153,7 +156,9 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 						r.metrics.Counter(domain.MetricDeliveryPanics, 1,
 							domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID},
 						)
-						retryErr := del.Retry(context.Background(), 0, fmt.Errorf("panic recovered in route %s: %v", r.routeID, rec))
+						retryCtx, retryCancel := context.WithTimeout(context.Background(), 5*time.Second)
+						retryErr := del.Retry(retryCtx, 0, fmt.Errorf("panic recovered in route %s: %v", r.routeID, rec))
+						retryCancel()
 						if retryErr != nil && r.logger != nil {
 							r.logger.Error("retry after panic failed",
 								"route", r.routeID, "error", retryErr)

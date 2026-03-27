@@ -150,7 +150,9 @@ func (r *CredentialResolver) getCached(uri string) *domain.CredentialSet {
 	}
 	if time.Now().After(entry.expiresAt) {
 		r.mu.Lock()
-		delete(r.cache, uri)
+		if current, exists := r.cache[uri]; exists && current == entry {
+			delete(r.cache, uri)
+		}
 		r.mu.Unlock()
 		return nil
 	}
