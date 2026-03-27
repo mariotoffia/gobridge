@@ -250,6 +250,214 @@ func TestPublishFromEnvelope_NoProperties(t *testing.T) {
 	}
 }
 
+// TestEnvelopeFromPublish_RejectsNonPrintableCorrelationData validates that
+// non-printable ASCII in CorrelationData is dropped to prevent log injection.
+func TestEnvelopeFromPublish_RejectsNonPrintableCorrelationData(t *testing.T) {
+	pub := &pahov5.Publish{
+		Topic: "t",
+		Properties: &pahov5.PublishProperties{
+			CorrelationData: []byte("corr\x00id\nnewline"),
+		},
+	}
+
+	env := EnvelopeFromPublish(pub)
+
+	if _, ok := env.Headers[domain.HeaderCorrelationID]; ok {
+		t.Error("non-printable correlation data should be rejected")
+	}
+}
+
+// TestEnvelopeFromPublish_RejectsOversizedCorrelationData validates that
+// correlation data exceeding maxHeaderValueLen is dropped.
+func TestEnvelopeFromPublish_RejectsOversizedCorrelationData(t *testing.T) {
+	longCorr := make([]byte, maxHeaderValueLen+1)
+	for i := range longCorr {
+		longCorr[i] = 'a'
+	}
+
+	pub := &pahov5.Publish{
+		Topic: "t",
+		Properties: &pahov5.PublishProperties{
+			CorrelationData: longCorr,
+		},
+	}
+
+	env := EnvelopeFromPublish(pub)
+
+	if _, ok := env.Headers[domain.HeaderCorrelationID]; ok {
+		t.Error("oversized correlation data should be rejected")
+	}
+}
+
+// TestEnvelopeFromPublish_RejectsNonPrintableContentType validates that
+// non-printable ASCII in ContentType is dropped.
+func TestEnvelopeFromPublish_RejectsNonPrintableContentType(t *testing.T) {
+	pub := &pahov5.Publish{
+		Topic: "t",
+		Properties: &pahov5.PublishProperties{
+			ContentType: "text/plain\x00; charset=utf-8",
+		},
+	}
+
+	env := EnvelopeFromPublish(pub)
+
+	if _, ok := env.Headers[domain.HeaderContentType]; ok {
+		t.Error("non-printable content type should be rejected")
+	}
+}
+
+// TestEnvelopeFromPublish_AcceptsValidCorrelationData validates that
+// valid printable ASCII CorrelationData within size limits is accepted.
+func TestEnvelopeFromPublish_AcceptsValidCorrelationData(t *testing.T) {
+	pub := &pahov5.Publish{
+		Topic: "t",
+		Properties: &pahov5.PublishProperties{
+			CorrelationData: []byte("550e8400-e29b-41d4-a716-446655440000"),
+			ContentType:     "application/json",
+		},
+	}
+
+	env := EnvelopeFromPublish(pub)
+
+	v, ok := domain.GetHeaderString(env.Headers, domain.HeaderCorrelationID)
+	if !ok || v != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Errorf("valid correlation data should be accepted, got %q", v)
+	}
+	v, ok = domain.GetHeaderString(env.Headers, domain.HeaderContentType)
+	if !ok || v != "application/json" {
+		t.Errorf("valid content type should be accepted, got %q", v)
+	}
+}
+
+// TestEnvelopeFromPublish_TimeConsistency validates that CreatedAt and
+// ExpiresAt are computed from the same time base (no drift).
+func TestEnvelopeFromPublish_TimeConsistency(t *testing.T) {
+	expiry := uint32(300)
+	pub := &pahov5.Publish{
+		Topic: "t",
+		Properties: &pahov5.PublishProperties{
+			MessageExpiry: &expiry,
+		},
+	}
+
+	env := EnvelopeFromPublish(pub)
+
+	diff := env.ExpiresAt.Sub(env.CreatedAt)
+	if diff != 300*time.Second {
+		t.Errorf("ExpiresAt - CreatedAt = %v, want exactly 300s (same time base)", diff)
+	}
+}
+
+// TestEnvelopeFromPublish_NilProperties validates that a publish with
+// nil properties produces an envelope with no headers.
+func TestEnvelopeFromPublish_NilProperties(t *testing.T) {
+	pub := &pahov5.Publish{
+		Topic:   "t",
+		Payload: []byte("p"),
+	}
+
+	env := EnvelopeFromPublish(pub)
+
+	if env.Headers != nil && len(env.Headers) > 0 {
+		t.Errorf("expected no headers for nil properties, got %v", env.Headers)
+	}
+}
+
+// TestEnvelopeFromPublish_MixedCaseReservedHeaders validates that
+// mixed-case user properties with reserved prefix are stripped.
+func TestEnvelopeFromPublish_MixedCaseReservedHeaders(t *testing.T) {
+	pub := &pahov5.Publish{
+		Topic: "t",
+		Properties: &pahov5.PublishProperties{
+			User: []pahov5.UserProperty{
+				{Key: "X-Bridge.Route-Id", Value: "injected"},
+				{Key: "X-BRIDGE.SOURCE-ID", Value: "injected"},
+				{Key: "safe-key", Value: "safe-val"},
+			},
+		},
+	}
+
+	env := EnvelopeFromPublish(pub)
+
+	if _, ok := env.Headers["X-Bridge.Route-Id"]; ok {
+		t.Error("mixed-case reserved header should be stripped")
+	}
+	if _, ok := env.Headers["X-BRIDGE.SOURCE-ID"]; ok {
+		t.Error("uppercase reserved header should be stripped")
+	}
+	if v, _ := domain.GetHeaderString(env.Headers, "safe-key"); v != "safe-val" {
+		t.Error("safe key should be preserved")
+	}
+}
+
+// TestEnvelopeFromPublish_RejectsNonPrintableResponseTopic validates that
+// response topics with control characters are dropped.
+func TestEnvelopeFromPublish_RejectsNonPrintableResponseTopic(t *testing.T) {
+	pub := &pahov5.Publish{
+		Topic: "t",
+		Properties: &pahov5.PublishProperties{
+			ResponseTopic: "reply/\x00topic",
+		},
+	}
+
+	env := EnvelopeFromPublish(pub)
+
+	if _, ok := env.Headers[headerMQTTResponseTopic]; ok {
+		t.Error("non-printable response topic should be rejected")
+	}
+}
+
+// TestEnvelopeFromPublish_RejectsOversizedUserProperty validates that
+// user properties with oversized keys or values are dropped.
+func TestEnvelopeFromPublish_RejectsOversizedUserProperty(t *testing.T) {
+	longVal := make([]byte, maxHeaderValueLen+1)
+	for i := range longVal {
+		longVal[i] = 'x'
+	}
+
+	pub := &pahov5.Publish{
+		Topic: "t",
+		Properties: &pahov5.PublishProperties{
+			User: []pahov5.UserProperty{
+				{Key: "normal-key", Value: string(longVal)},
+				{Key: "safe-key", Value: "safe-val"},
+			},
+		},
+	}
+
+	env := EnvelopeFromPublish(pub)
+
+	if _, ok := env.Headers["normal-key"]; ok {
+		t.Error("oversized user property value should be rejected")
+	}
+	if v, _ := domain.GetHeaderString(env.Headers, "safe-key"); v != "safe-val" {
+		t.Error("safe user property should be preserved")
+	}
+}
+
+// TestEnvelopeFromPublish_RejectsNonPrintableUserPropertyKey validates that
+// user properties with non-printable key characters are dropped.
+func TestEnvelopeFromPublish_RejectsNonPrintableUserPropertyKey(t *testing.T) {
+	pub := &pahov5.Publish{
+		Topic: "t",
+		Properties: &pahov5.PublishProperties{
+			User: []pahov5.UserProperty{
+				{Key: "bad\nkey", Value: "val"},
+				{Key: "good-key", Value: "good-val"},
+			},
+		},
+	}
+
+	env := EnvelopeFromPublish(pub)
+
+	if _, ok := env.Headers["bad\nkey"]; ok {
+		t.Error("user property with non-printable key should be rejected")
+	}
+	if v, _ := domain.GetHeaderString(env.Headers, "good-key"); v != "good-val" {
+		t.Error("good user property should be preserved")
+	}
+}
+
 // verifies PublishFromEnvelope followed by EnvelopeFromPublish preserves key fields and headers.
 func TestRoundTrip_EnvelopePublishEnvelope(t *testing.T) {
 	original := &domain.Envelope{

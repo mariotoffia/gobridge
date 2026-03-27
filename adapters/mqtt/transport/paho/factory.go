@@ -40,9 +40,9 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 // NewReceiver creates an MQTT Receiver bound to the given Session.
 func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, session ports.Session) (ports.Receiver, error) {
 	mqttSession, ok := session.(*Session)
-	if !ok {
+	if !ok || mqttSession == nil {
 		return nil, domain.ErrInvalidPayload.WithMessage(
-			fmt.Sprintf("mqtt receiver %q: session must be an MQTT session", spec.ID))
+			fmt.Sprintf("mqtt receiver %q: session must be a non-nil MQTT session", spec.ID))
 	}
 	return NewReceiver(spec.ID, mqttSession), nil
 }
@@ -50,9 +50,9 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, sessio
 // NewSender creates an MQTT Sender bound to the given Session.
 func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, session ports.Session) (ports.Sender, error) {
 	mqttSession, ok := session.(*Session)
-	if !ok {
+	if !ok || mqttSession == nil {
 		return nil, domain.ErrInvalidPayload.WithMessage(
-			fmt.Sprintf("mqtt sender %q: session must be an MQTT session", spec.ID))
+			fmt.Sprintf("mqtt sender %q: session must be a non-nil MQTT session", spec.ID))
 	}
 
 	opts := SenderOptionsFromMap(spec.Options)

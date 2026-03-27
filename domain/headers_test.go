@@ -105,6 +105,36 @@ func TestMergeHeaders_NilInputs(t *testing.T) {
 	if result["a"] != 1 {
 		t.Fatal("should merge overlay into empty base")
 	}
+	result = domain.MergeHeaders(map[string]any{"a": 1}, nil, false)
+	if result["a"] != 1 {
+		t.Fatal("should preserve base when overlay is nil")
+	}
+}
+
+// TestMergeHeaders_ProtectReserved_CaseInsensitive verifies that protection
+// works even when the base and overlay use different casing of the same
+// reserved header key.
+func TestMergeHeaders_ProtectReserved_CaseInsensitive(t *testing.T) {
+	base := map[string]any{
+		"x-bridge.route-id": "original",
+		"custom":            "base",
+	}
+	overlay := map[string]any{
+		"X-Bridge.Route-Id": "injected",
+		"custom":            "overlay",
+	}
+
+	merged := domain.MergeHeaders(base, overlay, true)
+
+	if merged["x-bridge.route-id"] != "original" {
+		t.Fatal("original reserved key should be preserved")
+	}
+	if _, ok := merged["X-Bridge.Route-Id"]; ok {
+		t.Fatal("mixed-case duplicate reserved key should not be added")
+	}
+	if merged["custom"] != "overlay" {
+		t.Fatal("non-reserved key should still be overridden")
+	}
 }
 
 // TestGetHeaderString verifies GetHeaderString returns string values, rejects wrong types and missing keys, and handles nil maps.
@@ -137,5 +167,96 @@ func TestSetHeader(t *testing.T) {
 	h = domain.SetHeader(h, "key2", 42)
 	if h["key2"] != 42 || h["key"] != "value" {
 		t.Fatal("expected both keys to be present")
+	}
+}
+
+// TestIsReservedHeader_CaseInsensitive validates that mixed-case attempts
+// to bypass the reserved prefix are caught.
+func TestIsReservedHeader_CaseInsensitive(t *testing.T) {
+	cases := []struct {
+		key  string
+		want bool
+	}{
+		{"X-Bridge.route-id", true},
+		{"X-BRIDGE.ROUTE-ID", true},
+		{"x-BRIDGE.tenant-id", true},
+		{"X-bridge.Custom", true},
+		{"x-Bridge.forwarded-from", true},
+		{"x-bridg", false},
+		{"x-bridge", false},
+		{"x-bridge.", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			if got := domain.IsReservedHeader(tc.key); got != tc.want {
+				t.Fatalf("IsReservedHeader(%q) = %v, want %v", tc.key, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStripReservedHeaders_CaseInsensitive validates that StripReservedHeaders
+// removes mixed-case reserved headers.
+func TestStripReservedHeaders_CaseInsensitive(t *testing.T) {
+	headers := map[string]any{
+		"X-Bridge.route-id": "injected",
+		"X-BRIDGE.SOURCE-ID": "injected",
+		"safe-header":        "keep",
+	}
+	stripped := domain.StripReservedHeaders(headers)
+
+	if _, ok := stripped["X-Bridge.route-id"]; ok {
+		t.Error("mixed-case reserved header should be stripped")
+	}
+	if _, ok := stripped["X-BRIDGE.SOURCE-ID"]; ok {
+		t.Error("uppercase reserved header should be stripped")
+	}
+	if stripped["safe-header"] != "keep" {
+		t.Error("safe header should be preserved")
+	}
+}
+
+// TestStripReservedHeaders_EmptyMap validates StripReservedHeaders returns
+// an empty map (not nil) for a non-nil empty input.
+func TestStripReservedHeaders_EmptyMap(t *testing.T) {
+	result := domain.StripReservedHeaders(map[string]any{})
+	if result == nil {
+		t.Fatal("expected non-nil empty map")
+	}
+	if len(result) != 0 {
+		t.Fatalf("expected empty map, got %d entries", len(result))
+	}
+}
+
+// TestMergeHeaders_ProtectReserved_NewReservedKey validates that
+// protectReserved allows new reserved keys from overlay when base
+// does not already have them.
+func TestMergeHeaders_ProtectReserved_NewReservedKey(t *testing.T) {
+	base := map[string]any{"custom": "base"}
+	overlay := map[string]any{
+		domain.HeaderCorrelationID: "new-corr",
+		"custom":                   "overlay",
+	}
+
+	merged := domain.MergeHeaders(base, overlay, true)
+	if merged[domain.HeaderCorrelationID] != "new-corr" {
+		t.Fatal("new reserved key from overlay should be added when not in base")
+	}
+	if merged["custom"] != "overlay" {
+		t.Fatal("non-reserved key should still be overridden")
+	}
+}
+
+// TestSetHeader_ReturnValueRequired validates that SetHeader's return value
+// must be captured when input is nil.
+func TestSetHeader_ReturnValueRequired(t *testing.T) {
+	var h map[string]any
+	h = domain.SetHeader(h, "a", 1)
+	h = domain.SetHeader(h, "b", 2)
+	if len(h) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(h))
+	}
+	if h["a"] != 1 || h["b"] != 2 {
+		t.Fatal("expected both values to be present")
 	}
 }

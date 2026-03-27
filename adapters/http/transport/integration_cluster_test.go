@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,9 +92,13 @@ func TestIntegration_Cluster_ForwardToBridge(t *testing.T) {
 		t.Fatalf("NewReceiver A: %v", err)
 	}
 	setRouteID(t, recvA, "route-cluster")
+	var emitCalled atomic.Bool
+	var wgA sync.WaitGroup
+	wgA.Add(1)
 	go func() {
+		defer wgA.Done()
 		_ = recvA.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
-			t.Error("Bridge A emit must not be called when forwarding")
+			emitCalled.Store(true)
 			return nil
 		})
 	}()
@@ -124,11 +129,20 @@ func TestIntegration_Cluster_ForwardToBridge(t *testing.T) {
 	})
 
 	envs := senderB.getSent()
+	if len(envs) != 1 {
+		t.Fatalf("expected exactly 1 envelope, got %d", len(envs))
+	}
 	if envs[0].Subject != "orders.created" {
 		t.Fatalf("subject: got %q, want orders.created", envs[0].Subject)
 	}
 	if string(envs[0].Payload) != `{"order":"123"}` {
 		t.Fatalf("payload mismatch: %s", envs[0].Payload)
+	}
+
+	cancel()
+	wgA.Wait()
+	if emitCalled.Load() {
+		t.Error("Bridge A emit must not be called when forwarding")
 	}
 }
 
@@ -210,28 +224,33 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 			t.Fatalf("Send: %v", err)
 		}
 
-		scanner := bufio.NewScanner(resp.Body)
+		lineCh := make(chan string, 64)
+		var scanWg sync.WaitGroup
+		scanWg.Add(1)
+		go func() {
+			defer scanWg.Done()
+			scanner := bufio.NewScanner(resp.Body)
+			for scanner.Scan() {
+				lineCh <- scanner.Text()
+			}
+			close(lineCh)
+		}()
+
 		var lines []string
 		deadline := time.After(2 * time.Second)
-		done := false
-		for !done {
-			ch := make(chan string, 1)
-			go func() {
-				if scanner.Scan() {
-					ch <- scanner.Text()
-				} else {
-					ch <- ""
-				}
-			}()
+	loop:
+		for {
 			select {
-			case l := <-ch:
-				if l == "" && len(lines) > 0 {
-					done = true
-				} else {
-					lines = append(lines, l)
+			case l, ok := <-lineCh:
+				if !ok {
+					break loop
 				}
+				if l == "" && len(lines) > 0 {
+					break loop
+				}
+				lines = append(lines, l)
 			case <-deadline:
-				done = true
+				break loop
 			}
 		}
 		joined := strings.Join(lines, "\n")
@@ -241,6 +260,8 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 		if !strings.Contains(joined, `"subject":"user.created"`) {
 			t.Fatalf("missing subject in SSE data, got:\n%s", joined)
 		}
+		_ = resp.Body.Close()
+		scanWg.Wait()
 	})
 }
 
@@ -271,7 +292,10 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 
 	var delivered []*domain.Envelope
 	var mu sync.Mutex
+	var wgB sync.WaitGroup
+	wgB.Add(1)
 	go func() {
+		defer wgB.Done()
 		_ = recvB.Run(ctx, func(_ context.Context, d ports.Delivery) error {
 			mu.Lock()
 			delivered = append(delivered, d.Envelope())
@@ -296,9 +320,13 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 		t.Fatalf("NewReceiver A: %v", err)
 	}
 	setRouteID(t, recvA, "route-loop")
+	var emitCalledA atomic.Bool
+	var wgA sync.WaitGroup
+	wgA.Add(1)
 	go func() {
+		defer wgA.Done()
 		_ = recvA.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
-			t.Error("Bridge A emit must not be called")
+			emitCalledA.Store(true)
 			return nil
 		})
 	}()
@@ -328,10 +356,20 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 	})
 
 	mu.Lock()
+	if len(delivered) != 1 {
+		t.Fatalf("expected exactly 1 delivered envelope, got %d", len(delivered))
+	}
 	if delivered[0].Subject != "loop.test" {
 		t.Fatalf("subject: got %q, want loop.test", delivered[0].Subject)
 	}
 	mu.Unlock()
+
+	cancel()
+	wgA.Wait()
+	wgB.Wait()
+	if emitCalledA.Load() {
+		t.Error("Bridge A emit must not be called")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -361,9 +399,13 @@ func TestIntegration_Cluster_ForwardToDeadPeer(t *testing.T) {
 		t.Fatalf("NewReceiver: %v", err)
 	}
 	setRouteID(t, recv, "route-dead")
+	var emitCalled atomic.Bool
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		_ = recv.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
-			t.Error("emit must not be called for dead peer")
+			emitCalled.Store(true)
 			return nil
 		})
 	}()
@@ -380,6 +422,12 @@ func TestIntegration_Cluster_ForwardToDeadPeer(t *testing.T) {
 
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d", resp.StatusCode)
+	}
+
+	cancel()
+	wg.Wait()
+	if emitCalled.Load() {
+		t.Error("emit must not be called for dead peer")
 	}
 }
 
@@ -428,9 +476,13 @@ func TestIntegration_Cluster_ForwardPreservesEnvelope(t *testing.T) {
 		t.Fatalf("NewReceiver A: %v", err)
 	}
 	setRouteID(t, recvA, "route-preserve")
+	var emitCalled atomic.Bool
+	var wgA sync.WaitGroup
+	wgA.Add(1)
 	go func() {
+		defer wgA.Done()
 		_ = recvA.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
-			t.Error("Bridge A emit must not be called")
+			emitCalled.Store(true)
 			return nil
 		})
 	}()
@@ -458,7 +510,11 @@ func TestIntegration_Cluster_ForwardPreservesEnvelope(t *testing.T) {
 		return len(senderB.getSent()) > 0
 	})
 
-	got := senderB.getSent()[0]
+	envs := senderB.getSent()
+	if len(envs) != 1 {
+		t.Fatalf("expected exactly 1 envelope, got %d", len(envs))
+	}
+	got := envs[0]
 	if got.ID != "env-rich-001" {
 		t.Fatalf("ID: got %q, want env-rich-001", got.ID)
 	}
@@ -474,5 +530,11 @@ func TestIntegration_Cluster_ForwardPreservesEnvelope(t *testing.T) {
 	}
 	if got.Headers["x-priority"] != "high" {
 		t.Fatalf("x-priority: got %v, want high", got.Headers["x-priority"])
+	}
+
+	cancel()
+	wgA.Wait()
+	if emitCalled.Load() {
+		t.Error("Bridge A emit must not be called")
 	}
 }

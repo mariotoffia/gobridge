@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,26 +32,50 @@ import (
 // ═══════════════════════════════════════════════════════════════════════
 
 // TestDefaultSessionConfig_S12Defaults validates that DefaultSessionConfig
-// returns the S12-aligned timeout values.
+// returns the S12-aligned timeout values including drain-related fields.
 func TestDefaultSessionConfig_S12Defaults(t *testing.T) {
 	cfg := goruntime.DefaultSessionConfig("test", true)
 
-	checks := []struct {
+	durationChecks := []struct {
 		name string
-		got  any
-		want any
+		got  time.Duration
+		want time.Duration
 	}{
 		{"LeaseTTL", cfg.LeaseTTL, 360 * time.Second},
-		{"RenewInterval", cfg.RenewInterval, time.Duration(0)},
+		{"RenewInterval", cfg.RenewInterval, 0},
 		{"RenewJitter", cfg.RenewJitter, 5 * time.Second},
-		{"MaxRenewFails", cfg.MaxRenewFails, 3},
 		{"StepDownGrace", cfg.StepDownGrace, 15 * time.Second},
 	}
-
-	for _, c := range checks {
+	for _, c := range durationChecks {
 		if c.got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, c.got, c.want)
 		}
+	}
+
+	intChecks := []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"MaxRenewFails", cfg.MaxRenewFails, 3},
+		{"DrainBatchSize", cfg.DrainBatchSize, 100},
+		{"DrainMaxBatchSize", cfg.DrainMaxBatchSize, 500},
+		{"DrainMaxConcurrency", cfg.DrainMaxConcurrency, 10},
+	}
+	for _, c := range intChecks {
+		if c.got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, c.got, c.want)
+		}
+	}
+
+	if cfg.SessionID != "test" {
+		t.Errorf("SessionID: got %q, want %q", cfg.SessionID, "test")
+	}
+	if !cfg.Exclusive {
+		t.Error("Exclusive: got false, want true")
+	}
+	if cfg.DrainStrategy == nil {
+		t.Error("DrainStrategy should not be nil")
 	}
 }
 
@@ -107,12 +132,18 @@ func TestSessionManager_DerivedRenewInterval(t *testing.T) {
 
 			mgr := goruntime.NewSessionManagerFromConfig(cfg, session, leaseStore, "owner-1", nil)
 
-			ctx, cancel := context.WithTimeout(context.Background(), tt.leaseTTL+200*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), tt.leaseTTL*2+200*time.Millisecond)
 			defer cancel()
 
-			_ = mgr.Run(ctx)
+			err := mgr.Run(ctx)
+			if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+				t.Fatalf("Run returned unexpected error: %v", err)
+			}
 
-			token, _ := mgr.Token()
+			token, ok := mgr.Token()
+			if !ok {
+				t.Fatal("expected valid token from Token()")
+			}
 			if token.Version == 0 {
 				t.Fatal("expected lease to be acquired")
 			}
@@ -180,7 +211,7 @@ func TestOutboxDrainer_FinalDrainCompletesPendingRecords(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err != nil && err != context.Canceled {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("Run returned unexpected error: %v", err)
 		}
 	case <-time.After(5 * time.Second):

@@ -27,8 +27,10 @@ const (
 
 // IsReservedHeader returns true if the key uses the reserved x-bridge. prefix.
 // The check is case-insensitive to prevent bypass via mixed-case keys.
+// Uses EqualFold on the prefix slice to avoid allocating a lowered copy.
 func IsReservedHeader(key string) bool {
-	return strings.HasPrefix(strings.ToLower(key), HeaderPrefix)
+	return len(key) >= len(HeaderPrefix) &&
+		strings.EqualFold(key[:len(HeaderPrefix)], HeaderPrefix)
 }
 
 // StripReservedHeaders returns a new map with all reserved-prefix headers removed.
@@ -48,7 +50,9 @@ func StripReservedHeaders(headers map[string]any) map[string]any {
 
 // MergeHeaders merges overlay into a copy of base. Overlay values take
 // precedence on key collision. When protectReserved is true, reserved-prefix
-// keys already present in base cannot be overridden by overlay.
+// keys already present in base cannot be overridden by overlay — the check
+// is case-insensitive so that "X-Bridge.Route-Id" is treated as already
+// present when "x-bridge.route-id" exists in base.
 func MergeHeaders(base, overlay map[string]any, protectReserved bool) map[string]any {
 	size := len(base) + len(overlay)
 	if size == 0 {
@@ -60,13 +64,29 @@ func MergeHeaders(base, overlay map[string]any, protectReserved bool) map[string
 	}
 	for k, v := range overlay {
 		if protectReserved && IsReservedHeader(k) {
-			if _, exists := out[k]; exists {
+			if hasKeyCaseInsensitive(out, k) {
 				continue
 			}
 		}
 		out[k] = v
 	}
 	return out
+}
+
+// hasKeyCaseInsensitive returns true if m contains a key that matches
+// target in a case-insensitive comparison. Used to prevent mixed-case
+// bypass of reserved header protection. Uses EqualFold to avoid
+// allocating lowered copies.
+func hasKeyCaseInsensitive(m map[string]any, target string) bool {
+	if _, ok := m[target]; ok {
+		return true
+	}
+	for k := range m {
+		if strings.EqualFold(k, target) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetHeaderString extracts a string value from a headers map.
