@@ -1058,3 +1058,18 @@ Catalog of all test functions in the gobridge repository.
 | TestRouteRunner_DeliveryPanic_OtherMessagesUnaffected | validates concurrent deliveries unaffected by one panic (S13) | unit | s13_delivery_panic | pass |
 | TestRouteRunner_DeliveryPanic_RetryFails_NoSecondPanic | validates retry error after panic does not crash (S13) | unit | s13_delivery_panic | pass |
 | TestRouteRunner_DeliveryPanic_RetryPanics_NoProcessCrash | validates nested panic in retry handler caught by inner recover (S13) | unit | s13_delivery_panic | pass |
+| TestIntegration_HTTPPost_RuntimePipeline_FakeSender | validates full HTTP POST through runtime pipeline to fake sender | integration | http_transport | pass |
+| TestIntegration_HTTPPost_FilterDrop_NoSend | validates filter processor drops spam messages without forwarding | integration | http_transport | pass |
+| TestIntegration_SSEClient_ReceivesMultipleEvents | validates SSE client receives multiple broadcast events | integration | http_transport | pass |
+| TestIntegration_HTTPPost_APIKeyAuth | validates API key authentication via X-API-Key and Bearer headers | integration | http_transport | pass |
+| TestIntegration_HTTPPost_BodyTooLarge | validates body size limit enforcement returns 400 | integration | http_transport | pass |
+| TestIntegration_HTTPPost_InvalidJSON | validates malformed JSON rejection returns 400 | integration | http_transport | pass |
+| TestIntegration_HTTPPost_HeaderProcessing | verifies reserved headers stripped and correlation-id injected | integration | http_transport | pass |
+| TestIntegration_HTTPPost_ReceiverNotReady | verifies POST before Run returns 503 Service Unavailable | integration | http_transport | pass |
+| TestIntegration_Cluster_ForwardToBridge | validates HTTP POST forwarding between two bridges via HTTPForwarder | integration | http_cluster | pass |
+| TestIntegration_Cluster_SSERedirect | validates SSE 307 redirect to remote bridge and event reception | integration | http_cluster | pass |
+| TestIntegration_Cluster_ForwardLoopPrevention | verifies X-Bridge-Forwarded prevents infinite forwarding loops | integration | http_cluster | pass |
+| TestIntegration_Cluster_ForwardToDeadPeer | verifies forwarding to unavailable peer returns 502 | integration | http_cluster | pass |
+| TestIntegration_Cluster_ForwardPreservesEnvelope | validates envelope integrity through forward round-trip | integration | http_cluster | pass |
+| TestIntegration_MQTT_To_SSE_CrossTransport | validates MQTT publish through bridge pipeline to SSE client | integration | cross_transport | pass |
+| TestIntegration_HTTP_To_MQTT_CrossTransport | validates HTTP POST through bridge pipeline to MQTT publish | integration | cross_transport | pass |
