@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
@@ -14,6 +15,8 @@ import (
 
 // RouteRunner executes the ingress pipeline for a single route.
 // It supports both DirectHold and SharedOutbox delivery modes.
+// Messages are processed concurrently up to MaxInFlight, and an
+// optional global semaphore provides host-level throttling across routes.
 type RouteRunner struct {
 	routeID     string
 	policy      domain.RoutePolicy
@@ -29,23 +32,27 @@ type RouteRunner struct {
 	tracer      ports.Tracer
 	logger      *slog.Logger
 	sem         chan struct{}
+	globalSem   chan struct{}
+	depthCache  *outboxDepthCache
 }
 
 // RouteRunnerConfig holds the configuration for a RouteRunner.
 type RouteRunnerConfig struct {
-	RouteID     string
-	Policy      domain.RoutePolicy
-	Receiver    ports.Receiver
-	Sender      ports.Sender
-	OutboxStore ports.OutboxStore
-	DLQ         *DLQRouter
-	Resolver    ports.DestinationResolver
-	Processors  []ports.Processor
-	Bindings    []domain.DestinationBinding
-	InstanceID  string
-	Metrics     ports.MetricsExporter
-	Tracer      ports.Tracer
-	Logger      *slog.Logger
+	RouteID       string
+	Policy        domain.RoutePolicy
+	Receiver      ports.Receiver
+	Sender        ports.Sender
+	OutboxStore   ports.OutboxStore
+	DLQ           *DLQRouter
+	Resolver      ports.DestinationResolver
+	Processors    []ports.Processor
+	Bindings      []domain.DestinationBinding
+	InstanceID    string
+	Metrics       ports.MetricsExporter
+	Tracer        ports.Tracer
+	Logger        *slog.Logger
+	GlobalSem     chan struct{}
+	DepthCacheTTL time.Duration
 }
 
 // NewRouteRunnerFromConfig creates a RouteRunner from a config struct.
@@ -66,9 +73,20 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 	if t == nil {
 		t = &ports.NoopTracer{}
 	}
+	policy := cfg.Policy.WithDefaults()
+
+	var dc *outboxDepthCache
+	if policy.DeliveryMode == domain.DeliverySharedOutbox {
+		depthTTL := cfg.DepthCacheTTL
+		if depthTTL <= 0 {
+			depthTTL = domain.DefaultDepthCacheTTL
+		}
+		dc = newOutboxDepthCache(depthTTL)
+	}
+
 	r := &RouteRunner{
 		routeID:     cfg.RouteID,
-		policy:      cfg.Policy.WithDefaults(),
+		policy:      policy,
 		receiver:    cfg.Receiver,
 		sender:      cfg.Sender,
 		outboxStore: cfg.OutboxStore,
@@ -80,6 +98,8 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 		metrics:     m,
 		tracer:      t,
 		logger:      cfg.Logger,
+		globalSem:   cfg.GlobalSem,
+		depthCache:  dc,
 	}
 	if r.policy.MaxInFlight > 0 {
 		r.sem = make(chan struct{}, r.policy.MaxInFlight)
@@ -87,18 +107,63 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 	return r
 }
 
-// Run starts the receiver and processes deliveries until the context
-// is cancelled or the receiver returns an unrecoverable error.
+// Run starts the receiver and processes deliveries concurrently up to
+// MaxInFlight. It blocks until the context is cancelled or the receiver
+// returns an unrecoverable error. In-flight goroutines are awaited on exit.
 func (r *RouteRunner) Run(ctx context.Context) error {
-	return r.receiver.Run(ctx, r.handleDelivery)
+	var (
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		closed bool
+	)
+
+	err := r.receiver.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
+		if err := r.acquireSlots(ctx); err != nil {
+			return err
+		}
+		mu.Lock()
+		if closed {
+			mu.Unlock()
+			r.releaseSlots()
+			return ctx.Err()
+		}
+		wg.Add(1)
+		mu.Unlock()
+		go func() {
+			defer wg.Done()
+			defer r.releaseSlots()
+			r.processDelivery(ctx, del)
+		}()
+		return nil
+	})
+
+	mu.Lock()
+	closed = true
+	mu.Unlock()
+	wg.Wait()
+
+	return err
 }
 
+// handleDelivery is the synchronous entry point used by Runtime.Inject.
 func (r *RouteRunner) handleDelivery(ctx context.Context, del ports.Delivery) error {
-	if err := r.acquireSlot(ctx); err != nil {
+	if err := r.acquireSlots(ctx); err != nil {
 		return err
 	}
-	defer r.releaseSlot()
+	defer r.releaseSlots()
+	return r.doHandleDelivery(ctx, del)
+}
 
+func (r *RouteRunner) processDelivery(ctx context.Context, del ports.Delivery) {
+	if err := r.doHandleDelivery(ctx, del); err != nil {
+		if r.logger != nil && ctx.Err() == nil {
+			r.logger.Warn("delivery processing error",
+				"route", r.routeID, "error", err)
+		}
+	}
+}
+
+func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) error {
 	start := time.Now()
 
 	env := del.Envelope()
@@ -175,18 +240,21 @@ func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *d
 		env.Headers = domain.MergeHeaders(env.Headers, plan.Headers, true)
 	}
 
-	sendErr := r.sender.Send(ctx, env)
+	sendCtx, sendCancel := context.WithTimeout(ctx, r.policy.SendTimeout)
+	defer sendCancel()
+
+	sendErr := r.sender.Send(sendCtx, env)
 	if sendErr == nil {
 		return del.Ack(ctx)
 	}
 
 	if domain.IsRecoverableError(sendErr) {
 		retryAfter := domain.GetRetryAfter(sendErr)
-		return del.Retry(ctx, retryAfter, sendErr)
+		return r.retryOrFallback(ctx, del, env, retryAfter, sendErr)
 	}
 
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, plan.BindingID, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
-		return del.Retry(ctx, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
+		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
 	}
 	r.emitDLQ("permanent")
 	return del.Ack(ctx)
@@ -198,14 +266,27 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 		return r.handleResolveError(ctx, del, env, err)
 	}
 
-	if r.policy.MaxOutboxDepth > 0 && r.outboxStore != nil {
+	// Depth check is advisory: concurrent goroutines may each see under-capacity
+	// and collectively exceed MaxOutboxDepth. This is acceptable because the
+	// outbox drainer will eventually process excess entries, and QueryPending
+	// errors now fail the delivery (fail-closed) rather than silently bypassing.
+	if r.policy.MaxOutboxDepth > 0 && r.outboxStore != nil && r.depthCache != nil {
 		partitionKey := r.outboxPartitionKey(plans)
-		if partitionKey != "" {
+		if partitionKey != "" && !r.depthCache.isUnderCapacity(partitionKey) {
 			pending, qErr := r.outboxStore.QueryPending(ctx, partitionKey, r.policy.MaxOutboxDepth+1)
-			if qErr == nil && len(pending) >= r.policy.MaxOutboxDepth {
-				return del.Retry(ctx, 5*time.Second, fmt.Errorf("outbox at capacity (%d pending)", len(pending)))
+			if qErr != nil {
+				return r.retryOrFallback(ctx, del, env, time.Second, fmt.Errorf("outbox depth query failed: %w", qErr))
+			}
+			atCapacity := len(pending) >= r.policy.MaxOutboxDepth
+			r.depthCache.update(partitionKey, atCapacity)
+			if atCapacity {
+				return r.retryOrFallback(ctx, del, env, 5*time.Second, fmt.Errorf("outbox at capacity (%d pending)", len(pending)))
 			}
 		}
+	}
+
+	if r.outboxStore == nil {
+		return r.retryOrFallback(ctx, del, env, time.Second, fmt.Errorf("shared_outbox route %q: no OutboxStore configured", r.routeID))
 	}
 
 	records := r.buildOutboxRecords(env, plans)
@@ -215,7 +296,7 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 		if errors.Is(persistErr, domain.ErrDuplicateRecord) {
 			return del.Ack(ctx)
 		}
-		return del.Retry(ctx, 0, persistErr)
+		return r.retryOrFallback(ctx, del, env, 0, persistErr)
 	}
 
 	return del.Ack(ctx)
@@ -278,7 +359,7 @@ func (r *RouteRunner) sessionIDForBinding(bindingID string) string {
 func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env *domain.Envelope) error {
 	if r.policy.OnExpired == domain.ExpiredDLQ {
 		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", domain.ErrMessageExpired, 0); dlqErr != nil {
-			return del.Retry(ctx, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
+			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
 		}
 		r.emitDLQ("expired")
 	}
@@ -291,10 +372,10 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 	}
 	if domain.IsRecoverableError(err) {
 		retryAfter := domain.GetRetryAfter(err)
-		return del.Retry(ctx, retryAfter, err)
+		return r.retryOrFallback(ctx, del, env, retryAfter, err)
 	}
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", err, 0); dlqErr != nil {
-		return del.Retry(ctx, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
+		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
 	}
 	r.emitDLQ("permanent")
 	return del.Ack(ctx)
@@ -304,12 +385,32 @@ func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery
 	be, ok := domain.AsBridgeError(err)
 	if ok && be.Class != domain.ErrorTransient {
 		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", err, 0); dlqErr != nil {
-			return del.Retry(ctx, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
+			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
 		}
 		r.emitDLQ("rejected")
 		return del.Ack(ctx)
 	}
-	return del.Retry(ctx, 0, err)
+	return r.retryOrFallback(ctx, del, env, 0, err)
+}
+
+// retryOrFallback attempts del.Retry; if the source transport does not
+// support retry (ErrNotSupported), it falls back to DLQ routing with
+// category "retry_unsupported" so the message is not silently lost.
+func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, env *domain.Envelope, after time.Duration, reason error) error {
+	retryErr := del.Retry(ctx, after, reason)
+	if retryErr == nil || !errors.Is(retryErr, domain.ErrNotSupported) {
+		return retryErr
+	}
+	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", reason, 0); dlqErr != nil {
+		r.emitDLQ("retry_unsupported_dlq_failed")
+		return fmt.Errorf("retry unsupported and DLQ write failed: %w", dlqErr)
+	}
+	if !r.dlq.HasStore() && r.logger != nil {
+		r.logger.Warn("message dropped: retry unsupported and no DLQ configured",
+			"route", r.routeID, "envelope_id", env.ID)
+	}
+	r.emitDLQ("retry_unsupported")
+	return del.Ack(ctx)
 }
 
 func (r *RouteRunner) emitDLQ(category string) {
@@ -330,19 +431,32 @@ func (r *RouteRunner) injectHeaders(env *domain.Envelope) {
 	env.Headers[domain.HeaderSourceID] = r.instanceID
 }
 
-func (r *RouteRunner) acquireSlot(ctx context.Context) error {
-	if r.sem == nil {
-		return nil
+func (r *RouteRunner) acquireSlots(ctx context.Context) error {
+	if r.sem != nil {
+		select {
+		case r.sem <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
-	select {
-	case r.sem <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	if r.globalSem != nil {
+		select {
+		case r.globalSem <- struct{}{}:
+		case <-ctx.Done():
+			if r.sem != nil {
+				<-r.sem
+			}
+			return ctx.Err()
+		}
 	}
+	return nil
 }
 
-func (r *RouteRunner) releaseSlot() {
+// releaseSlots releases in reverse acquisition order (global then per-route).
+func (r *RouteRunner) releaseSlots() {
+	if r.globalSem != nil {
+		<-r.globalSem
+	}
 	if r.sem != nil {
 		<-r.sem
 	}

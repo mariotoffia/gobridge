@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -25,6 +27,7 @@ type Receiver struct {
 	cfg    ReceiverConfig
 	client sqsAPI
 	logger *slog.Logger
+	initMu sync.Mutex
 }
 
 // NewReceiver creates an SQS Receiver.
@@ -58,6 +61,8 @@ func (r *Receiver) pollLoop(
 	queueURL string,
 	emit func(context.Context, ports.Delivery) error,
 ) error {
+	backoff := newPollBackoff()
+
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -76,19 +81,23 @@ func (r *Receiver) pollLoop(
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			delay := backoff.next()
 			if r.logger != nil {
 				r.logger.Warn("sqs: ReceiveMessage failed, retrying",
 					"queue", queueURL,
 					"error", err,
+					"retry_after", delay,
 				)
 			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(time.Second):
+			case <-time.After(delay):
 			}
 			continue
 		}
+
+		backoff.reset()
 
 		for _, msg := range output.Messages {
 			del := r.convertMessage(ctx, queueURL, msg)
@@ -100,6 +109,39 @@ func (r *Receiver) pollLoop(
 	}
 }
 
+// pollBackoff implements exponential backoff with jitter for poll loops.
+type pollBackoff struct {
+	current time.Duration
+}
+
+const (
+	pollBackoffInitial    = time.Second
+	pollBackoffMax        = 30 * time.Second
+	pollBackoffMultiplier = 2
+)
+
+func newPollBackoff() *pollBackoff {
+	return &pollBackoff{current: pollBackoffInitial}
+}
+
+func (b *pollBackoff) next() time.Duration {
+	delay := b.current
+
+	jitter := time.Duration(float64(delay) * 0.25 * (2*rand.Float64() - 1))
+	delay += jitter
+
+	b.current *= pollBackoffMultiplier
+	if b.current > pollBackoffMax {
+		b.current = pollBackoffMax
+	}
+
+	return delay
+}
+
+func (b *pollBackoff) reset() {
+	b.current = pollBackoffInitial
+}
+
 func (r *Receiver) convertMessage(
 	ctx context.Context,
 	queueURL string,
@@ -108,14 +150,22 @@ func (r *Receiver) convertMessage(
 	receiptHandle := aws.ToString(msg.ReceiptHandle)
 	body := aws.ToString(msg.Body)
 
+	headers := attributesToHeaders(msg.MessageAttributes, msg.Attributes)
+
+	subject := r.cfg.QueueName
+	if subject == "" {
+		subject = r.cfg.QueueURL
+	}
+	if v, ok := headers["Subject"].(string); ok && v != "" {
+		subject = v
+	}
+
 	env := &domain.Envelope{
 		ID:        aws.ToString(msg.MessageId),
-		Subject:   queueURL,
+		Subject:   subject,
 		Payload:   []byte(body),
 		CreatedAt: time.Now(),
 	}
-
-	headers := attributesToHeaders(msg.MessageAttributes, msg.Attributes)
 
 	if r.cfg.SNSUnwrap {
 		if unwrapped, ok := trySNSUnwrap(body, headers); ok {
@@ -139,6 +189,9 @@ func (r *Receiver) convertMessage(
 }
 
 func (r *Receiver) ensureClient(ctx context.Context) error {
+	r.initMu.Lock()
+	defer r.initMu.Unlock()
+
 	if r.client != nil {
 		return nil
 	}

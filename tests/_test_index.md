@@ -69,6 +69,22 @@ Catalog of all test functions in the gobridge repository.
 | TestValidate_RouteBadBindingRef | validates bad binding reference rejection | unit | config | pass |
 | TestValidate_InvalidAckAfter | validates invalid ack-after rejection | unit | config | pass |
 | TestValidate_DirectHold | validates direct-hold config validation | unit | config | pass |
+| TestValidate_ClusteredMQTTWithoutSharePrefix_Error | validates clustered MQTT bare topic rejected | unit | config | pass |
+| TestValidate_ClusteredMQTTWithSharePrefix_OK | validates clustered MQTT $share/ topic accepted | unit | config | pass |
+| TestValidate_ClusteredMQTTExclusiveSession_OK | validates exclusive session bypasses $share/ check | unit | config | pass |
+| TestValidate_StandaloneMode_NoCheck | validates standalone mode skips shared sub check | unit | config | pass |
+| TestValidate_ClusteredNonMQTT_NoCheck | validates non-MQTT receiver skips shared sub check | unit | config | pass |
+| TestValidate_SharedTopicMalformed_Error | validates malformed $share/ topic rejection | unit | config | pass |
+| TestValidate_MixedTopics_OneBareTopic_Error | validates mixed $share/ and bare topics error | unit | config | pass |
+| TestValidate_ClusteredMQTTTransportFromSession_Error | validates transport inherited from session | unit | config | pass |
+| TestValidate_EmptyDeploymentMode_NoCheck | validates empty deployment mode skips check | unit | config | pass |
+| TestValidate_ClusteredMQTTMultiLevelSharedTopic_OK | validates multi-level $share/ topic accepted | unit | config | pass |
+| TestValidate_ClusteredMQTTExplicitTransportNoSession_Error | validates explicit mqtt transport without session | unit | config | pass |
+| TestValidate_ClusteredMQTTEmptyTopics_OK | validates empty topics pass in clustered mode | unit | config | pass |
+| TestValidate_ClusteredMultiReceiver_OnlyMQTTChecked | validates only MQTT receiver checked in multi-receiver | unit | config | pass |
+| TestValidate_ClusteredMQTTEphemeralSession_Error | validates ephemeral session requires $share/ topics | unit | config | pass |
+| TestValidate_ClusteredMQTTShareExact_Malformed | validates $share/ alone is malformed | unit | config | pass |
+| TestValidate_ClusteredMQTTCaseInsensitiveTransport_Error | validates case-insensitive MQTT transport match | unit | config | pass |
 | TestValidate_ValidDirectHold | validates valid direct-hold config | unit | validate | pass |
 | TestValidate_ValidSharedOutbox | validates valid shared outbox config | unit | validate | pass |
 | TestValidate_DirectHold_NoVisibilityExtension | validates direct-hold without visibility extension | unit | validate | pass |
@@ -655,6 +671,9 @@ Catalog of all test functions in the gobridge repository.
 | TestIntegration_BackpressureNoDrops | validates MQTT backpressure no drops | integration | paho | pass |
 | TestIntegration_QoS1Completion | validates MQTT QoS1 completion | integration | paho | pass |
 | TestIntegration_Factory | validates MQTT factory integration | integration | paho | pass |
+| TestIntegration_SharedSubscription_CompetingConsumers | validates $share/ distributes messages across subscribers | integration | paho | pass |
+| TestIntegration_PlainSubscription_FanOut | validates plain topic delivers to ALL subscribers (N-fold) | integration | paho | pass |
+| TestIntegration_SharedSubscription_PayloadIntegrity | validates payload and headers survive $share/ delivery | integration | paho | pass |
 | TestNew_ValidPath | validates file credential new valid path | unit | file_credentials | pass |
 | TestNew_EmptyPath | validates file credential new empty path | unit | file_credentials | pass |
 | TestNew_AutoCreatesDirectory | validates file credential auto creates dir | unit | file_credentials | pass |
@@ -877,3 +896,156 @@ Catalog of all test functions in the gobridge repository.
 | TestIntegration_SQS_Sender_FIFO | validates SQS FIFO queue message ordering | integration | sqs_integration | pass |
 | TestIntegration_SQS_Receiver_VisibilityTimeout | validates SQS message redelivery after timeout | integration | sqs_integration | pass |
 | TestIntegration_SQS_Receiver_ContextCancel | validates SQS receiver stops on context cancel | integration | sqs_integration | pass |
+| TestDirectStrategy_PassThrough | validates direct strategy passes every config through immediately | unit | reconfig_strategy | pass |
+| TestDirectStrategy_MultipleChanges | validates direct strategy emits N changes in order | unit | reconfig_strategy | pass |
+| TestDirectStrategy_ContextCancel | validates direct strategy closes output on context cancel | unit | reconfig_strategy | pass |
+| TestDirectStrategy_InputChannelClosed | validates direct strategy closes output when input closes | unit | reconfig_strategy | pass |
+| TestDebouncedStrategy_QuietWindow | validates debounced strategy emits after quiet period | unit | reconfig_strategy | pass |
+| TestDebouncedStrategy_EmitsLatest | validates debounced strategy emits only latest of rapid configs | unit | reconfig_strategy | pass |
+| TestDebouncedStrategy_ResetOnNewChange | validates debounced timer resets on each new config | unit | reconfig_strategy | pass |
+| TestDebouncedStrategy_ExactlyOneEmitPerBurst | validates burst of 10 changes produces exactly 1 emit | unit | reconfig_strategy | pass |
+| TestDebouncedStrategy_ContextCancel_PendingTimer | validates cancel with pending timer emits nothing | unit | reconfig_strategy | pass |
+| TestDebouncedStrategy_InputChannelClosed_PendingTimer | validates input close with pending timer emits last | unit | reconfig_strategy | pass |
+| TestDebouncedStrategy_ZeroQuietPeriod | validates zero quiet period degrades to pass-through | unit | reconfig_strategy | pass |
+| TestWindowedStrategy_QuietWindow | validates windowed strategy emits via quiet window | unit | reconfig_strategy | pass |
+| TestWindowedStrategy_MaxDelay | validates windowed strategy forces emit at max delay | unit | reconfig_strategy | pass |
+| TestWindowedStrategy_MaxDelayResetAfterEmit | validates max-delay timer resets after forced emit | unit | reconfig_strategy | pass |
+| TestWindowedStrategy_QuietBeforeMaxDelay | validates quiet window fires before max delay | unit | reconfig_strategy | pass |
+| TestWindowedStrategy_ContextCancel | validates windowed strategy closes output on cancel | unit | reconfig_strategy | pass |
+| TestWindowedStrategy_MaxDelayLessThanQuiet | validates maxDelay less than quietPeriod takes precedence | unit | reconfig_strategy | pass |
+| TestWindowedStrategy_EqualPeriods | validates equal periods produce deterministic behavior | unit | reconfig_strategy | pass |
+| TestSupervisor_InitialBuildAndStart | validates initial config produces running runtime | unit | supervisor | pass |
+| TestSupervisor_InitialBuildFailure | validates bad initial config returns error from Run | unit | supervisor | pass |
+| TestSupervisor_InitialStartFailure | validates build succeeds but Start fails returns error | unit | supervisor | pass |
+| TestSupervisor_RuntimeAccessorBeforeRun | validates Runtime() returns nil before Run | unit | supervisor | pass |
+| TestSupervisor_OverlapSwap | validates overlap swap builds new while old runs | unit | supervisor | pass |
+| TestSupervisor_OverlapSwap_OldRuntimeStopsCleanly | validates old runtime stops after overlap swap | unit | supervisor | pass |
+| TestSupervisor_OverlapSwap_NewRuntimeGetsNewRoutes | validates new runtime has correct routes after swap | unit | supervisor | pass |
+| TestSupervisor_PrepareCommitSwap | validates prepare-commit swap ordering | unit | supervisor | pass |
+| TestSupervisor_PrepareCommitSwap_SessionsNotCreatedDuringPrepare | validates sessions not created during Prepare | unit | supervisor | pass |
+| TestSupervisor_PrepareCommitSwap_SessionsCreatedAfterOldStops | validates sessions created after old runtime stops | unit | supervisor | pass |
+| TestSupervisor_AutoDetect | validates auto swap mode detection from transport capabilities | unit | supervisor | pass |
+| TestSupervisor_AutoDetect_ConfigChangeRemovesExclusive | validates mode switches when exclusive sessions removed | unit | supervisor | pass |
+| TestSupervisor_MultipleConfigChanges | validates 3 sequential configs produce correct runtimes | unit | supervisor | pass |
+| TestSupervisor_RapidConfigChanges_WithDirectStrategy | validates 5 rapid changes all applied with direct strategy | unit | supervisor | pass |
+| TestSupervisor_RapidConfigChanges_WithDebouncedStrategy | validates 5 rapid changes debounced to 1 | unit | supervisor | pass |
+| TestSupervisor_AlternatingValidInvalid | validates valid configs applied, invalid rejected | unit | supervisor | pass |
+| TestSupervisor_ConfigRollback_AfterFailure | validates recovery after build failure | unit | supervisor | pass |
+| TestSupervisor_SwapCallback_Success | validates SwapEvent emitted on successful swap | unit | supervisor | pass |
+| TestSupervisor_SwapCallback_BuildFailure | validates SwapEvent error on build failure | unit | supervisor | pass |
+| TestSupervisor_NoSwapCallback_WhenNoneSet | validates no panic when onSwap is nil | unit | supervisor | pass |
+| TestSupervisor_ContextCancellation | validates clean shutdown on context cancel | unit | supervisor | pass |
+| TestSupervisor_ChannelClosed_GracefulShutdown | validates graceful shutdown when channel closes | unit | supervisor | pass |
+| TestSupervisor_NilChangesChannel | validates nil changes channel serves until cancel | unit | supervisor | pass |
+| TestSupervisor_EmptyConfig_Rejected | validates empty config fails validation | unit | supervisor | pass |
+| TestSupervisor_OverlapBuildFailure_KeepsOldRunning | validates old runtime stays on build failure | unit | supervisor_failure | pass |
+| TestSupervisor_OverlapBuildFailure_SwapEventHasError | validates SwapEvent error on overlap build failure | unit | supervisor_failure | pass |
+| TestSupervisor_OverlapBuildFailure_NextValidConfigWorks | validates recovery after overlap build failure | unit | supervisor_failure | pass |
+| TestSupervisor_PrepareFailure_KeepsOldRunning | validates old runtime stays on prepare failure | unit | supervisor_failure | pass |
+| TestSupervisor_PrepareFailure_NextValidConfigWorks | validates recovery after prepare failure | unit | supervisor_failure | pass |
+| TestSupervisor_CompleteFailure_AfterStop | validates bridge down after complete failure | unit | supervisor_failure | pass |
+| TestSupervisor_CompleteFailure_SwapEventReportsDegraded | validates SwapEvent reports degraded on complete failure | unit | supervisor_failure | pass |
+| TestSupervisor_CompleteFailure_NextConfigRecovers | validates recovery after complete failure | unit | supervisor_failure | pass |
+| TestSupervisor_StartFailure_Overlap | validates bridge down after overlap start failure | unit | supervisor_failure | pass |
+| TestSupervisor_StartFailure_PrepareCommit | validates bridge down after PrepareCommit start failure | unit | supervisor_failure | pass |
+| TestSupervisor_StartFailure_NextConfigRecovers | validates recovery after start failure | unit | supervisor_failure | pass |
+| TestSupervisor_StopTimeout_Overlap | validates swap proceeds despite stop timeout | unit | supervisor_failure | pass |
+| TestSupervisor_StopTimeout_PrepareCommit | validates PrepareCommit proceeds despite stop timeout | unit | supervisor_failure | pass |
+| TestSupervisor_FailingSessionClose | validates swap proceeds despite session close error | unit | supervisor_failure | pass |
+| TestSupervisor_StopErrorDoesNotPreventSwap | validates stop errors do not prevent swap | unit | supervisor_failure | pass |
+| TestSupervisor_BrokerUnreachable_Overlap | validates old runtime stays when broker unreachable | unit | supervisor_failure | pass |
+| TestSupervisor_BrokerUnreachable_PrepareCommit | validates bridge down when broker unreachable in commit | unit | supervisor_failure | pass |
+| TestSupervisor_NoTransportsRegistered | validates build fails without registered transports | unit | supervisor_failure | pass |
+| TestSupervisor_SwapCallback_NotCalledOnInvalidConfig | validates SwapEvent error on invalid config | unit | supervisor_failure | pass |
+| TestSupervisor_RuntimeAccessor_DuringSwap | validates concurrent Runtime() access during swap | unit | supervisor_failure | pass |
+| TestSupervisor_ConfigAccessor_DuringSwap | validates concurrent Config() access during swap | unit | supervisor_failure | pass |
+| TestSupervisor_ConcurrentApplySerializes | validates concurrent config changes serialize | unit | supervisor_failure | pass |
+| TestSupervisor_ContextCancel_DuringSwap | validates cancel during swap returns cleanly | unit | supervisor_failure | pass |
+| TestSupervisor_ChannelClosed_WhileApplying | validates channel close during apply completes | unit | supervisor_failure | pass |
+| TestBuilder_PrepareComplete_EquivalentToBuild | validates Prepare+Complete equivalent to Build | unit | builder_prepare | pass |
+| TestBuilder_PrepareComplete_DirectHold | validates Prepare+Complete for direct_hold route | unit | builder_prepare | pass |
+| TestBuilder_PrepareComplete_SharedOutbox | validates Prepare+Complete for shared_outbox route | unit | builder_prepare | pass |
+| TestBuilder_PrepareFailsOnInvalidConfig | validates Prepare fails on invalid config | unit | builder_prepare | pass |
+| TestBuilder_PrepareFailsOnMissingStoreFactory | validates Prepare fails on missing store factory | unit | builder_prepare | pass |
+| TestBuilder_PrepareBuildsStores | validates Prepare builds stores successfully | unit | builder_prepare | pass |
+| TestBuilder_PrepareDoesNotCallTransportFactory | validates Prepare does not call transport factory methods | unit | builder_prepare | pass |
+| TestBuilder_Prepare_ClusteredNonDistributedStore_Rejected | validates clustered mode rejects non-distributed store | unit | builder_prepare | pass |
+| TestBuilder_CompleteCreatesSessionsAndRoutes | validates Complete creates sessions and wires routes | unit | builder_prepare | pass |
+| TestBuilder_CompleteFailsOnSessionCreationError | validates Complete fails on session creation error | unit | builder_prepare | pass |
+| TestBuilder_CompleteNilPrepared | validates Complete returns error for nil PreparedBuild | unit | builder_prepare | pass |
+| TestF2_StopReleasesLeaseWithValidContext | validates Stop uses fresh context for lease release when stop context is expired | unit | runtime_resilience | pass |
+| TestF3_DrainOnShutdown | validates final drain sweep sends pending records during shutdown | unit | runtime_resilience | pass |
+| TestF3_DrainOnShutdown_NoLease | validates no final drain when lease is not held | unit | runtime_resilience | pass |
+| TestF4_DirectHoldSharedConsumerRejected | validates validator rejects direct_hold with shared consumer source | unit | runtime_resilience | pass |
+| TestF4_DirectHoldAllowUnfenced | validates AllowUnfenced bypasses shared consumer fencing check | unit | runtime_resilience | pass |
+| TestF5_DrainBatchSkipsTOCTOUCheck | validates drainBatch does not call leaseStore.Current() before Claim | unit | runtime_resilience | pass |
+| TestF6_StaleFencingTokenDoesNotKillRuntime | validates stale fencing token on one drainer does not kill runtime | unit | runtime_resilience | pass |
+| TestF6_CriticalErrorStillKillsRuntime | validates non-fencing errors still mark runtime unhealthy | unit | runtime_resilience | pass |
+| TestF7_ReacquiredLeaseRestartsDeadSession | validates session.Start re-called when health shows disconnected on re-acquisition | unit | runtime_resilience | pass |
+| TestF7_ReacquiredLeaseSkipsRestartIfHealthy | validates healthy session is not restarted on lease re-acquisition | unit | runtime_resilience | pass |
+| TestDrainBatch_ParallelSends | validates records in a drain batch are sent concurrently | unit | outbox_drainer_concurrent | pass |
+| TestDrainBatch_ConcurrencyLimit | validates MaxDrainConcurrency caps simultaneous goroutines | unit | outbox_drainer_concurrent | pass |
+| TestDrainBatch_ErrorIsolation | validates one record failure does not block others | unit | outbox_drainer_concurrent | pass |
+| TestDrainBatch_ConcurrencyDefault | validates default MaxDrainConcurrency is 10 | unit | outbox_drainer_concurrent | pass |
+| TestAdaptBatchSize_ScalesUpOnFullBatch | validates batch size doubles when full batch returned | unit | outbox_drainer_concurrent | pass |
+| TestAdaptBatchSize_CapsAtMaxBatchSize | validates batch size never exceeds MaxBatchSize | unit | outbox_drainer_concurrent | pass |
+| TestAdaptBatchSize_ResetsOnEmptyBatch | validates batch size resets to initial on empty drain | unit | outbox_drainer_concurrent | pass |
+| TestAdaptBatchSize_DefaultMaxBatchSize | validates default MaxBatchSize is applied | unit | outbox_drainer_concurrent | pass |
+| TestRouteRunner_ConcurrentDelivery | validates MaxInFlight effectively limits concurrent processing | unit | route_runner_concurrent | pass |
+| TestRouteRunner_BackpressureOnSemFull | validates emit blocks when MaxInFlight reached | unit | route_runner_concurrent | pass |
+| TestRouteRunner_GracefulShutdownWaitsInFlight | validates Run waits for in-flight goroutines on shutdown | unit | route_runner_concurrent | pass |
+| TestGlobalSemaphore_LimitsCrossRoute | validates global semaphore limits total cross-route concurrency | unit | route_runner_concurrent | pass |
+| TestGlobalSemaphore_ZeroDisablesGlobal | validates no global limit when not configured | unit | route_runner_concurrent | pass |
+| TestDepthCache_PreventsRepeatedQueries | validates cache prevents repeated QueryPending calls | unit | outbox_depth_cache | pass |
+| TestDepthCache_ExpiresAfterTTL | validates cache expires and triggers new query | unit | outbox_depth_cache | pass |
+| TestDepthCache_AtCapacityCachedImmediately | validates at-capacity status is cached | unit | outbox_depth_cache | pass |
+| TestOutboxDrainer_CancelDuringBatch_ReturnsPromptly | validates drainBatch exits promptly on mid-batch context cancellation (T1 regression) | unit | outbox_drainer | pass |
+| TestOutboxDrainer_CancelBeforeBatch_ExitsPromptly | validates Run exits promptly with pre-cancelled context (T1 regression) | unit | outbox_drainer | pass |
+| TestOutboxDrainer_ConcurrentBatch_SemaphoreConsistency | validates concurrent semaphore consistency on cancellation (T1 regression) | unit | outbox_drainer | pass |
+| TestPushEvent_ConcurrentClose_NoPanic | validates concurrent pushEvent and Close does not panic (T2 regression) | unit | session_pushevent | pass |
+| TestPushEvent_AfterClose_IsNoop | validates pushEvent after Close is a silent no-op (T2 regression) | unit | session_pushevent | pass |
+| TestPushEvent_BufferFull_DropsOldest | validates pushEvent drops oldest event when buffer is full (T2 regression) | unit | session_pushevent | pass |
+| TestDepthCache_EvictionClearsOnBurst | validates depth cache clears map when burst exceeds maxEntries (T9) | unit | medium_fixes | pass |
+| TestDepthCacheTTL_WiredFromPolicy | validates DepthCacheTTL from RoutePolicy reaches RouteRunner (T10) | unit | medium_fixes | pass |
+| TestDrainConfig_WiredFromSessionConfig | validates DrainMaxBatchSize/DrainMaxConcurrency wired from SessionConfig (T11) | unit | medium_fixes | pass |
+| TestQueryPendingError_FailsClosed | validates QueryPending error fails delivery instead of bypassing (T12) | unit | medium_fixes | pass |
+| TestQueryPendingSuccess_PersistsNormally | validates successful QueryPending allows normal outbox persist (T12) | unit | medium_fixes | pass |
+| TestAbsoluteMaxBatchSize_Clamps | validates absoluteMaxBatchSize clamps excessive MaxBatchSize (T13) | unit | medium_fixes | pass |
+| TestNormalMaxBatchSize_NotClamped | validates reasonable MaxBatchSize preserved without clamping (T13) | unit | medium_fixes | pass |
+| TestOutboxDrainer_EmitsRecordFailureMetric | validates MetricOutboxRecordFailures emitted on record failure (T14) | unit | medium_fixes | pass |
+| TestOutboxDrainer_SuccessEmitsCompletion | validates successful send emits completion, not failure metric (T14) | unit | medium_fixes | pass |
+| TestAdaptBatchSize_HalvesOnConsecutiveZeroSuccess | validates batch size halves on consecutive zero-success cycles (T16) | unit | medium_fixes | pass |
+| TestSessionManager_LogsLeaseReleaseError | validates lease release error logged in SessionManager.Close (T17) | unit | medium_fixes | pass |
+| TestFakeProcessor_AtomicCalled | validates FakeProcessor.CalledCount is atomic-safe under concurrency (T18) | unit | medium_fixes | pass |
+| TestBatchSizeClamped_PreventsAbsoluteMaxBypass | validates BatchSize clamped to prevent absoluteMaxBatchSize bypass (T13) | unit | medium_fixes | pass |
+| TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric | validates stale token does not emit RecordFailures metric (T14) | unit | medium_fixes | pass |
+| TestDefaultSessionConfig_IncludesDrainDefaults | validates DefaultSessionConfig includes drain field defaults (T11) | unit | medium_fixes | pass |
+| TestRouteRunner_SharedOutbox_DepthCacheExercised | validates SharedOutbox route exercises depth cache QueryPending path (T19) | unit | low_fixes | pass |
+| TestRouteRunner_DirectHold_NoQueryPending | validates DirectHold route never calls QueryPending (T19) | unit | low_fixes | pass |
+| TestDrainerNameGeneration | validates drainer name generation produces correct numeric suffixes for all indices (T20) | unit | low_fixes | pass |
+| TestOutboxDrainerConfig_DrainBatchSize_Default | validates DrainBatchSize=0 defaults to 100 (T21) | unit | low_fixes | pass |
+| TestOutboxDrainerConfig_DrainBatchSize_Custom | validates explicit DrainBatchSize is respected (T21) | unit | low_fixes | pass |
+| TestOutboxDrainer_FinalDrain_CompletesAfterCancel | validates finalDrain completes after Run context cancelled (T22) | unit | low_fixes | pass |
+| TestWithGlobalMaxInFlight_NegativeClampedToZero | validates negative globalMaxInFlight clamped to 0 (T24) | unit | low_fixes | pass |
+| TestWithGlobalMaxInFlight_Zero_DisablesThrottling | validates zero globalMaxInFlight disables throttling (T24) | unit | low_fixes | pass |
+| TestWithGlobalMaxInFlight_Positive_Accepted | validates positive globalMaxInFlight accepted (T24) | unit | low_fixes | pass |
+| TestRouter_Route_PayloadDeepCopy | validates Payload mutation in one handler does not affect another (T23) | unit | low_fixes | pass |
+| TestRouter_Route_NilPayload | validates nil Payload does not panic and handlers receive nil (T23) | unit | low_fixes | pass |
+| TestRouter_Route_EmptyPayload | validates empty Payload is deep-copied as non-nil zero-length slice (T23) | unit | low_fixes | pass |
+| TestRouter_Route_OriginalPayloadUnmutated | validates original Publish.Payload not affected by handler mutations (T23) | unit | low_fixes | pass |
+| TestRouter_Route_ConcurrentHandlers_IndependentPayloads | validates concurrent handlers receive independent payload copies (T23) | unit | low_fixes | pass |
+| TestOutboxDrainerConfig_DrainBatchSize_NegativeClamped | validates negative DrainBatchSize clamped to default 100 (T21) | unit | low_fixes | pass |
+| TestOutboxDrainerConfig_DrainMaxBatchSize_FloorsToBatchSize | validates DrainMaxBatchSize < DrainBatchSize is raised to match (T21) | unit | low_fixes | pass |
+| TestRouteRunner_SharedOutbox_NilOutboxStore_Retries | validates SharedOutbox with nil OutboxStore retries without panic (T19) | unit | low_fixes | pass |
+| TestRouter_Route_ConcurrentPropertiesRead | validates concurrent handlers reading shared Properties do not race (T23) | unit | low_fixes | pass |
+| TestDirectHold_RetryUnsupported_FallsToDLQ | validates direct_hold fallback to DLQ when del.Retry returns ErrNotSupported (S6) | unit | retry_fallback | pass |
+| TestDirectHold_RetryUnsupported_DLQAlsoFails_ReturnsError | validates error propagation when both retry and DLQ fail (S6) | unit | retry_fallback | pass |
+| TestHandleProcessorError_RetryUnsupported_FallsToDLQ | validates processor error DLQ fallback when retry unsupported (S6) | unit | retry_fallback | pass |
+| TestSharedOutbox_RetryUnsupported_FallsToDLQ | validates shared_outbox persist error DLQ fallback when retry unsupported (S6) | unit | retry_fallback | pass |
+| TestHandleExpired_RetryUnsupported_FallsToDLQ | validates expired message DLQ fallback on failed first write and unsupported retry (S6) | unit | retry_fallback | pass |
+| TestHandleResolveError_RetryUnsupported_FallsToDLQ | validates resolve error DLQ fallback when retry unsupported (S6) | unit | retry_fallback | pass |
+| TestDirectHold_RetrySupported_NoFallback | validates normal retry path with no DLQ fallback regression (S6) | unit | retry_fallback | pass |
+| TestSessionManager_ReconnectReconcileError_LogsAndPropagates | validates Reconcile error propagation from handleEvents on reconnect (S9) | unit | session_reconnect | pass |
+| TestSessionManager_ReconnectReconcileError_EmitsMetric | validates MetricReconcileFailures emitted on reconnect Reconcile failure (S9) | unit | session_reconnect | pass |
+| TestSessionManager_ReconnectReconcileOK_NoError | validates successful reconnect Reconcile does not emit failure metric (S9) | unit | session_reconnect | pass |
+| TestSessionManager_RenewLoop_ReconnectReconcileError_Exits | validates renewLoop exits when Reconcile fails on reconnect (S9) | unit | session_reconnect | pass |

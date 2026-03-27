@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -26,6 +27,7 @@ type Sender struct {
 	cfg      SenderConfig
 	client   sqsAPI
 	queueURL string
+	initMu   sync.Mutex
 }
 
 // NewSender creates an SQS Sender. The sender resolves its queue URL
@@ -193,21 +195,29 @@ func (s *Sender) applyFIFO(input *awssqs.SendMessageInput, env *domain.Envelope)
 }
 
 func (s *Sender) ensureClient(ctx context.Context) error {
-	if s.client != nil {
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
+
+	if s.client != nil && s.queueURL != "" {
 		return nil
 	}
 
-	if s.cfg.Client != nil {
-		s.client = s.cfg.Client
-	} else {
-		cfg, err := buildAWSConfig(ctx, s.cfg.Region, s.cfg.Endpoint, s.cfg.Profile)
-		if err != nil {
-			return domain.ErrUnavailable.Wrap(fmt.Errorf("sqs sender: build AWS config: %w", err))
+	initCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
+	defer cancel()
+
+	if s.client == nil {
+		if s.cfg.Client != nil {
+			s.client = s.cfg.Client
+		} else {
+			cfg, err := buildAWSConfig(initCtx, s.cfg.Region, s.cfg.Endpoint, s.cfg.Profile)
+			if err != nil {
+				return domain.ErrUnavailable.Wrap(fmt.Errorf("sqs sender: build AWS config: %w", err))
+			}
+			s.client = awssqs.NewFromConfig(cfg)
 		}
-		s.client = awssqs.NewFromConfig(cfg)
 	}
 
-	url, err := resolveQueueURL(ctx, s.client, s.cfg.QueueURL, s.cfg.QueueName)
+	url, err := resolveQueueURL(initCtx, s.client, s.cfg.QueueURL, s.cfg.QueueName)
 	if err != nil {
 		return err
 	}

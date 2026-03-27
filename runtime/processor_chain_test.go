@@ -26,8 +26,8 @@ func TestRunChain_Single(t *testing.T) {
 	if err := runtime.RunChain(context.Background(), []ports.Processor{p}, env); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if p.Called != 1 {
-		t.Fatalf("expected processor called 1 time, got %d", p.Called)
+	if p.CalledCount() != 1 {
+		t.Fatalf("expected processor called 1 time, got %d", p.CalledCount())
 	}
 }
 
@@ -106,7 +106,7 @@ func TestRunChain_ShortCircuit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from short-circuit")
 	}
-	if p2.Called != 0 {
+	if p2.CalledCount() != 0 {
 		t.Fatal("second processor should not have been called")
 	}
 }

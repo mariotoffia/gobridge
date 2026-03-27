@@ -1,0 +1,232 @@
+package bridge
+
+import (
+	"context"
+	"time"
+
+	"github.com/mariotoffia/gobridge/config"
+)
+
+// ReconfigStrategy filters a raw config change channel, controlling
+// when the Supervisor triggers a rebuild. Implementations receive the
+// upstream channel and return a new channel that emits configs at the
+// desired cadence. The returned channel must close when ctx is
+// cancelled or the input channel closes.
+type ReconfigStrategy interface {
+	Filter(ctx context.Context, in <-chan *config.BridgeConfig) <-chan *config.BridgeConfig
+}
+
+// DirectStrategy passes every config change through immediately.
+type DirectStrategy struct{}
+
+// NewDirectStrategy returns a strategy that applies every config
+// change as soon as it arrives.
+func NewDirectStrategy() *DirectStrategy { return &DirectStrategy{} }
+
+// Filter forwards each incoming config without delay.
+func (s *DirectStrategy) Filter(ctx context.Context, in <-chan *config.BridgeConfig) <-chan *config.BridgeConfig {
+	out := make(chan *config.BridgeConfig, 1)
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case cfg, ok := <-in:
+				if !ok {
+					return
+				}
+				select {
+				case out <- cfg:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return out
+}
+
+// DebouncedStrategy waits for a quiet period with no new changes
+// before emitting the latest config. Each incoming change resets
+// the timer.
+type DebouncedStrategy struct {
+	quietPeriod time.Duration
+}
+
+// NewDebouncedStrategy creates a debounce strategy. If quietPeriod
+// is zero or negative it behaves like DirectStrategy.
+func NewDebouncedStrategy(quietPeriod time.Duration) *DebouncedStrategy {
+	return &DebouncedStrategy{quietPeriod: quietPeriod}
+}
+
+// Filter debounces incoming configs, emitting only after quietPeriod
+// of silence. Only the latest config is kept; intermediate values
+// are discarded.
+func (s *DebouncedStrategy) Filter(ctx context.Context, in <-chan *config.BridgeConfig) <-chan *config.BridgeConfig {
+	if s.quietPeriod <= 0 {
+		return NewDirectStrategy().Filter(ctx, in)
+	}
+
+	out := make(chan *config.BridgeConfig, 1)
+	go func() {
+		defer close(out)
+
+		var pending *config.BridgeConfig
+		timer := time.NewTimer(0)
+		if !timer.Stop() {
+			<-timer.C
+		}
+		timerActive := false
+
+		for {
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() && timerActive {
+					<-timer.C
+				}
+				return
+			case cfg, ok := <-in:
+				if !ok {
+					if pending != nil && timerActive {
+						if !timer.Stop() {
+							<-timer.C
+						}
+						select {
+						case out <- pending:
+						default:
+						}
+					}
+					return
+				}
+				pending = cfg
+				if !timer.Stop() && timerActive {
+					<-timer.C
+				}
+				timer.Reset(s.quietPeriod)
+				timerActive = true
+			case <-timer.C:
+				timerActive = false
+				if pending != nil {
+					select {
+					case out <- pending:
+					case <-ctx.Done():
+						return
+					}
+					pending = nil
+				}
+			}
+		}
+	}()
+	return out
+}
+
+// WindowedStrategy combines debounce with a maximum delay cap.
+// It waits for a quiet period like DebouncedStrategy, but if
+// changes keep arriving it forces an emit after maxDelay
+// regardless.
+type WindowedStrategy struct {
+	quietPeriod time.Duration
+	maxDelay    time.Duration
+}
+
+// NewWindowedStrategy creates a windowed strategy. If quietPeriod is
+// zero it behaves like DirectStrategy. maxDelay must be positive;
+// if less than quietPeriod it takes precedence.
+func NewWindowedStrategy(quietPeriod, maxDelay time.Duration) *WindowedStrategy {
+	return &WindowedStrategy{quietPeriod: quietPeriod, maxDelay: maxDelay}
+}
+
+// Filter debounces incoming configs with a hard deadline. If the
+// quiet window never opens, the latest config is emitted after
+// maxDelay from the first change in the current batch.
+func (s *WindowedStrategy) Filter(ctx context.Context, in <-chan *config.BridgeConfig) <-chan *config.BridgeConfig {
+	if s.quietPeriod <= 0 {
+		return NewDirectStrategy().Filter(ctx, in)
+	}
+
+	out := make(chan *config.BridgeConfig, 1)
+	go func() {
+		defer close(out)
+
+		var pending *config.BridgeConfig
+		quietTimer := time.NewTimer(0)
+		if !quietTimer.Stop() {
+			<-quietTimer.C
+		}
+		quietActive := false
+
+		maxTimer := time.NewTimer(0)
+		if !maxTimer.Stop() {
+			<-maxTimer.C
+		}
+		maxActive := false
+
+		emit := func() {
+			if pending == nil {
+				return
+			}
+			select {
+			case out <- pending:
+			case <-ctx.Done():
+			}
+			pending = nil
+			if !quietTimer.Stop() && quietActive {
+				<-quietTimer.C
+			}
+			quietActive = false
+			if !maxTimer.Stop() && maxActive {
+				<-maxTimer.C
+			}
+			maxActive = false
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				if !quietTimer.Stop() && quietActive {
+					<-quietTimer.C
+				}
+				if !maxTimer.Stop() && maxActive {
+					<-maxTimer.C
+				}
+				return
+			case cfg, ok := <-in:
+				if !ok {
+					if pending != nil {
+						if !quietTimer.Stop() && quietActive {
+							<-quietTimer.C
+						}
+						if !maxTimer.Stop() && maxActive {
+							<-maxTimer.C
+						}
+						select {
+						case out <- pending:
+						default:
+						}
+					}
+					return
+				}
+				firstInBatch := pending == nil
+				pending = cfg
+				if !quietTimer.Stop() && quietActive {
+					<-quietTimer.C
+				}
+				quietTimer.Reset(s.quietPeriod)
+				quietActive = true
+
+				if firstInBatch && s.maxDelay > 0 {
+					maxTimer.Reset(s.maxDelay)
+					maxActive = true
+				}
+			case <-quietTimer.C:
+				quietActive = false
+				emit()
+			case <-maxTimer.C:
+				maxActive = false
+				emit()
+			}
+		}
+	}()
+	return out
+}

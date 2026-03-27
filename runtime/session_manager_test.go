@@ -43,6 +43,7 @@ func TestSessionManager_ExclusiveLease(t *testing.T) {
 		Exclusive:     true,
 		LeaseTTL:      500 * time.Millisecond,
 		RenewInterval: 100 * time.Millisecond,
+		RenewJitter:   0,
 		MaxRenewFails: 3,
 		StepDownGrace: 50 * time.Millisecond,
 	}
@@ -82,6 +83,7 @@ func TestSessionManager_StepDown(t *testing.T) {
 		Exclusive:     true,
 		LeaseTTL:      500 * time.Millisecond,
 		RenewInterval: 50 * time.Millisecond,
+		RenewJitter:   0,
 		MaxRenewFails: 2,
 		StepDownGrace: 50 * time.Millisecond,
 	}
@@ -136,6 +138,7 @@ func TestSessionManager_Close(t *testing.T) {
 		Exclusive:     true,
 		LeaseTTL:      500 * time.Millisecond,
 		RenewInterval: 100 * time.Millisecond,
+		RenewJitter:   0,
 		MaxRenewFails: 3,
 		StepDownGrace: 50 * time.Millisecond,
 	}

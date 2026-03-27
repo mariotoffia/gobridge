@@ -3,11 +3,25 @@ package runtime_test
 import (
 	"context"
 	"sync"
+	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for %s", desc)
+}
 
 // ---------------------------------------------------------------------------
 // FakeDelivery
@@ -56,15 +70,27 @@ func (d *FakeDelivery) Extend(_ context.Context, until time.Time) error {
 	return nil
 }
 
+func (d *FakeDelivery) IsAcked() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.Acked
+}
+
+func (d *FakeDelivery) IsRetried() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.Retried
+}
+
 // ---------------------------------------------------------------------------
 // FakeReceiver
 // ---------------------------------------------------------------------------
 
 type FakeReceiver struct {
-	mu      sync.Mutex
-	emit    func(context.Context, ports.Delivery) error
-	ready   chan struct{}
-	RunErr  error
+	mu     sync.Mutex
+	emit   func(context.Context, ports.Delivery) error
+	ready  chan struct{}
+	RunErr error
 }
 
 func NewFakeReceiver() *FakeReceiver {
@@ -91,6 +117,10 @@ func (r *FakeReceiver) Emit(ctx context.Context, del ports.Delivery) error {
 	emit := r.emit
 	r.mu.Unlock()
 	return emit(ctx, del)
+}
+
+func (r *FakeReceiver) Ready() <-chan struct{} {
+	return r.ready
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +160,14 @@ func (s *FakeSender) SentCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.Sent)
+}
+
+func (s *FakeSender) GetSent() []*domain.Envelope {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*domain.Envelope, len(s.Sent))
+	copy(out, s.Sent)
+	return out
 }
 
 func (s *FakeSender) SetSendErr(err error) {
@@ -190,6 +228,12 @@ func (s *FakeSession) Close(_ context.Context) error {
 
 func (s *FakeSession) PushEvent(ev ports.SessionEvent) {
 	s.events <- ev
+}
+
+func (s *FakeSession) SetReconcileErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ReconcileErr = err
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +366,7 @@ type FakeOutboxStore struct {
 	PersistErr    error
 	PersistFn     func([]domain.OutboxRecord) error
 	ClaimErr      error
+	ClaimFn       func(partitionKey, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error)
 	CompleteErr   error
 	CompleteFn    func([]string, domain.LeaseToken) error
 	StaleClaimAge time.Duration
@@ -363,6 +408,9 @@ func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.ClaimFn != nil {
+		return s.ClaimFn(partitionKey, ownerID, token, limit)
+	}
 	if s.ClaimErr != nil {
 		return nil, s.ClaimErr
 	}
@@ -435,6 +483,12 @@ func (s *FakeOutboxStore) Expire(_ context.Context, before time.Time) (int, erro
 		}
 	}
 	return count, nil
+}
+
+func (s *FakeOutboxStore) SetClaimErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ClaimErr = err
 }
 
 func (s *FakeOutboxStore) QueryPending(_ context.Context, partitionKey string, limit int) ([]domain.OutboxRecord, error) {
@@ -567,6 +621,23 @@ func (s *FakeSpan) SetAttributes(attrs ...domain.Tag) {
 	s.SetAttrs = append(s.SetAttrs, attrs...)
 }
 
+func (s *FakeSpan) IsEnded() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Ended
+}
+
+// Inspect returns a consistent snapshot of span fields for test assertions.
+func (s *FakeSpan) Inspect() (name string, ended bool, attrs []domain.Tag, spanErr error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name = s.Name
+	ended = s.Ended
+	attrs = append([]domain.Tag(nil), s.Attrs...)
+	spanErr = s.Err
+	return
+}
+
 type FakeTracer struct {
 	mu    sync.Mutex
 	Spans []*FakeSpan
@@ -600,7 +671,7 @@ func (t *FakeTracer) LastSpan() *FakeSpan {
 // ---------------------------------------------------------------------------
 
 type FakeResolver struct {
-	Plans     []domain.DispatchPlan
+	Plans      []domain.DispatchPlan
 	ResolveErr error
 }
 
@@ -619,13 +690,13 @@ type FakeProcessor struct {
 	NameVal    string
 	ProcessFn  func(context.Context, *domain.Envelope, ports.ProcessorFunc) error
 	ProcessErr error
-	Called     int
+	called     int32
 }
 
 func (p *FakeProcessor) Name() string { return p.NameVal }
 
 func (p *FakeProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
-	p.Called++
+	atomic.AddInt32(&p.called, 1)
 	if p.ProcessFn != nil {
 		return p.ProcessFn(ctx, env, next)
 	}
@@ -633,4 +704,8 @@ func (p *FakeProcessor) Process(ctx context.Context, env *domain.Envelope, next 
 		return p.ProcessErr
 	}
 	return next(ctx, env)
+}
+
+func (p *FakeProcessor) CalledCount() int32 {
+	return atomic.LoadInt32(&p.called)
 }

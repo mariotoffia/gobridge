@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	goruntime "runtime/debug"
+	"strconv"
 	"sync"
 	"time"
 
@@ -18,20 +20,22 @@ import (
 // Stop cancels the context, waits for all goroutines to finish, then
 // closes sessions.
 type Runtime struct {
-	instanceID  string
-	leaseStore  ports.LeaseStore
-	outboxStore ports.OutboxStore
-	dlqStore    ports.DLQStore
-	metrics     ports.MetricsExporter
-	audit       ports.AuditLogger
-	tracer      ports.Tracer
-	logger      *slog.Logger
+	instanceID        string
+	leaseStore        ports.LeaseStore
+	outboxStore       ports.OutboxStore
+	dlqStore          ports.DLQStore
+	metrics           ports.MetricsExporter
+	audit             ports.AuditLogger
+	tracer            ports.Tracer
+	logger            *slog.Logger
+	globalMaxInFlight int
 
 	mu              sync.Mutex
 	entries         []*routeEntry
 	sessionSenders  map[string]*sessionSenderEntry
 	sessionMgrs     map[string]*SessionManager
 	drainers        []*OutboxDrainer
+	globalSem       chan struct{}
 	running         bool
 	healthy         bool
 	componentErrors map[string]error
@@ -105,6 +109,20 @@ func WithTracer(t ports.Tracer) Option {
 // WithLogger sets the structured logger.
 func WithLogger(logger *slog.Logger) Option {
 	return func(rt *Runtime) { rt.logger = logger }
+}
+
+// WithGlobalMaxInFlight sets a host-level concurrency limit that is shared
+// across all routes. When set to a positive value, the runtime creates a
+// shared semaphore that each RouteRunner must acquire in addition to its
+// per-route MaxInFlight slot. A value of 0 (default) disables global
+// throttling for backward compatibility. Negative values are clamped to 0.
+func WithGlobalMaxInFlight(n int) Option {
+	return func(rt *Runtime) {
+		if n < 0 {
+			n = 0
+		}
+		rt.globalMaxInFlight = n
+	}
 }
 
 // New creates a new Runtime with the given options.
@@ -215,23 +233,29 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		m = &ports.NoopExporter{}
 	}
 
+	if rt.globalMaxInFlight > 0 {
+		rt.globalSem = make(chan struct{}, rt.globalMaxInFlight)
+	}
+
 	drainerSessions := make(map[string]bool)
 
 	for _, entry := range rt.entries {
 		entry.runner = newRouteRunner(RouteRunnerConfig{
-			RouteID:     entry.config.ID,
-			Policy:      entry.config.Policy,
-			Receiver:    entry.receiver,
-			Sender:      entry.sender,
-			OutboxStore: rt.outboxStore,
-			DLQ:         dlq,
-			Resolver:    entry.config.Resolver,
-			Processors:  entry.config.Processors,
-			Bindings:    entry.config.Bindings,
-			InstanceID:  rt.instanceID,
-			Metrics:     m,
-			Tracer:      rt.tracer,
-			Logger:      rt.logger,
+			RouteID:       entry.config.ID,
+			Policy:        entry.config.Policy,
+			Receiver:      entry.receiver,
+			Sender:        entry.sender,
+			OutboxStore:   rt.outboxStore,
+			DLQ:           dlq,
+			Resolver:      entry.config.Resolver,
+			Processors:    entry.config.Processors,
+			Bindings:      entry.config.Bindings,
+			InstanceID:    rt.instanceID,
+			Metrics:       m,
+			Tracer:        rt.tracer,
+			Logger:        rt.logger,
+			GlobalSem:     rt.globalSem,
+			DepthCacheTTL: entry.config.Policy.DepthCacheTTL,
 		})
 
 		if entry.session != nil && entry.sessCfg != nil {
@@ -246,20 +270,22 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				drainerSessions[sid] = true
 				mgr := rt.sessionMgrs[sid]
 				drainer := newOutboxDrainer(OutboxDrainerConfig{
-					OutboxStore:  rt.outboxStore,
-					LeaseStore:   rt.leaseStore,
-					Sender:       entry.sender,
-					DLQ:          dlq,
-					RouteID:      entry.config.ID,
-					PartitionKey: domain.OutboxPartitionKey(sid, ""),
-					LeaseID:      sid,
-					OwnerID:      rt.instanceID,
-					Policy:       entry.config.Policy.WithDefaults(),
-					Strategy:     entry.sessCfg.DrainStrategy,
-					BatchSize:    entry.sessCfg.DrainBatchSize,
-					Metrics:      m,
-					Logger:       rt.logger,
-					TokenFn:      mgr.Token,
+					OutboxStore:    rt.outboxStore,
+					LeaseStore:     rt.leaseStore,
+					Sender:         entry.sender,
+					DLQ:            dlq,
+					RouteID:        entry.config.ID,
+					PartitionKey:   domain.OutboxPartitionKey(sid, ""),
+					LeaseID:        sid,
+					OwnerID:        rt.instanceID,
+					Policy:         entry.config.Policy.WithDefaults(),
+					Strategy:            entry.sessCfg.DrainStrategy,
+					DrainBatchSize:      entry.sessCfg.DrainBatchSize,
+					DrainMaxBatchSize:   entry.sessCfg.DrainMaxBatchSize,
+					DrainMaxConcurrency: entry.sessCfg.DrainMaxConcurrency,
+					Metrics:             m,
+					Logger:         rt.logger,
+					TokenFn:        mgr.Token,
 				})
 				rt.drainers = append(rt.drainers, drainer)
 			}
@@ -289,20 +315,22 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				drainerSessions[sid] = true
 				mgr := rt.sessionMgrs[sid]
 				drainer := newOutboxDrainer(OutboxDrainerConfig{
-					OutboxStore:  rt.outboxStore,
-					LeaseStore:   rt.leaseStore,
-					Sender:       sse.sender,
-					DLQ:          dlq,
-					RouteID:      entry.config.ID,
-					PartitionKey: domain.OutboxPartitionKey(sid, ""),
-					LeaseID:      sid,
-					OwnerID:      rt.instanceID,
-					Policy:       entry.config.Policy.WithDefaults(),
-					Strategy:     sse.config.DrainStrategy,
-					BatchSize:    sse.config.DrainBatchSize,
-					Metrics:      m,
-					Logger:       rt.logger,
-					TokenFn:      mgr.Token,
+					OutboxStore:    rt.outboxStore,
+					LeaseStore:     rt.leaseStore,
+					Sender:         sse.sender,
+					DLQ:            dlq,
+					RouteID:        entry.config.ID,
+					PartitionKey:   domain.OutboxPartitionKey(sid, ""),
+					LeaseID:        sid,
+					OwnerID:        rt.instanceID,
+					Policy:         entry.config.Policy.WithDefaults(),
+					Strategy:            sse.config.DrainStrategy,
+					DrainBatchSize:      sse.config.DrainBatchSize,
+					DrainMaxBatchSize:   sse.config.DrainMaxBatchSize,
+					DrainMaxConcurrency: sse.config.DrainMaxConcurrency,
+					Metrics:             m,
+					Logger:         rt.logger,
+					TokenFn:        mgr.Token,
 				})
 				rt.drainers = append(rt.drainers, drainer)
 			}
@@ -317,7 +345,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		d := drainer
 		name := "drainer:" + d.partitionKey
 		if name == "drainer:" {
-			name = "drainer:" + d.routeID + ":" + string(rune('0'+i))
+			name = "drainer:" + d.routeID + ":" + strconv.Itoa(i)
 		}
 		rt.startBackground(ctx, name, d.Run)
 	}
@@ -363,9 +391,12 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		errs = append(errs, ctx.Err())
 	}
 
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+
 	rt.mu.Lock()
 	for _, mgr := range rt.sessionMgrs {
-		if err := mgr.Close(ctx); err != nil {
+		if err := mgr.Close(closeCtx); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -373,7 +404,7 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	rt.mu.Unlock()
 
 	if metrics != nil {
-		if err := metrics.Flush(ctx); err != nil {
+		if err := metrics.Flush(closeCtx); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -437,6 +468,42 @@ func (rt *Runtime) Routes() []RouteInfo {
 	return infos
 }
 
+// LeaseStatus returns the lease ownership status for each exclusive
+// session. The map keys are session IDs; values are true when the
+// session holds the lease (active) and false otherwise (standby).
+// Non-exclusive sessions are not included.
+func (rt *Runtime) LeaseStatus() map[string]bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	status := make(map[string]bool)
+	for id, mgr := range rt.sessionMgrs {
+		_, held := mgr.Token()
+		status[id] = held
+	}
+	return status
+}
+
+// Role returns the operational role of this instance based on lease
+// ownership: "active" if at least one exclusive session holds a lease,
+// "standby" if exclusive sessions exist but none hold a lease,
+// "standalone" if no exclusive sessions are configured.
+// The result is a point-in-time snapshot computed under a single lock.
+func (rt *Runtime) Role() string {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	if len(rt.sessionMgrs) == 0 {
+		return "standalone"
+	}
+	for _, mgr := range rt.sessionMgrs {
+		if _, held := mgr.Token(); held {
+			return "active"
+		}
+	}
+	return "standby"
+}
+
 // DLQStore returns the DLQ store if configured, or nil.
 func (rt *Runtime) DLQStore() ports.DLQStore {
 	return rt.dlqStore
@@ -479,22 +546,46 @@ type syntheticDelivery struct {
 	env *domain.Envelope
 }
 
-func (d *syntheticDelivery) Envelope() *domain.Envelope                              { return d.env }
-func (d *syntheticDelivery) Ack(_ context.Context) error                             { return nil }
-func (d *syntheticDelivery) Retry(_ context.Context, _ time.Duration, reason error) error { return reason }
-func (d *syntheticDelivery) Extend(_ context.Context, _ time.Time) error             { return nil }
+func (d *syntheticDelivery) Envelope() *domain.Envelope  { return d.env }
+func (d *syntheticDelivery) Ack(_ context.Context) error { return nil }
+func (d *syntheticDelivery) Retry(_ context.Context, _ time.Duration, reason error) error {
+	return reason
+}
+func (d *syntheticDelivery) Extend(_ context.Context, _ time.Time) error { return nil }
 
 func (rt *Runtime) startBackground(ctx context.Context, name string, fn func(context.Context) error) {
 	rt.wg.Add(1)
 	go func() {
 		defer rt.wg.Done()
-		if err := fn(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		defer func() {
+			if r := recover(); r != nil {
+				stack := goruntime.Stack()
+				err := fmt.Errorf("panic in %s: %v", name, r)
+				if rt.logger != nil {
+					rt.logger.Error("background component panicked",
+						"component", name, "panic", r, "stack", string(stack))
+				}
+				rt.mu.Lock()
+				rt.componentErrors[name] = err
+				rt.healthy = false
+				cancel := rt.cancel
+				rt.mu.Unlock()
+				if cancel != nil {
+					cancel()
+				}
+			}
+		}()
+		if err := fn(ctx); err != nil && ctx.Err() == nil {
 			if rt.logger != nil {
 				rt.logger.Error("background component failed", "component", name, "error", err)
 			}
 			rt.mu.Lock()
-			rt.healthy = false
 			rt.componentErrors[name] = err
+			if errors.Is(err, domain.ErrStaleFencingToken) {
+				rt.mu.Unlock()
+				return
+			}
+			rt.healthy = false
 			cancel := rt.cancel
 			rt.mu.Unlock()
 			if cancel != nil {

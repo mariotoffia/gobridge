@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
@@ -20,6 +21,13 @@ type asbAPI interface {
 	RenewMessageLock(ctx context.Context, message *azservicebus.ReceivedMessage, options *azservicebus.RenewMessageLockOptions) error
 }
 
+// retryScheduler schedules and cancels messages for future delivery.
+// Used by asbDelivery.Retry when a non-zero delay is requested.
+type retryScheduler interface {
+	ScheduleMessages(ctx context.Context, messages []*azservicebus.Message, scheduledEnqueueTime time.Time, options *azservicebus.ScheduleMessagesOptions) ([]int64, error)
+	CancelScheduledMessages(ctx context.Context, sequenceNumbers []int64, options *azservicebus.CancelScheduledMessagesOptions) error
+}
+
 // asbSenderAPI is the subset of the Azure Service Bus Sender SDK used
 // by the bridge Sender.
 type asbSenderAPI interface {
@@ -30,9 +38,39 @@ type asbSenderAPI interface {
 }
 
 var (
-	_ asbAPI       = (*azservicebus.Receiver)(nil)
-	_ asbSenderAPI = (*azservicebus.Sender)(nil)
+	_ asbAPI         = (*azservicebus.Receiver)(nil)
+	_ asbSenderAPI   = (*azservicebus.Sender)(nil)
+	_ retryScheduler = (*azservicebus.Sender)(nil)
 )
+
+// sessionReceiverAdapter wraps *azservicebus.SessionReceiver to
+// satisfy asbAPI. Session receivers use session-level locking
+// (RenewSessionLock) rather than per-message locking.
+type sessionReceiverAdapter struct {
+	inner *azservicebus.SessionReceiver
+}
+
+var _ asbAPI = (*sessionReceiverAdapter)(nil)
+
+func (a *sessionReceiverAdapter) ReceiveMessages(ctx context.Context, count int, options *azservicebus.ReceiveMessagesOptions) ([]*azservicebus.ReceivedMessage, error) {
+	return a.inner.ReceiveMessages(ctx, count, options)
+}
+
+func (a *sessionReceiverAdapter) CompleteMessage(ctx context.Context, message *azservicebus.ReceivedMessage, options *azservicebus.CompleteMessageOptions) error {
+	return a.inner.CompleteMessage(ctx, message, options)
+}
+
+func (a *sessionReceiverAdapter) AbandonMessage(ctx context.Context, message *azservicebus.ReceivedMessage, options *azservicebus.AbandonMessageOptions) error {
+	return a.inner.AbandonMessage(ctx, message, options)
+}
+
+func (a *sessionReceiverAdapter) RenewMessageLock(ctx context.Context, _ *azservicebus.ReceivedMessage, _ *azservicebus.RenewMessageLockOptions) error {
+	return a.inner.RenewSessionLock(ctx, nil)
+}
+
+func (a *sessionReceiverAdapter) Close(ctx context.Context) error {
+	return a.inner.Close(ctx)
+}
 
 // ConnectionConfig holds the credentials and TLS settings shared by
 // both Receiver and Sender.
@@ -52,14 +90,16 @@ type ConnectionConfig struct {
 // configuration. It supports connection-string auth, managed identity,
 // client-secret credentials, and the default Azure credential chain.
 func buildClient(cfg ConnectionConfig) (*azservicebus.Client, error) {
-	opts := buildClientOptions(cfg)
+	opts, err := buildClientOptions(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	if cfg.ConnectionString != "" {
 		return azservicebus.NewClientFromConnectionString(cfg.ConnectionString, opts)
 	}
 
 	var cred azcore.TokenCredential
-	var err error
 
 	switch {
 	case cfg.UseManagedIdentity:
@@ -82,25 +122,30 @@ func buildClient(cfg ConnectionConfig) (*azservicebus.Client, error) {
 // buildClientOptions returns ClientOptions with a custom TLS
 // configuration when the ConnectionConfig requests one, or nil when
 // the defaults are sufficient.
-func buildClientOptions(cfg ConnectionConfig) *azservicebus.ClientOptions {
+func buildClientOptions(cfg ConnectionConfig) (*azservicebus.ClientOptions, error) {
 	tc := cfg.TLSConfig
 	if tc == nil {
-		tc = buildTLSConfig(cfg.CaPEM, cfg.InsecureSkipVerify)
+		var err error
+		tc, err = buildTLSConfig(cfg.CaPEM, cfg.InsecureSkipVerify)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if tc == nil {
-		return nil
+		return nil, nil
 	}
 
 	return &azservicebus.ClientOptions{
 		TLSConfig: tc,
-	}
+	}, nil
 }
 
 // buildTLSConfig constructs a *tls.Config from optional CA PEM data
-// and the InsecureSkipVerify flag. Returns nil when neither is set.
-func buildTLSConfig(caPEM string, insecureSkipVerify bool) *tls.Config {
+// and the InsecureSkipVerify flag. Returns (nil, nil) when neither is set.
+// Returns an error if CaPEM is provided but contains no valid certificates.
+func buildTLSConfig(caPEM string, insecureSkipVerify bool) (*tls.Config, error) {
 	if caPEM == "" && !insecureSkipVerify {
-		return nil
+		return nil, nil
 	}
 
 	tc := &tls.Config{
@@ -109,9 +154,11 @@ func buildTLSConfig(caPEM string, insecureSkipVerify bool) *tls.Config {
 
 	if caPEM != "" {
 		pool := x509.NewCertPool()
-		pool.AppendCertsFromPEM([]byte(caPEM))
+		if !pool.AppendCertsFromPEM([]byte(caPEM)) {
+			return nil, fmt.Errorf("servicebus: CaPEM contains no valid certificates")
+		}
 		tc.RootCAs = pool
 	}
 
-	return tc
+	return tc, nil
 }

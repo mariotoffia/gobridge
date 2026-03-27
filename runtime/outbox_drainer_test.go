@@ -2,6 +2,9 @@ package runtime_test
 
 import (
 	"context"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,17 +23,17 @@ func makeDrainer(t *testing.T, token domain.LeaseToken, opts ...func(*goruntime.
 	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second)
 
 	cfg := goruntime.OutboxDrainerConfig{
-		OutboxStore:   outbox,
-		LeaseStore:    leaseStore,
-		Sender:        sender,
-		DLQ:           goruntime.NewDLQRouter(dlqStore),
-		RouteID:       "route-1",
-		PartitionKey:  pk,
-		LeaseID:       "sess-1",
-		OwnerID:       token.Owner,
-		Policy:        domain.RoutePolicy{}.WithDefaults(),
-		Strategy:  domain.NewFixedPoll(50 * time.Millisecond),
-		BatchSize: 100,
+		OutboxStore:    outbox,
+		LeaseStore:     leaseStore,
+		Sender:         sender,
+		DLQ:            goruntime.NewDLQRouter(dlqStore),
+		RouteID:        "route-1",
+		PartitionKey:   pk,
+		LeaseID:        "sess-1",
+		OwnerID:        token.Owner,
+		Policy:         domain.RoutePolicy{}.WithDefaults(),
+		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		DrainBatchSize: 100,
 		TokenFn: func() (domain.LeaseToken, bool) {
 			return token, true
 		},
@@ -132,15 +135,12 @@ func TestOutboxDrainer_PoisonMessage(t *testing.T) {
 	}
 }
 
-// TestOutboxDrainer_StaleFencingToken verifies Run returns an error when the lease token is stale.
+// TestOutboxDrainer_StaleFencingToken verifies the drainer handles stale
+// fencing tokens gracefully by continuing to poll rather than crashing.
 func TestOutboxDrainer_StaleFencingToken(t *testing.T) {
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
-		staleToken := domain.LeaseToken{Version: 99, Owner: "bridge-1"}
-		cfg.TokenFn = func() (domain.LeaseToken, bool) {
-			return staleToken, true
-		}
-	})
+	outbox, sender, _, drainer := makeDrainer(t, token)
+	outbox.SetClaimErr(domain.ErrStaleFencingToken)
 
 	ctx := context.Background()
 	rec := domain.OutboxRecord{
@@ -154,12 +154,12 @@ func TestOutboxDrainer_StaleFencingToken(t *testing.T) {
 	}
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
 
-	drainCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	drainCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
-	err := drainer.Run(drainCtx)
+	_ = drainer.Run(drainCtx)
 
-	if err == nil {
-		t.Fatal("expected stale fencing token error")
+	if sender.SentCount() != 0 {
+		t.Fatal("should not send when fencing token is stale")
 	}
 }
 
@@ -170,14 +170,14 @@ func TestOutboxDrainer_NoLease(t *testing.T) {
 	dlqStore := NewFakeDLQStore()
 
 	cfg := goruntime.OutboxDrainerConfig{
-		OutboxStore:   outbox,
-		Sender:        sender,
-		DLQ:           goruntime.NewDLQRouter(dlqStore),
-		RouteID:       "route-1",
-		PartitionKey:  domain.OutboxPartitionKey("sess-1", ""),
-		OwnerID:       "bridge-1",
-		Policy:   domain.RoutePolicy{}.WithDefaults(),
-		Strategy: domain.NewFixedPoll(50 * time.Millisecond),
+		OutboxStore:  outbox,
+		Sender:       sender,
+		DLQ:          goruntime.NewDLQRouter(dlqStore),
+		RouteID:      "route-1",
+		PartitionKey: domain.OutboxPartitionKey("sess-1", ""),
+		OwnerID:      "bridge-1",
+		Policy:       domain.RoutePolicy{}.WithDefaults(),
+		Strategy:     domain.NewFixedPoll(50 * time.Millisecond),
 		TokenFn: func() (domain.LeaseToken, bool) {
 			return domain.LeaseToken{}, false
 		},
@@ -281,5 +281,235 @@ func TestOutboxDrainer_PermanentSendError(t *testing.T) {
 
 	if dlqStore.Count() != 1 {
 		t.Fatalf("expected 1 DLQ entry for permanent error, got %d", dlqStore.Count())
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// T1 Regression: break-in-select deadlock fix (labeled break loop)
+//
+// These tests verify that drainBatch exits promptly when the context is
+// cancelled, without hanging on wg.Wait() due to semaphore slots that
+// were never acquired.
+//
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │  Before fix:                                                       │
+// │    select { case <-ctx.Done(): break }                             │
+// │    ↓ falls through to wg.Add(1) + goroutine with <-sem release    │
+// │    → hangs on wg.Wait() forever (deadlock)                        │
+// │                                                                    │
+// │  After fix:                                                        │
+// │    select { case <-ctx.Done(): break loop }                        │
+// │    ↓ exits for loop, proceeds directly to wg.Wait()               │
+// │    → returns promptly                                              │
+// └──────────────────────────────────────────────────────────────────────┘
+// ═══════════════════════════════════════════════════════════════════════════
+
+// TestOutboxDrainer_CancelDuringBatch_ReturnsPromptly validates that
+// drainBatch exits within a bounded time when the context is cancelled
+// mid-batch, proving the labeled break prevents the deadlock.
+//
+// Scenario:
+// ───────────────────────────────────────────────────────────────────────
+//
+//	50 records queued, maxConcurrency=1 (serial sem)
+//	Sender blocks until context is cancelled after first send
+//	Run must return within the timeout guard (2s) or the test fails
+//
+// ───────────────────────────────────────────────────────────────────────
+//
+// Assertions:
+//   - Run returns before the timeout guard
+//   - Fewer than 50 records are sent (batch was interrupted)
+func TestOutboxDrainer_CancelDuringBatch_ReturnsPromptly(t *testing.T) {
+	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+
+	var sendCount int32
+	cancelOnce := sync.Once{}
+	var cancelFn context.CancelFunc
+
+	_, _, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+		cfg.DrainMaxConcurrency = 1
+		cfg.DrainBatchSize = 50
+		cfg.DrainTimeout = 500 * time.Millisecond
+
+		outbox := NewFakeOutboxStore()
+		ctx := context.Background()
+		for i := 0; i < 50; i++ {
+			rec := domain.OutboxRecord{
+				ID:         fmt.Sprintf("rec-%d", i),
+				RouteID:    "route-1",
+				EnvelopeID: fmt.Sprintf("env-%d", i),
+				BindingID:  "bind-1",
+				SessionID:  "sess-1",
+				Envelope:   domain.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("data")},
+				Status:     domain.OutboxPending,
+			}
+			_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+		}
+		cfg.OutboxStore = outbox
+
+		sender := NewFakeSender()
+		sender.SendFn = func(_ *domain.Envelope) error {
+			n := atomic.AddInt32(&sendCount, 1)
+			if n >= 2 {
+				cancelOnce.Do(func() {
+					if cancelFn != nil {
+						cancelFn()
+					}
+				})
+			}
+			return nil
+		}
+		cfg.Sender = sender
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelFn = cancel
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		_ = drainer.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return promptly after context cancellation — deadlock suspected")
+	}
+
+	sent := int(atomic.LoadInt32(&sendCount))
+	if sent >= 50 {
+		t.Fatalf("expected fewer than 50 sends (batch interrupted), got %d", sent)
+	}
+}
+
+// TestOutboxDrainer_CancelBeforeBatch_ExitsPromptly validates that when the
+// context is already cancelled before Run enters the main loop, Run exits
+// promptly without hanging. Note: Run performs a finalDrain with a separate
+// context whose timeout is configured via DrainTimeout. The key
+// assertion is that Run returns in bounded time (no deadlock).
+//
+// Assertions:
+//   - Run returns before the timeout guard (no deadlock)
+func TestOutboxDrainer_CancelBeforeBatch_ExitsPromptly(t *testing.T) {
+	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+		cfg.Strategy = domain.NewFixedPoll(10 * time.Millisecond)
+		cfg.DrainTimeout = 500 * time.Millisecond
+	})
+
+	ctx := context.Background()
+	for i := 0; i < 10; i++ {
+		rec := domain.OutboxRecord{
+			ID:         fmt.Sprintf("rec-pre-%d", i),
+			RouteID:    "route-1",
+			EnvelopeID: fmt.Sprintf("env-pre-%d", i),
+			BindingID:  "bind-1",
+			SessionID:  "sess-1",
+			Envelope:   domain.Envelope{ID: fmt.Sprintf("env-pre-%d", i), Payload: []byte("x")},
+			Status:     domain.OutboxPending,
+		}
+		_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+	}
+
+	cancelledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		_ = drainer.Run(cancelledCtx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after pre-cancelled context — deadlock suspected")
+	}
+}
+
+// TestOutboxDrainer_ConcurrentBatch_SemaphoreConsistency validates that
+// with maxConcurrency > 1, cancellation during a batch does not leak
+// goroutines or cause semaphore imbalance (which would manifest as a hang).
+//
+// Scenario:
+// ───────────────────────────────────────────────────────────────────────
+//
+//	20 records, maxConcurrency=3
+//	Sender introduces a small delay to ensure concurrent processing
+//	Context is cancelled after a few sends
+//
+// ───────────────────────────────────────────────────────────────────────
+//
+// Assertions:
+//   - Run returns before the timeout guard (no semaphore imbalance hang)
+//   - Some but not all records are sent
+func TestOutboxDrainer_ConcurrentBatch_SemaphoreConsistency(t *testing.T) {
+	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+
+	var sendCount int32
+	cancelOnce := sync.Once{}
+	var cancelFn context.CancelFunc
+
+	_, _, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+		cfg.DrainMaxConcurrency = 3
+		cfg.DrainBatchSize = 20
+		cfg.DrainTimeout = 500 * time.Millisecond
+
+		outbox := NewFakeOutboxStore()
+		ctx := context.Background()
+		for i := 0; i < 20; i++ {
+			rec := domain.OutboxRecord{
+				ID:         fmt.Sprintf("rec-c-%d", i),
+				RouteID:    "route-1",
+				EnvelopeID: fmt.Sprintf("env-c-%d", i),
+				BindingID:  "bind-1",
+				SessionID:  "sess-1",
+				Envelope:   domain.Envelope{ID: fmt.Sprintf("env-c-%d", i), Payload: []byte("data")},
+				Status:     domain.OutboxPending,
+			}
+			_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+		}
+		cfg.OutboxStore = outbox
+
+		sender := NewFakeSender()
+		sender.SendFn = func(_ *domain.Envelope) error {
+			n := atomic.AddInt32(&sendCount, 1)
+			if n >= 5 {
+				cancelOnce.Do(func() {
+					if cancelFn != nil {
+						cancelFn()
+					}
+				})
+			}
+			return nil
+		}
+		cfg.Sender = sender
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelFn = cancel
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		_ = drainer.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return promptly — semaphore imbalance or deadlock suspected")
+	}
+
+	sent := int(atomic.LoadInt32(&sendCount))
+	if sent >= 20 {
+		t.Fatalf("expected fewer than 20 sends (batch interrupted), got %d", sent)
+	}
+	if sent == 0 {
+		t.Fatal("expected at least some sends before cancellation")
 	}
 }

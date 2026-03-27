@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -23,7 +24,7 @@ type sqsDelivery struct {
 	client            sqsAPI
 	queueURL          string
 	receiptHandle     string
-	visibilityTimeout int32
+	visibilityTimeout atomic.Int32
 	logger            *slog.Logger
 
 	cancel context.CancelFunc // stops auto-extend goroutine
@@ -47,14 +48,14 @@ func newDelivery(
 	ctx, cancel := context.WithCancel(parentCtx)
 
 	d := &sqsDelivery{
-		env:               env,
-		client:            client,
-		queueURL:          queueURL,
-		receiptHandle:     receiptHandle,
-		visibilityTimeout: visibilityTimeout,
-		logger:            logger,
-		cancel:            cancel,
+		env:           env,
+		client:        client,
+		queueURL:      queueURL,
+		receiptHandle: receiptHandle,
+		logger:        logger,
+		cancel:        cancel,
 	}
+	d.visibilityTimeout.Store(visibilityTimeout)
 
 	if autoExtend && visibilityTimeout > 1 {
 		go d.autoExtendLoop(ctx)
@@ -87,6 +88,12 @@ func (d *sqsDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 	timeout := int32(after.Seconds())
 	if timeout < 0 {
 		timeout = 0
+	} else if timeout == 0 && after > 0 {
+		timeout = 1
+	}
+	const sqsMaxVisibility = 43200
+	if timeout > sqsMaxVisibility {
+		timeout = sqsMaxVisibility
 	}
 
 	_, err := d.client.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
@@ -102,6 +109,8 @@ func (d *sqsDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 
 // Extend pushes the visibility timeout to the given absolute time.
 // The delta from now is clamped to [0, 43200] seconds (SQS maximum).
+// Also updates the stored timeout used by auto-extend to prevent it
+// from resetting visibility to a shorter value on the next tick.
 func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
 	timeout := int32(time.Until(until).Seconds())
 	if timeout < 0 {
@@ -120,6 +129,8 @@ func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
 	if err != nil {
 		return MapError(err)
 	}
+
+	d.visibilityTimeout.Store(timeout)
 	return nil
 }
 
@@ -132,36 +143,49 @@ func (d *sqsDelivery) stop() {
 	})
 }
 
+const autoExtendMaxFailures = 3
+
 // autoExtendLoop extends visibility at 50 % of the configured timeout
 // until the context is cancelled (via Ack, Retry, or parent shutdown).
+// Tolerates up to autoExtendMaxFailures consecutive transient errors
+// before giving up.
 func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
-	interval := time.Duration(d.visibilityTimeout) * time.Second / 2
+	interval := time.Duration(d.visibilityTimeout.Load()) * time.Second / 2
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	consecutiveFailures := 0
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			vis := d.visibilityTimeout.Load()
 			_, err := d.client.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
 				QueueUrl:          aws.String(d.queueURL),
 				ReceiptHandle:     aws.String(d.receiptHandle),
-				VisibilityTimeout: d.visibilityTimeout,
+				VisibilityTimeout: vis,
 			})
 			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
+				consecutiveFailures++
 				if d.logger != nil {
 					d.logger.Warn("sqs: auto-extend visibility failed",
 						"queue", d.queueURL,
 						"error", err,
+						"consecutive_failures", consecutiveFailures,
 					)
 				}
-				return
+				if consecutiveFailures >= autoExtendMaxFailures {
+					return
+				}
+				continue
 			}
+			consecutiveFailures = 0
 		}
 	}
 }

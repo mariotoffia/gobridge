@@ -63,6 +63,8 @@ const (
 	DefaultMaxInFlight       = 100
 	DefaultMaxReplayAttempts = 5
 	DefaultMaxOutboxDepth    = 10000
+	DefaultSendTimeout       = 30 * time.Second
+	DefaultDepthCacheTTL     = 1 * time.Second
 )
 
 // Default backoff values.
@@ -84,6 +86,9 @@ type RoutePolicy struct {
 	AckAfter             AckBoundary
 	MaxReplayAttempts    int
 	MaxOutboxDepth       int
+	AllowUnfenced        bool
+	SendTimeout          time.Duration
+	DepthCacheTTL        time.Duration
 }
 
 // WithDefaults returns a copy with zero-valued fields set to defaults.
@@ -120,6 +125,12 @@ func (p RoutePolicy) WithDefaults() RoutePolicy {
 	}
 	if p.AckAfter == "" {
 		p.AckAfter = AckAfterTargetAccept
+	}
+	if p.SendTimeout <= 0 {
+		p.SendTimeout = DefaultSendTimeout
+	}
+	if p.DepthCacheTTL <= 0 {
+		p.DepthCacheTTL = DefaultDepthCacheTTL
 	}
 	return p
 }

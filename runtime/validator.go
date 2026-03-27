@@ -78,8 +78,9 @@ func validateDirectHold(ve *ValidationError, prefix string, entry *routeEntry, p
 		ve.add(prefix + "direct_hold invalid: multiple bindings require fan-out or a single-match resolver")
 	}
 
-	// TODO(T3): validate MQTT QoS >= 1 for reliable routes
-	// TODO(T3): validate co-location is inherent (same process = co-located)
+	if !policy.AllowUnfenced && hasCapability(entry.config.SourceCapabilities, ports.CapSharedConsumer) {
+		ve.add(prefix + "direct_hold invalid: shared consumer source requires fencing (use shared_outbox) or set AllowUnfenced")
+	}
 }
 
 func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry, _ domain.RoutePolicy, hasOutboxStore, hasLeaseStore bool) {

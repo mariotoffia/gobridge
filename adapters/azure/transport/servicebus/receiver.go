@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
+	"sync"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
@@ -15,9 +17,12 @@ import (
 var _ ports.Receiver = (*Receiver)(nil)
 
 type Receiver struct {
-	cfg    ReceiverConfig
-	client asbAPI
-	logger *slog.Logger
+	cfg       ReceiverConfig
+	client    asbAPI
+	scheduler retryScheduler
+	asbClient *azservicebus.Client
+	logger    *slog.Logger
+	initMu    sync.Mutex
 }
 
 func NewReceiver(cfg ReceiverConfig, logger *slog.Logger) (*Receiver, error) {
@@ -33,14 +38,28 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		return err
 	}
 
-	if closer, ok := r.client.(interface{ Close(context.Context) error }); ok {
-		defer closer.Close(ctx) //nolint:errcheck
-	}
+	defer func() {
+		closeCtx := context.Background()
+		if closer, ok := r.client.(interface{ Close(context.Context) error }); ok {
+			_ = closer.Close(closeCtx)
+		}
+		if r.scheduler != nil {
+			if closer, ok := r.scheduler.(interface{ Close(context.Context) error }); ok {
+				_ = closer.Close(closeCtx)
+			}
+		}
+		if r.asbClient != nil {
+			_ = r.asbClient.Close(closeCtx)
+		}
+	}()
 
 	return r.pollLoop(ctx, emit)
 }
 
-func (r *Receiver) ensureClient(_ context.Context) error {
+func (r *Receiver) ensureClient(ctx context.Context) error {
+	r.initMu.Lock()
+	defer r.initMu.Unlock()
+
 	if r.client != nil {
 		return nil
 	}
@@ -67,23 +86,59 @@ func (r *Receiver) ensureClient(_ context.Context) error {
 		opts.SubQueue = azservicebus.SubQueueTransfer
 	}
 
-	var recv *azservicebus.Receiver
+	entityName := r.cfg.QueueName
+	if entityName == "" {
+		entityName = r.cfg.TopicName
+	}
 
-	if r.cfg.QueueName != "" {
-		recv, err = asbClient.NewReceiverForQueue(r.cfg.QueueName, opts)
+	if r.cfg.SessionID != "" {
+		sessOpts := &azservicebus.SessionReceiverOptions{}
+		if r.cfg.ReceiveMode == "ReceiveAndDelete" {
+			sessOpts.ReceiveMode = azservicebus.ReceiveModeReceiveAndDelete
+		}
+
+		var sessRecv *azservicebus.SessionReceiver
+		if r.cfg.QueueName != "" {
+			sessRecv, err = asbClient.AcceptSessionForQueue(ctx, r.cfg.QueueName, r.cfg.SessionID, sessOpts)
+		} else {
+			sessRecv, err = asbClient.AcceptSessionForSubscription(ctx, r.cfg.TopicName, r.cfg.SubscriptionName, r.cfg.SessionID, sessOpts)
+		}
+		if err != nil {
+			_ = asbClient.Close(context.Background())
+			return domain.ErrUnavailable.Wrap(fmt.Errorf("servicebus receiver: accept session %q: %w", r.cfg.SessionID, err))
+		}
+		r.client = &sessionReceiverAdapter{inner: sessRecv}
 	} else {
-		recv, err = asbClient.NewReceiverForSubscription(r.cfg.TopicName, r.cfg.SubscriptionName, opts)
+		var recv *azservicebus.Receiver
+		if r.cfg.QueueName != "" {
+			recv, err = asbClient.NewReceiverForQueue(r.cfg.QueueName, opts)
+		} else {
+			recv, err = asbClient.NewReceiverForSubscription(r.cfg.TopicName, r.cfg.SubscriptionName, opts)
+		}
+		if err != nil {
+			_ = asbClient.Close(context.Background())
+			return domain.ErrUnavailable.Wrap(fmt.Errorf("servicebus receiver: create receiver: %w", err))
+		}
+		r.client = recv
 	}
 
+	sender, err := asbClient.NewSender(entityName, nil)
 	if err != nil {
-		return domain.ErrUnavailable.Wrap(fmt.Errorf("servicebus receiver: create receiver: %w", err))
+		if r.logger != nil {
+			r.logger.Warn("servicebus: could not create retry scheduler sender",
+				"entity", entityName, "error", err)
+		}
+	} else {
+		r.scheduler = sender
 	}
 
-	r.client = recv
+	r.asbClient = asbClient
 	return nil
 }
 
 func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
+	backoff := newPollBackoff()
+
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -94,18 +149,22 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			delay := backoff.next()
 			if r.logger != nil {
 				r.logger.Warn("servicebus: ReceiveMessages failed, retrying",
 					"error", err,
+					"retry_after", delay,
 				)
 			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(time.Second):
+			case <-time.After(delay):
 			}
 			continue
 		}
+
+		backoff.reset()
 
 		for _, msg := range msgs {
 			del := r.convertMessage(ctx, msg)
@@ -115,6 +174,39 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			}
 		}
 	}
+}
+
+// pollBackoff implements exponential backoff with jitter for poll loops.
+type pollBackoff struct {
+	current time.Duration
+}
+
+const (
+	pollBackoffInitial    = time.Second
+	pollBackoffMax        = 30 * time.Second
+	pollBackoffMultiplier = 2
+)
+
+func newPollBackoff() *pollBackoff {
+	return &pollBackoff{current: pollBackoffInitial}
+}
+
+func (b *pollBackoff) next() time.Duration {
+	delay := b.current
+
+	jitter := time.Duration(float64(delay) * 0.25 * (2*rand.Float64() - 1))
+	delay += jitter
+
+	b.current *= pollBackoffMultiplier
+	if b.current > pollBackoffMax {
+		b.current = pollBackoffMax
+	}
+
+	return delay
+}
+
+func (b *pollBackoff) reset() {
+	b.current = pollBackoffInitial
 }
 
 func (r *Receiver) convertMessage(ctx context.Context, msg *azservicebus.ReceivedMessage) *asbDelivery {
@@ -144,6 +236,7 @@ func (r *Receiver) convertMessage(ctx context.Context, msg *azservicebus.Receive
 		ctx,
 		env,
 		r.client,
+		r.scheduler,
 		msg,
 		r.cfg.LockDuration,
 		r.cfg.autoExtendEnabled(),

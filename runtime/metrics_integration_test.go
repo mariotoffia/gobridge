@@ -32,6 +32,8 @@ func TestRouteRunner_EmitsE2ELatency(t *testing.T) {
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
+	waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
+
 	cancel()
 
 	timers := rec.FindEntries(domain.MetricDeliveryE2ELatency)
@@ -74,6 +76,8 @@ func TestRouteRunner_EmitsDLQEntries(t *testing.T) {
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
+	waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
+
 	cancel()
 
 	dlqCounters := rec.FindEntries(domain.MetricDLQEntries)
@@ -99,18 +103,18 @@ func TestOutboxDrainer_EmitsDrainLatency(t *testing.T) {
 	_ = outbox.Persist(context.Background(), records)
 
 	drainer := runtime.NewOutboxDrainerFromConfig(runtime.OutboxDrainerConfig{
-		OutboxStore:   outbox,
-		LeaseStore:    lease,
-		Sender:        sender,
-		RouteID:       "route-drain",
-		PartitionKey:  domain.OutboxPartitionKey("session-1", "b1"),
-		LeaseID:       "session-1",
-		OwnerID:       "owner-1",
-		Policy:    domain.RoutePolicy{}.WithDefaults(),
-		Strategy:  domain.NewFixedPoll(50 * time.Millisecond),
-		BatchSize: 10,
-		Metrics:   rec,
-		TokenFn:   func() (domain.LeaseToken, bool) { return token, true },
+		OutboxStore:    outbox,
+		LeaseStore:     lease,
+		Sender:         sender,
+		RouteID:        "route-drain",
+		PartitionKey:   domain.OutboxPartitionKey("session-1", "b1"),
+		LeaseID:        "session-1",
+		OwnerID:        "owner-1",
+		Policy:         domain.RoutePolicy{}.WithDefaults(),
+		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		DrainBatchSize: 10,
+		Metrics:        rec,
+		TokenFn:        func() (domain.LeaseToken, bool) { return token, true },
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -150,18 +154,18 @@ func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 	_ = outbox.Persist(context.Background(), records)
 
 	drainer := runtime.NewOutboxDrainerFromConfig(runtime.OutboxDrainerConfig{
-		OutboxStore:   outbox,
-		LeaseStore:    lease,
-		Sender:        sender,
-		RouteID:       "route-exp",
-		PartitionKey:  domain.OutboxPartitionKey("s1", "b1"),
-		LeaseID:       "s1",
-		OwnerID:       "owner-1",
-		Policy:    domain.RoutePolicy{OnExpired: domain.ExpiredDLQ}.WithDefaults(),
-		Strategy:  domain.NewFixedPoll(50 * time.Millisecond),
-		BatchSize: 10,
-		Metrics:   rec,
-		TokenFn:   func() (domain.LeaseToken, bool) { return token, true },
+		OutboxStore:    outbox,
+		LeaseStore:     lease,
+		Sender:         sender,
+		RouteID:        "route-exp",
+		PartitionKey:   domain.OutboxPartitionKey("s1", "b1"),
+		LeaseID:        "s1",
+		OwnerID:        "owner-1",
+		Policy:         domain.RoutePolicy{OnExpired: domain.ExpiredDLQ}.WithDefaults(),
+		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		DrainBatchSize: 10,
+		Metrics:        rec,
+		TokenFn:        func() (domain.LeaseToken, bool) { return token, true },
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)

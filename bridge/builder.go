@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
@@ -69,11 +70,20 @@ func (b *Builder) RegisterProcessor(name string, proc ports.Processor) *Builder 
 	return b
 }
 
-// Build validates the configuration, creates all adapters via registered
-// factories, and wires them into a runtime.Runtime. The returned runtime
-// is not yet started; call Start on it separately. If any step fails,
-// previously created sessions are closed to prevent resource leaks.
-func (b *Builder) Build(ctx context.Context) (_ *runtime.Runtime, retErr error) {
+// PreparedBuild holds pre-validated state from the prepare phase.
+// No transport sessions, receivers, or senders have been created yet,
+// making it safe to call Prepare while an old runtime still holds
+// exclusive transport connections.
+type PreparedBuild struct {
+	cfg    *config.BridgeConfig
+	stores *storeResult
+	rtOpts []runtime.Option
+}
+
+// Prepare validates config and builds stores but does NOT create
+// transport sessions, receivers, or senders. This is the first phase
+// of the two-phase build used by the Supervisor in PrepareCommit mode.
+func (b *Builder) Prepare(ctx context.Context) (*PreparedBuild, error) {
 	if err := config.Validate(b.cfg); err != nil {
 		return nil, fmt.Errorf("bridge: config validation: %w", err)
 	}
@@ -81,6 +91,34 @@ func (b *Builder) Build(ctx context.Context) (_ *runtime.Runtime, retErr error) 
 	stores, err := b.buildStores(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	rtOpts := []runtime.Option{
+		runtime.WithLeaseStore(stores.lease),
+		runtime.WithOutboxStore(stores.outbox),
+		runtime.WithDLQStore(stores.dlq),
+	}
+	if b.cfg.Bridge.InstanceID != "" {
+		rtOpts = append(rtOpts, runtime.WithInstanceID(b.cfg.Bridge.InstanceID))
+	}
+	if b.logger != nil {
+		rtOpts = append(rtOpts, runtime.WithLogger(b.logger))
+	}
+
+	return &PreparedBuild{
+		cfg:    b.cfg,
+		stores: stores,
+		rtOpts: rtOpts,
+	}, nil
+}
+
+// Complete creates sessions, receivers, senders, wires routes, and
+// returns a ready-to-start Runtime. Call after the old runtime has
+// released exclusive resources (e.g. MQTT client-ids). If prep is
+// nil, Complete returns an error.
+func (b *Builder) Complete(ctx context.Context, prep *PreparedBuild) (_ *runtime.Runtime, retErr error) {
+	if prep == nil {
+		return nil, fmt.Errorf("bridge: Complete called with nil PreparedBuild")
 	}
 
 	sessions, err := b.buildSessions(ctx)
@@ -107,25 +145,39 @@ func (b *Builder) Build(ctx context.Context) (_ *runtime.Runtime, retErr error) 
 		return nil, err
 	}
 
-	rtOpts := []runtime.Option{
-		runtime.WithLeaseStore(stores.lease),
-		runtime.WithOutboxStore(stores.outbox),
-		runtime.WithDLQStore(stores.dlq),
-	}
-	if b.cfg.Bridge.InstanceID != "" {
-		rtOpts = append(rtOpts, runtime.WithInstanceID(b.cfg.Bridge.InstanceID))
-	}
-	if b.logger != nil {
-		rtOpts = append(rtOpts, runtime.WithLogger(b.logger))
-	}
-	rt := runtime.New(rtOpts...)
+	rt := runtime.New(prep.rtOpts...)
 
+	if err := b.wireRoutes(rt, sessions, receivers, senders); err != nil {
+		return nil, err
+	}
+
+	return rt, nil
+}
+
+// Build validates the configuration, creates all adapters via registered
+// factories, and wires them into a runtime.Runtime. The returned runtime
+// is not yet started; call Start on it separately. If any step fails,
+// previously created sessions are closed to prevent resource leaks.
+func (b *Builder) Build(ctx context.Context) (*runtime.Runtime, error) {
+	prep, err := b.Prepare(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return b.Complete(ctx, prep)
+}
+
+func (b *Builder) wireRoutes(
+	rt *runtime.Runtime,
+	sessions map[string]ports.Session,
+	receivers map[string]ports.Receiver,
+	senders map[string]ports.Sender,
+) error {
 	registeredSessions := make(map[string]bool)
 
 	for _, routeDef := range b.cfg.Routes {
 		recv, ok := receivers[routeDef.ReceiverID]
 		if !ok {
-			return nil, fmt.Errorf("bridge: route %q: receiver %q not created", routeDef.ID, routeDef.ReceiverID)
+			return fmt.Errorf("bridge: route %q: receiver %q not created", routeDef.ID, routeDef.ReceiverID)
 		}
 
 		bindings := toBindings(b.cfg, routeDef.Bindings)
@@ -157,7 +209,7 @@ func (b *Builder) Build(ctx context.Context) (_ *runtime.Runtime, retErr error) 
 			if snd, ok := senders[routeDef.Session.SenderID]; ok {
 				routeSender = snd
 			} else {
-				return nil, fmt.Errorf("bridge: route %q: session sender %q not created", routeDef.ID, routeDef.Session.SenderID)
+				return fmt.Errorf("bridge: route %q: session sender %q not created", routeDef.ID, routeDef.Session.SenderID)
 			}
 		} else if len(bindings) > 0 {
 			firstBind := bindings[0]
@@ -172,12 +224,12 @@ func (b *Builder) Build(ctx context.Context) (_ *runtime.Runtime, retErr error) 
 		}
 
 		if routeSender == nil {
-			return nil, fmt.Errorf("bridge: route %q: no sender resolved", routeDef.ID)
+			return fmt.Errorf("bridge: route %q: no sender resolved", routeDef.ID)
 		}
 
 		procs, procErr := b.resolveProcessors(routeDef.Processors)
 		if procErr != nil {
-			return nil, fmt.Errorf("bridge: route %q: %w", routeDef.ID, procErr)
+			return fmt.Errorf("bridge: route %q: %w", routeDef.ID, procErr)
 		}
 
 		rcfg := runtime.RouteConfig{
@@ -189,7 +241,7 @@ func (b *Builder) Build(ctx context.Context) (_ *runtime.Runtime, retErr error) 
 		}
 
 		if err := rt.AddRoute(rcfg, recv, routeSender, routeSession, sessCfg); err != nil {
-			return nil, fmt.Errorf("bridge: add route %q: %w", routeDef.ID, err)
+			return fmt.Errorf("bridge: add route %q: %w", routeDef.ID, err)
 		}
 
 		if routeDef.Session != nil {
@@ -202,22 +254,22 @@ func (b *Builder) Build(ctx context.Context) (_ *runtime.Runtime, retErr error) 
 			}
 			sess, sessOk := sessions[bd.SessionID]
 			if !sessOk {
-				return nil, fmt.Errorf("bridge: route %q: binding %q references unknown session %q", routeDef.ID, bd.ID, bd.SessionID)
+				return fmt.Errorf("bridge: route %q: binding %q references unknown session %q", routeDef.ID, bd.ID, bd.SessionID)
 			}
 			snd, sndOk := senders[bd.SenderID]
 			if !sndOk {
-				return nil, fmt.Errorf("bridge: route %q: binding %q references unknown sender %q", routeDef.ID, bd.ID, bd.SenderID)
+				return fmt.Errorf("bridge: route %q: binding %q references unknown sender %q", routeDef.ID, bd.ID, bd.SenderID)
 			}
 			sc := runtime.DefaultSessionConfig(bd.SessionID, true)
 			sc.ConnectAfterLease = true
 			if err := rt.RegisterSessionSender(sc, sess, snd); err != nil {
-				return nil, fmt.Errorf("bridge: register session sender %q: %w", bd.SessionID, err)
+				return fmt.Errorf("bridge: register session sender %q: %w", bd.SessionID, err)
 			}
 			registeredSessions[bd.SessionID] = true
 		}
 	}
 
-	return rt, nil
+	return nil
 }
 
 type storeResult struct {
@@ -256,6 +308,7 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		if !ok {
 			return nil, fmt.Errorf("bridge: no store factory registered for outbox type %q", sc.Type)
 		}
+		b.injectStaleClaimDuration(sc)
 		s, err := sf.NewOutboxStore(ctx, *sc)
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create outbox store: %w", err)
@@ -293,20 +346,35 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 
 func (b *Builder) buildSessions(ctx context.Context) (map[string]ports.Session, error) {
 	sessions := make(map[string]ports.Session, len(b.cfg.Sessions))
+
+	cleanup := func(exclude string) {
+		for id, s := range sessions {
+			if id == exclude {
+				continue
+			}
+			if closeErr := s.Close(ctx); closeErr != nil && b.logger != nil {
+				b.logger.Warn("closing session after partial failure", "session", id, "error", closeErr)
+			}
+		}
+	}
+
 	for _, sd := range b.cfg.Sessions {
 		tf, ok := b.transports[sd.Transport]
 		if !ok {
+			cleanup("")
 			return nil, fmt.Errorf("bridge: no transport factory registered for %q (session %q)", sd.Transport, sd.ID)
 		}
 		if sd.Options != nil {
 			opts, err := b.resolveCredentials(ctx, sd.Options, fmt.Sprintf("session %q", sd.ID))
 			if err != nil {
+				cleanup("")
 				return nil, err
 			}
 			sd.Options = opts
 		}
 		sess, err := tf.NewSession(ctx, sd)
 		if err != nil {
+			cleanup("")
 			return nil, fmt.Errorf("bridge: create session %q: %w", sd.ID, err)
 		}
 		if sess != nil {
@@ -447,4 +515,34 @@ func (b *Builder) resolveCredentials(ctx context.Context, opts map[string]any, l
 	}
 
 	return resolved, nil
+}
+
+// injectStaleClaimDuration derives stale_claim_duration from the
+// session StepDownGrace values across all routes and injects it into
+// the outbox store config options. This keeps the outbox reclaim
+// timeout aligned with the lease lifecycle rather than being an
+// independent hardcoded value. The derivation is skipped when the
+// user has explicitly set stale_claim_duration in YAML.
+func (b *Builder) injectStaleClaimDuration(sc *config.StoreConfig) {
+	if sc.Options != nil {
+		if _, explicit := sc.Options["stale_claim_duration"]; explicit {
+			return
+		}
+	}
+
+	maxGrace := runtime.DefaultSessionConfig("", true).StepDownGrace
+	for _, r := range b.cfg.Routes {
+		if r.Session == nil {
+			continue
+		}
+		sessCfg := toSessionConfig(r.Session)
+		if sessCfg.StepDownGrace > maxGrace {
+			maxGrace = sessCfg.StepDownGrace
+		}
+	}
+
+	if sc.Options == nil {
+		sc.Options = make(map[string]any)
+	}
+	sc.Options["stale_claim_duration"] = maxGrace + 15*time.Second
 }

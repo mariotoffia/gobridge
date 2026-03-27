@@ -27,6 +27,7 @@ const (
 	MetricOutboxCompletions       = "OutboxCompletions"
 	MetricOutboxExpiredBeforeSend = "OutboxExpiredBeforeSend"
 	MetricOutboxReplayCount       = "OutboxReplayCount"
+	MetricOutboxRecordFailures    = "OutboxRecordFailures"
 )
 
 // SQS metric names.
@@ -46,6 +47,11 @@ const (
 const (
 	MetricMQTTPublishLatency = "MQTTPublishLatency"
 	MetricMQTTReconnects     = "MQTTReconnects"
+)
+
+// Session metric names.
+const (
+	MetricReconcileFailures = "ReconcileFailures"
 )
 
 // Standard dimension key names for metric tags.

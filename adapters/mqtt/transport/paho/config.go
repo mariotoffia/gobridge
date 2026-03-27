@@ -15,6 +15,7 @@ type SessionOptions struct {
 	ClientID              string
 	KeepAlive             uint16
 	ConnectTimeout        time.Duration
+	ReconnectTimeout      time.Duration
 	CleanStart            bool
 	SessionExpiryInterval uint32
 	Username              string
@@ -47,9 +48,10 @@ type TLSConfig struct {
 // DefaultSessionOptions returns SessionOptions with recommended defaults.
 func DefaultSessionOptions() SessionOptions {
 	return SessionOptions{
-		KeepAlive:      30,
-		ConnectTimeout: 30 * time.Second,
-		CleanStart:     true,
+		KeepAlive:        30,
+		ConnectTimeout:   30 * time.Second,
+		ReconnectTimeout: 30 * time.Second,
+		CleanStart:       true,
 	}
 }
 
@@ -82,6 +84,9 @@ func SessionOptionsFromMap(m map[string]any) SessionOptions {
 	}
 	if v, ok := m["connect_timeout"].(time.Duration); ok {
 		opts.ConnectTimeout = v
+	}
+	if v, ok := m["reconnect_timeout"].(time.Duration); ok {
+		opts.ReconnectTimeout = v
 	}
 	if v, ok := m["clean_start"].(bool); ok {
 		opts.CleanStart = v

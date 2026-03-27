@@ -96,6 +96,9 @@ func TestDelivery_Retry_WithDelay(t *testing.T) {
 		t.Fatalf("Retry failed: %v", err)
 	}
 
+	if len(mock.ChangeVisibilityCalls) == 0 {
+		t.Fatal("expected at least 1 ChangeMessageVisibility call")
+	}
 	if mock.ChangeVisibilityCalls[0].VisibilityTimeout != 10 {
 		t.Fatalf("expected visibility 10, got %d", mock.ChangeVisibilityCalls[0].VisibilityTimeout)
 	}
@@ -132,6 +135,9 @@ func TestDelivery_Extend_ClampsMax(t *testing.T) {
 		t.Fatalf("Extend failed: %v", err)
 	}
 
+	if len(mock.ChangeVisibilityCalls) == 0 {
+		t.Fatal("expected at least 1 ChangeMessageVisibility call")
+	}
 	if mock.ChangeVisibilityCalls[0].VisibilityTimeout != 43200 {
 		t.Fatalf("expected max clamped to 43200, got %d", mock.ChangeVisibilityCalls[0].VisibilityTimeout)
 	}
@@ -239,34 +245,17 @@ func TestDelivery_NoAutoExtend(t *testing.T) {
 	}
 }
 
-// Verifies auto-extend stops after a single failed ChangeMessageVisibility attempt.
-func TestDelivery_AutoExtend_StopsOnError(t *testing.T) {
-	var callCount atomic.Int32
-	mock := &mockSQSClient{
-		ChangeMessageVisibilityFn: func(_ context.Context, _ *awssqs.ChangeMessageVisibilityInput, _ ...func(*awssqs.Options)) (*awssqs.ChangeMessageVisibilityOutput, error) {
-			callCount.Add(1)
-			return nil, errors.New("network error")
-		},
-	}
-
-	env := &domain.Envelope{ID: "msg-1"}
-	_ = newDelivery(context.Background(), env, mock, "q", "rh", 2, true, nil)
-
-	// Wait for the auto-extend goroutine to fire and fail.
-	time.Sleep(1500 * time.Millisecond)
-
-	count := callCount.Load()
-	if count != 1 {
-		t.Fatalf("expected exactly 1 auto-extend attempt before stopping on error, got %d", count)
-	}
-}
-
 // Verifies auto-extend uses the full visibility timeout value in ChangeMessageVisibility.
 func TestDelivery_AutoExtend_UsesCorrectTimeout(t *testing.T) {
+	var callCount atomic.Int32
+	var sawBad atomic.Bool
+	var lastTimeout atomic.Int32
 	mock := &mockSQSClient{
 		ChangeMessageVisibilityFn: func(_ context.Context, in *awssqs.ChangeMessageVisibilityInput, _ ...func(*awssqs.Options)) (*awssqs.ChangeMessageVisibilityOutput, error) {
+			callCount.Add(1)
+			lastTimeout.Store(in.VisibilityTimeout)
 			if in.VisibilityTimeout != 10 {
-				t.Errorf("auto-extend should use full timeout 10, got %d", in.VisibilityTimeout)
+				sawBad.Store(true)
 			}
 			return &awssqs.ChangeMessageVisibilityOutput{}, nil
 		},
@@ -275,9 +264,15 @@ func TestDelivery_AutoExtend_UsesCorrectTimeout(t *testing.T) {
 	env := &domain.Envelope{ID: "msg-1"}
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 10, true, nil)
 
-	// Interval is 5s (50% of 10), wait a bit more than that.
 	time.Sleep(5500 * time.Millisecond)
 	d.stop()
+
+	if callCount.Load() == 0 {
+		t.Fatal("expected at least 1 auto-extend call")
+	}
+	if sawBad.Load() {
+		t.Errorf("auto-extend should use full timeout 10, got %d", lastTimeout.Load())
+	}
 }
 
 // Verifies calling stop multiple times leaves Ack working without panic or failure.
@@ -301,8 +296,13 @@ func TestNewDelivery_WithQueueURLAndHandle(t *testing.T) {
 	env := &domain.Envelope{ID: "msg-1"}
 	d := newDelivery(context.Background(), env, mock, "https://sqs.us-east-1.amazonaws.com/123/my-queue", "handle-abc", 30, false, nil)
 
-	_ = d.Ack(context.Background())
+	if err := d.Ack(context.Background()); err != nil {
+		t.Fatalf("Ack failed: %v", err)
+	}
 
+	if len(mock.DeleteCalls) == 0 {
+		t.Fatal("expected at least 1 DeleteMessage call")
+	}
 	if *mock.DeleteCalls[0].QueueUrl != "https://sqs.us-east-1.amazonaws.com/123/my-queue" {
 		t.Fatal("queue URL not passed correctly")
 	}
@@ -313,29 +313,34 @@ func TestNewDelivery_WithQueueURLAndHandle(t *testing.T) {
 
 // Verifies Ack deletes the message after stopping auto-extend without extra spurious calls.
 func TestDelivery_Ack_StopsAutoExtendThenDeletes(t *testing.T) {
-	callOrder := make([]string, 0, 3)
+	var extendCount atomic.Int32
 	mock := &mockSQSClient{
 		DeleteMessageFn: func(_ context.Context, _ *awssqs.DeleteMessageInput, _ ...func(*awssqs.Options)) (*awssqs.DeleteMessageOutput, error) {
-			callOrder = append(callOrder, "delete")
 			return &awssqs.DeleteMessageOutput{}, nil
+		},
+		ChangeMessageVisibilityFn: func(_ context.Context, _ *awssqs.ChangeMessageVisibilityInput, _ ...func(*awssqs.Options)) (*awssqs.ChangeMessageVisibilityOutput, error) {
+			extendCount.Add(1)
+			return &awssqs.ChangeMessageVisibilityOutput{}, nil
 		},
 	}
 
 	env := &domain.Envelope{ID: "msg-ack-order"}
-	d := newDelivery(context.Background(), env, mock, "q", "rh", 30, true, nil)
+	d := newDelivery(context.Background(), env, mock, "q", "rh", 2, true, nil)
 
-	_ = d.Ack(context.Background())
-
-	if len(callOrder) == 0 || callOrder[0] != "delete" {
-		t.Fatal("Ack should call DeleteMessage")
+	if err := d.Ack(context.Background()); err != nil {
+		t.Fatalf("Ack failed: %v", err)
 	}
 
 	mock.mu.Lock()
 	deleteCount := len(mock.DeleteCalls)
 	mock.mu.Unlock()
-
 	if deleteCount != 1 {
 		t.Fatalf("expected exactly 1 delete, got %d", deleteCount)
+	}
+
+	time.Sleep(1500 * time.Millisecond)
+	if extendCount.Load() > 0 {
+		t.Fatal("auto-extend should not fire after Ack")
 	}
 }
 

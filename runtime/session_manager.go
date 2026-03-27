@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
@@ -31,10 +32,10 @@ type SessionManager struct {
 	audit             ports.AuditLogger
 	logger            *slog.Logger
 
-	mu              sync.Mutex
-	token           domain.LeaseToken
-	hasLease        bool
-	connectedOnce   bool
+	mu            sync.Mutex
+	token         domain.LeaseToken
+	hasLease      bool
+	connectedOnce bool
 }
 
 // NewSessionManagerFromConfig creates a SessionManager from a config struct.
@@ -54,10 +55,11 @@ func newSessionManager(cfg SessionConfig, session ports.Session, leaseStore port
 		cfg.LeaseTTL = defaults.LeaseTTL
 	}
 	if cfg.RenewInterval == 0 {
-		cfg.RenewInterval = defaults.RenewInterval
-	}
-	if cfg.RenewJitter == 0 {
-		cfg.RenewJitter = defaults.RenewJitter
+		if cfg.MaxRenewFails > 0 {
+			cfg.RenewInterval = cfg.LeaseTTL / time.Duration(cfg.MaxRenewFails)
+		} else {
+			cfg.RenewInterval = cfg.LeaseTTL / 3
+		}
 	}
 	if cfg.MaxRenewFails == 0 {
 		cfg.MaxRenewFails = defaults.MaxRenewFails
@@ -140,7 +142,9 @@ func (m *SessionManager) Close(ctx context.Context) error {
 	m.mu.Unlock()
 
 	if hadLease && m.leaseStore != nil {
-		_ = m.leaseStore.Release(ctx, m.sessionID, token)
+		if err := m.leaseStore.Release(ctx, m.sessionID, token); err != nil {
+			m.log(ctx, slog.LevelWarn, "lease release failed during close", "error", err)
+		}
 	}
 	return m.session.Close(ctx)
 }
@@ -171,6 +175,17 @@ func (m *SessionManager) runExclusiveDeferred(ctx context.Context) error {
 				return err
 			}
 			sessionStarted = true
+		} else {
+			health := m.session.Health(ctx)
+			if !health.Connected {
+				m.log(ctx, slog.LevelWarn, "session disconnected during lease gap, reconnecting")
+				if closeErr := m.session.Close(ctx); closeErr != nil {
+					m.log(ctx, slog.LevelWarn, "session close failed before restart", "error", closeErr)
+				}
+				if err := m.session.Start(ctx); err != nil {
+					return err
+				}
+			}
 		}
 
 		if err := m.session.Reconcile(ctx, m.plan); err != nil {
@@ -261,7 +276,9 @@ func (m *SessionManager) renewLoop(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			m.handleSessionEvent(ctx, ev)
+			if err := m.handleSessionEvent(ctx, ev); err != nil {
+				return err
+			}
 
 		case <-timer.C:
 			m.mu.Lock()
@@ -338,12 +355,14 @@ func (m *SessionManager) handleEvents(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			m.handleSessionEvent(ctx, ev)
+			if err := m.handleSessionEvent(ctx, ev); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.SessionEvent) {
+func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.SessionEvent) error {
 	sessionTag := domain.Tag{Key: domain.TagKeySessionID, Value: m.sessionID}
 	switch ev.Type {
 	case ports.SessionConnected:
@@ -352,7 +371,11 @@ func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.Sessio
 			m.metrics.Counter(domain.MetricMQTTReconnects, 1, sessionTag)
 		}
 		m.connectedOnce = true
-		_ = m.session.Reconcile(ctx, m.plan)
+		if err := m.session.Reconcile(ctx, m.plan); err != nil {
+			m.log(ctx, slog.LevelError, "reconcile failed on reconnect", "error", err)
+			m.metrics.Counter(domain.MetricReconcileFailures, 1, sessionTag)
+			return fmt.Errorf("reconcile on reconnect: %w", err)
+		}
 
 	case ports.SessionDisconnected:
 		m.log(ctx, slog.LevelWarn, "session disconnected", "error", ev.Err)
@@ -363,6 +386,7 @@ func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.Sessio
 	case ports.SessionError:
 		m.log(ctx, slog.LevelError, "session error", "error", ev.Err)
 	}
+	return nil
 }
 
 func (m *SessionManager) setToken(token domain.LeaseToken) {

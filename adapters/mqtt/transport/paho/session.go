@@ -29,6 +29,11 @@ type Session struct {
 	events chan ports.SessionEvent
 	closed bool
 
+	// reconcileMu serializes concurrent reconcile calls (e.g. external
+	// Reconcile vs OnConnectionUp callback) to prevent interleaved
+	// subscribe/unsubscribe operations from corrupting activeSubs.
+	reconcileMu sync.Mutex
+
 	// router receives all incoming publishes; Receivers register handlers.
 	router *router
 
@@ -74,10 +79,6 @@ func (s *Session) Start(ctx context.Context) error {
 		return domain.ErrInvalidPayload.Wrap(err).WithMessage("parse broker URLs")
 	}
 
-	// Use a background-derived context for the connection manager so that
-	// reconnect callbacks survive after the caller's Start context ends.
-	connCtx := context.Background()
-
 	cfg := autopaho.ClientConfig{
 		ServerUrls: serverURLs,
 		KeepAlive:  s.opts.KeepAlive,
@@ -85,13 +86,17 @@ func (s *Session) Start(ctx context.Context) error {
 		OnConnectionUp: func(cm *autopaho.ConnectionManager, _ *pahov5.Connack) {
 			s.pushEvent(ports.SessionConnected, nil)
 			s.mu.Lock()
-			// Clear activeSubs so reconcile always re-subscribes after
-			// a reconnect, in case the broker lost session state.
 			s.activeSubs = make(map[string]byte)
 			plan := s.plan
 			s.mu.Unlock()
 			if plan != nil {
-				if err := s.reconcile(connCtx, cm, *plan); err != nil && s.logger != nil {
+				reconTimeout := s.opts.ReconnectTimeout
+				if reconTimeout == 0 {
+					reconTimeout = 30 * time.Second
+				}
+				reconCtx, reconCancel := context.WithTimeout(context.Background(), reconTimeout)
+				defer reconCancel()
+				if err := s.reconcile(reconCtx, cm, *plan); err != nil && s.logger != nil {
 					s.logger.Warn("reconcile on reconnect failed", "error", err)
 				}
 			}
@@ -169,6 +174,9 @@ func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error 
 }
 
 func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager, plan domain.SessionPlan) error {
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+
 	desired := make(map[string]byte, len(plan.Subscriptions))
 	for _, sub := range plan.Subscriptions {
 		desired[sub.Topic] = byte(sub.QoS)
@@ -214,14 +222,22 @@ func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager,
 		if err != nil {
 			return MapError(err)
 		}
-		s.mu.Lock()
+		var succeeded []pahov5.SubscribeOptions
 		for i, opt := range toSub {
 			if i < len(sa.Reasons) {
 				if berr := MapSubscribeReasonCode(sa.Reasons[i]); berr != nil {
+					s.mu.Lock()
+					for _, sub := range succeeded {
+						s.activeSubs[sub.Topic] = sub.QoS
+					}
 					s.mu.Unlock()
 					return berr.With("topic", opt.Topic)
 				}
 			}
+			succeeded = append(succeeded, opt)
+		}
+		s.mu.Lock()
+		for _, opt := range succeeded {
 			s.activeSubs[opt.Topic] = opt.QoS
 		}
 		s.mu.Unlock()
@@ -250,6 +266,13 @@ func (s *Session) Events() <-chan ports.SessionEvent {
 
 // Close gracefully disconnects the MQTT session. It is safe to call
 // Close multiple times.
+//
+// Ordering invariant (do not reorder):
+//  1. Set s.closed = true under mutex — prevents pushEvent from sending.
+//  2. Call cm.Disconnect — may trigger OnConnectError, which calls
+//     pushEvent, but the s.closed guard returns early (safe re-entrancy).
+//  3. Close s.events channel — safe because step 1 guarantees no
+//     concurrent sender can reach the channel send.
 func (s *Session) Close(ctx context.Context) error {
 	s.mu.Lock()
 	if s.closed {
@@ -266,6 +289,15 @@ func (s *Session) Close(ctx context.Context) error {
 		disconnErr = cm.Disconnect(ctx)
 	}
 
+	done := make(chan struct{})
+	go func() { s.router.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		if s.logger != nil {
+			s.logger.Warn("Close: context expired while waiting for in-flight handlers")
+		}
+	}
 	close(s.events)
 
 	if disconnErr != nil {
@@ -276,17 +308,16 @@ func (s *Session) Close(ctx context.Context) error {
 
 func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.closed {
-		s.mu.Unlock()
 		return
 	}
-	s.mu.Unlock()
 
 	ev := ports.SessionEvent{Type: t, Err: err, Timestamp: time.Now()}
 	select {
 	case s.events <- ev:
 	default:
-		// Drop oldest if buffer is full, then push.
 		select {
 		case <-s.events:
 		default:
@@ -303,9 +334,11 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 // ---------------------------------------------------------------------------
 
 // router implements paho.Router, dispatching incoming publishes to all
-// registered handlers (one per Receiver on this Session).
+// registered handlers (one per Receiver on this Session). A WaitGroup
+// tracks in-flight handler goroutines so Session.Close can await them.
 type router struct {
 	mu       sync.RWMutex
+	wg       sync.WaitGroup
 	handlers map[string]func(*pahov5.Publish)
 }
 
@@ -314,16 +347,46 @@ func newRouter() *router {
 }
 
 // Route implements paho.Router. It converts packets.Publish to paho.Publish
-// and calls all registered handlers.
+// and dispatches to all registered handlers concurrently. Each handler
+// receives an independent copy of the Publish -- both the struct and the
+// Payload slice are copied so that handlers can safely inspect (but should
+// not mutate) the data without racing on shared backing arrays.
 func (r *router) Route(pb *packets.Publish) {
 	pub := pahov5.PublishFromPacketPublish(pb)
 	r.mu.RLock()
-	defer r.mu.RUnlock()
+	handlers := make([]func(*pahov5.Publish), 0, len(r.handlers))
 	for _, h := range r.handlers {
-		h(pub)
+		handlers = append(handlers, h)
+	}
+	r.mu.RUnlock()
+	r.wg.Add(len(handlers))
+	for _, h := range handlers {
+		p := *pub
+		if pub.Payload != nil {
+			p.Payload = make([]byte, len(pub.Payload))
+			copy(p.Payload, pub.Payload)
+		}
+		go func(handler func(*pahov5.Publish)) {
+			defer r.wg.Done()
+			defer func() {
+				if rv := recover(); rv != nil {
+					// Handler panicked; absorb to avoid crashing the process.
+					// wg.Done is still called via the outer defer.
+				}
+			}()
+			handler(&p)
+		}(h)
 	}
 }
 
+// Wait blocks until all in-flight handler goroutines have returned.
+func (r *router) Wait() { r.wg.Wait() }
+
+// Register adds a handler for the given ID. Handlers receive an
+// independent copy of the Publish struct and Payload per invocation.
+// The Properties pointer is still shared across goroutines; handlers
+// MUST NOT modify Properties fields. Violations cause data races
+// under concurrent dispatch.
 func (r *router) Register(id string, h func(*pahov5.Publish)) {
 	r.mu.Lock()
 	r.handlers[id] = h

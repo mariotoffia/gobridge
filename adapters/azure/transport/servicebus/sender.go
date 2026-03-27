@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
@@ -31,6 +32,7 @@ type Sender struct {
 	cfg       SenderConfig
 	client    asbSenderAPI
 	asbClient *azservicebus.Client
+	initMu    sync.Mutex
 }
 
 // NewSender creates a Service Bus Sender. The underlying AMQP connection
@@ -145,6 +147,9 @@ func (s *Sender) Close(ctx context.Context) error {
 }
 
 func (s *Sender) ensureClient(ctx context.Context) error {
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
+
 	if s.client != nil {
 		return nil
 	}

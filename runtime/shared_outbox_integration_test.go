@@ -16,18 +16,6 @@ import (
 // Helpers
 // ---------------------------------------------------------------------------
 
-func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if fn() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for: %s", desc)
-}
-
 func newTestRuntime(instanceID string, outbox *FakeOutboxStore, lease *FakeLeaseStore, dlq *FakeDLQStore) *goruntime.Runtime {
 	opts := []goruntime.Option{
 		goruntime.WithInstanceID(instanceID),
@@ -200,8 +188,8 @@ func TestSharedOutbox_ProcessorChainRuns(t *testing.T) {
 	if v, ok := sent[0].Headers["enriched"]; !ok || v != true {
 		t.Error("expected enriched header on sent envelope")
 	}
-	if enricher.Called != 1 {
-		t.Errorf("expected processor called once, got %d", enricher.Called)
+	if enricher.CalledCount() != 1 {
+		t.Errorf("expected processor called once, got %d", enricher.CalledCount())
 	}
 }
 
@@ -317,30 +305,10 @@ func TestSharedOutbox_ReservedHeadersStripped(t *testing.T) {
 // Helper extensions for thread-safe assertions
 // ---------------------------------------------------------------------------
 
-func (d *FakeDelivery) IsAcked() bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.Acked
-}
-
-func (d *FakeDelivery) IsRetried() bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.Retried
-}
-
 func (s *FakeSession) IsStarted() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.Started
-}
-
-func (s *FakeSender) GetSent() []*domain.Envelope {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cp := make([]*domain.Envelope, len(s.Sent))
-	copy(cp, s.Sent)
-	return cp
 }
 
 // TrackingSender wraps a FakeSender and records which session's sender

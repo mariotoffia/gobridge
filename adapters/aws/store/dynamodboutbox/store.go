@@ -18,7 +18,7 @@ import (
 const (
 	defaultTableName          = "gobridge-outbox"
 	defaultCompactionGrace    = 1 * time.Hour
-	defaultStaleClaimDuration = 5 * time.Minute
+	defaultStaleClaimDuration = 30 * time.Second
 
 	skPrefix = "OUTBOX#"
 )

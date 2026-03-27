@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
@@ -14,19 +16,24 @@ import (
 // them through the target sender. It validates fencing tokens to prevent
 // stale owners from sending after a lease transfer.
 type OutboxDrainer struct {
-	outboxStore  ports.OutboxStore
-	leaseStore   ports.LeaseStore
-	sender       ports.Sender
-	dlq          *DLQRouter
-	routeID      string
-	partitionKey string
-	leaseID      string
-	ownerID      string
-	policy       domain.RoutePolicy
-	strategy     domain.DrainStrategy
-	batchSize    int
-	metrics      ports.MetricsExporter
-	logger       *slog.Logger
+	outboxStore    ports.OutboxStore
+	leaseStore     ports.LeaseStore
+	sender         ports.Sender
+	dlq            *DLQRouter
+	routeID        string
+	partitionKey   string
+	leaseID        string
+	ownerID        string
+	policy         domain.RoutePolicy
+	strategy       domain.DrainStrategy
+	batchSize      int
+	maxBatchSize   int
+	maxConcurrency int
+	metrics        ports.MetricsExporter
+	logger         *slog.Logger
+
+	drainTimeout     time.Duration
+	currentBatchSize int
 
 	// tokenFn returns the current lease token and whether the caller
 	// still holds the lease. The OutboxDrainer only processes when
@@ -36,20 +43,23 @@ type OutboxDrainer struct {
 
 // OutboxDrainerConfig holds the configuration for an OutboxDrainer.
 type OutboxDrainerConfig struct {
-	OutboxStore  ports.OutboxStore
-	LeaseStore   ports.LeaseStore
-	Sender       ports.Sender
-	DLQ          *DLQRouter
-	RouteID      string
-	PartitionKey string
-	LeaseID      string
-	OwnerID      string
-	Policy       domain.RoutePolicy
-	Strategy     domain.DrainStrategy
-	BatchSize    int
-	Metrics      ports.MetricsExporter
-	Logger       *slog.Logger
-	TokenFn      func() (domain.LeaseToken, bool)
+	OutboxStore    ports.OutboxStore
+	LeaseStore     ports.LeaseStore
+	Sender         ports.Sender
+	DLQ            *DLQRouter
+	RouteID        string
+	PartitionKey   string
+	LeaseID        string
+	OwnerID        string
+	Policy         domain.RoutePolicy
+	Strategy            domain.DrainStrategy
+	DrainBatchSize      int
+	DrainMaxBatchSize   int
+	DrainMaxConcurrency int
+	DrainTimeout        time.Duration
+	Metrics        ports.MetricsExporter
+	Logger         *slog.Logger
+	TokenFn        func() (domain.LeaseToken, bool)
 }
 
 // NewOutboxDrainerFromConfig creates an OutboxDrainer from a config struct.
@@ -57,15 +67,35 @@ func NewOutboxDrainerFromConfig(cfg OutboxDrainerConfig) *OutboxDrainer {
 	return newOutboxDrainer(cfg)
 }
 
+const absoluteMaxBatchSize = 10000
+
 func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 	if cfg.Strategy == nil {
 		cfg.Strategy = domain.NewFixedPoll(domain.DefaultFixedPollInterval)
 	}
-	if cfg.BatchSize == 0 {
-		cfg.BatchSize = 100
+	if cfg.DrainBatchSize <= 0 {
+		cfg.DrainBatchSize = 100
+	}
+	if cfg.DrainBatchSize > absoluteMaxBatchSize {
+		cfg.DrainBatchSize = absoluteMaxBatchSize
+	}
+	if cfg.DrainMaxBatchSize <= 0 {
+		cfg.DrainMaxBatchSize = 500
+	}
+	if cfg.DrainMaxBatchSize > absoluteMaxBatchSize {
+		cfg.DrainMaxBatchSize = absoluteMaxBatchSize
+	}
+	if cfg.DrainMaxBatchSize < cfg.DrainBatchSize {
+		cfg.DrainMaxBatchSize = cfg.DrainBatchSize
+	}
+	if cfg.DrainMaxConcurrency <= 0 {
+		cfg.DrainMaxConcurrency = 10
 	}
 	if cfg.DLQ == nil {
 		cfg.DLQ = NewDLQRouter(nil)
+	}
+	if cfg.DrainTimeout <= 0 {
+		cfg.DrainTimeout = 10 * time.Second
 	}
 	if cfg.TokenFn == nil {
 		cfg.TokenFn = func() (domain.LeaseToken, bool) { return domain.LeaseToken{}, false }
@@ -79,20 +109,24 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 		m = &ports.NoopExporter{}
 	}
 	return &OutboxDrainer{
-		outboxStore:  cfg.OutboxStore,
-		leaseStore:   cfg.LeaseStore,
-		sender:       cfg.Sender,
-		dlq:          cfg.DLQ,
-		routeID:      cfg.RouteID,
-		partitionKey: cfg.PartitionKey,
-		leaseID:      leaseID,
-		ownerID:      cfg.OwnerID,
-		policy:       cfg.Policy,
-		strategy:     cfg.Strategy,
-		batchSize:    cfg.BatchSize,
-		metrics:      m,
-		logger:       cfg.Logger,
-		tokenFn:      cfg.TokenFn,
+		outboxStore:      cfg.OutboxStore,
+		leaseStore:       cfg.LeaseStore,
+		sender:           cfg.Sender,
+		dlq:              cfg.DLQ,
+		routeID:          cfg.RouteID,
+		partitionKey:     cfg.PartitionKey,
+		leaseID:          leaseID,
+		ownerID:          cfg.OwnerID,
+		policy:           cfg.Policy,
+		strategy:         cfg.Strategy,
+		batchSize:        cfg.DrainBatchSize,
+		maxBatchSize:     cfg.DrainMaxBatchSize,
+		maxConcurrency:   cfg.DrainMaxConcurrency,
+		drainTimeout:     cfg.DrainTimeout,
+		currentBatchSize: cfg.DrainBatchSize,
+		metrics:          m,
+		logger:           cfg.Logger,
+		tokenFn:          cfg.TokenFn,
 	}
 }
 
@@ -106,6 +140,9 @@ func (d *OutboxDrainer) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			if drainErr := d.finalDrain(); drainErr != nil {
+				d.log(ctx, slog.LevelWarn, "final drain error during shutdown", "error", drainErr)
+			}
 			return ctx.Err()
 		case <-timer.C:
 			token, hasLease := d.tokenFn()
@@ -116,14 +153,33 @@ func (d *OutboxDrainer) Run(ctx context.Context) error {
 			n, err := d.drainBatch(ctx, token)
 			if err != nil {
 				if errors.Is(err, domain.ErrStaleFencingToken) {
-					d.log(ctx, slog.LevelError, "stale fencing token, stopping drain")
-					return err
+					d.log(ctx, slog.LevelWarn, "stale fencing token, waiting for new lease")
+					timer.Reset(d.strategy.NextInterval(0))
+					continue
 				}
 				d.log(ctx, slog.LevelWarn, "drain batch error", "error", err)
 			}
+			d.adaptBatchSize(n)
 			timer.Reset(d.strategy.NextInterval(n))
 		}
 	}
+}
+
+// finalDrain performs one last drain batch after the Run context has been
+// cancelled. It intentionally uses context.Background() as the parent so
+// that the drain can complete during the shutdown grace period even though
+// the caller's context is already done. The Claim call and dispatch loop
+// are bounded by DrainTimeout (default 5s). In-flight sends are further
+// bounded by SendTimeout + 5s via the workCtx inside drainBatch.
+func (d *OutboxDrainer) finalDrain() error {
+	token, hasLease := d.tokenFn()
+	if !hasLease {
+		return nil
+	}
+	drainCtx, cancel := context.WithTimeout(context.Background(), d.drainTimeout)
+	defer cancel()
+	_, err := d.drainBatch(drainCtx, token)
+	return err
 }
 
 func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken) (int, error) {
@@ -131,17 +187,7 @@ func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken)
 	sessionTag := domain.Tag{Key: domain.TagKeySessionID, Value: d.partitionKey}
 	routeTag := domain.Tag{Key: domain.TagKeyRouteID, Value: d.routeID}
 
-	if d.leaseStore != nil {
-		info, err := d.leaseStore.Current(ctx, d.leaseID)
-		if err != nil {
-			return 0, err
-		}
-		if info.Version != token.Version || info.Owner != token.Owner {
-			return 0, domain.ErrStaleFencingToken
-		}
-	}
-
-	records, err := d.outboxStore.Claim(ctx, d.partitionKey, d.ownerID, token, d.batchSize)
+	records, err := d.outboxStore.Claim(ctx, d.partitionKey, d.ownerID, token, d.currentBatchSize)
 	if err != nil {
 		return 0, err
 	}
@@ -149,19 +195,93 @@ func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken)
 		return 0, nil
 	}
 
+	sem := make(chan struct{}, d.maxConcurrency)
+	var wg sync.WaitGroup
+	var successCount int64
+	var staleDetected atomic.Bool
+
+	// workCtx gives in-flight goroutines a bounded deadline to finish
+	// their send+complete operations even after the parent ctx is cancelled.
+	// The timeout is derived from SendTimeout (plus a buffer for Complete)
+	// so that the configured SendTimeout is not silently capped.
+	batchTimeout := d.policy.SendTimeout + 5*time.Second
+	if batchTimeout < d.drainTimeout {
+		batchTimeout = d.drainTimeout
+	}
+	workCtx, workCancel := context.WithTimeout(context.Background(), batchTimeout)
+
+	// batchCtx is cancelled when a stale fencing token is detected so
+	// that sibling goroutines abort quickly instead of continuing to
+	// send with an invalid token (preventing duplicate deliveries).
+	batchCtx, batchCancel := context.WithCancel(workCtx)
+
+loop:
 	for i := range records {
+		if ctx.Err() != nil || batchCtx.Err() != nil {
+			break
+		}
 		rec := &records[i]
 		if rec.ReplayCount > 1 {
 			d.metrics.Counter(domain.MetricOutboxReplayCount, 1, routeTag)
 		}
-		if err := d.processRecord(ctx, rec, token); err != nil {
-			d.log(ctx, slog.LevelWarn, "record processing failed",
-				"record_id", rec.ID, "error", err)
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			break loop
+		case <-batchCtx.Done():
+			break loop
 		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := d.processRecord(batchCtx, rec, token); err != nil {
+				if errors.Is(err, domain.ErrStaleFencingToken) {
+					staleDetected.Store(true)
+					batchCancel()
+				} else {
+					d.metrics.Counter(domain.MetricOutboxRecordFailures, 1, routeTag)
+				}
+				d.log(batchCtx, slog.LevelWarn, "record processing failed",
+					"record_id", rec.ID, "error", err)
+			} else {
+				atomic.AddInt64(&successCount, 1)
+			}
+		}()
 	}
+	wg.Wait()
+	batchCancel()
+	workCancel()
 
 	d.metrics.Timer(domain.MetricOutboxDrainLatency, time.Since(start), sessionTag)
-	return len(records), nil
+
+	if staleDetected.Load() {
+		return int(atomic.LoadInt64(&successCount)), domain.ErrStaleFencingToken
+	}
+	return int(atomic.LoadInt64(&successCount)), nil
+}
+
+// adaptBatchSize adjusts currentBatchSize based on throughput.
+// Called only from the Run loop goroutine — not concurrent.
+//
+// Scale-up: when a full batch is drained, double (capped at maxBatchSize).
+// Scale-down: on each zero-success cycle, halve currentBatchSize
+// (floored at the initial batchSize). This progressively shrinks the
+// batch from any previously scaled-up value down to the floor.
+func (d *OutboxDrainer) adaptBatchSize(drained int) {
+	if drained >= d.currentBatchSize {
+		next := d.currentBatchSize * 2
+		if next > d.maxBatchSize {
+			next = d.maxBatchSize
+		}
+		d.currentBatchSize = next
+	} else if drained == 0 {
+		next := d.currentBatchSize / 2
+		if next < d.batchSize {
+			next = d.batchSize
+		}
+		d.currentBatchSize = next
+	}
 }
 
 func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRecord, token domain.LeaseToken) error {
@@ -184,10 +304,16 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRec
 		env.Headers = domain.MergeHeaders(env.Headers, rec.DispatchHeaders, true)
 	}
 
-	sendErr := d.sender.Send(ctx, env)
+	sendCtx, sendCancel := context.WithTimeout(ctx, d.policy.SendTimeout)
+	defer sendCancel()
+
+	sendErr := d.sender.Send(sendCtx, env)
 	if sendErr == nil {
+		if completeErr := d.outboxStore.Complete(ctx, []string{rec.ID}, token); completeErr != nil {
+			return completeErr
+		}
 		d.metrics.Counter(domain.MetricOutboxCompletions, 1, routeTag)
-		return d.outboxStore.Complete(ctx, []string{rec.ID}, token)
+		return nil
 	}
 
 	be, ok := domain.AsBridgeError(sendErr)
@@ -200,8 +326,13 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRec
 		return d.outboxStore.Complete(ctx, []string{rec.ID}, token)
 	}
 
-	d.log(ctx, slog.LevelWarn, "transient send failure, will retry on next drain",
-		"record_id", rec.ID, "error", sendErr)
+	if ctx.Err() != nil {
+		d.log(ctx, slog.LevelDebug, "send aborted due to context cancellation",
+			"record_id", rec.ID, "error", sendErr)
+	} else {
+		d.log(ctx, slog.LevelWarn, "transient send failure, will retry on next drain",
+			"record_id", rec.ID, "error", sendErr)
+	}
 	return nil
 }
 

@@ -8,7 +8,8 @@ import (
 
 // ValidationError collects multiple validation problems.
 type ValidationError struct {
-	Errors []string
+	Errors   []string
+	Warnings []string
 }
 
 func (e *ValidationError) Error() string {
@@ -27,10 +28,37 @@ func (e *ValidationError) hasErrors() bool {
 	return len(e.Errors) > 0
 }
 
+func (e *ValidationError) warn(msg string) {
+	e.Warnings = append(e.Warnings, msg)
+}
+
+func (e *ValidationError) warnf(format string, args ...any) {
+	e.Warnings = append(e.Warnings, fmt.Sprintf(format, args...))
+}
+
 // Validate performs structural validation on a BridgeConfig. It checks
 // required fields, referential integrity between IDs, and valid enum
 // values. It does not check transport-specific options.
 func Validate(cfg *BridgeConfig) error {
+	ve := validate(cfg)
+	if ve.hasErrors() {
+		return ve
+	}
+	return nil
+}
+
+// ValidateWithWarnings performs Validate and returns any non-fatal
+// warnings (e.g. direct_hold fencing advisory) even when validation
+// passes. The caller should log warnings but not treat them as errors.
+func ValidateWithWarnings(cfg *BridgeConfig) (warnings []string, err error) {
+	ve := validate(cfg)
+	if ve.hasErrors() {
+		return ve.Warnings, ve
+	}
+	return ve.Warnings, nil
+}
+
+func validate(cfg *BridgeConfig) *ValidationError {
 	ve := &ValidationError{}
 
 	if cfg.Bridge.ID == "" {
@@ -126,6 +154,11 @@ func Validate(cfg *BridgeConfig) error {
 			validateEnum(ve, fmt.Sprintf("routes[%d].delivery_mode", i), r.DeliveryMode,
 				"direct_hold", "shared_outbox")
 		}
+		if r.DeliveryMode == "direct_hold" || r.DeliveryMode == "" {
+			ve.warnf("routes[%d] (%s): direct_hold mode provides no inter-instance fencing; "+
+				"multiple instances will send independently — destination must handle duplicates idempotently",
+				i, r.ID)
+		}
 		if r.DispatchMode != "" {
 			validateEnum(ve, fmt.Sprintf("routes[%d].dispatch_mode", i), r.DispatchMode,
 				"single", "fan_out")
@@ -173,8 +206,7 @@ func Validate(cfg *BridgeConfig) error {
 				ve.addf("routes[%d] (%s): shared_outbox requires stores.outbox to be configured", i, r.ID)
 			}
 			if r.Session != nil {
-				sessDef, hasSess := sessionIDs[r.Session.SessionID]
-				_ = sessDef
+				_, hasSess := sessionIDs[r.Session.SessionID]
 				if hasSess {
 					for si, s := range cfg.Sessions {
 						if s.ID == r.Session.SessionID && s.SessionMode == "exclusive" {
@@ -192,10 +224,69 @@ func Validate(cfg *BridgeConfig) error {
 		return r.ID, fmt.Sprintf("routes[%d]", i)
 	})
 
-	if ve.hasErrors() {
-		return ve
+	if cfg.Bridge.DeploymentMode == "clustered" {
+		validateClusteredMQTTSubscriptions(ve, cfg)
 	}
-	return nil
+
+	validateStaleClaimDuration(ve, cfg)
+
+	return ve
+}
+
+// validateClusteredMQTTSubscriptions checks that MQTT receivers in clustered
+// mode use either an exclusive session (lease-based single subscriber) or
+// $share/ topic prefixes (MQTT v5 shared subscriptions) to prevent N-fold
+// message duplication across instances.
+func validateClusteredMQTTSubscriptions(ve *ValidationError, cfg *BridgeConfig) {
+	sessionsByID := make(map[string]SessionDef, len(cfg.Sessions))
+	for _, s := range cfg.Sessions {
+		sessionsByID[s.ID] = s
+	}
+
+	for i, r := range cfg.Receivers {
+		transport := r.Transport
+		var sessionMode string
+
+		if r.SessionID != "" {
+			if s, ok := sessionsByID[r.SessionID]; ok {
+				if transport == "" {
+					transport = s.Transport
+				}
+				sessionMode = s.SessionMode
+			}
+		}
+
+		if !strings.EqualFold(transport, "mqtt") {
+			continue
+		}
+
+		if sessionMode == "exclusive" {
+			continue
+		}
+
+		prefix := fmt.Sprintf("receivers[%d] (%s)", i, r.ID)
+		for j, topic := range r.Topics {
+			if !isSharedTopic(topic.Topic) {
+				ve.addf("%s: topics[%d]: clustered MQTT receiver requires $share/ topic prefix "+
+					"or exclusive session to prevent N-fold message duplication; got %q",
+					prefix, j, topic.Topic)
+			} else if !isValidSharedTopic(topic.Topic) {
+				ve.addf("%s: topics[%d]: malformed $share/ topic %q: "+
+					"must be $share/<group>/<topic> with non-empty group and topic",
+					prefix, j, topic.Topic)
+			}
+		}
+	}
+}
+
+func isSharedTopic(topic string) bool {
+	return strings.HasPrefix(topic, "$share/")
+}
+
+func isValidSharedTopic(topic string) bool {
+	rest := topic[len("$share/"):]
+	slashIdx := strings.Index(rest, "/")
+	return slashIdx > 0 && slashIdx < len(rest)-1
 }
 
 func collectIDs(ve *ValidationError, section string, n int, fn func(i int) (id, label string)) map[string]struct{} {
@@ -221,6 +312,61 @@ func validateEnum(ve *ValidationError, field, value string, allowed ...string) {
 		}
 	}
 	ve.addf("%s: invalid value %q, must be one of: %s", field, value, strings.Join(allowed, ", "))
+}
+
+// validateStaleClaimDuration warns when the outbox store's
+// stale_claim_duration is explicitly set to a value much larger than the
+// session step-down grace periods. A staleClaimAge that exceeds 2x the
+// maximum StepDownGrace delays failover recovery without preventing
+// duplicate sends.
+func validateStaleClaimDuration(ve *ValidationError, cfg *BridgeConfig) {
+	if cfg.Stores.Outbox == nil || cfg.Stores.Outbox.Options == nil {
+		return
+	}
+	raw, ok := cfg.Stores.Outbox.Options["stale_claim_duration"]
+	if !ok {
+		return
+	}
+
+	var stale time.Duration
+	switch v := raw.(type) {
+	case string:
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			ve.addf("stores.outbox.options.stale_claim_duration: invalid duration %q: %v", v, err)
+			return
+		}
+		stale = d
+	case time.Duration:
+		stale = v
+	default:
+		return
+	}
+
+	var maxGrace time.Duration
+	for _, r := range cfg.Routes {
+		if r.Session == nil || r.Session.StepDownGrace == "" {
+			continue
+		}
+		d, err := time.ParseDuration(r.Session.StepDownGrace)
+		if err != nil {
+			continue
+		}
+		if d > maxGrace {
+			maxGrace = d
+		}
+	}
+	if maxGrace == 0 {
+		maxGrace = 15 * time.Second
+	}
+
+	if stale > 2*maxGrace {
+		ve.warnf("stores.outbox.options.stale_claim_duration (%s) is more than 2x "+
+			"the maximum step_down_grace (%s); this delays failover recovery "+
+			"without reducing duplicate sends — consider a value closer to "+
+			"step_down_grace + 15s (%s)",
+			stale, maxGrace, maxGrace+15*time.Second)
+	}
 }
 
 func validateDrainStrategy(ve *ValidationError, prefix string, sess *RouteSessionDef) {

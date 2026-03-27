@@ -2,6 +2,7 @@ package awsstore
 
 import (
 	"context"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
@@ -43,6 +44,9 @@ func (f *DynamoDBStoreFactory) NewOutboxStore(_ context.Context, cfg config.Stor
 	var opts []dynamodboutbox.Option
 	if name, ok := cfg.Options["table_name"].(string); ok {
 		opts = append(opts, dynamodboutbox.WithTableName(name))
+	}
+	if d, ok := cfg.Options["stale_claim_duration"].(time.Duration); ok {
+		opts = append(opts, dynamodboutbox.WithStaleClaimDuration(d))
 	}
 	return dynamodboutbox.NewStore(f.client, opts...), nil
 }

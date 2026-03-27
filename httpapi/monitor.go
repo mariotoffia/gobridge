@@ -4,6 +4,15 @@ import (
 	"net/http"
 )
 
+// MonitorMux returns a ServeMux wired with monitor routes. It is intended
+// for tests and ad-hoc mounting; production servers use Start, which applies
+// middleware around the same route registration.
+func (s *Server) MonitorMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	s.registerMonitorRoutes(mux)
+	return mux
+}
+
 func (s *Server) registerMonitorRoutes(mux *http.ServeMux) {
 	const prefix = "/api/v1/monitor"
 
@@ -40,11 +49,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"routes":      len(s.rt.Routes()),
 	}
 	if compErrs := s.rt.ComponentErrors(); len(compErrs) > 0 {
-		errMap := make(map[string]string, len(compErrs))
-		for k, v := range compErrs {
-			errMap[k] = v.Error()
-		}
-		resp["component_errors"] = errMap
+		resp["failed_components"] = len(compErrs)
 	}
 	writeJSON(w, httpStatus, resp)
 }
@@ -66,7 +71,10 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "not ready")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ready",
+		"role":   s.rt.Role(),
+	})
 }
 
 // --- Authenticated sensitive endpoints ---

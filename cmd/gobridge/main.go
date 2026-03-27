@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/httpapi"
+	goruntime "github.com/mariotoffia/gobridge/runtime"
 
 	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
@@ -50,10 +53,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	builder := bridge.NewBuilder(cfg, bridge.WithLogger(logger))
+	sup := bridge.NewSupervisor(
+		bridge.WithSupervisorLogger(logger),
+		bridge.WithReconfigStrategy(bridge.NewWindowedStrategy(10*time.Second, 30*time.Second)),
+		bridge.WithOnSwap(func(ev bridge.SwapEvent) {
+			if ev.Error != nil {
+				logger.Error("reconfiguration failed",
+					"swap_mode", ev.SwapMode, "error", ev.Error, "duration", ev.Duration)
+			} else {
+				logger.Info("reconfiguration applied",
+					"swap_mode", ev.SwapMode, "duration", ev.Duration)
+			}
+		}),
+	)
 
-	builder.RegisterTransport("mqtt", paho.NewBridgeFactory(logger))
-	builder.RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory())
+	sup.RegisterTransport("mqtt", paho.NewBridgeFactory(logger))
+	sup.RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory())
 
 	// AWS adapters require an AWS SDK client. Uncomment and configure
 	// when deploying with AWS backing services:
@@ -65,12 +80,26 @@ func main() {
 	//
 	//   awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
 	//   ddbClient := dynamodb.NewFromConfig(awsCfg)
-	//   builder.RegisterTransport("sqs", sqs.NewBridgeFactory(logger))
-	//   builder.RegisterStoreFactory("dynamodb", awsstore.NewDynamoDBStoreFactory(ddbClient))
+	//   sup.RegisterTransport("sqs", sqs.NewBridgeFactory(logger))
+	//   sup.RegisterStoreFactory("dynamodb", awsstore.NewDynamoDBStoreFactory(ddbClient))
 
-	rt, err := builder.Build(ctx)
+	watchCh, err := mgr.Watch(ctx)
 	if err != nil {
-		logger.Error("failed to build runtime", "error", err)
+		logger.Error("failed to start config watcher", "error", err)
+		os.Exit(1)
+	}
+	defer mgr.Stop()
+
+	supDone := make(chan error, 1)
+	go func() {
+		supDone <- sup.Run(ctx, cfg, watchCh)
+	}()
+
+	// Wait for the supervisor to build and start the initial runtime.
+	rt := waitForSupervisorRuntime(sup, 10*time.Second)
+	if rt == nil {
+		logger.Error("supervisor did not produce a runtime within timeout")
+		cancel()
 		os.Exit(1)
 	}
 
@@ -101,16 +130,19 @@ func main() {
 		logger.Info("HTTP servers started", "admin", apiCfg.AdminAddr, "monitor", apiCfg.MonitorAddr)
 	}
 
-	if err := rt.Start(ctx); err != nil {
-		logger.Error("failed to start runtime", "error", err)
-		os.Exit(1)
-	}
 	logger.Info("bridge started", "instance_id", rt.InstanceID())
 
 	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	received := <-sig
-	logger.Info("shutdown signal received", "signal", received.String())
+
+	select {
+	case received := <-sig:
+		logger.Info("shutdown signal received", "signal", received.String())
+	case err := <-supDone:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("supervisor exited unexpectedly", "error", err)
+		}
+	}
 
 	cancel()
 
@@ -123,10 +155,27 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Bridge.ShutdownTimeoutDuration())
 	defer shutdownCancel()
 
-	if err := rt.Stop(shutdownCtx); err != nil {
-		logger.Error("runtime shutdown error", "error", err)
+	select {
+	case err := <-supDone:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("supervisor shutdown error", "error", err)
+		}
+	case <-shutdownCtx.Done():
+		logger.Error("supervisor shutdown timed out")
 	}
+
 	logger.Info("bridge stopped")
+}
+
+func waitForSupervisorRuntime(sup *bridge.Supervisor, timeout time.Duration) *goruntime.Runtime {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if rt := sup.Runtime(); rt != nil {
+			return rt
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return nil
 }
 
 func newLogger(level string) *slog.Logger {
@@ -143,4 +192,3 @@ func newLogger(level string) *slog.Logger {
 	}
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
 }
-

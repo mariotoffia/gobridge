@@ -1,0 +1,287 @@
+package bridge
+
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/domain"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// directHoldConfig returns a minimal config with a direct_hold route.
+func directHoldConfig() *config.BridgeConfig {
+	return &config.BridgeConfig{
+		Bridge: config.BridgeSettings{ID: "b1"},
+		Receivers: []config.ReceiverDef{
+			{ID: "rx1", Transport: "sqs"},
+		},
+		Senders: []config.SenderDef{
+			{ID: "tx1", Transport: "sqs"},
+		},
+		Bindings: []config.BindingDef{
+			{ID: "b1", SenderID: "tx1", Address: "queue://out"},
+		},
+		Routes: []config.RouteDef{
+			{
+				ID:           "r1",
+				ReceiverID:   "rx1",
+				DeliveryMode: "direct_hold",
+				Bindings:     []string{"b1"},
+			},
+		},
+	}
+}
+
+// buildWith creates a builder from cfg, registers fakeTransportFactory for
+// each named transport, and registers fakeStoreFactory for "memory".
+func buildWith(cfg *config.BridgeConfig, transports ...string) *Builder {
+	b := NewBuilder(cfg)
+	for _, t := range transports {
+		b.RegisterTransport(t, &fakeTransportFactory{})
+	}
+	b.RegisterStoreFactory("memory", &fakeStoreFactory{})
+	return b
+}
+
+// ---------------------------------------------------------------------------
+// Equivalence: Prepare+Complete == Build
+// ---------------------------------------------------------------------------
+
+// TestBuilder_PrepareComplete_EquivalentToBuild validates that the two-phase
+// Prepare+Complete path produces runtime routes identical to the single Build.
+func TestBuilder_PrepareComplete_EquivalentToBuild(t *testing.T) {
+	cfg := supervisorTestConfig("r1")
+	ctx := context.Background()
+
+	rtBuild, err := NewBuilder(cfg).
+		RegisterTransport("fake", &fakeTransportFactory{}).
+		Build(ctx)
+	require.NoError(t, err)
+
+	cfg2 := supervisorTestConfig("r1")
+	builder := NewBuilder(cfg2).
+		RegisterTransport("fake", &fakeTransportFactory{})
+
+	prep, err := builder.Prepare(ctx)
+	require.NoError(t, err)
+
+	rtPC, err := builder.Complete(ctx, prep)
+	require.NoError(t, err)
+
+	buildRoutes := rtBuild.Routes()
+	pcRoutes := rtPC.Routes()
+	require.Len(t, pcRoutes, len(buildRoutes))
+
+	for i := range buildRoutes {
+		assert.Equal(t, buildRoutes[i].ID, pcRoutes[i].ID)
+		assert.Equal(t, buildRoutes[i].DeliveryMode, pcRoutes[i].DeliveryMode)
+		assert.Equal(t, buildRoutes[i].DispatchMode, pcRoutes[i].DispatchMode)
+	}
+}
+
+// TestBuilder_PrepareComplete_DirectHold validates that a direct_hold route
+// yields identical runtime routes whether built via Build or Prepare+Complete.
+func TestBuilder_PrepareComplete_DirectHold(t *testing.T) {
+	ctx := context.Background()
+
+	rtBuild, err := buildWith(directHoldConfig(), "sqs").Build(ctx)
+	require.NoError(t, err)
+
+	cfg2 := directHoldConfig()
+	builder := buildWith(cfg2, "sqs")
+
+	prep, err := builder.Prepare(ctx)
+	require.NoError(t, err)
+
+	rtPC, err := builder.Complete(ctx, prep)
+	require.NoError(t, err)
+
+	buildRoutes := rtBuild.Routes()
+	pcRoutes := rtPC.Routes()
+	require.Len(t, pcRoutes, len(buildRoutes))
+	assert.Equal(t, domain.DeliveryDirectHold, pcRoutes[0].DeliveryMode)
+	assert.Equal(t, buildRoutes[0].ID, pcRoutes[0].ID)
+}
+
+// TestBuilder_PrepareComplete_SharedOutbox validates that a shared_outbox
+// route with a session produces identical runtime routes via both paths.
+func TestBuilder_PrepareComplete_SharedOutbox(t *testing.T) {
+	ctx := context.Background()
+
+	rtBuild, err := NewBuilder(testConfig()).
+		RegisterTransport("mqtt", &fakeTransportFactory{}).
+		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterStoreFactory("memory", &fakeStoreFactory{}).
+		Build(ctx)
+	require.NoError(t, err)
+
+	cfg2 := testConfig()
+	builder := NewBuilder(cfg2).
+		RegisterTransport("mqtt", &fakeTransportFactory{}).
+		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterStoreFactory("memory", &fakeStoreFactory{})
+
+	prep, err := builder.Prepare(ctx)
+	require.NoError(t, err)
+
+	rtPC, err := builder.Complete(ctx, prep)
+	require.NoError(t, err)
+
+	buildRoutes := rtBuild.Routes()
+	pcRoutes := rtPC.Routes()
+	require.Len(t, pcRoutes, len(buildRoutes))
+	assert.Equal(t, domain.DeliverySharedOutbox, pcRoutes[0].DeliveryMode)
+	assert.Equal(t, buildRoutes[0].ID, pcRoutes[0].ID)
+}
+
+// ---------------------------------------------------------------------------
+// Prepare phase
+// ---------------------------------------------------------------------------
+
+// TestBuilder_PrepareFailsOnInvalidConfig validates that Prepare rejects
+// an empty BridgeConfig due to missing bridge.id.
+func TestBuilder_PrepareFailsOnInvalidConfig(t *testing.T) {
+	_, err := NewBuilder(&config.BridgeConfig{}).Prepare(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config validation")
+}
+
+// TestBuilder_PrepareFailsOnMissingStoreFactory validates that Prepare
+// fails when the config references a store type with no registered factory.
+func TestBuilder_PrepareFailsOnMissingStoreFactory(t *testing.T) {
+	cfg := &config.BridgeConfig{
+		Bridge: config.BridgeSettings{ID: "b1"},
+		Stores: config.StoresConfig{
+			Lease: &config.StoreConfig{Type: "dynamodb"},
+		},
+	}
+
+	_, err := NewBuilder(cfg).Prepare(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no store factory")
+	assert.Contains(t, err.Error(), "dynamodb")
+}
+
+// TestBuilder_PrepareBuildsStores validates that Prepare succeeds and
+// returns a non-nil PreparedBuild when all stores are valid.
+func TestBuilder_PrepareBuildsStores(t *testing.T) {
+	cfg := testConfig()
+
+	prep, err := NewBuilder(cfg).
+		RegisterTransport("mqtt", &fakeTransportFactory{}).
+		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterStoreFactory("memory", &fakeStoreFactory{}).
+		Prepare(context.Background())
+
+	require.NoError(t, err)
+	require.NotNil(t, prep)
+}
+
+// TestBuilder_PrepareDoesNotCallTransportFactory validates that Prepare
+// never invokes NewSession, NewReceiver, or NewSender on the transport.
+func TestBuilder_PrepareDoesNotCallTransportFactory(t *testing.T) {
+	cfg := supervisorTestConfig("r1")
+	ct := &countingTransportFactory{}
+
+	prep, err := NewBuilder(cfg).
+		RegisterTransport("fake", ct).
+		Prepare(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, prep)
+
+	sessions, receivers, senders := ct.Counts()
+
+	t.Run("NewSession not called", func(t *testing.T) {
+		assert.Equal(t, 0, sessions, "Prepare must not call NewSession")
+	})
+	t.Run("NewReceiver not called", func(t *testing.T) {
+		assert.Equal(t, 0, receivers, "Prepare must not call NewReceiver")
+	})
+	t.Run("NewSender not called", func(t *testing.T) {
+		assert.Equal(t, 0, senders, "Prepare must not call NewSender")
+	})
+}
+
+// TestBuilder_Prepare_ClusteredNonDistributedStore_Rejected validates that
+// clustered deployment mode is rejected when the store factory is local-only.
+func TestBuilder_Prepare_ClusteredNonDistributedStore_Rejected(t *testing.T) {
+	cfg := testConfig()
+	cfg.Bridge.DeploymentMode = "clustered"
+
+	_, err := NewBuilder(cfg).
+		RegisterTransport("mqtt", &fakeTransportFactory{}).
+		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterStoreFactory("memory", &fakeStoreFactory{}).
+		Prepare(context.Background())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "clustered deployment requires a distributed")
+}
+
+// ---------------------------------------------------------------------------
+// Complete phase
+// ---------------------------------------------------------------------------
+
+// TestBuilder_CompleteCreatesSessionsAndRoutes validates that Complete invokes
+// NewSession, NewReceiver, and NewSender, and the resulting runtime has routes.
+func TestBuilder_CompleteCreatesSessionsAndRoutes(t *testing.T) {
+	cfg := supervisorTestConfig("r1")
+	ctx := context.Background()
+	ct := &countingTransportFactory{}
+
+	builder := NewBuilder(cfg).RegisterTransport("fake", ct)
+
+	prep, err := builder.Prepare(ctx)
+	require.NoError(t, err)
+
+	sessions, receivers, senders := ct.Counts()
+	require.Equal(t, 0, sessions+receivers+senders, "Prepare must not call transport")
+
+	rt, err := builder.Complete(ctx, prep)
+	require.NoError(t, err)
+	require.NotNil(t, rt)
+
+	sessions, receivers, senders = ct.Counts()
+	assert.Greater(t, receivers, 0, "Complete must call NewReceiver")
+	assert.Greater(t, senders, 0, "Complete must call NewSender")
+
+	routes := rt.Routes()
+	require.Len(t, routes, 1)
+	assert.Equal(t, "r1", routes[0].ID)
+}
+
+// TestBuilder_CompleteFailsOnSessionCreationError validates that Complete
+// surfaces transport session creation errors.
+func TestBuilder_CompleteFailsOnSessionCreationError(t *testing.T) {
+	cfg := testConfig()
+	ctx := context.Background()
+
+	ft := &failingTransportFactory{sessionErr: fmt.Errorf("connection refused")}
+
+	builder := NewBuilder(cfg).
+		RegisterTransport("mqtt", ft).
+		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterStoreFactory("memory", &fakeStoreFactory{})
+
+	prep, err := builder.Prepare(ctx)
+	require.NoError(t, err, "Prepare should succeed — no sessions created yet")
+
+	_, err = builder.Complete(ctx, prep)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "connection refused")
+}
+
+// TestBuilder_CompleteNilPrepared validates that Complete returns a clear
+// error when called with a nil PreparedBuild.
+func TestBuilder_CompleteNilPrepared(t *testing.T) {
+	builder := NewBuilder(supervisorTestConfig("r1")).
+		RegisterTransport("fake", &fakeTransportFactory{})
+
+	_, err := builder.Complete(context.Background(), nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nil PreparedBuild")
+}

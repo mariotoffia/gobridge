@@ -15,18 +15,20 @@ import (
 var _ ports.Delivery = (*asbDelivery)(nil)
 
 type asbDelivery struct {
-	env    *domain.Envelope
-	client asbAPI
-	msg    *azservicebus.ReceivedMessage
-	logger *slog.Logger
-	cancel context.CancelFunc
-	once   sync.Once
+	env       *domain.Envelope
+	client    asbAPI
+	scheduler retryScheduler
+	msg       *azservicebus.ReceivedMessage
+	logger    *slog.Logger
+	cancel    context.CancelFunc
+	once      sync.Once
 }
 
 func newDelivery(
 	parentCtx context.Context,
 	env *domain.Envelope,
 	client asbAPI,
+	scheduler retryScheduler,
 	msg *azservicebus.ReceivedMessage,
 	lockDuration time.Duration,
 	autoExtend bool,
@@ -35,11 +37,12 @@ func newDelivery(
 	ctx, cancel := context.WithCancel(parentCtx)
 
 	d := &asbDelivery{
-		env:    env,
-		client: client,
-		msg:    msg,
-		logger: logger,
-		cancel: cancel,
+		env:       env,
+		client:    client,
+		scheduler: scheduler,
+		msg:       msg,
+		logger:    logger,
+		cancel:    cancel,
 	}
 
 	if autoExtend && lockDuration > 0 {
@@ -71,8 +74,63 @@ func (d *asbDelivery) Ack(ctx context.Context) error {
 	return nil
 }
 
-func (d *asbDelivery) Retry(ctx context.Context, _ time.Duration, _ error) error {
+func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) error {
 	d.stop()
+
+	if after > 0 && d.scheduler == nil && d.logger != nil {
+		d.logger.Error("servicebus: Retry delay requested but no scheduler available, falling back to immediate abandon",
+			"message_id", d.msg.MessageID,
+			"requested_delay", after,
+		)
+	}
+
+	if after > 0 && d.scheduler != nil {
+		newMsg := &azservicebus.Message{
+			Body:    d.msg.Body,
+			Subject: d.msg.Subject,
+		}
+		if d.msg.MessageID != "" {
+			newMsg.MessageID = &d.msg.MessageID
+		}
+		if d.msg.SessionID != nil {
+			newMsg.SessionID = d.msg.SessionID
+		}
+		if d.msg.ContentType != nil {
+			newMsg.ContentType = d.msg.ContentType
+		}
+		if d.msg.CorrelationID != nil {
+			newMsg.CorrelationID = d.msg.CorrelationID
+		}
+		if len(d.msg.ApplicationProperties) > 0 {
+			newMsg.ApplicationProperties = d.msg.ApplicationProperties
+		}
+		if d.msg.ReplyTo != nil {
+			newMsg.ReplyTo = d.msg.ReplyTo
+		}
+		if d.msg.To != nil {
+			newMsg.To = d.msg.To
+		}
+		if d.msg.TimeToLive != nil {
+			newMsg.TimeToLive = d.msg.TimeToLive
+		}
+
+		enqueueAt := time.Now().Add(after)
+		seqNums, err := d.scheduler.ScheduleMessages(ctx, []*azservicebus.Message{newMsg}, enqueueAt, nil)
+		if err != nil {
+			return MapError(err)
+		}
+
+		if err := d.client.CompleteMessage(ctx, d.msg, nil); err != nil {
+			if cancelErr := d.scheduler.CancelScheduledMessages(ctx, seqNums, nil); cancelErr != nil && d.logger != nil {
+				d.logger.Error("servicebus: failed to cancel scheduled message after CompleteMessage failure",
+					"message_id", d.msg.MessageID,
+					"error", cancelErr,
+				)
+			}
+			return MapError(err)
+		}
+		return nil
+	}
 
 	if err := d.client.AbandonMessage(ctx, d.msg, nil); err != nil {
 		return MapError(err)
@@ -80,6 +138,10 @@ func (d *asbDelivery) Retry(ctx context.Context, _ time.Duration, _ error) error
 	return nil
 }
 
+// Extend renews the message lock using the broker's configured LockDuration.
+// The until parameter is ignored because Azure Service Bus lock renewals
+// always reset to the entity's configured lock duration; precise time-based
+// extension is not supported by the SDK.
 func (d *asbDelivery) Extend(ctx context.Context, _ time.Time) error {
 	if err := d.client.RenewMessageLock(ctx, d.msg, nil); err != nil {
 		return MapError(err)
@@ -95,9 +157,16 @@ func (d *asbDelivery) stop() {
 	})
 }
 
+const autoExtendMaxFailures = 3
+
+// autoExtendLoop renews the message lock at the given interval until
+// the context is cancelled. Tolerates up to autoExtendMaxFailures
+// consecutive transient errors before giving up.
 func (d *asbDelivery) autoExtendLoop(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	consecutiveFailures := 0
 
 	for {
 		select {
@@ -108,14 +177,20 @@ func (d *asbDelivery) autoExtendLoop(ctx context.Context, interval time.Duration
 				if ctx.Err() != nil {
 					return
 				}
+				consecutiveFailures++
 				if d.logger != nil {
 					d.logger.Warn("servicebus: auto-extend lock failed",
 						"message_id", d.msg.MessageID,
 						"error", err,
+						"consecutive_failures", consecutiveFailures,
 					)
 				}
-				return
+				if consecutiveFailures >= autoExtendMaxFailures {
+					return
+				}
+				continue
 			}
+			consecutiveFailures = 0
 		}
 	}
 }

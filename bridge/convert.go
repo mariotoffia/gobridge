@@ -50,6 +50,14 @@ func toSessionConfig(rs *config.RouteSessionDef) *runtime.SessionConfig {
 			sc.RenewInterval = d
 		}
 	}
+	if rs.MaxRenewFails > 0 {
+		sc.MaxRenewFails = rs.MaxRenewFails
+	}
+	if rs.StepDownGrace != "" {
+		if d, err := time.ParseDuration(rs.StepDownGrace); err == nil {
+			sc.StepDownGrace = d
+		}
+	}
 	sc.DrainStrategy = toDrainStrategy(rs)
 	if rs.DrainBatchSize > 0 {
 		sc.DrainBatchSize = rs.DrainBatchSize

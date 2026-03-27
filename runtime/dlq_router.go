@@ -18,6 +18,11 @@ func NewDLQRouter(store ports.DLQStore) *DLQRouter {
 	return &DLQRouter{store: store}
 }
 
+// HasStore returns true if a DLQ store is configured.
+func (r *DLQRouter) HasStore() bool {
+	return r.store != nil
+}
+
 // Route sends a failed envelope to the DLQ.
 func (r *DLQRouter) Route(
 	ctx context.Context,

@@ -20,8 +20,8 @@ func TestRuntime_StartStop(t *testing.T) {
 	sender := NewFakeSender()
 
 	cfg := goruntime.RouteConfig{
-		ID:     "route-1",
-		Policy: domain.RoutePolicy{}.WithDefaults(),
+		ID:                 "route-1",
+		Policy:             domain.RoutePolicy{}.WithDefaults(),
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 
@@ -101,12 +101,14 @@ func TestRuntime_DirectHoldEndToEnd(t *testing.T) {
 	env := &domain.Envelope{ID: "e2e-msg", Payload: []byte("hello")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "e2e send and ack", func() bool {
+		return del.IsAcked() && sender.SentCount() == 1
+	})
 
 	if sender.SentCount() != 1 {
 		t.Fatalf("expected 1 sent, got %d", sender.SentCount())
 	}
-	if !del.Acked {
+	if !del.IsAcked() {
 		t.Fatal("delivery should be acked")
 	}
 
@@ -151,12 +153,14 @@ func TestRuntime_Inject_HappyPath(t *testing.T) {
 		t.Fatalf("Inject failed: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "inject processed and sent", func() bool {
+		return sender.SentCount() == 1
+	})
 
 	if sender.SentCount() != 1 {
 		t.Fatalf("expected 1 sent message from injection, got %d", sender.SentCount())
 	}
-	sent := sender.Sent[0]
+	sent := sender.GetSent()[0]
 	if string(sent.Payload) != `{"injected":true}` {
 		t.Fatalf("unexpected payload: %s", sent.Payload)
 	}
@@ -220,12 +224,14 @@ func TestRuntime_Inject_AssignsIDWhenEmpty(t *testing.T) {
 		t.Fatalf("Inject failed: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "inject with auto ID sent", func() bool {
+		return sender.SentCount() == 1
+	})
 
 	if sender.SentCount() != 1 {
 		t.Fatalf("expected 1 sent, got %d", sender.SentCount())
 	}
-	if sender.Sent[0].ID == "" {
+	if sender.GetSent()[0].ID == "" {
 		t.Fatal("injected envelope should have an auto-assigned ID")
 	}
 	if env.ID != "" {
@@ -259,7 +265,9 @@ func TestRuntime_Inject_DoesNotMutateOriginal(t *testing.T) {
 	}
 	_ = rt.Inject(context.Background(), "clone-route", env)
 
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "clone-route inject completed", func() bool {
+		return sender.SentCount() == 1
+	})
 
 	if len(env.Headers) != 1 {
 		t.Fatalf("original headers should not be modified, got %d entries", len(env.Headers))
@@ -317,16 +325,20 @@ func TestRuntime_SharedOutboxEndToEnd(t *testing.T) {
 	env := &domain.Envelope{ID: "outbox-msg", Payload: []byte("outbox-data")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(100 * time.Millisecond)
+	waitFor(t, time.Second, "outbox persist and source ack", func() bool {
+		return del.IsAcked() && outbox.RecordCount() > 0
+	})
 
-	if !del.Acked {
+	if !del.IsAcked() {
 		t.Fatal("delivery should be acked after outbox persist")
 	}
 	if outbox.RecordCount() == 0 {
 		t.Fatal("expected outbox records")
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	waitFor(t, 5*time.Second, "outbox drain sent to destination", func() bool {
+		return sender.SentCount() >= 1
+	})
 
 	if sender.SentCount() < 1 {
 		t.Fatalf("expected at least 1 sent from outbox drain, got %d", sender.SentCount())

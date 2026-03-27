@@ -51,12 +51,14 @@ func TestRouteRunner_DirectHold_HappyPath(t *testing.T) {
 		t.Fatalf("emit failed: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "delivery acked and sent", func() bool {
+		return del.IsAcked() && sender.SentCount() == 1
+	})
 
 	if sender.SentCount() != 1 {
 		t.Fatalf("expected 1 sent message, got %d", sender.SentCount())
 	}
-	if !del.Acked {
+	if !del.IsAcked() {
 		t.Fatal("delivery should be acked")
 	}
 }
@@ -75,12 +77,12 @@ func TestRouteRunner_DirectHold_TransientSendError(t *testing.T) {
 
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-2"})
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "delivery retried on transient send error", del.IsRetried)
 
-	if !del.Retried {
+	if !del.IsRetried() {
 		t.Fatal("expected delivery to be retried on transient error")
 	}
-	if del.Acked {
+	if del.IsAcked() {
 		t.Fatal("should not ack on transient error")
 	}
 }
@@ -97,12 +99,14 @@ func TestRouteRunner_DirectHold_PermanentSendError(t *testing.T) {
 
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-3"})
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "DLQ write and delivery ack", func() bool {
+		return dlqStore.Count() == 1 && del.IsAcked()
+	})
 
 	if dlqStore.Count() != 1 {
 		t.Fatalf("expected 1 DLQ entry, got %d", dlqStore.Count())
 	}
-	if !del.Acked {
+	if !del.IsAcked() {
 		t.Fatal("should ack after DLQ on permanent error")
 	}
 }
@@ -122,7 +126,9 @@ func TestRouteRunner_ExpiredMessage(t *testing.T) {
 	}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "expired message DLQ and ack", func() bool {
+		return del.IsAcked() && dlqStore.Count() == 1 && sender.SentCount() == 0
+	})
 
 	if sender.SentCount() != 0 {
 		t.Fatal("expired message should not be sent")
@@ -130,7 +136,7 @@ func TestRouteRunner_ExpiredMessage(t *testing.T) {
 	if dlqStore.Count() != 1 {
 		t.Fatalf("expected 1 DLQ entry for expired message, got %d", dlqStore.Count())
 	}
-	if !del.Acked {
+	if !del.IsAcked() {
 		t.Fatal("expired message should be acked to prevent redelivery")
 	}
 }
@@ -148,17 +154,19 @@ func TestRouteRunner_HeaderInjection(t *testing.T) {
 		ID: "msg-headers",
 		Headers: map[string]any{
 			domain.HeaderCorrelationID: "injected-by-attacker",
-			"custom-header":           "keep-me",
+			"custom-header":            "keep-me",
 		},
 	}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "delivery acked and message sent", func() bool {
+		return del.IsAcked() && sender.SentCount() == 1
+	})
 
 	if sender.SentCount() != 1 {
 		t.Fatal("expected 1 sent message")
 	}
-	sent := sender.Sent[0]
+	sent := sender.GetSent()[0]
 	if _, ok := sent.Headers["custom-header"]; !ok {
 		t.Fatal("custom header should be preserved")
 	}
@@ -183,12 +191,14 @@ func TestRouteRunner_ProcessorError_Permanent(t *testing.T) {
 
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-bad"})
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "DLQ and ack after permanent processor error", func() bool {
+		return dlqStore.Count() == 1 && del.IsAcked()
+	})
 
 	if dlqStore.Count() != 1 {
 		t.Fatalf("expected 1 DLQ entry, got %d", dlqStore.Count())
 	}
-	if !del.Acked {
+	if !del.IsAcked() {
 		t.Fatal("permanent processor error should ack")
 	}
 }
@@ -208,9 +218,9 @@ func TestRouteRunner_ProcessorError_Transient(t *testing.T) {
 
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-retry"})
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "transient processor error retry", del.IsRetried)
 
-	if !del.Retried {
+	if !del.IsRetried() {
 		t.Fatal("transient processor error should retry via source")
 	}
 }
@@ -230,12 +240,12 @@ func TestRouteRunner_ProcessorError_MessageFiltered(t *testing.T) {
 
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-filtered"})
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "filtered message acked", del.IsAcked)
 
-	if !del.Acked {
+	if !del.IsAcked() {
 		t.Fatal("filtered message should be acked (silent drop)")
 	}
-	if del.Retried {
+	if del.IsRetried() {
 		t.Fatal("filtered message should not be retried")
 	}
 	if dlqStore.Count() != 0 {
@@ -261,26 +271,33 @@ func TestRouteRunner_Tracer_SpanLifecycle(t *testing.T) {
 	env := &domain.Envelope{ID: "msg-traced", Payload: []byte("hello")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "delivery acked and span ended", func() bool {
+		s := tracer.LastSpan()
+		return del.IsAcked() && s != nil && s.IsEnded()
+	})
 
 	if tracer.SpanCount() != 1 {
 		t.Fatalf("expected 1 span, got %d", tracer.SpanCount())
 	}
 
 	span := tracer.LastSpan()
-	if span.Name != "bridge.handleDelivery" {
-		t.Fatalf("expected span name bridge.handleDelivery, got %q", span.Name)
+	if span == nil {
+		t.Fatal("expected a span")
 	}
-	if !span.Ended {
+	name, ended, attrs, spanErr := span.Inspect()
+	if name != "bridge.handleDelivery" {
+		t.Fatalf("expected span name bridge.handleDelivery, got %q", name)
+	}
+	if !ended {
 		t.Fatal("span should be ended after delivery completes")
 	}
-	if span.Err != nil {
-		t.Fatalf("span should not have error on happy path, got %v", span.Err)
+	if spanErr != nil {
+		t.Fatalf("span should not have error on happy path, got %v", spanErr)
 	}
 
 	hasRouteTag := false
 	hasEnvelopeTag := false
-	for _, a := range span.Attrs {
+	for _, a := range attrs {
 		if a.Key == domain.TagKeyRouteID && a.Value == "test-route" {
 			hasRouteTag = true
 		}
@@ -316,15 +333,19 @@ func TestRouteRunner_Tracer_TraceContextExtraction(t *testing.T) {
 	}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "delivery acked and span ended for trace extraction", func() bool {
+		s := tracer.LastSpan()
+		return del.IsAcked() && s != nil && s.IsEnded()
+	})
 
 	span := tracer.LastSpan()
 	if span == nil {
 		t.Fatal("expected a span")
 	}
 
+	_, _, attrs, _ := span.Inspect()
 	hasTraceID := false
-	for _, a := range span.Attrs {
+	for _, a := range attrs {
 		if a.Key == "trace_id" && a.Value == "0af7651916cd43dd8448eb211c80319c" {
 			hasTraceID = true
 		}
@@ -367,7 +388,7 @@ func TestRouteRunner_Tracer_ContextEnrichment(t *testing.T) {
 	}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "delivery acked for context enrichment", del.IsAcked)
 
 	if capturedCorrID == "" {
 		t.Fatal("correlation ID should be set in context")
@@ -395,16 +416,20 @@ func TestRouteRunner_Tracer_ErrorRecording(t *testing.T) {
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-err"})
 	del.AckErr = fmt.Errorf("ack transport failure")
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "delivery ack attempted and span ended", func() bool {
+		s := tracer.LastSpan()
+		return del.IsAcked() && s != nil && s.IsEnded()
+	})
 
 	span := tracer.LastSpan()
 	if span == nil {
 		t.Fatal("expected a span")
 	}
-	if !span.Ended {
+	_, ended, _, spanErr := span.Inspect()
+	if !ended {
 		t.Fatal("span should be ended")
 	}
-	if span.Err == nil {
+	if spanErr == nil {
 		t.Fatal("span should record error on delivery failure")
 	}
 }
@@ -426,13 +451,17 @@ func TestRouteRunner_Tracer_ProcessorErrorRecording(t *testing.T) {
 
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-proc-err"})
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "delivery acked and span ended after processor error", func() bool {
+		s := tracer.LastSpan()
+		return del.IsAcked() && s != nil && s.IsEnded()
+	})
 
 	span := tracer.LastSpan()
 	if span == nil {
 		t.Fatal("expected a span")
 	}
-	if span.Err == nil {
+	_, _, _, spanErr := span.Inspect()
+	if spanErr == nil {
 		t.Fatal("span should record processor error")
 	}
 }
@@ -454,17 +483,21 @@ func TestRouteRunner_Tracer_FilteredNoError(t *testing.T) {
 
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-filtered-trace"})
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "filtered delivery acked and span ended", func() bool {
+		s := tracer.LastSpan()
+		return del.IsAcked() && s != nil && s.IsEnded()
+	})
 
 	span := tracer.LastSpan()
 	if span == nil {
 		t.Fatal("expected a span")
 	}
-	if !span.Ended {
+	_, ended, _, spanErr := span.Inspect()
+	if !ended {
 		t.Fatal("span should be ended")
 	}
-	if span.Err != nil {
-		t.Fatalf("filtered messages should NOT record error on span, got %v", span.Err)
+	if spanErr != nil {
+		t.Fatalf("filtered messages should NOT record error on span, got %v", spanErr)
 	}
 }
 
@@ -486,12 +519,14 @@ func TestRouteRunner_SharedOutbox_HappyPath(t *testing.T) {
 
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-outbox"})
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "outbox persist and source ack", func() bool {
+		return outbox.RecordCount() == 1 && del.IsAcked()
+	})
 
 	if outbox.RecordCount() != 1 {
 		t.Fatalf("expected 1 outbox record, got %d", outbox.RecordCount())
 	}
-	if !del.Acked {
+	if !del.IsAcked() {
 		t.Fatal("source should be acked after outbox persist")
 	}
 }
@@ -517,13 +552,13 @@ func TestRouteRunner_SharedOutbox_DuplicatePersist(t *testing.T) {
 	env := &domain.Envelope{ID: "msg-dup"}
 	del1 := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del1)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "first delivery acked", del1.IsAcked)
 
 	del2 := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del2)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "second delivery acked after duplicate persist", del2.IsAcked)
 
-	if !del2.Acked {
+	if !del2.IsAcked() {
 		t.Fatal("duplicate persist should still ack the delivery")
 	}
 }
@@ -553,15 +588,17 @@ func TestRouteRunner_DirectHold_WithResolver(t *testing.T) {
 	}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "send and ack with resolver", func() bool {
+		return del.IsAcked() && sender.SentCount() == 1
+	})
 
 	if sender.SentCount() != 1 {
 		t.Fatalf("expected 1 sent message, got %d", sender.SentCount())
 	}
-	if sender.Sent[0].Subject != "factory/a/orders/42" {
-		t.Fatalf("expected resolved subject, got %q", sender.Sent[0].Subject)
+	if sender.GetSent()[0].Subject != "factory/a/orders/42" {
+		t.Fatalf("expected resolved subject, got %q", sender.GetSent()[0].Subject)
 	}
-	if !del.Acked {
+	if !del.IsAcked() {
 		t.Fatal("delivery should be acked")
 	}
 }
@@ -582,7 +619,9 @@ func TestRouteRunner_DirectHold_ResolverError_Rejected(t *testing.T) {
 
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-reject"})
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "DLQ and ack on rejected resolve", func() bool {
+		return del.IsAcked() && dlqStore.Count() == 1 && sender.SentCount() == 0
+	})
 
 	if sender.SentCount() != 0 {
 		t.Fatal("should not send when resolver rejects")
@@ -590,7 +629,7 @@ func TestRouteRunner_DirectHold_ResolverError_Rejected(t *testing.T) {
 	if dlqStore.Count() != 1 {
 		t.Fatalf("expected 1 DLQ entry, got %d", dlqStore.Count())
 	}
-	if !del.Acked {
+	if !del.IsAcked() {
 		t.Fatal("should ack after DLQ")
 	}
 }
@@ -611,12 +650,12 @@ func TestRouteRunner_DirectHold_ResolverError_Transient(t *testing.T) {
 
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-retry-resolve"})
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "retry on transient resolver error", del.IsRetried)
 
 	if sender.SentCount() != 0 {
 		t.Fatal("should not send when resolver returns transient error")
 	}
-	if !del.Retried {
+	if !del.IsRetried() {
 		t.Fatal("should retry on transient resolver error")
 	}
 }
@@ -644,12 +683,14 @@ func TestRouteRunner_DirectHold_ResolverHeaders(t *testing.T) {
 	env := &domain.Envelope{ID: "msg-hdrs", Headers: map[string]any{"custom": "value"}}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "send with resolver headers", func() bool {
+		return del.IsAcked() && sender.SentCount() == 1
+	})
 
 	if sender.SentCount() != 1 {
 		t.Fatalf("expected 1 sent message, got %d", sender.SentCount())
 	}
-	sent := sender.Sent[0]
+	sent := sender.GetSent()[0]
 	if sent.Subject != "topic/resolved" {
 		t.Fatalf("expected subject topic/resolved, got %q", sent.Subject)
 	}
@@ -684,12 +725,14 @@ func TestRouteRunner_SharedOutbox_FanOut(t *testing.T) {
 
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-fanout"})
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "fan-out outbox and ack", func() bool {
+		return outbox.RecordCount() == 2 && del.IsAcked()
+	})
 
 	if outbox.RecordCount() != 2 {
 		t.Fatalf("expected 2 outbox records for fan-out, got %d", outbox.RecordCount())
 	}
-	if !del.Acked {
+	if !del.IsAcked() {
 		t.Fatal("source should be acked after outbox persist")
 	}
 }
@@ -710,12 +753,14 @@ func TestRouteRunner_SharedOutbox_ResolverError_Rejected(t *testing.T) {
 
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-outbox-reject"})
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "DLQ and ack on outbox rejected resolve", func() bool {
+		return dlqStore.Count() == 1 && del.IsAcked()
+	})
 
 	if dlqStore.Count() != 1 {
 		t.Fatalf("expected 1 DLQ entry, got %d", dlqStore.Count())
 	}
-	if !del.Acked {
+	if !del.IsAcked() {
 		t.Fatal("should ack after DLQ on rejected resolve error")
 	}
 }
@@ -805,19 +850,21 @@ func TestRouteRunner_MQTTToSQS_DirectHold(t *testing.T) {
 	}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "MQTT to SQS send and ack", func() bool {
+		return del.IsAcked() && sender.SentCount() == 1
+	})
 
 	if sender.SentCount() != 1 {
 		t.Fatalf("expected 1 sent message, got %d", sender.SentCount())
 	}
-	sent := sender.Sent[0]
+	sent := sender.GetSent()[0]
 	if sent.Subject != "arn:aws:sqs:eu-west-1:123456789:orders" {
 		t.Fatalf("expected SQS address as subject, got %q", sent.Subject)
 	}
 	if sent.Headers["source-transport"] != "mqtt" {
 		t.Fatal("processor should have set source-transport header")
 	}
-	if !del.Acked {
+	if !del.IsAcked() {
 		t.Fatal("delivery should be acked after successful send")
 	}
 }
@@ -846,12 +893,14 @@ func TestRouteRunner_MQTTToSQS_SharedOutbox(t *testing.T) {
 	}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, time.Second, "MQTT to SQS outbox persist and ack", func() bool {
+		return outbox.RecordCount() == 1 && del.IsAcked()
+	})
 
 	if outbox.RecordCount() != 1 {
 		t.Fatalf("expected 1 outbox record, got %d", outbox.RecordCount())
 	}
-	if !del.Acked {
+	if !del.IsAcked() {
 		t.Fatal("source should be acked after outbox persist")
 	}
 }

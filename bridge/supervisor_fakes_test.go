@@ -1,0 +1,419 @@
+package bridge
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
+	goruntime "github.com/mariotoffia/gobridge/runtime"
+)
+
+// ---------------------------------------------------------------------------
+// hangingSession — Close() blocks until context expires
+// ---------------------------------------------------------------------------
+
+type hangingSession struct{ fakeSession }
+
+func (s *hangingSession) Close(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// ---------------------------------------------------------------------------
+// slowSession — Close() sleeps then succeeds
+// ---------------------------------------------------------------------------
+
+type slowSession struct {
+	fakeSession
+	delay time.Duration
+}
+
+func (s *slowSession) Close(ctx context.Context) error {
+	select {
+	case <-time.After(s.delay):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// ---------------------------------------------------------------------------
+// failingSession — Close() returns an error
+// ---------------------------------------------------------------------------
+
+type failingSession struct {
+	fakeSession
+	closeErr error
+}
+
+func (s *failingSession) Close(_ context.Context) error {
+	return s.closeErr
+}
+
+// ---------------------------------------------------------------------------
+// countingTransportFactory — counts NewSession/NewReceiver/NewSender calls
+// ---------------------------------------------------------------------------
+
+type countingTransportFactory struct {
+	fakeTransportFactory
+	mu           sync.Mutex
+	SessionCalls int
+	ReceiverCalls int
+	SenderCalls  int
+	SessionFn    func(context.Context, config.SessionDef) (ports.Session, error)
+}
+
+func (f *countingTransportFactory) NewSession(ctx context.Context, sd config.SessionDef) (ports.Session, error) {
+	f.mu.Lock()
+	f.SessionCalls++
+	fn := f.SessionFn
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, sd)
+	}
+	return &fakeSession{}, nil
+}
+
+func (f *countingTransportFactory) NewReceiver(ctx context.Context, rd config.ReceiverDef, sess ports.Session) (ports.Receiver, error) {
+	f.mu.Lock()
+	f.ReceiverCalls++
+	f.mu.Unlock()
+	return &fakeReceiver{}, nil
+}
+
+func (f *countingTransportFactory) NewSender(ctx context.Context, sd config.SenderDef, sess ports.Session) (ports.Sender, error) {
+	f.mu.Lock()
+	f.SenderCalls++
+	f.mu.Unlock()
+	return &fakeSender{}, nil
+}
+
+func (f *countingTransportFactory) Counts() (sessions, receivers, senders int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.SessionCalls, f.ReceiverCalls, f.SenderCalls
+}
+
+// ---------------------------------------------------------------------------
+// exclusiveTransportFactory — declares CapExclusiveIdentity
+// ---------------------------------------------------------------------------
+
+type exclusiveTransportFactory struct {
+	countingTransportFactory
+}
+
+func (f *exclusiveTransportFactory) Capabilities() []ports.Capability {
+	return []ports.Capability{ports.CapExclusiveIdentity, ports.CapStatefulSession}
+}
+
+// ---------------------------------------------------------------------------
+// failingTransportFactory — NewSession returns error
+// ---------------------------------------------------------------------------
+
+type failingTransportFactory struct {
+	fakeTransportFactory
+	sessionErr error
+}
+
+func (f *failingTransportFactory) NewSession(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+	return nil, f.sessionErr
+}
+
+// ---------------------------------------------------------------------------
+// failingStoreFactory — store creation returns error
+// ---------------------------------------------------------------------------
+
+type failingStoreFactory struct {
+	fakeStoreFactory
+	leaseErr  error
+	outboxErr error
+	dlqErr    error
+}
+
+func (f *failingStoreFactory) NewLeaseStore(_ context.Context, _ config.StoreConfig) (ports.LeaseStore, error) {
+	if f.leaseErr != nil {
+		return nil, f.leaseErr
+	}
+	return &fakeLeaseStore{}, nil
+}
+
+func (f *failingStoreFactory) NewOutboxStore(_ context.Context, _ config.StoreConfig) (ports.OutboxStore, error) {
+	if f.outboxErr != nil {
+		return nil, f.outboxErr
+	}
+	return &fakeOutboxStore{}, nil
+}
+
+func (f *failingStoreFactory) NewDLQStore(_ context.Context, _ config.StoreConfig) (ports.DLQStore, error) {
+	if f.dlqErr != nil {
+		return nil, f.dlqErr
+	}
+	return nil, nil
+}
+
+// ---------------------------------------------------------------------------
+// trackingSession — records Close() calls with atomic counter
+// ---------------------------------------------------------------------------
+
+type trackingSession struct {
+	fakeSession
+	closed atomic.Int32
+}
+
+func (s *trackingSession) Close(_ context.Context) error {
+	s.closed.Add(1)
+	return nil
+}
+
+func (s *trackingSession) CloseCount() int {
+	return int(s.closed.Load())
+}
+
+// ---------------------------------------------------------------------------
+// trackingTransportFactory — creates trackingSessions, records order
+// ---------------------------------------------------------------------------
+
+type trackingTransportFactory struct {
+	fakeTransportFactory
+	mu       sync.Mutex
+	sessions []*trackingSession
+	failAt   int // -1 = never fail; 0-based index of session that fails
+}
+
+func newTrackingTransportFactory() *trackingTransportFactory {
+	return &trackingTransportFactory{failAt: -1}
+}
+
+func (f *trackingTransportFactory) NewSession(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	idx := len(f.sessions)
+	if f.failAt >= 0 && idx == f.failAt {
+		return nil, fmt.Errorf("session creation failed at index %d", idx)
+	}
+	s := &trackingSession{}
+	f.sessions = append(f.sessions, s)
+	return s, nil
+}
+
+func (f *trackingTransportFactory) Sessions() []*trackingSession {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := make([]*trackingSession, len(f.sessions))
+	copy(cp, f.sessions)
+	return cp
+}
+
+// ---------------------------------------------------------------------------
+// Config helpers
+// ---------------------------------------------------------------------------
+
+func supervisorTestConfig(routeID string) *config.BridgeConfig {
+	return &config.BridgeConfig{
+		Bridge: config.BridgeSettings{
+			ID:           "test-bridge",
+			DrainTimeout: "1s",
+		},
+		Receivers: []config.ReceiverDef{
+			{ID: routeID + "-rx", Transport: "fake"},
+		},
+		Senders: []config.SenderDef{
+			{ID: routeID + "-tx", Transport: "fake"},
+		},
+		Bindings: []config.BindingDef{
+			{ID: routeID + "-b1", SenderID: routeID + "-tx", Address: "addr/" + routeID},
+		},
+		Routes: []config.RouteDef{
+			{
+				ID:           routeID,
+				ReceiverID:   routeID + "-rx",
+				DeliveryMode: "direct_hold",
+				Bindings:     []string{routeID + "-b1"},
+			},
+		},
+	}
+}
+
+func supervisorTestConfigWithSession(routeID, sessionID string) *config.BridgeConfig {
+	return &config.BridgeConfig{
+		Bridge: config.BridgeSettings{
+			ID:           "test-bridge",
+			DrainTimeout: "1s",
+		},
+		Stores: config.StoresConfig{
+			Lease:  &config.StoreConfig{Type: "memory"},
+			Outbox: &config.StoreConfig{Type: "memory"},
+		},
+		Sessions: []config.SessionDef{
+			{ID: sessionID, Transport: "exclusive", SessionMode: "exclusive"},
+		},
+		Receivers: []config.ReceiverDef{
+			{ID: routeID + "-rx", Transport: "fake"},
+		},
+		Senders: []config.SenderDef{
+			{ID: routeID + "-tx", Transport: "exclusive", SessionID: sessionID},
+		},
+		Bindings: []config.BindingDef{
+			{ID: routeID + "-b1", SenderID: routeID + "-tx", SessionID: sessionID, Address: "topic/" + routeID},
+		},
+		Routes: []config.RouteDef{
+			{
+				ID:           routeID,
+				ReceiverID:   routeID + "-rx",
+				DeliveryMode: "shared_outbox",
+				Bindings:     []string{routeID + "-b1"},
+				Session: &config.RouteSessionDef{
+					SessionID: sessionID,
+					SenderID:  routeID + "-tx",
+				},
+			},
+		},
+	}
+}
+
+// newTestSupervisor creates a Supervisor with fake transports and stores.
+func newTestSupervisor(opts ...SupervisorOption) *Supervisor {
+	s := NewSupervisor(opts...)
+	s.RegisterTransport("fake", &fakeTransportFactory{})
+	s.RegisterStoreFactory("memory", &fakeStoreFactory{})
+	return s
+}
+
+// newTestSupervisorWithExclusive creates a Supervisor with both a
+// fake transport and an exclusive transport.
+func newTestSupervisorWithExclusive(opts ...SupervisorOption) (*Supervisor, *exclusiveTransportFactory) {
+	s := NewSupervisor(opts...)
+	s.RegisterTransport("fake", &fakeTransportFactory{})
+	ef := &exclusiveTransportFactory{}
+	s.RegisterTransport("exclusive", ef)
+	s.RegisterStoreFactory("memory", &fakeStoreFactory{})
+	return s, ef
+}
+
+// runSupervisorAsync starts the supervisor in a goroutine and returns
+// a channel that receives the Run result.
+func runSupervisorAsync(ctx context.Context, s *Supervisor, cfg *config.BridgeConfig, ch <-chan *config.BridgeConfig) <-chan error {
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.Run(ctx, cfg, ch)
+	}()
+	return errCh
+}
+
+// waitForRuntime polls s.Runtime() until it returns non-nil or
+// timeout is reached.
+func waitForRuntime(s *Supervisor, timeout time.Duration) *goruntime.Runtime {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if rt := s.Runtime(); rt != nil {
+			return rt
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return nil
+}
+
+// waitForRouteCount polls s.Runtime().Routes() until the count
+// matches or timeout is reached.
+func waitForRouteCount(s *Supervisor, count int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		rt := s.Runtime()
+		if rt != nil && len(rt.Routes()) == count {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
+// waitForRouteID polls until the first route has the given ID or
+// timeout is reached.
+func waitForRouteID(s *Supervisor, routeID string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		rt := s.Runtime()
+		if rt != nil {
+			routes := rt.Routes()
+			if len(routes) > 0 && routes[0].ID == routeID {
+				return true
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
+// waitForNilRuntime polls until s.Runtime() returns nil or timeout.
+func waitForNilRuntime(s *Supervisor, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if s.Runtime() == nil {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
+// quickCfg returns a minimal valid BridgeConfig with a unique route ID.
+func quickCfg(id string) *config.BridgeConfig {
+	return supervisorTestConfig(id)
+}
+
+// invalidCfg returns a BridgeConfig that fails validation.
+func invalidCfg() *config.BridgeConfig {
+	return &config.BridgeConfig{}
+}
+
+// sendConfig sends a config on the channel without blocking indefinitely.
+func sendConfig(ch chan<- *config.BridgeConfig, cfg *config.BridgeConfig, timeout time.Duration) bool {
+	select {
+	case ch <- cfg:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// unused variable guard
+var _ = []any{
+	(*hangingSession)(nil),
+	(*slowSession)(nil),
+	(*failingSession)(nil),
+	(*countingTransportFactory)(nil),
+	(*exclusiveTransportFactory)(nil),
+	(*failingTransportFactory)(nil),
+	(*failingStoreFactory)(nil),
+	(*trackingSession)(nil),
+	(*trackingTransportFactory)(nil),
+}
+
+// fakeReceiver/fakeSender/fakeSession/fakeTransportFactory/fakeStoreFactory
+// are defined in builder_test.go and shared across test files in this package.
+// The types below reference them via embedding.
+
+// ensure interface compliance for custom fakes
+var (
+	_ TransportFactory = (*countingTransportFactory)(nil)
+	_ TransportFactory = (*exclusiveTransportFactory)(nil)
+	_ TransportFactory = (*failingTransportFactory)(nil)
+	_ StoreFactory     = (*failingStoreFactory)(nil)
+	_ ports.Session    = (*hangingSession)(nil)
+	_ ports.Session    = (*slowSession)(nil)
+	_ ports.Session    = (*failingSession)(nil)
+	_ ports.Session    = (*trackingSession)(nil)
+)
+
+// quickSupervisorRun is a helper that starts a supervisor, waits for the
+// runtime to appear, then returns the cancel function and error channel.
+func quickSupervisorRun(s *Supervisor, cfg *config.BridgeConfig, changes chan *config.BridgeConfig) (context.CancelFunc, <-chan error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := runSupervisorAsync(ctx, s, cfg, changes)
+	waitForRuntime(s, 2*time.Second)
+	return cancel, errCh
+}

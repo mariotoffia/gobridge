@@ -127,6 +127,8 @@ type RouteSessionDef struct {
 	SenderID          string            `yaml:"sender_id" json:"sender_id"`
 	LeaseTTL          string            `yaml:"lease_ttl,omitempty" json:"lease_ttl,omitempty"`
 	RenewInterval     string            `yaml:"renew_interval,omitempty" json:"renew_interval,omitempty"`
+	MaxRenewFails     int               `yaml:"max_renew_fails,omitempty" json:"max_renew_fails,omitempty"`
+	StepDownGrace     string            `yaml:"step_down_grace,omitempty" json:"step_down_grace,omitempty"`
 	DrainInterval     string            `yaml:"drain_interval,omitempty" json:"drain_interval,omitempty"`
 	DrainBatchSize    int               `yaml:"drain_batch_size,omitempty" json:"drain_batch_size,omitempty"`
 	DrainStrategy     *DrainStrategyDef `yaml:"drain_strategy,omitempty" json:"drain_strategy,omitempty"`

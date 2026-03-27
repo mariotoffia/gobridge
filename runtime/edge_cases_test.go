@@ -96,7 +96,15 @@ func TestEdge_StaleFencingTokenRejected(t *testing.T) {
 		return sessionB.IsStarted()
 	})
 
-	// Verify B's lease version is higher than A's.
+	// Wait for B to actually hold the lease (session start alone does not
+	// guarantee the SessionManager has completed Acquire). Without this,
+	// lease.Current may return ErrNotFound if A released the lease and B
+	// hasn't acquired it yet.
+	waitFor(t, 3*time.Second, "B holds lease", func() bool {
+		info, err := lease.Current(context.Background(), sessionID)
+		return err == nil && info.Version >= 2
+	})
+
 	info, err := lease.Current(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("Current: %v", err)
@@ -487,8 +495,8 @@ func TestEdge_CrashAfterPersistBeforeAck(t *testing.T) {
 }
 
 // TestEdge_CrashAfterAckBeforeSend verifies that after source ack, if
-// the bridge crashes before sending, the outbox drainer recovers the
-// message and sends it.
+// the bridge crashes before sending, the message is delivered either by
+// A's final drain sweep (drain-on-shutdown) or by B's recovery drain.
 func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	lease := NewFakeLeaseStore()
@@ -496,7 +504,7 @@ func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 
 	const sessionID = "mqtt-crash-after-ack"
 
-	// Instance A: persists and acks, then crashes before drain.
+	// Instance A: persists and acks, then crashes before regular drain.
 	ctxA, cancelA := context.WithCancel(context.Background())
 
 	rtA := newTestRuntime("bridge-A-crash-ack", outbox, lease, dlq)
@@ -507,7 +515,6 @@ func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 	sessCfgA := fastSessionConfig(sessionID)
 	sessCfgA.LeaseTTL = 300 * time.Millisecond
 	sessCfgA.RenewInterval = 60 * time.Millisecond
-	// Long drain interval so A won't drain before crash.
 	sessCfgA.DrainStrategy = domain.NewFixedPoll(10 * time.Second)
 
 	cfgA := goruntime.RouteConfig{
@@ -532,7 +539,6 @@ func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 	_ = receiverA.Emit(ctxA, del)
 	waitFor(t, time.Second, "acked by A", func() bool { return del.IsAcked() })
 
-	// A has acked source but not drained yet. Crash A.
 	cancelA()
 	_ = rtA.Stop(context.Background())
 
@@ -566,14 +572,19 @@ func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 		return sessionB.IsStarted()
 	})
 
-	// B should drain and send the orphaned message.
-	waitFor(t, 5*time.Second, "sent by B", func() bool {
-		return senderB.SentCount() >= 1
+	// Message should have been sent by A (final drain on shutdown) or B (recovery).
+	waitFor(t, 5*time.Second, "message sent by A or B", func() bool {
+		return senderA.SentCount() >= 1 || senderB.SentCount() >= 1
 	})
 
-	sent := senderB.GetSent()
-	if sent[0].ID != "crash-ack-msg" {
-		t.Errorf("expected crash-ack-msg, got %q", sent[0].ID)
+	var sentMsg *domain.Envelope
+	if senderA.SentCount() >= 1 {
+		sentMsg = senderA.GetSent()[0]
+	} else {
+		sentMsg = senderB.GetSent()[0]
+	}
+	if sentMsg.ID != "crash-ack-msg" {
+		t.Errorf("expected crash-ack-msg, got %q", sentMsg.ID)
 	}
 
 	_ = rtB.Stop(context.Background())
