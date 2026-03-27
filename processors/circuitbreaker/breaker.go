@@ -2,6 +2,7 @@ package circuitbreaker
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
@@ -20,6 +21,7 @@ type breaker struct {
 	lastFailureTime      time.Time
 	onStateChange        func(key string, from, to State)
 	key                  string
+	halfOpenInFlight     atomic.Int32
 }
 
 // BreakerMetrics is a point-in-time snapshot of a single circuit breaker's counters and state.
@@ -35,6 +37,12 @@ type BreakerMetrics struct {
 }
 
 func newBreaker(key string, cfg Config, onStateChange func(string, State, State)) *breaker {
+	if cfg.HalfOpenMaxProbes <= 0 {
+		cfg.HalfOpenMaxProbes = 1
+	}
+	if cfg.CountError == nil {
+		cfg.CountError = domain.IsRecoverableError
+	}
 	return &breaker{
 		key:           key,
 		config:        cfg,
@@ -50,42 +58,58 @@ func (b *breaker) beforeRequest() error {
 		b.mu.Unlock()
 		return nil
 	case StateOpen:
-		if time.Since(b.openedAt) >= b.config.ResetTimeout {
+		elapsed := time.Since(b.openedAt)
+		if elapsed >= b.config.ResetTimeout {
 			notify := b.transitionTo(StateHalfOpen)
 			b.mu.Unlock()
 			if notify != nil {
 				notify()
 			}
-			return nil
+			return b.tryHalfOpenProbe()
 		}
-		remaining := b.config.ResetTimeout - time.Since(b.openedAt)
+		remaining := b.config.ResetTimeout - elapsed
 		b.mu.Unlock()
 		return domain.ErrUnavailable.WithRetryAfter(remaining)
 	case StateHalfOpen:
 		b.mu.Unlock()
-		return nil
+		return b.tryHalfOpenProbe()
 	default:
 		b.mu.Unlock()
 		return nil
 	}
 }
 
+func (b *breaker) tryHalfOpenProbe() error {
+	if b.halfOpenInFlight.Add(1) > int32(b.config.HalfOpenMaxProbes) {
+		b.halfOpenInFlight.Add(-1)
+		return domain.ErrUnavailable.WithRetryAfter(b.config.ResetTimeout / 2)
+	}
+	return nil
+}
+
 func (b *breaker) afterRequest(err error) {
+	countable := err != nil && b.config.CountError(err)
+
 	var notify func()
 
 	b.mu.Lock()
+	if b.state == StateHalfOpen {
+		b.halfOpenInFlight.Add(-1)
+	}
 	b.totalRequests++
 
 	if err != nil {
 		b.totalFailures++
-		b.consecutiveFailures++
-		b.consecutiveSuccesses = 0
-		b.lastFailureTime = time.Now()
+		if countable {
+			b.consecutiveFailures++
+			b.consecutiveSuccesses = 0
+			b.lastFailureTime = time.Now()
 
-		if b.state == StateClosed && b.consecutiveFailures >= b.config.FailureThreshold {
-			notify = b.transitionTo(StateOpen)
-		} else if b.state == StateHalfOpen {
-			notify = b.transitionTo(StateOpen)
+			if b.state == StateClosed && b.consecutiveFailures >= b.config.FailureThreshold {
+				notify = b.transitionTo(StateOpen)
+			} else if b.state == StateHalfOpen {
+				notify = b.transitionTo(StateOpen)
+			}
 		}
 		b.mu.Unlock()
 		if notify != nil {
@@ -116,6 +140,10 @@ func (b *breaker) transitionTo(newState State) func() {
 
 	old := b.state
 	b.state = newState
+
+	if old == StateHalfOpen {
+		b.halfOpenInFlight.Store(0)
+	}
 
 	switch newState {
 	case StateOpen:

@@ -26,10 +26,23 @@ func HeaderKey(name string) KeyExtractor {
 	}
 }
 
+// ErrorClassifier returns true if the error should count toward circuit
+// breaker failure thresholds. When nil, only transient errors are counted
+// (permanent/rejected errors are ignored to prevent malformed input from
+// tripping the breaker on a healthy dependency).
+type ErrorClassifier func(error) bool
+
 type Config struct {
 	FailureThreshold int
 	SuccessThreshold int
 	ResetTimeout     time.Duration
+	// HalfOpenMaxProbes limits concurrent requests allowed in half-open
+	// state. Defaults to 1 to prevent thundering herd on a recovering
+	// dependency.
+	HalfOpenMaxProbes int
+	// CountError determines whether an error counts toward the failure
+	// threshold. Defaults to counting only transient errors.
+	CountError ErrorClassifier
 }
 
 func DefaultConfig() Config {
@@ -49,6 +62,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.ResetTimeout == 0 {
 		c.ResetTimeout = 30 * time.Second
+	}
+	if c.HalfOpenMaxProbes <= 0 {
+		c.HalfOpenMaxProbes = 1
+	}
+	if c.CountError == nil {
+		c.CountError = domain.IsRecoverableError
 	}
 	return c
 }

@@ -261,7 +261,7 @@ func (m *SessionManager) acquireLeaseWithRetry(ctx context.Context) (domain.Leas
 		select {
 		case <-ctx.Done():
 			return domain.LeaseToken{}, ctx.Err()
-		case <-time.After(m.renewInterval + m.jitter()):
+		case <-time.After(m.clampedInterval()):
 		}
 	}
 }
@@ -270,7 +270,7 @@ func (m *SessionManager) renewLoop(ctx context.Context) error {
 	consecutiveFailures := 0
 	events := m.session.Events()
 
-	timer := time.NewTimer(m.renewInterval + m.jitter())
+	timer := time.NewTimer(m.clampedInterval())
 	defer timer.Stop()
 
 	for {
@@ -310,7 +310,7 @@ func (m *SessionManager) renewLoop(ctx context.Context) error {
 				m.setToken(newToken)
 			}
 
-			timer.Reset(m.renewInterval + m.jitter())
+			timer.Reset(m.clampedInterval())
 		}
 	}
 }
@@ -408,6 +408,17 @@ func (m *SessionManager) jitter() time.Duration {
 	}
 	half := m.renewJitter / 2
 	return time.Duration(rand.Int64N(int64(m.renewJitter))) - half
+}
+
+// clampedInterval returns renewInterval + jitter, floored at 1ms to
+// prevent near-zero or negative timer durations when jitter exceeds
+// the renewal interval.
+func (m *SessionManager) clampedInterval() time.Duration {
+	d := m.renewInterval + m.jitter()
+	if d < time.Millisecond {
+		d = time.Millisecond
+	}
+	return d
 }
 
 func (m *SessionManager) log(ctx context.Context, level slog.Level, msg string, args ...any) {

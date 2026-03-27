@@ -85,6 +85,16 @@ func (p *Processor) evictOldest() {
 		delete(p.breakers, oldestKey)
 		return
 	}
+	// Fallback: evict a half-open breaker. Never evict open breakers as
+	// they protect against known-failing dependencies.
+	for k, b := range p.breakers {
+		m := b.metrics()
+		if m.State == StateHalfOpen.String() {
+			delete(p.breakers, k)
+			return
+		}
+	}
+	// Last resort: evict any breaker (including open) to prevent unbounded growth.
 	for k := range p.breakers {
 		delete(p.breakers, k)
 		return

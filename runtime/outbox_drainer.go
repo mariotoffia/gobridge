@@ -154,7 +154,11 @@ func (d *OutboxDrainer) Run(ctx context.Context) error {
 			if err != nil {
 				if errors.Is(err, domain.ErrStaleFencingToken) {
 					d.log(ctx, slog.LevelWarn, "stale fencing token, waiting for new lease")
-					timer.Reset(d.strategy.NextInterval(0))
+					staleBackoff := d.strategy.NextInterval(0)
+					if staleBackoff < 5*time.Second {
+						staleBackoff = 5 * time.Second
+					}
+					timer.Reset(staleBackoff)
 					continue
 				}
 				d.log(ctx, slog.LevelWarn, "drain batch error", "error", err)
