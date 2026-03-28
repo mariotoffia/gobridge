@@ -54,9 +54,14 @@ type SessionEvent struct {
 }
 
 // SessionHealth describes the current health state of a session.
+// Transports that manage subscriptions (e.g., MQTT) should populate
+// the subscription fields so callers can determine readiness.
 type SessionHealth struct {
-	Connected bool
-	LastError error
+	Connected           bool
+	LastError           error
+	SubscriptionsWanted int  // Number of subscriptions in the reconciled plan
+	SubscriptionsActive int  // Number of subscriptions confirmed by broker
+	Ready               bool // Connected && SubscriptionsWanted == SubscriptionsActive
 }
 
 // Session owns network identity and remote state for stateful transports.

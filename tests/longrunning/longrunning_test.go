@@ -33,15 +33,34 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestMain(m *testing.M) {
+	// Container resource limits — tunable via env vars for different machines.
+	// Defaults are generous enough for 5+ concurrent bridges.
+	mqttMem := envOr("GOBRIDGE_MQTT_MEMORY", "256m")
+	mqttCPU := envOr("GOBRIDGE_MQTT_CPUS", "1.0")
+	sqsMem := envOr("GOBRIDGE_SQS_MEMORY", "512m")
+	sqsCPU := envOr("GOBRIDGE_SQS_CPUS", "1.0")
+	ddbMem := envOr("GOBRIDGE_DDB_MEMORY", "512m")
+	ddbCPU := envOr("GOBRIDGE_DDB_CPUS", "1.0")
+
 	mqttlocal.Configure(
 		mqttlocal.WithPersistence(true),
 		mqttlocal.WithMaxInflightMessages(0),
 		mqttlocal.WithMaxQueuedMessages(0),
 		mqttlocal.WithMaxQueuedBytes(0),
 		mqttlocal.WithCleanOrphans(true),
+		mqttlocal.WithMemory(mqttMem),
+		mqttlocal.WithCPUs(mqttCPU),
 	)
-	ddblocal.Configure(ddblocal.WithCleanOrphans(true))
-	sqslocal.Configure(sqslocal.WithCleanOrphans(true))
+	ddblocal.Configure(
+		ddblocal.WithCleanOrphans(true),
+		ddblocal.WithMemory(ddbMem),
+		ddblocal.WithCPUs(ddbCPU),
+	)
+	sqslocal.Configure(
+		sqslocal.WithCleanOrphans(true),
+		sqslocal.WithMemory(sqsMem),
+		sqslocal.WithCPUs(sqsCPU),
+	)
 
 	code := m.Run()
 
@@ -50,6 +69,65 @@ func TestMain(m *testing.M) {
 	ddblocal.Shutdown()
 	os.Exit(code)
 }
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// testLogger returns a structured logger for test diagnostics.
+// Control via GOBRIDGE_LOG_LEVEL env var:
+//
+//	trace — per-message flow tracing (very verbose, use for pipeline debugging)
+//	debug — component lifecycle, batch operations, resolver decisions
+//	info  — operational events (bridge start/stop, delivery counts)
+//	warn  — only warnings (default — keeps output clean during normal runs)
+//
+// Usage in tests:
+//
+//	log := testLogger(t)
+//	rt := goruntime.New(goruntime.WithLogger(log), ...)
+//	if isTrace() { t.Logf("msg flow: %v", someExpensiveValue) }
+func testLogger(t *testing.T) *slog.Logger {
+	t.Helper()
+	level := testLogLevel()
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: level,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.LevelKey {
+				if lvl, ok := a.Value.Any().(slog.Level); ok && lvl <= slog.Level(-8) {
+					a.Value = slog.StringValue("TRACE")
+				}
+			}
+			return a
+		},
+	}))
+}
+
+func testLogLevel() slog.Level {
+	switch os.Getenv("GOBRIDGE_LOG_LEVEL") {
+	case "trace":
+		return slog.Level(-8) // LevelTrace from bridge/logging
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	default:
+		return slog.LevelWarn
+	}
+}
+
+// isTrace returns true when GOBRIDGE_LOG_LEVEL=trace. Use to guard
+// expensive diagnostic operations (e.g., dumping per-message details).
+func isTrace() bool { return testLogLevel() <= slog.Level(-8) }
+
+// isDebug returns true when GOBRIDGE_LOG_LEVEL=trace or debug.
+func isDebug() bool { return testLogLevel() <= slog.LevelDebug }
+
+// isInfo returns true when GOBRIDGE_LOG_LEVEL is trace, debug, or info.
+func isInfo() bool { return testLogLevel() <= slog.LevelInfo }
 
 // ---------------------------------------------------------------------------
 // SQS helpers

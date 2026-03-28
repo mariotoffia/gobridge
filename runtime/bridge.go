@@ -511,6 +511,130 @@ func (rt *Runtime) Routes() []RouteInfo {
 	return infos
 }
 
+// DeepHealth returns a comprehensive health snapshot including session
+// subscription readiness and lease status. Use ReadyForTraffic to
+// determine if all sessions are connected and subscribed before
+// sending messages through the bridge.
+func (rt *Runtime) DeepHealth(ctx context.Context) DeepHealth {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	dh := DeepHealth{
+		Running:    rt.running,
+		Healthy:    rt.healthy,
+		InstanceID: rt.instanceID,
+		Role:       rt.roleUnlocked(),
+	}
+
+	allReady := rt.running && rt.healthy
+
+	// Collect session health from route entries.
+	seen := make(map[string]bool)
+	for _, e := range rt.entries {
+		if e.session == nil || e.sessCfg == nil {
+			continue
+		}
+		sid := e.sessCfg.SessionID
+		if seen[sid] {
+			continue
+		}
+		seen[sid] = true
+		sh := e.session.Health(ctx)
+
+		detail := SessionHealthDetail{
+			SessionID:           sid,
+			Connected:           sh.Connected,
+			SubscriptionsWanted: sh.SubscriptionsWanted,
+			SubscriptionsActive: sh.SubscriptionsActive,
+			Ready:               sh.Ready,
+		}
+		if mgr, ok := rt.sessionMgrs[sid]; ok {
+			_, detail.HasLease = mgr.Token()
+		}
+		dh.Sessions = append(dh.Sessions, detail)
+		if !sh.Ready {
+			allReady = false
+		}
+	}
+
+	// Also include sessionSenders (fan-out targets).
+	for sid, sse := range rt.sessionSenders {
+		if seen[sid] {
+			continue
+		}
+		seen[sid] = true
+		sh := sse.session.Health(ctx)
+		detail := SessionHealthDetail{
+			SessionID:           sid,
+			Connected:           sh.Connected,
+			SubscriptionsWanted: sh.SubscriptionsWanted,
+			SubscriptionsActive: sh.SubscriptionsActive,
+			Ready:               sh.Ready,
+		}
+		if mgr, ok := rt.sessionMgrs[sid]; ok {
+			_, detail.HasLease = mgr.Token()
+		}
+		dh.Sessions = append(dh.Sessions, detail)
+		if !sh.Ready {
+			allReady = false
+		}
+	}
+
+	// Routes.
+	for _, e := range rt.entries {
+		dh.Routes = append(dh.Routes, RouteHealth{
+			ID:           e.config.ID,
+			DeliveryMode: string(e.config.Policy.DeliveryMode),
+		})
+	}
+
+	// Sessions with no subscriptions (senders only, no plan) are ready
+	// if connected. Override allReady only when subscriptions are expected.
+	dh.ReadyForTraffic = allReady
+	return dh
+}
+
+// DeepHealth is a comprehensive health snapshot of the runtime.
+type DeepHealth struct {
+	Running         bool
+	Healthy         bool
+	InstanceID      string
+	Role            string
+	Routes          []RouteHealth
+	Sessions        []SessionHealthDetail
+	ReadyForTraffic bool // All sessions ready + runtime healthy
+}
+
+// SessionHealthDetail describes one session's health including
+// subscription readiness and lease ownership.
+type SessionHealthDetail struct {
+	SessionID           string
+	Connected           bool
+	HasLease            bool
+	SubscriptionsWanted int
+	SubscriptionsActive int
+	Ready               bool
+}
+
+// RouteHealth describes one route's health.
+type RouteHealth struct {
+	ID           string
+	DeliveryMode string
+}
+
+// roleUnlocked returns the role without acquiring the mutex (caller must hold it).
+func (rt *Runtime) roleUnlocked() string {
+	if len(rt.sessionMgrs) == 0 {
+		return "standalone"
+	}
+	for _, mgr := range rt.sessionMgrs {
+		if _, held := mgr.Token(); held {
+			return "active"
+		}
+	}
+	return "standby"
+}
+
 // LeaseStatus returns the lease ownership status for each exclusive
 // session. The map keys are session IDs; values are true when the
 // session holds the lease (active) and false otherwise (standby).
@@ -535,16 +659,7 @@ func (rt *Runtime) LeaseStatus() map[string]bool {
 func (rt *Runtime) Role() string {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-
-	if len(rt.sessionMgrs) == 0 {
-		return "standalone"
-	}
-	for _, mgr := range rt.sessionMgrs {
-		if _, held := mgr.Token(); held {
-			return "active"
-		}
-	}
-	return "standby"
+	return rt.roleUnlocked()
 }
 
 // DLQStore returns the DLQ store if configured, or nil.

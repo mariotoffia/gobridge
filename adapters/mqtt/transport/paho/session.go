@@ -261,17 +261,28 @@ func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager,
 	return nil
 }
 
-// Health returns the current health state of the session.
+// Health returns the current health state of the session, including
+// subscription readiness. Ready is true when the session is connected
+// and all desired subscriptions from the reconciled plan are active.
 func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	s.mu.Lock()
 	cm := s.cm
+	plan := s.plan
+	activeCount := len(s.activeSubs)
 	s.mu.Unlock()
 
-	if cm == nil {
-		return ports.SessionHealth{Connected: false}
+	connected := cm != nil
+	wantedCount := 0
+	if plan != nil {
+		wantedCount = len(plan.Subscriptions)
 	}
 
-	return ports.SessionHealth{Connected: true}
+	return ports.SessionHealth{
+		Connected:           connected,
+		SubscriptionsWanted: wantedCount,
+		SubscriptionsActive: activeCount,
+		Ready:               connected && wantedCount == activeCount,
+	}
 }
 
 // Events returns the channel on which session lifecycle events are emitted.
