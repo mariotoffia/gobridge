@@ -4,35 +4,55 @@ This file provides guidance for Claude Code when working with the gobridge proje
 
 ## Project Overview
 
-**GoBridge** is a message bridge framework for connecting different transport technologies. It routes messages between MQTT, AWS SQS, Azure Service Bus, and other transports with middleware support for transformation, filtering, and retry handling.
+**GoBridge** is a message-bridge framework for Go. It routes messages between MQTT, AWS SQS, Azure Service Bus, HTTP, and other transports with pluggable processors, durable outbox delivery, dead-letter queue management, and observability.
 
 ### Key Characteristics
 
-- **Multi-module Go workspace**: Core module has zero external dependencies; SDK dependencies are in separate modules
-- **Go version**: 1.24+
-- **Interface-first design**: All core abstractions defined in `bridge/types/`
-- **Pluggable architecture**: Easy to add new transports and middlewares
+- **Multi-module Go workspace**: Core module has zero external dependencies; adapter dependencies are in separate modules
+- **Go version**: 1.25+
+- **Hexagonal architecture**: Domain types in `domain/`, port interfaces in `ports/`, implementations in `adapters/` and `processors/`
+- **Pluggable architecture**: Transport, store, credential, and processor adapters via factory registration
 
 ## Project Structure
 
 ```
 gobridge/
-├── bridge/                    # Core abstractions
-│   ├── core/                  # Runtime: Bridge, Pipeline, Route
-│   ├── credentials/           # Credential resolution and builders
-│   ├── logging/               # Logging infrastructure
-│   ├── middleware/transport/  # Transport-level middleware (logging, correlation)
-│   ├── registry/              # Connection registry
-│   └── types/                 # All interfaces and type definitions
-├── config/                    # Configuration sources (DynamoDB, file)
-├── credentials/               # Credential repositories (AWS PMS, file)
-├── middleware/                # Business middleware (filter, transform, retry)
-├── metrics/                   # Metrics exporters (CloudWatch, OpenTelemetry)
-├── transport/                 # Transport implementations (separate modules)
-│   ├── mqtt/                  # MQTT v5 transport (go.mod)
-│   ├── aws/                   # AWS SQS transport (go.mod)
-│   └── azure/                 # Azure Service Bus transport (go.mod)
-└── tests/                     # Integration test utilities
+├── domain/                    # Pure value types (Envelope, RoutePolicy, errors) -- innermost ring
+├── ports/                     # Port interfaces (Receiver, Sender, stores, Processor)
+│   └── storetest/             # Conformance test suites for store implementations
+├── runtime/                   # Route execution engine (Runtime, RouteRunner)
+├── bridge/                    # Composition root (Builder wires config to runtime)
+├── config/                    # Declarative YAML/JSON configuration model
+├── validate/                  # Startup config validation
+├── httpapi/                   # Admin and monitor HTTP servers
+├── observability/             # Context helpers and correlation slog handler
+├── adapters/
+│   ├── mqtt/transport/paho/   # MQTT v5 via Paho (go.mod)
+│   ├── aws/
+│   │   ├── transport/sqs/     # AWS SQS (go.mod)
+│   │   ├── store/             # DynamoDB store factory (go.mod per store)
+│   │   ├── credentials/ssm/   # AWS SSM credentials (go.mod)
+│   │   ├── metrics/cloudwatch/ # CloudWatch metrics (go.mod)
+│   │   ├── config/dynamodb/   # DynamoDB config loader (go.mod)
+│   │   └── cluster/ecs/       # ECS cluster resolver
+│   ├── azure/transport/servicebus/ # Azure Service Bus (go.mod)
+│   ├── http/transport/        # HTTP POST ingress, SSE egress (root module)
+│   ├── native/
+│   │   ├── store/             # Memory + SQLite stores (go.mod per store)
+│   │   ├── credentials/file/  # File-based credentials (go.mod)
+│   │   ├── config/file/       # File config loader (go.mod)
+│   │   └── cluster/           # Native cluster resolver
+│   └── otel/
+│       ├── metrics/           # OTel OTLP metrics (go.mod)
+│       └── tracing/           # OTel OTLP tracing (go.mod)
+├── processors/                # ports.Processor implementations (go.mod each)
+│   ├── filter/                # Condition-based filtering
+│   ├── transform/             # JSON field mapping
+│   ├── circuitbreaker/        # Circuit breaker
+│   └── tenant/                # Multi-tenant validation
+├── cmd/gobridge/              # Example binary
+├── testutil/                  # Docker test helpers (DynamoDB, SQS, ASB, S3, MQTT, TLS)
+└── tests/integration/         # End-to-end integration tests
 ```
 
 ## Build & Test Commands
@@ -41,12 +61,12 @@ gobridge/
 # Build all modules
 make build
 
-# Run unit tests (with race detection)
+# Run unit tests (with race detection, skips Docker-dependent tests)
 make test
-# Or: go test -v -race ./...
+# Equivalent to: go test -short -race -timeout 120s ./...
 
 # Run integration tests (requires Docker)
-go test -v -tags=integration -timeout=300s ./tests/docker/...
+make test-integration
 
 # Lint all modules
 make lint
@@ -58,11 +78,13 @@ make tidy
 make update
 
 # Full CI check locally
-make check
+make check            # build + lint + unit tests (no Docker)
+make check-all        # build + lint + all tests (Docker required)
 
 # Docker test containers
-make docker-up    # Start Mosquitto, LocalStack
-make docker-down  # Stop containers
+make docker-up        # Start persistent test containers
+make docker-down      # Stop containers
+make docker-clean     # Remove ALL orphaned gobridge-* containers
 ```
 
 ## Coding Conventions
@@ -72,14 +94,15 @@ make docker-down  # Stop containers
 - Follow standard Go idioms and effective Go guidelines
 - Use descriptive variable names; avoid single-letter names except for loop indices
 - Error handling: Always check errors; wrap with context using `fmt.Errorf("context: %w", err)`
-- Use structured errors with `types.BridgeError` for transport operations
+- Use structured errors with `domain.BridgeError` for transport operations
 
 ### Package Organization
 
-- **Types in `bridge/types/`**: All interfaces and shared types live here
-- **Implementations in separate packages**: `core/`, `transport/mqtt/`, etc.
+- **Domain types in `domain/`**: Pure value types (Envelope, RoutePolicy, BridgeError, etc.)
+- **Port interfaces in `ports/`**: Receiver, Sender, Session, stores, Processor, MetricsExporter, Tracer
+- **Implementations in `adapters/` and `processors/`**: Each in a separate Go module
 - **Option pattern**: Use functional options (`WithXxx(value)`) for configuration
-- **Factory pattern**: Transports use factory registration for pluggability
+- **Factory pattern**: Transports and stores use factory registration via `bridge.Builder`
 
 ### Interface Implementation
 
@@ -87,72 +110,69 @@ Verify interface satisfaction at compile time:
 
 ```go
 var (
-    _ types.Source = (*MySource)(nil)
-    _ types.Target = (*MyTarget)(nil)
+    _ ports.Receiver = (*Receiver)(nil)
+    _ ports.Sender   = (*Sender)(nil)
 )
 ```
 
 ### Error Handling
 
-Use the two-tier error system:
-
-1. **BridgeError for transports**: All `Target.Send()` and connection operations must return `*types.BridgeError`
-2. **Recoverable vs Permanent**: Set `IsRecoverable` appropriately
+Use `domain.BridgeError` with `ErrorClass` to drive routing decisions:
 
 ```go
-// Wrap infrastructure errors (recoverable)
-return types.ErrConnectionLost.Wrap(err)
+// Wrap infrastructure errors (transient / retriable)
+return domain.ErrConnectionLost.Wrap(err)
 
-// Wrap application errors (permanent)
-return types.ErrInvalidPayload.With("topic", topic).Wrap(err)
+// Wrap application errors (permanent / not retriable)
+return domain.ErrInvalidPayload.With("topic", topic).Wrap(err)
+
+// Classification
+be, ok := domain.AsBridgeError(err)
+recoverable := domain.IsRecoverableError(err)
 ```
+
+Error classes: `Transient` (retriable), `Permanent` (not retriable), `Expired` (TTL exceeded), `Rejected` (payload-level).
 
 ### Logging
 
-Use the structured logging pattern with `types.LogCreator`:
+Use standard `*slog.Logger` with the `observability.CorrelationHandler` for contextual fields:
 
 ```go
-if b.Log != nil {
-    b.Log(ctx, types.LogLevelInfo).
-        Str("id", id).
-        Int("count", count).
-        Msg("operation completed")
-}
+logger.InfoContext(ctx, "operation completed",
+    "id", id,
+    "count", count,
+)
 ```
 
-### Two Retry Systems
-
-1. **Transport Retry** (`TransportRetryConfig`): For infrastructure failures (DNS, connection)
-   - Location: `Target.Send()`, `Connection.Start()`
-   - Limit: Message TTL
-   - Uses adaptive backoff
-
-2. **Message Retry** (`RetryPolicy`): For application failures (transform, validation)
-   - Location: `RetryManager`, middleware
-   - Limit: MaxAttempts
-   - Uses exponential backoff
+The correlation handler automatically injects `correlation_id`, `trace_id`, and `span_id` from context.
 
 ### Flow Control
 
-Pipelines implement backpressure:
-- `MaxInFlight`: Limits concurrent messages
-- `DefaultMessageTTL`: Expiration for messages without explicit TTL
+Routes implement backpressure via `RoutePolicy`:
+- `MaxInFlight`: Limits concurrent messages per route (default: 100)
+- `OnExpired` / `OnPermanentFailure`: Controls DLQ routing (`drop` or `dlq`)
+- `DeliveryMode`: `direct_hold` (synchronous) or `shared_outbox` (durable async)
 
 ### Shared Connections
 
-MQTT and similar transports support shared connections:
-- Multiple sources/targets on one connection
-- Use `LifecycleCoordinator` for atomic subscription changes
+MQTT and similar stateful transports use `ports.Session` for shared connections:
+- Multiple receivers/senders on one session
+- `Session.Reconcile(ctx, SessionPlan)` converges subscriptions atomically
 
 ## Important Files to Know
 
 | File | Purpose |
 |------|---------|
-| `bridge/types/ARCHITECTURE.md` | System design overview |
-| `bridge/types/ARCHITECTURE-MIDDLEWARE.md` | Middleware and retry systems |
-| `bridge/types/ARCHITECTURE-TRANSPORTS.md` | Transport implementation guide |
-| `bridge/types/MISSING.md` | Roadmap for production readiness |
-| `apis/README.md` | HTTP API documentation |
+| `ARCHITECTURE.md` | System design, hexagonal layers, core concepts, message flow |
+| `DEVELOPMENT.md` | Prerequisites, workspace setup, building, testing, CI |
+| `PLUGIN.md` | How to write transport, store, credential, and processor plugins |
+| `TESTS.md` | Unit tests, conformance suites, integration tests, test utilities |
+| `docs/configuration-overview.md` | Configuration lifecycle, sources, layered config |
+| `docs/configuration-reference.md` | Field-by-field config reference |
+| `docs/transport-configuration.md` | MQTT, SQS, Azure SB, HTTP transport options |
+| `docs/processors-and-stores.md` | Processor chain and store backends |
+| `docs/credentials-and-http-api.md` | Credential URI system and HTTP API endpoints |
+| `docs/scenarios/` | 14 progressive scenario walkthroughs |
 
 ## Multi-Module Workflow
 
@@ -160,7 +180,7 @@ When working with transport modules:
 
 ```bash
 # Work in specific module
-cd transport/mqtt
+cd adapters/mqtt/transport/paho
 go build ./...
 go test -v ./...
 

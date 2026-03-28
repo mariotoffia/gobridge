@@ -90,6 +90,17 @@ go get github.com/mariotoffia/gobridge/adapters/aws/store
 | [Plugins](PLUGIN.md) | How to write transport, store, credential, and processor plugins |
 | [Testing](TESTS.md) | Unit tests, conformance suites, integration tests, test utilities |
 
+### Guides
+
+| Guide | Description |
+|-------|-------------|
+| [Configuration Overview](docs/configuration-overview.md) | Configuration lifecycle, sources, layered config, dynamic reconfiguration |
+| [Configuration Reference](docs/configuration-reference.md) | Field-by-field reference for `BridgeConfig` |
+| [Transport Configuration](docs/transport-configuration.md) | MQTT, SQS, Azure Service Bus, HTTP transport options |
+| [Processors and Stores](docs/processors-and-stores.md) | Processor chain (filter, transform, circuit breaker, tenant) and store backends |
+| [Credentials and HTTP API](docs/credentials-and-http-api.md) | URI-based credential resolution and Admin/Monitor HTTP API |
+| [Scenarios](docs/scenarios/) | 14 progressive walkthroughs from basic MQTT forwarding to multi-tenant priority routing |
+
 ## Project Structure
 
 ```
@@ -103,9 +114,10 @@ gobridge/
 ├── observability/    Context helpers and correlation slog handler
 ├── adapters/
 │   ├── mqtt/         MQTT v5 via Paho
-│   ├── aws/          SQS, DynamoDB stores, SSM credentials, CloudWatch
+│   ├── aws/          SQS, DynamoDB stores, SSM credentials, CloudWatch, ECS cluster
 │   ├── azure/        Azure Service Bus
-│   ├── native/       Memory and SQLite stores, file credentials
+│   ├── http/         HTTP POST ingress, SSE egress
+│   ├── native/       Memory and SQLite stores, file credentials, file config
 │   └── otel/         OpenTelemetry metrics and tracing
 ├── processors/       Filter, transform, circuit breaker, tenant
 ├── cmd/gobridge/     Example binary
@@ -119,6 +131,7 @@ gobridge/
 | MQTT v5 | `adapters/mqtt/transport/paho` | Shared sessions, QoS 0/1/2, topic wildcards, autopaho reconnect |
 | AWS SQS | `adapters/aws/transport/sqs` | Long polling, batch send, visibility extension, FIFO support |
 | Azure Service Bus | `adapters/azure/transport/servicebus` | Queues, topics/subscriptions, batch send, auto-extend lock |
+| HTTP | `adapters/http/transport` (root module) | POST ingress, SSE egress, path-based routing |
 
 ## Stores
 
