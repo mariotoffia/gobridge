@@ -49,6 +49,8 @@ const containerPrefix = "gobridge-sqslocal-"
 
 type options struct {
 	cleanOrphans bool
+	memory       string // e.g. "512m", "1g" — passed to --memory
+	cpus         string // e.g. "1.0", "2.0" — passed to --cpus
 }
 
 var (
@@ -70,6 +72,16 @@ type Option func(*options)
 // test suites to prevent resource leaks from crashed runs.
 func WithCleanOrphans(enabled bool) Option {
 	return func(o *options) { o.cleanOrphans = enabled }
+}
+
+// WithMemory sets the Docker --memory limit for the container (e.g. "512m", "1g").
+func WithMemory(limit string) Option {
+	return func(o *options) { o.memory = limit }
+}
+
+// WithCPUs sets the Docker --cpus limit for the container (e.g. "1.0", "2.0").
+func WithCPUs(limit string) Option {
+	return func(o *options) { o.cpus = limit }
 }
 
 // Configure applies options before the container is started.
@@ -226,11 +238,18 @@ func startContainer() (string, string, func(), error) {
 	name := containerPrefix + fmt.Sprintf("%d", port)
 	_ = exec.Command("docker", "rm", "-f", name).Run()
 
-	cmd := exec.Command("docker", "run", "-d",
+	args := []string{"run", "-d",
 		"--name", name,
 		"-p", fmt.Sprintf("127.0.0.1:%d:9324", port),
-		"softwaremill/elasticmq-native:latest",
-	)
+	}
+	if opts.memory != "" {
+		args = append(args, "--memory", opts.memory)
+	}
+	if opts.cpus != "" {
+		args = append(args, "--cpus", opts.cpus)
+	}
+	args = append(args, "softwaremill/elasticmq-native:latest")
+	cmd := exec.Command("docker", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", "", nil, fmt.Errorf("docker run: %w\n%s", err, out)

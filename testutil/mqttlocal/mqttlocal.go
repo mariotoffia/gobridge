@@ -66,6 +66,8 @@ type config struct {
 	maxQueuedBytes   int // -1 = not set, 0 = unlimited
 	messageSizeLimit int // -1 = not set, 0 = unlimited
 	extraConfig      string
+	memory           string // e.g. "256m", "512m" — passed to --memory
+	cpus             string // e.g. "0.5", "1.0" — passed to --cpus
 }
 
 var (
@@ -140,6 +142,16 @@ func WithMessageSizeLimit(n int) Option {
 // Each line should be terminated with a newline.
 func WithExtraConfig(lines string) Option {
 	return func(c *config) { c.extraConfig = lines }
+}
+
+// WithMemory sets the Docker --memory limit for the container (e.g. "256m", "512m").
+func WithMemory(limit string) Option {
+	return func(c *config) { c.memory = limit }
+}
+
+// WithCPUs sets the Docker --cpus limit for the container (e.g. "0.5", "1.0").
+func WithCPUs(limit string) Option {
+	return func(c *config) { c.cpus = limit }
 }
 
 // Configure applies options before the container is started.
@@ -319,6 +331,12 @@ func startContainer(c config) (mqttURL, wsURLOut, cName string, cleanup func(), 
 
 	if c.webSocket && wsPort > 0 {
 		args = append(args, "-p", fmt.Sprintf("127.0.0.1:%d:9001", wsPort))
+	}
+	if c.memory != "" {
+		args = append(args, "--memory", c.memory)
+	}
+	if c.cpus != "" {
+		args = append(args, "--cpus", c.cpus)
 	}
 
 	args = append(args, c.image)

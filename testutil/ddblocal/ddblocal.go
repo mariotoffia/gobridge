@@ -50,6 +50,8 @@ const containerPrefix = "gobridge-ddblocal-"
 
 type options struct {
 	cleanOrphans bool
+	memory       string // e.g. "512m", "1g" — passed to --memory
+	cpus         string // e.g. "1.0", "2.0" — passed to --cpus
 }
 
 var (
@@ -71,6 +73,16 @@ type Option func(*options)
 // test suites to prevent resource leaks from crashed runs.
 func WithCleanOrphans(enabled bool) Option {
 	return func(o *options) { o.cleanOrphans = enabled }
+}
+
+// WithMemory sets the Docker --memory limit for the container (e.g. "512m", "1g").
+func WithMemory(limit string) Option {
+	return func(o *options) { o.memory = limit }
+}
+
+// WithCPUs sets the Docker --cpus limit for the container (e.g. "1.0", "2.0").
+func WithCPUs(limit string) Option {
+	return func(o *options) { o.cpus = limit }
 }
 
 // Configure applies options before the container is started.
@@ -209,12 +221,19 @@ func startContainer() (string, string, func(), error) {
 
 	_ = exec.Command("docker", "rm", "-f", name).Run()
 
-	cmd := exec.Command("docker", "run", "-d",
+	args := []string{"run", "-d",
 		"--name", name,
 		"-p", fmt.Sprintf("127.0.0.1:%d:8000", port),
-		"amazon/dynamodb-local:latest",
-		"-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory",
-	)
+	}
+	if opts.memory != "" {
+		args = append(args, "--memory", opts.memory)
+	}
+	if opts.cpus != "" {
+		args = append(args, "--cpus", opts.cpus)
+	}
+	args = append(args, "amazon/dynamodb-local:latest",
+		"-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory")
+	cmd := exec.Command("docker", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", "", nil, fmt.Errorf("docker run: %w\n%s", err, out)
