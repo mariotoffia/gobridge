@@ -255,7 +255,8 @@ func TestCredentialResolver_CacheMaxSize(t *testing.T) {
 		assert.LessOrEqual(t, stats.Size, maxCredentialCacheEntries,
 			"cache size after resolve %d", i)
 	}
-	assert.Equal(t, maxCredentialCacheEntries, r.CacheStats().Size)
+	assert.LessOrEqual(t, r.CacheStats().Size, maxCredentialCacheEntries,
+		"cache size should be at or below max after all insertions")
 }
 
 // Verifies when over capacity, expired entries are evicted before LRU-by-expiry eviction runs.
@@ -286,7 +287,8 @@ func TestCredentialResolver_CacheEvictsExpired(t *testing.T) {
 	assert.Equal(t, int32(maxCredentialCacheEntries+1), repo.callCount.Load())
 }
 
-// Verifies when still over capacity after removing expired entries, the entry closest to expiry (earliest expiresAt) is evicted.
+// Verifies when still over capacity after removing expired entries, a batch
+// of ~10% oldest entries (by expiry) is evicted, providing headroom.
 func TestCredentialResolver_CacheEvictsOldestWhenFull(t *testing.T) {
 	creds := &domain.CredentialSet{
 		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
@@ -296,10 +298,12 @@ func TestCredentialResolver_CacheEvictsOldestWhenFull(t *testing.T) {
 	r := NewCredentialResolver(WithCredentialCacheTTL(time.Hour))
 	r.Register(repo)
 
+	// Insert the first entry which will have the earliest expiry.
 	firstURI := "file://first-evict-candidate"
 	_, err := r.Resolve(context.Background(), firstURI)
 	require.NoError(t, err)
 
+	// Fill cache to capacity.
 	for i := 1; i < maxCredentialCacheEntries; i++ {
 		uri := fmt.Sprintf("file://fill-%d", i)
 		_, err := r.Resolve(context.Background(), uri)
@@ -307,15 +311,67 @@ func TestCredentialResolver_CacheEvictsOldestWhenFull(t *testing.T) {
 	}
 	assert.Equal(t, maxCredentialCacheEntries, r.CacheStats().Size)
 
+	// One more insert triggers batch eviction of ~10% oldest entries.
 	overflowURI := "file://overflow"
 	_, err = r.Resolve(context.Background(), overflowURI)
 	require.NoError(t, err)
-	assert.Equal(t, maxCredentialCacheEntries, r.CacheStats().Size)
 
+	// After batch eviction: cache should have headroom (well below max).
+	stats := r.CacheStats()
+	expectedMax := maxCredentialCacheEntries - maxCredentialCacheEntries/10 + 1
+	assert.LessOrEqual(t, stats.Size, expectedMax,
+		"batch eviction should remove ~10%% of entries, leaving headroom")
+
+	// The first URI (oldest expiry) should have been evicted.
 	_, err = r.Resolve(context.Background(), firstURI)
 	require.NoError(t, err)
 	assert.Equal(t, int32(maxCredentialCacheEntries+2), repo.callCount.Load(),
 		"first URI should miss cache after it was evicted as oldest-by-expiry")
+}
+
+// Verifies batch eviction removes ~10% entries to provide headroom for burst
+// traffic, not just a single entry.
+func TestCredentialResolver_BatchEvictionProvidesHeadroom(t *testing.T) {
+	creds := &domain.CredentialSet{
+		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	}
+	repo := &stubRepo{scheme: "file", creds: creds}
+
+	r := NewCredentialResolver(WithCredentialCacheTTL(time.Hour))
+	r.Register(repo)
+
+	// Fill cache to exactly maxCredentialCacheEntries.
+	for i := 0; i < maxCredentialCacheEntries; i++ {
+		uri := fmt.Sprintf("file://entry-%d", i)
+		_, err := r.Resolve(context.Background(), uri)
+		require.NoError(t, err)
+	}
+	require.Equal(t, maxCredentialCacheEntries, r.CacheStats().Size)
+
+	// Trigger one overflow to invoke batch eviction.
+	_, err := r.Resolve(context.Background(), "file://trigger-batch")
+	require.NoError(t, err)
+
+	stats := r.CacheStats()
+	evicted := maxCredentialCacheEntries + 1 - stats.Size
+	tenPercent := maxCredentialCacheEntries / 10
+
+	assert.GreaterOrEqual(t, evicted, tenPercent,
+		"batch eviction should remove at least 10%% of max entries (%d), but only removed %d",
+		tenPercent, evicted)
+
+	// Verify the earliest entries were the ones evicted (they have oldest expiry).
+	// Entries 0..tenPercent-1 should be gone; re-resolving them should cause backend calls.
+	callsBefore := repo.callCount.Load()
+	for i := 0; i < tenPercent; i++ {
+		uri := fmt.Sprintf("file://entry-%d", i)
+		_, err := r.Resolve(context.Background(), uri)
+		require.NoError(t, err)
+	}
+	callsAfter := repo.callCount.Load()
+	refetched := callsAfter - callsBefore
+	assert.Equal(t, int32(tenPercent), refetched,
+		"all %d oldest entries should have been evicted and require re-fetch", tenPercent)
 }
 
 // TestCredentialResolver_CachedCredentials_ReturnIndependentCopies verifies that

@@ -64,10 +64,11 @@ func DefaultSenderOptions() SenderOptions {
 }
 
 // SessionOptionsFromMap extracts SessionOptions from a generic options map.
-func SessionOptionsFromMap(m map[string]any) SessionOptions {
+// It returns an error if a provided value has an invalid type or range.
+func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	opts := DefaultSessionOptions()
 	if m == nil {
-		return opts
+		return opts, nil
 	}
 
 	if v, ok := m["broker_urls"].([]string); ok {
@@ -80,6 +81,9 @@ func SessionOptionsFromMap(m map[string]any) SessionOptions {
 		opts.ClientID = v
 	}
 	if v, ok := m["keep_alive"].(int); ok {
+		if v < 0 || v > 65535 {
+			return opts, fmt.Errorf("keep_alive must be 0..65535, got %d", v)
+		}
 		opts.KeepAlive = uint16(v)
 	}
 	if v, ok := m["connect_timeout"].(time.Duration); ok {
@@ -110,20 +114,28 @@ func SessionOptionsFromMap(m map[string]any) SessionOptions {
 		opts.TLS = tlsConfigFromMap(v)
 	}
 
-	return opts
+	return opts, nil
 }
 
 // SenderOptionsFromMap extracts SenderOptions from a generic options map.
-func SenderOptionsFromMap(m map[string]any) SenderOptions {
+// It returns an error if a provided value has an invalid type or range.
+func SenderOptionsFromMap(m map[string]any) (SenderOptions, error) {
 	opts := DefaultSenderOptions()
 	if m == nil {
-		return opts
+		return opts, nil
 	}
 
 	if v, ok := m["default_topic"].(string); ok {
 		opts.DefaultTopic = v
 	}
-	if v, ok := m["qos"].(int); ok && v >= 0 && v <= 2 {
+	if raw, exists := m["qos"]; exists {
+		v, ok := raw.(int)
+		if !ok {
+			return opts, fmt.Errorf("qos must be an int, got %T", raw)
+		}
+		if v < 0 || v > 2 {
+			return opts, fmt.Errorf("qos must be 0, 1, or 2, got %d", v)
+		}
 		opts.QoS = byte(v)
 	}
 	if v, ok := m["retain"].(bool); ok {
@@ -133,7 +145,7 @@ func SenderOptionsFromMap(m map[string]any) SenderOptions {
 		opts.Timeout = v
 	}
 
-	return opts
+	return opts, nil
 }
 
 // ReceiverOptionsFromMap extracts ReceiverOptions from a generic options map.

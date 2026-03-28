@@ -245,13 +245,18 @@ func (s *Server) requestLogMW(next http.Handler) http.Handler {
 func (s *Server) corsMW(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin != "" && s.isAllowedOrigin(origin) {
+		allowed := origin != "" && s.isAllowedOrigin(origin)
+		if allowed {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization")
 			w.Header().Set("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {
+			if !allowed {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -339,7 +344,9 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if data != nil {
-		_ = json.NewEncoder(w).Encode(data)
+		if err := json.NewEncoder(w).Encode(data); err != nil {
+			slog.Error("failed to encode JSON response", "error", err)
+		}
 	}
 }
 

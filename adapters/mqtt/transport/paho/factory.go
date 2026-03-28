@@ -23,7 +23,11 @@ var (
 
 // NewSession creates an MQTT Session from the given spec.
 func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.Session, error) {
-	opts := SessionOptionsFromMap(spec.Options)
+	opts, err := SessionOptionsFromMap(spec.Options)
+	if err != nil {
+		return nil, domain.ErrInvalidPayload.WithMessage(
+			fmt.Sprintf("mqtt session %q: %s", spec.ID, err))
+	}
 
 	if opts.ClientID == "" {
 		return nil, domain.ErrInvalidPayload.WithMessage(
@@ -55,6 +59,10 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, session po
 			fmt.Sprintf("mqtt sender %q: session must be a non-nil MQTT session", spec.ID))
 	}
 
-	opts := SenderOptionsFromMap(spec.Options)
+	opts, err := SenderOptionsFromMap(spec.Options)
+	if err != nil {
+		return nil, domain.ErrInvalidPayload.WithMessage(
+			fmt.Sprintf("mqtt sender %q: %s", spec.ID, err))
+	}
 	return NewSender(mqttSession, opts), nil
 }

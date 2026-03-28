@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -197,20 +198,36 @@ func (r *CredentialResolver) setCached(uri string, creds *domain.CredentialSet) 
 			}
 		}
 		if len(r.cache) > maxCredentialCacheEntries {
-			var oldest string
-			var oldestTime time.Time
-			first := true
-			for k, e := range r.cache {
-				if first || e.expiresAt.Before(oldestTime) {
-					oldest = k
-					oldestTime = e.expiresAt
-					first = false
-				}
-			}
-			if oldest != "" {
-				delete(r.cache, oldest)
-			}
+			r.evictOldestBatch()
 		}
+	}
+}
+
+// evictOldestBatch removes approximately 10% of the oldest entries (by expiry
+// time) to provide headroom under burst traffic. The caller must hold r.mu.Lock().
+func (r *CredentialResolver) evictOldestBatch() {
+	overflow := len(r.cache) - maxCredentialCacheEntries
+	evictCount := maxCredentialCacheEntries / 10 // 10% of max
+	if evictCount < overflow {
+		evictCount = overflow
+	}
+
+	type keyExpiry struct {
+		key       string
+		expiresAt time.Time
+	}
+
+	entries := make([]keyExpiry, 0, len(r.cache))
+	for k, e := range r.cache {
+		entries = append(entries, keyExpiry{key: k, expiresAt: e.expiresAt})
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].expiresAt.Before(entries[j].expiresAt)
+	})
+
+	for i := 0; i < evictCount && i < len(entries); i++ {
+		delete(r.cache, entries[i].key)
 	}
 }
 

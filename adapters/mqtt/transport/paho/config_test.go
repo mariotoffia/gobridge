@@ -1,13 +1,20 @@
 package paho
 
 import (
+	"context"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // verifies SessionOptionsFromMap applies defaults when the input map is nil.
 func TestSessionOptionsFromMap_Defaults(t *testing.T) {
-	opts := SessionOptionsFromMap(nil)
+	opts, err := SessionOptionsFromMap(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if opts.KeepAlive != 30 {
 		t.Errorf("KeepAlive = %d, want 30", opts.KeepAlive)
 	}
@@ -25,7 +32,10 @@ func TestSessionOptionsFromMap_BrokerURLs(t *testing.T) {
 		"broker_urls": []string{"tcp://a:1883", "tcp://b:1883"},
 		"client_id":   "test-client",
 	}
-	opts := SessionOptionsFromMap(m)
+	opts, err := SessionOptionsFromMap(m)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if len(opts.BrokerURLs) != 2 {
 		t.Fatalf("BrokerURLs len = %d, want 2", len(opts.BrokerURLs))
@@ -40,7 +50,10 @@ func TestSessionOptionsFromMap_SingleBrokerURL(t *testing.T) {
 	m := map[string]any{
 		"broker_url": "tcp://single:1883",
 	}
-	opts := SessionOptionsFromMap(m)
+	opts, err := SessionOptionsFromMap(m)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if len(opts.BrokerURLs) != 1 || opts.BrokerURLs[0] != "tcp://single:1883" {
 		t.Errorf("BrokerURLs = %v, want [tcp://single:1883]", opts.BrokerURLs)
@@ -53,7 +66,10 @@ func TestSessionOptionsFromMap_Auth(t *testing.T) {
 		"username": "user",
 		"password": "pass",
 	}
-	opts := SessionOptionsFromMap(m)
+	opts, err := SessionOptionsFromMap(m)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if opts.Username != "user" {
 		t.Errorf("Username = %q, want %q", opts.Username, "user")
@@ -71,7 +87,10 @@ func TestSessionOptionsFromMap_TLSFromMap(t *testing.T) {
 			"insecure_skip_verify": true,
 		},
 	}
-	opts := SessionOptionsFromMap(m)
+	opts, err := SessionOptionsFromMap(m)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if opts.TLS == nil {
 		t.Fatal("TLS should be set")
@@ -90,7 +109,10 @@ func TestSessionOptionsFromMap_SessionExpiry(t *testing.T) {
 		"session_expiry_interval": 3600,
 		"clean_start":            false,
 	}
-	opts := SessionOptionsFromMap(m)
+	opts, err := SessionOptionsFromMap(m)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if opts.SessionExpiryInterval != 3600 {
 		t.Errorf("SessionExpiryInterval = %d, want 3600", opts.SessionExpiryInterval)
@@ -100,9 +122,32 @@ func TestSessionOptionsFromMap_SessionExpiry(t *testing.T) {
 	}
 }
 
+// verifies SessionOptionsFromMap rejects keep_alive outside uint16 range.
+func TestSessionOptionsFromMap_InvalidKeepAlive(t *testing.T) {
+	tests := []struct {
+		name string
+		val  int
+	}{
+		{"negative", -1},
+		{"too_large", 70000},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := map[string]any{"keep_alive": tc.val}
+			_, err := SessionOptionsFromMap(m)
+			if err == nil {
+				t.Errorf("expected error for keep_alive=%d", tc.val)
+			}
+		})
+	}
+}
+
 // verifies SenderOptionsFromMap applies defaults when the input map is nil.
 func TestSenderOptionsFromMap_Defaults(t *testing.T) {
-	opts := SenderOptionsFromMap(nil)
+	opts, err := SenderOptionsFromMap(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if opts.QoS != 1 {
 		t.Errorf("QoS = %d, want 1", opts.QoS)
 	}
@@ -119,7 +164,10 @@ func TestSenderOptionsFromMap_AllFields(t *testing.T) {
 		"retain":        true,
 		"timeout":       10 * time.Second,
 	}
-	opts := SenderOptionsFromMap(m)
+	opts, err := SenderOptionsFromMap(m)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if opts.DefaultTopic != "my/topic" {
 		t.Errorf("DefaultTopic = %q, want %q", opts.DefaultTopic, "my/topic")
@@ -135,12 +183,21 @@ func TestSenderOptionsFromMap_AllFields(t *testing.T) {
 	}
 }
 
-// verifies SenderOptionsFromMap falls back to default QoS when qos is out of range.
+// verifies SenderOptionsFromMap returns error when qos is out of range.
 func TestSenderOptionsFromMap_InvalidQoS(t *testing.T) {
 	m := map[string]any{"qos": 5}
-	opts := SenderOptionsFromMap(m)
-	if opts.QoS != 1 {
-		t.Errorf("QoS = %d, want 1 (default for invalid)", opts.QoS)
+	_, err := SenderOptionsFromMap(m)
+	if err == nil {
+		t.Error("expected error for out-of-range QoS")
+	}
+}
+
+// verifies SenderOptionsFromMap returns error when qos has wrong type.
+func TestSenderOptionsFromMap_QoSWrongType(t *testing.T) {
+	m := map[string]any{"qos": "invalid"}
+	_, err := SenderOptionsFromMap(m)
+	if err == nil {
+		t.Error("expected error for string QoS")
 	}
 }
 
@@ -158,4 +215,231 @@ func TestReceiverOptionsFromMap_NonNilMap(t *testing.T) {
 		"some_unknown_key": "ignored",
 	})
 	_ = opts
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BUG-10: keep_alive validation (0..65535)
+//
+// SessionOptionsFromMap must reject keep_alive values outside uint16 range
+// and accept valid boundary values.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// TestKeepAlive_ValidBoundary_Zero validates keep_alive=0 is accepted.
+func TestKeepAlive_ValidBoundary_Zero(t *testing.T) {
+	m := map[string]any{"keep_alive": 0}
+	opts, err := SessionOptionsFromMap(m)
+	if err != nil {
+		t.Fatalf("keep_alive=0 should be valid, got error: %v", err)
+	}
+	if opts.KeepAlive != 0 {
+		t.Errorf("KeepAlive = %d, want 0", opts.KeepAlive)
+	}
+}
+
+// TestKeepAlive_ValidBoundary_Max validates keep_alive=65535 is accepted.
+func TestKeepAlive_ValidBoundary_Max(t *testing.T) {
+	m := map[string]any{"keep_alive": 65535}
+	opts, err := SessionOptionsFromMap(m)
+	if err != nil {
+		t.Fatalf("keep_alive=65535 should be valid, got error: %v", err)
+	}
+	if opts.KeepAlive != 65535 {
+		t.Errorf("KeepAlive = %d, want 65535", opts.KeepAlive)
+	}
+}
+
+// TestKeepAlive_InvalidValues validates that out-of-range values are rejected.
+func TestKeepAlive_InvalidValues(t *testing.T) {
+	tests := []struct {
+		name string
+		val  int
+	}{
+		{"negative_minus_one", -1},
+		{"negative_large", -100},
+		{"too_large_70000", 70000},
+		{"too_large_100000", 100000},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := map[string]any{"keep_alive": tc.val}
+			_, err := SessionOptionsFromMap(m)
+			if err == nil {
+				t.Errorf("expected error for keep_alive=%d, got nil", tc.val)
+			}
+		})
+	}
+}
+
+// TestKeepAlive_NotProvided validates the default keep_alive (30).
+func TestKeepAlive_NotProvided(t *testing.T) {
+	m := map[string]any{"client_id": "test"}
+	opts, err := SessionOptionsFromMap(m)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if opts.KeepAlive != 30 {
+		t.Errorf("KeepAlive = %d, want default 30", opts.KeepAlive)
+	}
+}
+
+// TestKeepAlive_WrongType_String validates that a string value for keep_alive
+// is silently ignored (type assertion fails), keeping the default.
+func TestKeepAlive_WrongType_String(t *testing.T) {
+	m := map[string]any{"keep_alive": "30"}
+	opts, err := SessionOptionsFromMap(m)
+	if err != nil {
+		t.Fatalf("string keep_alive should be silently ignored, got error: %v", err)
+	}
+	if opts.KeepAlive != 30 {
+		t.Errorf("KeepAlive = %d, want default 30 (string should be ignored)", opts.KeepAlive)
+	}
+}
+
+// TestKeepAlive_WrongType_Float validates that a float64 value for keep_alive
+// is silently ignored (type assertion fails), keeping the default.
+func TestKeepAlive_WrongType_Float(t *testing.T) {
+	m := map[string]any{"keep_alive": 30.0}
+	opts, err := SessionOptionsFromMap(m)
+	if err != nil {
+		t.Fatalf("float64 keep_alive should be silently ignored, got error: %v", err)
+	}
+	if opts.KeepAlive != 30 {
+		t.Errorf("KeepAlive = %d, want default 30 (float64 should be ignored)", opts.KeepAlive)
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BUG-11: QoS type validation in SenderOptionsFromMap
+//
+// SenderOptionsFromMap must reject QoS values of the wrong type
+// and out-of-range integer values.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// TestQoS_ValidValues validates accepted QoS values 0, 1, 2.
+func TestQoS_ValidValues(t *testing.T) {
+	for _, qos := range []int{0, 1, 2} {
+		t.Run(fmt.Sprintf("qos_%d", qos), func(t *testing.T) {
+			m := map[string]any{"qos": qos}
+			opts, err := SenderOptionsFromMap(m)
+			if err != nil {
+				t.Fatalf("QoS=%d should be valid, got error: %v", qos, err)
+			}
+			if opts.QoS != byte(qos) {
+				t.Errorf("QoS = %d, want %d", opts.QoS, qos)
+			}
+		})
+	}
+}
+
+// TestQoS_InvalidRange validates that out-of-range QoS int values are rejected.
+func TestQoS_InvalidRange(t *testing.T) {
+	tests := []struct {
+		name string
+		val  int
+	}{
+		{"negative", -1},
+		{"three", 3},
+		{"five", 5},
+		{"hundred", 100},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := map[string]any{"qos": tc.val}
+			_, err := SenderOptionsFromMap(m)
+			if err == nil {
+				t.Errorf("expected error for QoS=%d, got nil", tc.val)
+			}
+		})
+	}
+}
+
+// TestQoS_WrongType_String validates that QoS as string "1" returns error.
+func TestQoS_WrongType_String(t *testing.T) {
+	m := map[string]any{"qos": "1"}
+	_, err := SenderOptionsFromMap(m)
+	if err == nil {
+		t.Fatal("expected error for string QoS, got nil")
+	}
+}
+
+// TestQoS_WrongType_Float64 validates that QoS as float64 1.0 returns error.
+func TestQoS_WrongType_Float64(t *testing.T) {
+	m := map[string]any{"qos": 1.0}
+	_, err := SenderOptionsFromMap(m)
+	if err == nil {
+		t.Fatal("expected error for float64 QoS, got nil")
+	}
+}
+
+// TestQoS_WrongType_Bool validates that QoS as bool returns error.
+func TestQoS_WrongType_Bool(t *testing.T) {
+	m := map[string]any{"qos": true}
+	_, err := SenderOptionsFromMap(m)
+	if err == nil {
+		t.Fatal("expected error for bool QoS, got nil")
+	}
+}
+
+// TestQoS_NotProvided validates the default QoS (1).
+func TestQoS_NotProvided(t *testing.T) {
+	m := map[string]any{"default_topic": "test/topic"}
+	opts, err := SenderOptionsFromMap(m)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if opts.QoS != 1 {
+		t.Errorf("QoS = %d, want default 1", opts.QoS)
+	}
+}
+
+// TestQoS_Factory_NewSender_InvalidQoS validates that Factory.NewSender
+// returns a proper error when QoS is invalid in the sender spec.
+func TestQoS_Factory_NewSender_InvalidQoS(t *testing.T) {
+	f := &Factory{}
+	sess := validSession()
+
+	tests := []struct {
+		name string
+		qos  any
+	}{
+		{"out_of_range", 5},
+		{"string_type", "1"},
+		{"float_type", 1.0},
+		{"negative", -1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := f.NewSender(context.Background(), ports.SenderSpec{
+				ID:        "s-invalid-qos",
+				SessionID: "test-session",
+				Options:   map[string]any{"qos": tc.qos},
+			}, sess)
+			if err == nil {
+				t.Errorf("expected error for QoS=%v (%T), got nil", tc.qos, tc.qos)
+			}
+		})
+	}
+}
+
+// TestQoS_Factory_NewSender_ValidQoS validates that Factory.NewSender
+// succeeds with valid QoS values.
+func TestQoS_Factory_NewSender_ValidQoS(t *testing.T) {
+	f := &Factory{}
+	sess := validSession()
+
+	for _, qos := range []int{0, 1, 2} {
+		t.Run(fmt.Sprintf("qos_%d", qos), func(t *testing.T) {
+			sender, err := f.NewSender(context.Background(), ports.SenderSpec{
+				ID:        "s-valid-qos",
+				SessionID: "test-session",
+				Options:   map[string]any{"qos": qos},
+			}, sess)
+			if err != nil {
+				t.Fatalf("QoS=%d should be valid, got error: %v", qos, err)
+			}
+			if sender == nil {
+				t.Fatalf("sender should not be nil for QoS=%d", qos)
+			}
+		})
+	}
 }

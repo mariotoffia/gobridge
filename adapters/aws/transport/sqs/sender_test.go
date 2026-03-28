@@ -3,6 +3,7 @@ package sqs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -343,6 +344,127 @@ func TestSender_ConfigDefaults_Clamps(t *testing.T) {
 	}
 	if cfg.BatchSize != 10 {
 		t.Fatalf("batch > 10 should clamp to 10, got %d", cfg.BatchSize)
+	}
+}
+
+// Verifies that a partial failure in the first batch does not abort subsequent
+// batches. All batches are attempted; total sent includes successes from all.
+func TestSender_SendBatch_PartialFailure_ContinuesRemaining(t *testing.T) {
+	callNum := 0
+	mock := &mockSQSClient{
+		SendMessageBatchFn: func(_ context.Context, in *awssqs.SendMessageBatchInput, _ ...func(*awssqs.Options)) (*awssqs.SendMessageBatchOutput, error) {
+			callNum++
+			if callNum == 1 {
+				return &awssqs.SendMessageBatchOutput{
+					Successful: []sqstypes.SendMessageBatchResultEntry{{Id: in.Entries[0].Id}},
+					Failed:     []sqstypes.BatchResultErrorEntry{{Id: aws.String("1"), Code: aws.String("InternalError"), Message: aws.String("transient")}},
+				}, nil
+			}
+			result := make([]sqstypes.SendMessageBatchResultEntry, len(in.Entries))
+			for i := range in.Entries {
+				result[i] = sqstypes.SendMessageBatchResultEntry{Id: in.Entries[i].Id}
+			}
+			return &awssqs.SendMessageBatchOutput{Successful: result}, nil
+		},
+	}
+	sender, err := NewSender(SenderConfig{QueueURL: "https://q", BatchSize: 2, Client: mock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envs := make([]*domain.Envelope, 4)
+	for i := range envs {
+		envs[i] = &domain.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("msg")}
+	}
+	sent, sendErr := sender.SendBatch(context.Background(), envs)
+	if sendErr == nil {
+		t.Fatal("expected combined error from partial failure")
+	}
+	if sent != 3 {
+		t.Fatalf("expected 3 sent (1+2), got %d", sent)
+	}
+	if callNum != 2 {
+		t.Fatalf("expected 2 batch API calls, got %d", callNum)
+	}
+}
+
+// Verifies that a full API error on one batch does not abort remaining batches.
+func TestSender_SendBatch_APIError_ContinuesRemaining(t *testing.T) {
+	callNum := 0
+	mock := &mockSQSClient{
+		SendMessageBatchFn: func(_ context.Context, in *awssqs.SendMessageBatchInput, _ ...func(*awssqs.Options)) (*awssqs.SendMessageBatchOutput, error) {
+			callNum++
+			if callNum == 1 {
+				return nil, errors.New("ServiceUnavailable")
+			}
+			result := make([]sqstypes.SendMessageBatchResultEntry, len(in.Entries))
+			for i := range in.Entries {
+				result[i] = sqstypes.SendMessageBatchResultEntry{Id: in.Entries[i].Id}
+			}
+			return &awssqs.SendMessageBatchOutput{Successful: result}, nil
+		},
+	}
+	sender, err := NewSender(SenderConfig{QueueURL: "https://q", BatchSize: 3, Client: mock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envs := make([]*domain.Envelope, 6)
+	for i := range envs {
+		envs[i] = &domain.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("x")}
+	}
+	sent, sendErr := sender.SendBatch(context.Background(), envs)
+	if sendErr == nil {
+		t.Fatal("expected error from first batch failure")
+	}
+	if sent != 3 {
+		t.Fatalf("expected 3 sent from second batch, got %d", sent)
+	}
+	if callNum != 2 {
+		t.Fatalf("expected 2 batch API calls, got %d", callNum)
+	}
+	if !domain.IsRecoverableError(sendErr) {
+		t.Fatal("ServiceUnavailable should be recoverable")
+	}
+}
+
+// Verifies each batch gets its own timeout (BUG-9 regression test).
+func TestSender_SendBatch_PerBatchTimeout(t *testing.T) {
+	var deadlines []time.Time
+	mock := &mockSQSClient{
+		SendMessageBatchFn: func(ctx context.Context, in *awssqs.SendMessageBatchInput, _ ...func(*awssqs.Options)) (*awssqs.SendMessageBatchOutput, error) {
+			dl, ok := ctx.Deadline()
+			if !ok {
+				t.Fatal("expected deadline on batch context")
+			}
+			deadlines = append(deadlines, dl)
+			time.Sleep(5 * time.Millisecond) // ensure distinguishable deadlines
+			result := make([]sqstypes.SendMessageBatchResultEntry, len(in.Entries))
+			for i := range in.Entries {
+				result[i] = sqstypes.SendMessageBatchResultEntry{Id: in.Entries[i].Id}
+			}
+			return &awssqs.SendMessageBatchOutput{Successful: result}, nil
+		},
+	}
+	sender, err := NewSender(SenderConfig{QueueURL: "https://q", BatchSize: 2, Timeout: 100 * time.Millisecond, Client: mock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envs := make([]*domain.Envelope, 4)
+	for i := range envs {
+		envs[i] = &domain.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("x")}
+	}
+	sent, err := sender.SendBatch(context.Background(), envs)
+	if err != nil {
+		t.Fatalf("SendBatch: %v", err)
+	}
+	if sent != 4 {
+		t.Fatalf("expected 4 sent, got %d", sent)
+	}
+	if len(deadlines) != 2 {
+		t.Fatalf("expected 2 batch calls, got %d", len(deadlines))
+	}
+	// Per-batch timeouts: second deadline must be later than first.
+	if !deadlines[1].After(deadlines[0]) {
+		t.Fatalf("second batch deadline (%v) should be after first (%v); shared timeout suspected", deadlines[1], deadlines[0])
 	}
 }
 

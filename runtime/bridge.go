@@ -220,8 +220,9 @@ func (rt *Runtime) AddRoute(
 // use Stop to shut down gracefully.
 func (rt *Runtime) Start(ctx context.Context) error {
 	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
 	if rt.running {
-		rt.mu.Unlock()
 		return errors.New("runtime already running")
 	}
 	rt.running = true
@@ -230,7 +231,6 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 	if err := validateRoutes(rt.entries, rt.outboxStore != nil, rt.leaseStore != nil); err != nil {
 		rt.running = false
-		rt.mu.Unlock()
 		return err
 	}
 
@@ -375,7 +375,6 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		rt.startBackground(ctx, "route:"+e.config.ID, e.runner.Run)
 	}
 
-	rt.mu.Unlock()
 	return nil
 }
 

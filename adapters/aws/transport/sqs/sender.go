@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -59,16 +60,19 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 }
 
 // SendBatch sends multiple envelopes in batches of up to 10.
-// Returns the number of successfully sent messages.
+// Returns the number of successfully sent messages. When some batches
+// fail (partial failures or API errors), the method continues sending
+// the remaining batches and returns a combined error with the total
+// successful count.
 func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, error) {
 	if err := s.ensureClient(ctx); err != nil {
 		return 0, err
 	}
 
-	sendCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
-	defer cancel()
-
-	var sent int
+	var (
+		sent   int
+		errs   []error
+	)
 
 	for i := 0; i < len(envs); i += s.cfg.BatchSize {
 		end := i + s.cfg.BatchSize
@@ -83,23 +87,35 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 			entries = append(entries, entry)
 		}
 
-		result, err := s.client.SendMessageBatch(sendCtx, &awssqs.SendMessageBatchInput{
+		batchCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
+
+		result, err := s.client.SendMessageBatch(batchCtx, &awssqs.SendMessageBatchInput{
 			QueueUrl: aws.String(s.queueURL),
 			Entries:  entries,
 		})
+
+		cancel()
+
 		if err != nil {
-			return sent, MapError(err)
+			errs = append(errs, MapError(err))
+			continue
 		}
 
 		sent += len(result.Successful)
 
 		if len(result.Failed) > 0 {
-			f := result.Failed[0]
-			return sent, domain.ErrUnavailable.
-				Wrap(fmt.Errorf("sqs batch entry %s failed: %s", derefStr(f.Id), derefStr(f.Message))).
-				With("code", derefStr(f.Code)).
-				With("sender_fault", f.SenderFault)
+			for _, f := range result.Failed {
+				errs = append(errs, domain.ErrUnavailable.
+					Wrap(fmt.Errorf("sqs batch entry %s failed: %s",
+						derefStr(f.Id), derefStr(f.Message))).
+					With("code", derefStr(f.Code)).
+					With("sender_fault", f.SenderFault))
+			}
 		}
+	}
+
+	if len(errs) > 0 {
+		return sent, errors.Join(errs...)
 	}
 
 	return sent, nil

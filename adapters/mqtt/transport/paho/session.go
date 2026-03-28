@@ -42,6 +42,11 @@ type Session struct {
 
 	// activeSubs tracks topics for which SUBSCRIBE has been issued.
 	activeSubs map[string]byte // topic -> qos
+
+	// startCtx is the parent context from Start(), used to derive
+	// reconnect contexts so that session cancellation also cancels
+	// in-progress reconciliations.
+	startCtx context.Context
 }
 
 var _ ports.Session = (*Session)(nil)
@@ -86,18 +91,27 @@ func (s *Session) Start(ctx context.Context) error {
 		OnConnectionUp: func(cm *autopaho.ConnectionManager, _ *pahov5.Connack) {
 			s.pushEvent(ports.SessionConnected, nil)
 			s.mu.Lock()
+			oldSubs := s.activeSubs
 			s.activeSubs = make(map[string]byte)
 			plan := s.plan
+			parentCtx := s.startCtx
 			s.mu.Unlock()
 			if plan != nil {
 				reconTimeout := s.opts.ReconnectTimeout
 				if reconTimeout == 0 {
 					reconTimeout = 30 * time.Second
 				}
-				reconCtx, reconCancel := context.WithTimeout(context.Background(), reconTimeout)
+				reconCtx, reconCancel := context.WithTimeout(parentCtx, reconTimeout)
 				defer reconCancel()
-				if err := s.reconcile(reconCtx, cm, *plan); err != nil && s.logger != nil {
-					s.logger.Warn("reconcile on reconnect failed", "error", err)
+				if err := s.reconcile(reconCtx, cm, *plan); err != nil {
+					// Restore the old subscription state so that the next
+					// reconnect delta calculation remains correct.
+					s.mu.Lock()
+					s.activeSubs = oldSubs
+					s.mu.Unlock()
+					if s.logger != nil {
+						s.logger.Warn("reconcile on reconnect failed", "error", err)
+					}
 				}
 			}
 		},
@@ -153,6 +167,7 @@ func (s *Session) Start(ctx context.Context) error {
 
 	s.mu.Lock()
 	s.cm = cm
+	s.startCtx = ctx
 	s.mu.Unlock()
 
 	return nil

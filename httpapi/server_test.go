@@ -382,6 +382,26 @@ func TestCORS_PreflightReturns204(t *testing.T) {
 	assert.Equal(t, "https://example.com", rec.Header().Get("Access-Control-Allow-Origin"))
 }
 
+// Verifies OPTIONS preflight for a disallowed origin returns 403.
+func TestCORS_PreflightDisallowedOriginReturns403(t *testing.T) {
+	rt := testRuntime()
+	cfg := testConfig()
+	cfg.CORSOrigins = "https://example.com"
+	s := New(rt, cfg)
+
+	mux := http.NewServeMux()
+	s.registerMonitorRoutes(mux)
+	handler := s.wrap(mux)
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/monitor/live", nil)
+	req.Header.Set("Origin", "https://evil.com")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
+}
+
 // --- Handler tests ---
 
 // Verifies GET /api/v1/admin/bridge returns instance metadata and running=false when authenticated.

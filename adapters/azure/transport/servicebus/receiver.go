@@ -39,7 +39,8 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 	}
 
 	defer func() {
-		closeCtx := context.Background()
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer closeCancel()
 		if closer, ok := r.client.(interface{ Close(context.Context) error }); ok {
 			_ = closer.Close(closeCtx)
 		}

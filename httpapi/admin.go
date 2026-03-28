@@ -195,7 +195,7 @@ func (s *Server) handleDLQPurge(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
 	}
-	count, err := store.Purge(r.Context(), time.Now())
+	count, err := store.Purge(r.Context(), time.Now().UTC())
 	if err != nil {
 		s.emitAudit(r, "dlq.purge", "dlq", "", "failure", map[string]any{"error": err.Error()})
 		writeErr(w, http.StatusInternalServerError, "DLQ purge failed")
