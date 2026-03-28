@@ -317,3 +317,92 @@ func TestCredentialResolver_CacheEvictsOldestWhenFull(t *testing.T) {
 	assert.Equal(t, int32(maxCredentialCacheEntries+2), repo.callCount.Load(),
 		"first URI should miss cache after it was evicted as oldest-by-expiry")
 }
+
+// TestCredentialResolver_CachedCredentials_ReturnIndependentCopies verifies that
+// consecutive Resolve calls return independent deep copies so callers cannot
+// corrupt cached state by mutating the returned CredentialSet.
+func TestCredentialResolver_CachedCredentials_ReturnSharedPointer(t *testing.T) {
+	creds := &domain.CredentialSet{
+		Password: &domain.PasswordCredential{Username: "shared", Password: "secret"},
+	}
+	repo := &stubRepo{scheme: "file", creds: creds}
+
+	r := NewCredentialResolver(WithCredentialCacheTTL(time.Hour))
+	r.Register(repo)
+
+	got1, err := r.Resolve(context.Background(), "file://shared-ptr")
+	require.NoError(t, err)
+
+	got2, err := r.Resolve(context.Background(), "file://shared-ptr")
+	require.NoError(t, err)
+
+	assert.NotSame(t, got1, got2, "cached Resolve should return independent copies")
+	assert.Equal(t, int32(1), repo.callCount.Load(), "repo should only be called once")
+}
+
+// Verifies resolveRepo returns an error for a malformed URI.
+func TestCredentialResolver_ResolveRepo_InvalidURI(t *testing.T) {
+	r := NewCredentialResolver()
+
+	_, err := r.Resolve(context.Background(), "://missing-scheme")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid URI")
+}
+
+// Verifies CacheStats accurately reports expired entries.
+func TestCredentialResolver_CacheStats_AccurateExpiredCount(t *testing.T) {
+	creds := &domain.CredentialSet{
+		Password: &domain.PasswordCredential{Username: "stats-user"},
+	}
+	repo := &stubRepo{scheme: "file", creds: creds}
+
+	r := NewCredentialResolver(WithCredentialCacheTTL(10 * time.Millisecond))
+	r.Register(repo)
+
+	uris := []string{"file://a", "file://b", "file://c"}
+	for _, uri := range uris {
+		_, err := r.Resolve(context.Background(), uri)
+		require.NoError(t, err)
+	}
+
+	stats := r.CacheStats()
+	assert.Equal(t, 3, stats.Size)
+	assert.Equal(t, 3, stats.Active)
+	assert.Equal(t, 0, stats.Expired)
+
+	time.Sleep(20 * time.Millisecond)
+
+	stats = r.CacheStats()
+	assert.Equal(t, 3, stats.Size, "expired entries remain in cache until evicted")
+	assert.Equal(t, 3, stats.Expired)
+	assert.Equal(t, 0, stats.Active)
+}
+
+// TestCredentialResolver_Register_MultipleRepos_SameSchemeNamespace verifies
+// which repository wins when two repos share the same scheme and namespace.
+// The first registered repo wins because resolveRepo uses strict > comparison,
+// so equal-length namespaces do not replace an existing best match.
+func TestCredentialResolver_Register_MultipleRepos_SameSchemeNamespace(t *testing.T) {
+	credsA := &domain.CredentialSet{
+		Password: &domain.PasswordCredential{Username: "repoA"},
+	}
+	credsB := &domain.CredentialSet{
+		Password: &domain.PasswordCredential{Username: "repoB"},
+	}
+	repoA := &stubRepo{scheme: "pms", namespace: "tenant", creds: credsA}
+	repoB := &stubRepo{scheme: "pms", namespace: "tenant", creds: credsB}
+
+	r := NewCredentialResolver()
+	r.Register(repoA)
+	r.Register(repoB)
+
+	got, err := r.Resolve(context.Background(), "pms://tenant/secret")
+	require.NoError(t, err)
+
+	// resolveRepo uses `len(ns) > bestLen` (strict greater-than), so the first
+	// registered repo with equal namespace length wins.
+	assert.Equal(t, "repoA", got.Password.Username,
+		"first registered repo should win when namespace lengths are equal")
+	assert.Equal(t, int32(1), repoA.callCount.Load())
+	assert.Equal(t, int32(0), repoB.callCount.Load())
+}

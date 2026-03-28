@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -157,4 +159,116 @@ func TestBridgeSettings_DurationDefaults(t *testing.T) {
 	bs := BridgeSettings{}
 	assert.Equal(t, 30*1e9, float64(bs.ShutdownTimeoutDuration()))
 	assert.Equal(t, 30*1e9, float64(bs.DrainTimeoutDuration()))
+}
+
+// TestParseFile_ValidYAML verifies ParseFile reads a YAML temp file with FormatAuto
+// and correctly populates the bridge config fields.
+func TestParseFile_ValidYAML(t *testing.T) {
+	content := []byte(`
+bridge:
+  id: file-test
+receivers:
+  - id: rx-file
+    transport: sqs
+routes:
+  - id: r-file
+    receiver_id: rx-file
+    bindings: []
+`)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, content, 0o644))
+
+	cfg, err := ParseFile(path, FormatAuto)
+	require.NoError(t, err)
+	assert.Equal(t, "file-test", cfg.Bridge.ID)
+	require.Len(t, cfg.Receivers, 1)
+	assert.Equal(t, "rx-file", cfg.Receivers[0].ID)
+}
+
+// TestParseFile_ValidJSON verifies ParseFile detects JSON format from a .json extension
+// and parses the content correctly.
+func TestParseFile_ValidJSON(t *testing.T) {
+	content := []byte(`{
+  "bridge": {"id": "json-file"},
+  "receivers": [{"id": "rx-json", "transport": "sqs"}],
+  "routes": [{"id": "r-json", "receiver_id": "rx-json", "bindings": []}]
+}`)
+	path := filepath.Join(t.TempDir(), "config.json")
+	require.NoError(t, os.WriteFile(path, content, 0o644))
+
+	cfg, err := ParseFile(path, FormatAuto)
+	require.NoError(t, err)
+	assert.Equal(t, "json-file", cfg.Bridge.ID)
+	require.Len(t, cfg.Receivers, 1)
+	assert.Equal(t, "rx-json", cfg.Receivers[0].ID)
+}
+
+// TestParseFile_NonExistentFile verifies ParseFile returns an error whose message
+// contains "config: open" when the file does not exist.
+func TestParseFile_NonExistentFile(t *testing.T) {
+	_, err := ParseFile("/tmp/gobridge-nonexistent-12345.yaml", FormatAuto)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config: open")
+}
+
+// TestParseFile_FormatOverride verifies that an explicit format parameter takes
+// precedence over the file extension — JSON content in a .yaml file parses when
+// FormatJSON is specified.
+func TestParseFile_FormatOverride(t *testing.T) {
+	content := []byte(`{"bridge": {"id": "override-test"}}`)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, content, 0o644))
+
+	cfg, err := ParseFile(path, FormatJSON)
+	require.NoError(t, err)
+	assert.Equal(t, "override-test", cfg.Bridge.ID)
+}
+
+// TestParse_UnsupportedFormat verifies Parse returns an error containing
+// "unsupported format" for an unrecognized format string.
+func TestParse_UnsupportedFormat(t *testing.T) {
+	_, err := Parse(strings.NewReader("<xml/>"), Format("xml"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported format")
+}
+
+// TestParse_EmptyInput verifies Parse does not error on an empty reader and
+// returns a valid zero-valued config.
+func TestParse_EmptyInput(t *testing.T) {
+	cfg, err := Parse(strings.NewReader(""), FormatYAML)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Empty(t, cfg.Bridge.ID)
+	assert.Empty(t, cfg.Routes)
+}
+
+// TestParse_OversizedInput_RejectedByLimit verifies that Parse rejects inputs
+// exceeding MaxConfigBytes to prevent DoS via oversized configuration.
+func TestParse_OversizedInput_RejectedByLimit(t *testing.T) {
+	data := strings.Repeat("a: b\n", MaxConfigBytes/5+1)
+	require.Greater(t, len(data), MaxConfigBytes)
+
+	_, err := Parse(strings.NewReader(data), FormatYAML)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+}
+
+// TestDetectFormat_CaseInsensitive verifies that detectFormat handles upper-case
+// and mixed-case file extensions via strings.ToLower in the implementation.
+func TestDetectFormat_CaseInsensitive(t *testing.T) {
+	tests := []struct {
+		path string
+		want Format
+	}{
+		{"config.JSON", FormatJSON},
+		{"config.YAML", FormatYAML},
+		{"config.YML", FormatYAML},
+		{"config.Json", FormatJSON},
+		{"config.Yml", FormatYAML},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			assert.Equal(t, tt.want, detectFormat(tt.path))
+		})
+	}
 }

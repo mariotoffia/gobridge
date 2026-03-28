@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/mariotoffia/gobridge/domain"
@@ -65,5 +66,230 @@ func TestDLQRouter_UnknownError(t *testing.T) {
 	}
 	if store.Entries[0].Category != "unknown" {
 		t.Fatalf("expected category 'unknown', got %q", store.Entries[0].Category)
+	}
+}
+
+// Verifies HasStore returns true when a store is configured.
+func TestDLQRouter_HasStore_True(t *testing.T) {
+	store := NewFakeDLQStore()
+	dlq := runtime.NewDLQRouter(store)
+
+	if !dlq.HasStore() {
+		t.Fatal("HasStore() should return true when store is non-nil")
+	}
+}
+
+// Verifies HasStore returns false when store is nil.
+func TestDLQRouter_HasStore_False(t *testing.T) {
+	dlq := runtime.NewDLQRouter(nil)
+
+	if dlq.HasStore() {
+		t.Fatal("HasStore() should return false when store is nil")
+	}
+}
+
+// Documents RISK: Reason and LastError contain raw err.Error() strings,
+// which may include infrastructure details such as hostnames and ports.
+// TestDLQRouter_Route_RedactsErrorDetails verifies that DLQ entries use
+// sanitized error reasons rather than raw err.Error() to prevent information
+// disclosure of internal infrastructure details.
+func TestDLQRouter_Route_RedactsErrorDetails(t *testing.T) {
+	store := NewFakeDLQStore()
+	dlq := runtime.NewDLQRouter(store)
+	env := &domain.Envelope{ID: "msg-redact"}
+
+	rawErr := domain.ErrConnectionLost.Wrap(
+		fmt.Errorf("connection to db-prod.internal:5432 refused"),
+	)
+
+	err := dlq.Route(context.Background(), env, "route-redact", "bind-1", "sess-1", "src-1", rawErr, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if store.Count() != 1 {
+		t.Fatalf("expected 1 DLQ entry, got %d", store.Count())
+	}
+
+	entry := store.Entries[0]
+	const sensitiveSubstring = "db-prod.internal:5432"
+	if contains(entry.Reason, sensitiveSubstring) {
+		t.Fatalf("Reason should NOT contain sensitive details %q, got %q", sensitiveSubstring, entry.Reason)
+	}
+	if contains(entry.LastError, sensitiveSubstring) {
+		t.Fatalf("LastError should NOT contain sensitive details %q, got %q", sensitiveSubstring, entry.LastError)
+	}
+	if entry.Reason != "connection lost" {
+		t.Fatalf("Reason should be the BridgeError message, got %q", entry.Reason)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		findSubstring(s, substr))
+}
+
+func findSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+// Verifies that when the DLQ store returns a write error, Route propagates it.
+func TestDLQRouter_Route_StoreWriteError_Propagated(t *testing.T) {
+	store := NewFakeDLQStore()
+	store.WriteErr = fmt.Errorf("disk full")
+	dlq := runtime.NewDLQRouter(store)
+	env := &domain.Envelope{ID: "msg-fail"}
+
+	err := dlq.Route(context.Background(), env, "r", "", "", "", domain.ErrNotFound, 1)
+	if err == nil {
+		t.Fatal("expected store write error to be propagated")
+	}
+	if err.Error() != "disk full" {
+		t.Fatalf("expected error 'disk full', got %q", err.Error())
+	}
+}
+
+// Verifies all DLQEntry fields are correctly populated from the Route call.
+func TestDLQRouter_Route_AllFieldsPopulated(t *testing.T) {
+	store := NewFakeDLQStore()
+	dlq := runtime.NewDLQRouter(store)
+
+	env := &domain.Envelope{
+		ID:      "msg-all",
+		Subject: "test/topic",
+		Payload: []byte("payload-data"),
+		Headers: map[string]any{domain.HeaderCorrelationID: "corr-xyz"},
+	}
+
+	routeErr := domain.ErrThrottled
+	err := dlq.Route(context.Background(), env, "route-all", "bind-all", "sess-all", "src-all", routeErr, 7)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if store.Count() != 1 {
+		t.Fatalf("expected 1 entry, got %d", store.Count())
+	}
+
+	entry := store.Entries[0]
+	if entry.ID == "" {
+		t.Fatal("entry ID should be generated and non-empty")
+	}
+	if entry.Envelope.ID != "msg-all" {
+		t.Fatalf("expected envelope ID 'msg-all', got %q", entry.Envelope.ID)
+	}
+	if entry.RouteID != "route-all" {
+		t.Fatalf("expected RouteID 'route-all', got %q", entry.RouteID)
+	}
+	if entry.BindingID != "bind-all" {
+		t.Fatalf("expected BindingID 'bind-all', got %q", entry.BindingID)
+	}
+	if entry.SessionID != "sess-all" {
+		t.Fatalf("expected SessionID 'sess-all', got %q", entry.SessionID)
+	}
+	if entry.SourceID != "src-all" {
+		t.Fatalf("expected SourceID 'src-all', got %q", entry.SourceID)
+	}
+	if entry.CorrelationID != "corr-xyz" {
+		t.Fatalf("expected CorrelationID 'corr-xyz', got %q", entry.CorrelationID)
+	}
+	if entry.Reason == "" {
+		t.Fatal("Reason should not be empty")
+	}
+	if entry.Category != string(domain.ErrorTransient) {
+		t.Fatalf("expected category %q, got %q", domain.ErrorTransient, entry.Category)
+	}
+	if entry.ErrorCode != string(domain.ErrCodeThrottled) {
+		t.Fatalf("expected error code %q, got %q", domain.ErrCodeThrottled, entry.ErrorCode)
+	}
+	if entry.LastError == "" {
+		t.Fatal("LastError should not be empty")
+	}
+	if entry.FailedAt.IsZero() {
+		t.Fatal("FailedAt should be set")
+	}
+	if entry.Attempts != 7 {
+		t.Fatalf("expected Attempts 7, got %d", entry.Attempts)
+	}
+}
+
+// Verifies that when the envelope has no correlation ID header, CorrelationID is empty.
+func TestDLQRouter_Route_NoCorrelationID(t *testing.T) {
+	store := NewFakeDLQStore()
+	dlq := runtime.NewDLQRouter(store)
+
+	env := &domain.Envelope{ID: "msg-nocorr"}
+
+	err := dlq.Route(context.Background(), env, "route-nocorr", "", "", "", domain.ErrNotFound, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if store.Count() != 1 {
+		t.Fatalf("expected 1 entry, got %d", store.Count())
+	}
+	if store.Entries[0].CorrelationID != "" {
+		t.Fatalf("expected empty CorrelationID, got %q", store.Entries[0].CorrelationID)
+	}
+}
+
+// Verifies classifyError with a BridgeError returns the correct class and code.
+func TestDLQRouter_ClassifyError_BridgeError(t *testing.T) {
+	store := NewFakeDLQStore()
+	dlq := runtime.NewDLQRouter(store)
+	env := &domain.Envelope{ID: "msg-bridge"}
+
+	testCases := []struct {
+		name         string
+		err          error
+		wantCategory string
+		wantCode     string
+	}{
+		{
+			name:         "transient/throttled",
+			err:          domain.ErrThrottled,
+			wantCategory: string(domain.ErrorTransient),
+			wantCode:     string(domain.ErrCodeThrottled),
+		},
+		{
+			name:         "permanent/not_found",
+			err:          domain.ErrNotFound,
+			wantCategory: string(domain.ErrorPermanent),
+			wantCode:     string(domain.ErrCodeNotFound),
+		},
+		{
+			name:         "rejected/invalid_payload",
+			err:          domain.ErrInvalidPayload,
+			wantCategory: string(domain.ErrorRejected),
+			wantCode:     string(domain.ErrCodeInvalidPayload),
+		},
+		{
+			name:         "expired/message_expired",
+			err:          domain.ErrMessageExpired,
+			wantCategory: string(domain.ErrorExpired),
+			wantCode:     string(domain.ErrCodeMessageExpired),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			store.Entries = nil
+			err := dlq.Route(context.Background(), env, "route-classify", "", "", "", tc.err, 1)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if store.Count() != 1 {
+				t.Fatalf("expected 1 entry, got %d", store.Count())
+			}
+			entry := store.Entries[0]
+			if entry.Category != tc.wantCategory {
+				t.Fatalf("expected category %q, got %q", tc.wantCategory, entry.Category)
+			}
+			if entry.ErrorCode != tc.wantCode {
+				t.Fatalf("expected error code %q, got %q", tc.wantCode, entry.ErrorCode)
+			}
+		})
 	}
 }

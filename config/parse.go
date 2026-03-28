@@ -37,11 +37,20 @@ func ParseFile(path string, format Format) (*BridgeConfig, error) {
 	return Parse(f, format)
 }
 
+// MaxConfigBytes is the maximum allowed configuration size (4 MiB).
+// Inputs exceeding this limit are rejected to prevent excessive memory use.
+const MaxConfigBytes = 4 << 20
+
 // Parse reads configuration from r using the specified format.
+// Inputs larger than MaxConfigBytes are rejected.
 func Parse(r io.Reader, format Format) (*BridgeConfig, error) {
-	data, err := io.ReadAll(r)
+	lr := io.LimitReader(r, MaxConfigBytes+1)
+	data, err := io.ReadAll(lr)
 	if err != nil {
 		return nil, fmt.Errorf("config: read: %w", err)
+	}
+	if len(data) > MaxConfigBytes {
+		return nil, fmt.Errorf("config: input exceeds maximum size of %d bytes", MaxConfigBytes)
 	}
 
 	var cfg BridgeConfig

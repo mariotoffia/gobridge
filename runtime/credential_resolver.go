@@ -89,6 +89,7 @@ func (r *CredentialResolver) Resolve(ctx context.Context, uri string) (*domain.C
 
 	if !r.cacheDisabled {
 		r.setCached(uri, creds)
+		return cloneCredentialSet(creds), nil
 	}
 
 	return creds, nil
@@ -156,7 +157,27 @@ func (r *CredentialResolver) getCached(uri string) *domain.CredentialSet {
 		r.mu.Unlock()
 		return nil
 	}
-	return entry.creds
+	return cloneCredentialSet(entry.creds)
+}
+
+func cloneCredentialSet(c *domain.CredentialSet) *domain.CredentialSet {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	if c.Password != nil {
+		p := *c.Password
+		cp.Password = &p
+	}
+	if c.TLS != nil {
+		t := *c.TLS
+		if c.TLS.CAPEMs != nil {
+			t.CAPEMs = make([]string, len(c.TLS.CAPEMs))
+			copy(t.CAPEMs, c.TLS.CAPEMs)
+		}
+		cp.TLS = &t
+	}
+	return &cp
 }
 
 const maxCredentialCacheEntries = 1000

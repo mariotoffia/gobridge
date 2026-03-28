@@ -67,7 +67,9 @@ const (
 	DefaultDepthCacheTTL     = 1 * time.Second
 )
 
-// Default backoff values.
+// DefaultBackoffPolicy holds the default backoff configuration.
+// NOTE: This is a mutable package-level var. Callers should avoid modifying it
+// as changes affect all subsequent WithDefaults() calls globally.
 var DefaultBackoffPolicy = BackoffPolicy{
 	InitialInterval: 1 * time.Second,
 	MaxInterval:     30 * time.Second,
@@ -91,15 +93,15 @@ type RoutePolicy struct {
 	DepthCacheTTL        time.Duration
 }
 
-// WithDefaults returns a copy with zero-valued fields set to defaults.
+// WithDefaults returns a copy with zero-valued or invalid fields set to defaults.
 func (p RoutePolicy) WithDefaults() RoutePolicy {
-	if p.MaxInFlight == 0 {
+	if p.MaxInFlight <= 0 {
 		p.MaxInFlight = DefaultMaxInFlight
 	}
-	if p.MaxReplayAttempts == 0 {
+	if p.MaxReplayAttempts <= 0 {
 		p.MaxReplayAttempts = DefaultMaxReplayAttempts
 	}
-	if p.MaxOutboxDepth == 0 {
+	if p.MaxOutboxDepth <= 0 {
 		p.MaxOutboxDepth = DefaultMaxOutboxDepth
 	}
 	if p.Backoff.InitialInterval == 0 {

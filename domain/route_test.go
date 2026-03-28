@@ -207,3 +207,122 @@ func TestFailureAction_Constants(t *testing.T) {
 		seen[v] = true
 	}
 }
+
+// TestRoutePolicy_WithDefaults_NegativeValues verifies that negative values for
+// MaxInFlight, MaxReplayAttempts, and MaxOutboxDepth are clamped to defaults.
+func TestRoutePolicy_WithDefaults_NegativeValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		build func() domain.RoutePolicy
+		check func(t *testing.T, p domain.RoutePolicy)
+	}{
+		{
+			name: "negative MaxInFlight clamped to default",
+			build: func() domain.RoutePolicy {
+				return domain.RoutePolicy{MaxInFlight: -1}.WithDefaults()
+			},
+			check: func(t *testing.T, p domain.RoutePolicy) {
+				if p.MaxInFlight != domain.DefaultMaxInFlight {
+					t.Fatalf("MaxInFlight = %d, want %d (negative clamped)", p.MaxInFlight, domain.DefaultMaxInFlight)
+				}
+			},
+		},
+		{
+			name: "negative MaxReplayAttempts clamped to default",
+			build: func() domain.RoutePolicy {
+				return domain.RoutePolicy{MaxReplayAttempts: -5}.WithDefaults()
+			},
+			check: func(t *testing.T, p domain.RoutePolicy) {
+				if p.MaxReplayAttempts != domain.DefaultMaxReplayAttempts {
+					t.Fatalf("MaxReplayAttempts = %d, want %d (negative clamped)", p.MaxReplayAttempts, domain.DefaultMaxReplayAttempts)
+				}
+			},
+		},
+		{
+			name: "negative MaxOutboxDepth clamped to default",
+			build: func() domain.RoutePolicy {
+				return domain.RoutePolicy{MaxOutboxDepth: -100}.WithDefaults()
+			},
+			check: func(t *testing.T, p domain.RoutePolicy) {
+				if p.MaxOutboxDepth != domain.DefaultMaxOutboxDepth {
+					t.Fatalf("MaxOutboxDepth = %d, want %d (negative clamped)", p.MaxOutboxDepth, domain.DefaultMaxOutboxDepth)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.check(t, tt.build())
+		})
+	}
+}
+
+// TestRoutePolicy_WithDefaults_AllDefaults verifies that a completely zero-valued
+// RoutePolicy receives every default, including SendTimeout and DepthCacheTTL.
+func TestRoutePolicy_WithDefaults_AllDefaults(t *testing.T) {
+	p := domain.RoutePolicy{}.WithDefaults()
+
+	if p.MaxInFlight != domain.DefaultMaxInFlight {
+		t.Fatalf("MaxInFlight = %d, want %d", p.MaxInFlight, domain.DefaultMaxInFlight)
+	}
+	if p.MaxReplayAttempts != domain.DefaultMaxReplayAttempts {
+		t.Fatalf("MaxReplayAttempts = %d, want %d", p.MaxReplayAttempts, domain.DefaultMaxReplayAttempts)
+	}
+	if p.MaxOutboxDepth != domain.DefaultMaxOutboxDepth {
+		t.Fatalf("MaxOutboxDepth = %d, want %d", p.MaxOutboxDepth, domain.DefaultMaxOutboxDepth)
+	}
+	if p.Backoff.InitialInterval != domain.DefaultBackoffPolicy.InitialInterval {
+		t.Fatalf("Backoff.InitialInterval = %v, want %v", p.Backoff.InitialInterval, domain.DefaultBackoffPolicy.InitialInterval)
+	}
+	if p.Backoff.MaxInterval != domain.DefaultBackoffPolicy.MaxInterval {
+		t.Fatalf("Backoff.MaxInterval = %v, want %v", p.Backoff.MaxInterval, domain.DefaultBackoffPolicy.MaxInterval)
+	}
+	if p.Backoff.Multiplier != domain.DefaultBackoffPolicy.Multiplier {
+		t.Fatalf("Backoff.Multiplier = %v, want %v", p.Backoff.Multiplier, domain.DefaultBackoffPolicy.Multiplier)
+	}
+	if p.OnExpired != domain.ExpiredDLQ {
+		t.Fatalf("OnExpired = %s, want %s", p.OnExpired, domain.ExpiredDLQ)
+	}
+	if p.OnPermanentFailure != domain.FailureDLQ {
+		t.Fatalf("OnPermanentFailure = %s, want %s", p.OnPermanentFailure, domain.FailureDLQ)
+	}
+	if p.DispatchMode != domain.DispatchSingle {
+		t.Fatalf("DispatchMode = %s, want %s", p.DispatchMode, domain.DispatchSingle)
+	}
+	if p.DeliveryMode != domain.DeliveryDirectHold {
+		t.Fatalf("DeliveryMode = %s, want %s", p.DeliveryMode, domain.DeliveryDirectHold)
+	}
+	if p.AckAfter != domain.AckAfterTargetAccept {
+		t.Fatalf("AckAfter = %s, want %s", p.AckAfter, domain.AckAfterTargetAccept)
+	}
+	if p.SendTimeout != domain.DefaultSendTimeout {
+		t.Fatalf("SendTimeout = %v, want %v", p.SendTimeout, domain.DefaultSendTimeout)
+	}
+	if p.DepthCacheTTL != domain.DefaultDepthCacheTTL {
+		t.Fatalf("DepthCacheTTL = %v, want %v", p.DepthCacheTTL, domain.DefaultDepthCacheTTL)
+	}
+}
+
+// TestDefaultBackoffPolicy_IsMutableVar documents the risk that DefaultBackoffPolicy
+// is a package-level mutable var. Mutating it affects all subsequent WithDefaults calls.
+func TestDefaultBackoffPolicy_IsMutableVar(t *testing.T) {
+	saved := domain.DefaultBackoffPolicy
+	t.Cleanup(func() { domain.DefaultBackoffPolicy = saved })
+
+	domain.DefaultBackoffPolicy = domain.BackoffPolicy{
+		InitialInterval: 999 * time.Millisecond,
+		MaxInterval:     999 * time.Millisecond,
+		Multiplier:      99.0,
+	}
+
+	p := domain.RoutePolicy{}.WithDefaults()
+	if p.Backoff.InitialInterval != 999*time.Millisecond {
+		t.Fatalf("expected mutated InitialInterval 999ms, got %v", p.Backoff.InitialInterval)
+	}
+	if p.Backoff.MaxInterval != 999*time.Millisecond {
+		t.Fatalf("expected mutated MaxInterval 999ms, got %v", p.Backoff.MaxInterval)
+	}
+	if p.Backoff.Multiplier != 99.0 {
+		t.Fatalf("expected mutated Multiplier 99.0, got %v", p.Backoff.Multiplier)
+	}
+}

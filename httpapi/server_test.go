@@ -782,6 +782,48 @@ func TestHandleTopology(t *testing.T) {
 
 // --- SlogAuditLogger test ---
 
+// TestServer_DoubleStart_ReturnsError validates that calling Start twice
+// returns an error on the second call.
+func TestServer_DoubleStart_ReturnsError(t *testing.T) {
+	rt := testRuntime()
+	cfg := testConfig()
+	s := New(rt, cfg)
+
+	require.NoError(t, s.Start(context.Background()))
+	t.Cleanup(func() { _ = s.Stop(context.Background()) })
+
+	err := s.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already running")
+}
+
+// TestSanitizePropagatedID_Truncation validates that sanitizePropagatedID
+// truncates strings longer than 256 bytes.
+func TestSanitizePropagatedID_Truncation(t *testing.T) {
+	tests := []struct {
+		name    string
+		inputLen int
+		wantLen  int
+	}{
+		{name: "empty", inputLen: 0, wantLen: 0},
+		{name: "short", inputLen: 100, wantLen: 100},
+		{name: "exactly_256", inputLen: 256, wantLen: 256},
+		{name: "over_256", inputLen: 257, wantLen: 256},
+		{name: "much_longer", inputLen: 1024, wantLen: 256},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := strings.Repeat("x", tt.inputLen)
+			got := sanitizePropagatedID(input)
+			assert.Len(t, got, tt.wantLen)
+			if tt.inputLen <= 256 {
+				assert.Equal(t, input, got)
+			}
+		})
+	}
+}
+
 // Verifies SlogAuditLogger writes audit fields including action, actor, and audit marker to the slog output.
 func TestSlogAuditLogger_LogsEvent(t *testing.T) {
 	var buf strings.Builder

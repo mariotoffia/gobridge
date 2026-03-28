@@ -2,6 +2,7 @@ package circuitbreaker
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -62,8 +63,17 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 		return err
 	}
 
-	err := next(ctx, env)
-	b.afterRequest(err)
+	var err error
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("circuitbreaker: panic in processor chain: %v", r)
+			b.afterRequest(err)
+			panic(r)
+		}
+		b.afterRequest(err)
+	}()
+
+	err = next(ctx, env)
 	return err
 }
 

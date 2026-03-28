@@ -23,6 +23,9 @@ func (r *DLQRouter) HasStore() bool {
 	return r.store != nil
 }
 
+// dlqWriteTimeout is the maximum duration for a DLQ store write operation.
+const dlqWriteTimeout = 30 * time.Second
+
 // Route sends a failed envelope to the DLQ.
 func (r *DLQRouter) Route(
 	ctx context.Context,
@@ -38,6 +41,8 @@ func (r *DLQRouter) Route(
 	category, errorCode := classifyError(err)
 	correlationID, _ := domain.GetHeaderString(env.Headers, domain.HeaderCorrelationID)
 
+	reason := safeErrorReason(err)
+
 	entry := domain.DLQEntry{
 		ID:            generateID(),
 		Envelope:      *env,
@@ -46,15 +51,29 @@ func (r *DLQRouter) Route(
 		SessionID:     sessionID,
 		SourceID:      sourceID,
 		CorrelationID: correlationID,
-		Reason:        err.Error(),
+		Reason:        reason,
 		Category:      category,
 		ErrorCode:     errorCode,
-		LastError:     err.Error(),
+		LastError:     reason,
 		FailedAt:      time.Now(),
 		Attempts:      attempts,
 	}
 
-	return r.store.Write(ctx, entry)
+	writeCtx, cancel := context.WithTimeout(ctx, dlqWriteTimeout)
+	defer cancel()
+
+	return r.store.Write(writeCtx, entry)
+}
+
+// safeErrorReason returns a sanitized error reason suitable for persistence.
+// For BridgeErrors, it uses the structured message. For unknown errors, it
+// returns a generic description to avoid leaking internal details.
+func safeErrorReason(err error) string {
+	be, ok := domain.AsBridgeError(err)
+	if ok {
+		return be.Message
+	}
+	return "internal error"
 }
 
 func classifyError(err error) (category string, code string) {

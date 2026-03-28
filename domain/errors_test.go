@@ -1,8 +1,10 @@
 package domain_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -173,5 +175,123 @@ func TestErrMessageFiltered_Is(t *testing.T) {
 	}
 	if errors.Is(domain.ErrMessageFiltered, domain.ErrNotFound) {
 		t.Fatal("ErrMessageFiltered should not match ErrNotFound")
+	}
+}
+
+// TestBridgeError_Is_NonBridgeErrorTarget_ReturnsFalse validates that BridgeError.Is returns false
+// for targets that are not *BridgeError, exercising the type-assertion guard.
+func TestBridgeError_Is_NonBridgeErrorTarget_ReturnsFalse(t *testing.T) {
+	be := domain.ErrTimeout.Wrap(fmt.Errorf("inner"))
+
+	tests := []struct {
+		name   string
+		target error
+	}{
+		{"io.EOF", io.EOF},
+		{"context.Canceled", context.Canceled},
+		{"plain fmt error", fmt.Errorf("x")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if errors.Is(be, tt.target) {
+				t.Fatalf("BridgeError should not match %T via errors.Is", tt.target)
+			}
+		})
+	}
+}
+
+// TestSentinelErrorCodes_MatchDeclaredConstants validates every sentinel's .Code field
+// matches its corresponding ErrCode* constant, covering all 24 declared sentinels.
+func TestSentinelErrorCodes_MatchDeclaredConstants(t *testing.T) {
+	tests := []struct {
+		sentinel *domain.BridgeError
+		code     domain.ErrorCode
+	}{
+		{domain.ErrTimeout, domain.ErrCodeTimeout},
+		{domain.ErrConnectionLost, domain.ErrCodeConnectionLost},
+		{domain.ErrUnavailable, domain.ErrCodeUnavailable},
+		{domain.ErrThrottled, domain.ErrCodeThrottled},
+		{domain.ErrBrokerBusy, domain.ErrCodeBrokerBusy},
+		{domain.ErrTemporaryAuthFailure, domain.ErrCodeTemporaryAuthFailure},
+		{domain.ErrNotAuthorized, domain.ErrCodeNotAuthorized},
+		{domain.ErrForbidden, domain.ErrCodeForbidden},
+		{domain.ErrNotFound, domain.ErrCodeNotFound},
+		{domain.ErrInvalidPayload, domain.ErrCodeInvalidPayload},
+		{domain.ErrPayloadTooLarge, domain.ErrCodePayloadTooLarge},
+		{domain.ErrInvalidTopic, domain.ErrCodeInvalidTopic},
+		{domain.ErrProtocolError, domain.ErrCodeProtocolError},
+		{domain.ErrSchemaViolation, domain.ErrCodeSchemaViolation},
+		{domain.ErrMessageExpired, domain.ErrCodeMessageExpired},
+		{domain.ErrQoSNotSupported, domain.ErrCodeQoSNotSupported},
+		{domain.ErrMessageFiltered, domain.ErrCodeMessageFiltered},
+		{domain.ErrNotSupported, domain.ErrCodeNotSupported},
+		{domain.ErrVersionMismatch, domain.ErrCodeVersionMismatch},
+		{domain.ErrAlreadyExists, domain.ErrCodeAlreadyExists},
+		{domain.ErrStaleFencingToken, domain.ErrCodeStaleFencingToken},
+		{domain.ErrDuplicateRecord, domain.ErrCodeDuplicateRecord},
+		{domain.ErrNoRouteOwner, domain.ErrCodeNoRouteOwner},
+		{domain.ErrForwardFailed, domain.ErrCodeForwardFailed},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.code), func(t *testing.T) {
+			if tt.sentinel.Code != tt.code {
+				t.Fatalf("sentinel .Code = %s, want %s", tt.sentinel.Code, tt.code)
+			}
+		})
+	}
+}
+
+// TestBridgeError_Clone_ContextIsolation verifies that .With() returns a copy whose
+// context map is fully isolated from the original — mutations on the clone do not leak.
+func TestBridgeError_Clone_ContextIsolation(t *testing.T) {
+	original := domain.ErrTimeout.With("key1", "val1")
+	clone := original.With("key2", "val2")
+
+	if _, ok := original.Context["key2"]; ok {
+		t.Fatal("mutating clone leaked key2 into original")
+	}
+	if v, ok := clone.Context["key1"]; !ok || v != "val1" {
+		t.Fatal("clone should inherit key1 from original")
+	}
+	if v, ok := clone.Context["key2"]; !ok || v != "val2" {
+		t.Fatal("clone should contain key2")
+	}
+
+	clone.Context["key1"] = "overwritten"
+	if original.Context["key1"] != "val1" {
+		t.Fatal("direct map mutation on clone leaked into original")
+	}
+}
+
+// TestBridgeError_WithRetryAfter_DoesNotMutateSentinel verifies that calling
+// WithRetryAfter on a sentinel returns a new value without altering the sentinel.
+func TestBridgeError_WithRetryAfter_DoesNotMutateSentinel(t *testing.T) {
+	before := domain.ErrThrottled.RetryAfter
+
+	derived := domain.ErrThrottled.WithRetryAfter(10 * time.Second)
+
+	if domain.ErrThrottled.RetryAfter != before {
+		t.Fatalf("sentinel RetryAfter mutated: got %v, want %v", domain.ErrThrottled.RetryAfter, before)
+	}
+	if derived.RetryAfter != 10*time.Second {
+		t.Fatalf("derived RetryAfter = %v, want 10s", derived.RetryAfter)
+	}
+}
+
+// TestIsRecoverableError_DocumentsBehavior documents the design decision that unknown
+// (non-BridgeError) errors are treated as recoverable. This test exists for awareness;
+// if the policy changes, this test should be updated to reflect the new contract.
+func TestIsRecoverableError_DocumentsBehavior(t *testing.T) {
+	unknowns := []error{
+		fmt.Errorf("some random error"),
+		io.ErrUnexpectedEOF,
+		context.DeadlineExceeded,
+	}
+	for _, err := range unknowns {
+		t.Run(err.Error(), func(t *testing.T) {
+			if !domain.IsRecoverableError(err) {
+				t.Fatalf("design decision: unknown error %q should be treated as recoverable", err)
+			}
+		})
 	}
 }

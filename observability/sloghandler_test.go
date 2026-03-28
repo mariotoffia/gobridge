@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/mariotoffia/gobridge/observability"
 	"github.com/stretchr/testify/assert"
@@ -108,6 +110,37 @@ func TestCorrelationHandler_WithGroup(t *testing.T) {
 	require.True(t, ok, "expected 'request' group in output")
 	assert.Equal(t, "/api", group["path"])
 	assert.Equal(t, "corr-grp", group["correlation_id"])
+}
+
+// TestNewCorrelationHandler_NilInner_Panics validates that passing nil
+// to NewCorrelationHandler panics with the expected message.
+func TestNewCorrelationHandler_NilInner_Panics(t *testing.T) {
+	require.PanicsWithValue(t,
+		"observability: inner handler must not be nil",
+		func() { observability.NewCorrelationHandler(nil) },
+	)
+}
+
+// failingHandler is a slog.Handler stub that always returns an error from Handle.
+type failingHandler struct{}
+
+func (failingHandler) Enabled(context.Context, slog.Level) bool  { return true }
+func (failingHandler) Handle(context.Context, slog.Record) error { return errWriteFailed }
+func (failingHandler) WithAttrs([]slog.Attr) slog.Handler        { return failingHandler{} }
+func (failingHandler) WithGroup(string) slog.Handler              { return failingHandler{} }
+
+var errWriteFailed = errors.New("write failed")
+
+// TestCorrelationHandler_Handle_PropagatesInnerError validates that when
+// the inner handler returns an error, Handle propagates it unchanged.
+func TestCorrelationHandler_Handle_PropagatesInnerError(t *testing.T) {
+	h := observability.NewCorrelationHandler(failingHandler{})
+
+	ctx := observability.WithCorrelationID(context.Background(), "corr-err")
+	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "test", 0)
+
+	err := h.Handle(ctx, rec)
+	require.ErrorIs(t, err, errWriteFailed)
 }
 
 // Verifies Enabled reflects the wrapped handler's minimum level.
