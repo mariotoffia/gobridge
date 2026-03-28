@@ -8,7 +8,8 @@
       "Bash(wc -l:*)",
       "Bash(go test:*)",
       "Bash(make:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Skill(skill-create-test:*)"
     ]
   }
 }

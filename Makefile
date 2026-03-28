@@ -48,11 +48,7 @@ test-integration: ## Run all tests including integration (requires Docker)
 	AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
 		go test -race -timeout 600s -v ./...
 
-test-long-running: ## Run long-running stress tests (requires Docker, LONG_RUNNING=true)
-	@if [ "$$LONG_RUNNING" != "true" ]; then \
-		echo "Skipping long-running tests (set LONG_RUNNING=true to enable)"; \
-		exit 0; \
-	fi
+test-long-running: ## Run long-running stress tests (requires Docker, -tags=longrunning)
 	@echo "Running long-running stress tests..."
 	AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
 		go test -race -timeout 1200s -v -tags=longrunning ./tests/longrunning/...
