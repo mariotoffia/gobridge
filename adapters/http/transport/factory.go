@@ -22,13 +22,14 @@ var (
 // It creates HTTP source receivers and SSE target senders, exposing them
 // via an internal http.ServeMux accessible through Handler().
 type BridgeFactory struct {
-	mux        *http.ServeMux
-	pathPrefix string
-	locator    ports.RouteLocator
-	forwarder  ports.MessageForwarder
-	metrics    ports.MetricsExporter
-	logger     *slog.Logger
-	mu         sync.Mutex
+	mux             *http.ServeMux
+	pathPrefix      string
+	locator         ports.RouteLocator
+	forwarder       ports.MessageForwarder
+	metrics         ports.MetricsExporter
+	logger          *slog.Logger
+	mu              sync.Mutex
+	registeredPaths map[string]bool
 }
 
 // FactoryOption configures a BridgeFactory.
@@ -62,8 +63,9 @@ func WithPathPrefix(prefix string) FactoryOption {
 // NewBridgeFactory creates an HTTP transport factory.
 func NewBridgeFactory(opts ...FactoryOption) *BridgeFactory {
 	f := &BridgeFactory{
-		mux:        http.NewServeMux(),
-		pathPrefix: "/transport/http",
+		mux:             http.NewServeMux(),
+		pathPrefix:      "/transport/http",
+		registeredPaths: make(map[string]bool),
 	}
 	for _, o := range opts {
 		o(f)
@@ -96,8 +98,14 @@ func (f *BridgeFactory) NewReceiver(_ context.Context, def config.ReceiverDef, _
 		logger:      f.logger,
 	})
 
+	pattern := "POST " + path
 	f.mu.Lock()
-	f.mux.HandleFunc("POST "+path, recv.ServeHTTP)
+	if f.registeredPaths[pattern] {
+		f.mu.Unlock()
+		return nil, fmt.Errorf("http transport: duplicate receiver path %q", path)
+	}
+	f.registeredPaths[pattern] = true
+	f.mux.HandleFunc(pattern, recv.ServeHTTP)
 	f.mu.Unlock()
 
 	return recv, nil
@@ -131,8 +139,14 @@ func (f *BridgeFactory) NewSender(_ context.Context, def config.SenderDef, _ por
 		logger:            f.logger,
 	})
 
+	pattern := "GET " + path
 	f.mu.Lock()
-	f.mux.HandleFunc("GET "+path, sender.ServeHTTP)
+	if f.registeredPaths[pattern] {
+		f.mu.Unlock()
+		return nil, fmt.Errorf("http transport: duplicate sender path %q", path)
+	}
+	f.registeredPaths[pattern] = true
+	f.mux.HandleFunc(pattern, sender.ServeHTTP)
 	f.mu.Unlock()
 
 	return sender, nil

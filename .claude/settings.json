@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "Bash(find:*)",
+      "Bash(grep -n:*)",
+      "Bash(go build:*)",
+      "Bash(wc -l:*)",
+      "Bash(go test:*)",
+      "Bash(make:*)"
+    ]
+  }
+}

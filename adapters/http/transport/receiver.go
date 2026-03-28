@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -98,7 +99,11 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	env := body.toEnvelope()
+	env, err := body.toEnvelope()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	env.Headers = domain.StripReservedHeaders(env.Headers)
 
 	r.mu.Lock()
@@ -115,7 +120,14 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			writeError(w, http.StatusBadGateway, "route location failed")
 			return
 		}
-		if !local && node != nil && r.cfg.forwarder != nil {
+		if !local && node != nil {
+			if r.cfg.forwarder == nil {
+				if r.cfg.logger != nil {
+					r.cfg.logger.Error("remote route but no forwarder configured", "route", routeID, "peer", node.InstanceID)
+				}
+				writeError(w, http.StatusBadGateway, "no forwarder configured for remote route")
+				return
+			}
 			r.cfg.metrics.Counter(domain.MetricClusterForwards, 1)
 			fwdStart := time.Now()
 			if err := r.cfg.forwarder.Forward(ctx, node, routeID, env); err != nil {
@@ -162,7 +174,7 @@ type ingressRequest struct {
 	ExpiresAt string          `json:"expires_at,omitempty"`
 }
 
-func (r *ingressRequest) toEnvelope() *domain.Envelope {
+func (r *ingressRequest) toEnvelope() (*domain.Envelope, error) {
 	env := &domain.Envelope{
 		ID:        r.ID,
 		Subject:   r.Subject,
@@ -171,9 +183,11 @@ func (r *ingressRequest) toEnvelope() *domain.Envelope {
 		CreatedAt: time.Now(),
 	}
 	if r.ExpiresAt != "" {
-		if t, err := time.Parse(time.RFC3339, r.ExpiresAt); err == nil {
-			env.ExpiresAt = t
+		t, err := time.Parse(time.RFC3339, r.ExpiresAt)
+		if err != nil {
+			return nil, fmt.Errorf("invalid expires_at: must be RFC3339 format")
 		}
+		env.ExpiresAt = t
 	}
-	return env
+	return env, nil
 }
