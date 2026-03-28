@@ -249,6 +249,7 @@ func TestMonitorSensitive_RequiresAuth(t *testing.T) {
 	sensitive := []string{
 		"/api/v1/monitor/topology",
 		"/api/v1/monitor/routes",
+		"/api/v1/monitor/deephealth",
 		"/api/v1/monitor/logs",
 	}
 
@@ -266,9 +267,13 @@ func TestMonitorSensitive_RequiresAuth(t *testing.T) {
 			req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, req)
-			if path == "/api/v1/monitor/logs" {
+			switch path {
+			case "/api/v1/monitor/logs":
 				assert.Equal(t, http.StatusNotImplemented, rec.Code)
-			} else {
+			case "/api/v1/monitor/deephealth":
+				// Deep health returns 503 when runtime is not running.
+				assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+			default:
 				assert.Equal(t, http.StatusOK, rec.Code)
 			}
 		})

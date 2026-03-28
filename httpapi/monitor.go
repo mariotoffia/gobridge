@@ -24,6 +24,7 @@ func (s *Server) registerMonitorRoutes(mux *http.ServeMux) {
 	// Sensitive endpoints require authentication.
 	mux.HandleFunc(prefix+"/topology", s.requireMonitorAuth(s.handleTopology))
 	mux.HandleFunc(prefix+"/routes", s.requireMonitorAuth(s.handleMonitorRoutes))
+	mux.HandleFunc(prefix+"/deephealth", s.requireMonitorAuth(s.handleDeepHealth))
 	mux.HandleFunc(prefix+"/logs", s.requireMonitorAuth(s.handleLogs))
 }
 
@@ -120,6 +121,75 @@ func (s *Server) handleMonitorRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, views)
+}
+
+// deepHealthResponse is the JSON-serializable representation of a deep
+// health check. It mirrors runtime.DeepHealth with explicit JSON tags.
+type deepHealthResponse struct {
+	Running         bool                        `json:"running"`
+	Healthy         bool                        `json:"healthy"`
+	InstanceID      string                      `json:"instance_id"`
+	Role            string                      `json:"role"`
+	ReadyForTraffic bool                        `json:"ready_for_traffic"`
+	Sessions        []deepHealthSessionResponse `json:"sessions"`
+	Routes          []deepHealthRouteResponse   `json:"routes"`
+}
+
+type deepHealthSessionResponse struct {
+	SessionID           string `json:"session_id"`
+	Connected           bool   `json:"connected"`
+	HasLease            bool   `json:"has_lease"`
+	SubscriptionsWanted int    `json:"subscriptions_wanted"`
+	SubscriptionsActive int    `json:"subscriptions_active"`
+	Ready               bool   `json:"ready"`
+}
+
+type deepHealthRouteResponse struct {
+	ID           string `json:"id"`
+	DeliveryMode string `json:"delivery_mode"`
+}
+
+func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	dh := s.rt.DeepHealth(r.Context())
+
+	resp := deepHealthResponse{
+		Running:         dh.Running,
+		Healthy:         dh.Healthy,
+		InstanceID:      dh.InstanceID,
+		Role:            dh.Role,
+		ReadyForTraffic: dh.ReadyForTraffic,
+	}
+
+	resp.Sessions = make([]deepHealthSessionResponse, len(dh.Sessions))
+	for i, sh := range dh.Sessions {
+		resp.Sessions[i] = deepHealthSessionResponse{
+			SessionID:           sh.SessionID,
+			Connected:           sh.Connected,
+			HasLease:            sh.HasLease,
+			SubscriptionsWanted: sh.SubscriptionsWanted,
+			SubscriptionsActive: sh.SubscriptionsActive,
+			Ready:               sh.Ready,
+		}
+	}
+
+	resp.Routes = make([]deepHealthRouteResponse, len(dh.Routes))
+	for i, rh := range dh.Routes {
+		resp.Routes[i] = deepHealthRouteResponse{
+			ID:           rh.ID,
+			DeliveryMode: rh.DeliveryMode,
+		}
+	}
+
+	status := http.StatusOK
+	if !dh.ReadyForTraffic {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, resp)
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
