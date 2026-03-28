@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/observability"
 	"github.com/mariotoffia/gobridge/ports"
@@ -197,6 +198,16 @@ func (r *RouteRunner) processDelivery(ctx context.Context, del ports.Delivery) {
 			r.logger.Warn("delivery processing error",
 				"route", r.routeID, "error", err)
 		}
+		if logging.DebugEnabled(r.logger) && ctx.Err() == nil {
+			env := del.Envelope()
+			r.logger.Log(ctx, logging.LevelDebug, "delivery error detail",
+				"route", r.routeID,
+				"envelope_id", env.ID,
+				"subject", env.Subject,
+				"delivery_mode", string(r.policy.DeliveryMode),
+				"error", err,
+			)
+		}
 	}
 }
 
@@ -207,6 +218,14 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 
 	env.Headers = domain.StripReservedHeaders(env.Headers)
 	r.injectHeaders(env)
+
+	if logging.TraceEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelTrace, "delivery received",
+			"route", r.routeID,
+			"envelope_id", env.ID,
+			"subject", env.Subject,
+		)
+	}
 
 	tc, hasTrace := domain.ExtractTraceContext(env.Headers)
 
@@ -244,6 +263,18 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		}
 		return pErr
 	}
+
+	if logging.TraceEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelTrace, "processors complete",
+			"route", r.routeID,
+			"envelope_id", env.ID,
+		)
+	}
+
+	logging.Debug(r.logger, "dispatching",
+		"route", r.routeID,
+		"mode", string(r.policy.DeliveryMode),
+	)
 
 	var deliveryErr error
 	switch r.policy.DeliveryMode {

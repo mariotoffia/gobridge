@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -192,6 +193,11 @@ func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken)
 	sessionTag := domain.Tag{Key: domain.TagKeySessionID, Value: d.partitionKey}
 	routeTag := domain.Tag{Key: domain.TagKeyRouteID, Value: d.routeID}
 
+	logging.Debug(d.logger, "drain batch starting",
+		"partition_key", d.partitionKey,
+		"batch_size", d.currentBatchSize,
+	)
+
 	records, err := d.outboxStore.Claim(ctx, d.partitionKey, d.ownerID, token, d.currentBatchSize)
 	if err != nil {
 		return 0, err
@@ -199,6 +205,11 @@ func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken)
 	if len(records) == 0 {
 		return 0, nil
 	}
+
+	logging.Debug(d.logger, "claimed records",
+		"count", len(records),
+		"partition_key", d.partitionKey,
+	)
 
 	sem := make(chan struct{}, d.maxConcurrency)
 	var wg sync.WaitGroup
@@ -261,8 +272,22 @@ loop:
 	d.metrics.Timer(domain.MetricOutboxDrainLatency, time.Since(start), sessionTag)
 
 	if staleDetected.Load() {
+		if logging.TraceEnabled(d.logger) {
+			d.logger.Log(ctx, logging.LevelTrace, "stale fencing token detected",
+				"partition_key", d.partitionKey,
+				"token_version", token.Version,
+				"owner", d.ownerID,
+			)
+		}
 		return int(atomic.LoadInt64(&successCount)), domain.ErrStaleFencingToken
 	}
+
+	logging.Debug(d.logger, "drain batch complete",
+		"partition_key", d.partitionKey,
+		"success_count", atomic.LoadInt64(&successCount),
+		"duration", time.Since(start),
+	)
+
 	return int(atomic.LoadInt64(&successCount)), nil
 }
 

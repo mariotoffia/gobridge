@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -177,6 +178,12 @@ func (m *SessionManager) runExclusiveDeferred(ctx context.Context) error {
 
 		m.log(ctx, slog.LevelInfo, "lease acquired (deferred connect)", "version", token.Version)
 
+		logging.Debug(m.logger, "lease acquired",
+			"session_id", m.sessionID,
+			"owner_id", m.ownerID,
+			"lease_version", token.Version,
+		)
+
 		if !sessionStarted {
 			if err := m.session.Start(ctx); err != nil {
 				return err
@@ -230,6 +237,12 @@ func (m *SessionManager) runExclusive(ctx context.Context) error {
 		m.emitLeaseAudit(ctx, action, "success", token, nil)
 
 		m.log(ctx, slog.LevelInfo, "lease acquired", "version", token.Version)
+
+		logging.Debug(m.logger, "lease acquired",
+			"session_id", m.sessionID,
+			"owner_id", m.ownerID,
+			"lease_version", token.Version,
+		)
 
 		if err := m.session.Reconcile(ctx, m.plan); err != nil {
 			return err
@@ -309,6 +322,12 @@ func (m *SessionManager) renewLoop(ctx context.Context) error {
 			} else {
 				consecutiveFailures = 0
 				m.setToken(newToken)
+				if logging.TraceEnabled(m.logger) {
+					m.logger.Log(ctx, logging.LevelTrace, "lease renewed",
+						"session_id", m.sessionID,
+						"version", newToken.Version,
+					)
+				}
 			}
 
 			timer.Reset(m.clampedInterval())
@@ -322,6 +341,11 @@ func (m *SessionManager) renewLoop(ctx context.Context) error {
 // 3. Release the lease
 func (m *SessionManager) stepDown(ctx context.Context) error {
 	m.log(ctx, slog.LevelWarn, "stepping down from lease")
+
+	logging.Debug(m.logger, "step-down initiated",
+		"session_id", m.sessionID,
+		"reason", "renewal failures exceeded max",
+	)
 
 	m.mu.Lock()
 	token := m.token
@@ -377,6 +401,10 @@ func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.Sessio
 		if m.connectedOnce.Swap(true) {
 			m.metrics.Counter(domain.MetricMQTTReconnects, 1, sessionTag)
 		}
+		logging.Debug(m.logger, "session reconcile",
+			"session_id", m.sessionID,
+			"subscription_count", len(m.plan.Subscriptions),
+		)
 		if err := m.session.Reconcile(ctx, m.plan); err != nil {
 			m.log(ctx, slog.LevelError, "reconcile failed on reconnect", "error", err)
 			m.metrics.Counter(domain.MetricReconcileFailures, 1, sessionTag)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -52,11 +53,25 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 
 	sender := r.senderForBinding(plan.BindingID)
 
+	if logging.TraceEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelTrace, "direct hold send",
+			"route", r.routeID,
+			"binding_id", plan.BindingID,
+			"address", plan.Address,
+		)
+	}
+
 	sendCtx, sendCancel := context.WithTimeout(ctx, r.policy.SendTimeout)
 	defer sendCancel()
 
 	sendErr := sender.Send(sendCtx, env)
 	if sendErr == nil {
+		if logging.TraceEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelTrace, "direct hold ack",
+				"route", r.routeID,
+				"envelope_id", env.ID,
+			)
+		}
 		return del.Ack(ctx)
 	}
 
@@ -68,6 +83,12 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, plan.BindingID, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
 		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
 	}
+	logging.Debug(r.logger, "routed to DLQ",
+		"route", r.routeID,
+		"envelope_id", env.ID,
+		"binding_id", plan.BindingID,
+		"error", sendErr,
+	)
 	r.emitDLQ("permanent")
 	return del.Ack(ctx)
 }
