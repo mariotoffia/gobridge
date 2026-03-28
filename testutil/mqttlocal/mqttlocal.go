@@ -57,10 +57,15 @@ import (
 const containerPrefix = "gobridge-mqtt-"
 
 type config struct {
-	image        string
-	persistence  bool
-	webSocket    bool
-	cleanOrphans bool
+	image            string
+	persistence      bool
+	webSocket        bool
+	cleanOrphans     bool
+	maxInflightMsgs  int // -1 = not set, 0 = unlimited
+	maxQueuedMsgs    int // -1 = not set, 0 = unlimited
+	maxQueuedBytes   int // -1 = not set, 0 = unlimited
+	messageSizeLimit int // -1 = not set, 0 = unlimited
+	extraConfig      string
 }
 
 var (
@@ -72,7 +77,13 @@ var (
 	containerName string
 	cleanupFn     func()
 	initErr       error
-	cfg           = config{image: "eclipse-mosquitto:latest"}
+	cfg = config{
+		image:            "eclipse-mosquitto:latest",
+		maxInflightMsgs:  -1,
+		maxQueuedMsgs:    -1,
+		maxQueuedBytes:   -1,
+		messageSizeLimit: -1,
+	}
 )
 
 // Option configures the Mosquitto container before it is started.
@@ -99,6 +110,36 @@ func WithWebSocket(enabled bool) Option {
 // test suites to prevent resource leaks from crashed runs.
 func WithCleanOrphans(enabled bool) Option {
 	return func(c *config) { c.cleanOrphans = enabled }
+}
+
+// WithMaxInflightMessages sets the Mosquitto max_inflight_messages config.
+// Use 0 for unlimited. Default (-1) omits the setting (Mosquitto default: 20).
+func WithMaxInflightMessages(n int) Option {
+	return func(c *config) { c.maxInflightMsgs = n }
+}
+
+// WithMaxQueuedMessages sets the Mosquitto max_queued_messages config.
+// Use 0 for unlimited. Default (-1) omits the setting (Mosquitto default: 1000).
+func WithMaxQueuedMessages(n int) Option {
+	return func(c *config) { c.maxQueuedMsgs = n }
+}
+
+// WithMaxQueuedBytes sets the Mosquitto max_queued_bytes config.
+// Use 0 for unlimited. Default (-1) omits the setting.
+func WithMaxQueuedBytes(n int) Option {
+	return func(c *config) { c.maxQueuedBytes = n }
+}
+
+// WithMessageSizeLimit sets the Mosquitto message_size_limit config.
+// Use 0 for unlimited. Default (-1) omits the setting.
+func WithMessageSizeLimit(n int) Option {
+	return func(c *config) { c.messageSizeLimit = n }
+}
+
+// WithExtraConfig appends raw lines to the Mosquitto config file.
+// Each line should be terminated with a newline.
+func WithExtraConfig(lines string) Option {
+	return func(c *config) { c.extraConfig = lines }
 }
 
 // Configure applies options before the container is started.
@@ -367,6 +408,21 @@ func buildConfig(c config, hasWS bool) string {
 		s += "persistence true\npersistence_location /mosquitto/data/\n"
 	} else {
 		s += "persistence false\n"
+	}
+	if c.maxInflightMsgs >= 0 {
+		s += fmt.Sprintf("max_inflight_messages %d\n", c.maxInflightMsgs)
+	}
+	if c.maxQueuedMsgs >= 0 {
+		s += fmt.Sprintf("max_queued_messages %d\n", c.maxQueuedMsgs)
+	}
+	if c.maxQueuedBytes >= 0 {
+		s += fmt.Sprintf("max_queued_bytes %d\n", c.maxQueuedBytes)
+	}
+	if c.messageSizeLimit >= 0 {
+		s += fmt.Sprintf("message_size_limit %d\n", c.messageSizeLimit)
+	}
+	if c.extraConfig != "" {
+		s += c.extraConfig
 	}
 	s += "\nlog_dest stdout\n"
 	return s

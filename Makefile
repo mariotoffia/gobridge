@@ -3,7 +3,7 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test test-integration lint lint-fix clean tidy sync help
+.PHONY: all build test test-integration test-long-running lint lint-fix clean tidy sync help
 .PHONY: build-core build-mqtt build-aws build-azure
 .PHONY: install vulncheck update update-major outdated
 .PHONY: docker-up docker-down docker-clean
@@ -47,6 +47,15 @@ test-integration: ## Run all tests including integration (requires Docker)
 	@echo "Running all tests (unit + integration)..."
 	AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
 		go test -race -timeout 600s -v ./...
+
+test-long-running: ## Run long-running stress tests (requires Docker, LONG_RUNNING=true)
+	@if [ "$$LONG_RUNNING" != "true" ]; then \
+		echo "Skipping long-running tests (set LONG_RUNNING=true to enable)"; \
+		exit 0; \
+	fi
+	@echo "Running long-running stress tests..."
+	AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+		go test -race -timeout 1200s -v -tags=longrunning ./tests/longrunning/...
 
 # ============================================================================
 # Lint targets
