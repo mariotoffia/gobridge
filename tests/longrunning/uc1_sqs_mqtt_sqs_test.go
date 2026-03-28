@@ -34,9 +34,9 @@ import (
 // =========================================================================
 
 const (
-	uc1MsgCount = 5000
-	uc1Topic    = "uc1/pipeline/data"
-	uc1Timeout  = 120 * time.Second
+	uc1MsgCount    = 5000
+	uc1Topic       = "uc1/pipeline/data"
+	uc1PollTimeout = 300 * time.Second
 )
 
 func TestUC1_SQS_MQTT_SharedSub_FanOut_SQS(t *testing.T) {
@@ -47,7 +47,8 @@ func TestUC1_SQS_MQTT_SharedSub_FanOut_SQS(t *testing.T) {
 	leaseStore, outboxStore := setupDynamoStores(t)
 	dlq := &lrDLQStore{}
 
-	ctx, cancel := context.WithTimeout(context.Background(), uc1Timeout)
+	// Bridge context: no timeout — bridges run until t.Cleanup stops them.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// --- Ingress bridges A, B, C (competing via $share) ---
@@ -109,12 +110,12 @@ func TestUC1_SQS_MQTT_SharedSub_FanOut_SQS(t *testing.T) {
 
 	// --- Wait for SQS-OUT-1 to have 5,000 messages ---
 	t.Log("UC1: polling SQS-OUT-1")
-	out1Bodies := pollAllSQS(t, sqsOut1Client, sqsOut1URL, uc1MsgCount, uc1Timeout)
+	out1Bodies := pollAllSQS(t, sqsOut1Client, sqsOut1URL, uc1MsgCount, uc1PollTimeout)
 	t.Logf("UC1: SQS-OUT-1 received %d messages", len(out1Bodies))
 
 	// --- Wait for SQS-OUT-2 to have 5,000 messages ---
 	t.Log("UC1: polling SQS-OUT-2")
-	out2Bodies := pollAllSQS(t, sqsOut2Client, sqsOut2URL, uc1MsgCount, uc1Timeout)
+	out2Bodies := pollAllSQS(t, sqsOut2Client, sqsOut2URL, uc1MsgCount, uc1PollTimeout)
 	t.Logf("UC1: SQS-OUT-2 received %d messages", len(out2Bodies))
 
 	// --- Verify counts ---

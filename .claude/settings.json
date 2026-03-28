@@ -9,7 +9,9 @@
       "Bash(go test:*)",
       "Bash(make:*)",
       "Bash(ls:*)",
-      "Skill(skill-create-test:*)"
+      "Skill(skill-create-test:*)",
+      "Bash(go mod:*)",
+      "Bash(AWS_ACCESS_KEY_ID=test:*)"
     ]
   }
 }

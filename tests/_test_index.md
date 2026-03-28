@@ -1073,3 +1073,45 @@ Catalog of all test functions in the gobridge repository.
 | TestIntegration_Cluster_ForwardPreservesEnvelope | validates envelope integrity through forward round-trip | integration | http_cluster | pass |
 | TestIntegration_MQTT_To_SSE_CrossTransport | validates MQTT publish through bridge pipeline to SSE client | integration | cross_transport | pass |
 | TestIntegration_HTTP_To_MQTT_CrossTransport | validates HTTP POST through bridge pipeline to MQTT publish | integration | cross_transport | pass |
+<!-- longrunning: transport_combos (UC7-UC11) -->
+| TestUC7_SQS_FIFO_Ordering_Through_MQTT | validates FIFO message ordering through MQTT bridge | longrunning | transport_combos | pass |
+| TestUC8_MultiProtocol_FanOut | validates fan-out from SQS to 2 MQTT topics and 1 SQS queue | longrunning | transport_combos | pass |
+| TestUC9_MQTT_QoS2_Stress | validates 5,000 QoS 2 messages with no duplicates | longrunning | transport_combos | pass |
+| TestUC10_HTTP_Inject_To_MQTT | validates runtime Inject API delivers messages to MQTT | longrunning | transport_combos | pass |
+| TestUC11_SQS_To_SQS_Direct | validates SQS-to-SQS direct via SharedOutbox without MQTT | longrunning | transport_combos | pass |
+<!-- longrunning: cluster_lease (UC12-UC16) -->
+| TestUC12_LeaseExpiry_Standby_Takeover | validates standby takes over when leader lease expires | longrunning | cluster_lease | planned |
+| TestUC13_Lease_Renewal_Under_Load | validates lease renewal under sustained message load | longrunning | cluster_lease | planned |
+| TestUC14_Cluster_Graceful_Shutdown | validates graceful shutdown with drain before lease release | longrunning | cluster_lease | planned |
+| TestUC15_Cluster_Split_Brain_Fencing | validates fencing token prevents split-brain duplicate sends | longrunning | cluster_lease | planned |
+| TestUC16_Cluster_Lease_Jitter | validates lease renewal jitter prevents thundering herd | longrunning | cluster_lease | planned |
+<!-- longrunning: message_shape (UC17-UC21) -->
+| TestUC17_LargePayloads_200KB | validates 200KB payloads round-trip with SHA256 integrity | longrunning | message_shape | pass |
+| TestUC18_TinyPayloads_HighThroughput | validates 50,000 tiny payloads at high throughput | longrunning | message_shape | pass |
+| TestUC19_MixedPayloadSizes | validates mixed tiny/medium/large payloads delivered correctly | longrunning | message_shape | pass |
+| TestUC20_HeaderHeavy_50Headers | validates 50-header messages preserved through MQTT bridge | longrunning | message_shape | pass |
+| TestUC21_BinaryPayload_RoundTrip | validates binary payloads with 0x00/0xFF round-trip via base64 | longrunning | message_shape | pass |
+<!-- longrunning: routing_filtering (UC22-UC26) -->
+| TestUC22_ContentBased_Routing | validates content-based routing to different target queues | longrunning | routing_filtering | planned |
+| TestUC23_Header_Filter_Processor | validates header-based filter processor drops matching messages | longrunning | routing_filtering | planned |
+| TestUC24_Dynamic_Destination_Override | validates processor-driven HeaderRouteOverride destination | longrunning | routing_filtering | planned |
+| TestUC25_Multi_Processor_Chain | validates ordered execution of multiple processors | longrunning | routing_filtering | planned |
+| TestUC26_Processor_Error_DLQ | validates permanent processor errors route to DLQ | longrunning | routing_filtering | planned |
+<!-- longrunning: failure_recovery (UC27-UC31) -->
+| TestUC27_Transient_Sender_Failure_Recovery | validates recovery after transient sender failures | longrunning | failure_recovery | planned |
+| TestUC28_Outbox_Claim_Recovery | validates stale claim recovery after instance crash | longrunning | failure_recovery | planned |
+| TestUC29_DLQ_Replay | validates DLQ replay reprocesses failed messages | longrunning | failure_recovery | planned |
+| TestUC30_Expired_Message_DLQ | validates expired messages routed to DLQ | longrunning | failure_recovery | planned |
+| TestUC31_Connection_Reconnect | validates message flow resumes after transport reconnect | longrunning | failure_recovery | planned |
+<!-- longrunning: backpressure (UC32-UC37) -->
+| TestUC32_MaxInFlight_Throttle | validates MaxInFlight limits concurrent processing | longrunning | backpressure | planned |
+| TestUC33_Global_MaxInFlight | validates global semaphore across multiple routes | longrunning | backpressure | planned |
+| TestUC34_Visibility_Extension | validates SQS visibility timeout extension under slow processing | longrunning | backpressure | planned |
+| TestUC35_Burst_Absorption | validates burst traffic absorbed without message loss | longrunning | backpressure | planned |
+| TestUC36_Drain_Batch_Adaptive_Sizing | validates drain batch size adapts to send success rate | longrunning | backpressure | planned |
+| TestUC37_Concurrent_Routes_Isolation | validates concurrent routes do not interfere with each other | longrunning | backpressure | planned |
+<!-- longrunning: outbox_modes (UC38-UC41) -->
+| TestUC38_OutboxDepthLimit | validates MaxOutboxDepth=100 rejects messages when outbox is full | longrunning | outbox_modes | pass |
+| TestUC39_AckAfterOutboxPersist | validates AckAfterOutboxPersist acks source before drain completes | longrunning | outbox_modes | pass |
+| TestUC40_AdaptiveDrain_Backoff | validates AdaptiveBackoff reduces drain cycles during idle periods | longrunning | outbox_modes | pass |
+| TestUC41_IdempotentOutbox_Persist | validates outbox deduplication prevents duplicates on SQS redelivery | longrunning | outbox_modes | pass |
