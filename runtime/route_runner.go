@@ -23,6 +23,7 @@ type RouteRunner struct {
 	policy      domain.RoutePolicy
 	receiver    ports.Receiver
 	sender      ports.Sender
+	senders     map[string]ports.Sender // binding ID -> sender (optional)
 	outboxStore ports.OutboxStore
 	dlq         *DLQRouter
 	resolver    ports.DestinationResolver
@@ -43,6 +44,7 @@ type RouteRunnerConfig struct {
 	Policy        domain.RoutePolicy
 	Receiver      ports.Receiver
 	Sender        ports.Sender
+	Senders       map[string]ports.Sender // binding ID -> sender (optional)
 	OutboxStore   ports.OutboxStore
 	DLQ           *DLQRouter
 	Resolver      ports.DestinationResolver
@@ -90,6 +92,7 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 		policy:      policy,
 		receiver:    cfg.Receiver,
 		sender:      cfg.Sender,
+		senders:     cfg.Senders,
 		outboxStore: cfg.OutboxStore,
 		dlq:         dlq,
 		resolver:    cfg.Resolver,
@@ -261,6 +264,20 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 }
 
 func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *domain.Envelope) error {
+	// Consume HeaderRouteOverride set by processor chain (e.g., filter ActionRoute).
+	// SEC-1: validate the override references a binding declared on this route.
+	if override, ok := domain.GetHeaderString(env.Headers, domain.HeaderRouteOverride); ok {
+		delete(env.Headers, domain.HeaderRouteOverride)
+		if r.hasBinding(override) {
+			return r.sendDirectHoldForBinding(ctx, del, env, override)
+		}
+		if r.logger != nil {
+			r.logger.Warn("route override references unknown binding",
+				"route", r.routeID, "override", override)
+		}
+		// Fall through to normal resolution if override binding not found.
+	}
+
 	plans, resolveErr := r.resolvePlans(ctx, env)
 	if resolveErr != nil {
 		return r.handleResolveError(ctx, del, env, resolveErr)
@@ -270,38 +287,42 @@ func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *d
 		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("resolver returned no dispatch plans for route %s", r.routeID))
 	}
 
-	plan := plans[0]
-	if plan.Address != "" {
-		env.Subject = plan.Address
-	}
-	if plan.Headers != nil {
-		env.Headers = domain.MergeHeaders(env.Headers, plan.Headers, true)
-	}
-
-	sendCtx, sendCancel := context.WithTimeout(ctx, r.policy.SendTimeout)
-	defer sendCancel()
-
-	sendErr := r.sender.Send(sendCtx, env)
-	if sendErr == nil {
-		return del.Ack(ctx)
-	}
-
-	if domain.IsRecoverableError(sendErr) {
-		retryAfter := domain.GetRetryAfter(sendErr)
-		return r.retryOrFallback(ctx, del, env, retryAfter, sendErr)
-	}
-
-	if dlqErr := r.dlq.Route(ctx, env, r.routeID, plan.BindingID, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
-		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
-	}
-	r.emitDLQ("permanent")
-	return del.Ack(ctx)
+	return r.sendDirectHold(ctx, del, env, plans[0])
 }
 
 func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env *domain.Envelope) error {
-	plans, err := r.resolvePlans(ctx, env)
-	if err != nil {
-		return r.handleResolveError(ctx, del, env, err)
+	var plans []domain.DispatchPlan
+
+	// Consume HeaderRouteOverride set by processor chain.
+	if override, ok := domain.GetHeaderString(env.Headers, domain.HeaderRouteOverride); ok {
+		delete(env.Headers, domain.HeaderRouteOverride)
+		if r.hasBinding(override) {
+			for _, b := range r.bindings {
+				if b.ID == override {
+					addr := b.Address
+					if addr != "" {
+						if rendered, err := RenderAddress(addr, env.Headers); err == nil {
+							addr = rendered
+						}
+					}
+					plans = []domain.DispatchPlan{{
+						BindingID: b.ID, Address: addr, Headers: copyHeaders(b.Options),
+					}}
+					break
+				}
+			}
+		} else if r.logger != nil {
+			r.logger.Warn("route override references unknown binding",
+				"route", r.routeID, "override", override)
+		}
+	}
+
+	if plans == nil {
+		var err error
+		plans, err = r.resolvePlans(ctx, env)
+		if err != nil {
+			return r.handleResolveError(ctx, del, env, err)
+		}
 	}
 
 	if r.outboxStore == nil {
@@ -383,79 +404,6 @@ func (r *RouteRunner) buildOutboxRecords(env *domain.Envelope, plans []domain.Di
 		}
 	}
 	return records
-}
-
-func (r *RouteRunner) sessionIDForBinding(bindingID string) string {
-	for _, b := range r.bindings {
-		if b.ID == bindingID {
-			return b.SessionID
-		}
-	}
-	return ""
-}
-
-func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env *domain.Envelope) error {
-	if r.policy.OnExpired == domain.ExpiredDLQ {
-		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", domain.ErrMessageExpired, 0); dlqErr != nil {
-			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
-		}
-		r.emitDLQ("expired")
-	}
-	return del.Ack(ctx)
-}
-
-func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delivery, env *domain.Envelope, err error) error {
-	if errors.Is(err, domain.ErrMessageFiltered) {
-		return del.Ack(ctx)
-	}
-	if domain.IsRecoverableError(err) {
-		retryAfter := domain.GetRetryAfter(err)
-		return r.retryOrFallback(ctx, del, env, retryAfter, err)
-	}
-	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", err, 0); dlqErr != nil {
-		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
-	}
-	r.emitDLQ("permanent")
-	return del.Ack(ctx)
-}
-
-func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery, env *domain.Envelope, err error) error {
-	be, ok := domain.AsBridgeError(err)
-	if ok && be.Class != domain.ErrorTransient {
-		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", err, 0); dlqErr != nil {
-			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
-		}
-		r.emitDLQ("rejected")
-		return del.Ack(ctx)
-	}
-	return r.retryOrFallback(ctx, del, env, 0, err)
-}
-
-// retryOrFallback attempts del.Retry; if the source transport does not
-// support retry (ErrNotSupported), it falls back to DLQ routing with
-// category "retry_unsupported" so the message is not silently lost.
-func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, env *domain.Envelope, after time.Duration, reason error) error {
-	retryErr := del.Retry(ctx, after, reason)
-	if retryErr == nil || !errors.Is(retryErr, domain.ErrNotSupported) {
-		return retryErr
-	}
-	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", reason, 0); dlqErr != nil {
-		r.emitDLQ("retry_unsupported_dlq_failed")
-		return fmt.Errorf("retry unsupported and DLQ write failed: %w", dlqErr)
-	}
-	if !r.dlq.HasStore() && r.logger != nil {
-		r.logger.Warn("message dropped: retry unsupported and no DLQ configured",
-			"route", r.routeID, "envelope_id", env.ID)
-	}
-	r.emitDLQ("retry_unsupported")
-	return del.Ack(ctx)
-}
-
-func (r *RouteRunner) emitDLQ(category string) {
-	r.metrics.Counter(domain.MetricDLQEntries, 1,
-		domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID},
-		domain.Tag{Key: domain.TagKeyCategory, Value: category},
-	)
 }
 
 func (r *RouteRunner) injectHeaders(env *domain.Envelope) {

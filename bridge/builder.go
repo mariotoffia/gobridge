@@ -272,6 +272,29 @@ func (b *Builder) wireRoutes(
 			SourceCapabilities: caps,
 		}
 
+		// Build content-based resolver from config if present.
+		if routeDef.Resolver != nil {
+			resolver, resolverErr := buildResolver(routeDef.Resolver, bindings)
+			if resolverErr != nil {
+				return fmt.Errorf("bridge: route %q: resolver: %w", routeDef.ID, resolverErr)
+			}
+			rcfg.Resolver = resolver
+		}
+
+		// Build per-binding sender registry for DirectHold multi-sender dispatch.
+		if len(bindings) > 1 {
+			senderReg := make(map[string]ports.Sender, len(bindings))
+			for _, bd := range bindings {
+				snd, ok := senders[bd.SenderID]
+				if !ok {
+					return fmt.Errorf("bridge: route %q: binding %q references unknown sender %q",
+						routeDef.ID, bd.ID, bd.SenderID)
+				}
+				senderReg[bd.ID] = snd
+			}
+			rcfg.Senders = senderReg
+		}
+
 		if err := rt.AddRoute(rcfg, recv, routeSender, routeSession, sessCfg); err != nil {
 			return fmt.Errorf("bridge: add route %q: %w", routeDef.ID, err)
 		}

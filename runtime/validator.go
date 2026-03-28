@@ -70,12 +70,16 @@ func validateDirectHold(ve *ValidationError, prefix string, entry *routeEntry, p
 		ve.add(prefix + "direct_hold invalid: target session requires lease handoff")
 	}
 
-	if !hasCapability(entry.config.SourceCapabilities, ports.CapVisibilityExtension) {
+	if !hasCapability(entry.config.SourceCapabilities, ports.CapVisibilityExtension) &&
+		!hasCapability(entry.config.SourceCapabilities, ports.CapHTTPEndpoint) {
 		ve.add(prefix + "direct_hold invalid: source does not support visibility extension")
 	}
 
-	if len(entry.config.Bindings) > 1 {
-		ve.add(prefix + "direct_hold invalid: multiple bindings require fan-out or a single-match resolver")
+	// Multiple bindings are allowed when a resolver is configured for
+	// content-based single dispatch. Without a resolver, multiple
+	// bindings are ambiguous.
+	if len(entry.config.Bindings) > 1 && entry.config.Resolver == nil {
+		ve.add(prefix + "direct_hold invalid: multiple bindings require a resolver for content-based dispatch")
 	}
 
 	if !policy.AllowUnfenced && hasCapability(entry.config.SourceCapabilities, ports.CapSharedConsumer) {

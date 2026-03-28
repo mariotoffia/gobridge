@@ -376,3 +376,71 @@ func TestValidator_SharedOutbox_RejectsMissingLeaseStoreForExclusive(t *testing.
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// TestValidator_DirectHold_MultiBindingsWithResolver verifies that multiple
+// bindings are allowed in direct_hold when a resolver is configured.
+func TestValidator_DirectHold_MultiBindingsWithResolver(t *testing.T) {
+	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
+	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+	cfg.Bindings = []domain.DestinationBinding{
+		{ID: "bind-a", SessionID: "sess-a"},
+		{ID: "bind-b", SessionID: "sess-b"},
+	}
+	// Setting a resolver relaxes the multi-binding validation.
+	cfg.Resolver = runtime.NewStaticResolver(domain.DispatchPlan{
+		BindingID: "bind-a", Address: "topic-a",
+	})
+
+	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := rt.Start(ctx)
+	if err != nil {
+		t.Fatalf("expected no validation error with resolver + multi-bindings, got: %v", err)
+	}
+	_ = rt.Stop(context.Background())
+}
+
+// TestValidator_DirectHold_FanOutStillRejectedWithResolver verifies that
+// fan-out dispatch is still rejected in direct_hold even with a resolver.
+func TestValidator_DirectHold_FanOutStillRejectedWithResolver(t *testing.T) {
+	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
+	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+	cfg.Policy.DispatchMode = domain.DispatchFanOut
+	cfg.Resolver = runtime.NewStaticResolver(domain.DispatchPlan{BindingID: "b"})
+
+	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rt.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected validation error for fan-out in direct_hold even with resolver")
+	}
+	if !strings.Contains(err.Error(), "fan-out") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestValidator_DirectHold_HTTPSourceAccepted verifies that HTTP sources
+// (CapHTTPEndpoint) are accepted in direct_hold without CapVisibilityExtension.
+func TestValidator_DirectHold_HTTPSourceAccepted(t *testing.T) {
+	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
+	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+	cfg.SourceCapabilities = []ports.Capability{ports.CapHTTPEndpoint}
+
+	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := rt.Start(ctx)
+	if err != nil {
+		t.Fatalf("expected no validation error for HTTP source, got: %v", err)
+	}
+	_ = rt.Stop(context.Background())
+}

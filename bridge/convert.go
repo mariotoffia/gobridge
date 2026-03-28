@@ -238,3 +238,49 @@ func findSender(cfg *config.BridgeConfig, id string) *config.SenderDef {
 	}
 	return nil
 }
+
+// buildResolver constructs a DestinationResolver from a config ResolverDef.
+func buildResolver(def *config.ResolverDef, bindings []domain.DestinationBinding) (ports.DestinationResolver, error) {
+	switch def.Type {
+	case "header_map":
+		return runtime.NewBindingResolver(bindings,
+			runtime.MatchByHeader(def.HeaderKey, def.HeaderMap)), nil
+
+	case "all":
+		return runtime.NewBindingResolver(bindings, runtime.MatchAll()), nil
+
+	case "static":
+		if len(bindings) > 0 {
+			return runtime.NewBindingResolver(bindings,
+				runtime.MatchByID(bindings[0].ID)), nil
+		}
+		return nil, nil
+
+	case "rules":
+		rules := make([]runtime.MatchRule, len(def.Rules))
+		for i, r := range def.Rules {
+			conds := make([]runtime.MatchCondition, len(r.Match))
+			for j, c := range r.Match {
+				conds[j] = runtime.MatchCondition{
+					Field:    c.Field,
+					Operator: c.Operator,
+					Value:    c.Value,
+				}
+			}
+			rules[i] = runtime.MatchRule{
+				BindingID:  r.BindingID,
+				Conditions: conds,
+			}
+		}
+
+		compiled, err := runtime.CompileMatchRules(rules)
+		if err != nil {
+			return nil, fmt.Errorf("compile match rules: %w", err)
+		}
+
+		return runtime.NewRuleResolver(bindings, compiled, def.DefaultBinding)
+
+	default:
+		return nil, fmt.Errorf("unknown resolver type %q", def.Type)
+	}
+}

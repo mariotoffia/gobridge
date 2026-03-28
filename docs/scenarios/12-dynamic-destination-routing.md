@@ -257,15 +257,155 @@ How the resolved address is used depends on the transport:
 
 For MQTT, dynamic addressing is fully effective -- each message can go to a different topic. For SQS/Azure SB, the queue/topic is fixed per sender, but the address is preserved as message metadata.
 
+## Config-Driven Resolver
+
+In addition to address templates and programmatic `MatchFunc`, GoBridge supports a **config-driven resolver** that selects bindings based on envelope content -- headers, subject, or JSON payload fields. This eliminates the need for Go code in most content-based routing scenarios.
+
+### Architecture
+
+```mermaid
+flowchart LR
+    subgraph GoBridge
+        R[Receiver]
+        Proc["Processor Chain"]
+        Resolver["Resolver\n(rules / header_map)"]
+        SR["SenderRegistry"]
+    end
+
+    subgraph Targets
+        SA["Sender A\n(bind-a)"]
+        SB["Sender B\n(bind-b)"]
+        SD["Sender Default\n(bind-default)"]
+    end
+
+    R --> Proc
+    Proc --> Resolver
+    Resolver -->|"binding_id"| SR
+    SR --> SA
+    SR --> SB
+    SR --> SD
+
+    style Resolver fill:#ff9,stroke:#333
+    style SR fill:#9cf,stroke:#333
+```
+
+The resolver evaluates rules against each incoming envelope and returns a binding ID. The **SenderRegistry** maps binding IDs to senders, allowing a single route to dispatch to entirely different transports or connections per message.
+
+### Configuration Example: Multi-Tenant Routing
+
+Route messages to different Azure Service Bus queues based on the `x-tenant` header:
+
+```yaml
+senders:
+  - id: sb-acme
+    transport: servicebus
+    options:
+      connection_string: "${ACME_SB_CONN}"
+      queue: acme-events
+  - id: sb-globex
+    transport: servicebus
+    options:
+      connection_string: "${GLOBEX_SB_CONN}"
+      queue: globex-events
+  - id: sb-default
+    transport: servicebus
+    options:
+      connection_string: "${DEFAULT_SB_CONN}"
+      queue: unrouted-events
+
+bindings:
+  - id: bind-acme
+    sender_id: sb-acme
+    address: acme-events
+  - id: bind-globex
+    sender_id: sb-globex
+    address: globex-events
+  - id: bind-default
+    sender_id: sb-default
+    address: unrouted-events
+
+routes:
+  - id: tenant-router
+    receiver_id: http-in
+    delivery_mode: direct_hold
+    bindings: [bind-acme, bind-globex, bind-default]
+    resolver:
+      type: rules
+      default_binding: bind-default
+      rules:
+        - binding_id: bind-acme
+          match:
+            - field: header.x-tenant
+              operator: eq
+              value: acme
+        - binding_id: bind-globex
+          match:
+            - field: header.x-tenant
+              operator: eq
+              value: globex
+```
+
+Rules are evaluated top-to-bottom. The first rule whose conditions all match (AND logic) wins. If no rule matches, `default_binding` is used. If neither matches, the message is rejected.
+
+### Configuration Example: JSON Payload Routing
+
+Route based on a field inside the JSON payload using `$.` path syntax:
+
+```yaml
+routes:
+  - id: priority-router
+    receiver_id: sqs-in
+    bindings: [bind-high-priority, bind-normal]
+    resolver:
+      type: rules
+      default_binding: bind-normal
+      rules:
+        - binding_id: bind-high-priority
+          match:
+            - field: $.priority
+              operator: eq
+              value: high
+            - field: $.metadata.region
+              operator: in
+              value: ["us-east-1", "eu-west-1"]
+```
+
+The payload is parsed lazily on first `$.` access and cached for all subsequent condition evaluations within the same message.
+
+### header_map Shorthand
+
+For simple header-value-to-binding mappings, `header_map` is more concise than `rules`:
+
+```yaml
+routes:
+  - id: factory-router
+    receiver_id: sqs-in
+    bindings: [bind-factory-a, bind-factory-b]
+    resolver:
+      type: header_map
+      header_key: factory_id
+      header_map:
+        A: bind-factory-a
+        B: bind-factory-b
+```
+
+### HeaderRouteOverride
+
+The filter processor's `ActionRoute` sets a `x-bridge.route-override` header during the processor chain. The runtime now consumes this header in both `direct_hold` and `shared_outbox` delivery modes:
+
+1. The processor chain sets `HeaderRouteOverride` to a binding ID
+2. The runtime validates that the binding exists on the current route
+3. If valid, the message is dispatched to that binding (bypassing the resolver)
+4. The override header is stripped before sending to the target
+5. If the binding ID is invalid, the runtime falls through to normal resolver evaluation
+
+This enables processors to override routing decisions dynamically, complementing the config-driven resolver.
+
 ## Limitations
 
-1. **SQS queue selection is static** -- You cannot dynamically choose which SQS queue to send to based on message content. The queue URL is fixed in sender config. To route to different queues, use separate senders + `MatchByHeader` binding selection.
+1. **SQS queue selection is static** -- You cannot dynamically choose which SQS queue to send to based on message content. The queue URL is fixed in sender config. To route to different queues, use separate senders with different bindings and a resolver to select between them.
 
-2. **MatchByHeader is programmatic only** -- The YAML config only supports static binding references. Dynamic binding selection requires Go code with a custom `DestinationResolver` or `MatchFunc`.
-
-3. **Filter `route` action is incomplete** -- The filter processor's `ActionRoute` sets a header (`x-bridge.route-override`) but this header is not currently acted upon by the runtime route engine.
-
-4. **Address templates only resolve from headers** -- Payload fields cannot be used directly in address templates. To route based on payload content, use a transform processor to extract payload fields into headers first, then use address templates.
+2. **Address templates only resolve from headers** -- The `{placeholder}` syntax in binding addresses resolves from envelope headers only, not from JSON payload fields. To use payload values in address templates, first extract them into headers with a transform processor (see [Payload-Based Routing via Transform](#pattern-payload-based-routing-via-transform)). However, the resolver's `$.` conditions can select different bindings based on payload content, and each binding has its own static address -- so many payload-routing scenarios do not need address templates at all.
 
 ## Pattern: Payload-Based Routing via Transform
 

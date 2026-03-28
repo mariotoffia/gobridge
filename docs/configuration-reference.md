@@ -36,7 +36,27 @@ classDiagram
         policy: PolicyDef
         bindings: string[]
         processors: string[]
+        resolver: ResolverDef
         session: RouteSessionDef
+    }
+
+    class ResolverDef {
+        type: string
+        default_binding: string
+        header_key: string
+        header_map: map
+        rules: RuleDef[]
+    }
+
+    class RuleDef {
+        binding_id: string
+        match: ConditionDef[]
+    }
+
+    class ConditionDef {
+        field: string
+        operator: string
+        value: any
     }
 
     class PolicyDef {
@@ -51,7 +71,10 @@ classDiagram
     BridgeConfig --> BridgeSettings
     BridgeConfig --> RouteDef
     RouteDef --> PolicyDef
+    RouteDef --> ResolverDef
     RouteDef --> RouteSessionDef
+    ResolverDef --> RuleDef
+    RuleDef --> ConditionDef
     PolicyDef --> BackoffDef
     RouteSessionDef --> DrainStrategyDef
 ```
@@ -266,14 +289,15 @@ Routes define the message flow from a receiver through processors to bindings.
 | `policy` | object | no | -- | Delivery and retry policy |
 | `bindings` | string[] | **yes** | -- | References to binding IDs (at least one) |
 | `processors` | string[] | no | -- | Ordered list of processor names |
+| `resolver` | object | no | -- | Content-based binding resolver (see [Resolver](#routesresolver----content-based-resolver)) |
 | `session` | object | no | -- | Route session management (for exclusive sessions) |
 
 **Delivery modes:**
-- **`direct_hold`** -- Source held open until egress completes. No inter-instance fencing; destinations must handle duplicates idempotently in clustered mode.
+- **`direct_hold`** -- Source held open until egress completes. No inter-instance fencing; destinations must handle duplicates idempotently in clustered mode. When a `resolver` is configured, multiple bindings are allowed -- the resolver selects one per message.
 - **`shared_outbox`** -- Source acknowledged after persisting to outbox. Outbox drainer delivers asynchronously. Requires `stores.outbox`.
 
 **Dispatch modes:**
-- **`single`** -- Send to first matching binding.
+- **`single`** -- Send to first matching binding (or resolver-selected binding).
 - **`fan_out`** -- Send to all bindings.
 
 ### `routes[].policy` -- Delivery Policy
@@ -351,6 +375,125 @@ routes:
         multiplier: 1.5
 ```
 
+### `routes[].resolver` -- Content-Based Resolver
+
+Configures config-driven binding selection based on envelope content (headers, subject, JSON payload). When set, the resolver determines which binding receives each message. This replaces programmatic `MatchFunc` usage for most content-based routing scenarios.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `type` | string | **yes** | -- | Resolver type: `rules`, `header_map`, `all`, `static` |
+| `default_binding` | string | no | -- | Fallback binding ID when no rule matches |
+| `header_key` | string | cond. | -- | Header name to match (required for `header_map`) |
+| `header_map` | map[string]string | cond. | -- | Header value to binding ID mapping (required for `header_map`) |
+| `rules` | array | cond. | -- | Ordered rule list (required for `rules` type unless `default_binding` is set) |
+
+**Resolver types:**
+- **`rules`** -- Ordered first-match-wins rule evaluation. Each rule pairs conditions with a binding ID.
+- **`header_map`** -- Maps a single header value directly to a binding ID. Simpler than `rules` for key-value routing.
+- **`all`** -- Selects all bindings (fan-out).
+- **`static`** -- Always selects the first binding.
+
+#### `routes[].resolver.rules[]` -- Rule Definitions
+
+Each rule is evaluated in order. The first rule whose conditions all match (AND logic) selects the binding.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `binding_id` | string | **yes** | -- | Target binding ID (must be in the route's `bindings` list) |
+| `match` | array | no | -- | Conditions that must all be true. Empty `match` means the rule always matches (catch-all). |
+
+#### `routes[].resolver.rules[].match[]` -- Condition Definitions
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `field` | string | **yes** | -- | Field to evaluate (see field patterns below) |
+| `operator` | string | **yes** | -- | Comparison operator |
+| `value` | any | cond. | -- | Value to compare against (not required for `exists`) |
+
+**Field patterns:**
+
+| Pattern | Description | Example |
+|---------|-------------|---------|
+| `subject` | Envelope subject | `subject` |
+| `header.<key>` | Envelope header by key | `header.factory_id` |
+| `$.<path>` | JSON payload path (dot-separated) | `$.metadata.region` |
+| bare name | Header fallback (same as `header.<name>`) | `factory_id` |
+
+**Operators:**
+
+| Operator | Description | Value Type |
+|----------|-------------|------------|
+| `eq` | Equal (deep comparison) | any |
+| `ne` | Not equal | any |
+| `prefix` | String starts with | string |
+| `contains` | String contains | string |
+| `regex` | Regular expression match (max 4096 chars) | string |
+| `gt` | Greater than (numeric) | number |
+| `lt` | Less than (numeric) | number |
+| `gte` | Greater than or equal | number |
+| `lte` | Less than or equal | number |
+| `exists` | Field exists (or not, when value is `false`) | bool |
+| `in` | Value is in list | array |
+
+**Example -- rules-based multi-tenant routing:**
+
+```yaml
+routes:
+  - id: tenant-router
+    receiver_id: http-in
+    delivery_mode: direct_hold
+    bindings: [bind-acme, bind-globex, bind-default]
+    resolver:
+      type: rules
+      default_binding: bind-default
+      rules:
+        - binding_id: bind-acme
+          match:
+            - field: header.x-tenant
+              operator: eq
+              value: acme
+        - binding_id: bind-globex
+          match:
+            - field: header.x-tenant
+              operator: eq
+              value: globex
+```
+
+**Example -- header_map shorthand:**
+
+```yaml
+routes:
+  - id: tenant-router
+    receiver_id: http-in
+    bindings: [bind-acme, bind-globex]
+    resolver:
+      type: header_map
+      header_key: x-tenant
+      header_map:
+        acme: bind-acme
+        globex: bind-globex
+```
+
+**Example -- JSON payload routing:**
+
+```yaml
+routes:
+  - id: priority-router
+    receiver_id: sqs-in
+    bindings: [bind-high, bind-normal]
+    resolver:
+      type: rules
+      default_binding: bind-normal
+      rules:
+        - binding_id: bind-high
+          match:
+            - field: $.priority
+              operator: eq
+              value: high
+```
+
+When using a `rules` resolver with `direct_hold` delivery mode, each binding may reference a different sender. The runtime uses a **SenderRegistry** to dispatch messages to the correct sender based on the resolved binding. This enables true multi-sender routing from a single route definition.
+
 ## `http` -- HTTP API Configuration
 
 | Field | Type | Required | Default | Description |
@@ -399,6 +542,17 @@ Errors from `config.Validate()`:
 | Clustered MQTT without `$share/` or exclusive | `requires $share/ topic prefix or exclusive session` |
 | Invalid duration | `invalid duration "x"` |
 | Mutually exclusive drain config | `drain_strategy and drain_interval are mutually exclusive` |
+| Invalid resolver type | `resolver.type "x" is invalid; must be one of: rules, header_map, all, static` |
+| Resolver default_binding not in route | `resolver.default_binding "x" not found in route bindings` |
+| header_map missing header_key | `resolver.header_key is required for header_map type` |
+| header_map empty | `resolver.header_map must have at least one entry` |
+| header_map references unknown binding | `resolver.header_map["x"] references unknown binding "y"` |
+| rules with no rules and no default | `resolver type "rules" requires at least one rule or a default_binding` |
+| Rule references unknown binding | `binding_id "x" not found in route bindings` |
+| Condition missing field | `field is required` |
+| Condition invalid operator | `operator "x" is invalid` |
+| Invalid regex pattern | `invalid regex pattern: ...` |
+| Regex pattern too long | `regex pattern exceeds maximum length of 4096 characters` |
 
 **Warnings** (non-fatal):
 - `direct_hold` advisory: no inter-instance fencing, destination must handle duplicates

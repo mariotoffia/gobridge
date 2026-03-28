@@ -120,6 +120,156 @@ func MatchByID(bindingID string) MatchFunc {
 	}
 }
 
+// MatchBySubjectPrefix returns a MatchFunc that selects a binding when the
+// envelope's Subject starts with a prefix that maps to the binding's ID.
+// The prefixMap keys are subject prefixes, values are binding IDs.
+func MatchBySubjectPrefix(prefixMap map[string]string) MatchFunc {
+	return func(env *domain.Envelope, b domain.DestinationBinding) bool {
+		for prefix, targetID := range prefixMap {
+			if strings.HasPrefix(env.Subject, prefix) && targetID == b.ID {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// MatchRule pairs a binding ID with conditions that must all match.
+type MatchRule struct {
+	BindingID  string
+	Conditions []MatchCondition
+	evals      []*conditionEval
+}
+
+// CompileMatchRules pre-compiles all conditions in the rule set. Call this
+// once at startup; the returned rules contain cached regex patterns and are
+// safe for concurrent use. Returns an error if any condition fails to compile
+// (e.g., invalid regex pattern).
+func CompileMatchRules(rules []MatchRule) ([]MatchRule, error) {
+	compiled := make([]MatchRule, len(rules))
+	for i, r := range rules {
+		evals := make([]*conditionEval, len(r.Conditions))
+		for j, c := range r.Conditions {
+			eval, err := newConditionEval(c)
+			if err != nil {
+				return nil, fmt.Errorf("rule %d (binding %q), condition %d: %w",
+					i, r.BindingID, j, err)
+			}
+			evals[j] = eval
+		}
+		compiled[i] = MatchRule{
+			BindingID:  r.BindingID,
+			Conditions: r.Conditions,
+			evals:      evals,
+		}
+	}
+	return compiled, nil
+}
+
+// RuleResolver implements ports.DestinationResolver with ordered rule
+// evaluation (first-match-wins). Rules are evaluated in order; the first
+// rule whose conditions all match determines the target binding.
+// If no rule matches and a default binding is set, it is used as fallback.
+//
+// Unlike MatchFunc-based resolvers, RuleResolver guarantees that exactly
+// one binding is selected per envelope, providing true first-match semantics.
+type RuleResolver struct {
+	bindings       []domain.DestinationBinding
+	bindingIndex   map[string]domain.DestinationBinding
+	rules          []MatchRule
+	defaultBinding string
+}
+
+// NewRuleResolver creates a rule-based resolver. Rules must be pre-compiled
+// via CompileMatchRules. Returns an error if a rule references a binding
+// not present in the bindings list.
+func NewRuleResolver(
+	bindings []domain.DestinationBinding,
+	rules []MatchRule,
+	defaultBinding string,
+) (*RuleResolver, error) {
+	idx := make(map[string]domain.DestinationBinding, len(bindings))
+	for _, b := range bindings {
+		idx[b.ID] = b
+	}
+
+	for i, r := range rules {
+		if _, ok := idx[r.BindingID]; !ok {
+			return nil, fmt.Errorf("rule %d references unknown binding %q", i, r.BindingID)
+		}
+	}
+	if defaultBinding != "" {
+		if _, ok := idx[defaultBinding]; !ok {
+			return nil, fmt.Errorf("default binding %q not found in bindings", defaultBinding)
+		}
+	}
+
+	return &RuleResolver{
+		bindings:       bindings,
+		bindingIndex:   idx,
+		rules:          rules,
+		defaultBinding: defaultBinding,
+	}, nil
+}
+
+// Resolve evaluates rules in order and returns a single dispatch plan for
+// the first matching rule. Condition evaluation errors are treated as
+// non-matching; if all rules fail with errors, the message goes to the
+// default binding or returns ErrNoBindingMatch.
+func (r *RuleResolver) Resolve(_ context.Context, env *domain.Envelope) ([]domain.DispatchPlan, error) {
+	ctx := newEvalContext()
+
+	for _, rule := range r.rules {
+		if len(rule.evals) == 0 {
+			return r.planForBinding(rule.BindingID, env)
+		}
+
+		allMatch := true
+		for _, eval := range rule.evals {
+			ok, err := eval.evaluate(env, ctx)
+			if err != nil || !ok {
+				allMatch = false
+				break
+			}
+		}
+		if allMatch {
+			return r.planForBinding(rule.BindingID, env)
+		}
+	}
+
+	if r.defaultBinding != "" {
+		return r.planForBinding(r.defaultBinding, env)
+	}
+
+	return nil, domain.NewBridgeError(
+		domain.ErrCodeNoBindingMatch, domain.ErrorRejected,
+		"no rule matched the envelope",
+	)
+}
+
+func (r *RuleResolver) planForBinding(bindingID string, env *domain.Envelope) ([]domain.DispatchPlan, error) {
+	b := r.bindingIndex[bindingID]
+
+	addr, err := RenderAddress(b.Address, env.Headers)
+	if err != nil {
+		return nil, domain.ErrInvalidTopic.
+			WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
+	}
+
+	if strings.EqualFold(b.Transport, "mqtt") {
+		if err := ValidateMQTTTopic(addr); err != nil {
+			return nil, domain.ErrInvalidTopic.
+				WithMessage(fmt.Sprintf("binding %q: %v", b.ID, err))
+		}
+	}
+
+	return []domain.DispatchPlan{{
+		BindingID: b.ID,
+		Address:   addr,
+		Headers:   copyHeaders(b.Options),
+	}}, nil
+}
+
 // RenderAddress replaces {key} placeholders in template with values from vars.
 // Returns an error if a placeholder references a missing key or if the rendered
 // result is empty. Substituted values are never re-expanded, preventing

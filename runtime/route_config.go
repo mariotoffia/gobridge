@@ -18,6 +18,13 @@ type RouteConfig struct {
 	Resolver           ports.DestinationResolver
 	Processors         []ports.Processor
 	SourceCapabilities []ports.Capability
+
+	// Senders maps binding IDs to their respective senders for
+	// DirectHold content-based dispatch. When a resolver selects a
+	// binding, the runner looks up the sender in this map. If the
+	// binding ID is not found, it falls back to the route's default
+	// sender. Optional; when nil all bindings use the default sender.
+	Senders map[string]ports.Sender
 }
 
 // SessionConfig configures session management for exclusive sessions.

@@ -241,6 +241,10 @@ func validate(cfg *BridgeConfig) *ValidationError {
 			}
 		}
 
+		if r.Resolver != nil {
+			validateResolver(ve, fmt.Sprintf("routes[%d] (%s)", i, r.ID), r)
+		}
+
 		return r.ID, fmt.Sprintf("routes[%d]", i)
 	})
 

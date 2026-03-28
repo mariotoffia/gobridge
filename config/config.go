@@ -118,14 +118,44 @@ type BindingDef struct {
 // RouteDef describes a message route from a receiver through an optional
 // processor chain to one or more sender bindings.
 type RouteDef struct {
-	ID           string    `yaml:"id" json:"id"`
-	ReceiverID   string    `yaml:"receiver_id" json:"receiver_id"`
-	DeliveryMode string    `yaml:"delivery_mode,omitempty" json:"delivery_mode,omitempty"`
-	DispatchMode string    `yaml:"dispatch_mode,omitempty" json:"dispatch_mode,omitempty"`
-	Policy       PolicyDef `yaml:"policy,omitempty" json:"policy,omitempty"`
-	Bindings     []string  `yaml:"bindings,omitempty" json:"bindings,omitempty"`
-	Processors   []string  `yaml:"processors,omitempty" json:"processors,omitempty"`
+	ID           string           `yaml:"id" json:"id"`
+	ReceiverID   string           `yaml:"receiver_id" json:"receiver_id"`
+	DeliveryMode string           `yaml:"delivery_mode,omitempty" json:"delivery_mode,omitempty"`
+	DispatchMode string           `yaml:"dispatch_mode,omitempty" json:"dispatch_mode,omitempty"`
+	Policy       PolicyDef        `yaml:"policy,omitempty" json:"policy,omitempty"`
+	Bindings     []string         `yaml:"bindings,omitempty" json:"bindings,omitempty"`
+	Processors   []string         `yaml:"processors,omitempty" json:"processors,omitempty"`
+	Resolver     *ResolverDef     `yaml:"resolver,omitempty" json:"resolver,omitempty"`
 	Session      *RouteSessionDef `yaml:"session,omitempty" json:"session,omitempty"`
+}
+
+// ResolverDef configures content-based binding resolution for a route.
+// Supported types: "rules" (ordered rule evaluation), "header_map"
+// (header-value to binding-ID mapping), "all" (fan-out to all bindings),
+// "static" (first binding only).
+type ResolverDef struct {
+	Type           string            `yaml:"type" json:"type"`
+	DefaultBinding string            `yaml:"default_binding,omitempty" json:"default_binding,omitempty"`
+	HeaderKey      string            `yaml:"header_key,omitempty" json:"header_key,omitempty"`
+	HeaderMap      map[string]string `yaml:"header_map,omitempty" json:"header_map,omitempty"`
+	Rules          []RuleDef         `yaml:"rules,omitempty" json:"rules,omitempty"`
+}
+
+// RuleDef defines a single content-based routing rule: a binding ID and
+// the conditions that must all match (AND logic) for the rule to select.
+type RuleDef struct {
+	BindingID string         `yaml:"binding_id" json:"binding_id"`
+	Match     []ConditionDef `yaml:"match,omitempty" json:"match,omitempty"`
+}
+
+// ConditionDef defines a field-level predicate for routing decisions.
+// Field patterns: "subject", "header.<key>", "$.<json.path>", or bare name
+// (header fallback). Operators: eq, ne, prefix, contains, regex, gt, lt,
+// gte, lte, exists, in.
+type ConditionDef struct {
+	Field    string `yaml:"field" json:"field"`
+	Operator string `yaml:"operator" json:"operator"`
+	Value    any    `yaml:"value" json:"value"`
 }
 
 // RouteSessionDef configures session management for a route that targets

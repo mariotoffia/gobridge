@@ -258,6 +258,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 			Policy:        entry.config.Policy,
 			Receiver:      entry.receiver,
 			Sender:        entry.sender,
+			Senders:       entry.config.Senders,
 			OutboxStore:   rt.outboxStore,
 			DLQ:           dlq,
 			Resolver:      entry.config.Resolver,
