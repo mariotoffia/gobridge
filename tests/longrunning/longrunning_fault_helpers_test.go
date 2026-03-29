@@ -199,17 +199,17 @@ func (p *rejectEveryNthProcessor) Process(
 
 type panicProcessor struct {
 	panicEvery int
-	count      int64
+	count      atomic.Int64
 }
 
 func (p *panicProcessor) Name() string { return "panic-processor" }
 
 func (p *panicProcessor) Process(
-	_ context.Context, env *domain.Envelope, next ports.ProcessorFunc,
+	ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc,
 ) error {
-	p.count++
-	if p.count%int64(p.panicEvery) == 0 {
-		panic(fmt.Sprintf("panicProcessor: deliberate panic on message %d", p.count))
+	n := p.count.Add(1)
+	if n%int64(p.panicEvery) == 0 {
+		panic(fmt.Sprintf("panicProcessor: deliberate panic on message %d", n))
 	}
-	return next(context.Background(), env)
+	return next(ctx, env)
 }

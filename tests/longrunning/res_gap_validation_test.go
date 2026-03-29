@@ -309,8 +309,14 @@ func TestRES001_NoCircuitBreakerOnSender(t *testing.T) {
 	sessID := mqttlocal.UniqueClientID("res001-sess")
 	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
 	baseSnd := setupMQTTSender(t, sess)
-	// Wrap in degradedSender: 80% fail, 5s latency per send.
-	snd := newDegradedSender(baseSnd, 80, 5*time.Second)
+	// Wrap in CB sender + degradedSender: 80% fail, 5s latency per send.
+	// CB opens after 5 consecutive failures and fails-fast with ErrUnavailable.
+	cbSnd := paho.NewCircuitBreakerSender(baseSnd, paho.CBConfig{
+		FailureThreshold: 5,
+		SuccessThreshold: 2,
+		ResetTimeout:     5 * time.Second,
+	})
+	snd := newDegradedSender(cbSnd, 80, 5*time.Second)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("res001-bridge"),
@@ -335,17 +341,14 @@ func TestRES001_NoCircuitBreakerOnSender(t *testing.T) {
 	start := time.Now()
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
 
-	// Wait for processing (slow due to degraded sender).
+	// With CB: fails fast after 5 consecutive failures, then probes every 5s.
+	// Without CB: each fail blocks for 5s on the degraded sender.
 	time.Sleep(30 * time.Second)
 	elapsed := time.Since(start)
 
 	delivered := collector.count()
 	t.Logf("RES-001: delivered=%d/%d in %v, dlq=%d", delivered, msgCount, elapsed, dlq.count())
-
-	if elapsed > 20*time.Second && delivered < msgCount/2 {
-		t.Logf("RES-001: EVIDENCE -- degraded sender stalls pipeline (no circuit breaker)")
-		t.Logf("RES-001: With CB, sends would fail-fast after ~5 failures, freeing slots")
-	}
+	t.Logf("RES-001: CB should fail-fast on degraded sender, freeing semaphore slots quickly")
 
 	assert.Greater(t, delivered+dlq.count(), 0,
 		"At least some messages should be processed")
