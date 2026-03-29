@@ -63,7 +63,7 @@ func TestDeliveryRetryWithDelaySchedulesMessage(t *testing.T) {
 	env := &domain.Envelope{ID: "msg-1"}
 	body := []byte("payload")
 	msg := &azservicebus.ReceivedMessage{MessageID: "orig", Body: body}
-	d := newDelivery(context.Background(), env, mock, sched, msg, 30*time.Second, false, nil)
+	d := newDelivery(context.Background(), env, mock, sched, msg, 30*time.Second, false, nil, nil)
 
 	before := time.Now()
 	if err := d.Retry(context.Background(), 5*time.Second, nil); err != nil {
@@ -104,7 +104,7 @@ func TestDeliveryRetryZeroDelayAbandons(t *testing.T) {
 	sched := &mockRetryScheduler{}
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "orig"}
-	d := newDelivery(context.Background(), env, mock, sched, msg, 30*time.Second, false, nil)
+	d := newDelivery(context.Background(), env, mock, sched, msg, 30*time.Second, false, nil, nil)
 
 	if err := d.Retry(context.Background(), 0, nil); err != nil {
 		t.Fatalf("Retry: %v", err)
@@ -136,7 +136,7 @@ func TestDeliveryRetryScheduleFailsNoComplete(t *testing.T) {
 	sched := &mockRetryScheduler{Err: errors.New("schedule failed")}
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "orig", Body: []byte("payload")}
-	d := newDelivery(context.Background(), env, mock, sched, msg, 30*time.Second, false, nil)
+	d := newDelivery(context.Background(), env, mock, sched, msg, 30*time.Second, false, nil, nil)
 
 	err := d.Retry(context.Background(), 5*time.Second, nil)
 	if err == nil {
@@ -167,7 +167,7 @@ func TestDeliveryRetryCompleteFailCancelsScheduled(t *testing.T) {
 	sched := &mockRetryScheduler{}
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "orig", Body: []byte("payload")}
-	d := newDelivery(context.Background(), env, mock, sched, msg, 30*time.Second, false, nil)
+	d := newDelivery(context.Background(), env, mock, sched, msg, 30*time.Second, false, nil, nil)
 
 	err := d.Retry(context.Background(), 5*time.Second, nil)
 	if err == nil {
@@ -193,7 +193,7 @@ func TestDeliveryRetryNegativeDelayAbandons(t *testing.T) {
 	sched := &mockRetryScheduler{}
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "orig"}
-	d := newDelivery(context.Background(), env, mock, sched, msg, 30*time.Second, false, nil)
+	d := newDelivery(context.Background(), env, mock, sched, msg, 30*time.Second, false, nil, nil)
 
 	if err := d.Retry(context.Background(), -1*time.Second, nil); err != nil {
 		t.Fatalf("Retry: %v", err)
@@ -221,7 +221,7 @@ func TestDeliveryRetryNoSchedulerFallsBackToAbandon(t *testing.T) {
 	mock := &mockASBClient{}
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "orig"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil)
 
 	if err := d.Retry(context.Background(), 5*time.Second, nil); err != nil {
 		t.Fatalf("Retry: %v", err)

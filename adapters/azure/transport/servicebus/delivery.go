@@ -21,6 +21,7 @@ type asbDelivery struct {
 	scheduler retryScheduler
 	msg       *azservicebus.ReceivedMessage
 	logger    *slog.Logger
+	metrics   ports.MetricsExporter
 	cancel    context.CancelFunc
 	once      sync.Once
 }
@@ -34,7 +35,12 @@ func newDelivery(
 	lockDuration time.Duration,
 	autoExtend bool,
 	logger *slog.Logger,
+	metrics ports.MetricsExporter,
 ) *asbDelivery {
+	if metrics == nil {
+		metrics = &ports.NoopExporter{}
+	}
+
 	ctx, cancel := context.WithCancel(parentCtx)
 
 	d := &asbDelivery{
@@ -43,6 +49,7 @@ func newDelivery(
 		scheduler: scheduler,
 		msg:       msg,
 		logger:    logger,
+		metrics:   metrics,
 		cancel:    cancel,
 	}
 
@@ -82,7 +89,7 @@ func (d *asbDelivery) Ack(ctx context.Context) error {
 
 	// MetricASBCompleteLatency is emitted here because the InstrumentedDelivery
 	// wrapper uses the generic MetricAckLatency; this gives ASB-specific detail.
-	_ = time.Since(start)
+	d.metrics.Timer(domain.MetricASBCompleteLatency, time.Since(start))
 
 	return nil
 }
@@ -135,10 +142,12 @@ func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 		}
 
 		enqueueAt := time.Now().Add(after)
+		schedStart := time.Now()
 		seqNums, err := d.scheduler.ScheduleMessages(ctx, []*azservicebus.Message{newMsg}, enqueueAt, nil)
 		if err != nil {
 			return MapError(err)
 		}
+		d.metrics.Timer(domain.MetricASBScheduleLatency, time.Since(schedStart))
 
 		if err := d.client.CompleteMessage(ctx, d.msg, nil); err != nil {
 			if cancelErr := d.scheduler.CancelScheduledMessages(ctx, seqNums, nil); cancelErr != nil && d.logger != nil {
@@ -223,6 +232,7 @@ func (d *asbDelivery) autoExtendLoop(ctx context.Context, interval time.Duration
 				continue
 			}
 			consecutiveFailures = 0
+			d.metrics.Counter(domain.MetricASBLockRenewals, 1)
 			logging.TraceContext(d.logger, ctx, "servicebus: lock renewed",
 				"message_id", d.msg.MessageID,
 			)

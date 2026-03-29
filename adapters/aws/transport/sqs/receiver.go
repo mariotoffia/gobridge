@@ -117,6 +117,11 @@ func (r *Receiver) pollLoop(
 
 		r.metrics.Timer(domain.MetricSQSPollLatency, time.Since(pollStart),
 			domain.Tag{Key: domain.TagKeyQueueURL, Value: queueURL})
+		if len(output.Messages) > 0 {
+			perMsg := time.Since(pollStart) / time.Duration(len(output.Messages))
+			r.metrics.Timer(domain.MetricSQSReceiveLatency, perMsg,
+				domain.Tag{Key: domain.TagKeyQueueURL, Value: queueURL})
+		}
 		backoff.reset()
 
 		if logging.TraceEnabled(r.logger) {
@@ -233,6 +238,7 @@ func (r *Receiver) convertMessage(
 		r.cfg.VisibilityTimeout,
 		r.cfg.autoExtendEnabled(),
 		r.logger,
+		r.metrics,
 	)
 }
 

@@ -287,5 +287,6 @@ func (r *Receiver) convertMessage(ctx context.Context, msg *azservicebus.Receive
 		r.cfg.LockDuration,
 		r.cfg.autoExtendEnabled(),
 		r.logger,
+		r.metrics,
 	)
 }

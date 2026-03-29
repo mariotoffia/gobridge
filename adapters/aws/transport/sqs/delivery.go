@@ -27,6 +27,7 @@ type sqsDelivery struct {
 	receiptHandle     string
 	visibilityTimeout atomic.Int32
 	logger            *slog.Logger
+	metrics           ports.MetricsExporter
 
 	cancel           context.CancelFunc // stops auto-extend goroutine
 	processingCancel context.CancelFunc // cancels the processing goroutine on extend failure
@@ -46,7 +47,12 @@ func newDelivery(
 	visibilityTimeout int32,
 	autoExtend bool,
 	logger *slog.Logger,
+	metrics ports.MetricsExporter,
 ) *sqsDelivery {
+	if metrics == nil {
+		metrics = &ports.NoopExporter{}
+	}
+
 	ctx, cancel := context.WithCancel(parentCtx)
 
 	d := &sqsDelivery{
@@ -55,6 +61,7 @@ func newDelivery(
 		queueURL:      queueURL,
 		receiptHandle: receiptHandle,
 		logger:        logger,
+		metrics:       metrics,
 		cancel:        cancel,
 	}
 	d.visibilityTimeout.Store(visibilityTimeout)
@@ -79,6 +86,7 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 		)
 	}
 
+	start := time.Now()
 	_, err := d.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
 		QueueUrl:      aws.String(d.queueURL),
 		ReceiptHandle: aws.String(d.receiptHandle),
@@ -86,6 +94,8 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 	if err != nil {
 		return MapError(err)
 	}
+	d.metrics.Timer(domain.MetricSQSDeleteLatency, time.Since(start),
+		domain.Tag{Key: domain.TagKeyQueueURL, Value: d.queueURL})
 	return nil
 }
 
@@ -155,6 +165,8 @@ func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
 		return MapError(err)
 	}
 
+	d.metrics.Counter(domain.MetricSQSVisibilityExtensions, 1,
+		domain.Tag{Key: domain.TagKeyQueueURL, Value: d.queueURL})
 	d.visibilityTimeout.Store(timeout)
 	return nil
 }
@@ -221,6 +233,8 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 				continue
 			}
 			consecutiveFailures = 0
+			d.metrics.Counter(domain.MetricSQSAutoExtends, 1,
+				domain.Tag{Key: domain.TagKeyQueueURL, Value: d.queueURL})
 			logging.TraceContext(d.logger, ctx, "sqs: auto-extended",
 				"queue_url", d.queueURL,
 				"message_id", d.env.ID,
