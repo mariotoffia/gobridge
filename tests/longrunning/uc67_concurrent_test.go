@@ -26,6 +26,7 @@ import (
 // =========================================================================
 
 func TestUC68_FiveMinuteSoak(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		duration    = 5 * time.Minute
 		rate        = 100 // msgs/sec
@@ -138,6 +139,7 @@ injectLoop:
 // =========================================================================
 
 func TestUC67_ConcurrentReconcile(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 3000
 		outTopic    = "uc67/output"

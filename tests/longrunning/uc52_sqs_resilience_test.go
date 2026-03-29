@@ -22,6 +22,7 @@ import (
 )
 
 func TestUC52_VisibilityTimeoutExpiry(t *testing.T) {
+	_ = withFreshInfra(t)
 	client := sqslocal.Client(t)
 	name := sqslocal.UniqueQueue("uc52")
 	queueURL := sqslocal.CreateQueueWithAttrs(t, client, name, map[string]string{
@@ -83,6 +84,7 @@ func TestUC52_VisibilityTimeoutExpiry(t *testing.T) {
 }
 
 func TestUC53_AutoExtendUnderLoad(t *testing.T) {
+	_ = withFreshInfra(t)
 	client := sqslocal.Client(t)
 	name := sqslocal.UniqueQueue("uc53")
 	queueURL := sqslocal.CreateQueueWithAttrs(t, client, name, map[string]string{
@@ -143,6 +145,7 @@ func TestUC53_AutoExtendUnderLoad(t *testing.T) {
 }
 
 func TestUC54_FIFODeduplication(t *testing.T) {
+	_ = withFreshInfra(t)
 	queueURL, client := setupFIFOQueue(t, "uc54")
 
 	receiver := newSQSReceiver(t, queueURL)
@@ -189,6 +192,7 @@ func TestUC54_FIFODeduplication(t *testing.T) {
 }
 
 func TestUC55_FIFOOrdering(t *testing.T) {
+	_ = withFreshInfra(t)
 	queueURL, client := setupFIFOQueue(t, "uc55")
 
 	receiver := newSQSReceiver(t, queueURL)
@@ -257,6 +261,7 @@ func TestUC55_FIFOOrdering(t *testing.T) {
 }
 
 func TestUC56_BatchMixedSuccessFailure(t *testing.T) {
+	_ = withFreshInfra(t)
 	queueURL, client := setupSQSQueue(t, "uc56")
 
 	receiver := newSQSReceiver(t, queueURL)

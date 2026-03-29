@@ -40,6 +40,7 @@ const (
 )
 
 func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {
+	_ = withFreshInfra(t)
 	// --- Infrastructure ---
 	sqsAURL, sqsAClient := setupSQSQueue(t, "uc2-factory-a")
 	sqsBURL, sqsBClient := setupSQSQueue(t, "uc2-factory-b")

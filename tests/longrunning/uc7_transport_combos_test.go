@@ -32,6 +32,7 @@ import (
 // =========================================================================
 
 func TestUC7_SQS_FIFO_Ordering_Through_MQTT(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount   = 3000
 		groupCount = 3
@@ -100,6 +101,7 @@ func TestUC7_SQS_FIFO_Ordering_Through_MQTT(t *testing.T) {
 // =========================================================================
 
 func TestUC8_MultiProtocol_FanOut(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 2000
 		pollTimeout  = 120 * time.Second
@@ -199,6 +201,7 @@ func TestUC8_MultiProtocol_FanOut(t *testing.T) {
 // =========================================================================
 
 func TestUC9_MQTT_QoS2_Stress(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 5000
 		pollTimeout  = 120 * time.Second
@@ -289,6 +292,7 @@ func TestUC9_MQTT_QoS2_Stress(t *testing.T) {
 // =========================================================================
 
 func TestUC10_HTTP_Inject_To_MQTT(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 1000
 		pollTimeout  = 60 * time.Second
@@ -361,6 +365,7 @@ func TestUC10_HTTP_Inject_To_MQTT(t *testing.T) {
 // =========================================================================
 
 func TestUC11_SQS_To_SQS_Direct(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 5000
 		pollTimeout  = 120 * time.Second

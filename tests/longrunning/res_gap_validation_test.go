@@ -43,6 +43,7 @@ import (
 // =========================================================================
 
 func TestRES003_MQTTSourceDropWithoutDLQ(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount   = 100
 		srcTopic   = "res003/source"
@@ -189,6 +190,7 @@ func TestRES003_MQTTSourceDropWithoutDLQ(t *testing.T) {
 // =========================================================================
 
 func TestRES005_AutoExtendFailureDuplicates(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 50
 		outTopic    = "res005/output"
@@ -293,6 +295,7 @@ func TestRES005_AutoExtendFailureDuplicates(t *testing.T) {
 // =========================================================================
 
 func TestRES001_NoCircuitBreakerOnSender(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 100
 		outTopic    = "res001/output"
@@ -364,6 +367,7 @@ func TestRES001_NoCircuitBreakerOnSender(t *testing.T) {
 // =========================================================================
 
 func TestRES006_DLQWriteBlocksSemaphore(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 50
 		outTopic    = "res006/output"
@@ -431,6 +435,7 @@ func TestRES006_DLQWriteBlocksSemaphore(t *testing.T) {
 // =========================================================================
 
 func TestRES011_RouterPanicSwallowsMessages(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 100
 		outTopic    = "res011/output"

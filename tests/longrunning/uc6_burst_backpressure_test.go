@@ -46,6 +46,7 @@ func (p *poisonProcessor) Process(
 // Volume: 3,000 messages total (2,500 normal + 500 poison interleaved).
 // Verification: MQTT collector has 2,500, DLQ has 500, total = 3,000.
 func TestUC6_BurstBackpressure(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		totalCount  = 3000
 		normalCount = 2500

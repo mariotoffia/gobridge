@@ -21,6 +21,7 @@ import (
 // partition under a "hot key" workload and verifies that all messages are
 // delivered without any ending up in the DLQ.
 func TestUC59_PartitionHotspot(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 5000
 		outTopic    = "uc59/output"
@@ -91,6 +92,7 @@ func TestUC59_PartitionHotspot(t *testing.T) {
 // once the broker comes back online. This is the PRODUCTION FIX validation
 // for RES-001 (reconnect after broker restart).
 func TestUC60_OutboxPlusBrokerDown(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 2000
 		outTopic    = "uc60/output"
@@ -184,6 +186,7 @@ func TestUC60_OutboxPlusBrokerDown(t *testing.T) {
 // With MaxReplayAttempts set to 5, every message should eventually succeed on
 // the 4th attempt. This validates the outbox retry / replay-attempt counter.
 func TestUC61_MaxReplayAttempts(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 500
 		outTopic    = "uc61/output"
@@ -254,6 +257,7 @@ func TestUC61_MaxReplayAttempts(t *testing.T) {
 // many concurrent messages the lease must be renewed multiple times during
 // processing. All messages must arrive and the DLQ must remain empty.
 func TestUC62_LeaseRenewalHighLoad(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 10000
 		outTopic    = "uc62/output"

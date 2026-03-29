@@ -26,6 +26,7 @@ import (
 // =========================================================================
 
 func TestUC30_DLQ_AllPoison(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 5000
 		pollTimeout  = 120 * time.Second
@@ -100,6 +101,7 @@ func TestUC30_DLQ_AllPoison(t *testing.T) {
 // =========================================================================
 
 func TestUC31_OutboxReplay_Exhaustion(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 100
 		pollTimeout  = 120 * time.Second
@@ -167,6 +169,7 @@ func TestUC31_OutboxReplay_Exhaustion(t *testing.T) {
 // =========================================================================
 
 func TestUC32_GracefulShutdown_UnderLoad(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 3000
 		minReceived = 500

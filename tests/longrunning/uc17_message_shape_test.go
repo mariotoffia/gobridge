@@ -107,6 +107,7 @@ func sqsMQTTSQSBridge(
 // =========================================================================
 
 func TestUC17_LargePayloads_200KB(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 500
 		paySize  = 200 * 1024
@@ -164,6 +165,7 @@ func TestUC17_LargePayloads_200KB(t *testing.T) {
 // =========================================================================
 
 func TestUC18_TinyPayloads_HighThroughput(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 50000
 		pollTimeout  = 300 * time.Second
@@ -221,6 +223,7 @@ func TestUC18_TinyPayloads_HighThroughput(t *testing.T) {
 // =========================================================================
 
 func TestUC19_MixedPayloadSizes(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		perClass = 1000
 		total    = 3000
@@ -286,6 +289,7 @@ func TestUC19_MixedPayloadSizes(t *testing.T) {
 // =========================================================================
 
 func TestUC20_HeaderHeavy_50Headers(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount  = 1000
 		headerQty = 50
@@ -348,6 +352,7 @@ func TestUC20_HeaderHeavy_50Headers(t *testing.T) {
 // =========================================================================
 
 func TestUC21_BinaryPayload_RoundTrip(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 1000
 		pollTimeout  = 120 * time.Second

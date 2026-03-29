@@ -36,6 +36,7 @@ import (
 // =========================================================================
 
 func TestUC57_StaleClaimRecovery(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 1000
 		crashAt     = 300
@@ -172,6 +173,7 @@ func TestUC57_StaleClaimRecovery(t *testing.T) {
 // =========================================================================
 
 func TestUC58_DoubleDrainPrevention(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 2000
 		outTopic    = "uc58/output"

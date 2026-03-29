@@ -31,6 +31,7 @@ import (
 // Verification: no cross-contamination; direction-A payloads only in
 // collector-south, direction-B payloads only in SQS-SOUTH.
 func TestUC4_Bidirectional_SQS_MQTT(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 2000
 		pollTimeout  = 120 * time.Second

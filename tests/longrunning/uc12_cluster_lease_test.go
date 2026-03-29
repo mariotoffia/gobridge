@@ -28,6 +28,7 @@ type clusterInst struct {
 // of 3 cluster instances do not lose messages. Instances are stopped and
 // replaced sequentially while 3,000 messages flow through SQS -> MQTT.
 func TestUC12_RollingRestart_NoMessageLoss(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 3000
 		pollTimeout  = 180 * time.Second
@@ -103,6 +104,7 @@ func TestUC12_RollingRestart_NoMessageLoss(t *testing.T) {
 // (context cancelled without graceful stop), instance B acquires the
 // expired lease and continues processing >= 2,000 unique payloads.
 func TestUC13_SplitBrain_Recovery(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 2000
 		pollTimeout  = 180 * time.Second
@@ -172,6 +174,7 @@ func TestUC13_SplitBrain_Recovery(t *testing.T) {
 // with 1 exclusive session, exactly 1 is "active" at any sampling point,
 // and >= 1,000 messages are delivered.
 func TestUC14_LeaseContention_TenInstances(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		instCount = 10
 		msgCount  = 1000
@@ -246,6 +249,7 @@ func TestUC14_LeaseContention_TenInstances(t *testing.T) {
 // the standby does not connect until it acquires the lease. When the
 // leader stops, the standby acquires the lease, connects, and finishes.
 func TestUC15_ConnectAfterLease(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 2000
 		pollTimeout  = 180 * time.Second
@@ -327,6 +331,7 @@ func TestUC15_ConnectAfterLease(t *testing.T) {
 // (different sessionIDs) delivers to separate MQTT topics without
 // cross-contamination. 1,000 messages per route.
 func TestUC16_MultiSession_Cluster(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 1000
 		pollTimeout  = 120 * time.Second

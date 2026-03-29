@@ -29,6 +29,7 @@ import (
 // =========================================================================
 
 func TestUC38_OutboxDepthLimit(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 500
 		maxDepth = 100
@@ -115,6 +116,7 @@ func TestUC38_OutboxDepthLimit(t *testing.T) {
 // =========================================================================
 
 func TestUC39_AckAfterOutboxPersist(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 2000
 		pollTimeout  = 120 * time.Second
@@ -220,6 +222,7 @@ func TestUC39_AckAfterOutboxPersist(t *testing.T) {
 // =========================================================================
 
 func TestUC40_AdaptiveDrain_Backoff(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		firstBatch  = 1000
 		secondBatch = 500
@@ -329,6 +332,7 @@ func (p *uc41SlowFirstN) Process(
 }
 
 func TestUC41_IdempotentOutbox_Persist(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 200
 		pollTimeout  = 120 * time.Second

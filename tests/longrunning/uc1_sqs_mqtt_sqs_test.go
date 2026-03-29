@@ -40,6 +40,7 @@ const (
 )
 
 func TestUC1_SQS_MQTT_SharedSub_FanOut_SQS(t *testing.T) {
+	_ = withFreshInfra(t)
 	// --- Infrastructure ---
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc1-in")
 	sqsOut1URL, sqsOut1Client := setupSQSQueue(t, "uc1-out1")

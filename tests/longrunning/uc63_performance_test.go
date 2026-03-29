@@ -28,6 +28,7 @@ import (
 // =========================================================================
 
 func TestUC63_MemoryStability(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 50000
 		outTopic    = "uc63/output"
@@ -113,6 +114,7 @@ func TestUC63_MemoryStability(t *testing.T) {
 // =========================================================================
 
 func TestUC64_LatencyPercentiles(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 10000
 		outTopic    = "uc64/output"
@@ -188,6 +190,7 @@ func TestUC64_LatencyPercentiles(t *testing.T) {
 // =========================================================================
 
 func TestUC66_MultiTenantIsolation(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		tenants     = 10
 		perTenant   = 500
@@ -303,6 +306,7 @@ func TestUC66_MultiTenantIsolation(t *testing.T) {
 // =========================================================================
 
 func TestUC65_ThroughputCeiling(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		outTopic    = "uc65/output"
 		testTimeout = 600 * time.Second

@@ -115,6 +115,7 @@ func (p *stageProcessor) Process(
 // Verification: SQS-FINAL has 1,000 messages, each with stage_1..stage_4
 // headers and preserved original payload.
 func TestUC5_PipelineChain(t *testing.T) {
+	_ = withFreshInfra(t)
 	// Deep health now includes HandlersRegistered in Ready check.
 	// gobridgesync waits until handlers are registered before proceeding.
 	const (

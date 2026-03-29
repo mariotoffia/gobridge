@@ -28,6 +28,7 @@ import (
 // =========================================================================
 
 func TestUC27_Intermittent_SendFailures(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 3000
 		pollTimeout  = 180 * time.Second
@@ -131,6 +132,7 @@ func extractSeq(env *domain.Envelope) int {
 }
 
 func TestUC28_VisibilityTimeout_Race(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 500
 		pollTimeout  = 180 * time.Second
@@ -225,6 +227,7 @@ func TestUC28_VisibilityTimeout_Race(t *testing.T) {
 // =========================================================================
 
 func TestUC29_MessageTTL_Expiry(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 500
 		pollTimeout  = 120 * time.Second

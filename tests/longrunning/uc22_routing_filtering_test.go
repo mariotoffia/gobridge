@@ -24,6 +24,7 @@ import (
 // =========================================================================
 
 func TestUC22_TenRule_MatchRule_Routing(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		ruleCount    = 10
 		msgsPerRule  = 500
@@ -149,6 +150,7 @@ func TestUC22_TenRule_MatchRule_Routing(t *testing.T) {
 // =========================================================================
 
 func TestUC23_SubjectPrefix_Routing(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		perPrefix = 1000
 		total     = 3000
@@ -229,6 +231,7 @@ func TestUC23_SubjectPrefix_Routing(t *testing.T) {
 // =========================================================================
 
 func TestUC24_DynamicAddress_Templates(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		perCombo = 1000
 		total    = 3000
@@ -299,6 +302,7 @@ func TestUC24_DynamicAddress_Templates(t *testing.T) {
 // =========================================================================
 
 func TestUC25_FilterProcessor_90Percent_Drop(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		totalMsgs = 10000
 		keepCount = 1000
@@ -368,6 +372,7 @@ func TestUC25_FilterProcessor_90Percent_Drop(t *testing.T) {
 // =========================================================================
 
 func TestUC26_FiveStage_ProcessorChain(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount = 2000
 		pollTimeout  = 120 * time.Second

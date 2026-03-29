@@ -47,6 +47,7 @@ const (
 )
 
 func TestUC3_ClusterFailover_ThreeInstances(t *testing.T) {
+	_ = withFreshInfra(t)
 	// --- Infrastructure ---
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc3-in")
 	leaseStore, outboxStore := setupDynamoStores(t)

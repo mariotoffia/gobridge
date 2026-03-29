@@ -34,6 +34,7 @@ import (
 // =========================================================================
 
 func TestUC48_BrokerDownMultiHop(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 2000
 		killAt      = 500
@@ -149,22 +150,17 @@ func TestUC48_BrokerDownMultiHop(t *testing.T) {
 
 // =========================================================================
 // UC49: SharedOutbox vs DirectHold Under Broker Flapping
-//
 // Two parallel paths through the same per-test broker:
 //   Path A: SQS → SharedOutbox → MQTT topicA → collectorA
 //   Path B: SQS → DirectHold  → MQTT topicB → collectorB
-//
 // Broker restarts 3 times during message processing.
-//
 // DOCUMENTATION TEST: proves SharedOutbox handles broker instability
 // better than DirectHold. DirectHold may lose messages during flaps.
-//
-// PRODUCTION FIX NEEDED:
-//   - RES-001: autopaho reconnect to restarted broker.
-//   - Until fixed, both paths may fail to reconnect after flaps.
+// PRODUCTION FIX NEEDED: RES-001 (autopaho reconnect to restarted broker).
 // =========================================================================
 
 func TestUC49_SharedOutboxVsDirectHold_BrokerFlapping(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 2000
 		topicA      = "uc49/outbox/output"
@@ -307,6 +303,7 @@ func TestUC49_SharedOutboxVsDirectHold_BrokerFlapping(t *testing.T) {
 // =========================================================================
 
 func TestUC50_SessionExpiryDuringProcessing(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 100
 		outTopic    = "uc50/output"
@@ -386,6 +383,7 @@ func TestUC50_SessionExpiryDuringProcessing(t *testing.T) {
 // =========================================================================
 
 func TestUC51_PersistentSessionRecovery(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		beforeKill  = 500
 		duringDown  = 500

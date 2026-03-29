@@ -21,6 +21,7 @@ import (
 // to new subscribers and that subsequent bridge-routed messages coexist with
 // the retained message on the same topic.
 func TestUC74_MQTTRetainedMessages(t *testing.T) {
+	_ = withFreshInfra(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -96,6 +97,7 @@ func TestUC74_MQTTRetainedMessages(t *testing.T) {
 // subscription receives messages published to a matching specific topic.
 // This is primarily a documentation/behavior test.
 func TestUC75_WildcardSubscriptionOverlap(t *testing.T) {
+	_ = withFreshInfra(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -166,6 +168,7 @@ func TestUC75_WildcardSubscriptionOverlap(t *testing.T) {
 // expected. The test passes as long as the bridge does not error and at least
 // some messages arrive.
 func TestUC76_QoS0FireAndForget(t *testing.T) {
+	_ = withFreshInfra(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
@@ -238,6 +241,7 @@ func TestUC76_QoS0FireAndForget(t *testing.T) {
 // NOTE: paho v5 may negotiate QoS 2 down to QoS 1 depending on broker
 // configuration. The test documents the actual behavior.
 func TestUC77_QoS2UnderBrokerRestart(t *testing.T) {
+	_ = withFreshInfra(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 

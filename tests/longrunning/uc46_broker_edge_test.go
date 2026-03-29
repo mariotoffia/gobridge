@@ -23,6 +23,7 @@ import (
 // (>1024 bytes) are injected. The small messages must arrive at the collector;
 // oversized ones are expected to be DLQ'd or dropped by the broker.
 func TestUC46_BrokerMessageSizeLimit(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		smallCount  = 500
 		bigCount    = 500
@@ -115,6 +116,7 @@ func TestUC46_BrokerMessageSizeLimit(t *testing.T) {
 // receives fewer than the bridge sent -- proving that broker-side drops are
 // invisible to the publisher.
 func TestUC47_BrokerMaxQueuedMessages(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 2000
 		outTopic    = "uc47/output"

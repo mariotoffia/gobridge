@@ -20,6 +20,7 @@ import (
 // during Phase 1 (all sends fail) can be replayed through a healthy bridge
 // in Phase 2 and eventually reach the output collector.
 func TestUC69_DLQReplayIntegration(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 500
 		outTopic    = "uc69/output"
@@ -119,6 +120,7 @@ func TestUC69_DLQReplayIntegration(t *testing.T) {
 // sender correctly routes messages based on error_type header: messages with no
 // header succeed, while "permanent" and "transient" errors land in the DLQ.
 func TestUC70_ErrorClassificationAccuracy(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 300
 		outTopic    = "uc70/output"
@@ -195,6 +197,7 @@ func TestUC70_ErrorClassificationAccuracy(t *testing.T) {
 // always fail) are retried up to MaxReplayAttempts before landing in the DLQ,
 // and the Attempts field on each DLQ entry reflects the retry count.
 func TestUC71_PoisonMessageAttemptCount(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount          = 100
 		outTopic          = "uc71/output"
@@ -255,6 +258,7 @@ func TestUC71_PoisonMessageAttemptCount(t *testing.T) {
 // failing sender contains all required fields: ID, RouteID, Category, Reason,
 // FailedAt, and a non-empty Envelope.ID.
 func TestUC72_DLQEntryFieldIntegrity(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 500
 		outTopic    = "uc72/output"
@@ -324,6 +328,7 @@ func TestUC72_DLQEntryFieldIntegrity(t *testing.T) {
 // succeed and 40% fail with either transient or permanent errors, verifying
 // that the collector and DLQ counts match the expected distribution.
 func TestUC73_MixedErrorTypes(t *testing.T) {
+	_ = withFreshInfra(t)
 	const (
 		msgCount    = 1000
 		outTopic    = "uc73/output"

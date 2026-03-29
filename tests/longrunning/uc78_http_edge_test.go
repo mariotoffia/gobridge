@@ -24,12 +24,14 @@ import (
 // infrastructure (BridgeFactory + SSESender) is available.
 func TestUC78_HTTPSSEClientDisconnect(t *testing.T) {
 	t.Skip("UC78: requires HTTP transport infrastructure (BridgeFactory + SSESender) — deferred to dedicated HTTP test suite")
+	_ = withFreshInfra(t)
 }
 
 // TestUC79_FIFOMultiGroupConcurrent verifies that messages sent through an
 // SQS FIFO queue with 10 message groups are delivered in per-group order
 // through a DirectHold bridge route to MQTT output.
 func TestUC79_FIFOMultiGroupConcurrent(t *testing.T) {
+	_ = withFreshInfra(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
