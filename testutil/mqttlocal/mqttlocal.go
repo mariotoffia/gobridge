@@ -238,6 +238,49 @@ func Shutdown() {
 	}
 }
 
+// ForceStart kills any existing container and starts a fresh Mosquitto
+// container. The container is removed when the test ends via t.Cleanup.
+// Returns the MQTT broker URL (tcp://127.0.0.1:<port>).
+//
+// Use this instead of [BrokerURL] when the test needs a guaranteed-fresh
+// container (e.g. resilience or restart tests).
+func ForceStart(t testing.TB) string {
+	t.Helper()
+	mu.Lock()
+	defer mu.Unlock()
+
+	if cleanupFn != nil {
+		cleanupFn()
+		cleanupFn = nil
+	}
+	resolved = false
+
+	removeOrphans(containerPrefix)
+
+	mqttURL, wsEndpoint, name, cleanup, err := startContainer(cfg)
+	if err != nil {
+		t.Fatalf("mqttlocal.ForceStart: %v", err)
+	}
+
+	brokerURL = mqttURL
+	wsURL = wsEndpoint
+	containerName = name
+	cleanupFn = cleanup
+	resolved = true
+
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if cleanupFn != nil {
+			cleanupFn()
+			cleanupFn = nil
+		}
+		resolved = false
+	})
+
+	return mqttURL
+}
+
 // UniqueClientID returns a client ID built from prefix and a nanosecond
 // timestamp, suitable for test isolation.
 func UniqueClientID(prefix string) string {

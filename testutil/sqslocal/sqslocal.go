@@ -156,6 +156,48 @@ func Shutdown() {
 	}
 }
 
+// ForceStart kills any existing container and starts a fresh ElasticMQ
+// container. The container is removed when the test ends via t.Cleanup.
+// Returns the endpoint URL.
+//
+// Use this instead of [Endpoint] when the test needs a guaranteed-fresh
+// container (e.g. resilience or restart tests).
+func ForceStart(t testing.TB) string {
+	t.Helper()
+	mu.Lock()
+	defer mu.Unlock()
+
+	if cleanupFn != nil {
+		cleanupFn()
+		cleanupFn = nil
+	}
+	resolved = false
+
+	removeOrphans(containerPrefix)
+
+	ep, name, cleanup, err := startContainer()
+	if err != nil {
+		t.Fatalf("sqslocal.ForceStart: %v", err)
+	}
+
+	endpoint = ep
+	containerName = name
+	cleanupFn = cleanup
+	resolved = true
+
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if cleanupFn != nil {
+			cleanupFn()
+			cleanupFn = nil
+		}
+		resolved = false
+	})
+
+	return ep
+}
+
 // UniqueQueue returns a queue name with a nanosecond timestamp suffix.
 func UniqueQueue(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())

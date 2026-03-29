@@ -163,6 +163,48 @@ func Shutdown() {
 	}
 }
 
+// ForceStart kills any existing container and starts a fresh DynamoDB Local
+// container. The container is removed when the test ends via t.Cleanup.
+// Returns the endpoint URL.
+//
+// Use this instead of [Endpoint] when the test needs a guaranteed-fresh
+// container (e.g. resilience or restart tests).
+func ForceStart(t testing.TB) string {
+	t.Helper()
+	mu.Lock()
+	defer mu.Unlock()
+
+	if cleanupFn != nil {
+		cleanupFn()
+		cleanupFn = nil
+	}
+	resolved = false
+
+	removeOrphans(containerPrefix)
+
+	ep, name, cleanup, err := startContainer()
+	if err != nil {
+		t.Fatalf("ddblocal.ForceStart: %v", err)
+	}
+
+	endpoint = ep
+	containerName = name
+	cleanupFn = cleanup
+	resolved = true
+
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if cleanupFn != nil {
+			cleanupFn()
+			cleanupFn = nil
+		}
+		resolved = false
+	})
+
+	return ep
+}
+
 // UniqueTable returns a table name built from prefix and a nanosecond
 // timestamp, suitable for test isolation.
 func UniqueTable(prefix string) string {
