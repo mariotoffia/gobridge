@@ -47,27 +47,19 @@ func TestMain(m *testing.M) {
 		mqttlocal.WithMaxInflightMessages(0),
 		mqttlocal.WithMaxQueuedMessages(0),
 		mqttlocal.WithMaxQueuedBytes(0),
-		mqttlocal.WithCleanOrphans(true),
 		mqttlocal.WithMemory(mqttMem),
 		mqttlocal.WithCPUs(mqttCPU),
 	)
 	ddblocal.Configure(
-		ddblocal.WithCleanOrphans(true),
 		ddblocal.WithMemory(ddbMem),
 		ddblocal.WithCPUs(ddbCPU),
 	)
 	sqslocal.Configure(
-		sqslocal.WithCleanOrphans(true),
 		sqslocal.WithMemory(sqsMem),
 		sqslocal.WithCPUs(sqsCPU),
 	)
 
-	code := m.Run()
-
-	sqslocal.Shutdown()
-	mqttlocal.Shutdown()
-	ddblocal.Shutdown()
-	os.Exit(code)
+	os.Exit(m.Run())
 }
 
 func envOr(key, fallback string) string {
