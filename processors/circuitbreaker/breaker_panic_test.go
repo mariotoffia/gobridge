@@ -20,21 +20,21 @@ func TestBreaker_PanicInNext_LeavesHalfOpenProbeStuck(t *testing.T) {
 		SuccessThreshold: 1,
 		ResetTimeout:     10 * time.Millisecond,
 	}
-	b := newBreaker("panic-test", cfg, nil)
+	b := NewBreaker("panic-test", cfg, nil)
 
-	if err := b.beforeRequest(); err != nil {
+	if err := b.BeforeRequest(); err != nil {
 		t.Fatalf("beforeRequest in closed state: %v", err)
 	}
-	b.afterRequest(errTest)
+	b.AfterRequest(errTest)
 
-	m := b.metrics()
+	m := b.GetMetrics()
 	if m.State != "open" {
 		t.Fatalf("expected open after 1 failure (threshold=1), got %s", m.State)
 	}
 
 	time.Sleep(cfg.ResetTimeout + 5*time.Millisecond)
 
-	if err := b.beforeRequest(); err != nil {
+	if err := b.BeforeRequest(); err != nil {
 		t.Fatalf("expected half-open probe to be admitted: %v", err)
 	}
 
@@ -46,7 +46,7 @@ func TestBreaker_PanicInNext_LeavesHalfOpenProbeStuck(t *testing.T) {
 		t.Fatalf("halfOpenInFlight = %d, want 1 (stuck probe)", got)
 	}
 
-	err := b.beforeRequest()
+	err := b.BeforeRequest()
 	if err == nil {
 		t.Fatal("expected rejection due to stuck half-open probe, got nil")
 	}
@@ -132,7 +132,7 @@ func TestHalfOpen_MaxProbesDefaultsToOne(t *testing.T) {
 				ResetTimeout:      50 * time.Millisecond,
 				HalfOpenMaxProbes: tc.value,
 			}
-			b := newBreaker("defaults", cfg, nil)
+			b := NewBreaker("defaults", cfg, nil)
 			if b.config.HalfOpenMaxProbes != 1 {
 				t.Errorf("HalfOpenMaxProbes = %d, want 1", b.config.HalfOpenMaxProbes)
 			}

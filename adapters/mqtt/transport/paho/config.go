@@ -35,10 +35,11 @@ type ReceiverOptions struct {
 
 // SenderOptions holds MQTT sender-specific configuration.
 type SenderOptions struct {
-	DefaultTopic string
-	QoS          byte
-	Retain       bool
-	Timeout      time.Duration
+	DefaultTopic   string
+	QoS            byte
+	Retain         bool
+	Timeout        time.Duration
+	CircuitBreaker *CBConfig // nil = disabled (opt-in)
 }
 
 // TLSConfig holds TLS settings for the MQTT connection.

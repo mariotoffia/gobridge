@@ -7,6 +7,13 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
+// withinJitter checks that got is within ±25% of want.
+func withinJitter(got, want time.Duration) bool {
+	lo := time.Duration(float64(want) * 0.75)
+	hi := time.Duration(float64(want) * 1.25)
+	return got >= lo && got <= hi
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // FixedPoll Tests
 //
@@ -24,7 +31,7 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════
 
 // TestFixedPoll_NextInterval validates that FixedPoll returns the configured
-// interval regardless of the recordsFound argument.
+// interval (±25% jitter) regardless of the recordsFound argument.
 func TestFixedPoll_NextInterval(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -43,15 +50,15 @@ func TestFixedPoll_NextInterval(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fp := domain.NewFixedPoll(tt.interval)
 			got := fp.NextInterval(tt.recordsFound)
-			if got != tt.want {
-				t.Errorf("NextInterval(%d) = %v, want %v", tt.recordsFound, got, tt.want)
+			if !withinJitter(got, tt.want) {
+				t.Errorf("NextInterval(%d) = %v, want %v ±25%%", tt.recordsFound, got, tt.want)
 			}
 		})
 	}
 }
 
 // TestFixedPoll_DefaultInterval validates that zero or negative intervals
-// fall back to DefaultFixedPollInterval.
+// fall back to DefaultFixedPollInterval (±25% jitter).
 func TestFixedPoll_DefaultInterval(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -65,23 +72,23 @@ func TestFixedPoll_DefaultInterval(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fp := domain.NewFixedPoll(tt.interval)
 			got := fp.NextInterval(0)
-			if got != domain.DefaultFixedPollInterval {
-				t.Errorf("NextInterval(0) = %v, want default %v", got, domain.DefaultFixedPollInterval)
+			if !withinJitter(got, domain.DefaultFixedPollInterval) {
+				t.Errorf("NextInterval(0) = %v, want default %v ±25%%", got, domain.DefaultFixedPollInterval)
 			}
 		})
 	}
 }
 
-// TestFixedPoll_Stable validates that FixedPoll returns the same interval
-// across many consecutive calls with varying arguments.
+// TestFixedPoll_Stable validates that FixedPoll returns the configured
+// interval (±25% jitter) across many consecutive calls with varying arguments.
 func TestFixedPoll_Stable(t *testing.T) {
 	fp := domain.NewFixedPoll(250 * time.Millisecond)
 	args := []int{0, 0, 5, 0, 100, 0, 0, 1}
 
 	for i, n := range args {
 		got := fp.NextInterval(n)
-		if got != 250*time.Millisecond {
-			t.Errorf("call %d: NextInterval(%d) = %v, want 250ms", i, n, got)
+		if !withinJitter(got, 250*time.Millisecond) {
+			t.Errorf("call %d: NextInterval(%d) = %v, want 250ms ±25%%", i, n, got)
 		}
 	}
 }
@@ -121,61 +128,63 @@ func TestFixedPoll_Stable(t *testing.T) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // TestAdaptiveBackoff_ResetOnRecords validates that NextInterval returns
-// MinInterval whenever recordsFound > 0, regardless of prior backoff state.
+// MinInterval (±25% jitter) whenever recordsFound > 0, regardless of prior backoff state.
 func TestAdaptiveBackoff_ResetOnRecords(t *testing.T) {
 	ab := domain.NewAdaptiveBackoff(100*time.Millisecond, 10*time.Second, 2.0)
 
 	// Back off several times to increase current interval.
-	ab.NextInterval(0) // 200ms
-	ab.NextInterval(0) // 400ms
-	ab.NextInterval(0) // 800ms
+	ab.NextInterval(0) // ~200ms
+	ab.NextInterval(0) // ~400ms
+	ab.NextInterval(0) // ~800ms
 
 	got := ab.NextInterval(5)
-	if got != 100*time.Millisecond {
-		t.Errorf("after records found: got %v, want 100ms", got)
+	if !withinJitter(got, 100*time.Millisecond) {
+		t.Errorf("after records found: got %v, want 100ms ±25%%", got)
 	}
 }
 
 // TestAdaptiveBackoff_BackoffOnEmpty validates that NextInterval multiplies
-// the current interval by Multiplier when no records are found.
+// the current interval by Multiplier when no records are found (±25% jitter).
 func TestAdaptiveBackoff_BackoffOnEmpty(t *testing.T) {
 	ab := domain.NewAdaptiveBackoff(100*time.Millisecond, 10*time.Second, 2.0)
 
-	tests := []struct {
-		call int
-		want time.Duration
-	}{
-		{1, 200 * time.Millisecond},
-		{2, 400 * time.Millisecond},
-		{3, 800 * time.Millisecond},
-		{4, 1600 * time.Millisecond},
+	// Each base value doubles: 200, 400, 800, 1600.
+	// With jitter, the returned value varies but the internal state
+	// uses the non-jittered base for subsequent multiplications.
+	bases := []time.Duration{
+		200 * time.Millisecond,
+		400 * time.Millisecond,
+		800 * time.Millisecond,
+		1600 * time.Millisecond,
 	}
 
-	for _, tt := range tests {
+	for i, base := range bases {
 		got := ab.NextInterval(0)
-		if got != tt.want {
-			t.Errorf("call %d: got %v, want %v", tt.call, got, tt.want)
+		if !withinJitter(got, base) {
+			t.Errorf("call %d: got %v, want %v ±25%%", i+1, got, base)
 		}
 	}
 }
 
 // TestAdaptiveBackoff_CapsAtMax validates that the backoff interval never
-// exceeds MaxInterval.
+// exceeds MaxInterval + 25% jitter.
 func TestAdaptiveBackoff_CapsAtMax(t *testing.T) {
 	ab := domain.NewAdaptiveBackoff(100*time.Millisecond, 500*time.Millisecond, 2.0)
 
+	maxWithJitter := time.Duration(float64(500*time.Millisecond) * 1.25)
+
 	// Ramp up past the cap.
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		got := ab.NextInterval(0)
-		if got > 500*time.Millisecond {
-			t.Fatalf("call %d: interval %v exceeds max 500ms", i+1, got)
+		if got > maxWithJitter {
+			t.Fatalf("call %d: interval %v exceeds max 500ms + 25%% jitter", i+1, got)
 		}
 	}
 
-	// After many calls, should be exactly at the cap.
+	// After many calls, should be within jitter of the cap.
 	got := ab.NextInterval(0)
-	if got != 500*time.Millisecond {
-		t.Errorf("expected capped at 500ms, got %v", got)
+	if !withinJitter(got, 500*time.Millisecond) {
+		t.Errorf("expected capped near 500ms, got %v", got)
 	}
 }
 
@@ -210,8 +219,8 @@ func TestAdaptiveBackoff_FullRamp(t *testing.T) {
 
 	for i, tt := range expected {
 		got := ab.NextInterval(tt.records)
-		if got != tt.want {
-			t.Errorf("step %d (records=%d): got %v, want %v", i+1, tt.records, got, tt.want)
+		if !withinJitter(got, tt.want) {
+			t.Errorf("step %d (records=%d): got %v, want %v ±25%%", i+1, tt.records, got, tt.want)
 		}
 	}
 }
@@ -242,8 +251,9 @@ func TestAdaptiveBackoff_MaxClamped(t *testing.T) {
 	}
 
 	got := ab.NextInterval(0)
-	if got > 5*time.Second {
-		t.Errorf("interval %v exceeds clamped max 5s", got)
+	maxWithJitter := time.Duration(float64(5*time.Second) * 1.25)
+	if got > maxWithJitter {
+		t.Errorf("interval %v exceeds clamped max 5s + 25%% jitter", got)
 	}
 }
 
@@ -275,14 +285,14 @@ func TestAdaptiveBackoff_MultiplierFloor(t *testing.T) {
 func TestAdaptiveBackoff_Reset(t *testing.T) {
 	ab := domain.NewAdaptiveBackoff(100*time.Millisecond, 10*time.Second, 2.0)
 
-	ab.NextInterval(0) // 200ms
-	ab.NextInterval(0) // 400ms
-	ab.NextInterval(0) // 800ms
+	ab.NextInterval(0) // ~200ms
+	ab.NextInterval(0) // ~400ms
+	ab.NextInterval(0) // ~800ms
 
 	ab.Reset()
 
 	got := ab.NextInterval(0)
-	if got != 200*time.Millisecond {
-		t.Errorf("after Reset + empty: got %v, want 200ms (min * multiplier)", got)
+	if !withinJitter(got, 200*time.Millisecond) {
+		t.Errorf("after Reset + empty: got %v, want 200ms ±25%% (min * multiplier)", got)
 	}
 }

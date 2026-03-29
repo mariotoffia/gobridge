@@ -20,7 +20,7 @@ type Processor struct {
 	keyExtractor  KeyExtractor
 	onStateChange func(key string, from, to State)
 	mu            sync.Mutex
-	breakers      map[string]*breaker
+	breakers      map[string]*Breaker
 }
 
 func New(name string, cfg Config, opts ...Option) *Processor {
@@ -28,7 +28,7 @@ func New(name string, cfg Config, opts ...Option) *Processor {
 		name:         name,
 		config:       cfg.withDefaults(),
 		keyExtractor: GlobalKey,
-		breakers:     make(map[string]*breaker),
+		breakers:     make(map[string]*Breaker),
 	}
 	for _, o := range opts {
 		o(p)
@@ -54,12 +54,12 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 		if len(p.breakers) >= maxBreakers {
 			p.evictOldest()
 		}
-		b = newBreaker(key, p.config, p.onStateChange)
+		b = NewBreaker(key, p.config, p.onStateChange)
 		p.breakers[key] = b
 	}
 	p.mu.Unlock()
 
-	if err := b.beforeRequest(); err != nil {
+	if err := b.BeforeRequest(); err != nil {
 		return err
 	}
 
@@ -67,10 +67,10 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("circuitbreaker: panic in processor chain: %v", r)
-			b.afterRequest(err)
+			b.AfterRequest(err)
 			panic(r)
 		}
-		b.afterRequest(err)
+		b.AfterRequest(err)
 	}()
 
 	err = next(ctx, env)
@@ -82,7 +82,7 @@ func (p *Processor) evictOldest() {
 	var oldestTime time.Time
 	first := true
 	for k, b := range p.breakers {
-		m := b.metrics()
+		m := b.GetMetrics()
 		if m.State == StateClosed.String() {
 			if first || m.LastFailureTime.Before(oldestTime) {
 				oldestKey = k
@@ -98,7 +98,7 @@ func (p *Processor) evictOldest() {
 	// Fallback: evict a half-open breaker. Never evict open breakers as
 	// they protect against known-failing dependencies.
 	for k, b := range p.breakers {
-		m := b.metrics()
+		m := b.GetMetrics()
 		if m.State == StateHalfOpen.String() {
 			delete(p.breakers, k)
 			return
@@ -117,7 +117,7 @@ func (p *Processor) Metrics() map[string]BreakerMetrics {
 
 	m := make(map[string]BreakerMetrics, len(p.breakers))
 	for k, b := range p.breakers {
-		m[k] = b.metrics()
+		m[k] = b.GetMetrics()
 	}
 	return m
 }

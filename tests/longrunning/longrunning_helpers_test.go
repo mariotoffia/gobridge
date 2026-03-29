@@ -6,20 +6,23 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
+	"os/exec"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
-
-	"testing"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -273,6 +276,174 @@ type noopReceiver struct{}
 func (r *noopReceiver) Run(ctx context.Context, _ func(context.Context, ports.Delivery) error) error {
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+// ---------------------------------------------------------------------------
+// Docker control helpers
+// ---------------------------------------------------------------------------
+
+// dockerKill kills a Docker container by name.
+func dockerKill(t *testing.T, name string) {
+	t.Helper()
+	out, err := exec.Command("docker", "kill", name).CombinedOutput()
+	if err != nil {
+		t.Logf("dockerKill %q: %v\n%s", name, err, out)
+	}
+}
+
+// dockerRestart restarts a Docker container by name (kill + start).
+func dockerRestart(t *testing.T, name string) {
+	t.Helper()
+	dockerKill(t, name)
+	time.Sleep(500 * time.Millisecond)
+	out, err := exec.Command("docker", "start", name).CombinedOutput()
+	if err != nil {
+		t.Fatalf("dockerRestart %q: start failed: %v\n%s", name, err, out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MQTT session helpers for custom brokers
+// ---------------------------------------------------------------------------
+
+// setupMQTTSessionWithBroker creates an MQTT session against a custom broker
+// URL. Unlike setupMQTTSession, it accepts the broker URL and receive maximum
+// as parameters, making it suitable for per-test BrokerInstance usage.
+func setupMQTTSessionWithBroker(
+	t *testing.T, brokerURL, clientID string,
+	mode domain.SessionMode, receiveMax uint16,
+) *paho.Session {
+	t.Helper()
+	sess := paho.NewSession(paho.SessionOptions{
+		BrokerURLs:     []string{brokerURL},
+		ClientID:       clientID,
+		KeepAlive:      30,
+		ConnectTimeout: 15 * time.Second,
+		CleanStart:     true,
+		ReceiveMaximum: receiveMax,
+	}, mode, nil)
+
+	ctx := context.Background()
+	require.NoError(t, sess.Start(ctx),
+		"MQTT session Start %q at %s", clientID, brokerURL)
+
+	select {
+	case <-sess.Events():
+	case <-time.After(5 * time.Second):
+	}
+
+	t.Cleanup(func() { _ = sess.Close(context.Background()) })
+	return sess
+}
+
+// ---------------------------------------------------------------------------
+// newMQTTCollectorWithBroker — collector against a custom broker URL
+// ---------------------------------------------------------------------------
+
+func newMQTTCollectorWithBroker(
+	t *testing.T, brokerURL, topic, clientIDPrefix string,
+) *mqttCollector {
+	t.Helper()
+	clientID := mqttlocal.UniqueClientID(clientIDPrefix)
+
+	sess := paho.NewSession(paho.SessionOptions{
+		BrokerURLs:     []string{brokerURL},
+		ClientID:       clientID,
+		KeepAlive:      30,
+		ConnectTimeout: 15 * time.Second,
+		CleanStart:     true,
+	}, domain.SessionEphemeral, nil)
+
+	ctx := context.Background()
+	require.NoError(t, sess.Start(ctx), "collector Start at %s", brokerURL)
+
+	select {
+	case <-sess.Events():
+	case <-time.After(5 * time.Second):
+	}
+
+	require.NoError(t, sess.Reconcile(ctx, domain.SessionPlan{
+		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	}), "collector Reconcile")
+	time.Sleep(300 * time.Millisecond)
+
+	recv := paho.NewReceiver("collector-"+clientID, sess)
+	recvCtx, recvCancel := context.WithCancel(ctx)
+
+	c := &mqttCollector{cancel: recvCancel}
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
+			c.mu.Lock()
+			c.messages = append(c.messages, del.Envelope())
+			c.mu.Unlock()
+			return nil
+		})
+	}()
+
+	t.Cleanup(func() {
+		recvCancel()
+		c.wg.Wait()
+		_ = sess.Close(context.Background())
+	})
+
+	return c
+}
+
+// ---------------------------------------------------------------------------
+// errorClassSender — returns errors based on the "error_type" header
+// ---------------------------------------------------------------------------
+
+// errorClassSender inspects the "error_type" header on each envelope and
+// returns the corresponding sentinel error. If no header is set, or the
+// value is unrecognised, it delegates to the inner sender.
+//
+//   - "transient" -> domain.ErrUnavailable
+//   - "permanent" -> domain.ErrInvalidPayload
+//   - anything else -> inner.Send
+type errorClassSender struct {
+	inner ports.Sender
+}
+
+func (s *errorClassSender) Send(ctx context.Context, env *domain.Envelope) error {
+	if env.Headers != nil {
+		if et, ok := env.Headers["error_type"].(string); ok {
+			switch et {
+			case "transient":
+				return domain.ErrUnavailable.WithMessage("errorClassSender: transient")
+			case "permanent":
+				return domain.ErrInvalidPayload.WithMessage("errorClassSender: permanent")
+			}
+		}
+	}
+	return s.inner.Send(ctx, env)
+}
+
+// ---------------------------------------------------------------------------
+// Unique ID helpers for collector deduplication
+// ---------------------------------------------------------------------------
+
+// boolPtr returns a pointer to a bool value.
+func boolPtr(b bool) *bool { return &b }
+
+// ---------------------------------------------------------------------------
+// Route config helpers
+// ---------------------------------------------------------------------------
+
+var directHoldCaps = []ports.Capability{
+	ports.CapSourceRedelivery,
+	ports.CapVisibilityExtension,
+}
+
+// countUnique returns the number of unique envelope IDs in the collector.
+func countUnique(c *mqttCollector) int {
+	msgs := c.getMessages()
+	seen := make(map[string]struct{}, len(msgs))
+	for _, m := range msgs {
+		seen[m.ID] = struct{}{}
+	}
+	return len(seen)
 }
 
 // ---------------------------------------------------------------------------

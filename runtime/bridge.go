@@ -38,6 +38,7 @@ type Runtime struct {
 	sessionSenders  map[string]*sessionSenderEntry
 	sessionMgrs     map[string]*SessionManager
 	drainers        []*OutboxDrainer
+	dlqRouter       *DLQRouter
 	globalSem       chan struct{}
 	running         bool
 	healthy         bool
@@ -230,7 +231,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	rt.healthy = true
 	rt.componentErrors = make(map[string]error)
 
-	if err := validateRoutes(rt.entries, rt.outboxStore != nil, rt.leaseStore != nil); err != nil {
+	if err := validateRoutes(rt.entries, rt.outboxStore != nil, rt.leaseStore != nil, rt.dlqStore != nil); err != nil {
 		rt.running = false
 		return err
 	}
@@ -244,6 +245,9 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	ctx, rt.cancel = context.WithCancel(ctx)
 
 	dlq := NewDLQRouter(rt.dlqStore)
+	dlq.Start(ctx)
+	rt.dlqRouter = dlq
+
 	m := rt.metrics
 	if m == nil {
 		m = &ports.NoopExporter{}
@@ -419,6 +423,11 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	case <-done:
 	case <-ctx.Done():
 		errs = append(errs, ctx.Err())
+	}
+
+	// Drain remaining DLQ buffer entries before closing sessions.
+	if rt.dlqRouter != nil {
+		rt.dlqRouter.Close()
 	}
 
 	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)

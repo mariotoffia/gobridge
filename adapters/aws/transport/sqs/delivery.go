@@ -28,8 +28,9 @@ type sqsDelivery struct {
 	visibilityTimeout atomic.Int32
 	logger            *slog.Logger
 
-	cancel context.CancelFunc // stops auto-extend goroutine
-	once   sync.Once          // ensures cancel runs exactly once
+	cancel           context.CancelFunc // stops auto-extend goroutine
+	processingCancel context.CancelFunc // cancels the processing goroutine on extend failure
+	once             sync.Once          // ensures cancel runs exactly once
 }
 
 // newDelivery creates a delivery for a received SQS message.
@@ -205,6 +206,16 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 					)
 				}
 				if consecutiveFailures >= autoExtendMaxFailures {
+					if d.logger != nil {
+						d.logger.Error("sqs: auto-extend max failures reached, cancelling processing",
+							"queue", d.queueURL,
+							"message_id", d.env.ID,
+							"consecutive_failures", consecutiveFailures,
+						)
+					}
+					if d.processingCancel != nil {
+						d.processingCancel()
+					}
 					return
 				}
 				continue

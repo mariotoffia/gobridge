@@ -94,7 +94,13 @@ func (r *router) Route(pb *packets.Publish) {
 			defer r.wg.Done()
 			defer func() {
 				if rv := recover(); rv != nil {
-					// Handler panicked; absorb to avoid crashing the process.
+					r.metrics.Counter(domain.MetricMQTTHandlerPanics, 1)
+					if r.logger != nil {
+						r.logger.Error("mqtt: handler panicked",
+							"recovered", rv,
+							"topic", p.Topic,
+						)
+					}
 				}
 			}()
 			handler(&p)

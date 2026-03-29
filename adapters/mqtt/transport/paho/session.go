@@ -356,11 +356,17 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		ready = handlerCount > 0
 	}
 
+	rm := s.opts.ReceiveMaximum
+	if rm == 0 {
+		rm = 65535 // MQTT v5 default when not explicitly configured
+	}
+
 	return ports.SessionHealth{
 		Connected:           connected,
 		SubscriptionsWanted: wantedCount,
 		SubscriptionsActive: activeCount,
 		HandlersRegistered:  handlerCount,
+		ReceiveMaximum:      rm,
 		Ready:               ready,
 	}
 }

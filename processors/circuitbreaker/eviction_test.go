@@ -76,7 +76,7 @@ func TestProcessor_EvictsClosedBreakerPreferentially(t *testing.T) {
 	for len(p.breakers) < maxBreakers {
 		key := fmt.Sprintf("filler-%d", i)
 		i++
-		p.breakers[key] = newBreaker(key, cfg, nil)
+		p.breakers[key] = NewBreaker(key, cfg, nil)
 	}
 	p.mu.Unlock()
 

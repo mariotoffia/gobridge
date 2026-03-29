@@ -25,6 +25,13 @@ type RouteConfig struct {
 	// binding ID is not found, it falls back to the route's default
 	// sender. Optional; when nil all bindings use the default sender.
 	Senders map[string]ports.Sender
+
+	// SourceVisibilityTimeout is the visibility timeout of the source
+	// transport (e.g. SQS VisibilityTimeout). When set, the validator
+	// checks that SendTimeout does not exceed half this value to
+	// prevent duplicate processing from source redelivery. Zero means
+	// unknown or not applicable (validation is skipped).
+	SourceVisibilityTimeout time.Duration
 }
 
 // SessionConfig configures session management for exclusive sessions.

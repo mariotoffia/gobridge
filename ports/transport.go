@@ -59,10 +59,11 @@ type SessionEvent struct {
 type SessionHealth struct {
 	Connected           bool
 	LastError           error
-	SubscriptionsWanted int  // Number of subscriptions in the reconciled plan
-	SubscriptionsActive int  // Number of subscriptions confirmed by broker
-	HandlersRegistered  int  // Number of receiver handlers on the message router
-	Ready               bool // Connected && subs match && handlers registered (when expected)
+	SubscriptionsWanted int    // Number of subscriptions in the reconciled plan
+	SubscriptionsActive int    // Number of subscriptions confirmed by broker
+	HandlersRegistered  int    // Number of receiver handlers on the message router
+	ReceiveMaximum      uint16 // MQTT v5 ReceiveMaximum (0 = unknown/not applicable)
+	Ready               bool   // Connected && subs match && handlers registered (when expected)
 }
 
 // Session owns network identity and remote state for stateful transports.

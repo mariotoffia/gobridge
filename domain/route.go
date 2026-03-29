@@ -89,6 +89,7 @@ type RoutePolicy struct {
 	MaxReplayAttempts    int
 	MaxOutboxDepth       int
 	AllowUnfenced        bool
+	AllowRetryDrop       bool `json:"allow_retry_drop,omitempty" yaml:"allow_retry_drop,omitempty"`
 	SendTimeout          time.Duration
 	DepthCacheTTL        time.Duration
 }

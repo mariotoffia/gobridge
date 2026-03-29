@@ -8,7 +8,10 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
-type breaker struct {
+// Breaker is a standalone circuit breaker that can wrap any
+// func() error call pattern. Used internally by the Processor
+// and available for transport-level circuit breaking.
+type Breaker struct {
 	mu                   sync.Mutex
 	state                State
 	config               Config
@@ -36,21 +39,25 @@ type BreakerMetrics struct {
 	LastFailureTime      time.Time
 }
 
-func newBreaker(key string, cfg Config, onStateChange func(string, State, State)) *breaker {
+// NewBreaker creates a Breaker with the given key, config, and optional
+// state change callback.
+func NewBreaker(key string, cfg Config, onStateChange func(string, State, State)) *Breaker {
 	if cfg.HalfOpenMaxProbes <= 0 {
 		cfg.HalfOpenMaxProbes = 1
 	}
 	if cfg.CountError == nil {
 		cfg.CountError = domain.IsRecoverableError
 	}
-	return &breaker{
+	return &Breaker{
 		key:           key,
 		config:        cfg,
 		onStateChange: onStateChange,
 	}
 }
 
-func (b *breaker) beforeRequest() error {
+// BeforeRequest checks the breaker state and returns ErrUnavailable
+// with a RetryAfter hint if the circuit is open.
+func (b *Breaker) BeforeRequest() error {
 	b.mu.Lock()
 
 	switch b.state {
@@ -79,7 +86,7 @@ func (b *breaker) beforeRequest() error {
 	}
 }
 
-func (b *breaker) tryHalfOpenProbe() error {
+func (b *Breaker) tryHalfOpenProbe() error {
 	if b.halfOpenInFlight.Add(1) > int32(b.config.HalfOpenMaxProbes) {
 		b.halfOpenInFlight.Add(-1)
 		return domain.ErrUnavailable.WithRetryAfter(b.config.ResetTimeout / 2)
@@ -87,7 +94,8 @@ func (b *breaker) tryHalfOpenProbe() error {
 	return nil
 }
 
-func (b *breaker) afterRequest(err error) {
+// AfterRequest records the outcome of a request and transitions state.
+func (b *Breaker) AfterRequest(err error) {
 	countable := err != nil && b.config.CountError(err)
 
 	var notify func()
@@ -133,7 +141,7 @@ func (b *breaker) afterRequest(err error) {
 
 // transitionTo changes state and returns a callback to invoke AFTER releasing
 // the lock. Must be called with b.mu held.
-func (b *breaker) transitionTo(newState State) func() {
+func (b *Breaker) transitionTo(newState State) func() {
 	if b.state == newState {
 		return nil
 	}
@@ -163,7 +171,8 @@ func (b *breaker) transitionTo(newState State) func() {
 	return nil
 }
 
-func (b *breaker) metrics() BreakerMetrics {
+// GetMetrics returns a point-in-time snapshot of this breaker's counters.
+func (b *Breaker) GetMetrics() BreakerMetrics {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

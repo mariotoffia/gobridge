@@ -72,7 +72,7 @@ const absoluteMaxBatchSize = 10000
 
 func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 	if cfg.Strategy == nil {
-		cfg.Strategy = domain.NewFixedPoll(domain.DefaultFixedPollInterval)
+		cfg.Strategy = domain.NewAdaptiveBackoff(0, 0, 0)
 	}
 	if cfg.DrainBatchSize <= 0 {
 		cfg.DrainBatchSize = 100

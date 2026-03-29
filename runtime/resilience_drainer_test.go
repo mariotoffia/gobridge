@@ -169,12 +169,19 @@ func TestRetryUnsupported_WithDLQ_RoutesToDLQ(t *testing.T) {
 }
 
 // TestDrainer_AdaptiveBatchSize validates batch size adaptation.
+// Intervals include ±25% jitter, so assertions use tolerance bands.
 func TestDrainer_AdaptiveBatchSize(t *testing.T) {
+	withinJitter := func(got, want time.Duration) bool {
+		lo := time.Duration(float64(want) * 0.75)
+		hi := time.Duration(float64(want) * 1.25)
+		return got >= lo && got <= hi
+	}
+
 	t.Run("scales up on full batch", func(t *testing.T) {
 		strategy := domain.NewAdaptiveBackoff(50*time.Millisecond, time.Second, 2.0)
 		next := strategy.NextInterval(100)
-		if next != 50*time.Millisecond {
-			t.Fatalf("expected min interval on records found, got %v", next)
+		if !withinJitter(next, 50*time.Millisecond) {
+			t.Fatalf("expected min interval ±25%% on records found, got %v", next)
 		}
 	})
 
@@ -182,6 +189,7 @@ func TestDrainer_AdaptiveBatchSize(t *testing.T) {
 		strategy := domain.NewAdaptiveBackoff(50*time.Millisecond, time.Second, 2.0)
 		_ = strategy.NextInterval(0)
 		second := strategy.NextInterval(0)
+		// Second empty call: base is 200ms (50ms * 2 * 2), jitter minimum is 150ms
 		if second <= 50*time.Millisecond {
 			t.Fatalf("expected backoff > min, got %v", second)
 		}
@@ -193,8 +201,8 @@ func TestDrainer_AdaptiveBatchSize(t *testing.T) {
 			_ = strategy.NextInterval(0)
 		}
 		reset := strategy.NextInterval(5)
-		if reset != 50*time.Millisecond {
-			t.Fatalf("expected reset to min, got %v", reset)
+		if !withinJitter(reset, 50*time.Millisecond) {
+			t.Fatalf("expected reset to min ±25%%, got %v", reset)
 		}
 	})
 }

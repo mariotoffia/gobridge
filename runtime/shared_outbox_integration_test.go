@@ -28,6 +28,8 @@ func newTestRuntime(instanceID string, outbox *FakeOutboxStore, lease *FakeLease
 	}
 	if dlq != nil {
 		opts = append(opts, goruntime.WithDLQStore(dlq))
+	} else {
+		opts = append(opts, goruntime.WithDLQStore(NewFakeDLQStore()))
 	}
 	return goruntime.New(opts...)
 }

@@ -9,6 +9,7 @@
       "backpressure",
       "Configurator",
       "gobridge",
+      "longrunning",
       "mariotoffia",
       "Mosquitto",
       "MQTT",

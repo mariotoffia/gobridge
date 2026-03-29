@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"math/rand/v2"
+	"time"
+)
 
 // DrainStrategy determines the polling interval between outbox drain cycles.
 // The OutboxDrainer calls NextInterval after each cycle, passing the number
@@ -34,9 +37,10 @@ func NewFixedPoll(interval time.Duration) *FixedPoll {
 	return &FixedPoll{Interval: interval}
 }
 
-// NextInterval always returns the configured interval.
+// NextInterval returns the configured interval with ±25% jitter to
+// prevent thundering herd when multiple instances poll concurrently.
 func (f *FixedPoll) NextInterval(_ int) time.Duration {
-	return f.Interval
+	return applyJitter(f.Interval)
 }
 
 // AdaptiveBackoff is a DrainStrategy that uses exponential backoff when
@@ -76,13 +80,13 @@ func NewAdaptiveBackoff(minInterval, maxInterval time.Duration, multiplier float
 	}
 }
 
-// NextInterval returns MinInterval when records were found (fast poll),
-// otherwise multiplies the current interval by Multiplier, capped at
-// MaxInterval.
+// NextInterval returns MinInterval (with jitter) when records were found
+// (fast poll), otherwise multiplies the current interval by Multiplier,
+// capped at MaxInterval, with ±25% jitter to prevent thundering herd.
 func (a *AdaptiveBackoff) NextInterval(recordsFound int) time.Duration {
 	if recordsFound > 0 {
 		a.current = a.MinInterval
-		return a.current
+		return applyJitter(a.current)
 	}
 
 	next := time.Duration(float64(a.current) * a.Multiplier)
@@ -90,10 +94,18 @@ func (a *AdaptiveBackoff) NextInterval(recordsFound int) time.Duration {
 		next = a.MaxInterval
 	}
 	a.current = next
-	return next
+	return applyJitter(next)
 }
 
 // Reset restores the adaptive backoff to its initial state (MinInterval).
 func (a *AdaptiveBackoff) Reset() {
 	a.current = a.MinInterval
+}
+
+// applyJitter adds ±25% random jitter to a duration, matching the
+// pattern used by the SQS receiver poll backoff. This prevents
+// synchronized polling across multiple instances (thundering herd).
+func applyJitter(d time.Duration) time.Duration {
+	jitter := time.Duration(float64(d) * 0.25 * (2*rand.Float64() - 1))
+	return d + jitter
 }

@@ -51,16 +51,20 @@ const (
 const (
 	MetricDeliveryE2ELatency = "DeliveryE2ELatency"
 	MetricDLQEntries         = "DLQEntries"
+	MetricDLQBufferOverflow  = "DLQBufferOverflow"
+	MetricDLQWriteFailures   = "DLQWriteFailures"
 	MetricDeliveryPanics     = "DeliveryPanics"
 )
 
 // MQTT metric names.
 const (
-	MetricMQTTPublishLatency   = "MQTTPublishLatency"
-	MetricMQTTReconnects       = "MQTTReconnects"
-	MetricMQTTConnectLatency   = "MQTTConnectLatency"
+	MetricMQTTPublishLatency  = "MQTTPublishLatency"
+	MetricMQTTPublishFailures = "MQTTPublishFailures"
+	MetricMQTTHandlerPanics   = "MQTTHandlerPanics"
+	MetricMQTTReconnects      = "MQTTReconnects"
+	MetricMQTTConnectLatency  = "MQTTConnectLatency"
 	MetricMQTTReconcileLatency = "MQTTReconcileLatency"
-	MetricMQTTRouterDropped    = "MQTTRouterDropped"
+	MetricMQTTRouterDropped   = "MQTTRouterDropped"
 )
 
 // Session metric names.

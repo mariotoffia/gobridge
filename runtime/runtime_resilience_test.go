@@ -33,6 +33,7 @@ func TestF2_StopReleasesLeaseWithValidContext(t *testing.T) {
 		goruntime.WithInstanceID("bridge-f2"),
 		goruntime.WithLeaseStore(trackLease),
 		goruntime.WithOutboxStore(NewFakeOutboxStore()),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	receiver := NewSlowExitReceiver(500 * time.Millisecond)

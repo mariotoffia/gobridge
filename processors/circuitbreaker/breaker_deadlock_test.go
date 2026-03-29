@@ -15,19 +15,19 @@ func TestBreaker_OnStateChangeDoesNotDeadlock(t *testing.T) {
 	}
 
 	done := make(chan struct{})
-	b := newBreaker("deadlock-test", cfg, nil)
+	b := NewBreaker("deadlock-test", cfg, nil)
 	b.onStateChange = func(key string, from, to State) {
 		// Calling metrics() acquires b.mu — if transitionTo holds b.mu
 		// while invoking this callback, this will deadlock.
-		m := b.metrics()
+		m := b.GetMetrics()
 		_ = m.Key
 	}
 
 	go func() {
 		defer close(done)
 		for i := 0; i < cfg.FailureThreshold; i++ {
-			_ = b.beforeRequest()
-			b.afterRequest(errors.New("fail"))
+			_ = b.BeforeRequest()
+			b.AfterRequest(errors.New("fail"))
 		}
 	}()
 
@@ -49,24 +49,24 @@ func TestBreaker_OnStateChangeCallbackSafeConcurrent(t *testing.T) {
 	var mu sync.Mutex
 	var transitions []string
 
-	b := newBreaker("safe-cb", cfg, nil)
+	b := NewBreaker("safe-cb", cfg, nil)
 	b.onStateChange = func(key string, from, to State) {
-		m := b.metrics()
+		m := b.GetMetrics()
 		mu.Lock()
 		transitions = append(transitions, m.State)
 		mu.Unlock()
 	}
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
-		_ = b.beforeRequest()
-		b.afterRequest(errors.New("fail"))
+		_ = b.BeforeRequest()
+		b.AfterRequest(errors.New("fail"))
 	}
 
 	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond)
 
 	for i := 0; i < cfg.SuccessThreshold; i++ {
-		_ = b.beforeRequest()
-		b.afterRequest(nil)
+		_ = b.BeforeRequest()
+		b.AfterRequest(nil)
 	}
 
 	mu.Lock()

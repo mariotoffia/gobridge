@@ -491,11 +491,3 @@ func (s *lrDLQStore) getEntries() []domain.DLQEntry {
 	return cp
 }
 
-// ---------------------------------------------------------------------------
-// Route config helpers
-// ---------------------------------------------------------------------------
-
-var directHoldCaps = []ports.Capability{
-	ports.CapSourceRedelivery,
-	ports.CapVisibilityExtension,
-}

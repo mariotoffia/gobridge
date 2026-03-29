@@ -1,0 +1,376 @@
+//go:build longrunning
+
+package longrunning_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/ports"
+	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
+)
+
+// =========================================================================
+// UC63: Memory Stability (50K Messages)
+//
+// Sends 50,000 messages through SharedOutbox and verifies that heap
+// usage remains bounded — no leaks, no unbounded growth.
+//
+// Assert: Final heap <= 2x initial. Max heap < 500MB.
+// =========================================================================
+
+func TestUC63_MemoryStability(t *testing.T) {
+	const (
+		msgCount    = 50000
+		outTopic    = "uc63/output"
+		testTimeout = 600 * time.Second
+	)
+
+	sqsInURL, sqsInClient := setupSQSQueue(t, "uc63-in")
+	leaseStore, outboxStore := setupDynamoStores(t)
+	dlq := &lrDLQStore{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	collector := newMQTTCollector(t, outTopic, "uc63-col")
+
+	sessID := mqttlocal.UniqueClientID("uc63-sess")
+	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	snd := setupMQTTSender(t, sess)
+	rx := newSQSReceiver(t, sqsInURL)
+	sc := lrSessionConfig(sessID)
+
+	rt := goruntime.New(
+		goruntime.WithInstanceID("uc63-bridge"),
+		goruntime.WithLeaseStore(leaseStore),
+		goruntime.WithOutboxStore(outboxStore),
+		goruntime.WithDLQStore(dlq),
+		goruntime.WithLogger(testLogger(t)),
+	)
+	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
+		ID: "uc63-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+			MaxInFlight:  200,
+		},
+		Resolver: goruntime.NewStaticResolver(
+			domain.DispatchPlan{BindingID: "uc63-bind", Address: outTopic},
+		),
+		Bindings: []domain.DestinationBinding{
+			{ID: "uc63-bind", SessionID: sessID},
+		},
+	}, rx, snd, sess, &sc))
+
+	heap := newHeapSampler(1 * time.Second)
+
+	require.NoError(t, rt.Start(ctx))
+	defer func() { _ = rt.Stop(context.Background()) }()
+	gobridgesync(t, 10*time.Second, rt)
+
+	t.Logf("UC63: sending %d messages (initial heap=%dMB)",
+		msgCount, heap.initialHeap()/(1<<20))
+	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
+
+	lrWaitFor(t, 580*time.Second,
+		fmt.Sprintf("unique >= %d", msgCount),
+		func() bool { return countUnique(collector) >= msgCount })
+
+	heap.stop()
+
+	initial := heap.initialHeap()
+	maxH := heap.maxHeap()
+	final := heap.finalHeap()
+
+	t.Logf("UC63: heap — initial=%dMB, max=%dMB, final=%dMB",
+		initial/(1<<20), maxH/(1<<20), final/(1<<20))
+	t.Logf("UC63: unique=%d, total=%d, dlq=%d",
+		countUnique(collector), collector.count(), dlq.count())
+
+	require.Less(t, final, 2*initial,
+		"Final heap (%dMB) must be <= 2x initial (%dMB)", final/(1<<20), initial/(1<<20))
+	require.Less(t, maxH, uint64(500<<20),
+		"Max heap (%dMB) must be < 500MB", maxH/(1<<20))
+	require.GreaterOrEqual(t, countUnique(collector), msgCount,
+		"All %d messages must be delivered", msgCount)
+}
+
+// =========================================================================
+// UC64: Latency Percentiles
+//
+// Sends 10,000 messages through DirectHold with a latencyRecorder
+// processor and measures P50/P95/P99 send latencies.
+//
+// Assert: P50 < 500ms, P95 < 2s, P99 < 5s.
+// =========================================================================
+
+func TestUC64_LatencyPercentiles(t *testing.T) {
+	const (
+		msgCount    = 10000
+		outTopic    = "uc64/output"
+		testTimeout = 240 * time.Second
+	)
+
+	sqsInURL, sqsInClient := setupSQSQueue(t, "uc64-in")
+	dlq := &lrDLQStore{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	collector := newMQTTCollector(t, outTopic, "uc64-col")
+
+	sessID := mqttlocal.UniqueClientID("uc64-sess")
+	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	snd := setupMQTTSender(t, sess)
+	rx := newSQSReceiver(t, sqsInURL)
+
+	lr := &latencyRecorder{}
+
+	rt := goruntime.New(
+		goruntime.WithInstanceID("uc64-bridge"),
+		goruntime.WithDLQStore(dlq),
+		goruntime.WithLogger(testLogger(t)),
+	)
+	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
+		ID: "uc64-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliveryDirectHold,
+			MaxInFlight:  100,
+		},
+		Processors: []ports.Processor{lr},
+		Resolver: goruntime.NewStaticResolver(
+			domain.DispatchPlan{BindingID: "uc64-bind", Address: outTopic},
+		),
+		SourceCapabilities: directHoldCaps,
+	}, rx, snd, sess, nil))
+	require.NoError(t, rt.Start(ctx))
+	defer func() { _ = rt.Stop(context.Background()) }()
+	gobridgesync(t, 10*time.Second, rt)
+
+	t.Logf("UC64: sending %d messages", msgCount)
+	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
+
+	lrWaitFor(t, 220*time.Second,
+		fmt.Sprintf("collector >= %d", msgCount),
+		func() bool { return collector.count() >= msgCount })
+
+	p50 := lr.percentile(0.50)
+	p95 := lr.percentile(0.95)
+	p99 := lr.percentile(0.99)
+
+	t.Logf("UC64: latency — P50=%v, P95=%v, P99=%v (samples=%d)",
+		p50, p95, p99, lr.count())
+	t.Logf("UC64: delivered=%d, dlq=%d", collector.count(), dlq.count())
+
+	require.Less(t, p50, 500*time.Millisecond,
+		"P50 latency must be < 500ms (got %v)", p50)
+	require.Less(t, p95, 2*time.Second,
+		"P95 latency must be < 2s (got %v)", p95)
+	require.Less(t, p99, 5*time.Second,
+		"P99 latency must be < 5s (got %v)", p99)
+}
+
+// =========================================================================
+// UC66: Multi-Tenant Isolation
+//
+// 10 tenants × 500 messages = 5,000 total. Tenant 0 has a slow
+// processor (200ms per message). Other tenants should not be blocked.
+//
+// Assert: Tenants 1-9 each complete in < 30s. Tenant 0 in < 120s.
+// =========================================================================
+
+func TestUC66_MultiTenantIsolation(t *testing.T) {
+	const (
+		tenants     = 10
+		perTenant   = 500
+		msgCount    = tenants * perTenant
+		outTopic    = "uc66/output"
+		testTimeout = 240 * time.Second
+	)
+
+	sqsInURL, sqsInClient := setupSQSQueue(t, "uc66-in")
+	dlq := &lrDLQStore{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	collector := newMQTTCollector(t, outTopic, "uc66-col")
+
+	sessID := mqttlocal.UniqueClientID("uc66-sess")
+	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	snd := setupMQTTSender(t, sess)
+	rx := newSQSReceiver(t, sqsInURL)
+
+	rt := goruntime.New(
+		goruntime.WithInstanceID("uc66-bridge"),
+		goruntime.WithDLQStore(dlq),
+		goruntime.WithLogger(testLogger(t)),
+	)
+	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
+		ID: "uc66-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliveryDirectHold,
+			MaxInFlight:  100,
+		},
+		Processors: []ports.Processor{
+			&tenantSlowProcessor{delay: 200 * time.Millisecond, slowTenant: "0"},
+		},
+		Resolver: goruntime.NewStaticResolver(
+			domain.DispatchPlan{BindingID: "uc66-bind", Address: outTopic},
+		),
+		SourceCapabilities: directHoldCaps,
+	}, rx, snd, sess, nil))
+	require.NoError(t, rt.Start(ctx))
+	defer func() { _ = rt.Stop(context.Background()) }()
+	gobridgesync(t, 10*time.Second, rt)
+
+	// Send messages round-robin across tenants (msg N → tenant N%10).
+	t.Logf("UC66: sending %d messages (%d tenants × %d each, tenant 0 slow=200ms)",
+		msgCount, tenants, perTenant)
+	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, func(i int) map[string]string {
+		return map[string]string{"tenant_id": fmt.Sprintf("%d", i%tenants)}
+	})
+
+	// Track per-tenant completion by polling the collector.
+	type seqMsg struct {
+		Seq int `json:"seq"`
+	}
+	start := time.Now()
+	tenantDone := make(map[int]time.Duration)
+
+	for time.Since(start) < 220*time.Second {
+		msgs := collector.getMessages()
+		counts := make(map[int]int)
+		for _, m := range msgs {
+			var sm seqMsg
+			if json.Unmarshal(m.Payload, &sm) == nil {
+				counts[sm.Seq%tenants]++
+			}
+		}
+
+		allDone := true
+		for tid := 0; tid < tenants; tid++ {
+			if counts[tid] >= perTenant {
+				if _, ok := tenantDone[tid]; !ok {
+					tenantDone[tid] = time.Since(start)
+					t.Logf("UC66: tenant %d completed at %v (%d msgs)",
+						tid, tenantDone[tid].Round(time.Millisecond), counts[tid])
+				}
+			} else {
+				allDone = false
+			}
+		}
+		if allDone {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// Log and assert per-tenant timing.
+	for tid := 0; tid < tenants; tid++ {
+		dur, ok := tenantDone[tid]
+		if !ok {
+			t.Errorf("UC66: tenant %d did not complete (check header propagation)", tid)
+			continue
+		}
+		if tid == 0 {
+			assert.Less(t, dur, 120*time.Second,
+				"Slow tenant 0 should complete in < 120s")
+		} else {
+			assert.Less(t, dur, 30*time.Second,
+				"Tenant %d should complete in < 30s (isolation from tenant 0)", tid)
+		}
+	}
+
+	t.Logf("UC66: total delivered=%d, dlq=%d", collector.count(), dlq.count())
+	require.GreaterOrEqual(t, collector.count(), msgCount,
+		"All %d messages must be delivered", msgCount)
+}
+
+// =========================================================================
+// UC65: Throughput Ceiling Discovery
+//
+// 4 batches of increasing size (1K, 5K, 10K, 20K) with MaxInFlight=1000.
+// Discovers the maximum sustainable throughput.
+// =========================================================================
+
+func TestUC65_ThroughputCeiling(t *testing.T) {
+	const (
+		outTopic    = "uc65/output"
+		testTimeout = 600 * time.Second
+	)
+
+	batches := []int{1000, 5000, 10000, 20000}
+	totalMsgs := 0
+	for _, b := range batches {
+		totalMsgs += b
+	}
+
+	sqsInURL, sqsInClient := setupSQSQueue(t, "uc65-in")
+	leaseStore, outboxStore := setupDynamoStores(t)
+	dlq := &lrDLQStore{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	collector := newMQTTCollector(t, outTopic, "uc65-col")
+
+	sessID := mqttlocal.UniqueClientID("uc65-sess")
+	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	snd := setupMQTTSender(t, sess)
+	rx := newSQSReceiver(t, sqsInURL)
+	sc := lrSessionConfig(sessID)
+
+	rt := goruntime.New(
+		goruntime.WithInstanceID("uc65-bridge"),
+		goruntime.WithLeaseStore(leaseStore),
+		goruntime.WithOutboxStore(outboxStore),
+		goruntime.WithDLQStore(dlq),
+		goruntime.WithLogger(testLogger(t)),
+	)
+	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
+		ID: "uc65-route",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+			MaxInFlight:  1000,
+		},
+		Resolver: goruntime.NewStaticResolver(
+			domain.DispatchPlan{BindingID: "uc65-bind", Address: outTopic},
+		),
+		Bindings: []domain.DestinationBinding{
+			{ID: "uc65-bind", SessionID: sessID},
+		},
+	}, rx, snd, sess, &sc))
+	require.NoError(t, rt.Start(ctx))
+	defer func() { _ = rt.Stop(context.Background()) }()
+	gobridgesync(t, 10*time.Second, rt)
+
+	delivered := 0
+	for _, batchSize := range batches {
+		start := time.Now()
+		t.Logf("UC65: sending batch of %d (total so far: %d)", batchSize, delivered)
+		sendBulkToSQS(t, sqsInClient, sqsInURL, batchSize, nil)
+		delivered += batchSize
+
+		lrWaitFor(t, 180*time.Second,
+			fmt.Sprintf("unique >= %d", delivered),
+			func() bool { return countUnique(collector) >= delivered })
+
+		elapsed := time.Since(start)
+		rate := float64(batchSize) / elapsed.Seconds()
+		t.Logf("UC65: batch %d done in %v (%.0f msgs/sec)", batchSize, elapsed, rate)
+	}
+
+	unique := countUnique(collector)
+	t.Logf("UC65: total unique=%d, total=%d, dlq=%d", unique, collector.count(), dlq.count())
+	require.GreaterOrEqual(t, unique, totalMsgs)
+	assert.Equal(t, 0, dlq.count())
+}

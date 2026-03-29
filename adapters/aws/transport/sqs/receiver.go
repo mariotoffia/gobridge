@@ -129,7 +129,13 @@ func (r *Receiver) pollLoop(
 		for _, msg := range output.Messages {
 			del := r.convertMessage(ctx, queueURL, msg)
 
-			if err := emit(ctx, del); err != nil {
+			// Create a per-delivery context so that auto-extend failure
+			// can cancel processing without affecting other deliveries.
+			deliveryCtx, deliveryCancel := context.WithCancel(ctx)
+			del.processingCancel = deliveryCancel
+
+			if err := emit(deliveryCtx, del); err != nil {
+				deliveryCancel()
 				return err
 			}
 		}

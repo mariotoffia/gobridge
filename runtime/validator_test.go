@@ -176,6 +176,7 @@ func TestValidator_SharedOutbox_Valid(t *testing.T) {
 		runtime.WithInstanceID("test-bridge"),
 		runtime.WithOutboxStore(outbox),
 		runtime.WithLeaseStore(lease),
+		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	cfg := runtime.RouteConfig{
@@ -288,6 +289,7 @@ func TestValidator_SharedOutbox_NonExclusiveNoLeaseStore(t *testing.T) {
 	rt := runtime.New(
 		runtime.WithInstanceID("test-bridge"),
 		runtime.WithOutboxStore(outbox),
+		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	cfg := runtime.RouteConfig{

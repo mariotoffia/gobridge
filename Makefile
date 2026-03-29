@@ -54,7 +54,7 @@ test-long-running: ## Run long-running stress tests (requires Docker, -tags=long
 	GOBRIDGE_MQTT_MEMORY=256m GOBRIDGE_MQTT_CPUS=1.0 \
 	GOBRIDGE_SQS_MEMORY=512m GOBRIDGE_SQS_CPUS=1.0 \
 	GOBRIDGE_DDB_MEMORY=512m GOBRIDGE_DDB_CPUS=1.0 \
-		go test -race -timeout 1200s -v -tags=longrunning ./tests/longrunning/...
+		go test -race -timeout 3600s -v -tags=longrunning ./tests/longrunning/...
 
 # ============================================================================
 # Lint targets

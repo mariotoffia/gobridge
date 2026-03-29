@@ -116,6 +116,7 @@ func TestToSessionConfig_NilReturnsNil(t *testing.T) {
 }
 
 // TestToDrainStrategy_FixedPoll validates fixed_poll drain strategy construction.
+// FixedPoll applies ±25% jitter, so we check within tolerance.
 func TestToDrainStrategy_FixedPoll(t *testing.T) {
 	rs := &config.RouteSessionDef{
 		SessionID:     "s1",
@@ -123,8 +124,10 @@ func TestToDrainStrategy_FixedPoll(t *testing.T) {
 	}
 	strategy := toDrainStrategy(rs)
 	interval := strategy.NextInterval(0)
-	if interval != 5*time.Second {
-		t.Fatalf("expected 5s interval, got %v", interval)
+	lo := time.Duration(float64(5*time.Second) * 0.75)
+	hi := time.Duration(float64(5*time.Second) * 1.25)
+	if interval < lo || interval > hi {
+		t.Fatalf("expected 5s ±25%% interval, got %v", interval)
 	}
 }
 

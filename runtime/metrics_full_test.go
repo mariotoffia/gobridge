@@ -78,6 +78,7 @@ func TestMetrics_FullPipeline_SharedOutbox(t *testing.T) {
 		runtime.WithMetrics(rec),
 		runtime.WithOutboxStore(outbox),
 		runtime.WithLeaseStore(lease),
+		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	cfg := runtime.RouteConfig{

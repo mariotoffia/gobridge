@@ -47,21 +47,21 @@ import (
 // ───────────────────────────────────────────────
 func TestHalfOpen_LimitsConcurrentProbes(t *testing.T) {
 	cfg := fastConfig()
-	b := newBreaker("test", cfg, nil)
+	b := NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
-		_ = b.beforeRequest()
-		b.afterRequest(errTest)
+		_ = b.BeforeRequest()
+		b.AfterRequest(errTest)
 	}
 
 	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond)
 
-	err1 := b.beforeRequest()
+	err1 := b.BeforeRequest()
 	if err1 != nil {
 		t.Fatalf("first half-open probe should be allowed, got: %v", err1)
 	}
 
-	err2 := b.beforeRequest()
+	err2 := b.BeforeRequest()
 	if err2 == nil {
 		t.Fatal("second half-open probe should be rejected when max=1")
 	}
@@ -69,41 +69,41 @@ func TestHalfOpen_LimitsConcurrentProbes(t *testing.T) {
 		t.Fatalf("expected ErrUnavailable, got: %v", err2)
 	}
 
-	b.afterRequest(nil)
+	b.AfterRequest(nil)
 
-	err3 := b.beforeRequest()
+	err3 := b.BeforeRequest()
 	if err3 != nil {
 		t.Fatalf("after completing first probe, next should be allowed: %v", err3)
 	}
-	b.afterRequest(nil)
+	b.AfterRequest(nil)
 }
 
 // TestHalfOpen_CustomMaxProbes validates configurable probe limits.
 func TestHalfOpen_CustomMaxProbes(t *testing.T) {
 	cfg := fastConfig()
 	cfg.HalfOpenMaxProbes = 3
-	b := newBreaker("test", cfg, nil)
+	b := NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
-		_ = b.beforeRequest()
-		b.afterRequest(errTest)
+		_ = b.BeforeRequest()
+		b.AfterRequest(errTest)
 	}
 
 	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond)
 
 	for i := 0; i < 3; i++ {
-		if err := b.beforeRequest(); err != nil {
+		if err := b.BeforeRequest(); err != nil {
 			t.Fatalf("probe %d should be allowed with max=3: %v", i+1, err)
 		}
 	}
 
-	err := b.beforeRequest()
+	err := b.BeforeRequest()
 	if err == nil {
 		t.Fatal("4th probe should be rejected when max=3")
 	}
 
 	for i := 0; i < 3; i++ {
-		b.afterRequest(nil)
+		b.AfterRequest(nil)
 	}
 }
 
@@ -117,14 +117,14 @@ func TestHalfOpen_CustomMaxProbes(t *testing.T) {
 // ───────────────────────────────────────────────
 func TestPermanentErrors_DontTripBreaker(t *testing.T) {
 	cfg := fastConfig()
-	b := newBreaker("test", cfg, nil)
+	b := NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold*3; i++ {
-		_ = b.beforeRequest()
-		b.afterRequest(domain.ErrInvalidPayload)
+		_ = b.BeforeRequest()
+		b.AfterRequest(domain.ErrInvalidPayload)
 	}
 
-	m := b.metrics()
+	m := b.GetMetrics()
 	if m.State != "closed" {
 		t.Fatalf("permanent errors should not trip breaker, got state=%s", m.State)
 	}
@@ -139,18 +139,18 @@ func TestPermanentErrors_DontTripBreaker(t *testing.T) {
 // TestMixedErrors_OnlyTransientCounted validates error classification.
 func TestMixedErrors_OnlyTransientCounted(t *testing.T) {
 	cfg := fastConfig()
-	b := newBreaker("test", cfg, nil)
+	b := NewBreaker("test", cfg, nil)
 
-	_ = b.beforeRequest()
-	b.afterRequest(domain.ErrInvalidPayload)
+	_ = b.BeforeRequest()
+	b.AfterRequest(domain.ErrInvalidPayload)
 
-	_ = b.beforeRequest()
-	b.afterRequest(domain.ErrSchemaViolation)
+	_ = b.BeforeRequest()
+	b.AfterRequest(domain.ErrSchemaViolation)
 
-	_ = b.beforeRequest()
-	b.afterRequest(domain.ErrConnectionLost)
+	_ = b.BeforeRequest()
+	b.AfterRequest(domain.ErrConnectionLost)
 
-	m := b.metrics()
+	m := b.GetMetrics()
 	if m.ConsecutiveFailures != 1 {
 		t.Fatalf("only transient error should count, got consecutiveFailures=%d", m.ConsecutiveFailures)
 	}
@@ -165,14 +165,14 @@ func TestCustomErrorClassifier(t *testing.T) {
 	cfg.CountError = func(err error) bool {
 		return true
 	}
-	b := newBreaker("test", cfg, nil)
+	b := NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
-		_ = b.beforeRequest()
-		b.afterRequest(domain.ErrInvalidPayload)
+		_ = b.BeforeRequest()
+		b.AfterRequest(domain.ErrInvalidPayload)
 	}
 
-	m := b.metrics()
+	m := b.GetMetrics()
 	if m.State != "open" {
 		t.Fatalf("custom classifier counting all errors: expected open, got %s", m.State)
 	}
@@ -199,14 +199,14 @@ func TestEviction_PrefersHalfOpenOverOpen(t *testing.T) {
 	p.mu.Lock()
 	for i := 0; i < maxBreakers; i++ {
 		key := "key-" + string(rune('A'+i%26)) + string(rune('0'+i/26))
-		b := newBreaker(key, cfg.withDefaults(), nil)
+		b := NewBreaker(key, cfg.withDefaults(), nil)
 		b.state = StateOpen
 		b.openedAt = time.Now()
 		p.breakers[key] = b
 	}
 
 	halfOpenKey := "key-halfopen"
-	hb := newBreaker(halfOpenKey, cfg.withDefaults(), nil)
+	hb := NewBreaker(halfOpenKey, cfg.withDefaults(), nil)
 	hb.state = StateHalfOpen
 	p.breakers[halfOpenKey] = hb
 
@@ -234,24 +234,24 @@ func TestDefaultConfig_SetsHalfOpenMaxProbes(t *testing.T) {
 // half-open probe releases the slot for the next request.
 func TestHalfOpen_ProbeReleasedAfterResponse(t *testing.T) {
 	cfg := fastConfig()
-	b := newBreaker("test", cfg, nil)
+	b := NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
-		_ = b.beforeRequest()
-		b.afterRequest(errTest)
+		_ = b.BeforeRequest()
+		b.AfterRequest(errTest)
 	}
 
 	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond)
 
 	for i := 0; i < 10; i++ {
-		err := b.beforeRequest()
+		err := b.BeforeRequest()
 		if err != nil {
 			t.Fatalf("sequential probe %d should succeed: %v", i, err)
 		}
-		b.afterRequest(nil)
+		b.AfterRequest(nil)
 	}
 
-	m := b.metrics()
+	m := b.GetMetrics()
 	if m.State != "closed" {
 		t.Fatalf("after 10 successes (threshold=2), expected closed, got %s", m.State)
 	}
@@ -265,11 +265,11 @@ func TestHalfOpen_ConcurrentProbesLimited(t *testing.T) {
 		SuccessThreshold: 2,
 		ResetTimeout:     50 * time.Millisecond,
 	}
-	b := newBreaker("test", cfg, nil)
+	b := NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
-		_ = b.beforeRequest()
-		b.afterRequest(errTest)
+		_ = b.BeforeRequest()
+		b.AfterRequest(errTest)
 	}
 
 	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond)
@@ -285,11 +285,11 @@ func TestHalfOpen_ConcurrentProbesLimited(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-barrier
-			err := b.beforeRequest()
+			err := b.BeforeRequest()
 			if err == nil {
 				allowed.Add(1)
 				time.Sleep(10 * time.Millisecond)
-				b.afterRequest(nil)
+				b.AfterRequest(nil)
 			} else {
 				rejected.Add(1)
 			}

@@ -62,6 +62,7 @@ func TestDepthCache_PreventsRepeatedQueries(t *testing.T) {
 		goruntime.WithInstanceID("bridge-cache"),
 		goruntime.WithOutboxStore(countingOutbox),
 		goruntime.WithLeaseStore(lease),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	receiver := NewFakeReceiver()
@@ -121,6 +122,7 @@ func TestDepthCache_ExpiresAfterTTL(t *testing.T) {
 		goruntime.WithInstanceID("bridge-ttl"),
 		goruntime.WithOutboxStore(countingOutbox),
 		goruntime.WithLeaseStore(lease),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	receiver := NewFakeReceiver()

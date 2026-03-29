@@ -113,6 +113,7 @@ func TestDepthCacheTTL_WiredFromPolicy(t *testing.T) {
 		goruntime.WithInstanceID("bridge-ttl-wire"),
 		goruntime.WithOutboxStore(countingOutbox),
 		goruntime.WithLeaseStore(lease),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	receiver := NewFakeReceiver()
@@ -179,6 +180,7 @@ func TestDrainConfig_WiredFromSessionConfig(t *testing.T) {
 		goruntime.WithInstanceID("bridge-drain-config"),
 		goruntime.WithOutboxStore(outbox),
 		goruntime.WithLeaseStore(lease),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	receiver := NewFakeReceiver()

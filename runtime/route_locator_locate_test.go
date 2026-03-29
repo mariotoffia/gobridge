@@ -87,6 +87,7 @@ func TestRouteLocator_Locate_Exclusive_LocalOwner(t *testing.T) {
 		runtime.WithInstanceID("instance-1"),
 		runtime.WithLeaseStore(leaseStore),
 		runtime.WithOutboxStore(NewFakeOutboxStore()),
+		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	sessCfg := runtime.DefaultSessionConfig("sess-1", true)
@@ -152,6 +153,7 @@ func TestRouteLocator_Locate_Exclusive_RemoteOwner(t *testing.T) {
 		runtime.WithInstanceID("instance-1"),
 		runtime.WithLeaseStore(leaseStore),
 		runtime.WithOutboxStore(NewFakeOutboxStore()),
+		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	sessCfg := runtime.DefaultSessionConfig("sess-1", true)
@@ -215,6 +217,7 @@ func TestRouteLocator_Locate_LeaseStoreError(t *testing.T) {
 		runtime.WithInstanceID("instance-1"),
 		runtime.WithLeaseStore(leaseStore),
 		runtime.WithOutboxStore(NewFakeOutboxStore()),
+		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	sessCfg := runtime.DefaultSessionConfig("sess-err", true)

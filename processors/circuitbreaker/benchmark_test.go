@@ -10,7 +10,7 @@ import (
 )
 
 func BenchmarkBreaker_BeforeAfter_Closed(b *testing.B) {
-	br := newBreaker("bench", Config{
+	br := NewBreaker("bench", Config{
 		FailureThreshold: 100,
 		SuccessThreshold: 2,
 		ResetTimeout:     time.Second,
@@ -18,13 +18,13 @@ func BenchmarkBreaker_BeforeAfter_Closed(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = br.beforeRequest()
-		br.afterRequest(nil)
+		_ = br.BeforeRequest()
+		br.AfterRequest(nil)
 	}
 }
 
 func BenchmarkBreaker_BeforeAfter_Failures(b *testing.B) {
-	br := newBreaker("bench", Config{
+	br := NewBreaker("bench", Config{
 		FailureThreshold: b.N + 1,
 		SuccessThreshold: 2,
 		ResetTimeout:     time.Second,
@@ -32,8 +32,8 @@ func BenchmarkBreaker_BeforeAfter_Failures(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = br.beforeRequest()
-		br.afterRequest(errTest)
+		_ = br.BeforeRequest()
+		br.AfterRequest(errTest)
 	}
 }
 
