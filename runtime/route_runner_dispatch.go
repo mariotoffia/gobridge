@@ -66,6 +66,8 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 
 	sendErr := sender.Send(sendCtx, env)
 	if sendErr == nil {
+		r.metrics.Counter(domain.MetricMessagesSent, 1,
+			domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID})
 		if logging.TraceEnabled(r.logger) {
 			r.logger.Log(ctx, logging.LevelTrace, "direct hold ack",
 				"route", r.routeID,
@@ -76,6 +78,8 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	}
 
 	if domain.IsRecoverableError(sendErr) {
+		r.metrics.Counter(domain.MetricRouteErrors, 1,
+			domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID})
 		retryAfter := domain.GetRetryAfter(sendErr)
 		return r.retryOrFallback(ctx, del, env, retryAfter, sendErr)
 	}
@@ -128,6 +132,8 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 		return del.Ack(ctx)
 	}
 	if domain.IsRecoverableError(err) {
+		r.metrics.Counter(domain.MetricRouteErrors, 1,
+			domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID})
 		retryAfter := domain.GetRetryAfter(err)
 		return r.retryOrFallback(ctx, del, env, retryAfter, err)
 	}
@@ -162,9 +168,13 @@ func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, e
 		r.emitDLQ("retry_unsupported_dlq_failed")
 		return fmt.Errorf("retry unsupported and DLQ write failed: %w", dlqErr)
 	}
-	if !r.dlq.HasStore() && r.logger != nil {
-		r.logger.Warn("message dropped: retry unsupported and no DLQ configured",
-			"route", r.routeID, "envelope_id", env.ID)
+	if !r.dlq.HasStore() {
+		r.metrics.Counter(domain.MetricMessagesDropped, 1,
+			domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID})
+		if r.logger != nil {
+			r.logger.Warn("message dropped: retry unsupported and no DLQ configured",
+				"route", r.routeID, "envelope_id", env.ID)
+		}
 	}
 	r.emitDLQ("retry_unsupported")
 	return del.Ack(ctx)

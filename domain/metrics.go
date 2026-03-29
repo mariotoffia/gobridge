@@ -56,6 +56,14 @@ const (
 	MetricDeliveryPanics     = "DeliveryPanics"
 )
 
+// Throughput metric names.
+const (
+	MetricMessagesReceived = "MessagesReceived"
+	MetricMessagesSent     = "MessagesSent"
+	MetricMessagesDropped  = "MessagesDropped"
+	MetricRouteErrors      = "RouteErrors"
+)
+
 // MQTT metric names.
 const (
 	MetricMQTTPublishLatency  = "MQTTPublishLatency"

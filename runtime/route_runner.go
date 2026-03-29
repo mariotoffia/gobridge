@@ -137,6 +137,8 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 		}
 		wg.Add(1)
 		mu.Unlock()
+		r.metrics.Counter(domain.MetricMessagesReceived, 1,
+			domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID})
 		go func() {
 			defer wg.Done()
 			defer r.releaseSlots()

@@ -343,6 +343,7 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRec
 			return completeErr
 		}
 		d.metrics.Counter(domain.MetricOutboxCompletions, 1, routeTag)
+		d.metrics.Counter(domain.MetricMessagesSent, 1, routeTag)
 		return nil
 	}
 
