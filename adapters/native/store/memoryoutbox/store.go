@@ -2,10 +2,12 @@ package memoryoutbox
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 )
 
@@ -16,6 +18,7 @@ type Store struct {
 	records map[string]*domain.OutboxRecord // keyed by record ID
 	dedup   map[string]bool                 // keyed by "EnvelopeID\x00BindingID"
 	now     func() time.Time
+	logger  *slog.Logger
 }
 
 // Option configures a Store.
@@ -24,6 +27,11 @@ type Option func(*Store)
 // WithClock overrides the time source (defaults to time.Now).
 func WithClock(fn func() time.Time) Option {
 	return func(s *Store) { s.now = fn }
+}
+
+// WithLogger sets a structured logger for trace-level diagnostics.
+func WithLogger(l *slog.Logger) Option {
+	return func(s *Store) { s.logger = l }
 }
 
 // NewStore creates a new in-memory OutboxStore.
@@ -47,7 +55,9 @@ func partitionKey(r *domain.OutboxRecord) string {
 	return domain.OutboxPartitionKey(r.SessionID, r.BindingID)
 }
 
-func (s *Store) Persist(_ context.Context, records []domain.OutboxRecord) error {
+func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) error {
+	logging.TraceContext(s.logger, ctx, "memoryoutbox: persist",
+		"count", len(records))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -74,7 +84,9 @@ func (s *Store) Persist(_ context.Context, records []domain.OutboxRecord) error 
 	return nil
 }
 
-func (s *Store) Claim(_ context.Context, pk string, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error) {
+func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error) {
+	logging.TraceContext(s.logger, ctx, "memoryoutbox: claim",
+		"partition_key", pk, "owner_id", ownerID, "limit", limit)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -113,7 +125,9 @@ func (s *Store) Claim(_ context.Context, pk string, ownerID string, token domain
 	return result, nil
 }
 
-func (s *Store) Complete(_ context.Context, recordIDs []string, token domain.LeaseToken) error {
+func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.LeaseToken) error {
+	logging.TraceContext(s.logger, ctx, "memoryoutbox: complete",
+		"count", len(recordIDs))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -152,7 +166,9 @@ func (s *Store) Expire(_ context.Context, before time.Time) (int, error) {
 	return count, nil
 }
 
-func (s *Store) QueryPending(_ context.Context, pk string, limit int) ([]domain.OutboxRecord, error) {
+func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]domain.OutboxRecord, error) {
+	logging.TraceContext(s.logger, ctx, "memoryoutbox: query_pending",
+		"partition_key", pk, "limit", limit)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

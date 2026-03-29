@@ -2,10 +2,12 @@ package memorydlq
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -23,10 +25,16 @@ type Store struct {
 	mu      sync.Mutex
 	entries map[string]*dlqEntry
 	now     func() time.Time
+	logger  *slog.Logger
 }
 
 // Option configures a Store.
 type Option func(*Store)
+
+// WithLogger sets the logger for trace-level diagnostics.
+func WithLogger(l *slog.Logger) Option {
+	return func(s *Store) { s.logger = l }
+}
 
 // WithClock overrides the time source (defaults to time.Now).
 func WithClock(fn func() time.Time) Option {
@@ -45,7 +53,9 @@ func NewStore(opts ...Option) *Store {
 	return s
 }
 
-func (s *Store) Write(_ context.Context, entry domain.DLQEntry) error {
+func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
+	logging.TraceContext(s.logger, ctx, "memorydlq: store", "entryID", entry.ID)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -59,7 +69,10 @@ func (s *Store) Write(_ context.Context, entry domain.DLQEntry) error {
 	return nil
 }
 
-func (s *Store) List(_ context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error) {
+	logging.TraceContext(s.logger, ctx, "memorydlq: query",
+		"routeID", filter.RouteID, "category", filter.Category, "limit", filter.Limit)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -111,7 +124,9 @@ func (s *Store) Replay(_ context.Context, entryIDs []string) error {
 	return nil
 }
 
-func (s *Store) Purge(_ context.Context, before time.Time) (int, error) {
+func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
+	logging.TraceContext(s.logger, ctx, "memorydlq: purge")
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

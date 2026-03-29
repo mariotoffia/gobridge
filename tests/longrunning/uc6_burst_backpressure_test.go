@@ -50,7 +50,7 @@ func TestUC6_BurstBackpressure(t *testing.T) {
 		totalCount  = 3000
 		normalCount = 2500
 		poisonCount = 500
-		timeout     = 120 * time.Second
+		pollTimeout     = 120 * time.Second
 	)
 
 	// -- Infrastructure ---------------------------------------------------
@@ -87,7 +87,7 @@ func TestUC6_BurstBackpressure(t *testing.T) {
 	require.NoError(t, rt.AddRoute(routeCfg, sqsRx, mqttSender, nil, nil))
 
 	// -- Start bridge ------------------------------------------------------
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	require.NoError(t, rt.Start(ctx))
@@ -106,7 +106,7 @@ func TestUC6_BurstBackpressure(t *testing.T) {
 	)
 
 	// -- Wait for total accounting: MQTT + DLQ == 3,000 -------------------
-	lrWaitFor(t, timeout,
+	lrWaitFor(t, pollTimeout,
 		fmt.Sprintf("MQTT(%d) + DLQ(%d) = %d", normalCount, poisonCount, totalCount),
 		func() bool {
 			return collector.count()+dlqStore.count() >= totalCount

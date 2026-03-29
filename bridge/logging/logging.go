@@ -70,6 +70,26 @@ func Debug(l *slog.Logger, msg string, args ...any) {
 	}
 }
 
+// TraceContext logs at LevelTrace with context propagation for correlation
+// IDs. Use this when a context.Context is available and you want the
+// observability.CorrelationHandler to inject trace/correlation fields.
+// For hot-path logging with expensive arguments, prefer the explicit guard
+// pattern: if TraceEnabled(l) { l.Log(ctx, LevelTrace, ...) }.
+func TraceContext(l *slog.Logger, ctx context.Context, msg string, args ...any) {
+	if l != nil && l.Enabled(ctx, LevelTrace) {
+		l.Log(ctx, LevelTrace, msg, args...)
+	}
+}
+
+// DebugContext logs at LevelDebug with context propagation for correlation
+// IDs. Use this when a context.Context is available and you want the
+// observability.CorrelationHandler to inject trace/correlation fields.
+func DebugContext(l *slog.Logger, ctx context.Context, msg string, args ...any) {
+	if l != nil && l.Enabled(ctx, LevelDebug) {
+		l.Log(ctx, LevelDebug, msg, args...)
+	}
+}
+
 // LevelNames maps custom level values to human-readable names.
 // Use with slog.HandlerOptions.ReplaceAttr to display "TRACE" instead of
 // "DEBUG-4":

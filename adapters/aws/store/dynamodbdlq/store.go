@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 )
 
@@ -44,6 +46,7 @@ type Store struct {
 	tableName   string
 	gracePeriod time.Duration
 	now         func() time.Time
+	logger      *slog.Logger
 }
 
 // Option configures a Store.
@@ -65,6 +68,11 @@ func WithClock(fn func() time.Time) Option {
 	return func(s *Store) { s.now = fn }
 }
 
+// WithLogger sets the structured logger for trace/debug diagnostics.
+func WithLogger(l *slog.Logger) Option {
+	return func(s *Store) { s.logger = l }
+}
+
 // NewStore creates a new DynamoDB-backed DLQStore.
 func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 	s := &Store{
@@ -82,6 +90,8 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 // EnsureTable creates the DynamoDB table with the required schema and GSIs.
 // It is idempotent: if the table already exists, it returns nil.
 func (s *Store) EnsureTable(ctx context.Context) error {
+	logging.DebugContext(s.logger, ctx, "dynamodbdlq: create_table")
+
 	_, err := s.client.CreateTable(ctx, &dynamodb.CreateTableInput{
 		TableName: aws.String(s.tableName),
 		KeySchema: []ddbtypes.KeySchemaElement{
@@ -129,6 +139,9 @@ func (s *Store) EnsureTable(ctx context.Context) error {
 // Write stores a DLQ entry. The write is idempotent: if an entry with the
 // same ID already exists, domain.ErrDuplicateRecord is returned.
 func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
+	logging.TraceContext(s.logger, ctx, "dynamodbdlq: write",
+		"entry_id", entry.ID, "route_id", entry.RouteID, "category", entry.Category)
+
 	envJSON, err := json.Marshal(&entry.Envelope)
 	if err != nil {
 		return fmt.Errorf("dynamodbdlq: marshal envelope: %w", err)
@@ -180,6 +193,9 @@ func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
 //   - Both          → RouteIndex GSI with post-filter on category
 //   - Neither       → full table Scan
 func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error) {
+	logging.TraceContext(s.logger, ctx, "dynamodbdlq: list",
+		"route_id", filter.RouteID, "category", filter.Category, "limit", filter.Limit)
+
 	switch {
 	case filter.RouteID != "":
 		return s.listByIndex(ctx, "RouteIndex", attrRouteID, filter.RouteID, filter)
@@ -392,6 +408,8 @@ func (s *Store) Replay(ctx context.Context, entryIDs []string) error {
 // Purge deletes entries whose failed_at is before the given time.
 // Returns the count of deleted items.
 func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
+	logging.TraceContext(s.logger, ctx, "dynamodbdlq: purge", "before", before)
+
 	beforeMs := before.UnixMilli()
 	count := 0
 

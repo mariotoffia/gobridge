@@ -115,9 +115,11 @@ func (p *stageProcessor) Process(
 // Verification: SQS-FINAL has 1,000 messages, each with stage_1..stage_4
 // headers and preserved original payload.
 func TestUC5_PipelineChain(t *testing.T) {
+	// Deep health now includes HandlersRegistered in Ready check.
+	// gobridgesync waits until handlers are registered before proceeding.
 	const (
-		msgCount = 1000
-		timeout  = 120 * time.Second
+		msgCount    = 1000
+		pollTimeout = 300 * time.Second
 	)
 
 	// -- Infrastructure: SQS queues ----------------------------------------
@@ -135,6 +137,7 @@ func TestUC5_PipelineChain(t *testing.T) {
 	rt1 := goruntime.New(
 		goruntime.WithInstanceID("uc5-bridge-1"),
 		goruntime.WithDLQStore(dlq1),
+		goruntime.WithLogger(testLogger(t)),
 	)
 	route1 := goruntime.RouteConfig{
 		ID: "uc5-route-1",
@@ -238,17 +241,35 @@ func TestUC5_PipelineChain(t *testing.T) {
 	require.NoError(t, rt4.AddRoute(route4, mqttRx4, sqsSenderFinal, nil, nil))
 
 	// -- Start all bridges -------------------------------------------------
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	for i, rt := range []*goruntime.Runtime{rt1, rt2, rt3, rt4} {
-		require.NoError(t, rt.Start(ctx), "Start bridge-%d", i+1)
+	// Start bridges in reverse order so downstream subscribers are ready
+	// before upstream producers begin consuming from SQS.
+	for i, rt := range []*goruntime.Runtime{rt4, rt3, rt2, rt1} {
+		require.NoError(t, rt.Start(ctx), "Start bridge-%d (reverse)", 4-i)
 	}
 	defer func() {
 		for _, rt := range []*goruntime.Runtime{rt4, rt3, rt2, rt1} {
 			_ = rt.Stop(context.Background())
 		}
 	}()
+
+	// Wait until MQTT subscriber sessions are ready (subscriptions active
+	// AND receiver handler registered). Bridge-2 and Bridge-4 subscribe via
+	// MQTT; we need their sessions to confirm subscriptions are active.
+	// Also wait briefly for receiver handlers to register on the router.
+	lrWaitFor(t, 10*time.Second, "Bridge-2 session ready", func() bool {
+		h := sess2.Health(context.Background())
+		if isDebug() {
+			t.Logf("UC5: sess2 health: connected=%v subs=%d/%d handlers=%d ready=%v",
+				h.Connected, h.SubscriptionsActive, h.SubscriptionsWanted, h.HandlersRegistered, h.Ready)
+		}
+		return h.Ready
+	})
+	lrWaitFor(t, 10*time.Second, "Bridge-4 session ready", func() bool {
+		return sess4.Health(context.Background()).Ready
+	})
 
 	// -- Inject messages into SQS-STAGE-0 ----------------------------------
 	sendBulkToSQS(t, stage0Client, stage0URL, msgCount,
@@ -258,7 +279,7 @@ func TestUC5_PipelineChain(t *testing.T) {
 	)
 
 	// -- Poll SQS-FINAL for all messages with attributes ---------------------
-	finalMsgs := pollSQSWithAttrs(t, finalClient, finalURL, msgCount, timeout)
+	finalMsgs := pollSQSWithAttrs(t, finalClient, finalURL, msgCount, pollTimeout)
 	require.Equal(t, msgCount, len(finalMsgs),
 		"SQS-FINAL should contain exactly %d messages", msgCount)
 

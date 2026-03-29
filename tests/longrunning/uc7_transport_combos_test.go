@@ -35,14 +35,14 @@ func TestUC7_SQS_FIFO_Ordering_Through_MQTT(t *testing.T) {
 	const (
 		msgCount   = 3000
 		groupCount = 3
-		timeout    = 120 * time.Second
+		pollTimeout    = 120 * time.Second
 	)
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc7-in")
 	sqsOutURL, sqsOutClient := setupSQSQueue(t, "uc7-out")
 	dlq := &lrDLQStore{}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Ingress: SQS-IN -> MQTT uc7/ordered
@@ -69,7 +69,7 @@ func TestUC7_SQS_FIFO_Ordering_Through_MQTT(t *testing.T) {
 	egress := buildEgressBridge(t, ctx, "uc7-E", "uc7/ordered", sqsOutURL, dlq)
 	t.Cleanup(func() { _ = egress.Stop(context.Background()) })
 
-	time.Sleep(1 * time.Second)
+	gobridgesync(t, 10*time.Second, rtIn, egress)
 
 	// Send 3,000 messages with group IDs (round-robin across 3 groups).
 	t.Logf("UC7: sending %d messages in %d groups", msgCount, groupCount)
@@ -78,7 +78,7 @@ func TestUC7_SQS_FIFO_Ordering_Through_MQTT(t *testing.T) {
 	})
 
 	// Poll SQS-OUT for all messages.
-	bodies := pollAllSQS(t, sqsOutClient, sqsOutURL, msgCount, timeout)
+	bodies := pollAllSQS(t, sqsOutClient, sqsOutURL, msgCount, pollTimeout)
 	require.GreaterOrEqual(t, len(bodies), msgCount,
 		"SQS-OUT should have at least %d messages", msgCount)
 
@@ -102,7 +102,7 @@ func TestUC7_SQS_FIFO_Ordering_Through_MQTT(t *testing.T) {
 func TestUC8_MultiProtocol_FanOut(t *testing.T) {
 	const (
 		msgCount = 2000
-		timeout  = 120 * time.Second
+		pollTimeout  = 120 * time.Second
 	)
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc8-in")
@@ -110,7 +110,7 @@ func TestUC8_MultiProtocol_FanOut(t *testing.T) {
 	leaseStore, outboxStore := setupDynamoStores(t)
 	dlq := &lrDLQStore{}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// MQTT collectors for the two MQTT targets.
@@ -168,15 +168,15 @@ func TestUC8_MultiProtocol_FanOut(t *testing.T) {
 	require.NoError(t, rt.Start(ctx))
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 
-	time.Sleep(1 * time.Second)
+	gobridgesync(t, 10*time.Second, rt)
 
 	t.Logf("UC8: sending %d messages to SQS-IN", msgCount)
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
 
 	// Wait for all 3 targets.
-	lrWaitFor(t, timeout, "alpha collector", func() bool { return collAlpha.count() >= msgCount })
-	lrWaitFor(t, timeout, "beta collector", func() bool { return collBeta.count() >= msgCount })
-	sqsBodies := pollAllSQS(t, sqsOutClient, sqsOutURL, msgCount, timeout)
+	lrWaitFor(t, pollTimeout, "alpha collector", func() bool { return collAlpha.count() >= msgCount })
+	lrWaitFor(t, pollTimeout, "beta collector", func() bool { return collBeta.count() >= msgCount })
+	sqsBodies := pollAllSQS(t, sqsOutClient, sqsOutURL, msgCount, pollTimeout)
 
 	require.GreaterOrEqual(t, collAlpha.count(), msgCount, "alpha should have >= %d", msgCount)
 	require.GreaterOrEqual(t, collBeta.count(), msgCount, "beta should have >= %d", msgCount)
@@ -201,11 +201,11 @@ func TestUC8_MultiProtocol_FanOut(t *testing.T) {
 func TestUC9_MQTT_QoS2_Stress(t *testing.T) {
 	const (
 		msgCount = 5000
-		timeout  = 120 * time.Second
+		pollTimeout  = 120 * time.Second
 	)
 
 	dlq := &lrDLQStore{}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Collector on output topic.
@@ -240,7 +240,7 @@ func TestUC9_MQTT_QoS2_Stress(t *testing.T) {
 	require.NoError(t, rt.Start(ctx))
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 
-	time.Sleep(500 * time.Millisecond)
+	gobridgesync(t, 10*time.Second, rt)
 
 	// Publish 5,000 messages at QoS 2.
 	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc9-pub"), domain.SessionEphemeral)
@@ -255,7 +255,7 @@ func TestUC9_MQTT_QoS2_Stress(t *testing.T) {
 	}
 	t.Logf("UC9: published %d QoS 2 messages", msgCount)
 
-	lrWaitFor(t, timeout, "collector >= msgCount", func() bool {
+	lrWaitFor(t, pollTimeout, "collector >= msgCount", func() bool {
 		return collector.count() >= msgCount
 	})
 
@@ -291,11 +291,11 @@ func TestUC9_MQTT_QoS2_Stress(t *testing.T) {
 func TestUC10_HTTP_Inject_To_MQTT(t *testing.T) {
 	const (
 		msgCount = 1000
-		timeout  = 60 * time.Second
+		pollTimeout  = 60 * time.Second
 	)
 
 	dlq := &lrDLQStore{}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	collector := newMQTTCollector(t, "uc10/output", "uc10-col")
@@ -319,7 +319,7 @@ func TestUC10_HTTP_Inject_To_MQTT(t *testing.T) {
 	require.NoError(t, rt.Start(ctx))
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 
-	time.Sleep(500 * time.Millisecond)
+	gobridgesync(t, 10*time.Second, rt)
 
 	// Inject messages in a goroutine.
 	var wg sync.WaitGroup
@@ -341,7 +341,7 @@ func TestUC10_HTTP_Inject_To_MQTT(t *testing.T) {
 	wg.Wait()
 	t.Logf("UC10: injected %d messages", msgCount)
 
-	lrWaitFor(t, timeout, "collector >= msgCount", func() bool {
+	lrWaitFor(t, pollTimeout, "collector >= msgCount", func() bool {
 		return collector.count() >= msgCount
 	})
 
@@ -363,7 +363,7 @@ func TestUC10_HTTP_Inject_To_MQTT(t *testing.T) {
 func TestUC11_SQS_To_SQS_Direct(t *testing.T) {
 	const (
 		msgCount = 5000
-		timeout  = 120 * time.Second
+		pollTimeout  = 120 * time.Second
 	)
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc11-in")
@@ -371,7 +371,7 @@ func TestUC11_SQS_To_SQS_Direct(t *testing.T) {
 	leaseStore, outboxStore := setupDynamoStores(t)
 	dlq := &lrDLQStore{}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	sqsRx := newSQSReceiver(t, sqsInURL)
@@ -402,12 +402,12 @@ func TestUC11_SQS_To_SQS_Direct(t *testing.T) {
 	require.NoError(t, rt.Start(ctx))
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 
-	time.Sleep(1 * time.Second)
+	gobridgesync(t, 10*time.Second, rt)
 
 	t.Logf("UC11: sending %d messages to SQS-IN", msgCount)
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
 
-	bodies := pollAllSQS(t, sqsOutClient, sqsOutURL, msgCount, timeout)
+	bodies := pollAllSQS(t, sqsOutClient, sqsOutURL, msgCount, pollTimeout)
 	require.GreaterOrEqual(t, len(bodies), msgCount,
 		"SQS-OUT should have at least %d messages", msgCount)
 	assertNoDuplicates(t, "SQS-OUT", bodies)

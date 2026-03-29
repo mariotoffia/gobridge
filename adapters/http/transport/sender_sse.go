@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -93,6 +94,14 @@ func (s *SSESender) Send(ctx context.Context, env *domain.Envelope) error {
 	}
 	s.mu.RUnlock()
 
+	if logging.TraceEnabled(s.cfg.logger) {
+		s.cfg.logger.Log(ctx, logging.LevelTrace, "sse: broadcasting",
+			"sender_id", s.cfg.id,
+			"envelope_id", env.ID,
+			"client_count", len(clients),
+		)
+	}
+
 	for _, c := range clients {
 		select {
 		case <-ctx.Done():
@@ -136,6 +145,8 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err == nil && !local && node != nil {
 			httpEndpoint, ok := node.Endpoints["http"]
 			if ok {
+				logging.Debug(s.cfg.logger, "sse: redirecting to peer",
+					"route_id", rid, "peer", node.InstanceID)
 				http.Redirect(w, r, httpEndpoint+s.cfg.path, http.StatusTemporaryRedirect)
 				return
 			}
@@ -158,6 +169,8 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	count := len(s.clients)
 	s.mu.Unlock()
 	s.cfg.metrics.Gauge(domain.MetricSSEClients, float64(count))
+	logging.Debug(s.cfg.logger, "sse: client connected",
+		"client_id", clientID, "total_clients", count)
 
 	defer func() {
 		s.mu.Lock()
@@ -165,6 +178,8 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		count := len(s.clients)
 		s.mu.Unlock()
 		s.cfg.metrics.Gauge(domain.MetricSSEClients, float64(count))
+		logging.Debug(s.cfg.logger, "sse: client disconnected",
+			"client_id", clientID, "total_clients", count)
 	}()
 
 	w.Header().Set("Content-Type", "text/event-stream")

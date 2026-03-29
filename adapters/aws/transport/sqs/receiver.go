@@ -13,6 +13,7 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -24,10 +25,11 @@ var _ ports.Receiver = (*Receiver)(nil)
 // messages and emits each as a ports.Delivery whose Ack/Retry/Extend
 // operations map to the SQS receipt-handle lifecycle.
 type Receiver struct {
-	cfg    ReceiverConfig
-	client sqsAPI
-	logger *slog.Logger
-	initMu sync.Mutex
+	cfg     ReceiverConfig
+	client  sqsAPI
+	logger  *slog.Logger
+	metrics ports.MetricsExporter
+	initMu  sync.Mutex
 }
 
 // NewReceiver creates an SQS Receiver.
@@ -36,7 +38,15 @@ func NewReceiver(cfg ReceiverConfig, logger *slog.Logger) (*Receiver, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	return &Receiver{cfg: cfg, logger: logger}, nil
+	l := cfg.Logger
+	if l == nil {
+		l = logger
+	}
+	m := cfg.Metrics
+	if m == nil {
+		m = &ports.NoopExporter{}
+	}
+	return &Receiver{cfg: cfg, logger: l, metrics: m}, nil
 }
 
 // Run starts the long-poll loop. For each received SQS message it
@@ -53,6 +63,13 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		return err
 	}
 
+	logging.DebugContext(r.logger, ctx, "sqs: receiver starting",
+		"queue_url", queueURL,
+		"max_messages", r.cfg.MaxMessages,
+		"visibility_timeout", r.cfg.VisibilityTimeout,
+		"auto_extend", r.cfg.autoExtendEnabled(),
+	)
+
 	return r.pollLoop(ctx, queueURL, emit)
 }
 
@@ -68,6 +85,7 @@ func (r *Receiver) pollLoop(
 			return ctx.Err()
 		}
 
+		pollStart := time.Now()
 		output, err := r.client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
 			QueueUrl:              aws.String(queueURL),
 			MaxNumberOfMessages:   r.cfg.MaxMessages,
@@ -97,7 +115,16 @@ func (r *Receiver) pollLoop(
 			continue
 		}
 
+		r.metrics.Timer(domain.MetricSQSPollLatency, time.Since(pollStart),
+			domain.Tag{Key: domain.TagKeyQueueURL, Value: queueURL})
 		backoff.reset()
+
+		if logging.TraceEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelTrace, "sqs: received",
+				"queue_url", queueURL,
+				"count", len(output.Messages),
+			)
+		}
 
 		for _, msg := range output.Messages {
 			del := r.convertMessage(ctx, queueURL, msg)
@@ -169,12 +196,27 @@ func (r *Receiver) convertMessage(
 
 	if r.cfg.SNSUnwrap {
 		if unwrapped, ok := trySNSUnwrap(body, headers); ok {
+			if logging.TraceEnabled(r.logger) {
+				r.logger.Log(ctx, logging.LevelTrace, "sqs: SNS unwrap",
+					"queue_url", queueURL,
+					"message_id", env.ID,
+					"new_subject", unwrapped.subject,
+				)
+			}
 			env.Subject = unwrapped.subject
 			env.Payload = []byte(unwrapped.message)
 		}
 	}
 
 	env.Headers = headers
+
+	if logging.TraceEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelTrace, "sqs: converting",
+			"queue_url", queueURL,
+			"message_id", env.ID,
+			"body_len", len(body),
+		)
+	}
 
 	return newDelivery(
 		ctx,
@@ -205,6 +247,12 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 		return domain.ErrUnavailable.Wrap(fmt.Errorf("sqs receiver: build AWS config: %w", err))
 	}
 	r.client = awssqs.NewFromConfig(cfg)
+
+	logging.DebugContext(r.logger, ctx, "sqs: receiver initialized",
+		"region", r.cfg.Region,
+		"endpoint", r.cfg.Endpoint,
+	)
+
 	return nil
 }
 

@@ -186,6 +186,7 @@ func setupMQTTSession(
 		KeepAlive:      30,
 		ConnectTimeout: 15 * time.Second,
 		CleanStart:     true,
+		ReceiveMaximum: 65535, // high throughput: avoid broker quota throttling
 	}, mode, nil)
 
 	ctx := context.Background()
@@ -468,19 +469,11 @@ func (s *lrDLQStore) Write(_ context.Context, entry domain.DLQEntry) error {
 	return nil
 }
 
-func (s *lrDLQStore) List(
-	_ context.Context, _ domain.DLQFilter,
-) ([]domain.DLQEntry, error) {
+func (s *lrDLQStore) List(_ context.Context, _ domain.DLQFilter) ([]domain.DLQEntry, error) {
 	return nil, nil
 }
-
-func (s *lrDLQStore) Replay(_ context.Context, _ []string) error {
-	return nil
-}
-
-func (s *lrDLQStore) Purge(
-	_ context.Context, _ time.Time,
-) (int, error) {
+func (s *lrDLQStore) Replay(_ context.Context, _ []string) error { return nil }
+func (s *lrDLQStore) Purge(_ context.Context, _ time.Time) (int, error) {
 	return 0, nil
 }
 
@@ -496,38 +489,6 @@ func (s *lrDLQStore) getEntries() []domain.DLQEntry {
 	cp := make([]domain.DLQEntry, len(s.entries))
 	copy(cp, s.entries)
 	return cp
-}
-
-// ---------------------------------------------------------------------------
-// gobridgesync — wait until all runtimes report ReadyForTraffic
-// ---------------------------------------------------------------------------
-
-// gobridgesync waits until all runtimes report ReadyForTraffic via DeepHealth.
-// On timeout, logs detailed health for each bridge and fails the test.
-func gobridgesync(t *testing.T, timeout time.Duration, runtimes ...*goruntime.Runtime) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		allReady := true
-		for _, rt := range runtimes {
-			dh := rt.DeepHealth(context.Background())
-			if !dh.ReadyForTraffic {
-				allReady = false
-				break
-			}
-		}
-		if allReady {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	// Dump health for debugging on failure
-	for _, rt := range runtimes {
-		dh := rt.DeepHealth(context.Background())
-		t.Logf("gobridgesync: instance=%s running=%v healthy=%v ready=%v sessions=%+v",
-			dh.InstanceID, dh.Running, dh.Healthy, dh.ReadyForTraffic, dh.Sessions)
-	}
-	t.Fatalf("gobridgesync: timed out waiting for %d bridges to be ready", len(runtimes))
 }
 
 // ---------------------------------------------------------------------------

@@ -32,7 +32,7 @@ func TestUC38_OutboxDepthLimit(t *testing.T) {
 	const (
 		msgCount = 500
 		maxDepth = 100
-		timeout  = 120 * time.Second
+		pollTimeout  = 120 * time.Second
 		outTopic = "uc38/output/data"
 	)
 
@@ -42,7 +42,7 @@ func TestUC38_OutboxDepthLimit(t *testing.T) {
 	sessionID := mqttlocal.UniqueClientID("uc38-session")
 	collector := newMQTTCollector(t, outTopic, "uc38-col")
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	mqttSess := setupMQTTSession(t, sessionID, domain.SessionExclusive)
@@ -75,7 +75,7 @@ func TestUC38_OutboxDepthLimit(t *testing.T) {
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	time.Sleep(3 * time.Second)
+	gobridgesync(t, 10*time.Second, rt)
 
 	t.Logf("UC38: sending %d messages to SQS-IN", msgCount)
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
@@ -117,7 +117,7 @@ func TestUC38_OutboxDepthLimit(t *testing.T) {
 func TestUC39_AckAfterOutboxPersist(t *testing.T) {
 	const (
 		msgCount = 2000
-		timeout  = 120 * time.Second
+		pollTimeout  = 120 * time.Second
 		outTopic = "uc39/output/data"
 	)
 
@@ -127,7 +127,7 @@ func TestUC39_AckAfterOutboxPersist(t *testing.T) {
 	sessionID := mqttlocal.UniqueClientID("uc39-session")
 	collector := newMQTTCollector(t, outTopic, "uc39-col")
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	mqttSess := setupMQTTSession(t, sessionID, domain.SessionExclusive)
@@ -159,7 +159,7 @@ func TestUC39_AckAfterOutboxPersist(t *testing.T) {
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	time.Sleep(3 * time.Second)
+	gobridgesync(t, 10*time.Second, rt)
 
 	t.Logf("UC39: sending %d messages to SQS-IN", msgCount)
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
@@ -194,7 +194,7 @@ func TestUC39_AckAfterOutboxPersist(t *testing.T) {
 		}
 	}()
 
-	lrWaitFor(t, timeout, fmt.Sprintf("collector>=%d", msgCount), func() bool {
+	lrWaitFor(t, pollTimeout, fmt.Sprintf("collector>=%d", msgCount), func() bool {
 		return collector.count() >= msgCount
 	})
 	drainDoneTime := time.Now().UnixMilli()
@@ -225,7 +225,7 @@ func TestUC40_AdaptiveDrain_Backoff(t *testing.T) {
 		secondBatch = 500
 		totalMsg    = firstBatch + secondBatch
 		idleWait    = 15 * time.Second
-		timeout     = 120 * time.Second
+		pollTimeout     = 120 * time.Second
 		outTopic    = "uc40/output/data"
 	)
 
@@ -236,7 +236,7 @@ func TestUC40_AdaptiveDrain_Backoff(t *testing.T) {
 	sessionID := mqttlocal.UniqueClientID("uc40-session")
 	collector := newMQTTCollector(t, outTopic, "uc40-col")
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	mqttSess := setupMQTTSession(t, sessionID, domain.SessionExclusive)
@@ -269,7 +269,7 @@ func TestUC40_AdaptiveDrain_Backoff(t *testing.T) {
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	time.Sleep(3 * time.Second)
+	gobridgesync(t, 10*time.Second, rt)
 
 	t.Logf("UC40: sending first batch of %d", firstBatch)
 	sendBulkToSQS(t, sqsInClient, sqsInURL, firstBatch, nil)
@@ -331,7 +331,7 @@ func (p *uc41SlowFirstN) Process(
 func TestUC41_IdempotentOutbox_Persist(t *testing.T) {
 	const (
 		msgCount = 200
-		timeout  = 120 * time.Second
+		pollTimeout  = 120 * time.Second
 	)
 
 	sqsInClient := sqslocal.Client(t)
@@ -344,7 +344,7 @@ func TestUC41_IdempotentOutbox_Persist(t *testing.T) {
 	dlq := &lrDLQStore{}
 	sessionID := mqttlocal.UniqueClientID("uc41-session")
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	ep := sqslocal.Endpoint(t)
@@ -386,7 +386,7 @@ func TestUC41_IdempotentOutbox_Persist(t *testing.T) {
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	time.Sleep(3 * time.Second)
+	gobridgesync(t, 10*time.Second, rt)
 
 	t.Logf("UC41: sending %d messages to SQS-IN (vis=3s)", msgCount)
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)

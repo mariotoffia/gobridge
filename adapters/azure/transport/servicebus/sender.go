@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -33,6 +36,8 @@ type Sender struct {
 	client    asbSenderAPI
 	asbClient *azservicebus.Client
 	initMu    sync.Mutex
+	logger    *slog.Logger
+	metrics   ports.MetricsExporter
 }
 
 // NewSender creates a Service Bus Sender. The underlying AMQP connection
@@ -43,7 +48,18 @@ func NewSender(cfg SenderConfig) (*Sender, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	return &Sender{cfg: cfg, client: cfg.Client}, nil
+	m := cfg.Metrics
+	if m == nil {
+		m = &ports.NoopExporter{}
+	}
+	return &Sender{cfg: cfg, client: cfg.Client, logger: cfg.Logger, metrics: m}, nil
+}
+
+func (s *Sender) entityName() string {
+	if s.cfg.QueueName != "" {
+		return s.cfg.QueueName
+	}
+	return s.cfg.TopicName
 }
 
 // Send submits a single envelope to Service Bus.
@@ -52,13 +68,28 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 		return err
 	}
 
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "servicebus: sending",
+			"entity", s.entityName(),
+			"envelope_id", env.ID,
+			"payload_len", len(env.Payload),
+		)
+	}
+
 	sendCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
 
 	msg := s.buildMessage(env)
+	start := time.Now()
 	if err := s.client.SendMessage(sendCtx, msg, nil); err != nil {
+		logging.DebugContext(s.logger, ctx, "servicebus: send failed",
+			"entity", s.entityName(), "error", err)
 		return MapError(err)
 	}
+
+	s.metrics.Timer(domain.MetricASBSendLatency, time.Since(start),
+		domain.Tag{Key: domain.TagKeyEntity, Value: s.entityName()})
+
 	return nil
 }
 
@@ -83,6 +114,12 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 		}
 		chunk := envs[i:end]
 
+		logging.DebugContext(s.logger, ctx, "servicebus: sending batch",
+			"entity", s.entityName(),
+			"chunk_size", len(chunk),
+		)
+
+		start := time.Now()
 		msgBatch, err := s.client.NewMessageBatch(sendCtx, nil)
 		if err != nil {
 			return sent, MapError(err)
@@ -101,6 +138,9 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 			if !errors.Is(addErr, azservicebus.ErrMessageTooLarge) {
 				return sent, MapError(addErr)
 			}
+
+			logging.DebugContext(s.logger, ctx, "servicebus: message overflow, sending individually",
+				"entity", s.entityName())
 
 			if msgBatch.NumMessages() > 0 {
 				if err := s.client.SendMessageBatch(sendCtx, msgBatch, nil); err != nil {
@@ -127,6 +167,9 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 			}
 			sent += int(msgBatch.NumMessages())
 		}
+
+		s.metrics.Timer(domain.MetricASBSendBatchLatency, time.Since(start),
+			domain.Tag{Key: domain.TagKeyEntity, Value: s.entityName()})
 	}
 
 	return sent, nil
@@ -134,6 +177,9 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 
 // Close tears down the Service Bus sender and the underlying AMQP connection.
 func (s *Sender) Close(ctx context.Context) error {
+	logging.DebugContext(s.logger, ctx, "servicebus: sender closing",
+		"entity", s.entityName())
+
 	var firstErr error
 	if s.client != nil {
 		firstErr = s.client.Close(ctx)
@@ -159,10 +205,7 @@ func (s *Sender) ensureClient(ctx context.Context) error {
 		return fmt.Errorf("servicebus sender: %w", err)
 	}
 
-	entityName := s.cfg.QueueName
-	if entityName == "" {
-		entityName = s.cfg.TopicName
-	}
+	entityName := s.entityName()
 
 	sender, err := asbClient.NewSender(entityName, nil)
 	if err != nil {
@@ -172,6 +215,10 @@ func (s *Sender) ensureClient(ctx context.Context) error {
 
 	s.client = sender
 	s.asbClient = asbClient
+
+	logging.DebugContext(s.logger, ctx, "servicebus: sender initialized",
+		"entity", entityName)
+
 	return nil
 }
 

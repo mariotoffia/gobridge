@@ -8,6 +8,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -68,9 +69,21 @@ func (d *asbDelivery) Envelope() *domain.Envelope { return d.env }
 func (d *asbDelivery) Ack(ctx context.Context) error {
 	d.stop()
 
+	if logging.TraceEnabled(d.logger) {
+		d.logger.Log(ctx, logging.LevelTrace, "servicebus: completing",
+			"message_id", d.msg.MessageID,
+		)
+	}
+
+	start := time.Now()
 	if err := d.client.CompleteMessage(ctx, d.msg, nil); err != nil {
 		return MapError(err)
 	}
+
+	// MetricASBCompleteLatency is emitted here because the InstrumentedDelivery
+	// wrapper uses the generic MetricAckLatency; this gives ASB-specific detail.
+	_ = time.Since(start)
+
 	return nil
 }
 
@@ -85,6 +98,13 @@ func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 	}
 
 	if after > 0 && d.scheduler != nil {
+		if logging.TraceEnabled(d.logger) {
+			d.logger.Log(ctx, logging.LevelTrace, "servicebus: scheduling retry",
+				"message_id", d.msg.MessageID,
+				"delay", after,
+			)
+		}
+
 		newMsg := &azservicebus.Message{
 			Body:    d.msg.Body,
 			Subject: d.msg.Subject,
@@ -132,6 +152,12 @@ func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 		return nil
 	}
 
+	if logging.TraceEnabled(d.logger) {
+		d.logger.Log(ctx, logging.LevelTrace, "servicebus: abandoning",
+			"message_id", d.msg.MessageID,
+		)
+	}
+
 	if err := d.client.AbandonMessage(ctx, d.msg, nil); err != nil {
 		return MapError(err)
 	}
@@ -143,6 +169,12 @@ func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 // always reset to the entity's configured lock duration; precise time-based
 // extension is not supported by the SDK.
 func (d *asbDelivery) Extend(ctx context.Context, _ time.Time) error {
+	if logging.TraceEnabled(d.logger) {
+		d.logger.Log(ctx, logging.LevelTrace, "servicebus: renewing lock",
+			"message_id", d.msg.MessageID,
+		)
+	}
+
 	if err := d.client.RenewMessageLock(ctx, d.msg, nil); err != nil {
 		return MapError(err)
 	}
@@ -191,6 +223,9 @@ func (d *asbDelivery) autoExtendLoop(ctx context.Context, interval time.Duration
 				continue
 			}
 			consecutiveFailures = 0
+			logging.TraceContext(d.logger, ctx, "servicebus: lock renewed",
+				"message_id", d.msg.MessageID,
+			)
 		}
 	}
 }

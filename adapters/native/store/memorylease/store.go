@@ -2,10 +2,12 @@ package memorylease
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 )
 
@@ -23,6 +25,7 @@ type Store struct {
 	leases  map[string]*leaseEntry
 	nextVer atomic.Uint64
 	now     func() time.Time // injectable clock for testing
+	logger  *slog.Logger
 }
 
 // Option configures a Store.
@@ -31,6 +34,11 @@ type Option func(*Store)
 // WithClock overrides the time source (defaults to time.Now).
 func WithClock(fn func() time.Time) Option {
 	return func(s *Store) { s.now = fn }
+}
+
+// WithLogger sets a structured logger for trace-level diagnostics.
+func WithLogger(l *slog.Logger) Option {
+	return func(s *Store) { s.logger = l }
 }
 
 // NewStore creates a new in-memory LeaseStore.
@@ -45,7 +53,9 @@ func NewStore(opts ...Option) *Store {
 	return s
 }
 
-func (s *Store) Acquire(_ context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+	logging.TraceContext(s.logger, ctx, "memorylease: acquire",
+		"lease_id", leaseID, "owner_id", ownerID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -68,7 +78,9 @@ func (s *Store) Acquire(_ context.Context, leaseID, ownerID string, ttl time.Dur
 	return domain.LeaseToken{Version: ver, Owner: ownerID}, nil
 }
 
-func (s *Store) Renew(_ context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+	logging.TraceContext(s.logger, ctx, "memorylease: renew",
+		"lease_id", leaseID, "owner_id", token.Owner)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -94,7 +106,9 @@ func (s *Store) Renew(_ context.Context, leaseID string, token domain.LeaseToken
 	return token, nil
 }
 
-func (s *Store) Release(_ context.Context, leaseID string, token domain.LeaseToken) error {
+func (s *Store) Release(ctx context.Context, leaseID string, token domain.LeaseToken) error {
+	logging.TraceContext(s.logger, ctx, "memorylease: release",
+		"lease_id", leaseID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

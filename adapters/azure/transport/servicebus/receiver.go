@@ -10,6 +10,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -22,6 +23,7 @@ type Receiver struct {
 	scheduler retryScheduler
 	asbClient *azservicebus.Client
 	logger    *slog.Logger
+	metrics   ports.MetricsExporter
 	initMu    sync.Mutex
 }
 
@@ -30,13 +32,35 @@ func NewReceiver(cfg ReceiverConfig, logger *slog.Logger) (*Receiver, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	return &Receiver{cfg: cfg, logger: logger}, nil
+	l := cfg.Logger
+	if l == nil {
+		l = logger
+	}
+	m := cfg.Metrics
+	if m == nil {
+		m = &ports.NoopExporter{}
+	}
+	return &Receiver{cfg: cfg, logger: l, metrics: m}, nil
+}
+
+func (r *Receiver) entityName() string {
+	if r.cfg.QueueName != "" {
+		return r.cfg.QueueName
+	}
+	return r.cfg.TopicName
 }
 
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
 	if err := r.ensureClient(ctx); err != nil {
 		return err
 	}
+
+	logging.DebugContext(r.logger, ctx, "servicebus: receiver starting",
+		"entity", r.entityName(),
+		"max_messages", r.cfg.MaxMessages,
+		"lock_duration", r.cfg.LockDuration,
+		"auto_extend", r.cfg.autoExtendEnabled(),
+	)
 
 	defer func() {
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -87,10 +111,7 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 		opts.SubQueue = azservicebus.SubQueueTransfer
 	}
 
-	entityName := r.cfg.QueueName
-	if entityName == "" {
-		entityName = r.cfg.TopicName
-	}
+	entityName := r.entityName()
 
 	if r.cfg.SessionID != "" {
 		sessOpts := &azservicebus.SessionReceiverOptions{}
@@ -134,6 +155,12 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 	}
 
 	r.asbClient = asbClient
+
+	logging.DebugContext(r.logger, ctx, "servicebus: client initialized",
+		"entity", entityName,
+		"session_id", r.cfg.SessionID,
+	)
+
 	return nil
 }
 
@@ -145,6 +172,7 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			return ctx.Err()
 		}
 
+		pollStart := time.Now()
 		msgs, err := r.client.ReceiveMessages(ctx, r.cfg.MaxMessages, nil)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -165,7 +193,16 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			continue
 		}
 
+		r.metrics.Timer(domain.MetricASBReceiveLatency, time.Since(pollStart),
+			domain.Tag{Key: domain.TagKeyEntity, Value: r.entityName()})
 		backoff.reset()
+
+		if logging.TraceEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelTrace, "servicebus: received",
+				"entity", r.entityName(),
+				"count", len(msgs),
+			)
+		}
 
 		for _, msg := range msgs {
 			del := r.convertMessage(ctx, msg)
@@ -231,6 +268,14 @@ func (r *Receiver) convertMessage(ctx context.Context, msg *azservicebus.Receive
 
 	if msg.ExpiresAt != nil {
 		env.ExpiresAt = *msg.ExpiresAt
+	}
+
+	if logging.TraceEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelTrace, "servicebus: converting",
+			"entity", r.entityName(),
+			"message_id", msg.MessageID,
+			"body_len", len(msg.Body),
+		)
 	}
 
 	return newDelivery(

@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 
 	_ "modernc.org/sqlite"
@@ -39,7 +41,8 @@ CREATE INDEX IF NOT EXISTS idx_outbox_partition_status ON outbox(partition_key, 
 // Store implements ports.OutboxStore using SQLite for local durable
 // persistence in tests and single-process deployments.
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	logger *slog.Logger
 }
 
 // NewStore opens (or creates) a SQLite database at dbPath and runs the
@@ -68,6 +71,9 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// SetLogger assigns a structured logger for trace-level diagnostics.
+func (s *Store) SetLogger(l *slog.Logger) { s.logger = l }
+
 func partitionKey(r *domain.OutboxRecord) string {
 	if r.SessionID != "" {
 		return "SESSION#" + r.SessionID
@@ -76,6 +82,8 @@ func partitionKey(r *domain.OutboxRecord) string {
 }
 
 func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) error {
+	logging.TraceContext(s.logger, ctx, "sqliteoutbox: persist", "count", len(records))
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("sqliteoutbox: begin tx: %w", err)
@@ -144,6 +152,8 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 }
 
 func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error) {
+	logging.TraceContext(s.logger, ctx, "sqliteoutbox: claim", "partition_key", pk, "limit", limit)
+
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id FROM outbox
 		 WHERE partition_key = ? AND (status = 'pending' OR (status = 'claimed' AND claim_version < ?))
@@ -196,6 +206,8 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 }
 
 func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.LeaseToken) error {
+	logging.TraceContext(s.logger, ctx, "sqliteoutbox: complete", "count", len(recordIDs))
+
 	if len(recordIDs) == 0 {
 		return nil
 	}
@@ -229,6 +241,8 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.L
 }
 
 func (s *Store) Expire(ctx context.Context, before time.Time) (int, error) {
+	logging.TraceContext(s.logger, ctx, "sqliteoutbox: expire")
+
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE outbox SET status = 'expired'
 		 WHERE expires_at > 0 AND expires_at < ? AND status IN ('pending', 'claimed')`,
@@ -242,6 +256,8 @@ func (s *Store) Expire(ctx context.Context, before time.Time) (int, error) {
 }
 
 func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]domain.OutboxRecord, error) {
+	logging.TraceContext(s.logger, ctx, "sqliteoutbox: query_pending", "partition_key", pk, "limit", limit)
+
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, partition_key, route_id, envelope_id, binding_id, session_id,
 		        address, envelope_json, headers_json, status, claimed_by, claim_version,

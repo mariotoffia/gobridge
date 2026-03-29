@@ -9,10 +9,9 @@ import (
 	"time"
 
 	"github.com/eclipse/paho.golang/autopaho"
-	"github.com/eclipse/paho.golang/packets"
 	pahov5 "github.com/eclipse/paho.golang/paho"
-	"github.com/eclipse/paho.golang/paho/log"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -20,9 +19,10 @@ import (
 // Session implements ports.Session for MQTT, owning the broker connection,
 // ClientID identity, and subscription reconciliation.
 type Session struct {
-	opts   SessionOptions
-	mode   domain.SessionMode
-	logger *slog.Logger
+	opts    SessionOptions
+	mode    domain.SessionMode
+	logger  *slog.Logger
+	metrics ports.MetricsExporter
 
 	mu     sync.Mutex
 	cm     *autopaho.ConnectionManager
@@ -52,13 +52,19 @@ type Session struct {
 var _ ports.Session = (*Session)(nil)
 
 // NewSession creates an MQTT Session from the given options.
-func NewSession(opts SessionOptions, mode domain.SessionMode, logger *slog.Logger) *Session {
+// metrics may be nil; a no-op exporter is used in that case.
+func NewSession(opts SessionOptions, mode domain.SessionMode, logger *slog.Logger, metrics ...ports.MetricsExporter) *Session {
+	var m ports.MetricsExporter = &ports.NoopExporter{}
+	if len(metrics) > 0 && metrics[0] != nil {
+		m = metrics[0]
+	}
 	return &Session{
 		opts:       opts,
 		mode:       mode,
 		logger:     logger,
+		metrics:    m,
 		events:     make(chan ports.SessionEvent, 16),
-		router:     newRouter(),
+		router:     newRouter(logger, m),
 		activeSubs: make(map[string]byte),
 	}
 }
@@ -79,6 +85,13 @@ func (s *Session) Router() *router {
 // Start connects to the MQTT broker and emits a SessionConnected event
 // once the initial connection is established.
 func (s *Session) Start(ctx context.Context) error {
+	logging.DebugContext(s.logger, ctx, "mqtt: session connecting",
+		"client_id", s.opts.ClientID,
+		"broker_count", len(s.opts.BrokerURLs),
+		"session_mode", s.mode,
+	)
+	connectStart := time.Now()
+
 	serverURLs, err := parseURLs(s.opts.BrokerURLs)
 	if err != nil {
 		return domain.ErrInvalidPayload.Wrap(err).WithMessage("parse broker URLs")
@@ -90,6 +103,8 @@ func (s *Session) Start(ctx context.Context) error {
 
 		OnConnectionUp: func(cm *autopaho.ConnectionManager, _ *pahov5.Connack) {
 			s.pushEvent(ports.SessionConnected, nil)
+			logging.Debug(s.logger, "mqtt: connection up",
+				"client_id", s.opts.ClientID)
 			s.mu.Lock()
 			oldSubs := s.activeSubs
 			s.activeSubs = make(map[string]byte)
@@ -123,6 +138,19 @@ func (s *Session) Start(ctx context.Context) error {
 			ClientID: s.opts.ClientID,
 			Router:   s.router,
 		},
+	}
+
+	// Set ReceiveMaximum via ConnectPacketBuilder to avoid exceeding the
+	// broker's per-client inflight quota under high throughput.
+	if s.opts.ReceiveMaximum > 0 {
+		rm := s.opts.ReceiveMaximum
+		cfg.ConnectPacketBuilder = func(cp *pahov5.Connect, _ *url.URL) (*pahov5.Connect, error) {
+			if cp.Properties == nil {
+				cp.Properties = &pahov5.ConnectProperties{}
+			}
+			cp.Properties.ReceiveMaximum = &rm
+			return cp, nil
+		}
 	}
 
 	switch s.mode {
@@ -162,6 +190,8 @@ func (s *Session) Start(ctx context.Context) error {
 	if err := cm.AwaitConnection(awaitCtx); err != nil {
 		// Connection failed; disconnect to clean up the autopaho goroutine.
 		_ = cm.Disconnect(context.Background())
+		logging.DebugContext(s.logger, ctx, "mqtt: connect failed",
+			"client_id", s.opts.ClientID, "error", err)
 		return MapError(err)
 	}
 
@@ -169,6 +199,12 @@ func (s *Session) Start(ctx context.Context) error {
 	s.cm = cm
 	s.startCtx = ctx
 	s.mu.Unlock()
+
+	elapsed := time.Since(connectStart)
+	s.metrics.Timer(domain.MetricMQTTConnectLatency, elapsed,
+		domain.Tag{Key: domain.TagKeySessionID, Value: s.opts.ClientID})
+	logging.DebugContext(s.logger, ctx, "mqtt: session connected",
+		"client_id", s.opts.ClientID, "connect_latency", elapsed)
 
 	return nil
 }
@@ -189,6 +225,7 @@ func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error 
 }
 
 func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager, plan domain.SessionPlan) error {
+	reconcileStart := time.Now()
 	s.reconcileMu.Lock()
 	defer s.reconcileMu.Unlock()
 
@@ -204,6 +241,12 @@ func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager,
 	}
 	s.mu.Unlock()
 
+	logging.DebugContext(s.logger, ctx, "mqtt: reconcile",
+		"client_id", s.opts.ClientID,
+		"desired", len(desired),
+		"active", len(current),
+	)
+
 	// Unsubscribe topics no longer desired
 	var toUnsub []string
 	for topic := range current {
@@ -213,6 +256,10 @@ func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager,
 	}
 
 	if len(toUnsub) > 0 {
+		if logging.TraceEnabled(s.logger) {
+			s.logger.Log(ctx, logging.LevelTrace, "mqtt: unsubscribing",
+				"client_id", s.opts.ClientID, "topics", toUnsub)
+		}
 		if _, err := cm.Unsubscribe(ctx, &pahov5.Unsubscribe{Topics: toUnsub}); err != nil {
 			return MapError(err)
 		}
@@ -233,6 +280,14 @@ func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager,
 	}
 
 	if len(toSub) > 0 {
+		if logging.TraceEnabled(s.logger) {
+			topics := make([]string, len(toSub))
+			for i, sub := range toSub {
+				topics[i] = sub.Topic
+			}
+			s.logger.Log(ctx, logging.LevelTrace, "mqtt: subscribing",
+				"client_id", s.opts.ClientID, "topics", topics)
+		}
 		sa, err := cm.Subscribe(ctx, &pahov5.Subscribe{Subscriptions: toSub})
 		if err != nil {
 			return MapError(err)
@@ -258,12 +313,26 @@ func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager,
 		s.mu.Unlock()
 	}
 
+	elapsed := time.Since(reconcileStart)
+	s.metrics.Timer(domain.MetricMQTTReconcileLatency, elapsed,
+		domain.Tag{Key: domain.TagKeySessionID, Value: s.opts.ClientID})
+	logging.DebugContext(s.logger, ctx, "mqtt: reconcile done",
+		"client_id", s.opts.ClientID,
+		"unsubscribed", len(toUnsub),
+		"subscribed", len(toSub),
+		"duration", elapsed,
+	)
+
 	return nil
 }
 
 // Health returns the current health state of the session, including
-// subscription readiness. Ready is true when the session is connected
-// and all desired subscriptions from the reconciled plan are active.
+// subscription and handler readiness. Ready is true when:
+//   - The session is connected to the broker
+//   - All desired subscriptions are active on the broker
+//   - At least one receiver handler is registered (when subscriptions are expected)
+//
+// For sender-only sessions (no subscriptions), Ready is true when connected.
 func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	s.mu.Lock()
 	cm := s.cm
@@ -276,12 +345,23 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	if plan != nil {
 		wantedCount = len(plan.Subscriptions)
 	}
+	handlerCount := s.router.HandlerCount()
+
+	// Ready logic:
+	// - Must be connected
+	// - Subscriptions must match plan
+	// - If subscriptions are expected, at least one handler must be registered
+	ready := connected && wantedCount == activeCount
+	if ready && wantedCount > 0 {
+		ready = handlerCount > 0
+	}
 
 	return ports.SessionHealth{
 		Connected:           connected,
 		SubscriptionsWanted: wantedCount,
 		SubscriptionsActive: activeCount,
-		Ready:               connected && wantedCount == activeCount,
+		HandlersRegistered:  handlerCount,
+		Ready:               ready,
 	}
 }
 
@@ -300,6 +380,9 @@ func (s *Session) Events() <-chan ports.SessionEvent {
 //  3. Close s.events channel — safe because step 1 guarantees no
 //     concurrent sender can reach the channel send.
 func (s *Session) Close(ctx context.Context) error {
+	logging.DebugContext(s.logger, ctx, "mqtt: session closing",
+		"client_id", s.opts.ClientID)
+
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -354,81 +437,6 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 		}
 	}
 }
-
-// ---------------------------------------------------------------------------
-// router: multiplexing paho.Router for shared Session
-// ---------------------------------------------------------------------------
-
-// router implements paho.Router, dispatching incoming publishes to all
-// registered handlers (one per Receiver on this Session). A WaitGroup
-// tracks in-flight handler goroutines so Session.Close can await them.
-type router struct {
-	mu       sync.RWMutex
-	wg       sync.WaitGroup
-	handlers map[string]func(*pahov5.Publish)
-}
-
-func newRouter() *router {
-	return &router{handlers: make(map[string]func(*pahov5.Publish))}
-}
-
-// Route implements paho.Router. It converts packets.Publish to paho.Publish
-// and dispatches to all registered handlers concurrently. Each handler
-// receives an independent copy of the Publish -- both the struct and the
-// Payload slice are copied so that handlers can safely inspect (but should
-// not mutate) the data without racing on shared backing arrays.
-func (r *router) Route(pb *packets.Publish) {
-	pub := pahov5.PublishFromPacketPublish(pb)
-	r.mu.RLock()
-	handlers := make([]func(*pahov5.Publish), 0, len(r.handlers))
-	for _, h := range r.handlers {
-		handlers = append(handlers, h)
-	}
-	r.mu.RUnlock()
-	r.wg.Add(len(handlers))
-	for _, h := range handlers {
-		p := *pub
-		if pub.Payload != nil {
-			p.Payload = make([]byte, len(pub.Payload))
-			copy(p.Payload, pub.Payload)
-		}
-		go func(handler func(*pahov5.Publish)) {
-			defer r.wg.Done()
-			defer func() {
-				if rv := recover(); rv != nil {
-					// Handler panicked; absorb to avoid crashing the process.
-					// wg.Done is still called via the outer defer.
-				}
-			}()
-			handler(&p)
-		}(h)
-	}
-}
-
-// Wait blocks until all in-flight handler goroutines have returned.
-func (r *router) Wait() { r.wg.Wait() }
-
-// Register adds a handler for the given ID. Handlers receive an
-// independent copy of the Publish struct and Payload per invocation.
-// The Properties pointer is still shared across goroutines; handlers
-// MUST NOT modify Properties fields. Violations cause data races
-// under concurrent dispatch.
-func (r *router) Register(id string, h func(*pahov5.Publish)) {
-	r.mu.Lock()
-	r.handlers[id] = h
-	r.mu.Unlock()
-}
-
-func (r *router) Unregister(id string) {
-	r.mu.Lock()
-	delete(r.handlers, id)
-	r.mu.Unlock()
-}
-
-// paho.Router interface stubs — registration is done via Register/Unregister.
-func (r *router) RegisterHandler(_ string, _ pahov5.MessageHandler) {}
-func (r *router) UnregisterHandler(_ string)                        {}
-func (r *router) SetDebugLogger(_ log.Logger)                       {}
 
 // ---------------------------------------------------------------------------
 // helpers

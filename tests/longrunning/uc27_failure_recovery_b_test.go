@@ -28,7 +28,7 @@ import (
 func TestUC30_DLQ_AllPoison(t *testing.T) {
 	const (
 		msgCount = 5000
-		timeout  = 120 * time.Second
+		pollTimeout  = 120 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc30-in")
@@ -61,7 +61,7 @@ func TestUC30_DLQ_AllPoison(t *testing.T) {
 	}
 	require.NoError(t, rt.AddRoute(routeCfg, sqsRx, mqttSender, nil, nil))
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
@@ -71,7 +71,7 @@ func TestUC30_DLQ_AllPoison(t *testing.T) {
 		return map[string]string{"poison": "true"}
 	})
 
-	lrWaitFor(t, timeout, fmt.Sprintf("DLQ >= %d", msgCount), func() bool {
+	lrWaitFor(t, pollTimeout, fmt.Sprintf("DLQ >= %d", msgCount), func() bool {
 		return dlqStore.count() >= msgCount
 	})
 
@@ -102,7 +102,7 @@ func TestUC30_DLQ_AllPoison(t *testing.T) {
 func TestUC31_OutboxReplay_Exhaustion(t *testing.T) {
 	const (
 		msgCount = 100
-		timeout  = 120 * time.Second
+		pollTimeout  = 120 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc31-in")
@@ -138,14 +138,14 @@ func TestUC31_OutboxReplay_Exhaustion(t *testing.T) {
 	}
 	require.NoError(t, rt.AddRoute(routeCfg, sqsRx, failSender, sess, &sc))
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
 
 	sendBulkToSQS(t, inClient, inQueueURL, msgCount, nil)
 
-	lrWaitFor(t, timeout, fmt.Sprintf("DLQ >= %d", msgCount), func() bool {
+	lrWaitFor(t, pollTimeout, fmt.Sprintf("DLQ >= %d", msgCount), func() bool {
 		return dlqStore.count() >= msgCount
 	})
 
@@ -170,7 +170,7 @@ func TestUC32_GracefulShutdown_UnderLoad(t *testing.T) {
 	const (
 		msgCount    = 3000
 		minReceived = 500
-		timeout     = 60 * time.Second
+		pollTimeout     = 60 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc32-in")
@@ -202,7 +202,7 @@ func TestUC32_GracefulShutdown_UnderLoad(t *testing.T) {
 	}
 	require.NoError(t, rt.AddRoute(routeCfg, sqsRx, mqttSender, nil, nil))
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	require.NoError(t, rt.Start(ctx))
 

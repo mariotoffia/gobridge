@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 
 	_ "modernc.org/sqlite"
@@ -38,8 +40,12 @@ CREATE INDEX IF NOT EXISTS idx_dlq_failed_at ON dlq(failed_at);
 // Store implements ports.DLQStore using SQLite for local durable
 // persistence in tests and single-process deployments.
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	logger *slog.Logger
 }
+
+// SetLogger sets a structured logger for trace-level diagnostics.
+func (s *Store) SetLogger(l *slog.Logger) { s.logger = l }
 
 // NewStore opens (or creates) a SQLite database at dbPath and runs the
 // schema migration. Use ":memory:" for a purely in-memory database.
@@ -68,6 +74,8 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
+	logging.TraceContext(s.logger, ctx, "sqlitedlq: write",
+		"route_id", entry.RouteID, "entry_id", entry.ID)
 	envJSON, err := json.Marshal(entry.Envelope)
 	if err != nil {
 		return fmt.Errorf("sqlitedlq: marshal envelope: %w", err)
@@ -93,6 +101,8 @@ func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
 }
 
 func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error) {
+	logging.TraceContext(s.logger, ctx, "sqlitedlq: list",
+		"route_id", filter.RouteID, "limit", filter.Limit)
 	var clauses []string
 	var args []any
 
@@ -165,6 +175,8 @@ func (s *Store) Replay(ctx context.Context, entryIDs []string) error {
 }
 
 func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
+	logging.TraceContext(s.logger, ctx, "sqlitedlq: purge",
+		"before", before)
 	res, err := s.db.ExecContext(ctx,
 		`DELETE FROM dlq WHERE failed_at < ?`,
 		before.UnixMilli(),

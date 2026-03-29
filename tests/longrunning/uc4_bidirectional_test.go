@@ -33,7 +33,7 @@ import (
 func TestUC4_Bidirectional_SQS_MQTT(t *testing.T) {
 	const (
 		msgCount = 2000
-		timeout  = 120 * time.Second
+		pollTimeout  = 120 * time.Second
 	)
 
 	// -- Infrastructure: SQS queues ----------------------------------------
@@ -109,7 +109,7 @@ func TestUC4_Bidirectional_SQS_MQTT(t *testing.T) {
 	require.NoError(t, rtB.AddRoute(routeB, mqttReceiverB, sqsSenderSouth, nil, nil))
 
 	// -- Start both bridges ------------------------------------------------
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	require.NoError(t, rtA.Start(ctx))
@@ -160,12 +160,12 @@ func TestUC4_Bidirectional_SQS_MQTT(t *testing.T) {
 	wg.Wait()
 
 	// -- Wait for direction A: MQTT collector-south == 2,000 ---------------
-	lrWaitFor(t, timeout, "collector-south to reach 2000", func() bool {
+	lrWaitFor(t, pollTimeout, "collector-south to reach 2000", func() bool {
 		return collectorSouth.count() >= msgCount
 	})
 
 	// -- Wait for direction B: SQS-SOUTH == 2,000 -------------------------
-	southBodies := pollAllSQS(t, southSQSClient, southQueueURL, msgCount, timeout)
+	southBodies := pollAllSQS(t, southSQSClient, southQueueURL, msgCount, pollTimeout)
 
 	// -- Verification: counts ----------------------------------------------
 	require.Equal(t, msgCount, collectorSouth.count(),

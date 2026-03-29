@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -59,6 +60,11 @@ func (r *Receiver) SetRouteID(routeID string) {
 // Run stores the emit callback and blocks until ctx is cancelled.
 // Safe to call multiple times (idempotent ready signal).
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
+	logging.DebugContext(r.cfg.logger, ctx, "http: receiver ready",
+		"receiver_id", r.cfg.id,
+		"path", r.cfg.path,
+	)
+
 	r.mu.Lock()
 	r.emit = emit
 	r.readyOnce.Do(func() { close(r.ready) })
@@ -86,6 +92,14 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	forwarded := req.Header.Get("X-Bridge-Forwarded") == "true"
+
+	if logging.TraceEnabled(r.cfg.logger) {
+		r.cfg.logger.Log(ctx, logging.LevelTrace, "http: ingress request",
+			"path", req.URL.Path,
+			"content_length", req.ContentLength,
+			"forwarded", forwarded,
+		)
+	}
 
 	req.Body = http.MaxBytesReader(w, req.Body, r.cfg.maxBodySize)
 	var body ingressRequest

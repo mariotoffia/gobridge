@@ -28,7 +28,7 @@ func TestUC22_TenRule_MatchRule_Routing(t *testing.T) {
 		ruleCount    = 10
 		msgsPerRule  = 500
 		totalMsgs    = ruleCount * msgsPerRule
-		timeout      = 120 * time.Second
+		pollTimeout      = 120 * time.Second
 	)
 
 	// Create 10 SQS queues and their bindings.
@@ -90,7 +90,7 @@ func TestUC22_TenRule_MatchRule_Routing(t *testing.T) {
 
 	inURL, inClient := setupSQSQueue(t, "uc22-in")
 	dlq := &lrDLQStore{}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	sqsRx := newSQSReceiver(t, inURL)
@@ -106,7 +106,7 @@ func TestUC22_TenRule_MatchRule_Routing(t *testing.T) {
 	}, sqsRx, senders["bind-0"], nil, nil))
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
-	time.Sleep(1 * time.Second)
+	gobridgesync(t, 10*time.Second, rt)
 
 	// Send 500 msgs per rule with appropriate headers.
 	headerGenerators := []func(i int) map[string]string{
@@ -137,7 +137,7 @@ func TestUC22_TenRule_MatchRule_Routing(t *testing.T) {
 	// Poll each queue for its 500 messages.
 	sqsClient := inClient // same localstack
 	for i := 0; i < ruleCount; i++ {
-		bodies := pollSQSBodies(t, sqsClient, queueURLs[i], msgsPerRule, timeout)
+		bodies := pollSQSBodies(t, sqsClient, queueURLs[i], msgsPerRule, pollTimeout)
 		require.Len(t, bodies, msgsPerRule, "queue %d count", i)
 	}
 	assert.Equal(t, 0, dlq.count(), "DLQ empty")
@@ -152,13 +152,13 @@ func TestUC23_SubjectPrefix_Routing(t *testing.T) {
 	const (
 		perPrefix = 1000
 		total     = 3000
-		timeout   = 90 * time.Second
+		pollTimeout   = 90 * time.Second
 	)
 	qOrders, sqsC := setupSQSQueue(t, "uc23-orders")
 	qEvents, _ := setupSQSQueue(t, "uc23-events")
 	qMetrics, _ := setupSQSQueue(t, "uc23-metrics")
 	dlq := &lrDLQStore{}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	bindings := []domain.DestinationBinding{
@@ -197,7 +197,7 @@ func TestUC23_SubjectPrefix_Routing(t *testing.T) {
 	}, mqttRx, senders["b-orders"], nil, nil))
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
-	time.Sleep(1 * time.Second)
+	gobridgesync(t, 10*time.Second, rt)
 
 	// Publish to 3 subject prefixes.
 	prefixes := []string{"uc23/orders/", "uc23/events/", "uc23/metrics/"}
@@ -217,7 +217,7 @@ func TestUC23_SubjectPrefix_Routing(t *testing.T) {
 
 	// Poll each queue using the shared localstack SQS client.
 	for i, url := range []string{qOrders, qEvents, qMetrics} {
-		bodies := pollSQSBodies(t, sqsC, url, perPrefix, timeout)
+		bodies := pollSQSBodies(t, sqsC, url, perPrefix, pollTimeout)
 		require.Len(t, bodies, perPrefix, "prefix %s queue count", prefixes[i])
 	}
 	assert.Equal(t, 0, dlq.count())
@@ -232,11 +232,11 @@ func TestUC24_DynamicAddress_Templates(t *testing.T) {
 	const (
 		perCombo = 1000
 		total    = 3000
-		timeout  = 90 * time.Second
+		pollTimeout  = 90 * time.Second
 	)
 	inURL, inClient := setupSQSQueue(t, "uc24-in")
 	dlq := &lrDLQStore{}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	combos := []struct{ tenant, region string }{
@@ -271,7 +271,7 @@ func TestUC24_DynamicAddress_Templates(t *testing.T) {
 	}, sqsRx, mqttSnd, nil, nil))
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
-	time.Sleep(1 * time.Second)
+	gobridgesync(t, 10*time.Second, rt)
 
 	// Send messages with tenant/region headers.
 	for _, c := range combos {
@@ -285,7 +285,7 @@ func TestUC24_DynamicAddress_Templates(t *testing.T) {
 	t.Logf("UC24: sent %d messages with 3 tenant/region combos", total)
 
 	for i, col := range collectors {
-		lrWaitFor(t, timeout, fmt.Sprintf("collector %d >= %d", i, perCombo), func() bool {
+		lrWaitFor(t, pollTimeout, fmt.Sprintf("collector %d >= %d", i, perCombo), func() bool {
 			return col.count() >= perCombo
 		})
 		require.Equal(t, perCombo, col.count(), "collector %d count", i)
@@ -303,12 +303,12 @@ func TestUC25_FilterProcessor_90Percent_Drop(t *testing.T) {
 		totalMsgs = 10000
 		keepCount = 1000
 		dropCount = 9000
-		timeout   = 180 * time.Second
+		pollTimeout   = 180 * time.Second
 	)
 	inURL, inClient := setupSQSQueue(t, "uc25-in")
 	collector := newMQTTCollector(t, "uc25/data", "uc25-col")
 	dlqStore := &lrDLQStore{}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc25-b"), domain.SessionEphemeral)
@@ -344,14 +344,14 @@ func TestUC25_FilterProcessor_90Percent_Drop(t *testing.T) {
 	}, sqsRx, mqttSnd, nil, nil))
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
-	time.Sleep(1 * time.Second)
+	gobridgesync(t, 10*time.Second, rt)
 
 	sendBulkToSQS(t, inClient, inURL, totalMsgs, func(i int) map[string]string {
 		return map[string]string{"seq": strconv.Itoa(i)}
 	})
 	t.Logf("UC25: sent %d messages, expecting %d kept, %d dropped", totalMsgs, keepCount, dropCount)
 
-	lrWaitFor(t, timeout,
+	lrWaitFor(t, pollTimeout,
 		fmt.Sprintf("collector(%d) + DLQ(%d) = %d", keepCount, dropCount, totalMsgs),
 		func() bool { return collector.count()+dlqStore.count() >= totalMsgs },
 	)
@@ -370,12 +370,12 @@ func TestUC25_FilterProcessor_90Percent_Drop(t *testing.T) {
 func TestUC26_FiveStage_ProcessorChain(t *testing.T) {
 	const (
 		msgCount = 2000
-		timeout  = 120 * time.Second
+		pollTimeout  = 120 * time.Second
 	)
 	inURL, inClient := setupSQSQueue(t, "uc26-in")
 	outURL, outClient := setupSQSQueue(t, "uc26-out")
 	dlq := &lrDLQStore{}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	stages := []string{"p1", "p2", "p3", "p4", "p5"}
@@ -417,14 +417,14 @@ func TestUC26_FiveStage_ProcessorChain(t *testing.T) {
 	require.NoError(t, rt1.Start(ctx))
 	require.NoError(t, rt2.Start(ctx))
 	defer func() { _ = rt2.Stop(context.Background()); _ = rt1.Stop(context.Background()) }()
-	time.Sleep(1 * time.Second)
+	gobridgesync(t, 10*time.Second, rt1, rt2)
 
 	sendBulkToSQS(t, inClient, inURL, msgCount, func(i int) map[string]string {
 		return map[string]string{"seq": strconv.Itoa(i)}
 	})
 	t.Logf("UC26: sent %d messages through 5-stage chain", msgCount)
 
-	msgs := pollSQSWithAttrs(t, outClient, outURL, msgCount, timeout)
+	msgs := pollSQSWithAttrs(t, outClient, outURL, msgCount, pollTimeout)
 	require.Len(t, msgs, msgCount, "output count")
 
 	expectedOrder := "p1,p2,p3,p4,p5"

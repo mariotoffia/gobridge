@@ -101,8 +101,9 @@ func TestUC1_SQS_MQTT_SharedSub_FanOut_SQS(t *testing.T) {
 		_ = egressE.Stop(context.Background())
 	})
 
-	// Allow subscriptions to settle.
-	time.Sleep(1 * time.Second)
+	// Wait until all bridges report ReadyForTraffic via DeepHealth.
+	allRTs := append(ingressRTs, egressD, egressE)
+	gobridgesync(t, 10*time.Second, allRTs...)
 
 	// --- Send 5,000 messages to SQS-IN ---
 	t.Logf("UC1: sending %d messages to SQS-IN", uc1MsgCount)

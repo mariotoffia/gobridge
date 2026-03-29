@@ -6,13 +6,16 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -29,6 +32,8 @@ type Sender struct {
 	client   sqsAPI
 	queueURL string
 	initMu   sync.Mutex
+	logger   *slog.Logger
+	metrics  ports.MetricsExporter
 }
 
 // NewSender creates an SQS Sender. The sender resolves its queue URL
@@ -38,7 +43,16 @@ func NewSender(cfg SenderConfig) (*Sender, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	return &Sender{cfg: cfg, queueURL: cfg.QueueURL}, nil
+	m := cfg.Metrics
+	if m == nil {
+		m = &ports.NoopExporter{}
+	}
+	return &Sender{
+		cfg:      cfg,
+		queueURL: cfg.QueueURL,
+		logger:   cfg.Logger,
+		metrics:  m,
+	}, nil
 }
 
 // Send submits a single envelope to SQS.
@@ -47,15 +61,30 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 		return err
 	}
 
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqs: sending",
+			"queue_url", s.queueURL,
+			"envelope_id", env.ID,
+			"payload_len", len(env.Payload),
+		)
+	}
+
 	sendCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
 
 	input := s.buildSendInput(env)
 
+	start := time.Now()
 	_, err := s.client.SendMessage(sendCtx, input)
 	if err != nil {
+		logging.DebugContext(s.logger, ctx, "sqs: send failed",
+			"queue_url", s.queueURL, "error", err)
 		return MapError(err)
 	}
+
+	s.metrics.Timer(domain.MetricSQSSendLatency, time.Since(start),
+		domain.Tag{Key: domain.TagKeyQueueURL, Value: s.queueURL})
+
 	return nil
 }
 
@@ -70,8 +99,8 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 	}
 
 	var (
-		sent   int
-		errs   []error
+		sent int
+		errs []error
 	)
 
 	for i := 0; i < len(envs); i += s.cfg.BatchSize {
@@ -81,6 +110,12 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 		}
 		batch := envs[i:end]
 
+		logging.DebugContext(s.logger, ctx, "sqs: sending batch",
+			"queue_url", s.queueURL,
+			"chunk_size", len(batch),
+			"chunk_offset", i,
+		)
+
 		entries := make([]sqstypes.SendMessageBatchRequestEntry, 0, len(batch))
 		for j, env := range batch {
 			entry := s.buildBatchEntry(j, env)
@@ -89,6 +124,7 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 
 		batchCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 
+		start := time.Now()
 		result, err := s.client.SendMessageBatch(batchCtx, &awssqs.SendMessageBatchInput{
 			QueueUrl: aws.String(s.queueURL),
 			Entries:  entries,
@@ -101,9 +137,17 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 			continue
 		}
 
+		s.metrics.Timer(domain.MetricSQSSendBatchLatency, time.Since(start),
+			domain.Tag{Key: domain.TagKeyQueueURL, Value: s.queueURL})
+
 		sent += len(result.Successful)
 
 		if len(result.Failed) > 0 {
+			logging.DebugContext(s.logger, ctx, "sqs: batch partial failure",
+				"queue_url", s.queueURL,
+				"sent", len(result.Successful),
+				"failed", len(result.Failed),
+			)
 			for _, f := range result.Failed {
 				errs = append(errs, domain.ErrUnavailable.
 					Wrap(fmt.Errorf("sqs batch entry %s failed: %s",
@@ -238,6 +282,12 @@ func (s *Sender) ensureClient(ctx context.Context) error {
 		return err
 	}
 	s.queueURL = url
+
+	logging.DebugContext(s.logger, ctx, "sqs: sender initialized",
+		"queue_url", s.queueURL,
+		"region", s.cfg.Region,
+	)
+
 	return nil
 }
 

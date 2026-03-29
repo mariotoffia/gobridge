@@ -11,7 +11,8 @@
       "Bash(ls:*)",
       "Skill(skill-create-test:*)",
       "Bash(go mod:*)",
-      "Bash(AWS_ACCESS_KEY_ID=test:*)"
+      "Bash(AWS_ACCESS_KEY_ID=test:*)",
+      "Bash(grep -E \"--- \\(PASS|FAIL|SKIP\\)\")"
     ]
   }
 }

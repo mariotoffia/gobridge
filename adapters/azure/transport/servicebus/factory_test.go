@@ -150,7 +150,7 @@ func TestReceiverFactory_NewReceiver(t *testing.T) {
 
 // verifies SenderFactory.NewSender from a ports.SenderSpec.
 func TestSenderFactory_NewSender(t *testing.T) {
-	sf := NewSenderFactory()
+	sf := NewSenderFactory(nil)
 
 	spec := ports.SenderSpec{
 		ID: "send-direct",

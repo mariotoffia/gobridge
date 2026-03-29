@@ -35,6 +35,10 @@ const (
 	MetricSQSReceiveLatency       = "SQSReceiveLatency"
 	MetricSQSDeleteLatency        = "SQSDeleteLatency"
 	MetricSQSVisibilityExtensions = "SQSVisibilityExtensions"
+	MetricSQSPollLatency          = "SQSPollLatency"
+	MetricSQSSendLatency          = "SQSSendLatency"
+	MetricSQSSendBatchLatency     = "SQSSendBatchLatency"
+	MetricSQSAutoExtends          = "SQSAutoExtends"
 )
 
 // Generic transport-agnostic delivery metric names.
@@ -52,13 +56,26 @@ const (
 
 // MQTT metric names.
 const (
-	MetricMQTTPublishLatency = "MQTTPublishLatency"
-	MetricMQTTReconnects     = "MQTTReconnects"
+	MetricMQTTPublishLatency   = "MQTTPublishLatency"
+	MetricMQTTReconnects       = "MQTTReconnects"
+	MetricMQTTConnectLatency   = "MQTTConnectLatency"
+	MetricMQTTReconcileLatency = "MQTTReconcileLatency"
+	MetricMQTTRouterDropped    = "MQTTRouterDropped"
 )
 
 // Session metric names.
 const (
 	MetricReconcileFailures = "ReconcileFailures"
+)
+
+// Azure Service Bus metric names.
+const (
+	MetricASBReceiveLatency   = "ASBReceiveLatency"
+	MetricASBCompleteLatency  = "ASBCompleteLatency"
+	MetricASBSendLatency      = "ASBSendLatency"
+	MetricASBSendBatchLatency = "ASBSendBatchLatency"
+	MetricASBScheduleLatency  = "ASBScheduleLatency"
+	MetricASBLockRenewals     = "ASBLockRenewals"
 )
 
 // HTTP transport metric names.
@@ -78,4 +95,6 @@ const (
 	TagKeyPartition = "partition"
 	TagKeyQueueURL  = "queue_url"
 	TagKeyCategory  = "category"
+	TagKeyTransport = "transport"
+	TagKeyEntity    = "entity"
 )

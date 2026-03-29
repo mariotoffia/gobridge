@@ -31,16 +31,19 @@ func (f *ReceiverFactory) NewReceiver(_ context.Context, spec ports.ReceiverSpec
 }
 
 // SenderFactory creates SQS Sender instances from SenderSpec.
-type SenderFactory struct{}
+type SenderFactory struct {
+	logger *slog.Logger
+}
 
 // NewSenderFactory returns a factory that creates SQS senders.
-func NewSenderFactory() *SenderFactory {
-	return &SenderFactory{}
+func NewSenderFactory(logger *slog.Logger) *SenderFactory {
+	return &SenderFactory{logger: logger}
 }
 
 // NewSender creates a Sender from a SenderSpec. SQS is stateless so
 // the session parameter is ignored.
 func (f *SenderFactory) NewSender(_ context.Context, spec ports.SenderSpec, _ ports.Session) (ports.Sender, error) {
 	cfg := SenderConfigFromOptions(spec.Options)
+	cfg.Logger = f.logger
 	return NewSender(cfg)
 }

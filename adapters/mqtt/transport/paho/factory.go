@@ -12,7 +12,8 @@ import (
 // Factory implements ports.SessionFactory, ports.ReceiverFactory, and
 // ports.SenderFactory for MQTT via Eclipse Paho.
 type Factory struct {
-	Logger *slog.Logger
+	Logger  *slog.Logger
+	Metrics ports.MetricsExporter
 }
 
 var (
@@ -38,7 +39,7 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 			fmt.Sprintf("mqtt session %q: at least one broker URL is required", spec.ID))
 	}
 
-	return NewSession(opts, spec.SessionMode, f.Logger), nil
+	return NewSession(opts, spec.SessionMode, f.Logger, f.Metrics), nil
 }
 
 // NewReceiver creates an MQTT Receiver bound to the given Session.

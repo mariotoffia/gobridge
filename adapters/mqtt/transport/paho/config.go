@@ -21,6 +21,11 @@ type SessionOptions struct {
 	Username              string
 	Password              string
 	TLS                   *TLSConfig
+	// ReceiveMaximum sets the MQTT v5 Receive Maximum property in the
+	// CONNECT packet. This limits the number of QoS 1/2 messages the
+	// broker can send before receiving PUBACKs. Default 0 means use the
+	// paho library default (65535). Set higher for high-throughput scenarios.
+	ReceiveMaximum uint16
 }
 
 // ReceiverOptions holds MQTT receiver-specific configuration.

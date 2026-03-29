@@ -27,7 +27,7 @@ import (
 func TestUC33_MaxInFlight1_Serial(t *testing.T) {
 	const (
 		msgCount = 500
-		timeout  = 120 * time.Second
+		pollTimeout  = 120 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc33-in")
@@ -61,14 +61,14 @@ func TestUC33_MaxInFlight1_Serial(t *testing.T) {
 	}
 	require.NoError(t, rt.AddRoute(routeCfg, sqsRx, mqttSender, nil, nil))
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
 
 	sendBulkToSQS(t, inClient, inQueueURL, msgCount, nil)
 
-	lrWaitFor(t, timeout, fmt.Sprintf("collector >= %d", msgCount), func() bool {
+	lrWaitFor(t, pollTimeout, fmt.Sprintf("collector >= %d", msgCount), func() bool {
 		return collector.count() >= msgCount
 	})
 
@@ -94,7 +94,7 @@ func TestUC33_MaxInFlight1_Serial(t *testing.T) {
 func TestUC34_MaxInFlight1000_HighConcurrency(t *testing.T) {
 	const (
 		msgCount = 10000
-		timeout  = 180 * time.Second
+		pollTimeout  = 180 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc34-in")
@@ -128,14 +128,14 @@ func TestUC34_MaxInFlight1000_HighConcurrency(t *testing.T) {
 	}
 	require.NoError(t, rt.AddRoute(routeCfg, sqsRx, mqttSender, nil, nil))
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
 
 	sendBulkToSQS(t, inClient, inQueueURL, msgCount, nil)
 
-	lrWaitFor(t, timeout, fmt.Sprintf("collector >= %d", msgCount), func() bool {
+	lrWaitFor(t, pollTimeout, fmt.Sprintf("collector >= %d", msgCount), func() bool {
 		return collector.count() >= msgCount
 	})
 
@@ -162,7 +162,7 @@ func TestUC34_MaxInFlight1000_HighConcurrency(t *testing.T) {
 func TestUC35_GlobalMaxInFlight_ThreeRoutes(t *testing.T) {
 	const (
 		perRoute = 1000
-		timeout  = 120 * time.Second
+		pollTimeout  = 120 * time.Second
 		globalMF = 50
 	)
 
@@ -213,7 +213,7 @@ func TestUC35_GlobalMaxInFlight_ThreeRoutes(t *testing.T) {
 	collector := newMQTTCollector(t, "uc35/output/+", "uc35-col")
 	time.Sleep(300 * time.Millisecond)
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
@@ -224,7 +224,7 @@ func TestUC35_GlobalMaxInFlight_ThreeRoutes(t *testing.T) {
 	}
 
 	totalExpected := perRoute * 3
-	lrWaitFor(t, timeout, fmt.Sprintf("collector >= %d", totalExpected), func() bool {
+	lrWaitFor(t, pollTimeout, fmt.Sprintf("collector >= %d", totalExpected), func() bool {
 		return collector.count() >= totalExpected
 	})
 
@@ -251,7 +251,7 @@ func TestUC35_GlobalMaxInFlight_ThreeRoutes(t *testing.T) {
 func TestUC36_SlowConsumer(t *testing.T) {
 	const (
 		msgCount = 1000
-		timeout  = 180 * time.Second
+		pollTimeout  = 180 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc36-in")
@@ -284,14 +284,14 @@ func TestUC36_SlowConsumer(t *testing.T) {
 	}
 	require.NoError(t, rt.AddRoute(routeCfg, sqsRx, slow, nil, nil))
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
 
 	sendBulkToSQS(t, inClient, inQueueURL, msgCount, nil)
 
-	lrWaitFor(t, timeout, fmt.Sprintf("collector >= %d", msgCount), func() bool {
+	lrWaitFor(t, pollTimeout, fmt.Sprintf("collector >= %d", msgCount), func() bool {
 		return collector.count() >= msgCount
 	})
 
@@ -319,7 +319,7 @@ func TestUC37_BurstThenIdle(t *testing.T) {
 		burstSize  = 1000
 		burstCount = 3
 		gapSeconds = 5
-		timeout    = 180 * time.Second
+		pollTimeout    = 180 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc37-in")
@@ -351,7 +351,7 @@ func TestUC37_BurstThenIdle(t *testing.T) {
 	}
 	require.NoError(t, rt.AddRoute(routeCfg, sqsRx, mqttSender, nil, nil))
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()

@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -70,6 +71,13 @@ func (d *sqsDelivery) Envelope() *domain.Envelope { return d.env }
 func (d *sqsDelivery) Ack(ctx context.Context) error {
 	d.stop()
 
+	if logging.TraceEnabled(d.logger) {
+		d.logger.Log(ctx, logging.LevelTrace, "sqs: acking",
+			"queue_url", d.queueURL,
+			"message_id", d.env.ID,
+		)
+	}
+
 	_, err := d.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
 		QueueUrl:      aws.String(d.queueURL),
 		ReceiptHandle: aws.String(d.receiptHandle),
@@ -96,6 +104,14 @@ func (d *sqsDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 		timeout = sqsMaxVisibility
 	}
 
+	if logging.TraceEnabled(d.logger) {
+		d.logger.Log(ctx, logging.LevelTrace, "sqs: retrying",
+			"queue_url", d.queueURL,
+			"message_id", d.env.ID,
+			"delay_seconds", timeout,
+		)
+	}
+
 	_, err := d.client.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
 		QueueUrl:          aws.String(d.queueURL),
 		ReceiptHandle:     aws.String(d.receiptHandle),
@@ -119,6 +135,14 @@ func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
 	const sqsMaxVisibility = 43200
 	if timeout > sqsMaxVisibility {
 		timeout = sqsMaxVisibility
+	}
+
+	if logging.TraceEnabled(d.logger) {
+		d.logger.Log(ctx, logging.LevelTrace, "sqs: extending",
+			"queue_url", d.queueURL,
+			"message_id", d.env.ID,
+			"new_timeout", timeout,
+		)
 	}
 
 	_, err := d.client.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
@@ -186,6 +210,11 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 				continue
 			}
 			consecutiveFailures = 0
+			logging.TraceContext(d.logger, ctx, "sqs: auto-extended",
+				"queue_url", d.queueURL,
+				"message_id", d.env.ID,
+				"visibility_timeout", vis,
+			)
 		}
 	}
 }

@@ -45,7 +45,7 @@ func TestReceiverFactory_NewReceiver_OptionsPassthrough(t *testing.T) {
 // TestSenderFactory_NewSender_OptionsPassthrough validates that
 // SenderSpec.Options flow through the factory to SenderConfig fields.
 func TestSenderFactory_NewSender_OptionsPassthrough(t *testing.T) {
-	f := NewSenderFactory()
+	f := NewSenderFactory(nil)
 
 	spec := ports.SenderSpec{
 		ID: "s1",

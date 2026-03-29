@@ -16,6 +16,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
+	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 
 	"testing"
@@ -272,4 +273,36 @@ type noopReceiver struct{}
 func (r *noopReceiver) Run(ctx context.Context, _ func(context.Context, ports.Delivery) error) error {
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+// ---------------------------------------------------------------------------
+// gobridgesync — wait until all runtimes report ReadyForTraffic
+// ---------------------------------------------------------------------------
+
+// gobridgesync waits until all runtimes report ReadyForTraffic via DeepHealth.
+// On timeout, logs detailed health for each bridge and fails the test.
+func gobridgesync(t *testing.T, timeout time.Duration, runtimes ...*goruntime.Runtime) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		allReady := true
+		for _, rt := range runtimes {
+			dh := rt.DeepHealth(context.Background())
+			if !dh.ReadyForTraffic {
+				allReady = false
+				break
+			}
+		}
+		if allReady {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	// Dump health for debugging on failure
+	for _, rt := range runtimes {
+		dh := rt.DeepHealth(context.Background())
+		t.Logf("gobridgesync: instance=%s running=%v healthy=%v ready=%v sessions=%+v",
+			dh.InstanceID, dh.Running, dh.Healthy, dh.ReadyForTraffic, dh.Sessions)
+	}
+	t.Fatalf("gobridgesync: timed out waiting for %d bridges to be ready", len(runtimes))
 }

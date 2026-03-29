@@ -28,14 +28,17 @@ func (f *ReceiverFactory) NewReceiver(_ context.Context, spec ports.ReceiverSpec
 	return NewReceiver(cfg, f.logger)
 }
 
-type SenderFactory struct{}
+type SenderFactory struct {
+	logger *slog.Logger
+}
 
-func NewSenderFactory() *SenderFactory {
-	return &SenderFactory{}
+func NewSenderFactory(logger *slog.Logger) *SenderFactory {
+	return &SenderFactory{logger: logger}
 }
 
 func (f *SenderFactory) NewSender(_ context.Context, spec ports.SenderSpec, _ ports.Session) (ports.Sender, error) {
 	cfg := SenderConfigFromOptions(spec.Options)
+	cfg.Logger = f.logger
 	return NewSender(cfg)
 }
 
@@ -47,7 +50,7 @@ type BridgeFactory struct {
 func NewBridgeFactory(logger *slog.Logger) *BridgeFactory {
 	return &BridgeFactory{
 		recvFactory: NewReceiverFactory(logger),
-		sendFactory: NewSenderFactory(),
+		sendFactory: NewSenderFactory(logger),
 	}
 }
 

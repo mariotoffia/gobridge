@@ -23,7 +23,7 @@ type BridgeFactory struct {
 func NewBridgeFactory(logger *slog.Logger) *BridgeFactory {
 	return &BridgeFactory{
 		recvFactory: NewReceiverFactory(logger),
-		sendFactory: NewSenderFactory(),
+		sendFactory: NewSenderFactory(logger),
 	}
 }
 

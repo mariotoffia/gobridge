@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 )
 
@@ -45,6 +47,7 @@ type Store struct {
 	staleClaim     time.Duration
 	maxReplayCount int
 	now            func() time.Time
+	logger         *slog.Logger
 }
 
 // Option configures a Store.
@@ -79,6 +82,11 @@ func WithClock(fn func() time.Time) Option {
 	return func(s *Store) { s.now = fn }
 }
 
+// WithLogger sets the structured logger for trace/debug diagnostics.
+func WithLogger(l *slog.Logger) Option {
+	return func(s *Store) { s.logger = l }
+}
+
 // NewStore creates a DynamoDB-backed OutboxStore.
 func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 	s := &Store{
@@ -98,6 +106,8 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 // CreateTable creates the DynamoDB table with the required schema and GSIs.
 // It is idempotent: if the table already exists, it returns nil.
 func (s *Store) CreateTable(ctx context.Context) error {
+	logging.DebugContext(s.logger, ctx, "dynamodboutbox: create_table")
+
 	_, err := s.client.CreateTable(ctx, &dynamodb.CreateTableInput{
 		TableName: aws.String(s.table),
 		KeySchema: []ddbtypes.KeySchemaElement{
@@ -160,6 +170,8 @@ func (s *Store) CreateTable(ctx context.Context) error {
 // PutItem with a condition to reject duplicates. For multiple records
 // (fan-out), it uses TransactWriteItems to ensure atomicity.
 func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) error {
+	logging.TraceContext(s.logger, ctx, "dynamodboutbox: persist", "count", len(records))
+
 	if len(records) == 0 {
 		return nil
 	}
@@ -234,6 +246,8 @@ func (s *Store) persistFanOut(ctx context.Context, records []domain.OutboxRecord
 // Limit+Filter interaction (Limit caps evaluated items, not filtered results).
 // Records that have exceeded the max replay count are skipped.
 func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error) {
+	logging.TraceContext(s.logger, ctx, "dynamodboutbox: claim", "partition_key", partitionKey, "limit", limit)
+
 	now := s.now()
 	staleThreshold := now.Add(-s.staleClaim)
 
@@ -342,6 +356,8 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, 
 // Complete marks the given records as completed after successful target delivery.
 // The caller's fencing token must match the claim_version on each record.
 func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.LeaseToken) error {
+	logging.TraceContext(s.logger, ctx, "dynamodboutbox: complete", "count", len(recordIDs))
+
 	if len(recordIDs) == 0 {
 		return nil
 	}
@@ -490,6 +506,8 @@ func (s *Store) expireByStatus(ctx context.Context, status string, beforeMs, ttl
 // by creation time (oldest first). Uses strongly consistent reads and
 // paginates past DynamoDB's Limit+Filter interaction.
 func (s *Store) QueryPending(ctx context.Context, partitionKey string, limit int) ([]domain.OutboxRecord, error) {
+	logging.TraceContext(s.logger, ctx, "dynamodboutbox: query_pending", "partition_key", partitionKey, "limit", limit)
+
 	var records []domain.OutboxRecord
 	var startKey map[string]ddbtypes.AttributeValue
 

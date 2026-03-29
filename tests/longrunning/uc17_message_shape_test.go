@@ -49,12 +49,20 @@ func sendOneSQS(
 	require.NoError(t, err, "sendOneSQS")
 }
 
+// sqsMQTTSQSBridgeResult holds the runtimes created by sqsMQTTSQSBridge
+// so callers can use gobridgesync to wait for readiness.
+type sqsMQTTSQSBridgeResult struct {
+	RT1     *goruntime.Runtime
+	RT2     *goruntime.Runtime
+	Cleanup func()
+}
+
 // sqsMQTTSQSBridge sets up a two-hop bridge: SQS-IN -> MQTT -> SQS-OUT.
-// Returns cleanup function; caller must defer it.
+// Returns both runtimes and a cleanup function; caller must defer Cleanup.
 func sqsMQTTSQSBridge(
 	t *testing.T, ctx context.Context, prefix, topic, inURL, outURL string,
 	dlq *lrDLQStore,
-) func() {
+) sqsMQTTSQSBridgeResult {
 	t.Helper()
 	sess1 := setupMQTTSession(t, mqttlocal.UniqueClientID(prefix+"-b1"), domain.SessionEphemeral)
 	mqttSnd := setupMQTTSender(t, sess1)
@@ -84,9 +92,13 @@ func sqsMQTTSQSBridge(
 
 	require.NoError(t, rt1.Start(ctx))
 	require.NoError(t, rt2.Start(ctx))
-	return func() {
-		_ = rt2.Stop(context.Background())
-		_ = rt1.Stop(context.Background())
+	return sqsMQTTSQSBridgeResult{
+		RT1: rt1,
+		RT2: rt2,
+		Cleanup: func() {
+			_ = rt2.Stop(context.Background())
+			_ = rt1.Stop(context.Background())
+		},
 	}
 }
 
@@ -98,17 +110,17 @@ func TestUC17_LargePayloads_200KB(t *testing.T) {
 	const (
 		msgCount = 500
 		paySize  = 200 * 1024
-		timeout  = 180 * time.Second
+		pollTimeout  = 180 * time.Second
 	)
 	inURL, inClient := setupSQSQueue(t, "uc17-in")
 	outURL, outClient := setupSQSQueue(t, "uc17-out")
 	dlq := &lrDLQStore{}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cleanup := sqsMQTTSQSBridge(t, ctx, "uc17", "uc17/data", inURL, outURL, dlq)
-	defer cleanup()
-	time.Sleep(1 * time.Second)
+	br := sqsMQTTSQSBridge(t, ctx, "uc17", "uc17/data", inURL, outURL, dlq)
+	defer br.Cleanup()
+	gobridgesync(t, 10*time.Second, br.RT1, br.RT2)
 
 	hashes := make(map[string]bool, msgCount)
 	for i := 0; i < msgCount; i++ {
@@ -125,7 +137,7 @@ func TestUC17_LargePayloads_200KB(t *testing.T) {
 	}
 	t.Logf("UC17: sent %d x 200KB messages", msgCount)
 
-	msgs := pollSQSWithAttrs(t, outClient, outURL, msgCount, timeout)
+	msgs := pollSQSWithAttrs(t, outClient, outURL, msgCount, pollTimeout)
 	require.Len(t, msgs, msgCount, "output count")
 	for idx, m := range msgs {
 		decoded, err := base64.StdEncoding.DecodeString(m.Body)
@@ -154,12 +166,12 @@ func TestUC17_LargePayloads_200KB(t *testing.T) {
 func TestUC18_TinyPayloads_HighThroughput(t *testing.T) {
 	const (
 		msgCount = 50000
-		timeout  = 300 * time.Second
+		pollTimeout  = 300 * time.Second
 	)
 	inURL, inClient := setupSQSQueue(t, "uc18-in")
 	collector := newMQTTCollector(t, "uc18/data", "uc18-col")
 	dlq := &lrDLQStore{}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc18-b"), domain.SessionEphemeral)
@@ -174,7 +186,7 @@ func TestUC18_TinyPayloads_HighThroughput(t *testing.T) {
 	}, sqsRx, mqttSnd, nil, nil))
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
-	time.Sleep(1 * time.Second)
+	gobridgesync(t, 10*time.Second, rt)
 
 	start := time.Now()
 	sendBulkToSQS(t, inClient, inURL, msgCount, func(i int) map[string]string {
@@ -182,7 +194,7 @@ func TestUC18_TinyPayloads_HighThroughput(t *testing.T) {
 	})
 	t.Logf("UC18: enqueued %d tiny messages in %v", msgCount, time.Since(start))
 
-	lrWaitFor(t, timeout, fmt.Sprintf("collector >= %d", msgCount), func() bool {
+	lrWaitFor(t, pollTimeout, fmt.Sprintf("collector >= %d", msgCount), func() bool {
 		return collector.count() >= msgCount
 	})
 	elapsed := time.Since(start)
@@ -212,12 +224,12 @@ func TestUC19_MixedPayloadSizes(t *testing.T) {
 	const (
 		perClass = 1000
 		total    = 3000
-		timeout  = 180 * time.Second
+		pollTimeout  = 180 * time.Second
 	)
 	inURL, inClient := setupSQSQueue(t, "uc19-in")
 	collector := newMQTTCollector(t, "uc19/data", "uc19-col")
 	dlq := &lrDLQStore{}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc19-b"), domain.SessionEphemeral)
@@ -232,7 +244,7 @@ func TestUC19_MixedPayloadSizes(t *testing.T) {
 	}, sqsRx, mqttSnd, nil, nil))
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
-	time.Sleep(1 * time.Second)
+	gobridgesync(t, 10*time.Second, rt)
 
 	classes := []struct {
 		name string
@@ -252,7 +264,7 @@ func TestUC19_MixedPayloadSizes(t *testing.T) {
 	}
 	t.Logf("UC19: sent %d mixed-size messages", total)
 
-	lrWaitFor(t, timeout, fmt.Sprintf("collector >= %d", total), func() bool {
+	lrWaitFor(t, pollTimeout, fmt.Sprintf("collector >= %d", total), func() bool {
 		return collector.count() >= total
 	})
 	msgs := collector.getMessages()
@@ -277,12 +289,12 @@ func TestUC20_HeaderHeavy_50Headers(t *testing.T) {
 	const (
 		msgCount  = 1000
 		headerQty = 50
-		timeout   = 120 * time.Second
+		pollTimeout   = 120 * time.Second
 	)
 	inURL, inClient := setupSQSQueue(t, "uc20-in")
 	collector := newMQTTCollector(t, "uc20/data", "uc20-col")
 	dlq := &lrDLQStore{}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc20-b"), domain.SessionEphemeral)
@@ -297,7 +309,7 @@ func TestUC20_HeaderHeavy_50Headers(t *testing.T) {
 	}, sqsRx, mqttSnd, nil, nil))
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
-	time.Sleep(1 * time.Second)
+	gobridgesync(t, 10*time.Second, rt)
 
 	// SQS limits attrs to 10. Send 10 via SQS attrs; rest via JSON body.
 	for i := 0; i < msgCount; i++ {
@@ -315,7 +327,7 @@ func TestUC20_HeaderHeavy_50Headers(t *testing.T) {
 	}
 	t.Logf("UC20: sent %d messages with %d headers", msgCount, headerQty)
 
-	lrWaitFor(t, timeout, fmt.Sprintf("collector >= %d", msgCount), func() bool {
+	lrWaitFor(t, pollTimeout, fmt.Sprintf("collector >= %d", msgCount), func() bool {
 		return collector.count() >= msgCount
 	})
 	msgs := collector.getMessages()
@@ -338,17 +350,17 @@ func TestUC20_HeaderHeavy_50Headers(t *testing.T) {
 func TestUC21_BinaryPayload_RoundTrip(t *testing.T) {
 	const (
 		msgCount = 1000
-		timeout  = 120 * time.Second
+		pollTimeout  = 120 * time.Second
 	)
 	inURL, inClient := setupSQSQueue(t, "uc21-in")
 	outURL, outClient := setupSQSQueue(t, "uc21-out")
 	dlq := &lrDLQStore{}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cleanup := sqsMQTTSQSBridge(t, ctx, "uc21", "uc21/data", inURL, outURL, dlq)
-	defer cleanup()
-	time.Sleep(1 * time.Second)
+	br := sqsMQTTSQSBridge(t, ctx, "uc21", "uc21/data", inURL, outURL, dlq)
+	defer br.Cleanup()
+	gobridgesync(t, 10*time.Second, br.RT1, br.RT2)
 
 	hashes := make(map[string]bool, msgCount)
 	for i := 0; i < msgCount; i++ {
@@ -366,7 +378,7 @@ func TestUC21_BinaryPayload_RoundTrip(t *testing.T) {
 	}
 	t.Logf("UC21: sent %d binary payloads", msgCount)
 
-	msgs := pollSQSWithAttrs(t, outClient, outURL, msgCount, timeout)
+	msgs := pollSQSWithAttrs(t, outClient, outURL, msgCount, pollTimeout)
 	require.Len(t, msgs, msgCount)
 	for idx, m := range msgs {
 		decoded, err := base64.StdEncoding.DecodeString(m.Body)

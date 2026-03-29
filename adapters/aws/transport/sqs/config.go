@@ -2,7 +2,10 @@ package sqs
 
 import (
 	"errors"
+	"log/slog"
 	"time"
+
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // ReceiverConfig configures an SQS Receiver.
@@ -48,6 +51,12 @@ type ReceiverConfig struct {
 	// Client allows injecting a pre-built SQS client (for tests).
 	// When set, Region/Endpoint/Profile are ignored.
 	Client sqsAPI
+
+	// Logger is an optional structured logger for trace/debug output.
+	Logger *slog.Logger
+
+	// Metrics is an optional metrics exporter for adapter-internal metrics.
+	Metrics ports.MetricsExporter
 }
 
 // SenderConfig configures an SQS Sender.
@@ -90,6 +99,12 @@ type SenderConfig struct {
 	// Client allows injecting a pre-built SQS client (for tests).
 	// When set, Region/Endpoint/Profile are ignored.
 	Client sqsAPI
+
+	// Logger is an optional structured logger for trace/debug output.
+	Logger *slog.Logger
+
+	// Metrics is an optional metrics exporter for adapter-internal metrics.
+	Metrics ports.MetricsExporter
 }
 
 func (c *ReceiverConfig) validate() error {

@@ -36,7 +36,7 @@ import (
 
 const (
 	uc2MsgsPerFactory = 1000
-	uc2Timeout        = 90 * time.Second
+	uc2PollTimeout        = 90 * time.Second
 )
 
 func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {
@@ -46,7 +46,7 @@ func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {
 	sqsCURL, sqsCClient := setupSQSQueue(t, "uc2-factory-c")
 	dlq := &lrDLQStore{}
 
-	ctx, cancel := context.WithTimeout(context.Background(), uc2Timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// --- Bridge: MQTT receiver -> 3 SQS senders via content routing ---
@@ -122,8 +122,8 @@ func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {
 	require.NoError(t, rt.Start(ctx), "Start bridge")
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 
-	// Allow startup to settle.
-	time.Sleep(1 * time.Second)
+	// Wait until bridge reports ReadyForTraffic via DeepHealth.
+	gobridgesync(t, 10*time.Second, rt)
 
 	// --- Publish 1,000 messages per factory ---
 	factories := []string{"A", "B", "C"}
@@ -158,17 +158,17 @@ func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {
 	// --- Poll each SQS queue for 1,000 messages ---
 	t.Log("UC2: polling SQS-A")
 	bodiesA := pollAllSQS(t, sqsAClient, sqsAURL,
-		uc2MsgsPerFactory, uc2Timeout)
+		uc2MsgsPerFactory, uc2PollTimeout)
 	t.Logf("UC2: SQS-A received %d messages", len(bodiesA))
 
 	t.Log("UC2: polling SQS-B")
 	bodiesB := pollAllSQS(t, sqsBClient, sqsBURL,
-		uc2MsgsPerFactory, uc2Timeout)
+		uc2MsgsPerFactory, uc2PollTimeout)
 	t.Logf("UC2: SQS-B received %d messages", len(bodiesB))
 
 	t.Log("UC2: polling SQS-C")
 	bodiesC := pollAllSQS(t, sqsCClient, sqsCURL,
-		uc2MsgsPerFactory, uc2Timeout)
+		uc2MsgsPerFactory, uc2PollTimeout)
 	t.Logf("UC2: SQS-C received %d messages", len(bodiesC))
 
 	// --- Verify counts ---

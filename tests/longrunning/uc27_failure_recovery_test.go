@@ -30,7 +30,7 @@ import (
 func TestUC27_Intermittent_SendFailures(t *testing.T) {
 	const (
 		msgCount = 3000
-		timeout  = 180 * time.Second
+		pollTimeout  = 180 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc27-in")
@@ -63,14 +63,14 @@ func TestUC27_Intermittent_SendFailures(t *testing.T) {
 	}
 	require.NoError(t, rt.AddRoute(routeCfg, sqsRx, faulty, nil, nil))
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
 
 	sendBulkToSQS(t, inClient, inQueueURL, msgCount, nil)
 
-	lrWaitFor(t, timeout, fmt.Sprintf("collector >= %d", msgCount), func() bool {
+	lrWaitFor(t, pollTimeout, fmt.Sprintf("collector >= %d", msgCount), func() bool {
 		return collector.count() >= msgCount
 	})
 
@@ -133,7 +133,7 @@ func extractSeq(env *domain.Envelope) int {
 func TestUC28_VisibilityTimeout_Race(t *testing.T) {
 	const (
 		msgCount = 500
-		timeout  = 180 * time.Second
+		pollTimeout  = 180 * time.Second
 	)
 
 	// Create SQS queue with short visibility timeout (5s).
@@ -185,14 +185,14 @@ func TestUC28_VisibilityTimeout_Race(t *testing.T) {
 	}
 	require.NoError(t, rt.AddRoute(routeCfg, sqsRx, mqttSender, nil, nil))
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
 
 	sendBulkToSQS(t, client, inQueueURL, msgCount, nil)
 
-	lrWaitFor(t, timeout, fmt.Sprintf("collector >= %d unique", msgCount), func() bool {
+	lrWaitFor(t, pollTimeout, fmt.Sprintf("collector >= %d unique", msgCount), func() bool {
 		msgs := collector.getMessages()
 		unique := make(map[string]bool, len(msgs))
 		for _, m := range msgs {
@@ -227,7 +227,7 @@ func TestUC28_VisibilityTimeout_Race(t *testing.T) {
 func TestUC29_MessageTTL_Expiry(t *testing.T) {
 	const (
 		msgCount = 500
-		timeout  = 120 * time.Second
+		pollTimeout  = 120 * time.Second
 	)
 
 	collector := newMQTTCollector(t, "uc29/output/data", "uc29-col")
@@ -259,7 +259,7 @@ func TestUC29_MessageTTL_Expiry(t *testing.T) {
 	// Use noopReceiver since we inject messages directly.
 	require.NoError(t, rt.AddRoute(routeCfg, &noopReceiver{}, mqttSender, nil, nil))
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
@@ -276,7 +276,7 @@ func TestUC29_MessageTTL_Expiry(t *testing.T) {
 		require.NoError(t, err, "inject message %d", i)
 	}
 
-	lrWaitFor(t, timeout, fmt.Sprintf("DLQ >= %d", msgCount), func() bool {
+	lrWaitFor(t, pollTimeout, fmt.Sprintf("DLQ >= %d", msgCount), func() bool {
 		return dlqStore.count() >= msgCount
 	})
 

@@ -16,9 +16,13 @@ type BridgeFactory struct {
 	inner Factory
 }
 
-func NewBridgeFactory(logger *slog.Logger) *BridgeFactory {
+func NewBridgeFactory(logger *slog.Logger, metrics ...ports.MetricsExporter) *BridgeFactory {
+	var m ports.MetricsExporter
+	if len(metrics) > 0 {
+		m = metrics[0]
+	}
 	return &BridgeFactory{
-		inner: Factory{Logger: logger},
+		inner: Factory{Logger: logger, Metrics: m},
 	}
 }
 

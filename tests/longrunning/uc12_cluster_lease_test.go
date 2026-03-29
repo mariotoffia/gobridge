@@ -30,7 +30,7 @@ type clusterInst struct {
 func TestUC12_RollingRestart_NoMessageLoss(t *testing.T) {
 	const (
 		msgCount = 3000
-		timeout  = 180 * time.Second
+		pollTimeout  = 180 * time.Second
 	)
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc12-in")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -38,7 +38,7 @@ func TestUC12_RollingRestart_NoMessageLoss(t *testing.T) {
 	sessionID := mqttlocal.UniqueClientID("uc12-session")
 	collector := newMQTTCollector(t, "uc12/output", "uc12-col")
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	routeCfg := goruntime.RouteConfig{
@@ -75,7 +75,7 @@ func TestUC12_RollingRestart_NoMessageLoss(t *testing.T) {
 
 	a, b, c := mkInst("A"), mkInst("B"), mkInst("C")
 	t.Cleanup(func() { stop(a); stop(b); stop(c) })
-	time.Sleep(3 * time.Second)
+	gobridgesync(t, 10*time.Second, a.rt, b.rt, c.rt)
 
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
 
@@ -105,7 +105,7 @@ func TestUC12_RollingRestart_NoMessageLoss(t *testing.T) {
 func TestUC13_SplitBrain_Recovery(t *testing.T) {
 	const (
 		msgCount = 2000
-		timeout  = 180 * time.Second
+		pollTimeout  = 180 * time.Second
 	)
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc13-in")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -113,7 +113,7 @@ func TestUC13_SplitBrain_Recovery(t *testing.T) {
 	sessionID := mqttlocal.UniqueClientID("uc13-session")
 	collector := newMQTTCollector(t, "uc13/output", "uc13-col")
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	routeCfg := goruntime.RouteConfig{
@@ -149,7 +149,7 @@ func TestUC13_SplitBrain_Recovery(t *testing.T) {
 		cancelA(); _ = rtA.Stop(context.Background())
 		cancelB(); _ = rtB.Stop(context.Background())
 	})
-	time.Sleep(3 * time.Second)
+	gobridgesync(t, 10*time.Second, rtA, rtB)
 
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
 
@@ -175,7 +175,7 @@ func TestUC14_LeaseContention_TenInstances(t *testing.T) {
 	const (
 		instCount = 10
 		msgCount  = 1000
-		timeout   = 180 * time.Second
+		pollTimeout   = 180 * time.Second
 	)
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc14-in")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -183,7 +183,7 @@ func TestUC14_LeaseContention_TenInstances(t *testing.T) {
 	sessionID := mqttlocal.UniqueClientID("uc14-session")
 	collector := newMQTTCollector(t, "uc14/output", "uc14-col")
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	routeCfg := goruntime.RouteConfig{
@@ -220,7 +220,7 @@ func TestUC14_LeaseContention_TenInstances(t *testing.T) {
 			cans[i](); _ = rts[i].Stop(context.Background())
 		}
 	})
-	time.Sleep(5 * time.Second)
+	gobridgesync(t, 10*time.Second, rts...)
 
 	// Sample roles 5 times, verify exactly 1 active each time.
 	for s := range 5 {
@@ -236,7 +236,7 @@ func TestUC14_LeaseContention_TenInstances(t *testing.T) {
 	}
 
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
-	lrWaitFor(t, timeout, "all messages", func() bool { return collector.count() >= msgCount })
+	lrWaitFor(t, pollTimeout, "all messages", func() bool { return collector.count() >= msgCount })
 	require.GreaterOrEqual(t, collector.count(), msgCount)
 	assert.Equal(t, 0, dlq.count(), "DLQ should be empty")
 	t.Logf("UC14: %d instances, %d messages delivered", instCount, collector.count())
@@ -248,7 +248,7 @@ func TestUC14_LeaseContention_TenInstances(t *testing.T) {
 func TestUC15_ConnectAfterLease(t *testing.T) {
 	const (
 		msgCount = 2000
-		timeout  = 180 * time.Second
+		pollTimeout  = 180 * time.Second
 	)
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc15-in")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -256,7 +256,7 @@ func TestUC15_ConnectAfterLease(t *testing.T) {
 	sessionID := mqttlocal.UniqueClientID("uc15-session")
 	collector := newMQTTCollector(t, "uc15/output", "uc15-col")
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	routeCfg := goruntime.RouteConfig{
@@ -293,7 +293,7 @@ func TestUC15_ConnectAfterLease(t *testing.T) {
 		cancelA(); _ = rtA.Stop(context.Background())
 		cancelB(); _ = rtB.Stop(context.Background())
 	})
-	time.Sleep(5 * time.Second)
+	gobridgesync(t, 10*time.Second, rtA, rtB)
 
 	roleA, roleB := rtA.Role(), rtB.Role()
 	t.Logf("UC15: A=%s, B=%s", roleA, roleB)
@@ -329,7 +329,7 @@ func TestUC15_ConnectAfterLease(t *testing.T) {
 func TestUC16_MultiSession_Cluster(t *testing.T) {
 	const (
 		msgCount = 1000
-		timeout  = 120 * time.Second
+		pollTimeout  = 120 * time.Second
 	)
 	sqsIn1URL, sqsIn1Client := setupSQSQueue(t, "uc16-in1")
 	sqsIn2URL, sqsIn2Client := setupSQSQueue(t, "uc16-in2")
@@ -340,7 +340,7 @@ func TestUC16_MultiSession_Cluster(t *testing.T) {
 	collBeta := newMQTTCollector(t, "uc16/beta", "uc16-col-b")
 	time.Sleep(300 * time.Millisecond)
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	saID := mqttlocal.UniqueClientID("uc16-alpha")
@@ -374,7 +374,7 @@ func TestUC16_MultiSession_Cluster(t *testing.T) {
 
 	require.NoError(t, rt.Start(ctx))
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
-	time.Sleep(2 * time.Second)
+	gobridgesync(t, 10*time.Second, rt)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -390,8 +390,8 @@ func TestUC16_MultiSession_Cluster(t *testing.T) {
 	}()
 	wg.Wait()
 
-	lrWaitFor(t, timeout, "alpha", func() bool { return collAlpha.count() >= msgCount })
-	lrWaitFor(t, timeout, "beta", func() bool { return collBeta.count() >= msgCount })
+	lrWaitFor(t, pollTimeout, "alpha", func() bool { return collAlpha.count() >= msgCount })
+	lrWaitFor(t, pollTimeout, "beta", func() bool { return collBeta.count() >= msgCount })
 	require.GreaterOrEqual(t, collAlpha.count(), msgCount)
 	require.GreaterOrEqual(t, collBeta.count(), msgCount)
 	assert.Equal(t, 0, dlq.count(), "DLQ should be empty")

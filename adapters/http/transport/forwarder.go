@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -21,6 +23,7 @@ type HTTPForwarder struct {
 	client     *http.Client
 	pathPrefix string
 	clusterKey string
+	logger     *slog.Logger
 }
 
 // NewHTTPForwarder creates a forwarder that sends messages to remote instances.
@@ -46,6 +49,9 @@ func NewHTTPForwarder(pathPrefix string, timeout time.Duration, clusterKey ...st
 	return f
 }
 
+// SetLogger configures the forwarder's logger for trace/debug output.
+func (f *HTTPForwarder) SetLogger(l *slog.Logger) { f.logger = l }
+
 // Forward sends an envelope to a remote instance for the given route.
 func (f *HTTPForwarder) Forward(
 	ctx context.Context, target *domain.PeerInfo, routeID string, env *domain.Envelope,
@@ -53,6 +59,14 @@ func (f *HTTPForwarder) Forward(
 	httpEndpoint, ok := target.Endpoints["http"]
 	if !ok {
 		return domain.ErrForwardFailed.WithMessage("target has no HTTP endpoint")
+	}
+
+	if logging.TraceEnabled(f.logger) {
+		f.logger.Log(ctx, logging.LevelTrace, "http: forwarding",
+			"target_instance", target.InstanceID,
+			"route_id", routeID,
+			"endpoint", httpEndpoint,
+		)
 	}
 
 	ir := ingressRequest{
@@ -91,6 +105,11 @@ func (f *HTTPForwarder) Forward(
 	}()
 
 	if resp.StatusCode >= 400 {
+		logging.DebugContext(f.logger, ctx, "http: forward failed",
+			"target_instance", target.InstanceID,
+			"route_id", routeID,
+			"status_code", resp.StatusCode,
+		)
 		return domain.ErrForwardFailed.WithMessage(
 			fmt.Sprintf("remote returned %d", resp.StatusCode),
 		)

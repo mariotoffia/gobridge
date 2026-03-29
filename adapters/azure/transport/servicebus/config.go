@@ -2,7 +2,10 @@ package servicebus
 
 import (
 	"errors"
+	"log/slog"
 	"time"
+
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // ReceiverConfig configures an Azure Service Bus Receiver.
@@ -56,6 +59,12 @@ type ReceiverConfig struct {
 	// Client allows injecting a pre-built receiver (for tests).
 	// When set, Connection is ignored.
 	Client asbAPI
+
+	// Logger is an optional structured logger for trace/debug output.
+	Logger *slog.Logger
+
+	// Metrics is an optional metrics exporter for adapter-internal metrics.
+	Metrics ports.MetricsExporter
 }
 
 // SenderConfig configures an Azure Service Bus Sender.
@@ -86,6 +95,12 @@ type SenderConfig struct {
 	// Client allows injecting a pre-built sender (for tests).
 	// When set, Connection is ignored.
 	Client asbSenderAPI
+
+	// Logger is an optional structured logger for trace/debug output.
+	Logger *slog.Logger
+
+	// Metrics is an optional metrics exporter for adapter-internal metrics.
+	Metrics ports.MetricsExporter
 }
 
 func (c *ReceiverConfig) validate() error {

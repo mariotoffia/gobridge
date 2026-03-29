@@ -42,7 +42,8 @@ import (
 const (
 	uc3MsgCount = 2000
 	uc3Topic    = "uc3/output/data"
-	uc3Timeout  = 180 * time.Second
+	// uc3 has no poll timeout constant; individual lrWaitFor calls specify
+	// their own durations.
 )
 
 func TestUC3_ClusterFailover_ThreeInstances(t *testing.T) {
@@ -55,7 +56,7 @@ func TestUC3_ClusterFailover_ThreeInstances(t *testing.T) {
 	// --- MQTT collector on the output topic ---
 	collector := newMQTTCollector(t, uc3Topic, "uc3-collector")
 
-	ctx, cancel := context.WithTimeout(context.Background(), uc3Timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// --- Build route config (shared across all instances) ---
@@ -133,8 +134,8 @@ func TestUC3_ClusterFailover_ThreeInstances(t *testing.T) {
 		}
 	})
 
-	// Allow lease acquisition to settle.
-	time.Sleep(3 * time.Second)
+	// Wait until all bridges report ReadyForTraffic via DeepHealth.
+	gobridgesync(t, 10*time.Second, instA.rt, instB.rt, instC.rt)
 
 	// --- Send 2,000 messages to SQS-IN ---
 	t.Logf("UC3: sending %d messages to SQS-IN", uc3MsgCount)

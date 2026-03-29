@@ -50,7 +50,7 @@ func newTestPacketPublish(topic string, payload []byte) *packets.Publish {
 //   - All 3 handlers were invoked
 //   - Wait() does not return before all handlers complete
 func TestRouter_Wait_BlocksUntilHandlersComplete(t *testing.T) {
-	r := newRouter()
+	r := newRouter(nil, nil)
 	var completed atomic.Int32
 
 	for i := 0; i < 3; i++ {
@@ -80,7 +80,7 @@ func TestRouter_Wait_BlocksUntilHandlersComplete(t *testing.T) {
 //   - Each handler receives a non-nil *Publish
 //   - No two handlers receive the same pointer
 func TestRouter_ShallowCopy_DistinctPointers(t *testing.T) {
-	r := newRouter()
+	r := newRouter(nil, nil)
 	var mu sync.Mutex
 	pointers := make(map[*pahov5.Publish]bool)
 
@@ -217,7 +217,7 @@ func TestRouter_Close_RespectsCtxDeadline(t *testing.T) {
 //   - Wait() returns (WaitGroup is still balanced)
 //   - Other handlers complete normally
 func TestRouter_HandlerPanic_DoesNotCrash(t *testing.T) {
-	r := newRouter()
+	r := newRouter(nil, nil)
 	var normalDone atomic.Bool
 
 	r.Register("panicker", func(_ *pahov5.Publish) {
@@ -257,7 +257,7 @@ func TestRouter_HandlerPanic_DoesNotCrash(t *testing.T) {
 //   Expected: Handler B sees original byte, not 'X'
 // ───────────────────────────────────────────────
 func TestRouter_Route_PayloadDeepCopy(t *testing.T) {
-	r := newRouter()
+	r := newRouter(nil, nil)
 	original := []byte("hello")
 
 	handlerADone := make(chan struct{})
@@ -290,7 +290,7 @@ func TestRouter_Route_PayloadDeepCopy(t *testing.T) {
 // TestRouter_Route_NilPayload validates that routing a message with
 // nil Payload does not panic and handlers receive nil.
 func TestRouter_Route_NilPayload(t *testing.T) {
-	r := newRouter()
+	r := newRouter(nil, nil)
 	var received atomic.Bool
 	var receivedNil atomic.Bool
 
@@ -316,7 +316,7 @@ func TestRouter_Route_NilPayload(t *testing.T) {
 // TestRouter_Route_EmptyPayload validates that an empty (zero-length)
 // Payload is deep-copied correctly.
 func TestRouter_Route_EmptyPayload(t *testing.T) {
-	r := newRouter()
+	r := newRouter(nil, nil)
 	var received atomic.Bool
 
 	r.Register("empty-handler", func(pub *pahov5.Publish) {
@@ -341,7 +341,7 @@ func TestRouter_Route_EmptyPayload(t *testing.T) {
 // TestRouter_Route_OriginalPayloadUnmutated validates that the original
 // Publish.Payload bytes are not affected by handler mutations.
 func TestRouter_Route_OriginalPayloadUnmutated(t *testing.T) {
-	r := newRouter()
+	r := newRouter(nil, nil)
 	original := []byte("immutable")
 	originalCopy := make([]byte, len(original))
 	copy(originalCopy, original)
@@ -365,7 +365,7 @@ func TestRouter_Route_OriginalPayloadUnmutated(t *testing.T) {
 // that under concurrent dispatch with multiple handlers, each handler
 // receives an independent payload copy (safe under -race).
 func TestRouter_Route_ConcurrentHandlers_IndependentPayloads(t *testing.T) {
-	r := newRouter()
+	r := newRouter(nil, nil)
 	const numHandlers = 10
 	payload := []byte("concurrent-test-payload")
 	var completedCount atomic.Int32
@@ -392,7 +392,7 @@ func TestRouter_Route_ConcurrentHandlers_IndependentPayloads(t *testing.T) {
 // TestRouter_Route_ConcurrentPropertiesRead validates that concurrent
 // handlers reading shared Properties fields do not race (safe under -race).
 func TestRouter_Route_ConcurrentPropertiesRead(t *testing.T) {
-	r := newRouter()
+	r := newRouter(nil, nil)
 	const numHandlers = 5
 	var completedCount atomic.Int32
 

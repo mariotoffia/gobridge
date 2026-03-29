@@ -439,6 +439,8 @@ func buildConfig(c config, hasWS bool) string {
 	if c.messageSizeLimit >= 0 {
 		s += fmt.Sprintf("message_size_limit %d\n", c.messageSizeLimit)
 	}
+	// Always set max_receive_maximum to the maximum per MQTT v5 spec.
+	s += "max_receive_maximum 65535\n"
 	if c.extraConfig != "" {
 		s += c.extraConfig
 	}

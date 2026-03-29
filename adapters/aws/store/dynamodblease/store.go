@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
+	"github.com/mariotoffia/gobridge/bridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 )
 
@@ -40,6 +42,7 @@ type Store struct {
 	tableName   string
 	gracePeriod time.Duration
 	now         func() time.Time
+	logger      *slog.Logger
 }
 
 // Option configures a Store.
@@ -61,6 +64,11 @@ func WithClock(fn func() time.Time) Option {
 	return func(s *Store) { s.now = fn }
 }
 
+// WithLogger sets the structured logger for trace/debug diagnostics.
+func WithLogger(l *slog.Logger) Option {
+	return func(s *Store) { s.logger = l }
+}
+
 // NewStore creates a new DynamoDB-backed LeaseStore.
 func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 	s := &Store{
@@ -80,6 +88,8 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 // takeover via UpdateItem with an expires_at < :now condition, atomically
 // incrementing the version.
 func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+	logging.TraceContext(s.logger, ctx, "dynamodblease: acquire", "lease_id", leaseID, "owner_id", ownerID)
+
 	now := s.now()
 	expiresAt := now.Add(ttl)
 	pk := leaseKey(leaseID)
@@ -167,6 +177,8 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 // Renew extends the lease TTL. The caller's token must match the stored
 // owner and version. The returned token keeps the same version.
 func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+	logging.TraceContext(s.logger, ctx, "dynamodblease: renew", "lease_id", leaseID, "owner_id", token.Owner)
+
 	now := s.now()
 	expiresAt := now.Add(ttl)
 	pk := leaseKey(leaseID)
@@ -216,6 +228,8 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseTok
 // remains available for monotonic increments on subsequent acquires.
 // DynamoDB TTL will eventually remove the item after the grace period.
 func (s *Store) Release(ctx context.Context, leaseID string, token domain.LeaseToken) error {
+	logging.TraceContext(s.logger, ctx, "dynamodblease: release", "lease_id", leaseID)
+
 	pk := leaseKey(leaseID)
 	now := s.now()
 
