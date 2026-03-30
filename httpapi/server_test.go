@@ -237,7 +237,8 @@ func TestMonitorProbes_NoAuthRequired(t *testing.T) {
 	}
 }
 
-// Verifies topology, routes, and logs monitor endpoints require auth without a key and return 200 with the admin API key.
+// Verifies topology, routes, and deephealth monitor endpoints require auth
+// without a key and return success with the admin API key.
 func TestMonitorSensitive_RequiresAuth(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -250,7 +251,6 @@ func TestMonitorSensitive_RequiresAuth(t *testing.T) {
 		"/api/v1/monitor/topology",
 		"/api/v1/monitor/routes",
 		"/api/v1/monitor/deephealth",
-		"/api/v1/monitor/logs",
 	}
 
 	for _, path := range sensitive {
@@ -267,20 +267,18 @@ func TestMonitorSensitive_RequiresAuth(t *testing.T) {
 			req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, req)
-			switch path {
-			case "/api/v1/monitor/logs":
-				assert.Equal(t, http.StatusNotImplemented, rec.Code)
-			case "/api/v1/monitor/deephealth":
+			if path == "/api/v1/monitor/deephealth" {
 				// Deep health returns 503 when runtime is not running.
 				assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-			default:
+			} else {
 				assert.Equal(t, http.StatusOK, rec.Code)
 			}
 		})
 	}
 }
 
-// Verifies a dedicated MonitorAPIKey is enforced: admin key is rejected, monitor key is accepted for sensitive monitor routes.
+// Verifies a dedicated MonitorAPIKey works, and admin key is also accepted
+// as fallback (admin is a superset of monitor access).
 func TestMonitorSensitive_SeparateMonitorKey(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -290,9 +288,9 @@ func TestMonitorSensitive_SeparateMonitorKey(t *testing.T) {
 	mux := http.NewServeMux()
 	s.registerMonitorRoutes(mux)
 
-	t.Run("admin key rejected for monitor", func(t *testing.T) {
+	t.Run("wrong key rejected", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/topology", nil)
-		req.Header.Set("X-API-Key", "test-secret-key-0123456789")
+		req.Header.Set("X-API-Key", "wrong-key-0123456789ab")
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		assert.Equal(t, http.StatusUnauthorized, rec.Code)
@@ -301,6 +299,14 @@ func TestMonitorSensitive_SeparateMonitorKey(t *testing.T) {
 	t.Run("monitor key accepted", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/topology", nil)
 		req.Header.Set("X-API-Key", "monitor-key-0123456789ab")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+
+	t.Run("admin key accepted as fallback", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/topology", nil)
+		req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		assert.Equal(t, http.StatusOK, rec.Code)
@@ -431,7 +437,7 @@ func TestHandleBridge(t *testing.T) {
 	assert.Equal(t, false, body["running"])
 }
 
-// Verifies GET /api/v1/admin/routes returns an empty JSON array when no routes exist.
+// Verifies GET /api/v1/admin/routes returns a wrapped object with empty routes array.
 func TestHandleRoutes_Empty(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -447,8 +453,11 @@ func TestHandleRoutes_Empty(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 
+	var body map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Contains(t, body, "routes")
 	var routes []routeView
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &routes))
+	require.NoError(t, json.Unmarshal(body["routes"], &routes))
 	assert.Empty(t, routes)
 }
 
@@ -520,7 +529,7 @@ func TestMethodNotAllowed(t *testing.T) {
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 }
 
-// Verifies GET /api/v1/admin/dlq succeeds with a status indicating no DLQ when no store is configured.
+// Verifies GET /api/v1/admin/dlq returns 404 when no DLQ store is configured.
 func TestDLQ_NoStore(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
@@ -534,10 +543,10 @@ func TestDLQ_NoStore(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	assert.Equal(t, http.StatusOK, rec.Code)
-	var body map[string]any
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	var body map[string]string
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
-	assert.Contains(t, body["status"], "no DLQ")
+	assert.Contains(t, body["error"], "no DLQ store")
 }
 
 // --- Audit logging tests ---

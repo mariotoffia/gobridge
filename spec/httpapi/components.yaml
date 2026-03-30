@@ -1,0 +1,468 @@
+securitySchemes:
+  ApiKeyAuth:
+    type: apiKey
+    in: header
+    name: X-API-Key
+    description: >
+      API key passed in the `X-API-Key` header. Must be at least 16 characters.
+      Compared using SHA-256 constant-time comparison.
+  BearerAuth:
+    type: http
+    scheme: bearer
+    description: >
+      Bearer token in the `Authorization` header. The token value must match
+      the configured API key. Compared using SHA-256 constant-time comparison.
+
+parameters:
+  RouteID:
+    name: routeID
+    in: path
+    required: true
+    description: Unique identifier of the target route.
+    schema:
+      type: string
+    example: mqtt-to-sqs
+
+responses:
+  Unauthorized:
+    description: Invalid or missing API key.
+    headers:
+      WWW-Authenticate:
+        schema:
+          type: string
+          example: Bearer realm="gobridge-admin"
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/ErrorResponse"
+        example: { "error": "invalid or missing API key" }
+
+  UnauthorizedMonitor:
+    description: Invalid or missing API key (monitor realm).
+    headers:
+      WWW-Authenticate:
+        schema:
+          type: string
+          example: Bearer realm="gobridge-monitor"
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/ErrorResponse"
+        example: { "error": "invalid or missing API key" }
+
+  NoDLQStore:
+    description: No DLQ store is configured on this instance.
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/ErrorResponse"
+        example: { "error": "no DLQ store configured" }
+
+  BridgeStatusResponse:
+    description: Bridge status.
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/BridgeStatus"
+
+schemas:
+  ErrorResponse:
+    type: object
+    required: [error]
+    properties:
+      error:
+        type: string
+        description: Human-readable error message.
+        example: invalid or missing API key
+
+  StatusMessage:
+    type: object
+    required: [status]
+    properties:
+      status:
+        type: string
+        description: Operation result status.
+        example: started
+
+  BridgeStatus:
+    type: object
+    required: [instance_id, running, routes]
+    properties:
+      instance_id:
+        type: string
+        description: Unique identifier for this bridge instance.
+        example: gobridge-1
+      running:
+        type: boolean
+        description: Whether the bridge runtime is currently running.
+        example: true
+      routes:
+        type: integer
+        description: Number of configured routes.
+        example: 3
+
+  RouteView:
+    type: object
+    required: [id, delivery_mode, dispatch_mode, max_in_flight]
+    description: Compact route summary used by admin endpoints.
+    properties:
+      id:
+        type: string
+        description: Route identifier.
+        example: mqtt-to-sqs
+      delivery_mode:
+        type: string
+        description: >
+          Delivery strategy. `direct_hold` processes synchronously;
+          `shared_outbox` uses durable async delivery.
+        enum: [direct_hold, shared_outbox]
+        example: direct_hold
+      dispatch_mode:
+        type: string
+        description: How messages are dispatched to senders (parallel or sequential).
+        enum: [parallel, sequential]
+        example: parallel
+      max_in_flight:
+        type: integer
+        description: Maximum concurrent messages allowed on this route.
+        example: 100
+
+  TopologyRouteView:
+    type: object
+    required: [id, delivery_mode, dispatch_mode]
+    description: Compact route view for topology responses (no policy detail).
+    properties:
+      id:
+        type: string
+        description: Route identifier.
+        example: mqtt-to-sqs
+      delivery_mode:
+        type: string
+        enum: [direct_hold, shared_outbox]
+        example: direct_hold
+      dispatch_mode:
+        type: string
+        enum: [parallel, sequential]
+        example: parallel
+
+  TopologyResponse:
+    type: object
+    required: [instance_id, running, routes]
+    description: Cluster topology view for a single bridge instance.
+    properties:
+      instance_id:
+        type: string
+        description: Unique identifier for this bridge instance.
+        example: gobridge-1
+      running:
+        type: boolean
+        description: Whether the bridge runtime is currently running.
+        example: true
+      routes:
+        type: array
+        description: Routes configured on this instance.
+        items:
+          $ref: "#/schemas/TopologyRouteView"
+
+  MonitorRouteView:
+    type: object
+    required: [id, delivery_mode, dispatch_mode, max_in_flight, max_replay, ack_after, on_expired, on_perm_failure]
+    description: Detailed route view with full policy information.
+    properties:
+      id:
+        type: string
+        description: Route identifier.
+        example: mqtt-to-sqs
+      delivery_mode:
+        type: string
+        enum: [direct_hold, shared_outbox]
+        example: direct_hold
+      dispatch_mode:
+        type: string
+        enum: [parallel, sequential]
+        example: parallel
+      max_in_flight:
+        type: integer
+        description: Maximum concurrent messages allowed on this route.
+        example: 100
+      max_replay:
+        type: integer
+        description: Maximum number of replay attempts before a message is sent to DLQ.
+        example: 3
+      ack_after:
+        type: string
+        description: >
+          When to acknowledge the source message. `send` acknowledges after
+          successful send; `receive` acknowledges on receive.
+        enum: [send, receive]
+        example: send
+      on_expired:
+        type: string
+        description: Action when a message TTL expires (`dlq` or `drop`).
+        enum: [dlq, drop]
+        example: dlq
+      on_perm_failure:
+        type: string
+        description: Action on permanent (non-retriable) failure (`dlq` or `drop`).
+        enum: [dlq, drop]
+        example: dlq
+
+  HealthResponse:
+    type: object
+    required: [status, instance_id, routes]
+    description: Health check response for load balancer probes.
+    properties:
+      status:
+        type: string
+        description: Health status (`ok`, `unhealthy`, or `not_running`).
+        enum: [ok, unhealthy, not_running]
+        example: ok
+      instance_id:
+        type: string
+        description: Unique identifier for this bridge instance.
+        example: gobridge-1
+      routes:
+        type: integer
+        description: Number of configured routes.
+        example: 3
+      failed_components:
+        type: integer
+        description: >
+          Number of components reporting errors. Only present when at least
+          one component has failed.
+        example: 1
+
+  DLQSummary:
+    type: object
+    required: [configured, count]
+    description: Summary of dead-letter queue state.
+    properties:
+      configured:
+        type: boolean
+        description: Whether a DLQ store is configured.
+        example: true
+      count:
+        type: integer
+        description: Number of messages currently in the DLQ.
+        example: 42
+
+  DLQEntryView:
+    type: object
+    required: [id, route_id, subject, reason, category, failed_at, attempts]
+    description: A single dead-letter queue entry.
+    properties:
+      id:
+        type: string
+        description: Unique DLQ entry identifier.
+        example: dlq-001
+      route_id:
+        type: string
+        description: Route that produced this DLQ entry.
+        example: mqtt-to-sqs
+      binding_id:
+        type: string
+        description: Binding within the route.
+        example: bind-1
+      session_id:
+        type: string
+        description: Transport session that produced this entry.
+        example: sess-1
+      source_id:
+        type: string
+        description: Source receiver identifier.
+        example: src-1
+      correlation_id:
+        type: string
+        description: Correlation ID from the original message.
+        example: corr-abc
+      subject:
+        type: string
+        description: Message subject (topic or queue name).
+        example: sensors/temp
+      reason:
+        type: string
+        description: Human-readable reason for DLQ placement.
+        example: delivery timeout
+      category:
+        type: string
+        description: Error category that caused DLQ placement.
+        enum: [transient, permanent, expired, rejected]
+        example: transient
+      error_code:
+        type: string
+        description: Machine-readable error code.
+        example: TIMEOUT
+      last_error:
+        type: string
+        description: Last error message before DLQ placement.
+        example: context deadline exceeded
+      failed_at:
+        type: string
+        format: date-time
+        description: Timestamp when the message was placed in the DLQ (RFC 3339).
+        example: "2025-12-01T10:30:00Z"
+      attempts:
+        type: integer
+        description: Number of delivery attempts before failure.
+        example: 3
+
+  DLQMessagesResponse:
+    type: object
+    required: [messages, total, limit, offset]
+    description: Paginated list of DLQ messages.
+    properties:
+      messages:
+        type: array
+        description: DLQ entries matching the filter criteria.
+        items:
+          $ref: "#/schemas/DLQEntryView"
+      total:
+        type: integer
+        description: Number of messages in this page (not the global total).
+        example: 1
+      limit:
+        type: integer
+        description: Effective limit used for this query.
+        example: 100
+      offset:
+        type: integer
+        description: Offset applied to this query.
+        example: 0
+
+  InjectRequest:
+    type: object
+    required: [subject]
+    description: >
+      Request body for injecting a synthetic message into a route.
+      The total body size is limited to 1 MB.
+    properties:
+      subject:
+        type: string
+        description: Message subject (topic, queue name, or routing key).
+        example: sensors/temp
+      payload:
+        type: string
+        format: byte
+        description: >
+          Base64-encoded message payload (standard encoding, RFC 4648).
+          Omit or send empty string for an empty payload.
+        example: eyJ0ZW1wIjoyMi41fQ==
+      headers:
+        type: object
+        additionalProperties: true
+        description: >
+          Arbitrary key-value headers attached to the message. Keys matching
+          `X-Bridge-*` are automatically stripped by the server.
+        example: { "source": "api-inject" }
+
+  DLQReplayRequest:
+    type: object
+    required: [ids]
+    description: Request body for replaying specific DLQ messages.
+    properties:
+      ids:
+        type: array
+        description: DLQ entry IDs to replay.
+        minItems: 1
+        maxItems: 1000
+        items:
+          type: string
+        example: ["dlq-001", "dlq-002"]
+
+  DeepHealthResponse:
+    type: object
+    required: [running, healthy, instance_id, role, ready_for_traffic, service_level, sessions, routes]
+    description: >
+      Comprehensive health report covering runtime state, session connectivity,
+      and route status. Returned with 200 when ready or 503 when not ready.
+    properties:
+      running:
+        type: boolean
+        description: Whether the bridge runtime is running.
+        example: true
+      healthy:
+        type: boolean
+        description: Overall health assessment.
+        example: true
+      instance_id:
+        type: string
+        description: Unique identifier for this bridge instance.
+        example: gobridge-1
+      role:
+        type: string
+        description: Cluster role (e.g. standalone, leader, follower).
+        example: standalone
+      ready_for_traffic:
+        type: boolean
+        description: Whether this instance should receive traffic from a load balancer.
+        example: true
+      service_level:
+        type: string
+        description: >
+          Aggregated service level across all sessions. `full` when all
+          sessions are fully healthy, `degraded` when some are impaired,
+          `none` when no sessions are functional.
+        enum: [full, degraded, none]
+        example: full
+      sessions:
+        type: array
+        description: Per-session health details.
+        items:
+          $ref: "#/schemas/DeepHealthSession"
+      routes:
+        type: array
+        description: Configured routes with delivery mode.
+        items:
+          $ref: "#/schemas/DeepHealthRoute"
+
+  DeepHealthSession:
+    type: object
+    required: [session_id, connected, has_lease, subscriptions_wanted, subscriptions_active, ready, service_level]
+    description: Health status of a single transport session.
+    properties:
+      session_id:
+        type: string
+        description: Transport session identifier.
+        example: mqtt-main
+      connected:
+        type: boolean
+        description: Whether the underlying transport connection is active.
+        example: true
+      has_lease:
+        type: boolean
+        description: Whether the session holds a cluster lease (relevant for shared sessions).
+        example: true
+      subscriptions_wanted:
+        type: integer
+        description: Number of subscriptions the session should have.
+        example: 5
+      subscriptions_active:
+        type: integer
+        description: Number of subscriptions currently active.
+        example: 5
+      ready:
+        type: boolean
+        description: Whether the session is fully converged and ready.
+        example: true
+      service_level:
+        type: string
+        description: >
+          Session service level. `full` when connected with all subscriptions
+          active, `degraded` when partially converged, `none` when disconnected.
+        enum: [full, degraded, none]
+        example: full
+
+  DeepHealthRoute:
+    type: object
+    required: [id, delivery_mode]
+    description: Minimal route info included in deep health checks.
+    properties:
+      id:
+        type: string
+        description: Route identifier.
+        example: mqtt-to-sqs
+      delivery_mode:
+        type: string
+        description: Delivery strategy for this route.
+        enum: [direct_hold, shared_outbox]
+        example: direct_hold

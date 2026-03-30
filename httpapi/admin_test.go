@@ -110,13 +110,17 @@ func TestHandleDLQMessages_NoStore(t *testing.T) {
 	assert.Contains(t, body["error"], "no DLQ store")
 }
 
-// TestHandleStart_MethodNotAllowed validates that GET on /bridge/start is rejected.
+// TestHandleStart_MethodNotAllowed validates that GET on /bridge/start is rejected
+// at the mux level (method-prefix pattern enforcement).
 func TestHandleStart_MethodNotAllowed(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-method"))
 	s := New(rt, testConfig())
 
+	mux := http.NewServeMux()
+	s.registerAdminRoutes(mux)
+
 	rec := httptest.NewRecorder()
-	s.handleStart(rec, adminRequest(http.MethodGet, "/api/v1/admin/bridge/start"))
+	mux.ServeHTTP(rec, adminRequest(http.MethodGet, "/api/v1/admin/bridge/start"))
 
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 }

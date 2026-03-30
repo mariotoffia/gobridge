@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
@@ -16,24 +17,20 @@ import (
 func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	const prefix = "/api/v1/admin"
 
-	mux.HandleFunc(prefix+"/bridge", s.requireAdminAuth(s.handleBridge))
-	mux.HandleFunc(prefix+"/bridge/start", s.requireAdminAuth(s.handleStart))
-	mux.HandleFunc(prefix+"/bridge/stop", s.requireAdminAuth(s.handleStop))
+	mux.HandleFunc("GET "+prefix+"/bridge", s.requireAdminAuth(s.handleBridge))
+	mux.HandleFunc("POST "+prefix+"/bridge/start", s.requireAdminAuth(s.handleStart))
+	mux.HandleFunc("POST "+prefix+"/bridge/stop", s.requireAdminAuth(s.handleStop))
 
-	mux.HandleFunc(prefix+"/routes", s.requireAdminAuth(s.handleRoutes))
+	mux.HandleFunc("GET "+prefix+"/routes", s.requireAdminAuth(s.handleRoutes))
 	mux.HandleFunc("POST "+prefix+"/routes/{routeID}/inject", s.requireAdminAuth(s.handleInject))
 
-	mux.HandleFunc(prefix+"/dlq", s.requireAdminAuth(s.handleDLQ))
-	mux.HandleFunc(prefix+"/dlq/messages", s.requireAdminAuth(s.handleDLQMessages))
-	mux.HandleFunc(prefix+"/dlq/replay", s.requireAdminAuth(s.handleDLQReplay))
-	mux.HandleFunc(prefix+"/dlq/purge", s.requireAdminAuth(s.handleDLQPurge))
+	mux.HandleFunc("GET "+prefix+"/dlq", s.requireAdminAuth(s.handleDLQ))
+	mux.HandleFunc("GET "+prefix+"/dlq/messages", s.requireAdminAuth(s.handleDLQMessages))
+	mux.HandleFunc("POST "+prefix+"/dlq/replay", s.requireAdminAuth(s.handleDLQReplay))
+	mux.HandleFunc("POST "+prefix+"/dlq/purge", s.requireAdminAuth(s.handleDLQPurge))
 }
 
 func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 	s.emitAudit(r, "bridge.status", "bridge", "", "success", nil)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"instance_id": s.rt.InstanceID(),
@@ -43,10 +40,6 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if err := s.rt.Start(ctx); err != nil {
@@ -59,10 +52,6 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if err := s.rt.Stop(ctx); err != nil {
@@ -82,10 +71,6 @@ type routeView struct {
 }
 
 func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 	routes := s.rt.Routes()
 	views := make([]routeView, len(routes))
 	for i, ri := range routes {
@@ -96,17 +81,57 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 			MaxInFlight:  ri.Policy.MaxInFlight,
 		}
 	}
-	writeJSON(w, http.StatusOK, views)
+	writeJSON(w, http.StatusOK, map[string]any{"routes": views})
+}
+
+// dlqEntryView is the HTTP-layer representation of a DLQ entry.
+// It uses snake_case JSON tags consistent with the rest of the API.
+type dlqEntryView struct {
+	ID            string    `json:"id"`
+	RouteID       string    `json:"route_id"`
+	BindingID     string    `json:"binding_id"`
+	SessionID     string    `json:"session_id"`
+	SourceID      string    `json:"source_id"`
+	CorrelationID string    `json:"correlation_id"`
+	Subject       string    `json:"subject"`
+	Reason        string    `json:"reason"`
+	Category      string    `json:"category"`
+	ErrorCode     string    `json:"error_code"`
+	LastError     string    `json:"last_error"`
+	FailedAt      time.Time `json:"failed_at"`
+	Attempts      int       `json:"attempts"`
+}
+
+func toDLQEntryView(e domain.DLQEntry) dlqEntryView {
+	return dlqEntryView{
+		ID:            e.ID,
+		RouteID:       e.RouteID,
+		BindingID:     e.BindingID,
+		SessionID:     e.SessionID,
+		SourceID:      e.SourceID,
+		CorrelationID: e.CorrelationID,
+		Subject:       e.Envelope.Subject,
+		Reason:        e.Reason,
+		Category:      e.Category,
+		ErrorCode:     e.ErrorCode,
+		LastError:     e.LastError,
+		FailedAt:      e.FailedAt,
+		Attempts:      e.Attempts,
+	}
+}
+
+func toDLQEntryViews(entries []domain.DLQEntry) []dlqEntryView {
+	views := make([]dlqEntryView, len(entries))
+	for i, e := range entries {
+		views[i] = toDLQEntryView(e)
+	}
+	return views
 }
 
 func (s *Server) handleDLQ(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 	store := s.rt.DLQStore()
 	if store == nil {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "no DLQ store configured"})
+		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
 	}
 	entries, err := store.List(r.Context(), domain.DLQFilter{Limit: 100})
@@ -115,39 +140,96 @@ func (s *Server) handleDLQ(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"count":   len(entries),
-		"entries": entries,
+		"configured": true,
+		"count":      len(entries),
 	})
 }
 
+const (
+	defaultDLQLimit = 100
+	maxDLQLimit     = 1000
+)
+
 func (s *Server) handleDLQMessages(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 	store := s.rt.DLQStore()
 	if store == nil {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
 	}
-	filter := domain.DLQFilter{
-		RouteID:  r.URL.Query().Get("route_id"),
-		Category: r.URL.Query().Get("category"),
-		Limit:    100,
+
+	q := r.URL.Query()
+	limit := defaultDLQLimit
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			writeErr(w, http.StatusBadRequest, "limit must be a positive integer")
+			return
+		}
+		if n > maxDLQLimit {
+			n = maxDLQLimit
+		}
+		limit = n
 	}
+
+	offset := 0
+	if v := q.Get("offset"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			writeErr(w, http.StatusBadRequest, "offset must be a non-negative integer")
+			return
+		}
+		offset = n
+	}
+
+	filter := domain.DLQFilter{
+		RouteID:  q.Get("route_id"),
+		Category: q.Get("category"),
+		Limit:    limit + offset, // fetch enough to slice
+	}
+
+	if v := q.Get("since"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "since must be RFC3339 format")
+			return
+		}
+		filter.Since = t
+	}
+	if v := q.Get("before"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "before must be RFC3339 format")
+			return
+		}
+		filter.Before = t
+	}
+
 	entries, err := store.List(r.Context(), filter)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "failed to list DLQ messages")
 		return
 	}
-	writeJSON(w, http.StatusOK, entries)
+
+	// Apply offset
+	if offset > len(entries) {
+		entries = nil
+	} else if offset > 0 {
+		entries = entries[offset:]
+	}
+	// Apply limit
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"messages": toDLQEntryViews(entries),
+		"total":    len(entries),
+		"limit":    limit,
+		"offset":   offset,
+	})
 }
 
 func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 	store := s.rt.DLQStore()
 	if store == nil {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
@@ -186,15 +268,12 @@ func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDLQPurge(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 	store := s.rt.DLQStore()
 	if store == nil {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	count, err := store.Purge(r.Context(), time.Now().UTC())
 	if err != nil {
 		s.emitAudit(r, "dlq.purge", "dlq", "", "failure", map[string]any{"error": err.Error()})

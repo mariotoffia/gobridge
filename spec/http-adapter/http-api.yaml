@@ -1,0 +1,531 @@
+openapi: "3.1.0"
+
+info:
+  title: GoBridge HTTP Transport API
+  version: 1.0.0
+  description: |
+    HTTP transport adapter for GoBridge message ingestion and Server-Sent Events
+    (SSE) streaming. Receivers accept POST requests with JSON message payloads.
+    Senders stream messages to clients via SSE. Both support optional API key
+    authentication and cluster-aware routing.
+
+    ## Overview
+
+    The HTTP transport adapter exposes two families of endpoints on a shared
+    `http.ServeMux`:
+
+    - **Receivers** -- accept inbound messages via HTTP POST and feed them into
+      the GoBridge routing engine.
+    - **Senders** -- stream outbound messages to connected clients as
+      Server-Sent Events (SSE).
+
+    All paths share a configurable prefix (default `/transport/http`).
+
+    ## Cluster-Aware Routing
+
+    When a `RouteLocator` is configured, each endpoint is cluster-aware:
+
+    - **Receivers**: If the target route is owned by a different node, the
+      message is transparently forwarded via HTTP POST to the owning peer.
+      The `X-Bridge-Forwarded: true` header prevents infinite forwarding loops.
+    - **Senders**: If the target route is owned by a different node, the client
+      receives an HTTP 307 redirect to the peer's SSE endpoint.
+
+    ## Authentication
+
+    Both receivers and senders support optional API key authentication. When an
+    `api_key` is configured on the endpoint, every request must include the key
+    via `X-API-Key` header or `Authorization: Bearer {key}`. Keys are compared
+    using SHA-256 constant-time comparison to prevent timing attacks.
+  contact:
+    name: GoBridge Maintainers
+  license:
+    name: MIT
+    identifier: MIT
+
+servers:
+  - url: http://localhost:9090
+    description: Default local transport server
+
+security: []
+
+tags:
+  - name: Receivers
+    description: |
+      Message ingestion endpoints. Each receiver has a unique ID and accepts
+      HTTP POST requests containing JSON message payloads. Messages are
+      converted to internal `domain.Envelope` objects and emitted into the
+      GoBridge routing engine.
+  - name: Senders
+    description: |
+      Server-Sent Events streaming endpoints. Each sender has a unique ID and
+      streams outbound messages to connected SSE clients. Supports heartbeat
+      keep-alive and configurable maximum client connections.
+
+paths:
+  /transport/http/receivers/{receiver_id}/messages:
+    post:
+      operationId: ingestMessage
+      summary: Ingest a message via HTTP POST
+      description: |
+        Accepts a JSON message payload and feeds it into the GoBridge routing
+        engine for the receiver's associated route.
+
+        The request body is limited by `max_body_size` (default 1 MiB).
+        Reserved headers (keys prefixed with `X-Bridge`) in the payload's
+        `headers` field are automatically stripped before processing.
+
+        **Cluster forwarding**: When the receiver is bound to a route owned by
+        a remote cluster node, the message is transparently forwarded to the
+        owning peer. The `X-Bridge-Forwarded` header prevents re-forwarding.
+      tags:
+        - Receivers
+      security:
+        - {}
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ReceiverID"
+        - $ref: "#/components/parameters/ContentTypeJSON"
+        - $ref: "#/components/parameters/ApiKeyHeader"
+        - $ref: "#/components/parameters/BridgeForwarded"
+      requestBody:
+        required: true
+        description: |
+          JSON message payload. The `subject` field is required; all other
+          fields are optional.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IngressRequest"
+            examples:
+              minimal:
+                summary: Minimal request with subject only
+                value:
+                  subject: "sensors/temperature"
+              full:
+                summary: Full request with all fields
+                value:
+                  subject: "sensors/temperature"
+                  payload:
+                    temp: 22.5
+                    unit: "celsius"
+                  id: "msg-20250101-001"
+                  headers:
+                    source: "web-api"
+                    tenant: "acme"
+                  expires_at: "2025-12-31T23:59:59Z"
+      responses:
+        "200":
+          description: Message accepted for processing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngressResponse"
+              example:
+                status: "accepted"
+        "400":
+          description: |
+            Invalid request. Possible causes: malformed JSON body, missing
+            required `subject` field, or invalid `expires_at` format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidBody:
+                  summary: Malformed JSON
+                  value:
+                    error: "invalid request body"
+                missingSubject:
+                  summary: Missing subject field
+                  value:
+                    error: "subject is required"
+                invalidExpiry:
+                  summary: Bad expires_at format
+                  value:
+                    error: "invalid expires_at: must be RFC3339 format"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          description: |
+            Internal processing failure. The message was received but the
+            routing engine failed to process it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "processing failed"
+        "502":
+          description: |
+            Cluster forwarding failure. The route is owned by a remote node
+            but forwarding failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                locationFailed:
+                  summary: Route location lookup failed
+                  value:
+                    error: "route location failed"
+                forwardFailed:
+                  summary: HTTP forward to peer failed
+                  value:
+                    error: "forward failed"
+                noForwarder:
+                  summary: No forwarder configured
+                  value:
+                    error: "no forwarder configured for remote route"
+        "503":
+          description: |
+            Receiver not ready. The receiver's `Run` method has not been
+            called yet, so it cannot accept messages.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "receiver not ready"
+        "504":
+          description: |
+            Request timeout. The request context was cancelled before the
+            routing engine finished processing the message.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "request timeout"
+
+  /transport/http/senders/{sender_id}/events:
+    get:
+      operationId: streamEvents
+      summary: Stream messages via Server-Sent Events
+      description: |
+        Opens a long-lived SSE connection and streams outbound messages as
+        `message` events. The connection is kept alive with periodic heartbeat
+        comments (default every 30 seconds).
+
+        Each connected client receives all messages broadcast by the sender.
+        The sender buffers up to 256 events per client; if a client falls
+        behind, events are dropped for that client.
+
+        **Cluster redirect**: When the sender is bound to a route owned by a
+        remote cluster node, the client receives an HTTP 307 redirect to the
+        owning peer's SSE endpoint.
+
+        **Connection limits**: The sender enforces a maximum number of
+        concurrent SSE clients (default 10,000). Connections beyond this limit
+        receive a 503 response.
+
+        ### SSE Event Format
+
+        Each message event follows the standard SSE wire format:
+
+        ```
+        id: msg-001
+        event: message
+        data: {"id":"msg-001","subject":"sensors/temp","payload":{"temp":22.5},"headers":{"source":"web-api"}}
+        ```
+
+        Heartbeat comments are sent as SSE comments:
+
+        ```
+        : heartbeat
+        ```
+      tags:
+        - Senders
+      security:
+        - {}
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SenderID"
+        - $ref: "#/components/parameters/ApiKeyHeader"
+      responses:
+        "200":
+          description: |
+            SSE stream opened. The response body is an indefinite stream of
+            Server-Sent Events. The connection remains open until the client
+            disconnects or the server shuts down.
+          headers:
+            Content-Type:
+              description: Always `text/event-stream` for SSE connections.
+              schema:
+                type: string
+                const: "text/event-stream"
+            Cache-Control:
+              description: Disables caching for the event stream.
+              schema:
+                type: string
+                const: "no-cache"
+            X-Accel-Buffering:
+              description: |
+                Disables response buffering in nginx reverse proxies.
+              schema:
+                type: string
+                const: "no"
+            X-Content-Type-Options:
+              description: Prevents MIME type sniffing.
+              schema:
+                type: string
+                const: "nosniff"
+          content:
+            text/event-stream:
+              schema:
+                description: |
+                  A stream of newline-delimited SSE frames. Each message
+                  event contains a JSON-encoded `SSEEvent` in its `data`
+                  field.
+                type: string
+              examples:
+                messageEvent:
+                  summary: A single message event
+                  value: |
+                    id: msg-001
+                    event: message
+                    data: {"id":"msg-001","subject":"sensors/temp","payload":{"temp":22.5},"headers":{"source":"web-api"}}
+                heartbeat:
+                  summary: Heartbeat comment
+                  value: |
+                    : heartbeat
+        "307":
+          description: |
+            Temporary redirect to the cluster node that owns the route. The
+            `Location` header points to the peer's SSE endpoint. Clients
+            should follow the redirect to establish the SSE connection.
+          headers:
+            Location:
+              description: |
+                Full URL of the SSE endpoint on the owning cluster node.
+                Format: `{peer_http_endpoint}/transport/http/senders/{sender_id}/events`
+              schema:
+                type: string
+                format: uri
+                example: "http://peer-node:9090/transport/http/senders/my-sender/events"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          description: |
+            Streaming not supported. The underlying `http.ResponseWriter`
+            does not implement `http.Flusher`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "streaming not supported"
+        "503":
+          description: |
+            Connection limit reached. The sender has reached its maximum
+            number of concurrent SSE clients.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "connection limit reached"
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        API key authentication. The key is configured per receiver or sender
+        endpoint. The server performs SHA-256 hashing followed by constant-time
+        comparison to prevent timing-based attacks.
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Bearer token authentication. An alternative to `X-API-Key` -- the
+        bearer token is compared against the same configured `api_key` value
+        using SHA-256 constant-time comparison.
+
+  parameters:
+    ReceiverID:
+      name: receiver_id
+      in: path
+      required: true
+      description: |
+        Unique identifier of the HTTP receiver. This ID is assigned during
+        receiver creation via the transport factory and corresponds to the
+        `id` field in the receiver configuration.
+      schema:
+        type: string
+        minLength: 1
+        example: "sensor-ingress"
+
+    SenderID:
+      name: sender_id
+      in: path
+      required: true
+      description: |
+        Unique identifier of the SSE sender. This ID is assigned during
+        sender creation via the transport factory and corresponds to the
+        `id` field in the sender configuration.
+      schema:
+        type: string
+        minLength: 1
+        example: "dashboard-stream"
+
+    ContentTypeJSON:
+      name: Content-Type
+      in: header
+      required: true
+      description: Must be `application/json` for message ingestion requests.
+      schema:
+        type: string
+        const: "application/json"
+
+    ApiKeyHeader:
+      name: X-API-Key
+      in: header
+      required: false
+      description: |
+        API key for authentication. Required only when the endpoint has an
+        `api_key` configured. Alternatively, use `Authorization: Bearer {key}`.
+      schema:
+        type: string
+        example: "my-secret-api-key"
+
+    BridgeForwarded:
+      name: X-Bridge-Forwarded
+      in: header
+      required: false
+      description: |
+        Internal header set to `"true"` by the cluster forwarder. Indicates
+        that this request has already been forwarded from another node.
+        Prevents infinite forwarding loops. Clients should not set this header.
+      schema:
+        type: string
+        enum:
+          - "true"
+        example: "true"
+
+  schemas:
+    IngressRequest:
+      type: object
+      required:
+        - subject
+      description: |
+        Message ingestion request body. Represents a message to be routed
+        through the GoBridge engine. The `subject` field is required; all
+        other fields are optional.
+      properties:
+        subject:
+          type: string
+          description: |
+            Message topic or subject. Used by the routing engine to determine
+            which route(s) should process this message.
+          example: "sensors/temperature"
+        payload:
+          description: |
+            Message content as arbitrary JSON. Can be any valid JSON value
+            (object, array, string, number, boolean, or null). Stored as raw
+            bytes in the internal envelope.
+          examples:
+            - {"temp": 22.5, "unit": "celsius"}
+            - [1, 2, 3]
+            - "plain string payload"
+        id:
+          type: string
+          description: |
+            Caller-provided message identifier. If omitted, the routing
+            engine may assign one. UUID format is recommended for global
+            uniqueness.
+          example: "msg-20250101-001"
+        headers:
+          type: object
+          additionalProperties: true
+          description: |
+            Custom metadata key-value pairs attached to the message. Keys
+            prefixed with `X-Bridge` (case-insensitive) are reserved and
+            will be stripped before processing.
+          example:
+            source: "web-api"
+            tenant: "acme"
+        expires_at:
+          type: string
+          format: date-time
+          description: |
+            Message expiration timestamp in RFC 3339 format. After this time,
+            the message may be routed to a dead-letter queue or dropped,
+            depending on the route's `on_expired` policy.
+          example: "2025-12-31T23:59:59Z"
+
+    IngressResponse:
+      type: object
+      required:
+        - status
+      description: Successful message ingestion response.
+      properties:
+        status:
+          type: string
+          const: "accepted"
+          description: |
+            Always `"accepted"` when the message has been successfully
+            received and processed (or forwarded to the owning cluster node).
+          example: "accepted"
+
+    SSEEvent:
+      type: object
+      required:
+        - id
+        - subject
+      description: |
+        JSON payload transmitted in the `data` field of an SSE `message`
+        event. Represents a single outbound message from the routing engine.
+      properties:
+        id:
+          type: string
+          description: Unique message identifier.
+          example: "msg-001"
+        subject:
+          type: string
+          description: Message topic or subject.
+          example: "sensors/temp"
+        payload:
+          description: |
+            Message content as arbitrary JSON. Mirrors the payload from the
+            original ingested message after any processor transformations.
+          examples:
+            - {"temp": 22.5}
+        headers:
+          type: object
+          additionalProperties: true
+          description: |
+            Custom metadata key-value pairs. May include headers added by
+            processors in the routing pipeline.
+          example:
+            source: "web-api"
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      description: |
+        Standard error response returned for all non-2xx status codes.
+        Contains a single human-readable error message.
+      properties:
+        error:
+          type: string
+          description: Human-readable description of the error.
+          example: "invalid request body"
+
+  responses:
+    Unauthorized:
+      description: |
+        Authentication failed. The endpoint has an `api_key` configured but
+        the request did not include a valid key via `X-API-Key` header or
+        `Authorization: Bearer` header.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "invalid or missing API key"

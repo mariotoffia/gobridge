@@ -29,22 +29,17 @@ func TestHandleHealth_WithComponentErrors(t *testing.T) {
 	assert.Equal(t, "not_running", body["status"])
 }
 
-// TestHandleLogs_ReturnsNotImplemented validates the logs endpoint returns
-// a stub response indicating log streaming is not yet implemented.
-func TestHandleLogs_ReturnsNotImplemented(t *testing.T) {
-	rt := runtime.New(runtime.WithInstanceID("test-logs"))
+// TestHandleHealth_CacheControl validates the Cache-Control header is set
+// on health probe responses.
+func TestHandleHealth_CacheControl(t *testing.T) {
+	rt := runtime.New(runtime.WithInstanceID("test-health-cache"))
 	s := New(rt, testConfig())
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/logs", nil)
-	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
-	s.handleLogs(rec, req)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/health", nil)
+	s.handleHealth(rec, req)
 
-	assert.Equal(t, http.StatusNotImplemented, rec.Code)
-
-	var body map[string]any
-	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
-	assert.Equal(t, "log streaming not yet implemented", body["error"])
+	assert.Equal(t, "no-cache, max-age=0", rec.Header().Get("Cache-Control"))
 }
 
 // TestHandleLive_ReturnsAlive validates the liveness probe returns "alive".

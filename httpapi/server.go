@@ -248,7 +248,7 @@ func (s *Server) corsMW(next http.Handler) http.Handler {
 		allowed := origin != "" && s.isAllowedOrigin(origin)
 		if allowed {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization")
 			w.Header().Set("Vary", "Origin")
 		}
@@ -276,6 +276,7 @@ func (s *Server) isAllowedOrigin(origin string) bool {
 func (s *Server) requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.checkAPIKey(r, s.cfg.AdminAPIKey) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="gobridge-admin"`)
 			writeErr(w, http.StatusUnauthorized, "invalid or missing API key")
 			return
 		}
@@ -285,11 +286,17 @@ func (s *Server) requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) requireMonitorAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		key := s.cfg.MonitorAPIKey
-		if key == "" {
-			key = s.cfg.AdminAPIKey
+		// Accept monitor key, or fall back to admin key (admin is a
+		// superset of monitor access).
+		ok := false
+		if s.cfg.MonitorAPIKey != "" {
+			ok = s.checkAPIKey(r, s.cfg.MonitorAPIKey)
 		}
-		if !s.checkAPIKey(r, key) {
+		if !ok {
+			ok = s.checkAPIKey(r, s.cfg.AdminAPIKey)
+		}
+		if !ok {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="gobridge-monitor"`)
 			writeErr(w, http.StatusUnauthorized, "invalid or missing API key")
 			return
 		}

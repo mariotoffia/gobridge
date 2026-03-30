@@ -2,6 +2,7 @@ package transport
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -19,13 +20,24 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
+// checkAPIKey validates the request API key using constant-time comparison.
+// Both values are SHA256-hashed before comparison to prevent length-based
+// timing leaks (subtle.ConstantTimeCompare returns 0 immediately when
+// slice lengths differ).
 func checkAPIKey(r *http.Request, key string) bool {
-	if got := r.Header.Get("X-API-Key"); len(got) > 0 && subtle.ConstantTimeCompare([]byte(got), []byte(key)) == 1 {
-		return true
+	expHash := sha256.Sum256([]byte(key))
+	if got := r.Header.Get("X-API-Key"); len(got) > 0 {
+		gotHash := sha256.Sum256([]byte(got))
+		if subtle.ConstantTimeCompare(gotHash[:], expHash[:]) == 1 {
+			return true
+		}
 	}
-	bearer := "Bearer " + key
-	if got := r.Header.Get("Authorization"); len(got) > 0 && subtle.ConstantTimeCompare([]byte(got), []byte(bearer)) == 1 {
-		return true
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		token := strings.TrimPrefix(auth, "Bearer ")
+		tHash := sha256.Sum256([]byte(token))
+		if subtle.ConstantTimeCompare(tHash[:], expHash[:]) == 1 {
+			return true
+		}
 	}
 	return false
 }

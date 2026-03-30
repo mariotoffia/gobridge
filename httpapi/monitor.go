@@ -17,24 +17,20 @@ func (s *Server) registerMonitorRoutes(mux *http.ServeMux) {
 	const prefix = "/api/v1/monitor"
 
 	// Unauthenticated probes for load balancers and orchestrators.
-	mux.HandleFunc(prefix+"/health", s.handleHealth)
-	mux.HandleFunc(prefix+"/live", s.handleLive)
-	mux.HandleFunc(prefix+"/ready", s.handleReady)
+	mux.HandleFunc("GET "+prefix+"/health", s.handleHealth)
+	mux.HandleFunc("GET "+prefix+"/live", s.handleLive)
+	mux.HandleFunc("GET "+prefix+"/ready", s.handleReady)
 
 	// Sensitive endpoints require authentication.
-	mux.HandleFunc(prefix+"/topology", s.requireMonitorAuth(s.handleTopology))
-	mux.HandleFunc(prefix+"/routes", s.requireMonitorAuth(s.handleMonitorRoutes))
-	mux.HandleFunc(prefix+"/deephealth", s.requireMonitorAuth(s.handleDeepHealth))
-	mux.HandleFunc(prefix+"/logs", s.requireMonitorAuth(s.handleLogs))
+	mux.HandleFunc("GET "+prefix+"/topology", s.requireMonitorAuth(s.handleTopology))
+	mux.HandleFunc("GET "+prefix+"/routes", s.requireMonitorAuth(s.handleMonitorRoutes))
+	mux.HandleFunc("GET "+prefix+"/deephealth", s.requireMonitorAuth(s.handleDeepHealth))
 }
 
 // --- Unauthenticated probes ---
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
+	w.Header().Set("Cache-Control", "no-cache, max-age=0")
 	status := "ok"
 	httpStatus := http.StatusOK
 	if !s.rt.Healthy() {
@@ -56,18 +52,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
+	w.Header().Set("Cache-Control", "no-cache, max-age=0")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
 }
 
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
+	w.Header().Set("Cache-Control", "no-cache, max-age=0")
 	if !s.rt.IsRunning() || !s.rt.Healthy() {
 		writeErr(w, http.StatusServiceUnavailable, "not ready")
 		return
@@ -80,47 +70,58 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 
 // --- Authenticated sensitive endpoints ---
 
+// topologyRouteView is a compact route projection for topology responses.
+type topologyRouteView struct {
+	ID           string `json:"id"`
+	DeliveryMode string `json:"delivery_mode"`
+	DispatchMode string `json:"dispatch_mode"`
+}
+
 func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 	routes := s.rt.Routes()
-	nodes := make([]map[string]any, len(routes))
+	views := make([]topologyRouteView, len(routes))
 	for i, ri := range routes {
-		nodes[i] = map[string]any{
-			"id":            ri.ID,
-			"delivery_mode": string(ri.DeliveryMode),
-			"dispatch_mode": string(ri.DispatchMode),
+		views[i] = topologyRouteView{
+			ID:           ri.ID,
+			DeliveryMode: string(ri.DeliveryMode),
+			DispatchMode: string(ri.DispatchMode),
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"instance_id": s.rt.InstanceID(),
 		"running":     s.rt.IsRunning(),
-		"routes":      nodes,
+		"routes":      views,
 	})
 }
 
+// monitorRouteView is a detailed route view with policy fields.
+type monitorRouteView struct {
+	ID              string `json:"id"`
+	DeliveryMode    string `json:"delivery_mode"`
+	DispatchMode    string `json:"dispatch_mode"`
+	MaxInFlight     int    `json:"max_in_flight"`
+	MaxReplay       int    `json:"max_replay"`
+	AckAfter        string `json:"ack_after"`
+	OnExpired       string `json:"on_expired"`
+	OnPermFailure   string `json:"on_perm_failure"`
+}
+
 func (s *Server) handleMonitorRoutes(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 	routes := s.rt.Routes()
-	views := make([]map[string]any, len(routes))
+	views := make([]monitorRouteView, len(routes))
 	for i, ri := range routes {
-		views[i] = map[string]any{
-			"id":              ri.ID,
-			"delivery_mode":   string(ri.DeliveryMode),
-			"dispatch_mode":   string(ri.DispatchMode),
-			"max_in_flight":   ri.Policy.MaxInFlight,
-			"max_replay":      ri.Policy.MaxReplayAttempts,
-			"ack_after":       string(ri.Policy.AckAfter),
-			"on_expired":      string(ri.Policy.OnExpired),
-			"on_perm_failure": string(ri.Policy.OnPermanentFailure),
+		views[i] = monitorRouteView{
+			ID:            ri.ID,
+			DeliveryMode:  string(ri.DeliveryMode),
+			DispatchMode:  string(ri.DispatchMode),
+			MaxInFlight:   ri.Policy.MaxInFlight,
+			MaxReplay:     ri.Policy.MaxReplayAttempts,
+			AckAfter:      string(ri.Policy.AckAfter),
+			OnExpired:     string(ri.Policy.OnExpired),
+			OnPermFailure: string(ri.Policy.OnPermanentFailure),
 		}
 	}
-	writeJSON(w, http.StatusOK, views)
+	writeJSON(w, http.StatusOK, map[string]any{"routes": views})
 }
 
 // deepHealthResponse is the JSON-serializable representation of a deep
@@ -152,11 +153,6 @@ type deepHealthRouteResponse struct {
 }
 
 func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
 	dh := s.rt.DeepHealth(r.Context())
 
 	resp := deepHealthResponse{
@@ -194,12 +190,4 @@ func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusServiceUnavailable
 	}
 	writeJSON(w, status, resp)
-}
-
-func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	writeErr(w, http.StatusNotImplemented, "log streaming not yet implemented")
 }
