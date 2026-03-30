@@ -76,6 +76,7 @@ git clone https://github.com/mariotoffia/gobridge.git
 cd gobridge
 go work sync
 make tidy
+make hooks-install
 ```
 
 ### Build
