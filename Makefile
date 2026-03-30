@@ -7,6 +7,7 @@
 .PHONY: build-core build-mqtt build-aws build-azure
 .PHONY: install vulncheck update update-major outdated
 .PHONY: docker-up docker-down docker-clean
+.PHONY: hooks hooks-install hooks-uninstall
 
 # Default target
 all: build test
@@ -117,6 +118,22 @@ install: ## Install all development and CI tools
 check: build lint test ## Run full CI check (no Docker, integration skipped)
 
 check-all: build lint test-integration ## Run full CI check including integration (Docker required)
+
+# ============================================================================
+# Git hooks
+# ============================================================================
+
+hooks: hooks-install ## Alias for hooks-install
+
+hooks-install: ## Install git pre-commit hooks (symlinks scripts/hooks/ into .git/hooks/)
+	@echo "Installing git hooks..."
+	@ln -sf ../../scripts/hooks/check-binaries.sh .git/hooks/pre-commit
+	@echo "Installed pre-commit hook: check-binaries"
+
+hooks-uninstall: ## Remove installed git hooks
+	@echo "Removing git hooks..."
+	@rm -f .git/hooks/pre-commit
+	@echo "Git hooks removed."
 
 # ============================================================================
 # Docker test containers

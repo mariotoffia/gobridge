@@ -8,6 +8,10 @@
 *.so
 *.dylib
 
+# Go compiled binaries (bare names — convention: use .out postfix)
+/gobridge
+/cmd/gobridge/gobridge
+
 # Test binary, built with `go test -c`
 *.test
 
