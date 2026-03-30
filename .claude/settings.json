@@ -3,20 +3,17 @@
     "allow": [
       "Bash(wc:*)",
       "Bash(find:*)",
-      "Bash(grep -n:*)",
+      "Bash(grep:*)",
       "Bash(go build:*)",
-      "Bash(wc -l:*)",
       "Bash(go test:*)",
       "Bash(make:*)",
       "Bash(ls:*)",
-      "Skill(skill-create-test:*)",
       "Bash(go mod:*)",
-      "Bash(AWS_ACCESS_KEY_ID=test:*)",
-      "Bash(grep:*)",
-      "Bash(grep -E \"--- \\(PASS|FAIL|SKIP\\)\")",
-      "Bash(grep -E \"=== RUN|--- PASS|--- FAIL|--- SKIP|PASS$|FAIL$\")",
-      "Bash(grep -l \"resilience\\\\|circuit\\\\|backpressure\\\\|quota\\\\|throughput\" /Users/mariotoffia/progs/github/gobridge/adapters/mqtt/transport/paho/*.go)",
-      "Bash(grep -E \"\\\\.go$\")"
+      "WebSearch",
+      "WebFetch(domain:mosquitto.org)",
+      "WebFetch(domain:github.com)",
+      "Bash(docker ps:*)",
+      "Read(//Users/mariotoffia/go/pkg/**)"
     ]
   }
 }
