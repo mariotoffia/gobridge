@@ -97,6 +97,7 @@ func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {
 		goruntime.WithLeaseStore(leaseStore),
 		goruntime.WithOutboxStore(outboxStore),
 		goruntime.WithDLQStore(dlq),
+		goruntime.WithLogger(testLogger(t)),
 	)
 
 	require.NoError(t, rt.RegisterSessionSender(scB, fSessB, sndB),

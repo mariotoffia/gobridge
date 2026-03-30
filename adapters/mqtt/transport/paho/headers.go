@@ -1,6 +1,9 @@
 package paho
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"io"
 	"time"
 	"unicode"
 
@@ -30,6 +33,7 @@ func EnvelopeFromPublish(pub *pahov5.Publish) *domain.Envelope {
 	now := time.Now()
 
 	env := &domain.Envelope{
+		ID:        generateEnvelopeID(),
 		Subject:   pub.Topic,
 		Payload:   pub.Payload,
 		CreatedAt: now,
@@ -143,4 +147,15 @@ func PublishFromEnvelope(env *domain.Envelope, opts SenderOptions) *pahov5.Publi
 	}
 
 	return pub
+}
+
+// generateEnvelopeID returns a random 16-byte hex string suitable for
+// use as an Envelope.ID. MQTT publishes do not carry a message ID that
+// the bridge can use, so we generate one on receipt.
+func generateEnvelopeID() string {
+	b := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		panic("paho: crypto/rand unavailable: " + err.Error())
+	}
+	return hex.EncodeToString(b)
 }
