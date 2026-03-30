@@ -44,8 +44,8 @@ func TestMain(m *testing.M) {
 
 	mqttlocal.Configure(
 		mqttlocal.WithPersistence(true),
-		mqttlocal.WithMaxInflightMessages(0),
-		mqttlocal.WithMaxQueuedMessages(0),
+		mqttlocal.WithMaxInflightMessages(65534), // Mosquitto treats 65535 as 0 (default 20)
+		mqttlocal.WithMaxQueuedMessages(65534),
 		mqttlocal.WithMaxQueuedBytes(0),
 		mqttlocal.WithMemory(mqttMem),
 		mqttlocal.WithCPUs(mqttCPU),
@@ -178,7 +178,7 @@ func setupMQTTSession(
 		KeepAlive:      30,
 		ConnectTimeout: 15 * time.Second,
 		CleanStart:     true,
-		ReceiveMaximum: 65535, // high throughput: avoid broker quota throttling
+		ReceiveMaximum: 65534, // max messages broker can send TO this client concurrently
 	}, mode, nil)
 
 	ctx := context.Background()
