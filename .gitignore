@@ -40,4 +40,7 @@ go.work.sum
 # other junk files
 .temp-files/
 .claude/
-.cursor/    
+.cursor/
+
+# Git worktrees
+.worktrees/
