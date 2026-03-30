@@ -179,7 +179,7 @@ func setupMQTTSession(
 		ConnectTimeout: 15 * time.Second,
 		CleanStart:     true,
 		ReceiveMaximum: 65534, // max messages broker can send TO this client concurrently
-	}, mode, nil)
+	}, mode, testLogger(t))
 
 	ctx := context.Background()
 	require.NoError(t, sess.Start(ctx), "MQTT session Start %q", clientID)
@@ -225,7 +225,7 @@ func newMQTTCollector(
 		KeepAlive:      30,
 		ConnectTimeout: 15 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, domain.SessionEphemeral, testLogger(t))
 
 	ctx := context.Background()
 	require.NoError(t, sess.Start(ctx), "collector Start")
@@ -250,7 +250,11 @@ func newMQTTCollector(
 		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
 			c.mu.Lock()
 			c.messages = append(c.messages, del.Envelope())
+			n := len(c.messages)
 			c.mu.Unlock()
+			if n <= 5 || n%500 == 0 {
+				t.Logf("collector: received msg #%d id=%s", n, del.Envelope().ID)
+			}
 			return nil
 		})
 	}()

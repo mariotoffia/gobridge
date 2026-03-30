@@ -158,7 +158,20 @@ func (s *Session) Start(ctx context.Context) error {
 		cfg.CleanStartOnInitialConnection = true
 		cfg.SessionExpiryInterval = 0
 	case domain.SessionPersistent, domain.SessionExclusive:
-		cfg.CleanStartOnInitialConnection = s.opts.CleanStart
+		if s.opts.CleanStart && s.mode == domain.SessionExclusive {
+			// CleanStart + Exclusive is a misconfiguration: autopaho reconnects
+			// with the same Client ID and CleanStart=true, causing the broker to
+			// disconnect the existing connection ("session taken over" loop).
+			// Override to false and log a warning.
+			if s.logger != nil {
+				s.logger.Warn("mqtt: CleanStart=true with SessionExclusive is invalid; "+
+					"overriding to CleanStart=false to prevent session takeover loop",
+					"client_id", s.opts.ClientID)
+			}
+			cfg.CleanStartOnInitialConnection = false
+		} else {
+			cfg.CleanStartOnInitialConnection = s.opts.CleanStart
+		}
 		cfg.SessionExpiryInterval = s.opts.SessionExpiryInterval
 	}
 
