@@ -96,7 +96,7 @@ func TestUC22_TenRule_MatchRule_Routing(t *testing.T) {
 
 	sqsRx := newSQSReceiver(t, inURL)
 	// Use the first sender as default; the Senders map routes to others.
-	rt := goruntime.New(goruntime.WithInstanceID("uc22-bridge"), goruntime.WithDLQStore(dlq))
+	rt := goruntime.New(goruntime.WithInstanceID("uc22-bridge"), goruntime.WithDLQStore(dlq), goruntime.WithLogger(testLogger(t)))
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID:                 "uc22-route",
 		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},

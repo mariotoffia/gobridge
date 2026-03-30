@@ -225,9 +225,11 @@ func TestRouteRunner_ProcessorError_Transient(t *testing.T) {
 	}
 }
 
-// TestRouteRunner_ProcessorError_MessageFiltered verifies filtered messages ack silently without send, retry, or DLQ.
-func TestRouteRunner_ProcessorError_MessageFiltered(t *testing.T) {
+// TestRouteRunner_ProcessorError_MessageFiltered_Drop verifies filtered messages ack silently
+// without send, retry, or DLQ when OnPermanentFailure is set to Drop.
+func TestRouteRunner_ProcessorError_MessageFiltered_Drop(t *testing.T) {
 	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+		cfg.Policy.OnPermanentFailure = domain.FailureDrop
 		cfg.Processors = []ports.Processor{
 			&FakeProcessor{NameVal: "filter", ProcessErr: domain.ErrMessageFiltered},
 		}
@@ -250,6 +252,41 @@ func TestRouteRunner_ProcessorError_MessageFiltered(t *testing.T) {
 	}
 	if dlqStore.Count() != 0 {
 		t.Fatalf("filtered message should not go to DLQ, got %d entries", dlqStore.Count())
+	}
+	if sender.SentCount() != 0 {
+		t.Fatalf("filtered message should not be sent, got %d", sender.SentCount())
+	}
+}
+
+// TestRouteRunner_ProcessorError_MessageFiltered_DLQ verifies filtered messages are
+// written to DLQ and acked when OnPermanentFailure is set to DLQ.
+func TestRouteRunner_ProcessorError_MessageFiltered_DLQ(t *testing.T) {
+	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+		cfg.Policy.OnPermanentFailure = domain.FailureDLQ
+		cfg.Processors = []ports.Processor{
+			&FakeProcessor{NameVal: "filter", ProcessErr: domain.ErrMessageFiltered},
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = runner.Run(ctx) }()
+
+	del := NewFakeDelivery(&domain.Envelope{ID: "msg-filtered-dlq"})
+	_ = receiver.Emit(ctx, del)
+	waitFor(t, time.Second, "filtered message DLQ and ack", func() bool {
+		return dlqStore.Count() == 1 && del.IsAcked()
+	})
+
+	if !del.IsAcked() {
+		t.Fatal("filtered message with DLQ policy should be acked")
+	}
+	if del.IsRetried() {
+		t.Fatal("filtered message should not be retried")
+	}
+	if dlqStore.Count() != 1 {
+		t.Fatalf("filtered message with DLQ policy should have 1 DLQ entry, got %d", dlqStore.Count())
 	}
 	if sender.SentCount() != 0 {
 		t.Fatalf("filtered message should not be sent, got %d", sender.SentCount())

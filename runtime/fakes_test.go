@@ -211,7 +211,7 @@ func (s *FakeSession) Reconcile(_ context.Context, plan domain.SessionPlan) erro
 }
 
 func (s *FakeSession) Health(_ context.Context) ports.SessionHealth {
-	return ports.SessionHealth{Connected: true}
+	return ports.SessionHealth{Connected: true, Ready: true, ServiceLevel: ports.ServiceLevelFull}
 }
 
 func (s *FakeSession) Events() <-chan ports.SessionEvent {

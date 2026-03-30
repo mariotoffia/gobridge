@@ -323,8 +323,9 @@ func e2eWaitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool
 	t.Fatalf("timed out waiting for: %s", desc)
 }
 
-// gobridgesync waits until all runtimes report ReadyForTraffic via DeepHealth.
-// On timeout, logs detailed health for each bridge and fails the test.
+// gobridgesync waits until all runtimes report ReadyForTraffic and
+// ServiceLevel Full via DeepHealth. On timeout, logs detailed health
+// for each bridge and fails the test.
 func gobridgesync(t *testing.T, timeout time.Duration, runtimes ...*goruntime.Runtime) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -332,7 +333,7 @@ func gobridgesync(t *testing.T, timeout time.Duration, runtimes ...*goruntime.Ru
 		allReady := true
 		for _, rt := range runtimes {
 			dh := rt.DeepHealth(context.Background())
-			if !dh.ReadyForTraffic {
+			if !dh.ReadyForTraffic || dh.ServiceLevel != ports.ServiceLevelFull {
 				allReady = false
 				break
 			}
@@ -345,8 +346,8 @@ func gobridgesync(t *testing.T, timeout time.Duration, runtimes ...*goruntime.Ru
 	// Dump health for debugging on failure
 	for _, rt := range runtimes {
 		dh := rt.DeepHealth(context.Background())
-		t.Logf("gobridgesync: instance=%s running=%v healthy=%v ready=%v sessions=%+v",
-			dh.InstanceID, dh.Running, dh.Healthy, dh.ReadyForTraffic, dh.Sessions)
+		t.Logf("gobridgesync: instance=%s running=%v healthy=%v ready=%v service_level=%s sessions=%+v",
+			dh.InstanceID, dh.Running, dh.Healthy, dh.ReadyForTraffic, dh.ServiceLevel, dh.Sessions)
 	}
 	t.Fatalf("gobridgesync: timed out waiting for %d bridges to be ready", len(runtimes))
 }

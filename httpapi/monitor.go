@@ -131,6 +131,7 @@ type deepHealthResponse struct {
 	InstanceID      string                      `json:"instance_id"`
 	Role            string                      `json:"role"`
 	ReadyForTraffic bool                        `json:"ready_for_traffic"`
+	ServiceLevel    string                      `json:"service_level"`
 	Sessions        []deepHealthSessionResponse `json:"sessions"`
 	Routes          []deepHealthRouteResponse   `json:"routes"`
 }
@@ -142,6 +143,7 @@ type deepHealthSessionResponse struct {
 	SubscriptionsWanted int    `json:"subscriptions_wanted"`
 	SubscriptionsActive int    `json:"subscriptions_active"`
 	Ready               bool   `json:"ready"`
+	ServiceLevel        string `json:"service_level"`
 }
 
 type deepHealthRouteResponse struct {
@@ -163,6 +165,7 @@ func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 		InstanceID:      dh.InstanceID,
 		Role:            dh.Role,
 		ReadyForTraffic: dh.ReadyForTraffic,
+		ServiceLevel:    string(dh.ServiceLevel),
 	}
 
 	resp.Sessions = make([]deepHealthSessionResponse, len(dh.Sessions))
@@ -174,6 +177,7 @@ func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 			SubscriptionsWanted: sh.SubscriptionsWanted,
 			SubscriptionsActive: sh.SubscriptionsActive,
 			Ready:               sh.Ready,
+			ServiceLevel:        string(sh.ServiceLevel),
 		}
 	}
 

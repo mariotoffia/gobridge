@@ -17,16 +17,22 @@ import (
 
 // stubSession implements ports.Session for deep health tests.
 type stubSession struct {
-	connected bool
-	ready     bool
-	events    chan ports.SessionEvent
+	connected    bool
+	ready        bool
+	serviceLevel ports.ServiceLevel
+	events       chan ports.SessionEvent
 }
 
 func newStubSession(connected, ready bool) *stubSession {
+	sl := ports.ServiceLevelNone
+	if connected && ready {
+		sl = ports.ServiceLevelFull
+	}
 	return &stubSession{
-		connected: connected,
-		ready:     ready,
-		events:    make(chan ports.SessionEvent, 1),
+		connected:    connected,
+		ready:        ready,
+		serviceLevel: sl,
+		events:       make(chan ports.SessionEvent, 1),
 	}
 }
 
@@ -34,8 +40,9 @@ func (s *stubSession) Start(context.Context) error                        { retu
 func (s *stubSession) Reconcile(context.Context, domain.SessionPlan) error { return nil }
 func (s *stubSession) Health(context.Context) ports.SessionHealth {
 	return ports.SessionHealth{
-		Connected: s.connected,
-		Ready:     s.ready,
+		Connected:    s.connected,
+		Ready:        s.ready,
+		ServiceLevel: s.serviceLevel,
 	}
 }
 func (s *stubSession) Events() <-chan ports.SessionEvent { return s.events }
@@ -157,6 +164,8 @@ func TestHandleDeepHealth_WithSession(t *testing.T) {
 	assert.Equal(t, "sess-1", body.Sessions[0].SessionID)
 	assert.True(t, body.Sessions[0].Connected)
 	assert.True(t, body.Sessions[0].Ready)
+	assert.Equal(t, "full", body.Sessions[0].ServiceLevel)
+	assert.Equal(t, "full", body.ServiceLevel)
 
 	require.Len(t, body.Routes, 1)
 	assert.Equal(t, "route-with-session", body.Routes[0].ID)

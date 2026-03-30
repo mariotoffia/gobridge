@@ -297,7 +297,11 @@ func TestUC15_ConnectAfterLease(t *testing.T) {
 		cancelA(); _ = rtA.Stop(context.Background())
 		cancelB(); _ = rtB.Stop(context.Background())
 	})
-	gobridgesync(t, 10*time.Second, rtA, rtB)
+	// With ConnectAfterLease=true, only the active instance connects.
+	// Wait for one runtime to become active instead of requiring both ready.
+	lrWaitFor(t, 10*time.Second, "one bridge active", func() bool {
+		return rtA.Role() == "active" || rtB.Role() == "active"
+	})
 
 	roleA, roleB := rtA.Role(), rtB.Role()
 	t.Logf("UC15: A=%s, B=%s", roleA, roleB)

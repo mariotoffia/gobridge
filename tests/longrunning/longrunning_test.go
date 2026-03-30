@@ -137,27 +137,24 @@ func setupSQSQueue(t *testing.T, prefix string) (string, *awssqs.Client) {
 
 func newSQSReceiver(t *testing.T, queueURL string) *sqsadapter.Receiver {
 	t.Helper()
-	ep := sqslocal.Endpoint(t)
 	r, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          queueURL,
-		Endpoint:          ep,
-		Region:            "us-east-1",
+		Client:            sqslocal.Client(t),
 		MaxMessages:       10,
 		WaitTimeSeconds:   1,
 		VisibilityTimeout: 30,
-	}, slog.Default())
+	}, testLogger(t))
 	require.NoError(t, err, "newSQSReceiver")
 	return r
 }
 
 func newSQSSender(t *testing.T, queueURL string) *sqsadapter.Sender {
 	t.Helper()
-	ep := sqslocal.Endpoint(t)
 	s, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueURL: queueURL,
-		Endpoint: ep,
-		Region:   "us-east-1",
+		Client:   sqslocal.Client(t),
 		Timeout:  10 * time.Second,
+		Logger:   testLogger(t),
 	})
 	require.NoError(t, err, "newSQSSender")
 	return s

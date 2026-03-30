@@ -3,6 +3,7 @@ package sqs
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -64,6 +65,16 @@ func headersToAttributes(headers map[string]any) map[string]sqstypes.MessageAttr
 
 	for k, v := range headers {
 		if k == domain.HeaderOrderingKey || k == domain.HeaderDeduplicationID {
+			continue
+		}
+		// Skip SQS system attributes injected by the receiver — they are
+		// receiver metadata and must not be forwarded as user attributes.
+		if strings.HasPrefix(k, "sqs.") {
+			continue
+		}
+		// Skip bridge-reserved headers; they are injected per-hop and
+		// should not consume SQS attribute slots.
+		if domain.IsReservedHeader(k) {
 			continue
 		}
 

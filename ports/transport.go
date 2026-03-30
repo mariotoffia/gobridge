@@ -53,17 +53,34 @@ type SessionEvent struct {
 	Timestamp time.Time
 }
 
+// ServiceLevel describes the operational completeness of a session's
+// subscription and handler state.
+type ServiceLevel string
+
+const (
+	// ServiceLevelNone indicates no subscriptions are active and no
+	// handlers are registered, or the session is not connected.
+	ServiceLevelNone ServiceLevel = "none"
+	// ServiceLevelDegraded indicates the session is connected but not
+	// all desired subscriptions are active on the broker.
+	ServiceLevelDegraded ServiceLevel = "degraded"
+	// ServiceLevelFull indicates all desired subscriptions are active
+	// and handlers are registered (when subscriptions are expected).
+	ServiceLevelFull ServiceLevel = "full"
+)
+
 // SessionHealth describes the current health state of a session.
 // Transports that manage subscriptions (e.g., MQTT) should populate
 // the subscription and handler fields so callers can determine readiness.
 type SessionHealth struct {
 	Connected           bool
 	LastError           error
-	SubscriptionsWanted int    // Number of subscriptions in the reconciled plan
-	SubscriptionsActive int    // Number of subscriptions confirmed by broker
-	HandlersRegistered  int    // Number of receiver handlers on the message router
-	ReceiveMaximum      uint16 // MQTT v5 ReceiveMaximum (0 = unknown/not applicable)
-	Ready               bool   // Connected && subs match && handlers registered (when expected)
+	SubscriptionsWanted int          // Number of subscriptions in the reconciled plan
+	SubscriptionsActive int          // Number of subscriptions confirmed by broker
+	HandlersRegistered  int          // Number of receiver handlers on the message router
+	ReceiveMaximum      uint16       // MQTT v5 ReceiveMaximum (0 = unknown/not applicable)
+	Ready               bool         // Connected to the broker (connectivity only)
+	ServiceLevel        ServiceLevel // Operational completeness (none/degraded/full)
 }
 
 // Session owns network identity and remote state for stateful transports.

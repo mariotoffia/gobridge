@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -248,11 +249,13 @@ func TestUC58_DoubleDrainPrevention(t *testing.T) {
 	require.NoError(t, rtB.Start(ctx))
 	defer func() { _ = rtB.Stop(context.Background()) }()
 
-	// At least one bridge must become ready (the lease winner).
+	// At least one bridge must become fully ready (the lease winner).
 	lrWaitFor(t, 15*time.Second, "at least one bridge ready", func() bool {
 		dhA := rtA.DeepHealth(context.Background())
 		dhB := rtB.DeepHealth(context.Background())
-		return dhA.ReadyForTraffic || dhB.ReadyForTraffic
+		aFull := dhA.ReadyForTraffic && dhA.ServiceLevel == ports.ServiceLevelFull
+		bFull := dhB.ReadyForTraffic && dhB.ServiceLevel == ports.ServiceLevelFull
+		return aFull || bFull
 	})
 
 	t.Logf("UC58: sending %d messages to shared SQS queue", msgCount)

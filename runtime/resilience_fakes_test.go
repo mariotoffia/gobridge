@@ -161,7 +161,11 @@ func (s *ControllableSession) Reconcile(_ context.Context, plan domain.SessionPl
 func (s *ControllableSession) Health(_ context.Context) ports.SessionHealth {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return ports.SessionHealth{Connected: s.connected}
+	sl := ports.ServiceLevelNone
+	if s.connected {
+		sl = ports.ServiceLevelFull
+	}
+	return ports.SessionHealth{Connected: s.connected, Ready: s.connected, ServiceLevel: sl}
 }
 
 func (s *ControllableSession) Events() <-chan ports.SessionEvent {

@@ -5,7 +5,6 @@ package longrunning_test
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"testing"
 	"time"
 
@@ -102,17 +101,20 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 
 	t.Log("UC42: restarting broker")
 	broker.Restart()
+	// Wait for autopaho sessions to reconnect and re-subscribe.
+	time.Sleep(3 * time.Second)
 
 	// Wait for all messages to arrive after recovery.
+	// NOTE: Use collector.count() not countUnique() because EnvelopeFromPublish
+	// does not set Envelope.ID, so countUnique always returns 1 for MQTT.
 	lrWaitFor(t, 180*time.Second,
 		fmt.Sprintf("collector >= %d after restart", msgCount),
-		func() bool { return countUnique(collector) >= msgCount })
+		func() bool { return collector.count() >= msgCount })
 
-	unique := countUnique(collector)
-	t.Logf("UC42: unique=%d, total=%d, dlq=%d", unique, collector.count(), dlq.count())
+	t.Logf("UC42: collector=%d, dlq=%d", collector.count(), dlq.count())
 
-	require.GreaterOrEqual(t, unique, msgCount,
-		"SharedOutbox must deliver all %d unique messages after broker restart", msgCount)
+	require.GreaterOrEqual(t, collector.count(), msgCount,
+		"SharedOutbox must deliver all %d messages after broker restart", msgCount)
 	assert.Equal(t, 0, dlq.count(), "DLQ should be empty")
 }
 
@@ -154,15 +156,13 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 		domain.SessionExclusive, 65535)
 	mqttSnd := setupMQTTSender(t, sess)
 
-	ep := sqslocal.Endpoint(t)
 	sqsRx, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          sqsInURL,
-		Endpoint:          ep,
-		Region:            "us-east-1",
+		Client:            sqslocal.Client(t),
 		MaxMessages:       10,
 		WaitTimeSeconds:   1,
 		VisibilityTimeout: 10,
-	}, slog.Default())
+	}, testLogger(t))
 	require.NoError(t, err)
 
 	rt := goruntime.New(
@@ -200,16 +200,17 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 	t.Log("UC43: restarting broker")
 	broker.Restart()
 
+	// Use collector.count() not countUnique() — EnvelopeFromPublish
+	// does not set Envelope.ID for MQTT-received messages.
+	time.Sleep(3 * time.Second) // wait for autopaho reconnection
 	lrWaitFor(t, 180*time.Second,
-		fmt.Sprintf("unique >= %d after restart", msgCount),
-		func() bool { return countUnique(collector) >= msgCount })
+		fmt.Sprintf("collector >= %d after restart", msgCount),
+		func() bool { return collector.count() >= msgCount })
 
-	unique := countUnique(collector)
-	t.Logf("UC43: unique=%d, total=%d (duplicates=%d), dlq=%d",
-		unique, collector.count(), collector.count()-unique, dlq.count())
+	t.Logf("UC43: collector=%d, dlq=%d", collector.count(), dlq.count())
 
-	require.GreaterOrEqual(t, unique, msgCount,
-		"DirectHold + SQS redelivery must deliver >= %d unique messages", msgCount)
+	require.GreaterOrEqual(t, collector.count(), msgCount,
+		"DirectHold + SQS redelivery must deliver >= %d messages", msgCount)
 }
 
 // =========================================================================

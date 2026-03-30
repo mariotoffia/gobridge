@@ -340,12 +340,16 @@ func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager,
 }
 
 // Health returns the current health state of the session, including
-// subscription and handler readiness. Ready is true when:
-//   - The session is connected to the broker
-//   - All desired subscriptions are active on the broker
-//   - At least one receiver handler is registered (when subscriptions are expected)
+// subscription and handler readiness.
 //
-// For sender-only sessions (no subscriptions), Ready is true when connected.
+// Ready is true when the session is connected to the broker (connectivity only).
+//
+// ServiceLevel describes operational completeness:
+//   - Full: all desired subscriptions active and handlers registered (when expected)
+//   - Degraded: connected but not all desired subscriptions are active
+//   - None: not connected, or no subscriptions/handlers registered
+//
+// For sender-only sessions (no subscriptions), ServiceLevel is Full when connected.
 func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	s.mu.Lock()
 	cm := s.cm
@@ -360,13 +364,19 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	}
 	handlerCount := s.router.HandlerCount()
 
-	// Ready logic:
-	// - Must be connected
-	// - Subscriptions must match plan
-	// - If subscriptions are expected, at least one handler must be registered
-	ready := connected && wantedCount == activeCount
-	if ready && wantedCount > 0 {
-		ready = handlerCount > 0
+	var sl ports.ServiceLevel
+	switch {
+	case !connected:
+		sl = ports.ServiceLevelNone
+	case wantedCount == 0:
+		// Sender-only session: no subscriptions expected.
+		sl = ports.ServiceLevelFull
+	case activeCount == wantedCount && handlerCount > 0:
+		sl = ports.ServiceLevelFull
+	case activeCount == 0 && handlerCount == 0:
+		sl = ports.ServiceLevelNone
+	default:
+		sl = ports.ServiceLevelDegraded
 	}
 
 	rm := s.opts.ReceiveMaximum
@@ -380,7 +390,8 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		SubscriptionsActive: activeCount,
 		HandlersRegistered:  handlerCount,
 		ReceiveMaximum:      rm,
-		Ready:               ready,
+		Ready:               connected,
+		ServiceLevel:        sl,
 	}
 }
 

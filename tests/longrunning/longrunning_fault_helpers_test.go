@@ -5,6 +5,7 @@ package longrunning_test
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -87,8 +88,8 @@ func (s *degradedSender) Send(ctx context.Context, env *domain.Envelope) error {
 			return ctx.Err()
 		}
 	}
-	n := s.calls.Add(1)
-	if int(n%100) < s.failPercent {
+	s.calls.Add(1)
+	if rand.IntN(100) < s.failPercent {
 		return domain.ErrUnavailable.WithMessage("degraded sender: injected failure")
 	}
 	return s.inner.Send(ctx, env)

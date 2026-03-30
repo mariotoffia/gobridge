@@ -256,20 +256,20 @@ func TestUC5_PipelineChain(t *testing.T) {
 		}
 	}()
 
-	// Wait until MQTT subscriber sessions are ready (subscriptions active
-	// AND receiver handler registered). Bridge-2 and Bridge-4 subscribe via
-	// MQTT; we need their sessions to confirm subscriptions are active.
-	// Also wait briefly for receiver handlers to register on the router.
+	// Wait until MQTT subscriber sessions are fully operational (subscriptions
+	// active AND receiver handler registered). Bridge-2 and Bridge-4 subscribe
+	// via MQTT; we need their sessions to confirm subscriptions are active.
 	lrWaitFor(t, 10*time.Second, "Bridge-2 session ready", func() bool {
 		h := sess2.Health(context.Background())
 		if isDebug() {
-			t.Logf("UC5: sess2 health: connected=%v subs=%d/%d handlers=%d ready=%v",
-				h.Connected, h.SubscriptionsActive, h.SubscriptionsWanted, h.HandlersRegistered, h.Ready)
+			t.Logf("UC5: sess2 health: connected=%v subs=%d/%d handlers=%d ready=%v service_level=%s",
+				h.Connected, h.SubscriptionsActive, h.SubscriptionsWanted, h.HandlersRegistered, h.Ready, h.ServiceLevel)
 		}
-		return h.Ready
+		return h.Ready && h.ServiceLevel == ports.ServiceLevelFull
 	})
 	lrWaitFor(t, 10*time.Second, "Bridge-4 session ready", func() bool {
-		return sess4.Health(context.Background()).Ready
+		h := sess4.Health(context.Background())
+		return h.Ready && h.ServiceLevel == ports.ServiceLevelFull
 	})
 
 	// -- Inject messages into SQS-STAGE-0 ----------------------------------

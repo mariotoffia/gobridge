@@ -223,7 +223,7 @@ func (s *noopSession) Reconcile(
 	return nil
 }
 func (s *noopSession) Health(_ context.Context) ports.SessionHealth {
-	return ports.SessionHealth{Connected: true}
+	return ports.SessionHealth{Connected: true, Ready: true, ServiceLevel: ports.ServiceLevelFull}
 }
 func (s *noopSession) Events() <-chan ports.SessionEvent {
 	return s.events

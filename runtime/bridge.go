@@ -536,6 +536,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) DeepHealth {
 	}
 
 	allReady := rt.running && rt.healthy
+	aggSL := ports.ServiceLevelFull
 
 	// Collect session health from route entries.
 	seen := make(map[string]bool)
@@ -556,6 +557,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) DeepHealth {
 			SubscriptionsWanted: sh.SubscriptionsWanted,
 			SubscriptionsActive: sh.SubscriptionsActive,
 			Ready:               sh.Ready,
+			ServiceLevel:        sh.ServiceLevel,
 		}
 		if mgr, ok := rt.sessionMgrs[sid]; ok {
 			_, detail.HasLease = mgr.Token()
@@ -564,6 +566,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) DeepHealth {
 		if !sh.Ready {
 			allReady = false
 		}
+		aggSL = minServiceLevel(aggSL, sh.ServiceLevel)
 	}
 
 	// Also include sessionSenders (fan-out targets).
@@ -579,6 +582,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) DeepHealth {
 			SubscriptionsWanted: sh.SubscriptionsWanted,
 			SubscriptionsActive: sh.SubscriptionsActive,
 			Ready:               sh.Ready,
+			ServiceLevel:        sh.ServiceLevel,
 		}
 		if mgr, ok := rt.sessionMgrs[sid]; ok {
 			_, detail.HasLease = mgr.Token()
@@ -587,6 +591,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) DeepHealth {
 		if !sh.Ready {
 			allReady = false
 		}
+		aggSL = minServiceLevel(aggSL, sh.ServiceLevel)
 	}
 
 	// Routes.
@@ -597,10 +602,24 @@ func (rt *Runtime) DeepHealth(ctx context.Context) DeepHealth {
 		})
 	}
 
-	// Sessions with no subscriptions (senders only, no plan) are ready
-	// if connected. Override allReady only when subscriptions are expected.
 	dh.ReadyForTraffic = allReady
+	dh.ServiceLevel = aggSL
 	return dh
+}
+
+// minServiceLevel returns the lower of two service levels.
+// Order: None < Degraded < Full. Empty string is treated as None.
+func minServiceLevel(a, b ports.ServiceLevel) ports.ServiceLevel {
+	order := map[ports.ServiceLevel]int{
+		ports.ServiceLevelNone:     0,
+		"":                         0,
+		ports.ServiceLevelDegraded: 1,
+		ports.ServiceLevelFull:     2,
+	}
+	if order[a] < order[b] {
+		return a
+	}
+	return b
 }
 
 // DeepHealth is a comprehensive health snapshot of the runtime.
@@ -611,7 +630,8 @@ type DeepHealth struct {
 	Role            string
 	Routes          []RouteHealth
 	Sessions        []SessionHealthDetail
-	ReadyForTraffic bool // All sessions ready + runtime healthy
+	ReadyForTraffic bool               // All sessions connected + runtime healthy
+	ServiceLevel    ports.ServiceLevel // Minimum service level across all sessions
 }
 
 // SessionHealthDetail describes one session's health including
@@ -623,6 +643,7 @@ type SessionHealthDetail struct {
 	SubscriptionsWanted int
 	SubscriptionsActive int
 	Ready               bool
+	ServiceLevel        ports.ServiceLevel
 }
 
 // RouteHealth describes one route's health.
