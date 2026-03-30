@@ -112,7 +112,7 @@ func TestUC31_OutboxReplay_Exhaustion(t *testing.T) {
 	dlqStore := &lrDLQStore{}
 
 	sessionID := mqttlocal.UniqueClientID("uc31-session")
-	sess := setupMQTTSession(t, sessionID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessionID, domain.SessionExclusive)
 	failSender := &alwaysFailSender{}
 	sqsRx := newSQSReceiver(t, inQueueURL)
 	sc := lrSessionConfig(sessionID)

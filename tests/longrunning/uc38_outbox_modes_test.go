@@ -46,7 +46,7 @@ func TestUC38_OutboxDepthLimit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	mqttSess := setupMQTTSession(t, sessionID, domain.SessionExclusive)
+	mqttSess := newMQTTSession(t, sessionID, domain.SessionExclusive)
 	realSender := setupMQTTSender(t, mqttSess)
 	paused := newPausableSender(realSender)
 	sqsRx := newSQSReceiver(t, sqsInURL)
@@ -132,7 +132,7 @@ func TestUC39_AckAfterOutboxPersist(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	mqttSess := setupMQTTSession(t, sessionID, domain.SessionExclusive)
+	mqttSess := newMQTTSession(t, sessionID, domain.SessionExclusive)
 	realSender := setupMQTTSender(t, mqttSess)
 	slow := newSlowSender(realSender, 200*time.Millisecond)
 	sqsRx := newSQSReceiver(t, sqsInURL)
@@ -242,7 +242,7 @@ func TestUC40_AdaptiveDrain_Backoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	mqttSess := setupMQTTSession(t, sessionID, domain.SessionExclusive)
+	mqttSess := newMQTTSession(t, sessionID, domain.SessionExclusive)
 	mqttSnd := setupMQTTSender(t, mqttSess)
 	sqsRx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessionID)
@@ -364,7 +364,7 @@ func TestUC41_IdempotentOutbox_Persist(t *testing.T) {
 
 	sqsSnd := newSQSSender(t, sqsOutURL)
 	slowProc := &uc41SlowFirstN{delay: 4 * time.Second, limit: 50}
-	mqttSess := setupMQTTSession(t, sessionID, domain.SessionExclusive)
+	mqttSess := newMQTTSession(t, sessionID, domain.SessionExclusive)
 	sc := lrSessionConfig(sessionID)
 
 	rt := goruntime.New(

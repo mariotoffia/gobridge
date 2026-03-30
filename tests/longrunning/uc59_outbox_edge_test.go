@@ -38,7 +38,7 @@ func TestUC59_PartitionHotspot(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc59-col")
 
 	sessID := mqttlocal.UniqueClientID("uc59-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessID)
@@ -114,7 +114,7 @@ func TestUC60_OutboxPlusBrokerDown(t *testing.T) {
 	collector := newMQTTCollectorWithBroker(t, brokerURL, outTopic, "uc60-col")
 
 	sessID := mqttlocal.UniqueClientID("uc60-sess")
-	sess := setupMQTTSessionWithBroker(t, brokerURL, sessID, domain.SessionExclusive, 50)
+	sess := newMQTTSessionWithBroker(t, brokerURL, sessID, domain.SessionExclusive, 50)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessID)
@@ -204,7 +204,7 @@ func TestUC61_MaxReplayAttempts(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc61-col")
 
 	sessID := mqttlocal.UniqueClientID("uc61-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	mqttSnd := setupMQTTSender(t, sess)
 	snd := newFailFirstNSender(mqttSnd, failCount)
 	rx := newSQSReceiver(t, sqsInURL)
@@ -274,7 +274,7 @@ func TestUC62_LeaseRenewalHighLoad(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc62-col")
 
 	sessID := mqttlocal.UniqueClientID("uc62-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessID)

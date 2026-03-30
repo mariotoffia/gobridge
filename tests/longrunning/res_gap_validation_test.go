@@ -209,7 +209,7 @@ func TestRES005_AutoExtendFailureDuplicates(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "res005-col")
 
 	sessID := mqttlocal.UniqueClientID("res005-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	mqttSnd := setupMQTTSender(t, sess)
 
 	// SQS receiver with short visibility + auto-extend enabled.
@@ -310,7 +310,7 @@ func TestRES001_NoCircuitBreakerOnSender(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "res001-col")
 
 	sessID := mqttlocal.UniqueClientID("res001-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	baseSnd := setupMQTTSender(t, sess)
 	// Wrap in CB sender + degradedSender: 80% fail, 5s latency per send.
 	// CB opens after 5 consecutive failures and fails-fast with ErrUnavailable.
@@ -383,7 +383,7 @@ func TestRES006_DLQWriteBlocksSemaphore(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "res006-col")
 
 	sessID := mqttlocal.UniqueClientID("res006-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("res006-bridge"),
@@ -450,7 +450,7 @@ func TestRES011_RouterPanicSwallowsMessages(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "res011-col")
 
 	sessID := mqttlocal.UniqueClientID("res011-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 
 	rt := goruntime.New(

@@ -40,7 +40,7 @@ func TestUC68_FiveMinuteSoak(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc68-col")
 
 	sessID := mqttlocal.UniqueClientID("uc68-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 
 	rt := goruntime.New(
@@ -155,7 +155,7 @@ func TestUC67_ConcurrentReconcile(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc67-col")
 
 	sessID := mqttlocal.UniqueClientID("uc67-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 

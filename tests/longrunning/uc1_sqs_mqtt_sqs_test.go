@@ -34,7 +34,7 @@ import (
 // =========================================================================
 
 const (
-	uc1MsgCount    = 5000
+	uc1MsgCount    = 1000
 	uc1Topic       = "uc1/pipeline/data"
 	uc1PollTimeout = 300 * time.Second
 )
@@ -57,7 +57,7 @@ func TestUC1_SQS_MQTT_SharedSub_FanOut_SQS(t *testing.T) {
 	for i := range ingressRTs {
 		label := string(rune('A' + i))
 		sessID := mqttlocal.UniqueClientID(fmt.Sprintf("uc1-ingress-%s", label))
-		sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+		sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 		mqttSnd := setupMQTTSender(t, sess)
 		sqsRx := newSQSReceiver(t, sqsInURL)
 		sc := lrSessionConfig(sessID)

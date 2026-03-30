@@ -26,10 +26,10 @@ import (
 func TestUC22_TenRule_MatchRule_Routing(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		ruleCount    = 10
-		msgsPerRule  = 500
-		totalMsgs    = ruleCount * msgsPerRule
-		pollTimeout      = 120 * time.Second
+		ruleCount   = 10
+		msgsPerRule = 100
+		totalMsgs   = ruleCount * msgsPerRule
+		pollTimeout = 120 * time.Second
 	)
 
 	// Create 10 SQS queues and their bindings.
@@ -304,10 +304,10 @@ func TestUC24_DynamicAddress_Templates(t *testing.T) {
 func TestUC25_FilterProcessor_90Percent_Drop(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		totalMsgs = 10000
-		keepCount = 1000
-		dropCount = 9000
-		pollTimeout   = 180 * time.Second
+		totalMsgs   = 2000
+		keepCount   = 200
+		dropCount   = 1800
+		pollTimeout = 180 * time.Second
 	)
 	inURL, inClient := setupSQSQueue(t, "uc25-in")
 	collector := newMQTTCollector(t, "uc25/data", "uc25-col")

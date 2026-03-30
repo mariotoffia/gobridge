@@ -45,7 +45,7 @@ func TestUC63_MemoryStability(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc63-col")
 
 	sessID := mqttlocal.UniqueClientID("uc63-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessID)
@@ -130,7 +130,7 @@ func TestUC64_LatencyPercentiles(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc64-col")
 
 	sessID := mqttlocal.UniqueClientID("uc64-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 
@@ -208,7 +208,7 @@ func TestUC66_MultiTenantIsolation(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc66-col")
 
 	sessID := mqttlocal.UniqueClientID("uc66-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 
@@ -328,7 +328,7 @@ func TestUC65_ThroughputCeiling(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc65-col")
 
 	sessID := mqttlocal.UniqueClientID("uc65-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessID)

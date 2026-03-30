@@ -54,7 +54,7 @@ func TestUC12_RollingRestart_NoMessageLoss(t *testing.T) {
 
 	mkInst := func(label string) *clusterInst {
 		sid := mqttlocal.UniqueClientID(fmt.Sprintf("uc12-%s", label))
-		sess := setupMQTTSession(t, sid, domain.SessionExclusive)
+		sess := newMQTTSession(t, sid, domain.SessionExclusive)
 		sc := lrSessionConfig(sessionID)
 		rt := goruntime.New(
 			goruntime.WithInstanceID(fmt.Sprintf("uc12-%s", label)),
@@ -130,7 +130,7 @@ func TestUC13_SplitBrain_Recovery(t *testing.T) {
 
 	mkInst := func(label string) (*goruntime.Runtime, context.CancelFunc) {
 		sid := mqttlocal.UniqueClientID(fmt.Sprintf("uc13-%s", label))
-		sess := setupMQTTSession(t, sid, domain.SessionExclusive)
+		sess := newMQTTSession(t, sid, domain.SessionExclusive)
 		sc := lrSessionConfig(sessionID)
 		rt := goruntime.New(
 			goruntime.WithInstanceID(fmt.Sprintf("uc13-%s", label)),
@@ -204,7 +204,7 @@ func TestUC14_LeaseContention_TenInstances(t *testing.T) {
 	for i := range instCount {
 		label := fmt.Sprintf("inst-%d", i)
 		sid := mqttlocal.UniqueClientID(fmt.Sprintf("uc14-%s", label))
-		sess := setupMQTTSession(t, sid, domain.SessionExclusive)
+		sess := newMQTTSession(t, sid, domain.SessionExclusive)
 		sc := lrSessionConfig(sessionID)
 		rt := goruntime.New(
 			goruntime.WithInstanceID(fmt.Sprintf("uc14-%s", label)),
@@ -275,7 +275,7 @@ func TestUC15_ConnectAfterLease(t *testing.T) {
 
 	mkInst := func(label string) (*goruntime.Runtime, context.CancelFunc) {
 		sid := mqttlocal.UniqueClientID(fmt.Sprintf("uc15-%s", label))
-		sess := setupMQTTSession(t, sid, domain.SessionExclusive)
+		sess := newMQTTSession(t, sid, domain.SessionExclusive)
 		sc := lrSessionConfig(sessionID)
 		sc.ConnectAfterLease = true
 		rt := goruntime.New(
@@ -350,8 +350,8 @@ func TestUC16_MultiSession_Cluster(t *testing.T) {
 
 	saID := mqttlocal.UniqueClientID("uc16-alpha")
 	sbID := mqttlocal.UniqueClientID("uc16-beta")
-	sessA := setupMQTTSession(t, saID, domain.SessionExclusive)
-	sessB := setupMQTTSession(t, sbID, domain.SessionExclusive)
+	sessA := newMQTTSession(t, saID, domain.SessionExclusive)
+	sessB := newMQTTSession(t, sbID, domain.SessionExclusive)
 	scA := lrSessionConfig(saID)
 	scB := lrSessionConfig(sbID)
 

@@ -37,7 +37,7 @@ func TestUC69_DLQReplayIntegration(t *testing.T) {
 
 	// Phase 1: all messages fail -> DLQ
 	sessID := mqttlocal.UniqueClientID("uc69-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	failSnd := &alwaysFailSender{}
 	rx := newSQSReceiver(t, sqsInURL)
 
@@ -136,7 +136,7 @@ func TestUC70_ErrorClassificationAccuracy(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc70-col")
 
 	sessID := mqttlocal.UniqueClientID("uc70-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	realSnd := setupMQTTSender(t, sess)
 	errSnd := &errorClassSender{inner: realSnd}
 	rx := newSQSReceiver(t, sqsInURL)
@@ -212,7 +212,7 @@ func TestUC71_PoisonMessageAttemptCount(t *testing.T) {
 	defer cancel()
 
 	sessID := mqttlocal.UniqueClientID("uc71-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	failSnd := &alwaysFailSender{}
 	rx := newSQSReceiver(t, sqsInURL)
 
@@ -272,7 +272,7 @@ func TestUC72_DLQEntryFieldIntegrity(t *testing.T) {
 	defer cancel()
 
 	sessID := mqttlocal.UniqueClientID("uc72-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	failSnd := &alwaysFailSender{}
 	rx := newSQSReceiver(t, sqsInURL)
 
@@ -344,7 +344,7 @@ func TestUC73_MixedErrorTypes(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc73-col")
 
 	sessID := mqttlocal.UniqueClientID("uc73-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	realSnd := setupMQTTSender(t, sess)
 	errSnd := &errorClassSender{inner: realSnd}
 	rx := newSQSReceiver(t, sqsInURL)

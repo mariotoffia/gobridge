@@ -336,6 +336,26 @@ func setupMQTTSessionWithBroker(
 	return sess
 }
 
+// newMQTTSessionWithBroker creates an MQTT session against a custom broker
+// URL WITHOUT starting it. The runtime's SessionManager starts it.
+func newMQTTSessionWithBroker(
+	t *testing.T, brokerURL, clientID string,
+	mode domain.SessionMode, receiveMax uint16,
+) *paho.Session {
+	t.Helper()
+	sess := paho.NewSession(paho.SessionOptions{
+		BrokerURLs:     []string{brokerURL},
+		ClientID:       clientID,
+		KeepAlive:      30,
+		ConnectTimeout: 15 * time.Second,
+		CleanStart:     mode == domain.SessionEphemeral,
+		ReceiveMaximum: receiveMax,
+	}, mode, nil)
+
+	t.Cleanup(func() { _ = sess.Close(context.Background()) })
+	return sess
+}
+
 // ---------------------------------------------------------------------------
 // newMQTTCollectorWithBroker — collector against a custom broker URL
 // ---------------------------------------------------------------------------

@@ -85,7 +85,7 @@ func TestUC3_ClusterFailover_ThreeInstances(t *testing.T) {
 	mkInstance := func(label string) *instance {
 		mqttSessID := mqttlocal.UniqueClientID(
 			fmt.Sprintf("uc3-%s", label))
-		sess := setupMQTTSession(t, mqttSessID, domain.SessionExclusive)
+		sess := newMQTTSession(t, mqttSessID, domain.SessionExclusive)
 		mqttSnd := setupMQTTSender(t, sess)
 		sqsRx := newSQSReceiver(t, sqsInURL)
 		sc := lrSessionConfig(sessionID)

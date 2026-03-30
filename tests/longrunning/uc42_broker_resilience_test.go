@@ -53,7 +53,7 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 
 	// Bridge session on the per-test broker.
 	sessionID := mqttlocal.UniqueClientID("uc42-session")
-	sess := setupMQTTSessionWithBroker(t, brokerURL, sessionID,
+	sess := newMQTTSessionWithBroker(t, brokerURL, sessionID,
 		domain.SessionExclusive, 65535)
 	mqttSnd := setupMQTTSender(t, sess)
 	sqsRx := newSQSReceiver(t, sqsInURL)
@@ -243,7 +243,7 @@ func TestUC44_BrokerLowInflightQuota(t *testing.T) {
 	collector := newMQTTCollectorWithBroker(t, brokerURL, outTopic, "uc44-col")
 
 	sessionID := mqttlocal.UniqueClientID("uc44-session")
-	sess := setupMQTTSessionWithBroker(t, brokerURL, sessionID,
+	sess := newMQTTSessionWithBroker(t, brokerURL, sessionID,
 		domain.SessionExclusive, 5) // ReceiveMaximum=5
 	mqttSnd := setupMQTTSender(t, sess)
 	sqsRx := newSQSReceiver(t, sqsInURL)
@@ -334,7 +334,7 @@ func TestUC45_BrokerQuota_SharedOutbox_vs_DirectHold(t *testing.T) {
 
 	// --- Path A: SharedOutbox ---
 	sessIDA := mqttlocal.UniqueClientID("uc45-sess-a")
-	sessA := setupMQTTSessionWithBroker(t, brokerURL, sessIDA,
+	sessA := newMQTTSessionWithBroker(t, brokerURL, sessIDA,
 		domain.SessionExclusive, 10)
 	sndA := setupMQTTSender(t, sessA)
 	rxA := newSQSReceiver(t, sqsInA)

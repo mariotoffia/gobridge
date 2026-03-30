@@ -51,9 +51,9 @@ test-integration: ## Run all tests including integration (requires Docker)
 test-long-running: ## Run long-running stress tests (requires Docker, -tags=longrunning)
 	@echo "Running long-running stress tests..."
 	AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
-	GOBRIDGE_MQTT_MEMORY=256m GOBRIDGE_MQTT_CPUS=3.0 \
-	GOBRIDGE_SQS_MEMORY=512m GOBRIDGE_SQS_CPUS=3.0 \
-	GOBRIDGE_DDB_MEMORY=512m GOBRIDGE_DDB_CPUS=3.0 \
+	GOBRIDGE_MQTT_MEMORY=256m GOBRIDGE_MQTT_CPUS=2.0 \
+	GOBRIDGE_SQS_MEMORY=2g GOBRIDGE_SQS_CPUS=2.0 \
+	GOBRIDGE_DDB_MEMORY=1g GOBRIDGE_DDB_CPUS=2.0 \
 		go test -race -timeout 10800s -v -tags=longrunning ./tests/longrunning/...
 
 # ============================================================================
