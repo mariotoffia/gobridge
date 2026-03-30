@@ -36,11 +36,11 @@ func TestMain(m *testing.M) {
 	// Container resource limits — tunable via env vars for different machines.
 	// Defaults are generous enough for 5+ concurrent bridges.
 	mqttMem := envOr("GOBRIDGE_MQTT_MEMORY", "256m")
-	mqttCPU := envOr("GOBRIDGE_MQTT_CPUS", "1.0")
+	mqttCPU := envOr("GOBRIDGE_MQTT_CPUS", "3.0")
 	sqsMem := envOr("GOBRIDGE_SQS_MEMORY", "512m")
-	sqsCPU := envOr("GOBRIDGE_SQS_CPUS", "1.0")
+	sqsCPU := envOr("GOBRIDGE_SQS_CPUS", "3.0")
 	ddbMem := envOr("GOBRIDGE_DDB_MEMORY", "512m")
-	ddbCPU := envOr("GOBRIDGE_DDB_CPUS", "1.0")
+	ddbCPU := envOr("GOBRIDGE_DDB_CPUS", "3.0")
 
 	mqttlocal.Configure(
 		mqttlocal.WithPersistence(true),
@@ -482,4 +482,3 @@ func (s *lrDLQStore) getEntries() []domain.DLQEntry {
 	copy(cp, s.entries)
 	return cp
 }
-
