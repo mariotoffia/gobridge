@@ -123,9 +123,9 @@ Transient errors are retried up to 3 times with exponential backoff. After exhau
 
 ## HTTP API: DLQ Operations
 
-All admin endpoints require the API key via the `X-API-Key` header or `Authorization: Bearer <key>`.
+All admin endpoints require the API key via the `X-API-Key` header or `Authorization: Bearer <key>`. Key comparison uses SHA-256 constant-time hashing to prevent timing attacks. Failed auth returns HTTP 401 with a `WWW-Authenticate: Bearer realm="gobridge-admin"` header.
 
-### List DLQ Entries
+### DLQ Summary
 
 ```bash
 curl -s -H "X-API-Key: change-me-to-a-real-secret-key" \
@@ -133,71 +133,58 @@ curl -s -H "X-API-Key: change-me-to-a-real-secret-key" \
 ```
 
 ```json
-{
-  "entries": [
-    {
-      "id": "dlq-001", "route_id": "ingest",
-      "reason": "invalid payload", "category": "rejected",
-      "error_code": "INVALID_PAYLOAD",
-      "failed_at": "2026-03-28T10:15:30Z", "attempts": 3,
-      "correlation_id": "corr-abc-123"
-    }
-  ],
-  "count": 1
-}
+{ "configured": true, "count": 1 }
 ```
+
+All DLQ endpoints return HTTP 404 with `{"error": "no DLQ store configured"}` when no DLQ store is present.
 
 ### Retrieve DLQ Messages
 
-Fetch full message bodies. Supports `?route_id=` and `?category=` query filters.
+Paginated message listing with filtering. Supports `route_id`, `category`, `since`, `before`, `limit` (max 1000), and `offset` parameters.
 
 ```bash
 curl -s -H "X-API-Key: change-me-to-a-real-secret-key" \
-  "http://localhost:8080/api/v1/admin/dlq/messages?route_id=ingest" | jq .
+  "http://localhost:8080/api/v1/admin/dlq/messages?route_id=ingest&limit=10" | jq .
 ```
 
 ```json
 {
-  "entries": [
+  "messages": [
     {
-      "id": "dlq-001", "route_id": "ingest",
-      "envelope": {
-        "id": "env-xyz", "subject": "telemetry/temperature/sensor-42",
-        "payload": "eyJtYWxmb3JtZWQiOiB0cnVl",
-        "headers": { "x-correlation-id": "corr-abc-123" }
-      },
+      "id": "dlq-001", "route_id": "ingest", "binding_id": "to-events",
+      "source_id": "mqtt-in", "correlation_id": "corr-abc-123",
+      "subject": "telemetry/temperature/sensor-42",
       "reason": "invalid payload", "category": "rejected",
       "error_code": "INVALID_PAYLOAD",
       "last_error": "json: cannot unmarshal string into Go value of type int",
       "failed_at": "2026-03-28T10:15:30Z", "attempts": 3
     }
-  ]
+  ],
+  "total": 1, "limit": 10, "offset": 0
 }
 ```
 
 ### Replay DLQ Entries
 
-Re-inject entries back into their original route. Maximum 1000 entries per request.
+Re-inject entries back into their original route. Maximum 1000 IDs per request.
 
 ```bash
 curl -s -X POST -H "X-API-Key: change-me-to-a-real-secret-key" \
   -H "Content-Type: application/json" \
-  -d '{"entry_ids": ["dlq-001", "dlq-002"]}' \
+  -d '{"ids": ["dlq-001", "dlq-002"]}' \
   "http://localhost:8080/api/v1/admin/dlq/replay" | jq .
 ```
 
 ```json
-{ "replayed": 2, "failed": 0 }
+{ "replayed": 2 }
 ```
 
 ### Purge DLQ Entries
 
-Permanently delete entries older than a given timestamp.
+Permanently delete all expired entries up to the current time.
 
 ```bash
 curl -s -X POST -H "X-API-Key: change-me-to-a-real-secret-key" \
-  -H "Content-Type: application/json" \
-  -d '{"before": "2026-03-27T00:00:00Z"}' \
   "http://localhost:8080/api/v1/admin/dlq/purge" | jq .
 ```
 
@@ -263,17 +250,31 @@ flowchart TD
     D2 -->|drop| DROP
 ```
 
-## Monitor Endpoints: Health Probes
+## Monitor Endpoints
 
-The monitor server (`:8081`) exposes unauthenticated probes for container orchestrators.
+The monitor server (`:8081`) exposes unauthenticated probes and authenticated observability endpoints. All health probes set `Cache-Control: no-cache, max-age=0`.
+
+### Unauthenticated Probes
 
 | Endpoint | Purpose | Response |
 |----------|---------|----------|
-| `GET /api/v1/monitor/health` | Full health check | `{"status":"healthy", "instance_id":"...", "failed_components":[]}` |
+| `GET /api/v1/monitor/health` | Full health check | `{"status":"ok", "instance_id":"...", "routes":3}` (200 or 503) |
 | `GET /api/v1/monitor/live` | Liveness probe | `{"status":"alive"}` -- always 200 while process runs |
 | `GET /api/v1/monitor/ready` | Readiness probe | `{"status":"ready", "role":"standalone"}` -- 200 when processing |
 
-The `role` field reflects the deployment mode: `standalone`, `active` (lease holder), or `standby` (waiting for lease).
+The `health` endpoint returns `status` as `ok`, `unhealthy`, or `not_running`. When components have errors, a `failed_components` count is included. The `role` field reflects the deployment mode: `standalone`, `active` (lease holder), or `standby` (waiting for lease).
+
+### Authenticated Endpoints
+
+These require the monitor API key (or admin key as fallback):
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/v1/monitor/topology` | Instance identity, running state, compact route list |
+| `GET /api/v1/monitor/routes` | Detailed routes with policy (max_in_flight, ack_after, on_expired) |
+| `GET /api/v1/monitor/deephealth` | Session connectivity, lease status, subscription convergence, service levels |
+
+The deep health endpoint returns 200 when ready for traffic, 503 otherwise, with a `service_level` field aggregating session health: `full`, `degraded`, or `none`.
 
 ## Go Bootstrap
 

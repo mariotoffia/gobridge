@@ -501,10 +501,15 @@ When using a `rules` resolver with `direct_hold` delivery mode, each binding may
 | `admin_addr` | string | no | `:8080` | Admin server listen address |
 | `monitor_addr` | string | no | `:8081` | Monitor server listen address |
 | `admin_api_key` | string | **yes** | -- | API key (minimum 16 characters) |
-| `monitor_api_key` | string | no | admin key | Separate monitor API key |
+| `monitor_api_key` | string | no | admin key | Separate monitor API key (min 16 chars when set) |
 | `cors_origins` | string | no | disabled | CORS allowed origins (wildcard `*` rejected) |
 
-See [Credentials & HTTP API](credentials-and-http-api.md) for endpoint documentation.
+API keys are compared using SHA-256 constant-time hashing. Monitor endpoints
+accept the monitor key or fall back to the admin key (admin is a superset).
+Failed auth returns HTTP 401 with `WWW-Authenticate: Bearer` per RFC 9110.
+
+See [Credentials & HTTP API](credentials-and-http-api.md) for endpoint documentation and
+[OpenAPI specs](../spec/httpapi/http-api.yaml) for machine-readable definitions.
 
 ## ID Reference Graph
 

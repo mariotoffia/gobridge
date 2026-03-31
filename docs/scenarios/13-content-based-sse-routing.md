@@ -304,7 +304,7 @@ This is useful when multiple sensor types share the same MQTT topic but differen
 
 ### Adding API Key Authentication to SSE Endpoints
 
-Protect SSE streams with an API key:
+Protect SSE streams with a per-sender API key:
 
 ```yaml
 senders:
@@ -313,10 +313,10 @@ senders:
     options:
       mode: sse
       path: /events/temperature
-      api_key: "secret-dashboard-key"
+      api_key: "dashboard-key-min-16ch"
 ```
 
-Clients must include the key as a query parameter or `Authorization` header. Connections without a valid key receive HTTP 401.
+Clients must include the key via `X-API-Key` header or `Authorization: Bearer` token. Connections without a valid key receive HTTP 401. The key is compared using SHA-256 constant-time hashing to prevent timing and length-based information leaks.
 
 ### Parallel Durable Binding
 

@@ -331,10 +331,11 @@ Either `connection_string` or `namespace` is required.
 **Transport name:** `http`
 **Factory:** `httptransport.NewBridgeFactory(opts...)`
 **Capabilities:** `http_endpoint`
+**OpenAPI spec:** `spec/http-adapter/http-api.yaml`
 
 The HTTP transport exposes receivers as POST endpoints and senders as
-Server-Sent Events (SSE) GET endpoints. It requires the top-level `http`
-config block to be present so the bridge starts an HTTP server.
+Server-Sent Events (SSE) GET endpoints. All endpoints are mounted on an
+internal `http.ServeMux` accessible via `factory.Handler()`.
 
 ```mermaid
 flowchart LR
@@ -344,19 +345,23 @@ flowchart LR
     SSE -->|"GET /senders/{id}/events"| Client2["SSE Client"]
 ```
 
+### Authentication
+
+Both receivers and senders support optional per-endpoint API key
+authentication. When `api_key` is configured, requests must include the key
+via `X-API-Key` header or `Authorization: Bearer` token. Keys are compared
+using SHA-256 constant-time comparison to prevent timing and length-based
+information leaks.
+
 ### YAML Example
 
 ```yaml
-http:
-  admin_addr: ":8080"
-  admin_api_key: "admin-secret-key"
-
 receivers:
   - id: webhook-receiver
     transport: http
     options:
       path: "/transport/http/receivers/webhook-receiver/messages"
-      api_key: "recv-secret"
+      api_key: "recv-secret-min-16ch"
       max_body_size: 1048576
 
 senders:
@@ -366,7 +371,7 @@ senders:
       mode: "sse"
       path: "/transport/http/senders/event-stream/events"
       heartbeat_interval: "30s"
-      api_key: "sse-secret"
+      api_key: "sse-secret-min-16ch"
       max_clients: 100
 ```
 
@@ -375,8 +380,20 @@ senders:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `path` | string | `/transport/http/receivers/{id}/messages` | POST endpoint path |
-| `api_key` | string | -- | Per-receiver API key |
-| `max_body_size` | int | 1048576 (1 MB) | Maximum request body in bytes |
+| `api_key` | string | -- | Per-receiver API key (SHA-256 constant-time comparison) |
+| `max_body_size` | int | 1048576 (1 MiB) | Maximum request body in bytes |
+
+### Receiver Request Format
+
+The receiver accepts JSON POST with the following fields:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `subject` | string | **yes** | Message topic or routing key |
+| `payload` | any JSON | no | Message content (stored as raw bytes) |
+| `id` | string | no | Caller-provided message ID |
+| `headers` | object | no | Custom metadata (`X-Bridge-*` keys stripped) |
+| `expires_at` | RFC 3339 | no | Message TTL (drives `on_expired` policy) |
 
 ### Sender Options Reference
 
@@ -385,8 +402,18 @@ senders:
 | `mode` | string | `sse` | Sender mode (only `sse` supported) |
 | `path` | string | `/transport/http/senders/{id}/events` | GET endpoint path |
 | `heartbeat_interval` | duration | `30s` | SSE keep-alive heartbeat interval |
-| `api_key` | string | -- | Per-sender API key |
-| `max_clients` | int | 0 (unlimited) | Maximum concurrent SSE connections |
+| `api_key` | string | -- | Per-sender API key (SHA-256 constant-time comparison) |
+| `max_clients` | int | 10000 | Maximum concurrent SSE connections |
+
+### Cluster-Aware Routing
+
+When a `RouteLocator` is configured, endpoints become cluster-aware:
+
+- **Receivers**: If the target route is owned by a remote node, the message is
+  transparently forwarded to the peer. The `X-Bridge-Forwarded: true` header
+  prevents infinite loops.
+- **Senders**: If the target route is remote, the client receives an HTTP 307
+  redirect to the peer's SSE endpoint.
 
 ### Factory Options
 
