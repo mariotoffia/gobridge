@@ -1,0 +1,380 @@
+parameters:
+  TxnID:
+    name: txnID
+    in: path
+    required: true
+    description: Unique identifier of the config transaction.
+    schema:
+      type: string
+    example: a1b2c3d4e5f67890
+
+responses:
+  TxnNotFound:
+    description: Transaction not found or expired.
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/ErrorResponse"
+        example: { "error": "transaction not found or expired" }
+
+  ConfigValidationFailed:
+    description: Merged config fails validation.
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/ConfigValidationError"
+        example:
+          error: "config validation failed"
+          validation_errors:
+            - "receivers[0].id 'nonexistent' is referenced by routes[1] but not defined"
+          warnings: []
+
+schemas:
+  ErrorResponse:
+    type: object
+    required: [error]
+    properties:
+      error:
+        type: string
+        description: Human-readable error message.
+
+  ConfigResponse:
+    type: object
+    required: [config]
+    properties:
+      config:
+        $ref: "#/schemas/BridgeConfig"
+    description: Current effective config with sensitive fields redacted.
+
+  ConfigTxnCreateRequest:
+    type: object
+    properties:
+      ttl:
+        type: string
+        description: >
+          How long the transaction remains active before auto-rollback.
+          Go duration format (e.g. "5m", "10m30s"). Default: 5m, max: 30m.
+        example: "5m"
+
+  ConfigTxnCreateResponse:
+    type: object
+    required: [txn_id, created_at, expires_at, config]
+    properties:
+      txn_id:
+        type: string
+        description: Unique transaction identifier.
+        example: a1b2c3d4e5f67890
+      created_at:
+        type: string
+        format: date-time
+      expires_at:
+        type: string
+        format: date-time
+      config:
+        $ref: "#/schemas/BridgeConfig"
+
+  ConfigTxnStatusResponse:
+    type: object
+    required: [txn_id, created_at, expires_at, patch_count, preview]
+    properties:
+      txn_id:
+        type: string
+        example: a1b2c3d4e5f67890
+      created_at:
+        type: string
+        format: date-time
+      expires_at:
+        type: string
+        format: date-time
+      patch_count:
+        type: integer
+        description: Number of patches applied so far.
+      preview:
+        $ref: "#/schemas/BridgeConfig"
+
+  ConfigTxnPatchResponse:
+    type: object
+    required: [txn_id, preview]
+    properties:
+      txn_id:
+        type: string
+      preview:
+        $ref: "#/schemas/BridgeConfig"
+      warnings:
+        type: array
+        items:
+          type: string
+        description: Non-fatal validation warnings (advisory).
+
+  ConfigTxnCommitResponse:
+    type: object
+    required: [status]
+    properties:
+      status:
+        type: string
+        enum: [committed]
+
+  ConfigTxnRollbackResponse:
+    type: object
+    required: [status]
+    properties:
+      status:
+        type: string
+        enum: [rolled_back]
+
+  ConfigValidationError:
+    type: object
+    required: [error, validation_errors]
+    properties:
+      error:
+        type: string
+        example: "config validation failed"
+      validation_errors:
+        type: array
+        items:
+          type: string
+        description: List of fatal validation errors.
+      warnings:
+        type: array
+        items:
+          type: string
+        description: Non-fatal validation warnings.
+
+  BridgeConfig:
+    type: object
+    description: >
+      Full GoBridge configuration. When returned in API responses, sensitive
+      fields (API keys) are redacted as "***". When sent as a PATCH overlay,
+      only the fields present are merged; absent fields are left unchanged.
+    properties:
+      bridge:
+        $ref: "#/schemas/BridgeSettings"
+      config_watch:
+        $ref: "#/schemas/ConfigWatchDef"
+      stores:
+        $ref: "#/schemas/StoresConfig"
+      sessions:
+        type: array
+        items:
+          $ref: "#/schemas/SessionDef"
+      receivers:
+        type: array
+        items:
+          $ref: "#/schemas/ReceiverDef"
+      senders:
+        type: array
+        items:
+          $ref: "#/schemas/SenderDef"
+      bindings:
+        type: array
+        items:
+          $ref: "#/schemas/BindingDef"
+      routes:
+        type: array
+        items:
+          $ref: "#/schemas/RouteDef"
+      http:
+        $ref: "#/schemas/HTTPConfig"
+
+  BridgeSettings:
+    type: object
+    properties:
+      id:
+        type: string
+        description: Unique bridge identifier (required).
+      instance_id:
+        type: string
+      deployment_mode:
+        type: string
+        enum: [standalone, clustered]
+      shutdown_timeout:
+        type: string
+        description: Go duration string (e.g. "30s").
+      drain_timeout:
+        type: string
+      log_level:
+        type: string
+        enum: [debug, info, warn, error]
+
+  ConfigWatchDef:
+    type: object
+    properties:
+      mode:
+        type: string
+        enum: [notify, poll]
+      poll_interval:
+        type: string
+      debounce:
+        type: string
+
+  StoresConfig:
+    type: object
+    properties:
+      lease:
+        $ref: "#/schemas/StoreConfig"
+      outbox:
+        $ref: "#/schemas/StoreConfig"
+      dlq:
+        $ref: "#/schemas/StoreConfig"
+
+  StoreConfig:
+    type: object
+    required: [type]
+    properties:
+      type:
+        type: string
+        example: dynamodb
+      options:
+        type: object
+        additionalProperties: true
+
+  SessionDef:
+    type: object
+    required: [id, transport]
+    properties:
+      id:
+        type: string
+      transport:
+        type: string
+      session_mode:
+        type: string
+        enum: [ephemeral, persistent, exclusive]
+      options:
+        type: object
+        additionalProperties: true
+
+  ReceiverDef:
+    type: object
+    required: [id, transport]
+    properties:
+      id:
+        type: string
+      transport:
+        type: string
+      session_id:
+        type: string
+      topics:
+        type: array
+        items:
+          $ref: "#/schemas/SubscriptionDef"
+      options:
+        type: object
+        additionalProperties: true
+
+  SubscriptionDef:
+    type: object
+    required: [topic]
+    properties:
+      topic:
+        type: string
+      qos:
+        type: integer
+      options:
+        type: object
+        additionalProperties: true
+
+  SenderDef:
+    type: object
+    required: [id, transport]
+    properties:
+      id:
+        type: string
+      transport:
+        type: string
+      session_id:
+        type: string
+      options:
+        type: object
+        additionalProperties: true
+
+  BindingDef:
+    type: object
+    required: [id, sender_id, address]
+    properties:
+      id:
+        type: string
+      sender_id:
+        type: string
+      session_id:
+        type: string
+      address:
+        type: string
+      options:
+        type: object
+        additionalProperties: true
+
+  RouteDef:
+    type: object
+    required: [id, receiver_id]
+    properties:
+      id:
+        type: string
+      receiver_id:
+        type: string
+      delivery_mode:
+        type: string
+        enum: [direct_hold, shared_outbox]
+      dispatch_mode:
+        type: string
+        enum: [single, fan_out]
+      policy:
+        $ref: "#/schemas/PolicyDef"
+      bindings:
+        type: array
+        items:
+          type: string
+      processors:
+        type: array
+        items:
+          type: string
+
+  PolicyDef:
+    type: object
+    properties:
+      max_in_flight:
+        type: integer
+      ack_after:
+        type: string
+        enum: [target_accept, outbox_persist]
+      max_replay_attempts:
+        type: integer
+      max_outbox_depth:
+        type: integer
+      on_expired:
+        type: string
+        enum: [drop, dlq]
+      on_permanent_failure:
+        type: string
+        enum: [drop, dlq]
+      backoff:
+        $ref: "#/schemas/BackoffDef"
+
+  BackoffDef:
+    type: object
+    properties:
+      initial_interval:
+        type: string
+      max_interval:
+        type: string
+      multiplier:
+        type: number
+
+  HTTPConfig:
+    type: object
+    description: >
+      HTTP server configuration. API keys are redacted as "***" in responses.
+    properties:
+      admin_addr:
+        type: string
+        example: ":8080"
+      monitor_addr:
+        type: string
+        example: ":8081"
+      admin_api_key:
+        type: string
+        description: Redacted in responses.
+      monitor_api_key:
+        type: string
+        description: Redacted in responses.
+      cors_origins:
+        type: string

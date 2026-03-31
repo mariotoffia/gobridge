@@ -28,6 +28,8 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+prefix+"/dlq/messages", s.requireAdminAuth(s.handleDLQMessages))
 	mux.HandleFunc("POST "+prefix+"/dlq/replay", s.requireAdminAuth(s.handleDLQReplay))
 	mux.HandleFunc("POST "+prefix+"/dlq/purge", s.requireAdminAuth(s.handleDLQPurge))
+
+	s.registerConfigRoutes(mux)
 }
 
 func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {

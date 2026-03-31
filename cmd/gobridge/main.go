@@ -105,11 +105,13 @@ func main() {
 
 	if cfg.HTTP != nil {
 		apiCfg := httpapi.Config{
-			AdminAddr:     cfg.HTTP.AdminAddr,
-			MonitorAddr:   cfg.HTTP.MonitorAddr,
-			AdminAPIKey:   cfg.HTTP.AdminAPIKey,
-			MonitorAPIKey: cfg.HTTP.MonitorAPIKey,
-			CORSOrigins:   cfg.HTTP.CORSOrigins,
+			AdminAddr:      cfg.HTTP.AdminAddr,
+			MonitorAddr:    cfg.HTTP.MonitorAddr,
+			AdminAPIKey:    cfg.HTTP.AdminAPIKey,
+			MonitorAPIKey:  cfg.HTTP.MonitorAPIKey,
+			CORSOrigins:    cfg.HTTP.CORSOrigins,
+			ConfigFilePath: *configPath,
+			ConfigProvider: sup.Config,
 		}
 		if apiCfg.AdminAddr == "" {
 			apiCfg.AdminAddr = ":8080"

@@ -38,6 +38,8 @@ tags:
     description: Unauthenticated health, liveness, and readiness probes
   - name: Monitor
     description: Authenticated topology, route detail, and deep health
+  - name: Config
+    description: Configuration read/write with transactional batch support
 security:
   - ApiKeyAuth: []
   - BearerAuth: []
@@ -93,6 +95,24 @@ components:
       $ref: "components.yaml#/schemas/DeepHealthSession"
     DeepHealthRoute:
       $ref: "components.yaml#/schemas/DeepHealthRoute"
+    BridgeConfig:
+      $ref: "config-components.yaml#/schemas/BridgeConfig"
+    ConfigResponse:
+      $ref: "config-components.yaml#/schemas/ConfigResponse"
+    ConfigTxnCreateRequest:
+      $ref: "config-components.yaml#/schemas/ConfigTxnCreateRequest"
+    ConfigTxnCreateResponse:
+      $ref: "config-components.yaml#/schemas/ConfigTxnCreateResponse"
+    ConfigTxnStatusResponse:
+      $ref: "config-components.yaml#/schemas/ConfigTxnStatusResponse"
+    ConfigTxnPatchResponse:
+      $ref: "config-components.yaml#/schemas/ConfigTxnPatchResponse"
+    ConfigTxnCommitResponse:
+      $ref: "config-components.yaml#/schemas/ConfigTxnCommitResponse"
+    ConfigTxnRollbackResponse:
+      $ref: "config-components.yaml#/schemas/ConfigTxnRollbackResponse"
+    ConfigValidationError:
+      $ref: "config-components.yaml#/schemas/ConfigValidationError"
 
 paths:
   # ── Admin: Bridge ───────────────────────────────────────────────
@@ -590,3 +610,173 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DeepHealthResponse"
+
+  # ── Admin: Config ──────────────────────────────────────────────
+  /api/v1/admin/config:
+    get:
+      operationId: getConfig
+      summary: Get current effective config
+      description: >
+        Returns the current merged configuration with sensitive fields
+        (API keys) redacted as "***". Enabled only when the server is
+        configured with a config file path and config provider.
+      tags: [Config]
+      responses:
+        "200":
+          description: Current config returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          description: No config available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/admin/config/transactions:
+    post:
+      operationId: createConfigTransaction
+      summary: Begin a config transaction
+      description: >
+        Creates a new config transaction. Only one transaction may be
+        active at a time; returns 409 if another exists. The transaction
+        auto-rolls back after the specified TTL (default 5 minutes,
+        max 30 minutes).
+      tags: [Config]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigTxnCreateRequest"
+      responses:
+        "201":
+          description: Transaction created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigTxnCreateResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Another transaction is already active.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example: { "error": "another config transaction is already active" }
+
+  /api/v1/admin/config/transactions/{txnID}:
+    parameters:
+      - $ref: "config-components.yaml#/parameters/TxnID"
+    get:
+      operationId: getConfigTransaction
+      summary: Get transaction state and preview
+      description: >
+        Returns the active transaction's metadata (ID, timestamps, patch
+        count) and the current merged preview with all patches applied.
+      tags: [Config]
+      responses:
+        "200":
+          description: Transaction state and preview returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigTxnStatusResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "config-components.yaml#/responses/TxnNotFound"
+    patch:
+      operationId: patchConfigTransaction
+      summary: Apply config overlay to transaction
+      description: >
+        Merges a partial BridgeConfig overlay on top of the current
+        effective config plus all previous patches. Validates the merged
+        result and returns a preview. Returns 422 if the merged config
+        is invalid. Invalid patches are rejected without modifying the
+        transaction state.
+      tags: [Config]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BridgeConfig"
+      responses:
+        "200":
+          description: Patch applied, merged preview returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigTxnPatchResponse"
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "config-components.yaml#/responses/TxnNotFound"
+        "422":
+          $ref: "config-components.yaml#/responses/ConfigValidationFailed"
+    delete:
+      operationId: rollbackConfigTransaction
+      summary: Rollback (discard) a transaction
+      description: >
+        Discards the active transaction and all accumulated patches.
+        After rollback, a new transaction may be created.
+      tags: [Config]
+      responses:
+        "200":
+          description: Transaction rolled back.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigTxnRollbackResponse"
+              example: { "status": "rolled_back" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "config-components.yaml#/responses/TxnNotFound"
+
+  /api/v1/admin/config/transactions/{txnID}/commit:
+    parameters:
+      - $ref: "config-components.yaml#/parameters/TxnID"
+    post:
+      operationId: commitConfigTransaction
+      summary: Commit config to disk
+      description: >
+        Validates the final merged config and atomically writes it to
+        the config file (temp file + rename). The file watcher detects
+        the change and the supervisor applies the new config through
+        its normal reconfiguration pipeline. Returns 422 if validation
+        fails, 500 if the disk write fails.
+      tags: [Config]
+      responses:
+        "200":
+          description: Config committed to disk.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigTxnCommitResponse"
+              example: { "status": "committed" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "config-components.yaml#/responses/TxnNotFound"
+        "422":
+          $ref: "config-components.yaml#/responses/ConfigValidationFailed"
+        "500":
+          description: Failed to write config to disk.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example: { "error": "config operation failed" }

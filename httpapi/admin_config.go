@@ -1,0 +1,226 @@
+package httpapi
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/mariotoffia/gobridge/config"
+)
+
+// registerConfigRoutes adds config management endpoints to the admin mux.
+// It is a no-op when the config transaction manager is not configured.
+func (s *Server) registerConfigRoutes(mux *http.ServeMux) {
+	if s.configTxn == nil {
+		return
+	}
+
+	const prefix = "/api/v1/admin/config"
+
+	mux.HandleFunc("GET "+prefix, s.requireAdminAuth(s.handleConfigGet))
+	mux.HandleFunc("POST "+prefix+"/transactions", s.requireAdminAuth(s.handleConfigTxnCreate))
+	mux.HandleFunc("GET "+prefix+"/transactions/{txnID}", s.requireAdminAuth(s.handleConfigTxnGet))
+	mux.HandleFunc("PATCH "+prefix+"/transactions/{txnID}", s.requireAdminAuth(s.handleConfigTxnPatch))
+	mux.HandleFunc("POST "+prefix+"/transactions/{txnID}/commit", s.requireAdminAuth(s.handleConfigTxnCommit))
+	mux.HandleFunc("DELETE "+prefix+"/transactions/{txnID}", s.requireAdminAuth(s.handleConfigTxnRollback))
+}
+
+// handleConfigGet returns the current effective config with sensitive
+// fields redacted.
+func (s *Server) handleConfigGet(w http.ResponseWriter, r *http.Request) {
+	cfg := s.configTxn.configProvider()
+	if cfg == nil {
+		writeErr(w, http.StatusServiceUnavailable, "no config available")
+		return
+	}
+
+	s.emitAudit(r, "config.read", "config", "", "success", nil)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"config": sanitizeConfig(cfg),
+	})
+}
+
+// configTxnCreateRequest is the optional body for POST /transactions.
+type configTxnCreateRequest struct {
+	TTL string `json:"ttl"`
+}
+
+// handleConfigTxnCreate starts a new config transaction.
+func (s *Server) handleConfigTxnCreate(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
+	var ttl time.Duration
+	var body configTxnCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+		if body.TTL != "" {
+			var parseErr error
+			ttl, parseErr = time.ParseDuration(body.TTL)
+			if parseErr != nil {
+				writeErr(w, http.StatusBadRequest, "invalid ttl duration")
+				return
+			}
+		}
+	}
+
+	txn, err := s.configTxn.Begin(ttl)
+	if err != nil {
+		if errors.Is(err, errTxnActive) {
+			s.emitAudit(r, "config.txn.create", "config", "", "failure", map[string]any{
+				"error": "transaction already active",
+			})
+			writeErr(w, http.StatusConflict, "another config transaction is already active")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "failed to create transaction")
+		return
+	}
+
+	cfg := s.configTxn.configProvider()
+
+	s.emitAudit(r, "config.txn.create", "config", txn.ID, "success", nil)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"txn_id":     txn.ID,
+		"created_at": txn.CreatedAt.Format(time.RFC3339),
+		"expires_at": txn.ExpiresAt.Format(time.RFC3339),
+		"config":     sanitizeConfig(cfg),
+	})
+}
+
+// handleConfigTxnGet returns the state of the active transaction and
+// a preview of the merged config.
+func (s *Server) handleConfigTxnGet(w http.ResponseWriter, r *http.Request) {
+	txnID := r.PathValue("txnID")
+
+	preview, err := s.configTxn.Preview(txnID)
+	if err != nil {
+		s.writeConfigTxnError(w, r, "config.txn.read", txnID, err)
+		return
+	}
+
+	txn := s.configTxn.Active()
+	s.emitAudit(r, "config.txn.read", "config", txnID, "success", nil)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"txn_id":      txn.ID,
+		"created_at":  txn.CreatedAt.Format(time.RFC3339),
+		"expires_at":  txn.ExpiresAt.Format(time.RFC3339),
+		"patch_count": txn.PatchCount,
+		"preview":     sanitizeConfig(preview),
+	})
+}
+
+// handleConfigTxnPatch applies a config overlay to the active transaction.
+func (s *Server) handleConfigTxnPatch(w http.ResponseWriter, r *http.Request) {
+	txnID := r.PathValue("txnID")
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
+	var overlay config.BridgeConfig
+	if err := json.NewDecoder(r.Body).Decode(&overlay); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	merged, warnings, err := s.configTxn.Patch(txnID, &overlay)
+	if err != nil {
+		s.writeConfigTxnError(w, r, "config.txn.patch", txnID, err)
+		return
+	}
+
+	s.emitAudit(r, "config.txn.patch", "config", txnID, "success", nil)
+	resp := map[string]any{
+		"txn_id":  txnID,
+		"preview": sanitizeConfig(merged),
+	}
+	if len(warnings) > 0 {
+		resp["warnings"] = warnings
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleConfigTxnCommit validates and writes the config to disk.
+func (s *Server) handleConfigTxnCommit(w http.ResponseWriter, r *http.Request) {
+	txnID := r.PathValue("txnID")
+
+	if err := s.configTxn.Commit(txnID); err != nil {
+		s.writeConfigTxnError(w, r, "config.txn.commit", txnID, err)
+		return
+	}
+
+	s.emitAudit(r, "config.txn.commit", "config", txnID, "success", nil)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "committed"})
+}
+
+// handleConfigTxnRollback discards the active transaction.
+func (s *Server) handleConfigTxnRollback(w http.ResponseWriter, r *http.Request) {
+	txnID := r.PathValue("txnID")
+
+	if err := s.configTxn.Rollback(txnID); err != nil {
+		s.writeConfigTxnError(w, r, "config.txn.rollback", txnID, err)
+		return
+	}
+
+	s.emitAudit(r, "config.txn.rollback", "config", txnID, "success", nil)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "rolled_back"})
+}
+
+// writeConfigTxnError maps transaction manager errors to HTTP responses.
+func (s *Server) writeConfigTxnError(w http.ResponseWriter, r *http.Request, action, txnID string, err error) {
+	switch {
+	case errors.Is(err, errTxnNotFound), errors.Is(err, errTxnExpired):
+		s.emitAudit(r, action, "config", txnID, "failure", map[string]any{"error": err.Error()})
+		writeErr(w, http.StatusNotFound, "transaction not found or expired")
+
+	case isValidationError(err):
+		ve := extractValidationError(err)
+		s.emitAudit(r, action, "config", txnID, "failure", map[string]any{
+			"error":             "validation failed",
+			"validation_errors": ve.Errors,
+		})
+		resp := map[string]any{
+			"error":             "config validation failed",
+			"validation_errors": ve.Errors,
+		}
+		if len(ve.Warnings) > 0 {
+			resp["warnings"] = ve.Warnings
+		}
+		writeJSON(w, http.StatusUnprocessableEntity, resp)
+
+	default:
+		s.emitAudit(r, action, "config", txnID, "failure", map[string]any{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "config operation failed")
+	}
+}
+
+// sanitizeConfig returns a copy of the config with sensitive fields redacted.
+func sanitizeConfig(cfg *config.BridgeConfig) *config.BridgeConfig {
+	if cfg == nil {
+		return nil
+	}
+	out := *cfg
+	if out.HTTP != nil {
+		h := *out.HTTP
+		if h.AdminAPIKey != "" {
+			h.AdminAPIKey = "***"
+		}
+		if h.MonitorAPIKey != "" {
+			h.MonitorAPIKey = "***"
+		}
+		out.HTTP = &h
+	}
+	return &out
+}
+
+// isValidationError checks whether the error is a config.ValidationError.
+func isValidationError(err error) bool {
+	var ve *config.ValidationError
+	return errors.As(err, &ve)
+}
+
+// extractValidationError unwraps a config.ValidationError from err.
+func extractValidationError(err error) *config.ValidationError {
+	var ve *config.ValidationError
+	if errors.As(err, &ve) {
+		return ve
+	}
+	return &config.ValidationError{Errors: []string{err.Error()}}
+}

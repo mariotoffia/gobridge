@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -24,6 +25,15 @@ type Config struct {
 	AdminAPIKey   string `json:"-"`
 	MonitorAPIKey string `json:"-"`
 	CORSOrigins   string `json:"cors_origins"`
+
+	// ConfigFilePath is the path to the config file for write-back.
+	// When set together with ConfigProvider, the config management
+	// endpoints are enabled on the admin server.
+	ConfigFilePath string `json:"-"`
+
+	// ConfigProvider returns the current effective BridgeConfig.
+	// Typically wired to bridge.Supervisor.Config().
+	ConfigProvider func() *config.BridgeConfig `json:"-"`
 }
 
 // DefaultConfig returns a Config with security-first defaults.
@@ -39,13 +49,16 @@ func DefaultConfig() Config {
 
 // Server manages the admin and monitor HTTP endpoints.
 type Server struct {
-	rt     *runtime.Runtime
-	cfg    Config
-	logger *slog.Logger
-	audit  ports.AuditLogger
+	rt        *runtime.Runtime
+	cfg       Config
+	logger    *slog.Logger
+	audit     ports.AuditLogger
+	configTxn *configTxnManager // nil when config management is disabled
 
-	admin   *http.Server
-	monitor *http.Server
+	admin    *http.Server
+	monitor  *http.Server
+	adminURL string // actual bound address (e.g. "http://127.0.0.1:54321")
+	monURL   string // actual bound monitor address
 
 	mu      sync.Mutex
 	running bool
@@ -72,6 +85,9 @@ func New(rt *runtime.Runtime, cfg Config, opts ...Option) *Server {
 	}
 	if s.audit == nil {
 		s.audit = ports.NoopAuditLogger{}
+	}
+	if cfg.ConfigFilePath != "" && cfg.ConfigProvider != nil {
+		s.configTxn = newTxnManager(cfg.ConfigFilePath, cfg.ConfigProvider, s.logger)
 	}
 	return s
 }
@@ -122,6 +138,9 @@ func (s *Server) Start(_ context.Context) error {
 		return fmt.Errorf("httpapi: monitor listen %s: %w", s.cfg.MonitorAddr, err)
 	}
 
+	s.adminURL = "http://" + adminLn.Addr().String()
+	s.monURL = "http://" + monitorLn.Addr().String()
+
 	go func() {
 		if err := s.admin.Serve(adminLn); err != nil && err != http.ErrServerClosed {
 			if s.logger != nil {
@@ -140,6 +159,14 @@ func (s *Server) Start(_ context.Context) error {
 	s.running = true
 	return nil
 }
+
+// AdminURL returns the actual bound admin URL (e.g. "http://127.0.0.1:54321").
+// Only valid after Start returns successfully.
+func (s *Server) AdminURL() string { return s.adminURL }
+
+// MonitorURL returns the actual bound monitor URL.
+// Only valid after Start returns successfully.
+func (s *Server) MonitorURL() string { return s.monURL }
 
 // Stop gracefully shuts down both HTTP servers.
 func (s *Server) Stop(ctx context.Context) error {

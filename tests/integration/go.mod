@@ -4,10 +4,12 @@ go 1.25.0
 
 replace (
 	github.com/mariotoffia/gobridge => ../..
+	github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb => ../../adapters/aws/config/dynamodb
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease => ../../adapters/aws/store/dynamodblease
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox => ../../adapters/aws/store/dynamodboutbox
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs => ../../adapters/aws/transport/sqs
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho => ../../adapters/mqtt/transport/paho
+	github.com/mariotoffia/gobridge/adapters/native/config/file => ../../adapters/native/config/file
 	github.com/mariotoffia/gobridge/adapters/native/store/memorylease => ../../adapters/native/store/memorylease
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox => ../../adapters/native/store/memoryoutbox
 	github.com/mariotoffia/gobridge/testutil/ddblocal => ../../testutil/ddblocal
@@ -17,10 +19,12 @@ replace (
 require (
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.24
 	github.com/mariotoffia/gobridge v0.0.0
+	github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb v0.0.0
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0
+	github.com/mariotoffia/gobridge/adapters/native/config/file v0.0.0
 	github.com/mariotoffia/gobridge/adapters/native/store/memorylease v0.0.0
 	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/testutil/sqslocal v0.0.0-00010101000000-000000000000
@@ -44,7 +48,10 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.9 // indirect
 	github.com/aws/smithy-go v1.24.2 // indirect
 	github.com/eclipse/paho.golang v0.23.0 // indirect
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/mariotoffia/gobridge/processors/circuitbreaker v0.0.0-20260331043033-0d253faf3dde // indirect
 	golang.org/x/net v0.52.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

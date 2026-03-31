@@ -1115,3 +1115,87 @@ Catalog of all test functions in the gobridge repository.
 | TestUC39_AckAfterOutboxPersist | validates AckAfterOutboxPersist acks source before drain completes | longrunning | outbox_modes | pass |
 | TestUC40_AdaptiveDrain_Backoff | validates AdaptiveBackoff reduces drain cycles during idle periods | longrunning | outbox_modes | pass |
 | TestUC41_IdempotentOutbox_Persist | validates outbox deduplication prevents duplicates on SQS redelivery | longrunning | outbox_modes | pass |
+<!-- integration: ddb_config_overlay -->
+| TestDDBOverlay_MergesSessionsFromDDB | validates DDB overlay session merges into base config | integration | ddb_config | pass |
+| TestDDBOverlay_ReplacesSessionByID | validates DDB overlay replaces session by matching ID | integration | ddb_config | pass |
+| TestDDBOverlay_AddsNewRoute | validates DDB overlay appends new route alongside base routes | integration | ddb_config | pass |
+| TestDDBOverlay_ReplacesRouteByID | validates DDB overlay replaces route by matching ID | integration | ddb_config | pass |
+| TestDDBOverlay_OverridesBridgeSettings | validates DDB overlay overrides non-zero bridge settings | integration | ddb_config | pass |
+| TestDDBOverlay_ReplacesConfigWatch | validates DDB overlay replaces config_watch block | integration | ddb_config | pass |
+| TestDDBOverlay_ReplacesStorePerRole | validates DDB overlay replaces stores per role independently | integration | ddb_config | pass |
+| TestDDBOverlay_EmptyOverlay_PreservesBase | validates empty DDB overlay preserves all base values | integration | ddb_config | pass |
+| TestDDBOverlay_PartialOverlay_OnlyAddsNewSenders | validates partial DDB overlay appends senders | integration | ddb_config | pass |
+<!-- integration: ddb_config_watch -->
+| TestDDBWatch_VersionChangeTriggersEmission | validates DDB version change triggers Manager emission | integration | ddb_config | pass |
+| TestDDBWatch_NoVersionChange_NoEmission | validates no emission when DDB version unchanged | integration | ddb_config | pass |
+| TestDDBWatch_ManagerRebuildsMergedConfig | validates Manager re-merges all layers on DDB change | integration | ddb_config | pass |
+| TestDDBWatch_InvalidMergedConfig_DroppedByManager | validates Manager drops invalid merged configs | integration | ddb_config | pass |
+| TestDDBWatch_ManagerStop_ClosesChannel | validates Manager.Stop closes watch channel | integration | ddb_config | pass |
+| TestDDBWatch_ContextCancel_ClosesChannel | validates context cancel closes watch channel | integration | ddb_config | pass |
+| TestDDBWatch_MultipleOverlayChanges_EachEmits | validates sequential DDB changes each emit merged config | integration | ddb_config | pass |
+| TestDDBWatch_RapidSaves_AtLeastOneEmission | validates rapid DDB saves produce at least one emission | integration | ddb_config | pass |
+| TestDDBWatch_InvalidThenValid_OnlyValidEmits | validates invalid overlay dropped then valid one emits | integration | ddb_config | pass |
+<!-- integration: ddb_config_supervisor -->
+| TestDDBSupervisor_InitialLoadAndRun | validates supervisor starts runtime from merged config | integration | ddb_config | pass |
+| TestDDBSupervisor_OverlayChangeSwapsRuntime | validates DDB change triggers supervisor runtime swap | integration | ddb_config | pass |
+| TestDDBSupervisor_SwapEvent_ReportsCorrectConfigs | validates SwapEvent has correct old and new configs | integration | ddb_config | pass |
+| TestDDBSupervisor_SwapEvent_ReportsMode | validates SwapEvent reports correct swap mode | integration | ddb_config | pass |
+| TestDDBSupervisor_DebouncedStrategy_CoalescesChanges | validates debounced strategy coalesces rapid DDB changes | integration | ddb_config | pass |
+| TestDDBSupervisor_SequentialChanges_EachApplied | validates sequential DDB changes each trigger a swap | integration | ddb_config | pass |
+| TestDDBSupervisor_PrepareCommitMode_WithExclusiveSession | validates auto-detect PrepareCommit for exclusive transport | integration | ddb_config | pass |
+<!-- integration: ddb_config_rollback -->
+| TestDDBRollback_InvalidOverlay_ManagerDrops | validates invalid overlay dropped, supervisor unchanged | integration | ddb_config | pass |
+| TestDDBRollback_ValidOverlayButBuildFails_KeepsOldConfig | validates build failure triggers rollback to old config | integration | ddb_config | pass |
+| TestDDBRollback_ValidOverlayButStartFails_RecoversOldConfig | validates start failure recovers old config | integration | ddb_config | pass |
+| TestDDBRollback_MultipleFailures_OldConfigSurvives | validates old config survives multiple failure types | integration | ddb_config | pass |
+| TestDDBRollback_InvalidThenValid_RecoversFully | validates recovery from invalid to valid overlay | integration | ddb_config | pass |
+<!-- integration: ddb_config_transport -->
+| TestDDBTransport_SQS_ConfigChangeSwapsQueue | validates SQS queue swap via DDB config change | integration | ddb_config | pass |
+| TestDDBTransport_SQS_NewRouteAdded | validates new SQS route added via DDB overlay | integration | ddb_config | pass |
+| TestDDBTransport_ConfigRemovesRoute | validates route removal when DDB overlay drops it | integration | ddb_config | pass |
+<!-- integration: config_api_crud -->
+| TestConfigAPI_GetConfig_ReturnsCurrentConfig | validates GET /config returns effective config over real HTTP | integration | config_api | pass |
+| TestConfigAPI_CreateTransaction_Returns201WithTxnID | validates POST /transactions returns 201 with txn_id | integration | config_api | pass |
+| TestConfigAPI_CreateTransaction_WithCustomTTL | validates custom TTL is respected in transaction expiry | integration | config_api | pass |
+| TestConfigAPI_GetTransaction_ReturnsPatchCountAndPreview | validates GET /transactions/{txnID} returns state and preview | integration | config_api | pass |
+| TestConfigAPI_PatchTransaction_ReturnsMergedPreview | validates PATCH returns merged preview with overlay applied | integration | config_api | pass |
+| TestConfigAPI_CommitTransaction_Returns200 | validates commit succeeds after valid patch | integration | config_api | pass |
+| TestConfigAPI_RollbackTransaction_Returns200 | validates rollback succeeds and returns expected status | integration | config_api | pass |
+| TestConfigAPI_RollbackThenNewTransaction_Succeeds | validates new transaction allowed after rollback | integration | config_api | pass |
+| TestConfigAPI_CommitThenNewTransaction_Succeeds | validates new transaction allowed after commit | integration | config_api | pass |
+<!-- integration: config_api_auth -->
+| TestConfigAPI_Auth_NoKey_Returns401 | validates all config endpoints reject requests without API key | integration | config_api | pass |
+| TestConfigAPI_Auth_WrongKey_Returns401 | validates all config endpoints reject incorrect API key | integration | config_api | pass |
+| TestConfigAPI_Auth_ValidXAPIKey_Succeeds | validates X-API-Key header authentication | integration | config_api | pass |
+| TestConfigAPI_Auth_ValidBearerToken_Succeeds | validates Bearer token authentication | integration | config_api | pass |
+| TestConfigAPI_Auth_CorrelationHeaders_Returned | validates correlation headers in responses | integration | config_api | pass |
+| TestConfigAPI_Auth_CustomCorrelationID_Echoed | validates client correlation ID echoed back | integration | config_api | pass |
+| TestConfigAPI_SecurityHeaders_Present | validates security headers on config API responses | integration | config_api | pass |
+<!-- integration: config_api_validation -->
+| TestConfigAPI_Patch_InvalidRouteRef_Returns422 | validates bad receiver_id returns 422 with validation_errors | integration | config_api | pass |
+| TestConfigAPI_Patch_MissingBindingRef_Returns422 | validates missing binding reference returns 422 | integration | config_api | pass |
+| TestConfigAPI_Patch_InvalidDeliveryMode_Returns422 | validates invalid delivery_mode returns 422 | integration | config_api | pass |
+| TestConfigAPI_Patch_InvalidJSON_Returns400 | validates non-JSON body produces 400 | integration | config_api | pass |
+| TestConfigAPI_Patch_AfterInvalidPatch_TransactionRemains | validates transaction not poisoned by rejected patch | integration | config_api | pass |
+<!-- integration: config_api_disk -->
+| TestConfigAPI_Commit_WritesConfigToDisk | validates commit writes merged YAML to config file | integration | config_api | pass |
+| TestConfigAPI_Commit_AtomicWrite_NoPartialFiles | validates no temp files remain after commit | integration | config_api | pass |
+| TestConfigAPI_Commit_PreservesFilePermissions | validates file permissions preserved after commit | integration | config_api | pass |
+| TestConfigAPI_Commit_MultiplePatchesMergedOnDisk | validates multiple patches reflected on disk | integration | config_api | pass |
+| TestConfigAPI_Rollback_DiskUnchanged | validates rollback leaves config file unchanged | integration | config_api | pass |
+| TestConfigAPI_Commit_ConfigRoundTrip | validates committed config round-trips through disk | integration | config_api | pass |
+<!-- integration: config_api_watcher -->
+| TestConfigAPI_Pipeline_CommitAddsRoute_SupervisorSwaps | validates commit adds route, supervisor swaps runtime | integration | config_api | pass |
+| TestConfigAPI_Pipeline_CommitChangesLogLevel | validates log_level change triggers supervisor swap | integration | config_api | pass |
+| TestConfigAPI_Pipeline_RollbackDoesNotTriggerSwap | validates rollback does not trigger supervisor swap | integration | config_api | pass |
+| TestConfigAPI_Pipeline_SequentialCommits_EachApplied | validates sequential commits each trigger swaps | integration | config_api | pass |
+<!-- integration: config_api_edge -->
+| TestConfigAPI_TransactionIsolation_OnlyOneActive | validates second transaction returns 409 Conflict | integration | config_api | pass |
+| TestConfigAPI_TransactionIsolation_WrongTxnID_Returns404 | validates wrong txn ID returns 404 | integration | config_api | pass |
+| TestConfigAPI_TransactionIsolation_ExpiredTxn_Returns404 | validates expired transaction returns 404 | integration | config_api | pass |
+| TestConfigAPI_TransactionIsolation_AfterExpiry_NewTxnAllowed | validates new transaction allowed after expiry | integration | config_api | pass |
+| TestConfigAPI_MultiPatch_Accumulation | validates three sequential patches accumulate correctly | integration | config_api | pass |
+| TestConfigAPI_MultiPatch_LastPatchWins | validates last patch wins for same field | integration | config_api | pass |
+| TestConfigAPI_Redaction_GetConfig_HidesAPIKeys | validates API keys redacted in GET /config | integration | config_api | pass |
+| TestConfigAPI_Redaction_PatchPreview_HidesAPIKeys | validates API keys redacted in PATCH preview | integration | config_api | pass |
+| TestConfigAPI_TTL_MaxClampedTo30m | validates TTL exceeding max is clamped to 30m | integration | config_api | pass |
