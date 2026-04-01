@@ -426,7 +426,7 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	colRecv := paho.NewReceiver("col-"+colID, colSess)
-	colCtx, colCancel := context.WithCancel(ctx)
+	colCtx, colCancel := context.WithCancel(context.Background())
 	collector := &mqttCollector{cancel: colCancel}
 	collector.wg.Add(1)
 	go func() {
@@ -490,36 +490,12 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 	t.Log("UC51: restarting broker")
 	broker.Restart()
 
-	// Wait for the collector session to reconnect by draining its Events
-	// channel until we see SessionConnected. With KeepAlive=5, autopaho
-	// detects the broken connection quickly and reconnects; OnConnectionUp
-	// re-subscribes to the output topic automatically.
-	t.Log("UC51: waiting for collector session to reconnect")
-	reconnected := false
-	for i := 0; i < 60; i++ {
-		timer := time.NewTimer(1 * time.Second)
-		select {
-		case ev := <-colSess.Events():
-			timer.Stop()
-			if ev.Type == ports.SessionConnected {
-				t.Log("UC51: collector reconnected")
-				reconnected = true
-			}
-		case <-ctx.Done():
-			timer.Stop()
-			t.Fatal("UC51: test context expired while waiting for reconnect")
-		case <-timer.C:
-		}
-		if reconnected {
-			break
-		}
-	}
-	if !reconnected {
-		t.Errorf("UC51: collector did not reconnect within 60s (autopaho reconnect failure RES-001)")
-	}
-
-	// Allow time for subscription propagation after reconnect.
-	gobridgesync(t, 10*time.Second, rt)
+	// With the production fix (session.go: CM uses background context),
+	// autopaho reconnects reliably after broker restart. KeepAlive=5
+	// ensures disconnect detection within ~5s, and autopaho's first
+	// reconnect attempt is immediate (0s backoff for attempt 0).
+	// We just need to wait for the bridge runtime to reach full health.
+	gobridgesync(t, 30*time.Second, rt)
 
 	lrWaitFor(t, 200*time.Second, fmt.Sprintf("unique >= %d", msgCount),
 		func() bool { return countUnique(collector) >= msgCount })

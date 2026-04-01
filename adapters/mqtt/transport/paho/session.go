@@ -24,10 +24,11 @@ type Session struct {
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
 
-	mu     sync.Mutex
-	cm     *autopaho.ConnectionManager
-	events chan ports.SessionEvent
-	closed bool
+	mu       sync.Mutex
+	cm       *autopaho.ConnectionManager
+	cmCancel context.CancelFunc // cancels the CM's background context on Close
+	events   chan ports.SessionEvent
+	closed   bool
 
 	// reconcileMu serializes concurrent reconcile calls (e.g. external
 	// Reconcile vs OnConnectionUp callback) to prevent interleaved
@@ -43,9 +44,10 @@ type Session struct {
 	// activeSubs tracks topics for which SUBSCRIBE has been issued.
 	activeSubs map[string]byte // topic -> qos
 
-	// startCtx is the parent context from Start(), used to derive
-	// reconnect contexts so that session cancellation also cancels
-	// in-progress reconciliations.
+	// startCtx is a long-lived context derived from context.Background(),
+	// used to derive reconnect reconciliation contexts. It is cancelled
+	// by Close() via cmCancel, ensuring in-progress reconciliations are
+	// aborted on shutdown.
 	startCtx context.Context
 }
 
@@ -196,8 +198,13 @@ func (s *Session) Start(ctx context.Context) error {
 		cfg.TlsCfg = tlsCfg
 	}
 
-	cm, err := autopaho.NewConnection(ctx, cfg)
+	// The CM's reconnection loop must outlive the caller's context.
+	// We derive a background context that is only cancelled by Close().
+	cmCtx, cmCancel := context.WithCancel(context.Background())
+
+	cm, err := autopaho.NewConnection(cmCtx, cfg)
 	if err != nil {
+		cmCancel()
 		return MapError(err)
 	}
 
@@ -205,11 +212,11 @@ func (s *Session) Start(ctx context.Context) error {
 	if connectTimeout == 0 {
 		connectTimeout = 30 * time.Second
 	}
-	awaitCtx, cancel := context.WithTimeout(ctx, connectTimeout)
-	defer cancel()
+	awaitCtx, awaitCancel := context.WithTimeout(ctx, connectTimeout)
+	defer awaitCancel()
 
 	if err := cm.AwaitConnection(awaitCtx); err != nil {
-		// Connection failed; disconnect to clean up the autopaho goroutine.
+		cmCancel()
 		_ = cm.Disconnect(context.Background())
 		logging.DebugContext(s.logger, ctx, "mqtt: connect failed",
 			"client_id", s.opts.ClientID, "error", err)
@@ -218,7 +225,8 @@ func (s *Session) Start(ctx context.Context) error {
 
 	s.mu.Lock()
 	s.cm = cm
-	s.startCtx = ctx
+	s.cmCancel = cmCancel
+	s.startCtx = cmCtx
 	s.mu.Unlock()
 
 	elapsed := time.Since(connectStart)
@@ -429,11 +437,16 @@ func (s *Session) Close(ctx context.Context) error {
 	s.closed = true
 	cm := s.cm
 	s.cm = nil
+	cmCancel := s.cmCancel
+	s.cmCancel = nil
 	s.mu.Unlock()
 
 	var disconnErr error
 	if cm != nil {
 		disconnErr = cm.Disconnect(ctx)
+	}
+	if cmCancel != nil {
+		cmCancel()
 	}
 
 	done := make(chan struct{})
