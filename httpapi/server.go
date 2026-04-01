@@ -26,6 +26,18 @@ type Config struct {
 	MonitorAPIKey string `json:"-"`
 	CORSOrigins   string `json:"cors_origins"`
 
+	// AdminAPIKeyProvider returns the current admin API key. When nil, the
+	// static AdminAPIKey value is used.
+	AdminAPIKeyProvider func() string `json:"-"`
+
+	// MonitorAPIKeyProvider returns the current monitor API key. When nil,
+	// the static MonitorAPIKey value is used.
+	MonitorAPIKeyProvider func() string `json:"-"`
+
+	// RuntimeProvider returns the current runtime backing the admin/monitor
+	// APIs. When nil, the Server uses the runtime passed to New().
+	RuntimeProvider func() *runtime.Runtime `json:"-"`
+
 	// ConfigFilePath is the path to the config file for write-back.
 	// When set together with ConfigProvider, the config management
 	// endpoints are enabled on the admin server.
@@ -49,11 +61,14 @@ func DefaultConfig() Config {
 
 // Server manages the admin and monitor HTTP endpoints.
 type Server struct {
-	rt        *runtime.Runtime
-	cfg       Config
-	logger    *slog.Logger
-	audit     ports.AuditLogger
-	configTxn *configTxnManager // nil when config management is disabled
+	rt                 *runtime.Runtime
+	rtProvider         func() *runtime.Runtime
+	adminKeyProvider   func() string
+	monitorKeyProvider func() string
+	cfg                Config
+	logger             *slog.Logger
+	audit              ports.AuditLogger
+	configTxn          *configTxnManager // nil when config management is disabled
 
 	admin    *http.Server
 	monitor  *http.Server
@@ -86,10 +101,52 @@ func New(rt *runtime.Runtime, cfg Config, opts ...Option) *Server {
 	if s.audit == nil {
 		s.audit = ports.NoopAuditLogger{}
 	}
+	if cfg.RuntimeProvider != nil {
+		s.rtProvider = cfg.RuntimeProvider
+	} else {
+		s.rtProvider = func() *runtime.Runtime { return rt }
+	}
+	if cfg.AdminAPIKeyProvider != nil {
+		s.adminKeyProvider = cfg.AdminAPIKeyProvider
+	} else {
+		s.adminKeyProvider = func() string { return cfg.AdminAPIKey }
+	}
+	if cfg.MonitorAPIKeyProvider != nil {
+		s.monitorKeyProvider = cfg.MonitorAPIKeyProvider
+	} else {
+		s.monitorKeyProvider = func() string { return cfg.MonitorAPIKey }
+	}
 	if cfg.ConfigFilePath != "" && cfg.ConfigProvider != nil {
 		s.configTxn = newTxnManager(cfg.ConfigFilePath, cfg.ConfigProvider, s.logger)
 	}
 	return s
+}
+
+func (s *Server) currentRuntime() *runtime.Runtime {
+	if s.rtProvider != nil {
+		if rt := s.rtProvider(); rt != nil {
+			return rt
+		}
+	}
+	return s.rt
+}
+
+func (s *Server) currentAdminAPIKey() string {
+	if s.adminKeyProvider != nil {
+		key := s.adminKeyProvider()
+		if key == "" && s.logger != nil {
+			s.logger.Warn("admin API key provider returned empty key; all admin requests will be rejected")
+		}
+		return key
+	}
+	return s.cfg.AdminAPIKey
+}
+
+func (s *Server) currentMonitorAPIKey() string {
+	if s.monitorKeyProvider != nil {
+		return s.monitorKeyProvider()
+	}
+	return s.cfg.MonitorAPIKey
 }
 
 // Start starts both HTTP servers. It validates configuration, binds
@@ -198,13 +255,15 @@ func (s *Server) Stop(ctx context.Context) error {
 const minAPIKeyLen = 16
 
 func (s *Server) validateConfig() error {
-	if s.cfg.AdminAPIKey == "" {
+	adminKey := s.currentAdminAPIKey()
+	if adminKey == "" {
 		return fmt.Errorf("httpapi: admin API key is required; set AdminAPIKey in Config")
 	}
-	if len(s.cfg.AdminAPIKey) < minAPIKeyLen {
+	if len(adminKey) < minAPIKeyLen {
 		return fmt.Errorf("httpapi: admin API key must be at least %d characters", minAPIKeyLen)
 	}
-	if s.cfg.MonitorAPIKey != "" && len(s.cfg.MonitorAPIKey) < minAPIKeyLen {
+	monitorKey := s.currentMonitorAPIKey()
+	if monitorKey != "" && len(monitorKey) < minAPIKeyLen {
 		return fmt.Errorf("httpapi: monitor API key must be at least %d characters when set", minAPIKeyLen)
 	}
 	if s.cfg.CORSOrigins == "*" {
@@ -302,7 +361,7 @@ func (s *Server) isAllowedOrigin(origin string) bool {
 
 func (s *Server) requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.checkAPIKey(r, s.cfg.AdminAPIKey) {
+		if !s.checkAPIKey(r, s.currentAdminAPIKey()) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="gobridge-admin"`)
 			writeErr(w, http.StatusUnauthorized, "invalid or missing API key")
 			return
@@ -316,11 +375,12 @@ func (s *Server) requireMonitorAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Accept monitor key, or fall back to admin key (admin is a
 		// superset of monitor access).
 		ok := false
-		if s.cfg.MonitorAPIKey != "" {
-			ok = s.checkAPIKey(r, s.cfg.MonitorAPIKey)
+		monitorKey := s.currentMonitorAPIKey()
+		if monitorKey != "" {
+			ok = s.checkAPIKey(r, monitorKey)
 		}
 		if !ok {
-			ok = s.checkAPIKey(r, s.cfg.AdminAPIKey)
+			ok = s.checkAPIKey(r, s.currentAdminAPIKey())
 		}
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="gobridge-monitor"`)

@@ -54,12 +54,13 @@ func newConfigAPITestServer(t *testing.T, baseCfg *config.BridgeConfig) configAP
 	currentCfg := baseCfg
 	rt := goruntime.New(goruntime.WithInstanceID("config-api-test"))
 	apiCfg := httpapi.Config{
-		AdminAddr:      ":0",
-		MonitorAddr:    ":0",
-		AdminAPIKey:    testAdminAPIKey,
-		MonitorAPIKey:  testMonitorAPIKey,
-		ConfigFilePath: cfgPath,
-		ConfigProvider: func() *config.BridgeConfig { return currentCfg },
+		AdminAddr:       ":0",
+		MonitorAddr:     ":0",
+		AdminAPIKey:     testAdminAPIKey,
+		MonitorAPIKey:   testMonitorAPIKey,
+		RuntimeProvider: func() *goruntime.Runtime { return rt },
+		ConfigFilePath:  cfgPath,
+		ConfigProvider:  func() *config.BridgeConfig { return currentCfg },
 	}
 
 	srv := httpapi.New(rt, apiCfg, httpapi.WithServerLogger(nil))
@@ -138,12 +139,13 @@ func newConfigAPITestServerWithPipeline(t *testing.T, baseCfg *config.BridgeConf
 	rt := waitForSupervisorRuntime(t, sup, 5*time.Second)
 
 	apiCfg := httpapi.Config{
-		AdminAddr:      ":0",
-		MonitorAddr:    ":0",
-		AdminAPIKey:    testAdminAPIKey,
-		MonitorAPIKey:  testMonitorAPIKey,
-		ConfigFilePath: cfgPath,
-		ConfigProvider: sup.Config,
+		AdminAddr:       ":0",
+		MonitorAddr:     ":0",
+		AdminAPIKey:     testAdminAPIKey,
+		MonitorAPIKey:   testMonitorAPIKey,
+		RuntimeProvider: sup.Runtime,
+		ConfigFilePath:  cfgPath,
+		ConfigProvider:  sup.Config,
 	}
 
 	srv := httpapi.New(rt, apiCfg, httpapi.WithServerLogger(nil))

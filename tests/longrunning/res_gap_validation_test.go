@@ -383,7 +383,7 @@ func TestRES006_DLQWriteBlocksSemaphore(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "res006-col")
 
 	sessID := mqttlocal.UniqueClientID("res006-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("res006-bridge"),

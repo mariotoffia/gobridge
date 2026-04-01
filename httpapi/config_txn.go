@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -20,9 +21,10 @@ const maxTxnTTL = 30 * time.Minute
 
 // Sentinel errors returned by configTxnManager methods.
 var (
-	errTxnActive   = errors.New("another transaction is already active")
-	errTxnNotFound = errors.New("transaction not found")
-	errTxnExpired  = errors.New("transaction has expired")
+	errTxnActive          = errors.New("another transaction is already active")
+	errTxnNotFound        = errors.New("transaction not found")
+	errTxnExpired         = errors.New("transaction has expired")
+	errVersionConflict    = errors.New("config version conflict")
 )
 
 // ConfigTransaction represents an in-progress configuration change.
@@ -32,8 +34,9 @@ type ConfigTransaction struct {
 	ExpiresAt  time.Time `json:"expires_at"`
 	PatchCount int       `json:"patch_count"`
 
-	patches []*config.BridgeConfig
-	merged  *config.BridgeConfig
+	baseVersion int // config version when the transaction was created
+	patches     []*config.BridgeConfig
+	merged      *config.BridgeConfig
 }
 
 // configTxnManager manages the single active config transaction.
@@ -77,10 +80,17 @@ func (m *configTxnManager) Begin(ttl time.Duration) (*ConfigTransaction, error) 
 	}
 
 	now := time.Now().UTC()
+
+	baseVersion := 0
+	if current := m.configProvider(); current != nil {
+		baseVersion = current.Version
+	}
+
 	txn := &ConfigTransaction{
-		ID:        generateTxnID(),
-		CreatedAt: now,
-		ExpiresAt: now.Add(ttl),
+		ID:          generateTxnID(),
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(ttl),
+		baseVersion: baseVersion,
 	}
 	m.active = txn
 
@@ -147,31 +157,66 @@ func (m *configTxnManager) Preview(txnID string) (*config.BridgeConfig, error) {
 	return merged, nil
 }
 
-// Commit validates the final merged config and atomically writes it to
-// the config file. The transaction is cleaned up on success.
-func (m *configTxnManager) Commit(txnID string) error {
+// Commit validates the final merged config and writes it to the config
+// file using optimistic concurrency control. It reads the on-disk config,
+// verifies that its version matches the version captured when the
+// transaction was created (check-and-set), increments the version, and
+// writes. Returns errVersionConflict if another instance committed a
+// different version in the meantime. The transaction is cleaned up on
+// success.
+//
+// Note: on network filesystems (NFS/EFS) the check-read and write are
+// not perfectly atomic. For truly concurrent config management, use the
+// DynamoDB-backed config profile instead.
+func (m *configTxnManager) Commit(txnID string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if err := m.checkTxn(txnID); err != nil {
-		return err
+		return 0, err
 	}
 
 	merged, err := m.computeMerged()
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	if _, valErr := config.ValidateWithWarnings(merged); valErr != nil {
-		return valErr
+		return 0, valErr
 	}
 
+	// CAS: read current on-disk version and compare with our base.
+	diskVersion, err := m.readDiskVersion()
+	if err != nil {
+		return 0, fmt.Errorf("config commit: read disk version: %w", err)
+	}
+	if diskVersion != m.active.baseVersion {
+		return 0, fmt.Errorf("%w: expected version %d but file has version %d; re-read the config and retry",
+			errVersionConflict, m.active.baseVersion, diskVersion)
+	}
+
+	newVersion := diskVersion + 1
+	merged.Version = newVersion
+
 	if err := config.WriteFile(m.configFilePath, merged); err != nil {
-		return fmt.Errorf("config write failed: %w", err)
+		return 0, fmt.Errorf("config write failed: %w", err)
 	}
 
 	m.cleanup()
-	return nil
+	return newVersion, nil
+}
+
+// readDiskVersion reads the config file from disk and returns its version.
+// Returns 0 if the file does not exist or has no version field.
+func (m *configTxnManager) readDiskVersion() (int, error) {
+	diskCfg, err := config.ParseFile(m.configFilePath, config.FormatAuto)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return diskCfg.Version, nil
 }
 
 // Rollback discards the active transaction.

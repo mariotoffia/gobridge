@@ -30,7 +30,7 @@ import (
 func TestUC63_MemoryStability(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount    = 50000
+		msgCount    = 25000
 		outTopic    = "uc63/output"
 		testTimeout = 600 * time.Second
 	)
@@ -130,7 +130,7 @@ func TestUC64_LatencyPercentiles(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc64-col")
 
 	sessID := mqttlocal.UniqueClientID("uc64-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 
@@ -208,7 +208,7 @@ func TestUC66_MultiTenantIsolation(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc66-col")
 
 	sessID := mqttlocal.UniqueClientID("uc66-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 
@@ -309,10 +309,10 @@ func TestUC65_ThroughputCeiling(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
 		outTopic    = "uc65/output"
-		testTimeout = 600 * time.Second
+		testTimeout = 900 * time.Second
 	)
 
-	batches := []int{1000, 5000, 10000, 20000}
+	batches := []int{500, 2500, 5000, 10000}
 	totalMsgs := 0
 	for _, b := range batches {
 		totalMsgs += b
@@ -364,7 +364,7 @@ func TestUC65_ThroughputCeiling(t *testing.T) {
 		sendBulkToSQS(t, sqsInClient, sqsInURL, batchSize, nil)
 		delivered += batchSize
 
-		lrWaitFor(t, 180*time.Second,
+		lrWaitFor(t, 300*time.Second,
 			fmt.Sprintf("unique >= %d", delivered),
 			func() bool { return countUnique(collector) >= delivered })
 

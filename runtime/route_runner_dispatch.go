@@ -80,6 +80,25 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	if domain.IsRecoverableError(sendErr) {
 		r.metrics.Counter(domain.MetricRouteErrors, 1,
 			domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID})
+
+		rc := receiveCount(env)
+		if r.policy.MaxReplayAttempts > 0 && rc >= r.policy.MaxReplayAttempts {
+			logging.Debug(r.logger, "max replay attempts exceeded in direct_hold",
+				"route", r.routeID,
+				"envelope_id", env.ID,
+				"receive_count", rc,
+				"max_replay_attempts", r.policy.MaxReplayAttempts,
+			)
+			poisonErr := domain.NewBridgeError(domain.ErrCodePoisonMessage, domain.ErrorPermanent,
+				fmt.Sprintf("direct_hold: receive count %d >= max replay attempts %d", rc, r.policy.MaxReplayAttempts))
+			if dlqErr := r.dlq.Route(ctx, env, r.routeID, plan.BindingID,
+				r.sessionIDForBinding(plan.BindingID), "", poisonErr, rc); dlqErr != nil {
+				return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
+			}
+			r.emitDLQ("max_retries")
+			return del.Ack(ctx)
+		}
+
 		retryAfter := domain.GetRetryAfter(sendErr)
 		return r.retryOrFallback(ctx, del, env, retryAfter, sendErr)
 	}
@@ -184,6 +203,21 @@ func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, e
 	}
 	r.emitDLQ("retry_unsupported")
 	return del.Ack(ctx)
+}
+
+// receiveCount extracts the transport-level receive count from envelope
+// headers. SQS populates this as "sqs.ApproximateReceiveCount" (int).
+// Returns 0 when the header is absent or not an int.
+func receiveCount(env *domain.Envelope) int {
+	if env.Headers == nil {
+		return 0
+	}
+	if v, ok := env.Headers["sqs.ApproximateReceiveCount"]; ok {
+		if n, ok := v.(int); ok {
+			return n
+		}
+	}
+	return 0
 }
 
 func (r *RouteRunner) emitDLQ(category string) {

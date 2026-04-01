@@ -108,11 +108,15 @@ schemas:
 
   ConfigTxnCommitResponse:
     type: object
-    required: [status]
+    required: [status, version]
     properties:
       status:
         type: string
         enum: [committed]
+      version:
+        type: integer
+        description: The new config version after the commit.
+        example: 4
 
   ConfigTxnRollbackResponse:
     type: object
@@ -146,7 +150,27 @@ schemas:
       Full GoBridge configuration. When returned in API responses, sensitive
       fields (API keys) are redacted as "***". When sent as a PATCH overlay,
       only the fields present are merged; absent fields are left unchanged.
+
+
+      The `version` field is an optimistic-concurrency counter. It is
+      incremented on each successful config commit via the transaction API.
+      When multiple instances share a config file (e.g. on AWS EFS), the
+      commit uses check-and-set: it succeeds only when the on-disk version
+      matches the version the transaction was started against. A version
+      conflict returns HTTP 409 and the client must re-read and retry.
+
+
+      **Note:** the check-and-set is not perfectly atomic on network
+      filesystems (NFS/EFS). For truly concurrent config management across
+      many writers, use the DynamoDB-backed config profile instead.
     properties:
+      version:
+        type: integer
+        description: >
+          Optimistic-concurrency version counter. Incremented on each
+          successful commit via the config transaction API. Zero means the
+          config has never been committed via the API.
+        example: 3
       bridge:
         $ref: "#/schemas/BridgeSettings"
       config_watch:

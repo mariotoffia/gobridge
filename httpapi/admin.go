@@ -33,18 +33,28 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
+	rt := s.currentRuntime()
+	if rt == nil {
+		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+		return
+	}
 	s.emitAudit(r, "bridge.status", "bridge", "", "success", nil)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"instance_id": s.rt.InstanceID(),
-		"running":     s.rt.IsRunning(),
-		"routes":      len(s.rt.Routes()),
+		"instance_id": rt.InstanceID(),
+		"running":     rt.IsRunning(),
+		"routes":      len(rt.Routes()),
 	})
 }
 
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
+	rt := s.currentRuntime()
+	if rt == nil {
+		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	if err := s.rt.Start(ctx); err != nil {
+	if err := rt.Start(ctx); err != nil {
 		s.emitAudit(r, "bridge.start", "bridge", "", "failure", map[string]any{"error": err.Error()})
 		writeErr(w, http.StatusConflict, "bridge start failed")
 		return
@@ -54,9 +64,14 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
+	rt := s.currentRuntime()
+	if rt == nil {
+		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	if err := s.rt.Stop(ctx); err != nil {
+	if err := rt.Stop(ctx); err != nil {
 		s.emitAudit(r, "bridge.stop", "bridge", "", "failure", map[string]any{"error": err.Error()})
 		writeErr(w, http.StatusInternalServerError, "bridge stop failed")
 		return
@@ -73,7 +88,12 @@ type routeView struct {
 }
 
 func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
-	routes := s.rt.Routes()
+	rt := s.currentRuntime()
+	if rt == nil {
+		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+		return
+	}
+	routes := rt.Routes()
 	views := make([]routeView, len(routes))
 	for i, ri := range routes {
 		views[i] = routeView{
@@ -131,7 +151,12 @@ func toDLQEntryViews(entries []domain.DLQEntry) []dlqEntryView {
 }
 
 func (s *Server) handleDLQ(w http.ResponseWriter, r *http.Request) {
-	store := s.rt.DLQStore()
+	rt := s.currentRuntime()
+	if rt == nil {
+		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+		return
+	}
+	store := rt.DLQStore()
 	if store == nil {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
@@ -153,7 +178,12 @@ const (
 )
 
 func (s *Server) handleDLQMessages(w http.ResponseWriter, r *http.Request) {
-	store := s.rt.DLQStore()
+	rt := s.currentRuntime()
+	if rt == nil {
+		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+		return
+	}
+	store := rt.DLQStore()
 	if store == nil {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
@@ -232,7 +262,12 @@ func (s *Server) handleDLQMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
-	store := s.rt.DLQStore()
+	rt := s.currentRuntime()
+	if rt == nil {
+		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+		return
+	}
+	store := rt.DLQStore()
 	if store == nil {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
@@ -270,7 +305,12 @@ func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDLQPurge(w http.ResponseWriter, r *http.Request) {
-	store := s.rt.DLQStore()
+	rt := s.currentRuntime()
+	if rt == nil {
+		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+		return
+	}
+	store := rt.DLQStore()
 	if store == nil {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
@@ -293,6 +333,11 @@ type injectRequest struct {
 }
 
 func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
+	rt := s.currentRuntime()
+	if rt == nil {
+		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+		return
+	}
 	routeID := r.PathValue("routeID")
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
@@ -318,7 +363,7 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 		Headers: domain.StripReservedHeaders(body.Headers),
 	}
 
-	if err := s.rt.Inject(r.Context(), routeID, env); err != nil {
+	if err := rt.Inject(r.Context(), routeID, env); err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			s.emitAudit(r, "route.inject", "route", routeID, "failure", map[string]any{
 				"error": "route not found",

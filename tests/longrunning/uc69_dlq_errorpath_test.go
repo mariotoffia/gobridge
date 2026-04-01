@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -37,7 +38,7 @@ func TestUC69_DLQReplayIntegration(t *testing.T) {
 
 	// Phase 1: all messages fail -> DLQ
 	sessID := mqttlocal.UniqueClientID("uc69-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
 	failSnd := &alwaysFailSender{}
 	rx := newSQSReceiver(t, sqsInURL)
 
@@ -94,6 +95,7 @@ func TestUC69_DLQReplayIntegration(t *testing.T) {
 			BindingID: "uc69-bind2",
 			Address:   outTopic,
 		}),
+		SourceCapabilities: []ports.Capability{ports.CapHTTPEndpoint},
 	}, &noopReceiver{}, realSnd, sess, nil))
 
 	require.NoError(t, rt2.Start(ctx))
@@ -136,7 +138,7 @@ func TestUC70_ErrorClassificationAccuracy(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc70-col")
 
 	sessID := mqttlocal.UniqueClientID("uc70-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
 	realSnd := setupMQTTSender(t, sess)
 	errSnd := &errorClassSender{inner: realSnd}
 	rx := newSQSReceiver(t, sqsInURL)
@@ -206,6 +208,7 @@ func TestUC71_PoisonMessageAttemptCount(t *testing.T) {
 	)
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc71-in")
+	leaseStore, outboxStore := setupDynamoStores(t)
 	dlq := &replayableDLQStore{}
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -215,9 +218,12 @@ func TestUC71_PoisonMessageAttemptCount(t *testing.T) {
 	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	failSnd := &alwaysFailSender{}
 	rx := newSQSReceiver(t, sqsInURL)
+	sc := lrSessionConfig(sessID)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("uc71"),
+		goruntime.WithLeaseStore(leaseStore),
+		goruntime.WithOutboxStore(outboxStore),
 		goruntime.WithDLQStore(dlq),
 		goruntime.WithLogger(testLogger(t)),
 	)
@@ -232,8 +238,11 @@ func TestUC71_PoisonMessageAttemptCount(t *testing.T) {
 			BindingID: "uc71-bind",
 			Address:   outTopic,
 		}),
+		Bindings: []domain.DestinationBinding{
+			{ID: "uc71-bind", SessionID: sessID},
+		},
 		SourceCapabilities: directHoldCaps,
-	}, rx, failSnd, sess, nil))
+	}, rx, failSnd, sess, &sc))
 
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
@@ -266,6 +275,7 @@ func TestUC72_DLQEntryFieldIntegrity(t *testing.T) {
 	)
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc72-in")
+	leaseStore, outboxStore := setupDynamoStores(t)
 	dlq := &replayableDLQStore{}
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -275,9 +285,12 @@ func TestUC72_DLQEntryFieldIntegrity(t *testing.T) {
 	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
 	failSnd := &alwaysFailSender{}
 	rx := newSQSReceiver(t, sqsInURL)
+	sc := lrSessionConfig(sessID)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("uc72"),
+		goruntime.WithLeaseStore(leaseStore),
+		goruntime.WithOutboxStore(outboxStore),
 		goruntime.WithDLQStore(dlq),
 		goruntime.WithLogger(testLogger(t)),
 	)
@@ -292,8 +305,11 @@ func TestUC72_DLQEntryFieldIntegrity(t *testing.T) {
 			BindingID: "uc72-bind",
 			Address:   outTopic,
 		}),
+		Bindings: []domain.DestinationBinding{
+			{ID: "uc72-bind", SessionID: sessID},
+		},
 		SourceCapabilities: directHoldCaps,
-	}, rx, failSnd, sess, nil))
+	}, rx, failSnd, sess, &sc))
 
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
@@ -344,7 +360,7 @@ func TestUC73_MixedErrorTypes(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc73-col")
 
 	sessID := mqttlocal.UniqueClientID("uc73-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
 	realSnd := setupMQTTSender(t, sess)
 	errSnd := &errorClassSender{inner: realSnd}
 	rx := newSQSReceiver(t, sqsInURL)

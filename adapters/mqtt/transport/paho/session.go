@@ -83,8 +83,16 @@ func (s *Session) Router() *router {
 }
 
 // Start connects to the MQTT broker and emits a SessionConnected event
-// once the initial connection is established.
+// once the initial connection is established. Calling Start on an
+// already-started session is a no-op (idempotent).
 func (s *Session) Start(ctx context.Context) error {
+	s.mu.Lock()
+	if s.cm != nil {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+
 	logging.DebugContext(s.logger, ctx, "mqtt: session connecting",
 		"client_id", s.opts.ClientID,
 		"broker_count", len(s.opts.BrokerURLs),

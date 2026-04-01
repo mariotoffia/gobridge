@@ -222,6 +222,7 @@ func newMQTTCollector(
 		KeepAlive:      30,
 		ConnectTimeout: 15 * time.Second,
 		CleanStart:     true,
+		ReceiveMaximum: 65534,
 	}, domain.SessionEphemeral, testLogger(t))
 
 	ctx := context.Background()
@@ -231,11 +232,6 @@ func newMQTTCollector(
 	case <-sess.Events():
 	case <-time.After(5 * time.Second):
 	}
-
-	require.NoError(t, sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
-	}), "collector Reconcile")
-	time.Sleep(300 * time.Millisecond)
 
 	recv := paho.NewReceiver("collector-"+clientID, sess)
 	recvCtx, recvCancel := context.WithCancel(ctx)
@@ -255,6 +251,11 @@ func newMQTTCollector(
 			return nil
 		})
 	}()
+
+	require.NoError(t, sess.Reconcile(ctx, domain.SessionPlan{
+		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	}), "collector Reconcile")
+	time.Sleep(300 * time.Millisecond)
 
 	t.Cleanup(func() {
 		recvCancel()

@@ -1,0 +1,154 @@
+package bootstrap
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"strings"
+
+	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
+	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/model"
+)
+
+const (
+	EnvBootstrapJSON = "GOBRIDGE_FILEBASED_BOOTSTRAP_JSON"
+	EnvBootstrapFile = "GOBRIDGE_FILEBASED_BOOTSTRAP_FILE"
+)
+
+func LoadBootstrapConfigFromEnv() (model.BootstrapConfig, error) {
+	if inline := strings.TrimSpace(os.Getenv(EnvBootstrapJSON)); inline != "" {
+		return LoadBootstrapConfigJSON([]byte(inline))
+	}
+
+	path := strings.TrimSpace(os.Getenv(EnvBootstrapFile))
+	if path == "" {
+		return model.BootstrapConfig{}, fmt.Errorf("bootstrap: neither %s nor %s is set", EnvBootstrapJSON, EnvBootstrapFile)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return model.BootstrapConfig{}, fmt.Errorf("bootstrap: read %s: %w", path, err)
+	}
+	return LoadBootstrapConfigJSON(data)
+}
+
+func LoadBootstrapConfigFile(path string) (model.BootstrapConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return model.BootstrapConfig{}, fmt.Errorf("bootstrap: read %s: %w", path, err)
+	}
+	return LoadBootstrapConfigJSON(data)
+}
+
+func LoadBootstrapConfigJSON(data []byte) (model.BootstrapConfig, error) {
+	var cfg model.BootstrapConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return model.BootstrapConfig{}, fmt.Errorf("bootstrap: decode bootstrap config: %w", err)
+	}
+	cfg = cfg.Normalized()
+	if err := cfg.Validate(); err != nil {
+		return model.BootstrapConfig{}, err
+	}
+	return cfg, nil
+}
+
+type optionalFileSource struct {
+	path     string
+	fallback func() *config.BridgeConfig
+}
+
+func newOptionalFileSource(path string, fallback func() *config.BridgeConfig) config.Loader {
+	return &optionalFileSource{path: path, fallback: fallback}
+}
+
+func (s *optionalFileSource) Load(_ context.Context) (*config.BridgeConfig, error) {
+	cfg, err := config.ParseFile(s.path, config.FormatAuto)
+	if err == nil {
+		return cfg, nil
+	}
+	if errors.Is(err, os.ErrNotExist) || os.IsNotExist(err) {
+		return s.fallback(), nil
+	}
+	return nil, err
+}
+
+func newPollWatcher(cfg model.BootstrapConfig, logger *slog.Logger) config.Watcher {
+	var opts []fileconfig.WatcherOption
+	opts = append(opts,
+		fileconfig.WithMode(fileconfig.ModePoll),
+		fileconfig.WithPollInterval(cfg.EffectivePollInterval()),
+	)
+	if logger != nil {
+		opts = append(opts, fileconfig.WithLogger(logger))
+	}
+	return fileconfig.NewWatcher(cfg.ConfigFilePath, opts...)
+}
+
+func defaultLogicalConfig(cfg model.BootstrapConfig) *config.BridgeConfig {
+	return &config.BridgeConfig{
+		Bridge: config.BridgeSettings{
+			ID:              cfg.BridgeID,
+			DeploymentMode:  "standalone",
+			ShutdownTimeout: "30s",
+			DrainTimeout:    "30s",
+		},
+	}
+}
+
+func cloneBridgeConfig(cfg *config.BridgeConfig) (*config.BridgeConfig, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	data, err := config.MarshalYAML(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return config.Parse(bytes.NewReader(data), config.FormatYAML)
+}
+
+func hasHTTPTransportEndpoints(cfg *config.BridgeConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	for _, recv := range cfg.Receivers {
+		if recv.Transport == "http" {
+			return true
+		}
+	}
+	for _, sender := range cfg.Senders {
+		if sender.Transport == "http" {
+			return true
+		}
+	}
+	return false
+}
+
+func validateFilesystemProfile(cfg model.BootstrapConfig, logical *config.BridgeConfig) error {
+	if logical == nil {
+		return fmt.Errorf("bootstrap: logical config is nil")
+	}
+
+	if cfg.Topology != model.TopologyFilesystemReplicated {
+		return nil
+	}
+
+	// Under the filesystem_replicated topology, features that require
+	// distributed coordination are not supported — use the HA/DynamoDB
+	// config profile instead. Clustered deployment_mode itself is allowed;
+	// only features that need cross-instance state are restricted.
+	for _, route := range logical.Routes {
+		if route.DeliveryMode == "shared_outbox" {
+			return fmt.Errorf("bootstrap: route %q uses shared_outbox, which requires the HA/DynamoDB profile", route.ID)
+		}
+		if route.Session != nil {
+			return fmt.Errorf("bootstrap: route %q uses route.session lease coordination, which requires the HA/DynamoDB profile", route.ID)
+		}
+	}
+
+	return nil
+}

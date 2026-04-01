@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -293,15 +294,17 @@ func TestHandleConfigTxnCommit_WritesFile(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 
-	var body map[string]string
+	var body map[string]any
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 	assert.Equal(t, "committed", body["status"])
+	assert.Equal(t, float64(1), body["version"]) // first commit: 0 → 1
 
-	// Verify file was actually written.
+	// Verify file was actually written with version.
 	parsed, err := config.ParseFile(path, config.FormatYAML)
 	require.NoError(t, err)
 	assert.Equal(t, "error", parsed.Bridge.LogLevel)
 	assert.Equal(t, "test-bridge", parsed.Bridge.ID)
+	assert.Equal(t, 1, parsed.Version)
 }
 
 func TestHandleConfigTxnCommit_NoTempFilesRemain(t *testing.T) {
@@ -397,40 +400,6 @@ func TestConfigTxn_AutoTimeout(t *testing.T) {
 
 // --- sanitizeConfig ---
 
-func TestSanitizeConfig_RedactsAPIKeys(t *testing.T) {
-	cfg := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test"},
-		HTTP: &config.HTTPConfig{
-			AdminAPIKey:   "secret-admin-key",
-			MonitorAPIKey: "secret-monitor-key",
-		},
-	}
-
-	sanitized := sanitizeConfig(cfg)
-
-	assert.Equal(t, "***", sanitized.HTTP.AdminAPIKey)
-	assert.Equal(t, "***", sanitized.HTTP.MonitorAPIKey)
-	// Original must not be modified.
-	assert.Equal(t, "secret-admin-key", cfg.HTTP.AdminAPIKey)
-}
-
-func TestSanitizeConfig_NilHTTP(t *testing.T) {
-	cfg := &config.BridgeConfig{Bridge: config.BridgeSettings{ID: "test"}}
-	sanitized := sanitizeConfig(cfg)
-	assert.Nil(t, sanitized.HTTP)
-}
-
-func TestSanitizeConfig_EmptyKeys(t *testing.T) {
-	cfg := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test"},
-		HTTP:   &config.HTTPConfig{},
-	}
-
-	sanitized := sanitizeConfig(cfg)
-	assert.Equal(t, "", sanitized.HTTP.AdminAPIKey)
-	assert.Equal(t, "", sanitized.HTTP.MonitorAPIKey)
-}
-
 // --- Helpers ---
 
 // createTxn creates a config transaction and returns the txn ID.
@@ -460,12 +429,6 @@ func applyPatch(t *testing.T, s *Server, txnID, patchJSON string) *httptest.Resp
 }
 
 // bodyReader wraps a string as an io.ReadCloser for request bodies.
-func bodyReader(s string) *readCloserString {
-	return &readCloserString{Reader: strings.NewReader(s)}
+func bodyReader(s string) io.ReadCloser {
+	return io.NopCloser(strings.NewReader(s))
 }
-
-type readCloserString struct {
-	*strings.Reader
-}
-
-func (r *readCloserString) Close() error { return nil }

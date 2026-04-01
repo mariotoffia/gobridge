@@ -58,6 +58,16 @@ responses:
           $ref: "#/schemas/ErrorResponse"
         example: { "error": "no DLQ store configured" }
 
+  RuntimeUnavailable:
+    description: >
+      Runtime is not available. Returned during startup before the first
+      runtime has been built, or during a config-driven runtime swap.
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/ErrorResponse"
+        example: { "error": "runtime not available" }
+
   BridgeStatusResponse:
     description: Bridge status.
     content:
@@ -214,8 +224,11 @@ schemas:
     properties:
       status:
         type: string
-        description: Health status (`ok`, `unhealthy`, or `not_running`).
-        enum: [ok, unhealthy, not_running]
+        description: >
+          Health status. `ok` when running and healthy, `unhealthy` when
+          components report errors, `not_running` when runtime exists but
+          is stopped, `unavailable` when the runtime is not yet initialized.
+        enum: [ok, unhealthy, not_running, unavailable]
         example: ok
       instance_id:
         type: string

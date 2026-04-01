@@ -1,0 +1,417 @@
+package bootstrap
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/mariotoffia/gobridge/bridge"
+	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/model"
+	"github.com/mariotoffia/gobridge/httpapi"
+	"github.com/mariotoffia/gobridge/ports"
+	goruntime "github.com/mariotoffia/gobridge/runtime"
+)
+
+type Option func(*App)
+
+func WithLogger(logger *slog.Logger) Option {
+	return func(a *App) { a.logger = logger }
+}
+
+func WithParameterResolver(resolver parameterResolver) Option {
+	return func(a *App) { a.parameterResolver = resolver }
+}
+
+func WithCredentialStore(store ports.CredentialStore) Option {
+	return func(a *App) { a.credentialStore = store }
+}
+
+type App struct {
+	cfg model.BootstrapConfig
+
+	logger            *slog.Logger
+	parameterResolver parameterResolver
+	credentialStore   ports.CredentialStore
+
+	manager         *config.Manager
+	httpServer      *httpapi.Server
+	transportServer *transportServer
+
+	logicalRef bridgeConfigRef
+	appliedRef bridgeConfigRef
+	runtimeRef runtimeRef
+	apiKeysRef apiKeysRef
+	handlerRef *transportHandlerRef
+
+	watchCancel context.CancelFunc
+
+	mu      sync.Mutex
+	started bool
+}
+
+func NewApp(cfg model.BootstrapConfig, opts ...Option) *App {
+	cfg = cfg.Normalized()
+	app := &App{
+		cfg:        cfg,
+		logger:     slog.Default(),
+		handlerRef: newTransportHandlerRef(),
+	}
+	for _, opt := range opts {
+		opt(app)
+	}
+	return app
+}
+
+func (a *App) Start(ctx context.Context) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.started {
+		return fmt.Errorf("bootstrap: app already started")
+	}
+
+	if err := a.cfg.Validate(); err != nil {
+		return err
+	}
+
+	if a.parameterResolver == nil {
+		resolver, err := newSSMParameterResolver(ctx, a.cfg)
+		if err != nil {
+			return err
+		}
+		a.parameterResolver = resolver
+	}
+	if a.credentialStore == nil {
+		a.credentialStore = newDefaultCredentialStore(a.cfg)
+	}
+
+	source := newOptionalFileSource(a.cfg.ConfigFilePath, func() *config.BridgeConfig {
+		return defaultLogicalConfig(a.cfg)
+	})
+	watcher := newPollWatcher(a.cfg, a.logger)
+	a.manager = config.NewManager(
+		config.Layer{Name: "file", Loader: source, Watcher: watcher},
+		config.WithManagerLogger(a.logger),
+	)
+
+	logicalCfg, err := a.manager.Load(ctx)
+	if err != nil {
+		return err
+	}
+	a.logicalRef.Set(logicalCfg)
+
+	if err := a.applyLogicalConfig(ctx, logicalCfg); err != nil {
+		return err
+	}
+
+	a.transportServer = newTransportServer(a.handlerRef, a.logger)
+	if err := a.transportServer.Start(a.cfg.TransportHTTPAddr); err != nil {
+		return fmt.Errorf("bootstrap: start transport HTTP server: %w", err)
+	}
+
+	apiCfg := httpapi.Config{
+		AdminAddr:             a.cfg.AdminAddr,
+		MonitorAddr:           a.cfg.MonitorAddr,
+		CORSOrigins:           a.cfg.CORSOrigins,
+		AdminAPIKeyProvider:   a.apiKeysRef.AdminKey,
+		MonitorAPIKeyProvider: a.apiKeysRef.MonitorKey,
+		RuntimeProvider:       a.runtimeRef.Get,
+		ConfigFilePath:        a.cfg.ConfigFilePath,
+		ConfigProvider:        a.logicalRef.Get,
+	}
+	a.httpServer = httpapi.New(nil, apiCfg,
+		httpapi.WithServerLogger(a.logger),
+		httpapi.WithAuditLogger(httpapi.NewSlogAuditLogger(a.logger)),
+	)
+	if err := a.httpServer.Start(ctx); err != nil {
+		_ = a.transportServer.Stop(context.Background())
+		return fmt.Errorf("bootstrap: start admin/monitor HTTP server: %w", err)
+	}
+
+	watchCh, err := a.manager.Watch(ctx)
+	if err != nil {
+		a.manager.Stop()
+		_ = a.httpServer.Stop(context.Background())
+		_ = a.transportServer.Stop(context.Background())
+		return fmt.Errorf("bootstrap: start config watcher: %w", err)
+	}
+
+	watchCtx, watchCancel := context.WithCancel(context.Background())
+	a.watchCancel = watchCancel
+	a.started = true
+
+	go a.watchLoop(watchCtx, watchCh)
+
+	return nil
+}
+
+func (a *App) Stop(ctx context.Context) error {
+	a.mu.Lock()
+	if !a.started {
+		a.mu.Unlock()
+		return nil
+	}
+	a.started = false
+	if a.watchCancel != nil {
+		a.watchCancel()
+		a.watchCancel = nil
+	}
+	manager := a.manager
+	httpServer := a.httpServer
+	transportServer := a.transportServer
+	currentRuntime := a.runtimeRef.Get()
+	currentApplied := a.appliedRef.Get()
+	a.mu.Unlock()
+
+	if manager != nil {
+		manager.Stop()
+	}
+
+	var firstErr error
+	if httpServer != nil {
+		if err := httpServer.Stop(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if transportServer != nil {
+		if err := transportServer.Stop(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if currentRuntime != nil {
+		if err := stopRuntime(currentRuntime, currentApplied); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	return firstErr
+}
+
+func (a *App) Run(ctx context.Context) error {
+	if err := a.Start(ctx); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return a.Stop(shutdownCtx)
+}
+
+func (a *App) AdminURL() string {
+	if a.httpServer == nil {
+		return ""
+	}
+	return a.httpServer.AdminURL()
+}
+
+func (a *App) MonitorURL() string {
+	if a.httpServer == nil {
+		return ""
+	}
+	return a.httpServer.MonitorURL()
+}
+
+func (a *App) TransportURL() string {
+	if a.transportServer == nil {
+		return ""
+	}
+	return a.transportServer.URL()
+}
+
+func (a *App) CurrentLogicalConfig() *config.BridgeConfig {
+	return a.logicalRef.Get()
+}
+
+func (a *App) CurrentAppliedConfig() *config.BridgeConfig {
+	return a.appliedRef.Get()
+}
+
+func (a *App) CurrentRuntime() *goruntime.Runtime {
+	return a.runtimeRef.Get()
+}
+
+func (a *App) watchLoop(ctx context.Context, watchCh <-chan *config.BridgeConfig) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case logicalCfg, ok := <-watchCh:
+			if !ok {
+				return
+			}
+			a.logicalRef.Set(logicalCfg)
+			if err := a.applyLogicalConfig(ctx, logicalCfg); err != nil {
+				a.logger.Warn("bootstrap: config reload rejected; keeping last good runtime", "error", err)
+			}
+		}
+	}
+}
+
+type swapMode int
+
+const (
+	swapModeOverlap swapMode = iota
+	swapModePrepareCommit
+)
+
+type runtimePlan struct {
+	logical  *config.BridgeConfig
+	resolved *config.BridgeConfig
+	inputs   *resolvedInputs
+	mode     swapMode
+
+	registry *factoryRegistry
+	prepared *bridge.PreparedBuild
+	runtime  *goruntime.Runtime
+}
+
+func (a *App) applyLogicalConfig(ctx context.Context, logical *config.BridgeConfig) error {
+	if err := validateFilesystemProfile(a.cfg, logical); err != nil {
+		return err
+	}
+
+	plan, err := a.prepareRuntimePlan(ctx, logical)
+	if err != nil {
+		return err
+	}
+
+	oldRuntime := a.runtimeRef.Get()
+	oldApplied := a.appliedRef.Get()
+
+	switch plan.mode {
+	case swapModePrepareCommit:
+		return a.applyPrepareCommit(ctx, plan, oldRuntime, oldApplied)
+	default:
+		return a.applyOverlap(ctx, plan, oldRuntime, oldApplied)
+	}
+}
+
+func (a *App) prepareRuntimePlan(ctx context.Context, logical *config.BridgeConfig) (*runtimePlan, error) {
+	inputs, err := resolveInputs(ctx, a.parameterResolver, a.cfg, logical)
+	if err != nil {
+		return nil, err
+	}
+
+	registry := a.newFactoryRegistry(inputs.RuntimeConfig)
+	mode := registry.detectSwapMode(inputs.RuntimeConfig)
+
+	plan := &runtimePlan{
+		logical:  logical,
+		resolved: inputs.RuntimeConfig,
+		inputs:   inputs,
+		mode:     mode,
+		registry: registry,
+	}
+
+	switch mode {
+	case swapModePrepareCommit:
+		prepared, err := registry.builder.Prepare(ctx)
+		if err != nil {
+			return nil, err
+		}
+		plan.prepared = prepared
+	default:
+		rt, err := registry.builder.Build(ctx)
+		if err != nil {
+			return nil, err
+		}
+		plan.runtime = rt
+	}
+
+	return plan, nil
+}
+
+func (a *App) applyOverlap(
+	ctx context.Context,
+	plan *runtimePlan,
+	oldRuntime *goruntime.Runtime,
+	oldApplied *config.BridgeConfig,
+) error {
+	if err := plan.runtime.Start(ctx); err != nil {
+		return fmt.Errorf("bootstrap: start runtime: %w", err)
+	}
+
+	a.installPlan(plan)
+
+	if oldRuntime != nil {
+		if err := stopRuntime(oldRuntime, oldApplied); err != nil {
+			a.logger.Warn("bootstrap: stop old runtime after overlap swap", "error", err)
+		}
+	}
+	return nil
+}
+
+func (a *App) applyPrepareCommit(
+	ctx context.Context,
+	plan *runtimePlan,
+	oldRuntime *goruntime.Runtime,
+	oldApplied *config.BridgeConfig,
+) error {
+	if oldRuntime != nil {
+		if err := stopRuntime(oldRuntime, oldApplied); err != nil {
+			a.logger.Warn("bootstrap: stop old runtime before prepare/commit swap", "error", err)
+		}
+	}
+	a.runtimeRef.Set(nil)
+
+	newRuntime, err := plan.registry.builder.Complete(ctx, plan.prepared)
+	if err != nil {
+		a.recoverPrevious(ctx, oldApplied)
+		return fmt.Errorf("bootstrap: complete runtime: %w", err)
+	}
+	if err := newRuntime.Start(ctx); err != nil {
+		a.recoverPrevious(ctx, oldApplied)
+		return fmt.Errorf("bootstrap: start runtime: %w", err)
+	}
+	plan.runtime = newRuntime
+	a.installPlan(plan)
+	return nil
+}
+
+func (a *App) recoverPrevious(ctx context.Context, logical *config.BridgeConfig) {
+	if logical == nil {
+		a.runtimeRef.Set(nil)
+		a.appliedRef.Set(nil)
+		a.handlerRef.Set(http.NotFoundHandler())
+		return
+	}
+
+	plan, err := a.prepareRuntimePlan(ctx, logical)
+	if err != nil {
+		a.logger.Error("bootstrap: failed to rebuild previous runtime after prepare/commit failure", "error", err)
+		a.runtimeRef.Set(nil)
+		a.appliedRef.Set(nil)
+		a.handlerRef.Set(http.NotFoundHandler())
+		return
+	}
+
+	switch plan.mode {
+	case swapModePrepareCommit:
+		plan.runtime, err = plan.registry.builder.Complete(ctx, plan.prepared)
+	default:
+		// Overlap mode: plan.runtime was already built by prepareRuntimePlan.
+	}
+	if err == nil {
+		err = plan.runtime.Start(ctx)
+	}
+	if err != nil {
+		a.logger.Error("bootstrap: failed to restart previous runtime after prepare/commit failure", "error", err)
+		a.runtimeRef.Set(nil)
+		a.appliedRef.Set(nil)
+		a.handlerRef.Set(http.NotFoundHandler())
+		return
+	}
+
+	a.installPlan(plan)
+}
+
+func (a *App) installPlan(plan *runtimePlan) {
+	a.runtimeRef.Set(plan.runtime)
+	a.appliedRef.Set(plan.logical)
+	a.apiKeysRef.Set(plan.inputs.AdminAPIKey, plan.inputs.MonitorAPIKey)
+	a.handlerRef.Set(plan.registry.transportHandler())
+}
+

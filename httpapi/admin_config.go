@@ -141,13 +141,19 @@ func (s *Server) handleConfigTxnPatch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConfigTxnCommit(w http.ResponseWriter, r *http.Request) {
 	txnID := r.PathValue("txnID")
 
-	if err := s.configTxn.Commit(txnID); err != nil {
+	newVersion, err := s.configTxn.Commit(txnID)
+	if err != nil {
 		s.writeConfigTxnError(w, r, "config.txn.commit", txnID, err)
 		return
 	}
 
-	s.emitAudit(r, "config.txn.commit", "config", txnID, "success", nil)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "committed"})
+	s.emitAudit(r, "config.txn.commit", "config", txnID, "success", map[string]any{
+		"version": newVersion,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "committed",
+		"version": newVersion,
+	})
 }
 
 // handleConfigTxnRollback discards the active transaction.
@@ -170,6 +176,10 @@ func (s *Server) writeConfigTxnError(w http.ResponseWriter, r *http.Request, act
 		s.emitAudit(r, action, "config", txnID, "failure", map[string]any{"error": err.Error()})
 		writeErr(w, http.StatusNotFound, "transaction not found or expired")
 
+	case errors.Is(err, errVersionConflict):
+		s.emitAudit(r, action, "config", txnID, "failure", map[string]any{"error": err.Error()})
+		writeErr(w, http.StatusConflict, err.Error())
+
 	case isValidationError(err):
 		ve := extractValidationError(err)
 		s.emitAudit(r, action, "config", txnID, "failure", map[string]any{
@@ -191,7 +201,9 @@ func (s *Server) writeConfigTxnError(w http.ResponseWriter, r *http.Request, act
 	}
 }
 
-// sanitizeConfig returns a copy of the config with sensitive fields redacted.
+// sanitizeConfig returns a shallow copy of the config with sensitive fields
+// redacted. The returned value must NOT be mutated — other nested fields
+// (Sessions, Routes, Stores, etc.) still share references with the original.
 func sanitizeConfig(cfg *config.BridgeConfig) *config.BridgeConfig {
 	if cfg == nil {
 		return nil
@@ -207,7 +219,54 @@ func sanitizeConfig(cfg *config.BridgeConfig) *config.BridgeConfig {
 		}
 		out.HTTP = &h
 	}
+	out.Receivers = cloneReceiversWithRedactedAPIKeys(cfg.Receivers)
+	out.Senders = cloneSendersWithRedactedAPIKeys(cfg.Senders)
 	return &out
+}
+
+func cloneReceiversWithRedactedAPIKeys(in []config.ReceiverDef) []config.ReceiverDef {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]config.ReceiverDef, len(in))
+	for i, recv := range in {
+		out[i] = recv
+		if redacted, changed := redactAPIKeyOption(recv.Options); changed {
+			out[i].Options = redacted
+		}
+	}
+	return out
+}
+
+func cloneSendersWithRedactedAPIKeys(in []config.SenderDef) []config.SenderDef {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]config.SenderDef, len(in))
+	for i, sender := range in {
+		out[i] = sender
+		if redacted, changed := redactAPIKeyOption(sender.Options); changed {
+			out[i].Options = redacted
+		}
+	}
+	return out
+}
+
+func redactAPIKeyOption(options map[string]any) (map[string]any, bool) {
+	if len(options) == 0 {
+		return nil, false
+	}
+	value, ok := options["api_key"]
+	secret, okString := value.(string)
+	if !ok || !okString || secret == "" {
+		return nil, false
+	}
+	out := make(map[string]any, len(options))
+	for k, v := range options {
+		out[k] = v
+	}
+	out["api_key"] = "***"
+	return out, true
 }
 
 // isValidationError checks whether the error is a config.ValidationError.

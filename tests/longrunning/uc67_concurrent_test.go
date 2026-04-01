@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -40,7 +41,7 @@ func TestUC68_FiveMinuteSoak(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc68-col")
 
 	sessID := mqttlocal.UniqueClientID("uc68-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 
 	rt := goruntime.New(
@@ -56,6 +57,7 @@ func TestUC68_FiveMinuteSoak(t *testing.T) {
 		Resolver: goruntime.NewStaticResolver(
 			domain.DispatchPlan{BindingID: "uc68-bind", Address: outTopic},
 		),
+		SourceCapabilities: []ports.Capability{ports.CapHTTPEndpoint},
 	}, &noopReceiver{}, snd, sess, nil))
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
@@ -123,8 +125,12 @@ injectLoop:
 
 	require.GreaterOrEqual(t, deliveryPct, 95.0,
 		"At least 95%% of injected messages must be delivered")
-	require.Less(t, heap.finalHeap(), 2*heap.initialHeap(),
-		"Final heap must be <= 2x initial")
+	initialFloor := heap.initialHeap()
+	if initialFloor < 50<<20 {
+		initialFloor = 50 << 20 // floor at 50MB to avoid false positives when initial heap is tiny
+	}
+	require.Less(t, heap.finalHeap(), 2*initialFloor,
+		"Final heap must be <= 2x initial (floored at 50MB)")
 
 	goroutineDiff := endGoroutines - startGoroutines
 	require.Less(t, goroutineDiff, 50,
@@ -155,7 +161,7 @@ func TestUC67_ConcurrentReconcile(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc67-col")
 
 	sessID := mqttlocal.UniqueClientID("uc67-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 

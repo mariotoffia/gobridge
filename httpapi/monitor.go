@@ -30,41 +30,60 @@ func (s *Server) registerMonitorRoutes(mux *http.ServeMux) {
 // --- Unauthenticated probes ---
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	rt := s.currentRuntime()
 	w.Header().Set("Cache-Control", "no-cache, max-age=0")
+
+	if rt == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status":      "unavailable",
+			"instance_id": "",
+			"routes":      0,
+		})
+		return
+	}
+
 	status := "ok"
 	httpStatus := http.StatusOK
-	if !s.rt.Healthy() {
+	if !rt.Healthy() {
 		status = "unhealthy"
 		httpStatus = http.StatusServiceUnavailable
-	} else if !s.rt.IsRunning() {
+	} else if !rt.IsRunning() {
 		status = "not_running"
 		httpStatus = http.StatusServiceUnavailable
 	}
 	resp := map[string]any{
 		"status":      status,
-		"instance_id": s.rt.InstanceID(),
-		"routes":      len(s.rt.Routes()),
+		"instance_id": rt.InstanceID(),
+		"routes":      len(rt.Routes()),
 	}
-	if compErrs := s.rt.ComponentErrors(); len(compErrs) > 0 {
+	if compErrs := rt.ComponentErrors(); len(compErrs) > 0 {
 		resp["failed_components"] = len(compErrs)
 	}
 	writeJSON(w, httpStatus, resp)
 }
 
+// handleLive always returns 200 — the process is alive. Kubernetes uses
+// this probe to decide whether to restart the container; it should succeed
+// even during runtime swap windows when the runtime is temporarily nil.
 func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, max-age=0")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
 }
 
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	rt := s.currentRuntime()
+	if rt == nil {
+		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+		return
+	}
 	w.Header().Set("Cache-Control", "no-cache, max-age=0")
-	if !s.rt.IsRunning() || !s.rt.Healthy() {
+	if !rt.IsRunning() || !rt.Healthy() {
 		writeErr(w, http.StatusServiceUnavailable, "not ready")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ready",
-		"role":   s.rt.Role(),
+		"role":   rt.Role(),
 	})
 }
 
@@ -78,7 +97,12 @@ type topologyRouteView struct {
 }
 
 func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
-	routes := s.rt.Routes()
+	rt := s.currentRuntime()
+	if rt == nil {
+		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+		return
+	}
+	routes := rt.Routes()
 	views := make([]topologyRouteView, len(routes))
 	for i, ri := range routes {
 		views[i] = topologyRouteView{
@@ -88,26 +112,31 @@ func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"instance_id": s.rt.InstanceID(),
-		"running":     s.rt.IsRunning(),
+		"instance_id": rt.InstanceID(),
+		"running":     rt.IsRunning(),
 		"routes":      views,
 	})
 }
 
 // monitorRouteView is a detailed route view with policy fields.
 type monitorRouteView struct {
-	ID              string `json:"id"`
-	DeliveryMode    string `json:"delivery_mode"`
-	DispatchMode    string `json:"dispatch_mode"`
-	MaxInFlight     int    `json:"max_in_flight"`
-	MaxReplay       int    `json:"max_replay"`
-	AckAfter        string `json:"ack_after"`
-	OnExpired       string `json:"on_expired"`
-	OnPermFailure   string `json:"on_perm_failure"`
+	ID            string `json:"id"`
+	DeliveryMode  string `json:"delivery_mode"`
+	DispatchMode  string `json:"dispatch_mode"`
+	MaxInFlight   int    `json:"max_in_flight"`
+	MaxReplay     int    `json:"max_replay"`
+	AckAfter      string `json:"ack_after"`
+	OnExpired     string `json:"on_expired"`
+	OnPermFailure string `json:"on_perm_failure"`
 }
 
 func (s *Server) handleMonitorRoutes(w http.ResponseWriter, r *http.Request) {
-	routes := s.rt.Routes()
+	rt := s.currentRuntime()
+	if rt == nil {
+		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+		return
+	}
+	routes := rt.Routes()
 	views := make([]monitorRouteView, len(routes))
 	for i, ri := range routes {
 		views[i] = monitorRouteView{
@@ -153,7 +182,12 @@ type deepHealthRouteResponse struct {
 }
 
 func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
-	dh := s.rt.DeepHealth(r.Context())
+	rt := s.currentRuntime()
+	if rt == nil {
+		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+		return
+	}
+	dh := rt.DeepHealth(r.Context())
 
 	resp := deepHealthResponse{
 		Running:         dh.Running,

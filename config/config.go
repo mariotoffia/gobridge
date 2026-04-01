@@ -4,6 +4,14 @@ import "time"
 
 // BridgeConfig is the root configuration for a GoBridge instance.
 type BridgeConfig struct {
+	// Version is an optimistic-concurrency counter incremented on each
+	// config commit. When multiple instances share a config file (e.g.
+	// on AWS EFS), the config transaction API uses this field for
+	// check-and-set: a commit succeeds only when the on-disk version
+	// matches the version the transaction was started against.
+	// A zero value means the config has never been committed via the API.
+	Version int `yaml:"version,omitempty" json:"version,omitempty"`
+
 	Bridge      BridgeSettings  `yaml:"bridge" json:"bridge"`
 	ConfigWatch *ConfigWatchDef `yaml:"config_watch,omitempty" json:"config_watch,omitempty"`
 	Stores      StoresConfig    `yaml:"stores,omitempty" json:"stores,omitempty"`

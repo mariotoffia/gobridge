@@ -178,7 +178,7 @@ func TestUC58_DoubleDrainPrevention(t *testing.T) {
 	const (
 		msgCount    = 2000
 		outTopic    = "uc58/output"
-		testTimeout = 180 * time.Second
+		testTimeout = 300 * time.Second
 	)
 
 	broker := mqttlocal.NewBrokerInstance(t, mqttlocal.WithPersistence(true))

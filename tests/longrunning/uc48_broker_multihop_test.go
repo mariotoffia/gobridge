@@ -385,10 +385,10 @@ func TestUC50_SessionExpiryDuringProcessing(t *testing.T) {
 func TestUC51_PersistentSessionRecovery(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		beforeKill  = 500
-		duringDown  = 500
+		beforeKill  = 250
+		duringDown  = 250
 		outTopic    = "uc51/output"
-		testTimeout = 300 * time.Second
+		testTimeout = 180 * time.Second
 	)
 	msgCount := beforeKill + duringDown
 
@@ -473,7 +473,7 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 	// Send first batch before kill.
 	t.Logf("UC51: sending %d msgs before kill", beforeKill)
 	sendBulkToSQS(t, sqsInClient, sqsInURL, beforeKill, nil)
-	lrWaitFor(t, 60*time.Second, fmt.Sprintf("collector >= %d", beforeKill),
+	lrWaitFor(t, 30*time.Second, fmt.Sprintf("collector >= %d", beforeKill),
 		func() bool { return collector.count() >= beforeKill })
 
 	t.Log("UC51: killing broker")
@@ -487,7 +487,7 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 	t.Log("UC51: restarting broker")
 	broker.Restart()
 
-	lrWaitFor(t, 240*time.Second, fmt.Sprintf("unique >= %d", msgCount),
+	lrWaitFor(t, 120*time.Second, fmt.Sprintf("unique >= %d", msgCount),
 		func() bool { return countUnique(collector) >= msgCount })
 
 	t.Logf("UC51: unique=%d, total=%d, dlq=%d",

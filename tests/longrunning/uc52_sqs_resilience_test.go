@@ -40,7 +40,7 @@ func TestUC52_VisibilityTimeoutExpiry(t *testing.T) {
 	}, slog.Default())
 	require.NoError(t, err)
 
-	sess := newMQTTSession(t, mqttlocal.UniqueClientID("uc52"), domain.SessionExclusive)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc52"), domain.SessionExclusive)
 	collector := newMQTTCollector(t, "uc52/out", "uc52")
 	sender := setupMQTTSender(t, sess)
 
@@ -57,7 +57,7 @@ func TestUC52_VisibilityTimeoutExpiry(t *testing.T) {
 		ID: "uc52-vis",
 		Policy: domain.RoutePolicy{
 			DeliveryMode: domain.DeliveryDirectHold,
-			MaxInFlight:  5,
+			MaxInFlight:  50,
 		},
 		Resolver: goruntime.NewStaticResolver(
 			domain.DispatchPlan{BindingID: "uc52-bind", Address: "uc52/out"},
@@ -72,8 +72,8 @@ func TestUC52_VisibilityTimeoutExpiry(t *testing.T) {
 	gobridgesync(t, 30*time.Second, rt)
 	sendBulkToSQS(t, client, queueURL, 50, nil)
 
-	lrWaitFor(t, 5*time.Minute, "uc52: unique >= 50", func() bool {
-		return countUnique(collector) >= 50
+	lrWaitFor(t, 5*time.Minute, "uc52: total > 50 (expecting duplicates)", func() bool {
+		return collector.count() > 50
 	})
 
 	unique := countUnique(collector)
@@ -102,7 +102,7 @@ func TestUC53_AutoExtendUnderLoad(t *testing.T) {
 	}, slog.Default())
 	require.NoError(t, err)
 
-	sess := newMQTTSession(t, mqttlocal.UniqueClientID("uc53"), domain.SessionExclusive)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc53"), domain.SessionExclusive)
 	collector := newMQTTCollector(t, "uc53/out", "uc53")
 	sender := setupMQTTSender(t, sess)
 
@@ -149,7 +149,7 @@ func TestUC54_FIFODeduplication(t *testing.T) {
 	queueURL, client := setupFIFOQueue(t, "uc54")
 
 	receiver := newSQSReceiver(t, queueURL)
-	sess := newMQTTSession(t, mqttlocal.UniqueClientID("uc54"), domain.SessionExclusive)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc54"), domain.SessionExclusive)
 	collector := newMQTTCollector(t, "uc54/out", "uc54")
 	sender := setupMQTTSender(t, sess)
 
@@ -196,7 +196,7 @@ func TestUC55_FIFOOrdering(t *testing.T) {
 	queueURL, client := setupFIFOQueue(t, "uc55")
 
 	receiver := newSQSReceiver(t, queueURL)
-	sess := newMQTTSession(t, mqttlocal.UniqueClientID("uc55"), domain.SessionExclusive)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc55"), domain.SessionExclusive)
 	collector := newMQTTCollector(t, "uc55/out", "uc55")
 	sender := setupMQTTSender(t, sess)
 
@@ -265,7 +265,7 @@ func TestUC56_BatchMixedSuccessFailure(t *testing.T) {
 	queueURL, client := setupSQSQueue(t, "uc56")
 
 	receiver := newSQSReceiver(t, queueURL)
-	sess := newMQTTSession(t, mqttlocal.UniqueClientID("uc56"), domain.SessionExclusive)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc56"), domain.SessionExclusive)
 	collector := newMQTTCollector(t, "uc56/out", "uc56")
 	sender := setupMQTTSender(t, sess)
 

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoBridge Management API
-  version: 1.0.0
+  version: 1.1.0
   description: >
     Admin and Monitor HTTP endpoints for managing a GoBridge instance.
     The admin server (default :8080) handles bridge lifecycle, route management,
@@ -60,6 +60,8 @@ components:
       $ref: "components.yaml#/responses/UnauthorizedMonitor"
     NoDLQStore:
       $ref: "components.yaml#/responses/NoDLQStore"
+    RuntimeUnavailable:
+      $ref: "components.yaml#/responses/RuntimeUnavailable"
     BridgeStatusResponse:
       $ref: "components.yaml#/responses/BridgeStatusResponse"
   schemas:
@@ -127,6 +129,8 @@ paths:
           $ref: "#/components/responses/BridgeStatusResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/RuntimeUnavailable"
 
   /api/v1/admin/bridge/start:
     post:
@@ -153,6 +157,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               example: { "error": "bridge start failed" }
+        "503":
+          $ref: "#/components/responses/RuntimeUnavailable"
 
   /api/v1/admin/bridge/stop:
     post:
@@ -179,6 +185,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               example: { "error": "bridge stop failed" }
+        "503":
+          $ref: "#/components/responses/RuntimeUnavailable"
 
   # ── Admin: Routes ───────────────────────────────────────────────
   /api/v1/admin/routes:
@@ -205,6 +213,8 @@ paths:
                   - { id: mqtt-to-sqs, delivery_mode: direct_hold, dispatch_mode: parallel, max_in_flight: 100 }
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/RuntimeUnavailable"
 
   /api/v1/admin/routes/{routeID}/inject:
     post:
@@ -259,6 +269,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               example: { "error": "message injection failed" }
+        "503":
+          $ref: "#/components/responses/RuntimeUnavailable"
 
   # ── Admin: DLQ ──────────────────────────────────────────────────
   /api/v1/admin/dlq:
@@ -286,6 +298,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               example: { "error": "failed to list DLQ entries" }
+        "503":
+          $ref: "#/components/responses/RuntimeUnavailable"
 
   /api/v1/admin/dlq/messages:
     get:
@@ -357,6 +371,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               example: { "error": "failed to list DLQ messages" }
+        "503":
+          $ref: "#/components/responses/RuntimeUnavailable"
 
   /api/v1/admin/dlq/replay:
     post:
@@ -409,6 +425,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               example: { "error": "DLQ replay failed" }
+        "503":
+          $ref: "#/components/responses/RuntimeUnavailable"
 
   /api/v1/admin/dlq/purge:
     post:
@@ -440,6 +458,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               example: { "error": "DLQ purge failed" }
+        "503":
+          $ref: "#/components/responses/RuntimeUnavailable"
 
   # ── Monitor: Unauthenticated probes ─────────────────────────────
   /api/v1/monitor/health:
@@ -468,7 +488,7 @@ paths:
                 degraded:
                   value: { "status": "ok", "instance_id": "gobridge-1", "routes": 3, "failed_components": 1 }
         "503":
-          description: Bridge is unhealthy or not running.
+          description: Bridge is unhealthy, not running, or runtime unavailable.
           content:
             application/json:
               schema:
@@ -478,6 +498,8 @@ paths:
                   value: { "status": "unhealthy", "instance_id": "gobridge-1", "routes": 3 }
                 notRunning:
                   value: { "status": "not_running", "instance_id": "gobridge-1", "routes": 0 }
+                unavailable:
+                  value: { "status": "unavailable", "instance_id": "", "routes": 0 }
 
   /api/v1/monitor/live:
     get:
@@ -551,6 +573,8 @@ paths:
                 $ref: "#/components/schemas/TopologyResponse"
         "401":
           $ref: "#/components/responses/UnauthorizedMonitor"
+        "503":
+          $ref: "#/components/responses/RuntimeUnavailable"
 
   /api/v1/monitor/routes:
     get:
@@ -585,6 +609,8 @@ paths:
                     on_perm_failure: dlq
         "401":
           $ref: "#/components/responses/UnauthorizedMonitor"
+        "503":
+          $ref: "#/components/responses/RuntimeUnavailable"
 
   /api/v1/monitor/deephealth:
     get:
@@ -753,15 +779,31 @@ paths:
       operationId: commitConfigTransaction
       summary: Commit config to disk
       description: >
-        Validates the final merged config and atomically writes it to
-        the config file (temp file + rename). The file watcher detects
-        the change and the supervisor applies the new config through
-        its normal reconfiguration pipeline. Returns 422 if validation
-        fails, 500 if the disk write fails.
+        Validates the final merged config, performs a check-and-set
+        version comparison against the on-disk config, increments the
+        version, and writes the file (temp file + rename). The file
+        watcher detects the change and the supervisor applies the new
+        config through its normal reconfiguration pipeline.
+
+
+        Returns 409 if the on-disk config version has changed since
+        the transaction was created (another instance committed first).
+        The client must re-read the config, create a new transaction,
+        re-apply patches, and retry.
+
+
+        Returns 422 if validation fails, 500 if the disk write fails.
+
+
+        **Multi-instance note:** the version check provides
+        optimistic concurrency control suitable for infrequent config
+        changes across EFS-backed clusters. It is not perfectly atomic
+        on network filesystems. For high-frequency concurrent config
+        management, use the DynamoDB-backed config profile instead.
       tags: [Config]
       responses:
         "200":
-          description: Config committed to disk.
+          description: Config committed to disk. The config version has been incremented.
           content:
             application/json:
               schema:
@@ -771,6 +813,17 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "config-components.yaml#/responses/TxnNotFound"
+        "409":
+          description: >
+            Config version conflict. Another instance committed a
+            config change after this transaction was created. The
+            client must re-read the current config, create a new
+            transaction, re-apply desired patches, and retry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example: { "error": "config version conflict: expected version 2 but file has version 3; re-read the config and retry" }
         "422":
           $ref: "config-components.yaml#/responses/ConfigValidationFailed"
         "500":
