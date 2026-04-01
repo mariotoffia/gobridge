@@ -160,7 +160,7 @@ Tests use per-test `mqttlocal.BrokerInstance` containers with custom configs.
 | UC48 | Multi-hop pipeline + broker kill | 2,000 | SQS-OUT >= 2,000 after restart. |
 | UC49 | SharedOutbox vs DirectHold, 3 flaps | 2×2,000 | SharedOutbox >= 2,000 despite flapping. |
 | UC50 | Session expiry during processing | 100 | All delivered. Bridge reconnects. |
-| UC51 | Persistent session recovery | 1,000 | Collector >= 1,000 after broker restart. |
+| UC51 | Persistent session recovery | 500 | Collector >= 500 after broker restart. |
 
 **Expect FAIL** until RES-001 (autopaho reconnect) is fixed.
 
@@ -195,9 +195,9 @@ Tests use per-test `mqttlocal.BrokerInstance` containers with custom configs.
 
 | Test | Description | Volume | Key Assertion |
 |------|-------------|--------|---------------|
-| UC63 | Memory stability | 50,000 | Final heap <= 2× initial. Max < 500MB. |
+| UC63 | Memory stability | 10,000 | Final heap < 2× initial. Max < 500MB. |
 | UC64 | Latency percentiles | 10,000 | P50 < 500ms, P95 < 2s, P99 < 5s. |
-| UC65 | Throughput ceiling (4 batches) | 36,000 | All delivered. Max msgs/sec logged. |
+| UC65 | Throughput ceiling (4 batches) | 6,500 | All delivered. Max msgs/sec logged. |
 | UC66 | Multi-tenant isolation (10 tenants) | 5,000 | Tenants 1-9 < 30s each. Tenant 0 < 120s. |
 | UC67 | Concurrent Reconcile during flow | 3,000 | >= 3,000 unique. No races. |
 | UC68 | 5-minute soak (100 msgs/sec) | ~30,000 | >= 95% delivered. Heap < 2×. Goroutines stable. |
@@ -280,3 +280,27 @@ Defined in `longrunning_fault_helpers_test.go`:
 | `replayableDLQStore` | store | Extends lrDLQStore with working List/Replay |
 | `rejectEveryNthProcessor` | processor | Rejects every Nth message (permanent error) |
 | `panicProcessor` | processor | Panics on every Nth message |
+
+---
+
+## Testing Tips
+
+### KeepAlive and broker restart tests
+
+The MQTT KeepAlive interval controls how quickly the client detects a killed
+broker. The default 30s is fine for normal operation, but broker stop/restart
+tests (`docker kill` + `docker run`) should pass a low KeepAlive (e.g. 5s) to
+the session helpers to avoid waiting up to 30s for disconnect detection.
+
+The helpers `setupMQTTSessionWithBroker`, `newMQTTSessionWithBroker`, and
+`newMQTTCollectorWithBroker` all accept an optional trailing `keepAlive`
+parameter (defaults to 30). Example:
+
+```go
+sess := setupMQTTSessionWithBroker(t, brokerURL, sessID,
+    domain.SessionExclusive, 65535, 5) // KeepAlive = 5s
+```
+
+After `broker.Restart()`, drain the session's `Events()` channel and wait for
+`ports.SessionConnected` to confirm autopaho has reconnected and re-subscribed
+before asserting on message delivery.

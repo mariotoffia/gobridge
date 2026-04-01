@@ -313,18 +313,36 @@ func dockerRestart(t *testing.T, name string) {
 // MQTT session helpers for custom brokers
 // ---------------------------------------------------------------------------
 
+const defaultKeepAlive uint16 = 30
+
+// resolveKeepAlive returns the first value from the variadic slice, or
+// defaultKeepAlive (30) if none is provided.
+func resolveKeepAlive(vals []uint16) uint16 {
+	if len(vals) == 0 {
+		return defaultKeepAlive
+	}
+	return vals[0]
+}
+
 // setupMQTTSessionWithBroker creates an MQTT session against a custom broker
 // URL. Unlike setupMQTTSession, it accepts the broker URL and receive maximum
 // as parameters, making it suitable for per-test BrokerInstance usage.
+//
+// The optional keepAlive parameter overrides the default 30s MQTT KeepAlive.
+// When testing broker stop/restart scenarios (docker kill + docker run),
+// use a low value (e.g. 5) so autopaho detects the broken TCP connection
+// within seconds instead of the default 30s. This directly reduces the
+// reconnection delay after broker.Restart().
 func setupMQTTSessionWithBroker(
 	t *testing.T, brokerURL, clientID string,
 	mode domain.SessionMode, receiveMax uint16,
+	keepAlive ...uint16,
 ) *paho.Session {
 	t.Helper()
 	sess := paho.NewSession(paho.SessionOptions{
 		BrokerURLs:     []string{brokerURL},
 		ClientID:       clientID,
-		KeepAlive:      30,
+		KeepAlive:      resolveKeepAlive(keepAlive),
 		ConnectTimeout: 15 * time.Second,
 		CleanStart:     true,
 		ReceiveMaximum: receiveMax,
@@ -345,15 +363,22 @@ func setupMQTTSessionWithBroker(
 
 // newMQTTSessionWithBroker creates an MQTT session against a custom broker
 // URL WITHOUT starting it. The runtime's SessionManager starts it.
+//
+// The optional keepAlive parameter overrides the default 30s MQTT KeepAlive.
+// When testing broker stop/restart scenarios (docker kill + docker run),
+// use a low value (e.g. 5) so autopaho detects the broken TCP connection
+// within seconds instead of the default 30s. This directly reduces the
+// reconnection delay after broker.Restart().
 func newMQTTSessionWithBroker(
 	t *testing.T, brokerURL, clientID string,
 	mode domain.SessionMode, receiveMax uint16,
+	keepAlive ...uint16,
 ) *paho.Session {
 	t.Helper()
 	sess := paho.NewSession(paho.SessionOptions{
 		BrokerURLs:     []string{brokerURL},
 		ClientID:       clientID,
-		KeepAlive:      30,
+		KeepAlive:      resolveKeepAlive(keepAlive),
 		ConnectTimeout: 15 * time.Second,
 		CleanStart:     mode == domain.SessionEphemeral,
 		ReceiveMaximum: receiveMax,
@@ -367,8 +392,13 @@ func newMQTTSessionWithBroker(
 // newMQTTCollectorWithBroker — collector against a custom broker URL
 // ---------------------------------------------------------------------------
 
+// newMQTTCollectorWithBroker creates a collector that subscribes to the given
+// topic on a custom broker URL. The optional keepAlive parameter overrides the
+// default 30s MQTT KeepAlive. When testing broker stop/restart scenarios, use a
+// low value (e.g. 5) to speed up disconnect detection after broker.Restart().
 func newMQTTCollectorWithBroker(
 	t *testing.T, brokerURL, topic, clientIDPrefix string,
+	keepAlive ...uint16,
 ) *mqttCollector {
 	t.Helper()
 	clientID := mqttlocal.UniqueClientID(clientIDPrefix)
@@ -376,7 +406,7 @@ func newMQTTCollectorWithBroker(
 	sess := paho.NewSession(paho.SessionOptions{
 		BrokerURLs:     []string{brokerURL},
 		ClientID:       clientID,
-		KeepAlive:      30,
+		KeepAlive:      resolveKeepAlive(keepAlive),
 		ConnectTimeout: 15 * time.Second,
 		CleanStart:     true,
 	}, domain.SessionEphemeral, testLogger(t))

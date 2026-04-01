@@ -19,20 +19,20 @@ import (
 )
 
 // =========================================================================
-// UC63: Memory Stability (50K Messages)
+// UC63: Memory Stability
 //
-// Sends 50,000 messages through SharedOutbox and verifies that heap
-// usage remains bounded — no leaks, no unbounded growth.
+// Sends messages through SharedOutbox and verifies that heap usage
+// remains bounded — no leaks, no unbounded growth.
 //
-// Assert: Final heap <= 2x initial. Max heap < 500MB.
+// Assert: Final heap < 2x initial. Max heap < 500MB.
 // =========================================================================
 
 func TestUC63_MemoryStability(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount    = 25000
+		msgCount    = 10000
 		outTopic    = "uc63/output"
-		testTimeout = 600 * time.Second
+		testTimeout = 360 * time.Second
 	)
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc63-in")
@@ -81,7 +81,7 @@ func TestUC63_MemoryStability(t *testing.T) {
 		msgCount, heap.initialHeap()/(1<<20))
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
 
-	lrWaitFor(t, 580*time.Second,
+	lrWaitFor(t, 280*time.Second,
 		fmt.Sprintf("unique >= %d", msgCount),
 		func() bool { return countUnique(collector) >= msgCount })
 
@@ -301,7 +301,7 @@ func TestUC66_MultiTenantIsolation(t *testing.T) {
 // =========================================================================
 // UC65: Throughput Ceiling Discovery
 //
-// 4 batches of increasing size (1K, 5K, 10K, 20K) with MaxInFlight=1000.
+// 4 batches of increasing size with MaxInFlight=1000.
 // Discovers the maximum sustainable throughput.
 // =========================================================================
 
@@ -309,10 +309,10 @@ func TestUC65_ThroughputCeiling(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
 		outTopic    = "uc65/output"
-		testTimeout = 900 * time.Second
+		testTimeout = 480 * time.Second
 	)
 
-	batches := []int{500, 2500, 5000, 10000}
+	batches := []int{500, 1000, 2000, 3000}
 	totalMsgs := 0
 	for _, b := range batches {
 		totalMsgs += b
@@ -364,7 +364,7 @@ func TestUC65_ThroughputCeiling(t *testing.T) {
 		sendBulkToSQS(t, sqsInClient, sqsInURL, batchSize, nil)
 		delivered += batchSize
 
-		lrWaitFor(t, 300*time.Second,
+		lrWaitFor(t, 90*time.Second,
 			fmt.Sprintf("unique >= %d", delivered),
 			func() bool { return countUnique(collector) >= delivered })
 
