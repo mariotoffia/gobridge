@@ -26,6 +26,11 @@ type SessionOptions struct {
 	// broker can send before receiving PUBACKs. Default 0 means use the
 	// paho library default (65535). Set higher for high-throughput scenarios.
 	ReceiveMaximum uint16
+	// ReconnectDelay is the constant delay between failed reconnection
+	// attempts after the first immediate retry. Zero means use the
+	// autopaho default (10s). Shorter values speed up reconnection in
+	// test environments but increase load on the broker in production.
+	ReconnectDelay time.Duration
 }
 
 // ReceiverOptions holds MQTT receiver-specific configuration.
@@ -97,6 +102,9 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	}
 	if v, ok := m["reconnect_timeout"].(time.Duration); ok {
 		opts.ReconnectTimeout = v
+	}
+	if v, ok := m["reconnect_delay"].(time.Duration); ok {
+		opts.ReconnectDelay = v
 	}
 	if v, ok := m["clean_start"].(bool); ok {
 		opts.CleanStart = v

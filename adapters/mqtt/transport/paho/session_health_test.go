@@ -98,9 +98,9 @@ func TestHealth_ServiceLevel(t *testing.T) {
 
 			// Simulate connection state.
 			if tc.connected {
-				// Set cm to a non-nil sentinel; Health only checks cm != nil.
 				s.mu.Lock()
 				s.cm = &autopaho.ConnectionManager{}
+				s.connected = true
 				s.mu.Unlock()
 			}
 

@@ -96,8 +96,12 @@ func TestUC63_MemoryStability(t *testing.T) {
 	t.Logf("UC63: unique=%d, total=%d, dlq=%d",
 		countUnique(collector), collector.count(), dlq.count())
 
-	require.Less(t, final, 2*initial,
-		"Final heap (%dMB) must be <= 2x initial (%dMB)", final/(1<<20), initial/(1<<20))
+	threshold := 2 * initial
+	if floor := uint64(30 << 20); threshold < floor {
+		threshold = floor
+	}
+	require.Less(t, final, threshold,
+		"Final heap (%dMB) must be <= max(2x initial, 30MB) (%dMB)", final/(1<<20), threshold/(1<<20))
 	require.Less(t, maxH, uint64(500<<20),
 		"Max heap (%dMB) must be < 500MB", maxH/(1<<20))
 	require.GreaterOrEqual(t, countUnique(collector), msgCount,

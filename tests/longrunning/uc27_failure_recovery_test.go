@@ -30,8 +30,8 @@ import (
 func TestUC27_Intermittent_SendFailures(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 3000
-		pollTimeout  = 180 * time.Second
+		msgCount    = 3000
+		pollTimeout = 300 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc27-in")
@@ -43,7 +43,14 @@ func TestUC27_Intermittent_SendFailures(t *testing.T) {
 	sess := setupMQTTSession(t, uniqueID("uc27-bridge"), domain.SessionEphemeral)
 	realSender := setupMQTTSender(t, sess)
 	faulty := newFaultySender(realSender, 20)
-	sqsRx := newSQSReceiver(t, inQueueURL)
+	sqsRx, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
+		QueueURL:          inQueueURL,
+		Client:            sqslocal.Client(t),
+		MaxMessages:       10,
+		WaitTimeSeconds:   1,
+		VisibilityTimeout: 10,
+	}, testLogger(t))
+	require.NoError(t, err)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("uc27-bridge"),

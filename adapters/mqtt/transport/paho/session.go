@@ -24,11 +24,12 @@ type Session struct {
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
 
-	mu       sync.Mutex
-	cm       *autopaho.ConnectionManager
-	cmCancel context.CancelFunc // cancels the CM's background context on Close
-	events   chan ports.SessionEvent
-	closed   bool
+	mu        sync.Mutex
+	cm        *autopaho.ConnectionManager
+	cmCancel  context.CancelFunc // cancels the CM's background context on Close
+	events    chan ports.SessionEvent
+	closed    bool
+	connected bool // true when autopaho reports connection is up
 
 	// reconcileMu serializes concurrent reconcile calls (e.g. external
 	// Reconcile vs OnConnectionUp callback) to prevent interleaved
@@ -112,6 +113,9 @@ func (s *Session) Start(ctx context.Context) error {
 		KeepAlive:  s.opts.KeepAlive,
 
 		OnConnectionUp: func(cm *autopaho.ConnectionManager, _ *pahov5.Connack) {
+			s.mu.Lock()
+			s.connected = true
+			s.mu.Unlock()
 			s.pushEvent(ports.SessionConnected, nil)
 			logging.Debug(s.logger, "mqtt: connection up",
 				"client_id", s.opts.ClientID)
@@ -141,13 +145,29 @@ func (s *Session) Start(ctx context.Context) error {
 			}
 		},
 		OnConnectError: func(err error) {
+			s.mu.Lock()
+			s.connected = false
+			s.mu.Unlock()
 			s.pushEvent(ports.SessionReconnecting, MapError(err))
+		},
+		OnConnectionDown: func() bool {
+			s.mu.Lock()
+			s.connected = false
+			s.mu.Unlock()
+			s.pushEvent(ports.SessionDisconnected, nil)
+			logging.Debug(s.logger, "mqtt: connection down",
+				"client_id", s.opts.ClientID)
+			return true // always attempt reconnect
 		},
 
 		ClientConfig: pahov5.ClientConfig{
 			ClientID: s.opts.ClientID,
 			Router:   s.router,
 		},
+	}
+
+	if s.opts.ReconnectDelay > 0 {
+		cfg.ReconnectBackoff = autopaho.NewConstantBackoff(s.opts.ReconnectDelay)
 	}
 
 	// Set ReceiveMaximum via ConnectPacketBuilder to avoid exceeding the
@@ -227,6 +247,7 @@ func (s *Session) Start(ctx context.Context) error {
 	s.cm = cm
 	s.cmCancel = cmCancel
 	s.startCtx = cmCtx
+	s.connected = true
 	s.mu.Unlock()
 
 	elapsed := time.Since(connectStart)
@@ -371,9 +392,8 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	cm := s.cm
 	plan := s.plan
 	activeCount := len(s.activeSubs)
+	connected := cm != nil && s.connected
 	s.mu.Unlock()
-
-	connected := cm != nil
 	wantedCount := 0
 	if plan != nil {
 		wantedCount = len(plan.Subscriptions)
@@ -435,6 +455,7 @@ func (s *Session) Close(ctx context.Context) error {
 		return nil
 	}
 	s.closed = true
+	s.connected = false
 	cm := s.cm
 	s.cm = nil
 	cmCancel := s.cmCancel

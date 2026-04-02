@@ -82,6 +82,7 @@ type heapSampler struct {
 }
 
 func newHeapSampler(interval time.Duration) *heapSampler {
+	runtime.GC()
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 
@@ -133,6 +134,7 @@ func (h *heapSampler) maxHeap() uint64 {
 }
 
 func (h *heapSampler) finalHeap() uint64 {
+	runtime.GC()
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 	return ms.HeapAlloc

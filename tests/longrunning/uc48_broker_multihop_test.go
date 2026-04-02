@@ -87,10 +87,13 @@ func TestUC48_BrokerDownMultiHop(t *testing.T) {
 	require.NoError(t, rtA.Start(ctx))
 	defer func() { _ = rtA.Stop(context.Background()) }()
 
-	// --- Bridge-B: MQTT → DirectHold → SQS-OUT ---
+	// --- Bridge-B: MQTT → SharedOutbox → SQS-OUT ---
+	// MQTT sources do not support visibility extension, so SharedOutbox is
+	// the correct delivery mode (DirectHold would fail validation).
+	leaseStoreB, outboxStoreB := setupDynamoStores(t)
 	rxSessIDB := mqttlocal.UniqueClientID("uc48-rxb")
 	rxSessB := setupMQTTSessionWithBroker(t, brokerURL, rxSessIDB,
-		domain.SessionEphemeral, 65535)
+		domain.SessionExclusive, 65535)
 	require.NoError(t, rxSessB.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: hopTopic, QoS: 1}},
 	}))
@@ -98,21 +101,27 @@ func TestUC48_BrokerDownMultiHop(t *testing.T) {
 
 	mqttRxB := paho.NewReceiver("uc48-rxb", rxSessB)
 	sqsSndB := newSQSSender(t, sqsOutURL)
+	scB := lrSessionConfig(rxSessIDB)
 
 	rtB := goruntime.New(
 		goruntime.WithInstanceID("uc48-bridge-b"),
+		goruntime.WithLeaseStore(leaseStoreB),
+		goruntime.WithOutboxStore(outboxStoreB),
 		goruntime.WithDLQStore(dlqB),
 		goruntime.WithLogger(testLogger(t)),
 	)
 	require.NoError(t, rtB.AddRoute(goruntime.RouteConfig{
 		ID: "uc48-route-b",
 		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+			DeliveryMode: domain.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewStaticResolver(
 			domain.DispatchPlan{BindingID: "uc48-bind-b", Address: sqsOutURL},
 		),
-	}, mqttRxB, sqsSndB, nil, nil))
+		Bindings: []domain.DestinationBinding{
+			{ID: "uc48-bind-b", SessionID: rxSessIDB},
+		},
+	}, mqttRxB, sqsSndB, rxSessB, &scB))
 	require.NoError(t, rtB.Start(ctx))
 	defer func() { _ = rtB.Stop(context.Background()) }()
 
