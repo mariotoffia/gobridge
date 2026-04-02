@@ -42,5 +42,8 @@ go.work.sum
 .claude/
 .cursor/
 
+# Test reports
+reports/
+
 # Git worktrees
 .worktrees/

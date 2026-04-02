@@ -50,12 +50,28 @@ test-integration: ## Run all tests including integration (requires Docker)
 		go test -race -timeout 600s -v ./...
 
 test-long-running: ## Run long-running stress tests (requires Docker, -tags=longrunning)
+	@mkdir -p reports
 	@echo "Running long-running stress tests..."
-	AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+	@echo "Report will be saved to: reports/test-long-running.log"
+	@bash -c 'set -o pipefail; AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
 	GOBRIDGE_MQTT_MEMORY=256m GOBRIDGE_MQTT_CPUS=2.0 \
 	GOBRIDGE_SQS_MEMORY=2g GOBRIDGE_SQS_CPUS=2.0 \
 	GOBRIDGE_DDB_MEMORY=1g GOBRIDGE_DDB_CPUS=2.0 \
-		go test -race -timeout 10800s -v -tags=longrunning ./tests/longrunning/...
+		go test -race -timeout 10800s -v -tags=longrunning ./tests/longrunning/... 2>&1 | tee reports/test-long-running.log; \
+		rc=$$?; \
+		echo ""; \
+		echo "========================================"; \
+		echo "  Test Report: reports/test-long-running.log"; \
+		echo "========================================"; \
+		if [ $$rc -ne 0 ]; then \
+			echo ""; \
+			echo "FAILED tests:"; \
+			grep -E "^--- FAIL:" reports/test-long-running.log || true; \
+			echo ""; \
+			echo "FAILED packages:"; \
+			grep -E "^FAIL\s" reports/test-long-running.log || true; \
+		fi; \
+		exit $$rc'
 
 # ============================================================================
 # Lint targets
