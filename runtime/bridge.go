@@ -299,6 +299,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 			if entry.config.Policy.DeliveryMode == domain.DeliverySharedOutbox && rt.outboxStore != nil && !drainerSessions[sid] {
 				drainerSessions[sid] = true
 				mgr := rt.sessionMgrs[sid]
+				sess := entry.session
 				drainer := newOutboxDrainer(OutboxDrainerConfig{
 					OutboxStore:    rt.outboxStore,
 					LeaseStore:     rt.leaseStore,
@@ -316,6 +317,9 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					Metrics:             m,
 					Logger:         rt.logger,
 					TokenFn:        mgr.Token,
+					ReadyFn: func() bool {
+						return sess.Health(context.Background()).Connected
+					},
 				})
 				rt.drainers = append(rt.drainers, drainer)
 			}
@@ -345,6 +349,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 				drainerSessions[sid] = true
 				mgr := rt.sessionMgrs[sid]
+				fanSess := sse.session
 				drainer := newOutboxDrainer(OutboxDrainerConfig{
 					OutboxStore:    rt.outboxStore,
 					LeaseStore:     rt.leaseStore,
@@ -362,6 +367,9 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					Metrics:             m,
 					Logger:         rt.logger,
 					TokenFn:        mgr.Token,
+					ReadyFn: func() bool {
+						return fanSess.Health(context.Background()).Connected
+					},
 				})
 				rt.drainers = append(rt.drainers, drainer)
 			}

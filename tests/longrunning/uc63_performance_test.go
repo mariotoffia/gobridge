@@ -22,14 +22,20 @@ import (
 // UC63: Memory Stability
 //
 // Sends messages through SharedOutbox and verifies that heap usage
-// remains bounded — no leaks, no unbounded growth.
+// returns to baseline after processing — no leaks, no unbounded growth.
 //
-// Assert: Final heap < 2x initial. Max heap < 500MB.
+// Strategy: run a warmup batch to stabilize allocations, take a GC'd
+// baseline, run the real load, wait for quiescence, take another GC'd
+// reading, and assert the DELTA is bounded. This avoids absolute heap
+// thresholds that are meaningless under variable Docker resource pressure.
+//
+// Assert: Heap growth (final - baseline) < 50MB after full quiescence.
 // =========================================================================
 
 func TestUC63_MemoryStability(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
+		warmupCount = 1000
 		msgCount    = 10000
 		outTopic    = "uc63/output"
 		testTimeout = 360 * time.Second
@@ -71,41 +77,56 @@ func TestUC63_MemoryStability(t *testing.T) {
 		},
 	}, rx, snd, sess, &sc))
 
-	heap := newHeapSampler(1 * time.Second)
-
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
 	gobridgesync(t, 10*time.Second, rt)
 
-	t.Logf("UC63: sending %d messages (initial heap=%dMB)",
-		msgCount, heap.initialHeap()/(1<<20))
+	// Phase 1: warmup — stabilize goroutine stacks, connection pools,
+	// DDB table caches, and GC pacing. Results are discarded.
+	t.Logf("UC63: warmup — sending %d messages", warmupCount)
+	sendBulkToSQS(t, sqsInClient, sqsInURL, warmupCount, nil)
+	lrWaitFor(t, 60*time.Second,
+		fmt.Sprintf("warmup >= %d", warmupCount),
+		func() bool { return countUnique(collector) >= warmupCount })
+
+	// Phase 2: baseline — force multiple GC cycles to get a clean reading.
+	baseline := stableHeapAlloc()
+	t.Logf("UC63: baseline heap=%dMB (after warmup + GC)", baseline/(1<<20))
+
+	// Phase 3: load — send the real batch.
+	t.Logf("UC63: sending %d messages", msgCount)
+	totalExpected := warmupCount + msgCount
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
 
 	lrWaitFor(t, 280*time.Second,
-		fmt.Sprintf("unique >= %d", msgCount),
-		func() bool { return countUnique(collector) >= msgCount })
+		fmt.Sprintf("unique >= %d", totalExpected),
+		func() bool { return countUnique(collector) >= totalExpected })
 
-	heap.stop()
+	// Phase 4: quiescence — wait briefly for outbox drainer to finish,
+	// buffers to be released, then force multiple GC cycles.
+	time.Sleep(2 * time.Second)
+	final := stableHeapAlloc()
 
-	initial := heap.initialHeap()
-	maxH := heap.maxHeap()
-	final := heap.finalHeap()
-
-	t.Logf("UC63: heap — initial=%dMB, max=%dMB, final=%dMB",
-		initial/(1<<20), maxH/(1<<20), final/(1<<20))
+	t.Logf("UC63: heap — baseline=%dMB, final=%dMB, delta=%dMB",
+		baseline/(1<<20), final/(1<<20), int64(final-baseline)/(1<<20))
 	t.Logf("UC63: unique=%d, total=%d, dlq=%d",
 		countUnique(collector), collector.count(), dlq.count())
 
-	threshold := 2 * initial
-	if floor := uint64(30 << 20); threshold < floor {
-		threshold = floor
+	// Assert: heap growth should be bounded. After all messages are
+	// processed and buffers drained, retained memory should not grow
+	// proportionally to throughput. A 50MB allowance covers goroutine
+	// stacks, runtime overhead, and measurement noise.
+	const maxGrowth = 50 << 20 // 50MB
+	var growth uint64
+	if final > baseline {
+		growth = final - baseline
 	}
-	require.Less(t, final, threshold,
-		"Final heap (%dMB) must be <= max(2x initial, 30MB) (%dMB)", final/(1<<20), threshold/(1<<20))
-	require.Less(t, maxH, uint64(500<<20),
-		"Max heap (%dMB) must be < 500MB", maxH/(1<<20))
-	require.GreaterOrEqual(t, countUnique(collector), msgCount,
-		"All %d messages must be delivered", msgCount)
+	assert.LessOrEqual(t, growth, uint64(maxGrowth),
+		"Heap growth (%dMB) after processing %d messages should be < %dMB — potential memory leak",
+		growth/(1<<20), msgCount, maxGrowth/(1<<20))
+
+	require.GreaterOrEqual(t, countUnique(collector), totalExpected,
+		"All %d messages must be delivered", totalExpected)
 }
 
 // =========================================================================

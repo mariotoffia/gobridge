@@ -44,6 +44,7 @@ const (
 	SessionDisconnected
 	SessionReconnecting
 	SessionError
+	SessionReconciled // all subscriptions re-established after reconnect
 )
 
 // SessionEvent is a lifecycle notification from a stateful session.

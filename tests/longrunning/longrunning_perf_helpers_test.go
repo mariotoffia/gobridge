@@ -140,6 +140,21 @@ func (h *heapSampler) finalHeap() uint64 {
 	return ms.HeapAlloc
 }
 
+// stableHeapAlloc runs multiple GC cycles with short pauses to allow
+// finalizers to execute, then returns HeapAlloc. A single runtime.GC()
+// call is unreliable because the concurrent GC may not collect all
+// garbage, and finalizers run asynchronously. Three cycles with 50ms
+// pauses produces a stable reading.
+func stableHeapAlloc() uint64 {
+	for range 3 {
+		runtime.GC()
+		time.Sleep(50 * time.Millisecond)
+	}
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	return ms.HeapAlloc
+}
+
 // ---------------------------------------------------------------------------
 // tenantSlowProcessor — adds delay for a specific tenant
 // ---------------------------------------------------------------------------

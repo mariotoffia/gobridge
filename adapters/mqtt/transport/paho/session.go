@@ -125,24 +125,26 @@ func (s *Session) Start(ctx context.Context) error {
 			plan := s.plan
 			parentCtx := s.startCtx
 			s.mu.Unlock()
-			if plan != nil {
-				reconTimeout := s.opts.ReconnectTimeout
-				if reconTimeout == 0 {
-					reconTimeout = 30 * time.Second
-				}
-				reconCtx, reconCancel := context.WithTimeout(parentCtx, reconTimeout)
-				defer reconCancel()
-				if err := s.reconcile(reconCtx, cm, *plan); err != nil {
-					// Restore the old subscription state so that the next
-					// reconnect delta calculation remains correct.
-					s.mu.Lock()
-					s.activeSubs = oldSubs
-					s.mu.Unlock()
-					if s.logger != nil {
-						s.logger.Warn("reconcile on reconnect failed", "error", err)
-					}
-				}
+		if plan != nil {
+			reconTimeout := s.opts.ReconnectTimeout
+			if reconTimeout == 0 {
+				reconTimeout = 30 * time.Second
 			}
+			reconCtx, reconCancel := context.WithTimeout(parentCtx, reconTimeout)
+			defer reconCancel()
+			if err := s.reconcile(reconCtx, cm, *plan); err != nil {
+				s.mu.Lock()
+				s.activeSubs = oldSubs
+				s.mu.Unlock()
+				if s.logger != nil {
+					s.logger.Warn("reconcile on reconnect failed", "error", err)
+				}
+			} else {
+				s.pushEvent(ports.SessionReconciled, nil)
+			}
+		} else {
+			s.pushEvent(ports.SessionReconciled, nil)
+		}
 		},
 		OnConnectError: func(err error) {
 			s.mu.Lock()
@@ -261,14 +263,25 @@ func (s *Session) Start(ctx context.Context) error {
 
 // Reconcile diffs the desired SessionPlan against current subscriptions and
 // issues Subscribe / Unsubscribe to reach the desired state.
+//
+// When the new plan has no subscriptions and a plan is already set (from a
+// prior Reconcile call), the call is a no-op. This prevents a SessionManager
+// with an empty plan from unsubscribing externally-managed topics.
 func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error {
 	s.mu.Lock()
-	s.plan = &plan
+	hasPriorPlan := s.plan != nil
+	if len(plan.Subscriptions) > 0 || !hasPriorPlan {
+		s.plan = &plan
+	}
 	cm := s.cm
 	s.mu.Unlock()
 
 	if cm == nil {
 		return domain.ErrUnavailable.WithMessage("session not started")
+	}
+
+	if len(plan.Subscriptions) == 0 && hasPriorPlan {
+		return nil
 	}
 
 	return s.reconcile(ctx, cm, plan)

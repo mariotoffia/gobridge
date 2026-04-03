@@ -47,13 +47,15 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	// Collector subscribes to the per-test broker.
-	collector := newMQTTCollectorWithBroker(t, brokerURL, outTopic, "uc42-col")
+	// Persistent collector — broker queues messages during disconnection,
+	// eliminating the subscriber-before-publisher race on restart.
+	collector := newPersistentCollectorWithBroker(t, brokerURL, outTopic, "uc42-col")
 
 	// Bridge session on the per-test broker.
+	// KeepAlive=5 for fast disconnect detection after broker restart.
 	sessionID := mqttlocal.UniqueClientID("uc42-session")
 	sess := newMQTTSessionWithBroker(t, brokerURL, sessionID,
-		domain.SessionExclusive, 65535)
+		domain.SessionExclusive, 65535, 5)
 	mqttSnd := setupMQTTSender(t, sess)
 	sqsRx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessionID)
@@ -94,15 +96,19 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 
 	beforeKill := collector.count()
 	t.Logf("UC42: killing broker at collector=%d", beforeKill)
-	broker.Stop()
+	broker.StopGraceful()
 
 	// Broker is down for 5s.
 	time.Sleep(5 * time.Second)
 
 	t.Log("UC42: restarting broker")
-	broker.Restart()
-	// Wait for autopaho sessions to reconnect and re-subscribe.
-	time.Sleep(3 * time.Second)
+	broker.RestartGraceful()
+
+	// Black-box readiness: send a probe through the full pipeline and
+	// wait for it to arrive at the collector. This proves SQS receiver,
+	// outbox drainer, MQTT session, broker, and collector subscription
+	// are all operational — no sleep required.
+	sendProbe(t, sqsInClient, sqsInURL, collector, 30*time.Second)
 
 	// Wait for all messages to arrive after recovery.
 	// NOTE: Use collector.count() not countUnique() because EnvelopeFromPublish
@@ -149,11 +155,11 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	collector := newMQTTCollectorWithBroker(t, brokerURL, outTopic, "uc43-col")
+	collector := newPersistentCollectorWithBroker(t, brokerURL, outTopic, "uc43-col")
 
 	sessionID := mqttlocal.UniqueClientID("uc43-session")
 	sess := setupMQTTSessionWithBroker(t, brokerURL, sessionID,
-		domain.SessionExclusive, 65535)
+		domain.SessionExclusive, 65535, 5)
 	mqttSnd := setupMQTTSender(t, sess)
 
 	sqsRx, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
@@ -173,7 +179,8 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc43-route",
 		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+			DeliveryMode:      domain.DeliveryDirectHold,
+			MaxReplayAttempts: 50,
 		},
 		Resolver: goruntime.NewStaticResolver(
 			domain.DispatchPlan{BindingID: "uc43-bind", Address: outTopic},
@@ -194,15 +201,17 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 		func() bool { return collector.count() >= killAt })
 
 	t.Logf("UC43: killing broker at collector=%d", collector.count())
-	broker.Stop()
+	broker.StopGraceful()
 	time.Sleep(5 * time.Second)
 
 	t.Log("UC43: restarting broker")
-	broker.Restart()
+	broker.RestartGraceful()
 
-	// Use collector.count() not countUnique() — EnvelopeFromPublish
-	// does not set Envelope.ID for MQTT-received messages.
-	time.Sleep(3 * time.Second) // wait for autopaho reconnection
+	// DirectHold: the route runner retries via SQS redelivery. Use
+	// gobridgesync to confirm the bridge session is reconnected, then
+	// wait for all messages to arrive. Persistent collector ensures the
+	// broker queues messages during the reconnection gap.
+	gobridgesync(t, 30*time.Second, rt)
 	lrWaitFor(t, 180*time.Second,
 		fmt.Sprintf("collector >= %d after restart", msgCount),
 		func() bool { return collector.count() >= msgCount })

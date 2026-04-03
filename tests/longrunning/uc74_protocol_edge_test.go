@@ -249,18 +249,19 @@ func TestUC77_QoS2UnderBrokerRestart(t *testing.T) {
 	broker := mqttlocal.NewBrokerInstance(t, mqttlocal.WithPersistence(true))
 	brokerURL := broker.URL()
 
-	// Collector on per-test broker.
-	collector := newMQTTCollectorWithBroker(t, brokerURL, "uc77/qos2", "uc77-col")
+	// Persistent collector — broker queues messages during restart gap.
+	collector := newPersistentCollectorWithBroker(t, brokerURL, "uc77/qos2", "uc77-col")
 
 	// SQS input.
 	sqsURL, sqsClient := setupSQSQueue(t, "uc77")
 	sqsRcv := newSQSReceiver(t, sqsURL)
 
-	// QoS 2 sender.
+	// QoS 2 sender. KeepAlive=5 for fast reconnection after broker restart.
 	sess := setupMQTTSessionWithBroker(t, brokerURL,
 		mqttlocal.UniqueClientID("uc77-snd"),
 		domain.SessionPersistent,
 		10, // receiveMaximum
+		5,  // keepAlive
 	)
 	snd := paho.NewSender(sess, paho.SenderOptions{
 		DefaultTopic: "uc77/qos2",
@@ -278,7 +279,8 @@ func TestUC77_QoS2UnderBrokerRestart(t *testing.T) {
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc77-qos2",
 		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+			DeliveryMode:      domain.DeliveryDirectHold,
+			MaxReplayAttempts: 50,
 		},
 		Resolver: goruntime.NewStaticResolver(
 			domain.DispatchPlan{BindingID: "uc77-bind", Address: "uc77/qos2"},
@@ -304,9 +306,13 @@ func TestUC77_QoS2UnderBrokerRestart(t *testing.T) {
 	beforeRestart := collector.count()
 	t.Logf("UC77: %d messages received before broker restart", beforeRestart)
 
-	// Restart the broker — sessions should persist.
-	broker.Restart()
+	broker.RestartGraceful()
 	t.Log("UC77: broker restarted")
+
+	// DirectHold: the route runner retries via SQS redelivery. Use
+	// gobridgesync to confirm the bridge session is reconnected.
+	// Persistent collector ensures broker queues messages during the gap.
+	gobridgesync(t, 30*time.Second, rt)
 
 	// Wait for all messages to arrive after reconnect.
 	lrWaitFor(t, 120*time.Second,

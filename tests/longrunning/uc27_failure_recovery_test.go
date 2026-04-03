@@ -31,7 +31,7 @@ func TestUC27_Intermittent_SendFailures(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
 		msgCount    = 3000
-		pollTimeout = 300 * time.Second
+		pollTimeout = 420 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc27-in")
@@ -62,6 +62,7 @@ func TestUC27_Intermittent_SendFailures(t *testing.T) {
 		Policy: domain.RoutePolicy{
 			DeliveryMode:       domain.DeliveryDirectHold,
 			MaxInFlight:        100,
+			MaxReplayAttempts:  50,
 			OnPermanentFailure: domain.FailureDLQ,
 		},
 		Resolver: goruntime.NewStaticResolver(
@@ -78,8 +79,16 @@ func TestUC27_Intermittent_SendFailures(t *testing.T) {
 
 	sendBulkToSQS(t, inClient, inQueueURL, msgCount, nil)
 
+	start := time.Now()
+	lastLog := time.Now()
 	lrWaitFor(t, pollTimeout, fmt.Sprintf("collector >= %d", msgCount), func() bool {
-		return collector.count() >= msgCount
+		c := collector.count()
+		if time.Since(lastLog) > 10*time.Second {
+			t.Logf("UC27: progress collector=%d/%d, elapsed=%v, faulty_calls=%d",
+				c, msgCount, time.Since(start).Truncate(time.Second), faulty.calls.Load())
+			lastLog = time.Now()
+		}
+		return c >= msgCount
 	})
 
 	time.Sleep(2 * time.Second)

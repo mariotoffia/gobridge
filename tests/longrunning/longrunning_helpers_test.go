@@ -4,9 +4,12 @@ package longrunning_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
+	"net/http"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -501,6 +504,125 @@ func countUnique(c *mqttCollector) int {
 		seen[m.ID] = struct{}{}
 	}
 	return len(seen)
+}
+
+// ---------------------------------------------------------------------------
+// sendProbe — black-box end-to-end pipeline readiness gate
+// ---------------------------------------------------------------------------
+
+// sendProbe injects a canary message into the SQS input queue and blocks
+// until the collector receives it. This proves the full pipeline is
+// operational: SQS receiver -> route runner -> outbox drainer -> MQTT
+// session -> broker delivery -> collector subscription. No internal struct
+// access required. The probe uses a unique payload marker so it can be
+// distinguished from test data.
+func sendProbe(
+	t *testing.T,
+	sqsClient *awssqs.Client,
+	inputQueueURL string,
+	collector *mqttCollector,
+	timeout time.Duration,
+) {
+	t.Helper()
+	probeID := fmt.Sprintf("__probe__%d", time.Now().UnixNano())
+	body := fmt.Sprintf(`{"probe":"%s"}`, probeID)
+	_, err := sqsClient.SendMessage(context.Background(), &awssqs.SendMessageInput{
+		QueueUrl:    &inputQueueURL,
+		MessageBody: &body,
+	})
+	require.NoError(t, err, "send probe message")
+
+	lrWaitFor(t, timeout, "probe arrival: "+probeID, func() bool {
+		for _, m := range collector.getMessages() {
+			if strings.Contains(string(m.Payload), probeID) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// ---------------------------------------------------------------------------
+// awaitBridgeReady — HTTP-based black-box bridge readiness
+// ---------------------------------------------------------------------------
+
+// awaitBridgeReady polls the bridge's HTTP /api/v1/monitor/deephealth
+// endpoint until ready_for_traffic=true and service_level=full. This is
+// the same check a load balancer or Kubernetes readiness probe would use.
+func awaitBridgeReady(t *testing.T, monitorURL string, timeout time.Duration) {
+	t.Helper()
+	endpoint := monitorURL + "/api/v1/monitor/deephealth"
+	lrWaitFor(t, timeout, "bridge ready via HTTP "+endpoint, func() bool {
+		resp, err := http.Get(endpoint)
+		if err != nil || resp.StatusCode != 200 {
+			return false
+		}
+		defer resp.Body.Close()
+		var dh struct {
+			ReadyForTraffic bool   `json:"ready_for_traffic"`
+			ServiceLevel    string `json:"service_level"`
+		}
+		if json.NewDecoder(resp.Body).Decode(&dh) != nil {
+			return false
+		}
+		return dh.ReadyForTraffic && dh.ServiceLevel == "full"
+	})
+}
+
+// ---------------------------------------------------------------------------
+// newPersistentCollectorWithBroker — collector with persistent session
+// ---------------------------------------------------------------------------
+
+// newPersistentCollectorWithBroker creates a collector that uses a persistent
+// MQTT session (CleanStart=false, SessionExpiryInterval=300). The broker
+// queues messages for this client during disconnection, eliminating the
+// subscriber-before-publisher race on broker restart.
+func newPersistentCollectorWithBroker(
+	t *testing.T, brokerURL, topic, clientIDPrefix string,
+) *mqttCollector {
+	t.Helper()
+	clientID := mqttlocal.UniqueClientID(clientIDPrefix)
+	sess := paho.NewSession(paho.SessionOptions{
+		BrokerURLs:            []string{brokerURL},
+		ClientID:              clientID,
+		KeepAlive:             5,
+		ConnectTimeout:        15 * time.Second,
+		CleanStart:            false,
+		SessionExpiryInterval: 300,
+	}, domain.SessionPersistent, testLogger(t))
+
+	ctx := context.Background()
+	require.NoError(t, sess.Start(ctx), "persistent collector Start at %s", brokerURL)
+	select {
+	case <-sess.Events():
+	case <-time.After(5 * time.Second):
+	}
+	require.NoError(t, sess.Reconcile(ctx, domain.SessionPlan{
+		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	}), "persistent collector Reconcile")
+	time.Sleep(300 * time.Millisecond)
+
+	recv := paho.NewReceiver("collector-"+clientID, sess)
+	recvCtx, recvCancel := context.WithCancel(ctx)
+
+	c := &mqttCollector{cancel: recvCancel}
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
+			c.mu.Lock()
+			c.messages = append(c.messages, del.Envelope())
+			c.mu.Unlock()
+			return nil
+		})
+	}()
+
+	t.Cleanup(func() {
+		recvCancel()
+		c.wg.Wait()
+		_ = sess.Close(context.Background())
+	})
+	return c
 }
 
 // ---------------------------------------------------------------------------

@@ -54,13 +54,14 @@ func TestUC48_BrokerDownMultiHop(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	// MQTT collector on hop topic — measures when to kill broker.
-	hopCollector := newMQTTCollectorWithBroker(t, brokerURL, hopTopic, "uc48-col")
+	// Persistent collector on hop topic — measures when to kill broker.
+	// Persistent session ensures broker queues messages during restart gap.
+	hopCollector := newPersistentCollectorWithBroker(t, brokerURL, hopTopic, "uc48-col")
 
 	// --- Bridge-A: SQS-IN → SharedOutbox → MQTT ---
 	sessIDA := mqttlocal.UniqueClientID("uc48-sess-a")
 	sessA := setupMQTTSessionWithBroker(t, brokerURL, sessIDA,
-		domain.SessionExclusive, 65535)
+		domain.SessionExclusive, 65535, 5)
 	mqttSndA := setupMQTTSender(t, sessA)
 	sqsRxA := newSQSReceiver(t, sqsInURL)
 	scA := lrSessionConfig(sessIDA)
@@ -93,7 +94,7 @@ func TestUC48_BrokerDownMultiHop(t *testing.T) {
 	leaseStoreB, outboxStoreB := setupDynamoStores(t)
 	rxSessIDB := mqttlocal.UniqueClientID("uc48-rxb")
 	rxSessB := setupMQTTSessionWithBroker(t, brokerURL, rxSessIDB,
-		domain.SessionExclusive, 65535)
+		domain.SessionExclusive, 65535, 5)
 	require.NoError(t, rxSessB.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: hopTopic, QoS: 1}},
 	}))
@@ -136,11 +137,16 @@ func TestUC48_BrokerDownMultiHop(t *testing.T) {
 		func() bool { return hopCollector.count() >= killAt })
 
 	t.Logf("UC48: killing broker at hop-collector=%d", hopCollector.count())
-	broker.Stop()
+	broker.StopGraceful()
 	time.Sleep(5 * time.Second)
 
 	t.Log("UC48: restarting broker")
-	broker.Restart()
+	broker.RestartGraceful()
+
+	// Black-box readiness: probe the Bridge-A pipeline (SQS-IN → MQTT hop).
+	// When the probe arrives at hopCollector, both Bridge-A's session and
+	// the hop collector's subscription are proven operational.
+	sendProbe(t, sqsInClient, sqsInURL, hopCollector, 30*time.Second)
 
 	// Poll SQS-OUT for delivered messages.
 	bodies := pollAllSQS(t, sqsOutClient, sqsOutURL, msgCount, 240*time.Second)
@@ -192,13 +198,13 @@ func TestUC49_SharedOutboxVsDirectHold_BrokerFlapping(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	collectorA := newMQTTCollectorWithBroker(t, brokerURL, topicA, "uc49-col-a")
-	collectorB := newMQTTCollectorWithBroker(t, brokerURL, topicB, "uc49-col-b")
+	collectorA := newPersistentCollectorWithBroker(t, brokerURL, topicA, "uc49-col-a")
+	collectorB := newPersistentCollectorWithBroker(t, brokerURL, topicB, "uc49-col-b")
 
 	// --- Path A: SharedOutbox ---
 	sessIDA := mqttlocal.UniqueClientID("uc49-sess-a")
 	sessA := setupMQTTSessionWithBroker(t, brokerURL, sessIDA,
-		domain.SessionExclusive, 65535)
+		domain.SessionExclusive, 65535, 5)
 	sndA := setupMQTTSender(t, sessA)
 	rxA := newSQSReceiver(t, sqsInA)
 	scA := lrSessionConfig(sessIDA)
@@ -229,7 +235,7 @@ func TestUC49_SharedOutboxVsDirectHold_BrokerFlapping(t *testing.T) {
 	// --- Path B: DirectHold ---
 	sessIDB := mqttlocal.UniqueClientID("uc49-sess-b")
 	sessB := setupMQTTSessionWithBroker(t, brokerURL, sessIDB,
-		domain.SessionExclusive, 65535)
+		domain.SessionExclusive, 65535, 5)
 	sndB := setupMQTTSender(t, sessB)
 	rxB := newSQSReceiver(t, sqsInB)
 
@@ -268,9 +274,10 @@ func TestUC49_SharedOutboxVsDirectHold_BrokerFlapping(t *testing.T) {
 
 		t.Logf("UC49: flap %d/%d -- collectorA=%d, collectorB=%d",
 			i+1, flapCount, collectorA.count(), collectorB.count())
-		broker.Stop()
+		broker.StopGraceful()
 		time.Sleep(time.Duration(flapDownSec) * time.Second)
-		broker.Restart()
+		broker.RestartGraceful()
+		sendProbe(t, sqsClientA, sqsInA, collectorA, 30*time.Second)
 	}
 
 	// SharedOutbox must deliver all.
@@ -405,16 +412,15 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 	brokerURL := broker.URL()
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc51-in")
-	leaseStore, outboxStore := setupDynamoStores(t)
+	leaseStore, outboxStore := setupDynamoStoresForRestart(t)
 	dlq := &lrDLQStore{}
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	// Collector with persistent session. SessionEphemeral is used for the
-	// domain mode, but CleanStart=false so the broker preserves the session
-	// across reconnects (queued messages survive). KeepAlive=5 speeds up
-	// disconnect detection after docker kill (default 30s is too slow).
+	// Collector with persistent session so the broker queues messages
+	// during the reconnection gap. KeepAlive=5 speeds up disconnect
+	// detection after docker kill (default 30s is too slow).
 	colID := mqttlocal.UniqueClientID("uc51-col")
 	colSess := paho.NewSession(paho.SessionOptions{
 		BrokerURLs:            []string{brokerURL},
@@ -423,7 +429,7 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 		ConnectTimeout:        15 * time.Second,
 		CleanStart:            false,
 		SessionExpiryInterval: 300,
-	}, domain.SessionEphemeral, testLogger(t))
+	}, domain.SessionPersistent, testLogger(t))
 	require.NoError(t, colSess.Start(ctx))
 	select {
 	case <-colSess.Events():
@@ -470,7 +476,10 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc51-route",
-		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy: domain.RoutePolicy{
+			DeliveryMode:      domain.DeliverySharedOutbox,
+			MaxReplayAttempts: 50,
+		},
 		Resolver: goruntime.NewStaticResolver(
 			domain.DispatchPlan{BindingID: "uc51-bind", Address: outTopic},
 		),
@@ -489,7 +498,7 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 		func() bool { return collector.count() >= beforeKill })
 
 	t.Log("UC51: killing broker")
-	broker.Stop()
+	broker.StopGraceful()
 
 	// Send second batch during downtime (queues in SQS/outbox).
 	t.Logf("UC51: sending %d msgs during downtime", duringDown)
@@ -497,14 +506,13 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 	time.Sleep(5 * time.Second)
 
 	t.Log("UC51: restarting broker")
-	broker.Restart()
+	broker.RestartGraceful()
 
-	// With the production fix (session.go: CM uses background context),
-	// autopaho reconnects reliably after broker restart. KeepAlive=5
-	// ensures disconnect detection within ~5s, and autopaho's first
-	// reconnect attempt is immediate (0s backoff for attempt 0).
-	// We just need to wait for the bridge runtime to reach full health.
-	gobridgesync(t, 30*time.Second, rt)
+	// Black-box readiness: probe proves the full pipeline is operational.
+	// Graceful restart preserves the collector's persistent session, so
+	// the broker queues messages during downtime and delivers them on
+	// reconnect — no subscriber-before-publisher race.
+	sendProbe(t, sqsInClient, sqsInURL, collector, 30*time.Second)
 
 	lrWaitFor(t, 200*time.Second, fmt.Sprintf("unique >= %d", msgCount),
 		func() bool { return countUnique(collector) >= msgCount })

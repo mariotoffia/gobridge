@@ -40,6 +40,12 @@ type OutboxDrainer struct {
 	// still holds the lease. The OutboxDrainer only processes when
 	// the second return value is true.
 	tokenFn func() (domain.LeaseToken, bool)
+
+	// readyFn returns true when the egress transport is connected and
+	// ready to send. When set and returning false, the drainer skips the
+	// drain cycle entirely, preventing unnecessary Claim calls that would
+	// increment replay_count on records that cannot be sent anyway.
+	readyFn func() bool
 }
 
 // OutboxDrainerConfig holds the configuration for an OutboxDrainer.
@@ -61,6 +67,12 @@ type OutboxDrainerConfig struct {
 	Metrics        ports.MetricsExporter
 	Logger         *slog.Logger
 	TokenFn        func() (domain.LeaseToken, bool)
+
+	// ReadyFn optionally gates drain cycles on egress transport
+	// readiness. When the MQTT session is disconnected, skipping
+	// drains prevents replay_count from being exhausted by
+	// repeated failed Claim+Send cycles during broker downtime.
+	ReadyFn func() bool
 }
 
 // NewOutboxDrainerFromConfig creates an OutboxDrainer from a config struct.
@@ -128,6 +140,7 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 		metrics:          m,
 		logger:           cfg.Logger,
 		tokenFn:          cfg.TokenFn,
+		readyFn:          cfg.ReadyFn,
 	}
 }
 
@@ -148,6 +161,14 @@ func (d *OutboxDrainer) Run(ctx context.Context) error {
 		case <-timer.C:
 			token, hasLease := d.tokenFn()
 			if !hasLease {
+				timer.Reset(d.strategy.NextInterval(0))
+				continue
+			}
+			if d.readyFn != nil && !d.readyFn() {
+				if logging.TraceEnabled(d.logger) {
+					d.logger.Log(ctx, logging.LevelTrace, "egress not ready, skipping drain cycle",
+						"partition_key", d.partitionKey)
+				}
 				timer.Reset(d.strategy.NextInterval(0))
 				continue
 			}

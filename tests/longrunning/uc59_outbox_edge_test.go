@@ -111,10 +111,11 @@ func TestUC60_OutboxPlusBrokerDown(t *testing.T) {
 	broker := mqttlocal.NewBrokerInstance(t, mqttlocal.WithPersistence(true))
 	brokerURL := broker.URL()
 
-	collector := newMQTTCollectorWithBroker(t, brokerURL, outTopic, "uc60-col")
+	// Persistent collector — broker queues messages during disconnection.
+	collector := newPersistentCollectorWithBroker(t, brokerURL, outTopic, "uc60-col")
 
 	sessID := mqttlocal.UniqueClientID("uc60-sess")
-	sess := newMQTTSessionWithBroker(t, brokerURL, sessID, domain.SessionExclusive, 50)
+	sess := newMQTTSessionWithBroker(t, brokerURL, sessID, domain.SessionExclusive, 50, 5)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessID)
@@ -159,19 +160,16 @@ func TestUC60_OutboxPlusBrokerDown(t *testing.T) {
 		return countUnique(collector) >= waitBefore
 	})
 	t.Log("UC60: killing broker after initial delivery")
-	broker.Stop()
+	broker.StopGraceful()
 
 	// Keep the broker down for 5 seconds.
 	time.Sleep(5 * time.Second)
 
-	// Restart the broker; the outbox replay loop should reconnect and push
-	// the remaining messages.
 	t.Log("UC60: restarting broker")
-	broker.Restart()
+	broker.RestartGraceful()
 
-	// Reconnect the collector to the restarted broker so it picks up the
-	// remaining messages.
-	collector = newMQTTCollectorWithBroker(t, brokerURL, outTopic, "uc60-col2")
+	// Black-box readiness: probe proves the pipeline is operational.
+	sendProbe(t, sqsInClient, sqsInURL, collector, 30*time.Second)
 
 	lrWaitFor(t, 180*time.Second, fmt.Sprintf("unique >= %d after restart", msgCount), func() bool {
 		return countUnique(collector) >= msgCount

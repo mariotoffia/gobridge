@@ -308,6 +308,34 @@ func setupDynamoStores(t *testing.T) (ports.LeaseStore, ports.OutboxStore) {
 	return leaseStore, outboxStore
 }
 
+// setupDynamoStoresForRestart returns stores configured for tests that
+// involve broker kill/restart. The longer StaleClaimDuration (15s) prevents
+// the outbox drainer from rapidly re-claiming records during broker downtime,
+// which would otherwise exhaust MaxReplayAttempts and orphan records.
+func setupDynamoStoresForRestart(t *testing.T) (ports.LeaseStore, ports.OutboxStore) {
+	t.Helper()
+	client := ddblocal.Client(t)
+
+	leaseTable := ddblocal.UniqueTable("lr-leases")
+	outboxTable := ddblocal.UniqueTable("lr-outbox")
+
+	leaseStore := dblease.NewStore(client,
+		dblease.WithTableName(leaseTable),
+		dblease.WithGracePeriod(10*time.Second),
+	)
+	require.NoError(t, leaseStore.EnsureTable(context.Background()), "lease table")
+	ddblocal.CleanupTable(t, client, leaseTable)
+
+	outboxStore := dboutbox.NewStore(client,
+		dboutbox.WithTableName(outboxTable),
+		dboutbox.WithStaleClaimDuration(15*time.Second),
+	)
+	require.NoError(t, outboxStore.CreateTable(context.Background()), "outbox table")
+	ddblocal.CleanupTable(t, client, outboxTable)
+
+	return leaseStore, outboxStore
+}
+
 // ---------------------------------------------------------------------------
 // Runtime / session config helpers
 // ---------------------------------------------------------------------------

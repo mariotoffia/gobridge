@@ -31,6 +31,7 @@ type BrokerInstance struct {
 	port      int
 	name      string
 	confPath  string
+	dataDir   string // host-side temp dir for Mosquitto persistence data
 	url       string
 	stopped   bool
 }
@@ -72,12 +73,30 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 	}
 	_ = confFile.Close()
 
+	// When persistence is enabled, create a host-side temp directory for
+	// Mosquitto data. This directory is bind-mounted into every container
+	// created by start(), so persistence data survives docker rm + docker run.
+	var dataDir string
+	if c.persistence {
+		dir, err := os.MkdirTemp("", "mqttdata-*")
+		if err != nil {
+			t.Fatalf("mqttlocal.NewBrokerInstance: create data dir: %v", err)
+		}
+		// Mosquitto in the container runs as uid 1883; ensure the dir is writable.
+		if err := os.Chmod(dir, 0o777); err != nil {
+			_ = os.RemoveAll(dir)
+			t.Fatalf("mqttlocal.NewBrokerInstance: chmod data dir: %v", err)
+		}
+		dataDir = dir
+	}
+
 	b := &BrokerInstance{
 		t:        t,
 		cfg:      c,
 		port:     port,
 		name:     fmt.Sprintf("gobridge-mqttinst-%d", port),
 		confPath: confFile.Name(),
+		dataDir:  dataDir,
 		url:      fmt.Sprintf("tcp://127.0.0.1:%d", port),
 	}
 
@@ -86,6 +105,9 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 	t.Cleanup(func() {
 		_ = exec.Command("docker", "rm", "-f", b.name).Run()
 		_ = os.Remove(b.confPath)
+		if dataDir != "" {
+			_ = os.RemoveAll(dataDir)
+		}
 	})
 
 	return b
@@ -101,6 +123,9 @@ func (b *BrokerInstance) start() {
 		"--name", b.name,
 		"-p", fmt.Sprintf("127.0.0.1:%d:1883", b.port),
 		"-v", b.confPath + ":/mosquitto/config/mosquitto.conf:ro",
+	}
+	if b.dataDir != "" {
+		args = append(args, "-v", b.dataDir+":/mosquitto/data")
 	}
 	if b.cfg.memory != "" {
 		args = append(args, "--memory", b.cfg.memory)
@@ -160,6 +185,51 @@ func (b *BrokerInstance) Restart() {
 	// Remove the dead container so we can reuse the name.
 	_ = exec.Command("docker", "rm", "-f", b.name).Run()
 	b.start()
+}
+
+// StopGraceful sends SIGTERM via docker stop, giving Mosquitto time to
+// flush persistence data to disk. Unlike Stop (docker kill), the container
+// is left intact so RestartGraceful can bring it back with preserved
+// session state and queued messages.
+func (b *BrokerInstance) StopGraceful() {
+	b.t.Helper()
+	if b.stopped {
+		return
+	}
+	out, err := exec.Command("docker", "stop", "-t", "5", b.name).CombinedOutput()
+	if err != nil {
+		b.t.Logf("mqttlocal.BrokerInstance.StopGraceful: docker stop: %v\n%s", err, out)
+	}
+	b.stopped = true
+}
+
+// RestartGraceful does docker stop + docker start on the SAME container.
+// Persistence data, sessions, and queued messages survive because the
+// container filesystem is preserved. Use this instead of Restart when the
+// test needs broker persistence to work across the restart boundary.
+func (b *BrokerInstance) RestartGraceful() {
+	b.t.Helper()
+	if !b.stopped {
+		b.StopGraceful()
+	}
+	out, err := exec.Command("docker", "start", b.name).CombinedOutput()
+	if err != nil {
+		logContainerFailure(b.name)
+		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: docker start: %v\n%s", err, out)
+	}
+	if err := waitForContainerHealthy(b.name, 15*time.Second); err != nil {
+		logContainerFailure(b.name)
+		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: unhealthy: %v", err)
+	}
+	if err := waitForTCP(b.port, 30*time.Second); err != nil {
+		logContainerFailure(b.name)
+		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: TCP not ready: %v", err)
+	}
+	if err := stabilize(b.port); err != nil {
+		logContainerFailure(b.name)
+		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: stabilize failed: %v", err)
+	}
+	b.stopped = false
 }
 
 // IsRunning returns true if the broker container is currently running.
