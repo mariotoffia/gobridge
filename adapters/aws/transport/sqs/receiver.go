@@ -54,11 +54,14 @@ func NewReceiver(cfg ReceiverConfig, logger *slog.Logger) (*Receiver, error) {
 // backpressure. Run blocks until ctx is cancelled or an unrecoverable
 // error occurs.
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
-	if err := r.ensureClient(ctx); err != nil {
+	initCtx, initCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer initCancel()
+
+	if err := r.ensureClient(initCtx); err != nil {
 		return err
 	}
 
-	queueURL, err := resolveQueueURL(ctx, r.client, r.cfg.QueueURL, r.cfg.QueueName)
+	queueURL, err := resolveQueueURL(initCtx, r.client, r.cfg.QueueURL, r.cfg.QueueName)
 	if err != nil {
 		return err
 	}
@@ -79,6 +82,7 @@ func (r *Receiver) pollLoop(
 	emit func(context.Context, ports.Delivery) error,
 ) error {
 	backoff := newPollBackoff()
+	pollTimeout := time.Duration(r.cfg.WaitTimeSeconds+10) * time.Second
 
 	for {
 		if ctx.Err() != nil {
@@ -86,7 +90,8 @@ func (r *Receiver) pollLoop(
 		}
 
 		pollStart := time.Now()
-		output, err := r.client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		pollCtx, pollCancel := context.WithTimeout(ctx, pollTimeout)
+		output, err := r.client.ReceiveMessage(pollCtx, &awssqs.ReceiveMessageInput{
 			QueueUrl:              aws.String(queueURL),
 			MaxNumberOfMessages:   r.cfg.MaxMessages,
 			WaitTimeSeconds:       r.cfg.WaitTimeSeconds,
@@ -94,6 +99,7 @@ func (r *Receiver) pollLoop(
 			MessageAttributeNames: []string{"All"},
 			AttributeNames:        []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameAll},
 		})
+		pollCancel()
 
 		if err != nil {
 			if ctx.Err() != nil {
@@ -132,12 +138,12 @@ func (r *Receiver) pollLoop(
 		}
 
 		for _, msg := range output.Messages {
-			del := r.convertMessage(ctx, queueURL, msg)
-
 			// Create a per-delivery context so that auto-extend failure
 			// can cancel processing without affecting other deliveries.
+			// The cancel func is passed into convertMessage/newDelivery
+			// so it is set BEFORE any auto-extend goroutine starts.
 			deliveryCtx, deliveryCancel := context.WithCancel(ctx)
-			del.processingCancel = deliveryCancel
+			del := r.convertMessage(deliveryCtx, queueURL, msg, deliveryCancel)
 
 			if err := emit(deliveryCtx, del); err != nil {
 				deliveryCancel()
@@ -184,6 +190,7 @@ func (r *Receiver) convertMessage(
 	ctx context.Context,
 	queueURL string,
 	msg sqstypes.Message,
+	processingCancel context.CancelFunc,
 ) *sqsDelivery {
 	receiptHandle := aws.ToString(msg.ReceiptHandle)
 	body := aws.ToString(msg.Body)
@@ -237,6 +244,7 @@ func (r *Receiver) convertMessage(
 		receiptHandle,
 		r.cfg.VisibilityTimeout,
 		r.cfg.autoExtendEnabled(),
+		processingCancel,
 		r.logger,
 		r.metrics,
 	)

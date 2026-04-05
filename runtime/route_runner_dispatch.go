@@ -133,6 +133,12 @@ func (r *RouteRunner) sessionIDForBinding(bindingID string) string {
 			return b.SessionID
 		}
 	}
+	if r.logger != nil && bindingID != "" {
+		r.logger.Warn("no binding found for dispatch plan",
+			"route_id", r.routeID,
+			"binding_id", bindingID,
+		)
+	}
 	return ""
 }
 

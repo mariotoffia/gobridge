@@ -271,8 +271,11 @@ func TestEdge_ForwarderRemoteReturns500(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !errors.Is(err, domain.ErrForwardFailed) {
-		t.Fatalf("expected ErrForwardFailed, got %v", err)
+	if !errors.Is(err, domain.ErrUnavailable) {
+		t.Fatalf("expected ErrUnavailable (transient) for 500, got %v", err)
+	}
+	if !domain.IsRecoverableError(err) {
+		t.Fatal("expected recoverable error for 500")
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/mariotoffia/gobridge/domain"
 )
@@ -172,13 +173,10 @@ func MapSubscribeReasonCode(code byte) *domain.BridgeError {
 }
 
 func containsAny(s string, substrs ...string) bool {
+	lower := strings.ToLower(s)
 	for _, sub := range substrs {
-		if len(s) >= len(sub) {
-			for i := 0; i <= len(s)-len(sub); i++ {
-				if s[i:i+len(sub)] == sub {
-					return true
-				}
-			}
+		if strings.Contains(lower, sub) {
+			return true
 		}
 	}
 	return false

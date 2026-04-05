@@ -203,6 +203,12 @@ func (d *OutboxDrainer) finalDrain() error {
 	if !hasLease {
 		return nil
 	}
+	// Skip final drain if the egress transport is not connected.
+	// Draining into a disconnected sender wastes replay_count budget
+	// and the records will be re-claimed on the next healthy drain cycle.
+	if d.readyFn != nil && !d.readyFn() {
+		return nil
+	}
 	drainCtx, cancel := context.WithTimeout(context.Background(), d.drainTimeout)
 	defer cancel()
 	_, err := d.drainBatch(drainCtx, token)

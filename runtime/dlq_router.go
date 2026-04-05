@@ -25,7 +25,11 @@ type DLQRouter struct {
 	wg           sync.WaitGroup
 	logger       *slog.Logger
 	metrics      ports.MetricsExporter
+	mu           sync.Mutex // guards started, stopped, and sendWg.Add
 	started      bool
+	stopped      bool
+	done         chan struct{}    // closed by Close() to signal Route() to exit select
+	sendWg       sync.WaitGroup  // tracks goroutines in the Route select
 }
 
 // DLQRouterConfig configures the async DLQ router.
@@ -93,8 +97,12 @@ func (r *DLQRouter) Start(ctx context.Context) {
 	if r.store == nil {
 		return
 	}
+	r.mu.Lock()
 	r.buffer = make(chan domain.DLQEntry, r.bufferSize)
 	r.started = true
+	r.stopped = false
+	r.done = make(chan struct{})
+	r.mu.Unlock()
 	for range r.workers {
 		r.wg.Add(1)
 		go r.runWorker(ctx)
@@ -103,11 +111,18 @@ func (r *DLQRouter) Start(ctx context.Context) {
 
 // Close drains remaining buffer entries and waits for workers to finish.
 func (r *DLQRouter) Close() {
-	if !r.started {
+	r.mu.Lock()
+	if !r.started || r.stopped {
+		r.mu.Unlock()
 		return
 	}
-	close(r.buffer)
-	r.wg.Wait()
+	r.stopped = true
+	close(r.done) // signal Route() goroutines to exit select
+	r.mu.Unlock()
+
+	r.sendWg.Wait()  // wait for all Route() calls to exit select
+	close(r.buffer)   // safe: no Route() is sending
+	r.wg.Wait()       // wait for workers to drain remaining entries
 	r.started = false
 }
 
@@ -127,14 +142,26 @@ func (r *DLQRouter) Route(
 
 	entry := r.buildEntry(env, routeID, bindingID, sessionID, sourceID, err, attempts)
 
-	if !r.started {
+	r.mu.Lock()
+	if r.stopped || !r.started {
+		r.mu.Unlock()
 		return r.writeDirect(ctx, entry)
 	}
+	r.sendWg.Add(1) // under lock: Close() can't set stopped between check and Add
+	r.mu.Unlock()
+	defer r.sendWg.Done()
+
+	timer := time.NewTimer(r.enqTimeout)
+	defer timer.Stop()
 
 	select {
 	case r.buffer <- entry:
 		return nil
-	case <-time.After(r.enqTimeout):
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-r.done:
+		return r.writeDirect(ctx, entry)
+	case <-timer.C:
 		r.metrics.Counter(domain.MetricDLQBufferOverflow, 1)
 		return fmt.Errorf("DLQ buffer full after %s", r.enqTimeout)
 	}
@@ -173,10 +200,15 @@ func (r *DLQRouter) writeDirect(ctx context.Context, entry domain.DLQEntry) erro
 	return r.store.Write(writeCtx, entry)
 }
 
-func (r *DLQRouter) runWorker(ctx context.Context) {
+func (r *DLQRouter) runWorker(_ context.Context) {
 	defer r.wg.Done()
 	for entry := range r.buffer {
-		writeCtx, cancel := context.WithTimeout(ctx, r.writeTimeout)
+		// Use context.Background for the write deadline so buffered entries
+		// are still persisted after the runtime context is cancelled during
+		// Stop(). The runtime calls cancel() before dlqRouter.Close(), so
+		// the parent ctx is already dead by the time we drain remaining
+		// entries. Using Background ensures the writeTimeout applies cleanly.
+		writeCtx, cancel := context.WithTimeout(context.Background(), r.writeTimeout)
 		if err := r.store.Write(writeCtx, entry); err != nil {
 			r.metrics.Counter(domain.MetricDLQWriteFailures, 1)
 			if r.logger != nil {

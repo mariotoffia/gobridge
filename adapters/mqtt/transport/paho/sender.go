@@ -62,12 +62,10 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 		)
 	}
 
-	// Apply configured timeout if set.
-	if s.opts.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, s.opts.Timeout)
-		defer cancel()
-	}
+	// Apply timeout: use configured value, or a 60s safety-net fallback
+	// when Timeout<=0 and the caller's context has no deadline.
+	ctx, timeoutCancel := s.applyTimeout(ctx)
+	defer timeoutCancel()
 
 	sessionTag := domain.Tag{Key: domain.TagKeySessionID, Value: s.session.opts.ClientID}
 
@@ -111,4 +109,23 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	}
 
 	return nil
+}
+
+// defaultSendTimeout is the safety-net fallback used when
+// SenderOptions.Timeout is zero and the context has no deadline.
+const defaultSendTimeout = 60 * time.Second
+
+// applyTimeout returns a context with a deadline derived from the
+// configured Timeout. When Timeout <= 0 the fallback of 60 s is used.
+// If the context already carries a deadline, no additional timeout is
+// applied so we do not accidentally shorten an existing one.
+func (s *Sender) applyTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := s.opts.Timeout
+	if timeout <= 0 {
+		timeout = defaultSendTimeout
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		return context.WithTimeout(ctx, timeout)
+	}
+	return ctx, func() {} // noop cancel — caller's deadline is already shorter
 }

@@ -73,6 +73,7 @@ const (
 	MetricMQTTConnectLatency  = "MQTTConnectLatency"
 	MetricMQTTReconcileLatency = "MQTTReconcileLatency"
 	MetricMQTTRouterDropped   = "MQTTRouterDropped"
+	MetricMQTTEventDropped    = "MQTTEventDropped"
 )
 
 // Session metric names.

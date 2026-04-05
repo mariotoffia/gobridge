@@ -38,6 +38,7 @@ func NewHTTPForwarder(pathPrefix string, timeout time.Duration, clusterKey ...st
 			Timeout: timeout,
 			Transport: &http.Transport{
 				MaxIdleConnsPerHost: 32,
+				MaxConnsPerHost:     64,
 				IdleConnTimeout:     90 * time.Second,
 			},
 		},
@@ -104,13 +105,23 @@ func (f *HTTPForwarder) Forward(
 		_ = resp.Body.Close()
 	}()
 
-	if resp.StatusCode >= 400 {
-		logging.DebugContext(f.logger, ctx, "http: forward failed",
+	if resp.StatusCode >= 500 {
+		logging.DebugContext(f.logger, ctx, "http: forward failed (server error)",
 			"target_instance", target.InstanceID,
 			"route_id", routeID,
 			"status_code", resp.StatusCode,
 		)
-		return domain.ErrForwardFailed.WithMessage(
+		return domain.ErrUnavailable.WithMessage(
+			fmt.Sprintf("remote returned %d", resp.StatusCode),
+		)
+	} else if resp.StatusCode >= 400 {
+		logging.DebugContext(f.logger, ctx, "http: forward failed (client error)",
+			"target_instance", target.InstanceID,
+			"route_id", routeID,
+			"status_code", resp.StatusCode,
+		)
+		return domain.NewBridgeError(
+			domain.ErrCodeForwardFailed, domain.ErrorPermanent,
 			fmt.Sprintf("remote returned %d", resp.StatusCode),
 		)
 	}

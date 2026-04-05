@@ -76,6 +76,8 @@ func NewCircuitBreakerSender(inner *Sender, cfg CBConfig) *CircuitBreakerSender 
 // sender. Records the outcome for state transitions.
 func (s *CircuitBreakerSender) Send(ctx context.Context, env *domain.Envelope) error {
 	if err := s.breaker.BeforeRequest(); err != nil {
+		s.metrics.Counter(domain.MetricMQTTPublishFailures, 1,
+			domain.Tag{Key: "reason", Value: "circuit_open"})
 		return err
 	}
 	err := s.inner.Send(ctx, env)

@@ -84,11 +84,40 @@ func (r *router) Route(pb *packets.Publish) {
 	}
 
 	r.wg.Add(len(handlers))
-	for _, h := range handlers {
+	for i, h := range handlers {
 		p := *pub
 		if pub.Payload != nil {
 			p.Payload = make([]byte, len(pub.Payload))
 			copy(p.Payload, pub.Payload)
+		}
+		if len(handlers) > 1 && pub.Properties != nil && i > 0 {
+			orig := pub.Properties
+			cp := *orig
+			if orig.User != nil {
+				cp.User = make(pahov5.UserProperties, len(orig.User))
+				copy(cp.User, orig.User)
+			}
+			if orig.CorrelationData != nil {
+				cp.CorrelationData = make([]byte, len(orig.CorrelationData))
+				copy(cp.CorrelationData, orig.CorrelationData)
+			}
+			if orig.SubscriptionIdentifier != nil {
+				si := *orig.SubscriptionIdentifier
+				cp.SubscriptionIdentifier = &si
+			}
+			if orig.PayloadFormat != nil {
+				pf := *orig.PayloadFormat
+				cp.PayloadFormat = &pf
+			}
+			if orig.MessageExpiry != nil {
+				me := *orig.MessageExpiry
+				cp.MessageExpiry = &me
+			}
+			if orig.TopicAlias != nil {
+				ta := *orig.TopicAlias
+				cp.TopicAlias = &ta
+			}
+			p.Properties = &cp
 		}
 		go func(handler func(*pahov5.Publish)) {
 			defer r.wg.Done()
@@ -112,10 +141,10 @@ func (r *router) Route(pb *packets.Publish) {
 func (r *router) Wait() { r.wg.Wait() }
 
 // Register adds a handler for the given ID. Handlers receive an
-// independent copy of the Publish struct and Payload per invocation.
-// The Properties pointer is still shared across goroutines; handlers
-// MUST NOT modify Properties fields. Violations cause data races
-// under concurrent dispatch.
+// independent copy of the Publish struct, Payload, and Properties per
+// invocation when multiple handlers are registered. A single handler
+// receives a struct copy with the original Properties pointer (no
+// concurrent access risk). Handlers should treat Properties as read-only.
 func (r *router) Register(id string, h func(*pahov5.Publish)) {
 	r.mu.Lock()
 	r.handlers[id] = h

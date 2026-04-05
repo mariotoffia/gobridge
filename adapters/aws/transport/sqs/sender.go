@@ -149,7 +149,11 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 				"failed", len(result.Failed),
 			)
 			for _, f := range result.Failed {
-				errs = append(errs, domain.ErrUnavailable.
+				base := domain.ErrUnavailable
+				if f.SenderFault {
+					base = domain.ErrInvalidPayload
+				}
+				errs = append(errs, base.
 					Wrap(fmt.Errorf("sqs batch entry %s failed: %s",
 						derefStr(f.Id), derefStr(f.Message))).
 					With("code", derefStr(f.Code)).

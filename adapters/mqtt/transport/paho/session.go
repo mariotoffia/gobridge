@@ -30,6 +30,7 @@ type Session struct {
 	events    chan ports.SessionEvent
 	closed    bool
 	connected bool // true when autopaho reports connection is up
+	starting  bool // guards against concurrent Start() calls (BUG-2 fix)
 
 	// reconcileMu serializes concurrent reconcile calls (e.g. external
 	// Reconcile vs OnConnectionUp callback) to prevent interleaved
@@ -94,6 +95,11 @@ func (s *Session) Start(ctx context.Context) error {
 		s.mu.Unlock()
 		return nil
 	}
+	if s.starting {
+		s.mu.Unlock()
+		return nil // another goroutine is already starting
+	}
+	s.starting = true
 	s.mu.Unlock()
 
 	logging.DebugContext(s.logger, ctx, "mqtt: session connecting",
@@ -105,6 +111,9 @@ func (s *Session) Start(ctx context.Context) error {
 
 	serverURLs, err := parseURLs(s.opts.BrokerURLs)
 	if err != nil {
+		s.mu.Lock()
+		s.starting = false
+		s.mu.Unlock()
 		return domain.ErrInvalidPayload.Wrap(err).WithMessage("parse broker URLs")
 	}
 
@@ -215,6 +224,9 @@ func (s *Session) Start(ctx context.Context) error {
 	if s.opts.TLS != nil && s.opts.TLS.Enable {
 		tlsCfg, err := BuildTLSConfig(s.opts.TLS)
 		if err != nil {
+			s.mu.Lock()
+			s.starting = false
+			s.mu.Unlock()
 			return domain.ErrUnavailable.Wrap(err).WithMessage("build TLS config")
 		}
 		cfg.TlsCfg = tlsCfg
@@ -227,6 +239,9 @@ func (s *Session) Start(ctx context.Context) error {
 	cm, err := autopaho.NewConnection(cmCtx, cfg)
 	if err != nil {
 		cmCancel()
+		s.mu.Lock()
+		s.starting = false
+		s.mu.Unlock()
 		return MapError(err)
 	}
 
@@ -240,6 +255,9 @@ func (s *Session) Start(ctx context.Context) error {
 	if err := cm.AwaitConnection(awaitCtx); err != nil {
 		cmCancel()
 		_ = cm.Disconnect(context.Background())
+		s.mu.Lock()
+		s.starting = false
+		s.mu.Unlock()
 		logging.DebugContext(s.logger, ctx, "mqtt: connect failed",
 			"client_id", s.opts.ClientID, "error", err)
 		return MapError(err)
@@ -250,6 +268,7 @@ func (s *Session) Start(ctx context.Context) error {
 	s.cmCancel = cmCancel
 	s.startCtx = cmCtx
 	s.connected = true
+	s.starting = false
 	s.mu.Unlock()
 
 	elapsed := time.Since(connectStart)
@@ -512,6 +531,7 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 	select {
 	case s.events <- ev:
 	default:
+		// Drop oldest event to make room.
 		select {
 		case <-s.events:
 		default:
@@ -519,6 +539,8 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 		select {
 		case s.events <- ev:
 		default:
+			// Event channel still full after draining oldest; event lost.
+			s.metrics.Counter(domain.MetricMQTTEventDropped, 1)
 		}
 	}
 }

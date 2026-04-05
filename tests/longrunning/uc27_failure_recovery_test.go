@@ -31,7 +31,7 @@ func TestUC27_Intermittent_SendFailures(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
 		msgCount    = 3000
-		pollTimeout = 420 * time.Second
+		pollTimeout = 600 * time.Second // 10 min: 20% failure rate needs longer for all retries
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc27-in")
@@ -48,7 +48,7 @@ func TestUC27_Intermittent_SendFailures(t *testing.T) {
 		Client:            sqslocal.Client(t),
 		MaxMessages:       10,
 		WaitTimeSeconds:   1,
-		VisibilityTimeout: 10,
+		VisibilityTimeout: 30, // 30s: prevents premature SQS redelivery during retries
 	}, testLogger(t))
 	require.NoError(t, err)
 
@@ -81,35 +81,40 @@ func TestUC27_Intermittent_SendFailures(t *testing.T) {
 
 	start := time.Now()
 	lastLog := time.Now()
-	lrWaitFor(t, pollTimeout, fmt.Sprintf("collector >= %d", msgCount), func() bool {
-		c := collector.count()
+	// Wait for unique payloads (not total count, which includes SQS
+	// redelivery duplicates caused by visibility timeout expiry).
+	lrWaitFor(t, pollTimeout, fmt.Sprintf("unique payloads >= %d", msgCount), func() bool {
+		msgs := collector.getMessages()
+		seen := make(map[string]struct{}, len(msgs))
+		for _, m := range msgs {
+			seen[string(m.Payload)] = struct{}{}
+		}
 		if time.Since(lastLog) > 10*time.Second {
-			t.Logf("UC27: progress collector=%d/%d, elapsed=%v, faulty_calls=%d",
-				c, msgCount, time.Since(start).Truncate(time.Second), faulty.calls.Load())
+			t.Logf("UC27: progress unique=%d/%d total=%d, elapsed=%v, faulty_calls=%d",
+				len(seen), msgCount, len(msgs), time.Since(start).Truncate(time.Second), faulty.calls.Load())
 			lastLog = time.Now()
 		}
-		return c >= msgCount
+		return len(seen) >= msgCount
 	})
 
 	time.Sleep(2 * time.Second)
 
 	got := collector.count()
-	require.GreaterOrEqual(t, got, msgCount,
-		"collector should have at least %d messages, got %d", msgCount, got)
-
-	// Verify unique payloads cover all 3,000 sequence numbers.
 	msgs := collector.getMessages()
 	unique := make(map[string]bool, len(msgs))
 	for _, m := range msgs {
 		unique[string(m.Payload)] = true
 	}
-	require.GreaterOrEqual(t, len(unique), msgCount,
-		"should have at least %d unique payloads", msgCount)
 
-	assert.Equal(t, 0, dlqStore.count(), "DLQ should be empty")
-
+	// Log diagnostics BEFORE assertions so we always get visibility.
 	t.Logf("UC27: delivered %d messages (%d unique), DLQ=%d, sender calls=%d",
 		got, len(unique), dlqStore.count(), faulty.calls.Load())
+	assert.Equal(t, 0, dlqStore.count(), "DLQ should be empty — all errors are transient")
+
+	require.GreaterOrEqual(t, got, msgCount,
+		"collector should have at least %d messages, got %d", msgCount, got)
+	require.GreaterOrEqual(t, len(unique), msgCount,
+		"should have at least %d unique payloads", msgCount)
 }
 
 // =========================================================================

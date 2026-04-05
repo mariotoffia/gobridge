@@ -118,8 +118,8 @@ func (c *ReceiverConfig) applyDefaults() {
 	if c.MaxMessages <= 0 || c.MaxMessages > 10 {
 		c.MaxMessages = 10
 	}
-	if c.WaitTimeSeconds < 0 {
-		c.WaitTimeSeconds = 0
+	if c.WaitTimeSeconds <= 0 {
+		c.WaitTimeSeconds = 20
 	} else if c.WaitTimeSeconds > 20 {
 		c.WaitTimeSeconds = 20
 	}

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mariotoffia/gobridge/bridge/logging"
@@ -102,6 +104,13 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	req.Body = http.MaxBytesReader(w, req.Body, r.cfg.maxBodySize)
+
+	ct := req.Header.Get("Content-Type")
+	if ct != "" && !strings.HasPrefix(ct, "application/json") {
+		writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+		return
+	}
+
 	var body ingressRequest
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -189,8 +198,12 @@ type ingressRequest struct {
 }
 
 func (r *ingressRequest) toEnvelope() (*domain.Envelope, error) {
+	id := r.ID
+	if id == "" {
+		id = generateHTTPEnvelopeID()
+	}
 	env := &domain.Envelope{
-		ID:        r.ID,
+		ID:        id,
 		Subject:   r.Subject,
 		Payload:   []byte(r.Payload),
 		Headers:   r.Headers,
@@ -204,4 +217,11 @@ func (r *ingressRequest) toEnvelope() (*domain.Envelope, error) {
 		env.ExpiresAt = t
 	}
 	return env, nil
+}
+
+var httpIDCounter atomic.Uint64
+
+func generateHTTPEnvelopeID() string {
+	n := httpIDCounter.Add(1)
+	return fmt.Sprintf("http-%d-%d", time.Now().UnixNano(), n)
 }

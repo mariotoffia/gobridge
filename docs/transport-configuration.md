@@ -130,6 +130,20 @@ senders:
 | `retain` | bool | `false` | MQTT retain flag |
 | `timeout` | duration | `30s` | Per-publish timeout |
 
+### Resilience Behavior
+
+- **Publish timeout fallback.** When `timeout` is set to `0` (or omitted and no
+  context deadline is present), the sender applies a 60-second safety-net
+  timeout to prevent indefinite hangs on stalled broker connections.
+- **Case-insensitive error classification.** MQTT error messages from brokers
+  are matched case-insensitively. `"Connection Refused"`, `"CONNECTION REFUSED"`,
+  and `"connection refused"` are all correctly classified as `ErrConnectionLost`,
+  enabling proper retry behavior regardless of broker formatting.
+- **Properties deep-copy for shared sessions.** When multiple receivers share an
+  MQTT session, each handler goroutine receives an independent deep-copy of the
+  MQTT Properties (User properties, CorrelationData, ContentType, etc.),
+  preventing data races under concurrent dispatch.
+
 ### Receiver Options
 
 MQTT receivers have no transport-specific options. Subscriptions are declared
@@ -215,6 +229,25 @@ Either `queue_url` or `queue_name` must be provided.
 | `fifo` | bool | `false` | Mark queue as FIFO |
 
 Either `queue_url` or `queue_name` must be provided.
+
+### Resilience Behavior
+
+- **Long-poll default.** `wait_time_seconds` defaults to `20` (maximum SQS
+  long-poll duration) when not explicitly configured, preventing accidental
+  short-polling which causes excessive API costs.
+- **Receiver initialization timeout.** SQS receiver startup (client creation,
+  queue URL resolution) is bounded by a 30-second timeout, preventing
+  indefinite hangs when AWS credentials or endpoints are unavailable.
+- **Per-poll timeout.** Each `ReceiveMessage` call has an explicit timeout of
+  `WaitTimeSeconds + 10` seconds, protecting against network-level stalls
+  beyond the SQS long-poll window.
+- **Batch error classification.** SQS batch send failures distinguish between
+  server faults (transient, retriable) and sender faults (permanent, not
+  retriable). Messages with malformed payloads are classified as
+  `ErrorRejected` and routed to DLQ instead of being retried indefinitely.
+- **Adaptive auto-extend ticker.** When `Extend()` changes the SQS visibility
+  timeout, the auto-extend ticker interval updates accordingly, preventing
+  excessive or insufficient extend calls.
 
 > **Tip:** Set the SQS native DLQ `maxReceiveCount` to at least
 > `(bridge max retries + 3)` to prevent SQS from moving messages to the DLQ
@@ -404,6 +437,20 @@ The receiver accepts JSON POST with the following fields:
 | `heartbeat_interval` | duration | `30s` | SSE keep-alive heartbeat interval |
 | `api_key` | string | -- | Per-sender API key (SHA-256 constant-time comparison) |
 | `max_clients` | int | 10000 | Maximum concurrent SSE connections |
+
+### Resilience Behavior
+
+- **Content-Type validation.** HTTP ingress validates
+  `Content-Type: application/json` when the header is present, returning
+  `415 Unsupported Media Type` for non-JSON requests. Requests without a
+  `Content-Type` header are accepted (assumed JSON).
+- **Automatic envelope ID.** HTTP ingress generates a unique UUID envelope ID
+  when the request omits the `id` field, ensuring all messages have traceable
+  identifiers through the pipeline.
+- **Forward error classification.** HTTP forwarder responses are classified by
+  status code family: **5xx** responses map to `ErrUnavailable` (transient,
+  retriable) and **4xx** responses map to `ErrForwardFailed` (permanent, not
+  retriable), enabling correct DLQ routing for upstream HTTP failures.
 
 ### Cluster-Aware Routing
 

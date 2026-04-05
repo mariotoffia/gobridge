@@ -1115,6 +1115,20 @@ Catalog of all test functions in the gobridge repository.
 | TestUC39_AckAfterOutboxPersist | validates AckAfterOutboxPersist acks source before drain completes | longrunning | outbox_modes | pass |
 | TestUC40_AdaptiveDrain_Backoff | validates AdaptiveBackoff reduces drain cycles during idle periods | longrunning | outbox_modes | pass |
 | TestUC41_IdempotentOutbox_Persist | validates outbox deduplication prevents duplicates on SQS redelivery | longrunning | outbox_modes | pass |
+<!-- longrunning: gap_tests -->
+| TestGAP_BrokerHardCrash_SharedOutbox | validates SharedOutbox replay after broker hard kill with total state loss | longrunning | broker_resilience_gap | pending |
+| TestGAP_BrokerDisconnect_KeepAliveDetection | validates KeepAlive detection timing and reconnection after broker disconnect | longrunning | broker_resilience_gap | pending |
+| TestGAP_DynamoDBOutage_LeaseRenewal | validates lease stepdown and re-acquire during DynamoDB outage | longrunning | lease_resilience_gap | pending |
+| TestGAP_CircuitBreakerProcessor_Lifecycle | validates circuit breaker closed-open-half_open-closed lifecycle | longrunning | processor_gap | pending |
+| TestGAP_TransformProcessor_JSONPathMapping | validates JSON transform processor with JSONPath field mapping | longrunning | processor_gap | pending |
+| TestGAP_GoroutineLeak_StartStopCycle | validates zero goroutine leaks across multiple start/stop cycles | longrunning | performance_gap | pending |
+| TestGAP_HTTPFullSuite | validates all admin and monitor HTTP endpoints with auth | longrunning | httpapi_gap | pending |
+| TestGAP_HTTPBridgeStartStop | validates bridge start/stop lifecycle via HTTP endpoints | longrunning | httpapi_gap | pending |
+| TestGAP_HTTPDLQManagement | validates DLQ list replay purge via HTTP admin endpoints | longrunning | httpapi_gap | pending |
+| TestGAP_ShutdownWithOutboxInFlight | validates finalDrain completes when Stop called during active draining | longrunning | shutdown_gap | pending |
+| TestGAP_DoubleStopSafety | validates concurrent Stop calls do not panic or deadlock | longrunning | shutdown_gap | pending |
+| TestGAP_FanOutSharedOutbox_ThreeTargets | validates SharedOutbox fan-out to 3 MQTT targets with complete delivery | longrunning | delivery_gap | pending |
+| TestGAP_BackpressureFairness_MixedFastSlow | validates GlobalMaxInFlight fairness between fast and slow routes | longrunning | backpressure_gap | pending |
 <!-- integration: ddb_config_overlay -->
 | TestDDBOverlay_MergesSessionsFromDDB | validates DDB overlay session merges into base config | integration | ddb_config | pass |
 | TestDDBOverlay_ReplacesSessionByID | validates DDB overlay replaces session by matching ID | integration | ddb_config | pass |

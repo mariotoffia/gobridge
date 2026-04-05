@@ -46,6 +46,7 @@ func newDelivery(
 	receiptHandle string,
 	visibilityTimeout int32,
 	autoExtend bool,
+	processingCancel context.CancelFunc,
 	logger *slog.Logger,
 	metrics ports.MetricsExporter,
 ) *sqsDelivery {
@@ -56,13 +57,14 @@ func newDelivery(
 	ctx, cancel := context.WithCancel(parentCtx)
 
 	d := &sqsDelivery{
-		env:           env,
-		client:        client,
-		queueURL:      queueURL,
-		receiptHandle: receiptHandle,
-		logger:        logger,
-		metrics:       metrics,
-		cancel:        cancel,
+		env:              env,
+		client:           client,
+		queueURL:         queueURL,
+		receiptHandle:    receiptHandle,
+		processingCancel: processingCancel,
+		logger:           logger,
+		metrics:          metrics,
+		cancel:           cancel,
 	}
 	d.visibilityTimeout.Store(visibilityTimeout)
 
@@ -177,6 +179,13 @@ func (d *sqsDelivery) stop() {
 		if d.cancel != nil {
 			d.cancel()
 		}
+		// Also cancel the per-delivery context created by the receiver's
+		// Run loop. Without this, each successfully-processed message
+		// leaves a dangling context node in the Go runtime's context tree,
+		// growing monotonically over the receiver's lifetime.
+		if d.processingCancel != nil {
+			d.processingCancel()
+		}
 	})
 }
 
@@ -233,6 +242,11 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 				continue
 			}
 			consecutiveFailures = 0
+			newInterval := time.Duration(vis) * time.Second / 2
+			if newInterval != interval {
+				ticker.Reset(newInterval)
+				interval = newInterval
+			}
 			d.metrics.Counter(domain.MetricSQSAutoExtends, 1,
 				domain.Tag{Key: domain.TagKeyQueueURL, Value: d.queueURL})
 			logging.TraceContext(d.logger, ctx, "sqs: auto-extended",
