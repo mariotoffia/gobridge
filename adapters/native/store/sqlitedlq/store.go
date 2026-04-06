@@ -143,35 +143,111 @@ func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQ
 	return scanEntries(rows)
 }
 
-func (s *Store) Replay(ctx context.Context, entryIDs []string) error {
-	if len(entryIDs) == 0 {
-		return nil
+func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
+	logging.TraceContext(s.logger, ctx, "sqlitedlq: get", "entry_id", id)
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, route_id, binding_id, session_id, source_id, correlation_id,
+		 reason, category, error_code, last_error, envelope_json, failed_at, attempts
+		 FROM dlq WHERE id = ?`, id)
+	if err != nil {
+		return domain.DLQEntry{}, fmt.Errorf("sqlitedlq: get: %w", err)
+	}
+	defer rows.Close()
+
+	entries, err := scanEntries(rows)
+	if err != nil {
+		return domain.DLQEntry{}, err
+	}
+	if len(entries) == 0 {
+		return domain.DLQEntry{}, domain.ErrNotFound.
+			WithMessage("dlq entry not found").
+			With("entryID", id)
 	}
 
-	placeholders := make([]string, len(entryIDs))
-	args := make([]any, 0, len(entryIDs)+1)
-	args = append(args, time.Now().UnixMilli())
-	for i, id := range entryIDs {
+	return entries[0], nil
+}
+
+func (s *Store) Delete(ctx context.Context, ids []string) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	logging.TraceContext(s.logger, ctx, "sqlitedlq: delete", "count", len(ids))
+
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
 		placeholders[i] = "?"
-		args = append(args, id)
+		args[i] = id
 	}
 
 	res, err := s.db.ExecContext(ctx,
-		fmt.Sprintf(
-			`UPDATE dlq SET replayed = ? WHERE id IN (%s) AND replayed = 0`,
+		fmt.Sprintf(`DELETE FROM dlq WHERE id IN (%s)`,
 			strings.Join(placeholders, ",")),
 		args...,
 	)
 	if err != nil {
-		return fmt.Errorf("sqlitedlq: replay: %w", err)
+		return 0, fmt.Errorf("sqlitedlq: delete: %w", err)
 	}
 
 	n, _ := res.RowsAffected()
-	if n == 0 {
-		return domain.ErrNotFound.WithMessage("no unreplayed DLQ entries matched")
+	return int(n), nil
+}
+
+func (s *Store) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error) {
+	logging.TraceContext(s.logger, ctx, "sqlitedlq: delete_by_filter",
+		"route_id", filter.RouteID, "category", filter.Category)
+
+	var clauses []string
+	var args []any
+
+	if filter.RouteID != "" {
+		clauses = append(clauses, "route_id = ?")
+		args = append(args, filter.RouteID)
+	}
+	if filter.Category != "" {
+		clauses = append(clauses, "category = ?")
+		args = append(args, filter.Category)
+	}
+	if !filter.Since.IsZero() {
+		clauses = append(clauses, "failed_at >= ?")
+		args = append(args, filter.Since.UnixMilli())
+	}
+	if !filter.Before.IsZero() {
+		clauses = append(clauses, "failed_at < ?")
+		args = append(args, filter.Before.UnixMilli())
 	}
 
-	return nil
+	if filter.Limit > 0 {
+		// SQLite doesn't always support DELETE...LIMIT, use subquery instead.
+		subquery := "SELECT id FROM dlq"
+		if len(clauses) > 0 {
+			subquery += " WHERE " + strings.Join(clauses, " AND ")
+		}
+		subquery += " ORDER BY failed_at DESC"
+		subquery += fmt.Sprintf(" LIMIT %d", filter.Limit)
+		query := "DELETE FROM dlq WHERE id IN (" + subquery + ")"
+		res, err := s.db.ExecContext(ctx, query, args...)
+		if err != nil {
+			return 0, fmt.Errorf("sqlitedlq: delete_by_filter: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		return int(n), nil
+	}
+
+	query := "DELETE FROM dlq"
+	if len(clauses) > 0 {
+		query += " WHERE " + strings.Join(clauses, " AND ")
+	}
+
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("sqlitedlq: delete_by_filter: %w", err)
+	}
+
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {

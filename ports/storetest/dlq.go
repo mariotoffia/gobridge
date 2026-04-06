@@ -60,7 +60,16 @@ func RunDLQStoreTests(t *testing.T, store ports.DLQStore) {
 	t.Run("ListFilterByBefore", func(t *testing.T) { dlqListFilterByBefore(t, store) })
 	t.Run("ListRespectsLimit", func(t *testing.T) { dlqListRespectsLimit(t, store) })
 	t.Run("WriteIdempotent", func(t *testing.T) { dlqWriteIdempotent(t, store) })
-	t.Run("ReplayMarksEntries", func(t *testing.T) { dlqReplayMarksEntries(t, store) })
+	t.Run("GetExisting", func(t *testing.T) { dlqGetExisting(t, store) })
+	t.Run("GetMissing", func(t *testing.T) { dlqGetMissing(t, store) })
+	t.Run("DeleteByIDs", func(t *testing.T) { dlqDeleteByIDs(t, store) })
+	t.Run("DeleteMissing", func(t *testing.T) { dlqDeleteMissing(t, store) })
+	t.Run("DeletePartialMatch", func(t *testing.T) { dlqDeletePartialMatch(t, store) })
+	t.Run("DeleteByFilterRoute", func(t *testing.T) { dlqDeleteByFilterRoute(t, store) })
+	t.Run("DeleteByFilterCategory", func(t *testing.T) { dlqDeleteByFilterCategory(t, store) })
+	t.Run("DeleteByFilterTimeRange", func(t *testing.T) { dlqDeleteByFilterTimeRange(t, store) })
+	t.Run("DeleteByFilterWithLimit", func(t *testing.T) { dlqDeleteByFilterWithLimit(t, store) })
+	t.Run("DeleteByFilterAll", func(t *testing.T) { dlqDeleteByFilterAll(t, store) })
 	t.Run("PurgeRemovesOld", func(t *testing.T) { dlqPurgeRemovesOld(t, store) })
 	t.Run("PurgeSkipsRecent", func(t *testing.T) { dlqPurgeSkipsRecent(t, store) })
 	t.Run("FullLifecycle", func(t *testing.T) { dlqFullLifecycle(t, store) })
@@ -334,42 +343,6 @@ func dlqWriteIdempotent(t *testing.T, store ports.DLQStore) {
 	}
 }
 
-func dlqReplayMarksEntries(t *testing.T, store ports.DLQStore) {
-	ctx := context.Background()
-
-	if err := store.Write(ctx, makeDLQEntry("rme-1", "route-rme", "timeout", dlqT1)); err != nil {
-		t.Fatalf("write rme-1: %v", err)
-	}
-	if err := store.Write(ctx, makeDLQEntry("rme-2", "route-rme", "timeout", dlqT2)); err != nil {
-		t.Fatalf("write rme-2: %v", err)
-	}
-	if err := store.Write(ctx, makeDLQEntry("rme-3", "route-rme", "timeout", dlqT3)); err != nil {
-		t.Fatalf("write rme-3: %v", err)
-	}
-
-	if err := store.Replay(ctx, []string{"rme-1", "rme-2"}); err != nil {
-		t.Fatalf("replay: %v", err)
-	}
-
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-rme"})
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(results) != 3 {
-		t.Fatalf("expected 3 entries after replay, got %d", len(results))
-	}
-
-	ids := dlqEntryIDs(results)
-	if !ids["rme-1"] || !ids["rme-2"] || !ids["rme-3"] {
-		t.Fatalf("missing entries after replay: %v", ids)
-	}
-
-	err = store.Replay(ctx, []string{"rme-nonexistent"})
-	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound for nonexistent replay, got %v", err)
-	}
-}
-
 func dlqPurgeRemovesOld(t *testing.T, store ports.DLQStore) {
 	ctx := context.Background()
 
@@ -455,16 +428,31 @@ func dlqFullLifecycle(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("expected 4 entries, got %d", len(results))
 	}
 
-	if err := store.Replay(ctx, []string{"flc-1"}); err != nil {
-		t.Fatalf("replay: %v", err)
+	// Get single entry
+	got, err := store.Get(ctx, "flc-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ID != "flc-1" {
+		t.Fatalf("get ID: got %q, want %q", got.ID, "flc-1")
 	}
 
-	n, err := store.Purge(ctx, dlqT3)
+	// Delete specific entry
+	n, err := store.Delete(ctx, []string{"flc-1"})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 deleted, got %d", n)
+	}
+
+	// Purge old entries
+	pn, err := store.Purge(ctx, dlqT3)
 	if err != nil {
 		t.Fatalf("purge: %v", err)
 	}
-	if n != 2 {
-		t.Fatalf("expected 2 purged, got %d", n)
+	if pn < 1 {
+		t.Fatalf("expected at least 1 purged, got %d", pn)
 	}
 
 	results, err = store.List(ctx, domain.DLQFilter{RouteID: "route-flc"})

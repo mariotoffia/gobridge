@@ -34,7 +34,9 @@ type OutboxStore interface {
 // DLQStore manages dead-letter queue entries for failed or rejected messages.
 type DLQStore interface {
 	Write(ctx context.Context, entry domain.DLQEntry) error
+	Get(ctx context.Context, id string) (domain.DLQEntry, error)
 	List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error)
-	Replay(ctx context.Context, entryIDs []string) error
+	Delete(ctx context.Context, ids []string) (int, error)
+	DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error)
 	Purge(ctx context.Context, before time.Time) (int, error)
 }

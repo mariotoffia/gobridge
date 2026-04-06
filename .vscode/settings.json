@@ -17,6 +17,7 @@
       "omitzero",
       "paho",
       "Reconfig",
+      "redrive",
       "retryable",
       "servicebus",
       "servicebustests"

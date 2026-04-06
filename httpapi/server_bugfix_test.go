@@ -297,8 +297,14 @@ func (s *captureDLQStore) List(_ context.Context, _ domain.DLQFilter) ([]domain.
 	return []domain.DLQEntry{}, nil
 }
 
-func (s *captureDLQStore) Replay(_ context.Context, _ []string) error {
-	return nil
+func (s *captureDLQStore) Get(_ context.Context, _ string) (domain.DLQEntry, error) {
+	return domain.DLQEntry{}, domain.ErrNotFound
+}
+
+func (s *captureDLQStore) Delete(_ context.Context, _ []string) (int, error) { return 0, nil }
+
+func (s *captureDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error) {
+	return 0, nil
 }
 
 func (s *captureDLQStore) Purge(_ context.Context, before time.Time) (int, error) {

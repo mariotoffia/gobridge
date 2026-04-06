@@ -43,6 +43,7 @@ build-azure: ## Build Azure module only
 test: ## Run unit tests only (no Docker, integration tests skipped)
 	@echo "Running unit tests..."
 	go test -short -race -timeout 120s ./...
+	go test -short -race -timeout 120s ./httpapi/...
 
 test-integration: ## Run all tests including integration (requires Docker)
 	@echo "Running all tests (unit + integration)..."

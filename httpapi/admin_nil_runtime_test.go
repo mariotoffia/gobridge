@@ -93,10 +93,22 @@ func TestAdminHandlers_NilRuntime_Return503(t *testing.T) {
 			path:   "/api/v1/admin/dlq/messages",
 		},
 		{
-			name:   "POST /dlq/replay",
+			name:   "POST /dlq/redrive",
 			method: http.MethodPost,
-			path:   "/api/v1/admin/dlq/replay",
+			path:   "/api/v1/admin/dlq/redrive",
 			body:   `{"ids":["msg-1"]}`,
+		},
+		{
+			name:   "POST /dlq/delete",
+			method: http.MethodPost,
+			path:   "/api/v1/admin/dlq/delete",
+			body:   `{"ids":["msg-1"]}`,
+		},
+		{
+			name:   "POST /dlq/delete-by-filter",
+			method: http.MethodPost,
+			path:   "/api/v1/admin/dlq/delete-by-filter",
+			body:   `{"route_id":"r1","confirm_delete_all":true}`,
 		},
 		{
 			name:   "POST /dlq/purge",

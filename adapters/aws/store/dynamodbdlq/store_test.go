@@ -302,31 +302,53 @@ func TestWriteIdempotent(t *testing.T) {
 	}
 }
 
-// Verifies Replay succeeds for multiple IDs and entries remain listable.
-func TestReplayMarksEntries(t *testing.T) {
-	store := newStore(t, "dlq-replay")
+// Verifies Delete removes entries by ID and reports the count deleted.
+func TestDeleteRemovesEntries(t *testing.T) {
+	store := newStore(t, "dlq-delete")
 	ctx := context.Background()
 	base := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
 
 	for _, e := range []domain.DLQEntry{
-		makeEntry("rpl-1", "route-A", "timeout", base),
-		makeEntry("rpl-2", "route-A", "timeout", base.Add(1*time.Minute)),
+		makeEntry("del-1", "route-A", "timeout", base),
+		makeEntry("del-2", "route-A", "timeout", base.Add(1*time.Minute)),
+		makeEntry("del-3", "route-A", "timeout", base.Add(2*time.Minute)),
 	} {
 		if err := store.Write(ctx, e); err != nil {
 			t.Fatalf("write %q: %v", e.ID, err)
 		}
 	}
 
-	if err := store.Replay(ctx, []string{"rpl-1", "rpl-2"}); err != nil {
-		t.Fatalf("replay: %v", err)
+	n, err := store.Delete(ctx, []string{"del-1", "del-2"})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("delete count: got %d, want 2", n)
 	}
 
 	entries, err := store.List(ctx, domain.DLQFilter{})
 	if err != nil {
-		t.Fatalf("list after replay: %v", err)
+		t.Fatalf("list after delete: %v", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 entries after replay, got %d", len(entries))
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry after delete, got %d", len(entries))
+	}
+	if entries[0].ID != "del-3" {
+		t.Errorf("remaining entry: got %q, want %q", entries[0].ID, "del-3")
+	}
+}
+
+// Verifies Delete silently skips missing IDs and returns count=0 without error.
+func TestDeleteMissingIDsNoError(t *testing.T) {
+	store := newStore(t, "dlq-delmiss")
+	ctx := context.Background()
+
+	n, err := store.Delete(ctx, []string{"no-such-id-1", "no-such-id-2"})
+	if err != nil {
+		t.Fatalf("delete missing: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("delete count for missing IDs: got %d, want 0", n)
 	}
 }
 
@@ -407,7 +429,7 @@ func TestPurgeSkipsRecent(t *testing.T) {
 	}
 }
 
-// Verifies write, list, replay, and purge interact correctly in a combined scenario.
+// Verifies write, list, delete, and purge interact correctly in a combined scenario.
 func TestFullLifecycle(t *testing.T) {
 	store := newStore(t, "dlq-lifecycle")
 	ctx := context.Background()
@@ -436,17 +458,23 @@ func TestFullLifecycle(t *testing.T) {
 		t.Fatalf("expected 4 entries, got %d", len(entries))
 	}
 
-	if err := store.Replay(ctx, []string{"lc-1", "lc-3"}); err != nil {
-		t.Fatalf("replay: %v", err)
+	// Delete lc-1 explicitly; lc-2 will be removed by the subsequent purge.
+	n, err := store.Delete(ctx, []string{"lc-1"})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("delete count: got %d, want 1", n)
 	}
 
+	// Purge entries before Jan 13 — only lc-2 (Jan 12) remains eligible.
 	cutoff := time.Date(2024, 1, 13, 0, 0, 0, 0, time.UTC)
-	n, err := store.Purge(ctx, cutoff)
+	n, err = store.Purge(ctx, cutoff)
 	if err != nil {
 		t.Fatalf("purge: %v", err)
 	}
-	if n != 2 {
-		t.Fatalf("purged count: got %d, want 2", n)
+	if n != 1 {
+		t.Fatalf("purged count: got %d, want 1", n)
 	}
 
 	entries, err = store.List(ctx, domain.DLQFilter{})

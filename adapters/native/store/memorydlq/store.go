@@ -7,23 +7,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 var _ ports.DLQStore = (*Store)(nil)
 
-type dlqEntry struct {
-	entry      domain.DLQEntry
-	replayedAt time.Time
-}
-
 // Store implements ports.DLQStore in memory for tests and
 // single-process mode. It is not safe for clustered production deployments.
 type Store struct {
 	mu      sync.Mutex
-	entries map[string]*dlqEntry
+	entries map[string]domain.DLQEntry
 	now     func() time.Time
 	logger  *slog.Logger
 }
@@ -44,7 +39,7 @@ func WithClock(fn func() time.Time) Option {
 // NewStore creates a new in-memory DLQStore.
 func NewStore(opts ...Option) *Store {
 	s := &Store{
-		entries: make(map[string]*dlqEntry),
+		entries: make(map[string]domain.DLQEntry),
 		now:     time.Now,
 	}
 	for _, o := range opts {
@@ -65,8 +60,24 @@ func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
 			With("entryID", entry.ID)
 	}
 
-	s.entries[entry.ID] = &dlqEntry{entry: entry}
+	s.entries[entry.ID] = entry
 	return nil
+}
+
+func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
+	logging.TraceContext(s.logger, ctx, "memorydlq: get", "entryID", id)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.entries[id]
+	if !ok {
+		return domain.DLQEntry{}, domain.ErrNotFound.
+			WithMessage("dlq entry not found").
+			With("entryID", id)
+	}
+
+	return e, nil
 }
 
 func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error) {
@@ -78,19 +89,9 @@ func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQ
 
 	var result []domain.DLQEntry
 	for _, e := range s.entries {
-		if filter.RouteID != "" && e.entry.RouteID != filter.RouteID {
-			continue
+		if matchesFilter(e, filter) {
+			result = append(result, e)
 		}
-		if filter.Category != "" && e.entry.Category != filter.Category {
-			continue
-		}
-		if !filter.Since.IsZero() && e.entry.FailedAt.Before(filter.Since) {
-			continue
-		}
-		if !filter.Before.IsZero() && !e.entry.FailedAt.Before(filter.Before) {
-			continue
-		}
-		result = append(result, e.entry)
 	}
 
 	sort.Slice(result, func(i, j int) bool {
@@ -104,24 +105,51 @@ func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQ
 	return result, nil
 }
 
-func (s *Store) Replay(_ context.Context, entryIDs []string) error {
+func (s *Store) Delete(ctx context.Context, ids []string) (int, error) {
+	logging.TraceContext(s.logger, ctx, "memorydlq: delete", "count", len(ids))
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, id := range entryIDs {
-		if _, ok := s.entries[id]; !ok {
-			return domain.ErrNotFound.
-				WithMessage("dlq entry not found").
-				With("entryID", id)
+	var count int
+	for _, id := range ids {
+		if _, ok := s.entries[id]; ok {
+			delete(s.entries, id)
+			count++
 		}
 	}
 
-	now := s.now()
-	for _, id := range entryIDs {
-		s.entries[id].replayedAt = now
+	return count, nil
+}
+
+func (s *Store) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error) {
+	logging.TraceContext(s.logger, ctx, "memorydlq: delete_by_filter",
+		"routeID", filter.RouteID, "category", filter.Category)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Collect matching IDs, sorted by FailedAt descending (newest first)
+	// to match SQLite/DynamoDB ordering when Limit is applied.
+	var matched []domain.DLQEntry
+	for _, e := range s.entries {
+		if matchesFilter(e, filter) {
+			matched = append(matched, e)
+		}
 	}
 
-	return nil
+	if filter.Limit > 0 && len(matched) > filter.Limit {
+		sort.Slice(matched, func(i, j int) bool {
+			return matched[i].FailedAt.After(matched[j].FailedAt)
+		})
+		matched = matched[:filter.Limit]
+	}
+
+	for _, e := range matched {
+		delete(s.entries, e.ID)
+	}
+
+	return len(matched), nil
 }
 
 func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
@@ -132,11 +160,27 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
 
 	var count int
 	for id, e := range s.entries {
-		if e.entry.FailedAt.Before(before) {
+		if e.FailedAt.Before(before) {
 			delete(s.entries, id)
 			count++
 		}
 	}
 
 	return count, nil
+}
+
+func matchesFilter(e domain.DLQEntry, filter domain.DLQFilter) bool {
+	if filter.RouteID != "" && e.RouteID != filter.RouteID {
+		return false
+	}
+	if filter.Category != "" && e.Category != filter.Category {
+		return false
+	}
+	if !filter.Since.IsZero() && e.FailedAt.Before(filter.Since) {
+		return false
+	}
+	if !filter.Before.IsZero() && !e.FailedAt.Before(filter.Before) {
+		return false
+	}
+	return true
 }

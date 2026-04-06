@@ -186,8 +186,12 @@ func (s *fakeDLQStore) List(_ context.Context, _ domain.DLQFilter) ([]domain.DLQ
 	return nil, nil
 }
 
-func (s *fakeDLQStore) Replay(_ context.Context, _ []string) error        { return nil }
-func (s *fakeDLQStore) Purge(_ context.Context, _ time.Time) (int, error) { return 0, nil }
+func (s *fakeDLQStore) Get(_ context.Context, _ string) (domain.DLQEntry, error) {
+	return domain.DLQEntry{}, domain.ErrNotFound
+}
+func (s *fakeDLQStore) Delete(_ context.Context, _ []string) (int, error)                 { return 0, nil }
+func (s *fakeDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error) { return 0, nil }
+func (s *fakeDLQStore) Purge(_ context.Context, _ time.Time) (int, error)                 { return 0, nil }
 
 // ---------------------------------------------------------------------------
 // Helpers

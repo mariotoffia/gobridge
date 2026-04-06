@@ -278,8 +278,8 @@ func TestWriteIdempotent(t *testing.T) {
 	}
 }
 
-// Verifies first Replay succeeds and re-replaying the same ID returns ErrNotFound.
-func TestReplayMarksEntries(t *testing.T) {
+// Verifies Delete removes entries and returns the correct count.
+func TestDeleteRemovesEntries(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
 
@@ -287,24 +287,32 @@ func TestReplayMarksEntries(t *testing.T) {
 	s.Write(ctx, makeEntry("rp1", "route-A", "cat", now))
 	s.Write(ctx, makeEntry("rp2", "route-A", "cat", now))
 
-	if err := s.Replay(ctx, []string{"rp1"}); err != nil {
-		t.Fatalf("Replay: %v", err)
+	count, err := s.Delete(ctx, []string{"rp1"})
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("Delete count: got %d, want 1", count)
 	}
 
 	got, err := s.List(ctx, domain.DLQFilter{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 entries after replay (replay doesn't delete), got %d", len(got))
+	if len(got) != 1 {
+		t.Fatalf("expected 1 entry after delete, got %d", len(got))
+	}
+	if got[0].ID != "rp2" {
+		t.Fatalf("remaining entry ID: got %q, want %q", got[0].ID, "rp2")
 	}
 
-	err = s.Replay(ctx, []string{"rp1"})
-	if err == nil {
-		t.Fatal("expected error replaying already-replayed entry, got nil")
+	// Deleting the same ID again silently returns count=0, no error.
+	count, err = s.Delete(ctx, []string{"rp1"})
+	if err != nil {
+		t.Fatalf("second Delete: unexpected error %v", err)
 	}
-	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound on re-replay, got %v", err)
+	if count != 0 {
+		t.Fatalf("second Delete count: got %d, want 0", count)
 	}
 }
 
@@ -368,37 +376,42 @@ func TestPurgeSkipsRecent(t *testing.T) {
 	}
 }
 
-// Demonstrates write, list, replay idempotency, and purge clearing persisted rows.
+// Demonstrates write, list, delete, and purge clearing persisted rows.
 func TestFullLifecycle(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
 
 	past := time.Now().Add(-2 * time.Hour).Truncate(time.Millisecond)
-	entry := makeEntry("lc1", "route-A", "timeout", past)
-
-	if err := s.Write(ctx, entry); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
+	s.Write(ctx, makeEntry("lc1", "route-A", "timeout", past))
+	s.Write(ctx, makeEntry("lc2", "route-A", "timeout", past))
 
 	got, err := s.List(ctx, domain.DLQFilter{})
 	if err != nil {
 		t.Fatalf("List after write: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("expected 1 entry after write, got %d", len(got))
+	if len(got) != 2 {
+		t.Fatalf("expected 2 entries after write, got %d", len(got))
 	}
 
-	if err := s.Replay(ctx, []string{"lc1"}); err != nil {
-		t.Fatalf("Replay: %v", err)
+	count, err := s.Delete(ctx, []string{"lc1"})
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("Delete count: got %d, want 1", count)
 	}
 
-	err = s.Replay(ctx, []string{"lc1"})
-	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound on second replay, got %v", err)
+	// Deleting the same ID again returns count=0, no error.
+	count, err = s.Delete(ctx, []string{"lc1"})
+	if err != nil {
+		t.Fatalf("second Delete: unexpected error %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("second Delete count: got %d, want 0", count)
 	}
 
 	cutoff := time.Now().Add(-1 * time.Hour)
-	count, err := s.Purge(ctx, cutoff)
+	count, err = s.Purge(ctx, cutoff)
 	if err != nil {
 		t.Fatalf("Purge: %v", err)
 	}
@@ -547,17 +560,17 @@ func TestListOrderByFailedAtDesc(t *testing.T) {
 	}
 }
 
-// Verifies Replay returns ErrNotFound for unknown IDs.
-func TestReplayNonExistentEntry(t *testing.T) {
+// Verifies Delete silently skips non-existent IDs and returns count=0.
+func TestDeleteNonExistentEntry(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
 
-	err := s.Replay(ctx, []string{"no-such-id"})
-	if err == nil {
-		t.Fatal("expected error replaying non-existent entry, got nil")
+	count, err := s.Delete(ctx, []string{"no-such-id"})
+	if err != nil {
+		t.Fatalf("Delete: unexpected error %v", err)
 	}
-	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound, got %v", err)
+	if count != 0 {
+		t.Fatalf("Delete count: got %d, want 0", count)
 	}
 }
 

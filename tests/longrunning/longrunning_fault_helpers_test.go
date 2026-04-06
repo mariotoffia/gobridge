@@ -121,8 +121,16 @@ func (s *slowDLQStore) List(ctx context.Context, f domain.DLQFilter) ([]domain.D
 	return s.inner.List(ctx, f)
 }
 
-func (s *slowDLQStore) Replay(ctx context.Context, ids []string) error {
-	return s.inner.Replay(ctx, ids)
+func (s *slowDLQStore) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
+	return s.inner.Get(ctx, id)
+}
+
+func (s *slowDLQStore) Delete(ctx context.Context, ids []string) (int, error) {
+	return s.inner.Delete(ctx, ids)
+}
+
+func (s *slowDLQStore) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error) {
+	return s.inner.DeleteByFilter(ctx, filter)
 }
 
 func (s *slowDLQStore) Purge(ctx context.Context, before time.Time) (int, error) {
@@ -130,7 +138,7 @@ func (s *slowDLQStore) Purge(ctx context.Context, before time.Time) (int, error)
 }
 
 // ---------------------------------------------------------------------------
-// replayableDLQStore — extends lrDLQStore with working List and Replay
+// replayableDLQStore — extends lrDLQStore with working List and Delete
 // ---------------------------------------------------------------------------
 
 type replayableDLQStore struct {
@@ -155,7 +163,7 @@ func (s *replayableDLQStore) List(_ context.Context, filter domain.DLQFilter) ([
 	return result, nil
 }
 
-func (s *replayableDLQStore) Replay(_ context.Context, ids []string) error {
+func (s *replayableDLQStore) Delete(_ context.Context, ids []string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idSet := make(map[string]struct{}, len(ids))
@@ -163,13 +171,16 @@ func (s *replayableDLQStore) Replay(_ context.Context, ids []string) error {
 		idSet[id] = struct{}{}
 	}
 	var remaining []domain.DLQEntry
+	var count int
 	for _, e := range s.entries {
-		if _, ok := idSet[e.ID]; !ok {
+		if _, ok := idSet[e.ID]; ok {
+			count++
+		} else {
 			remaining = append(remaining, e)
 		}
 	}
 	s.entries = remaining
-	return nil
+	return count, nil
 }
 
 // ---------------------------------------------------------------------------

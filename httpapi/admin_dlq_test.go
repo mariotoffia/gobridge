@@ -1,0 +1,398 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// ═══════════════════════════════════════════════════════════════════
+// Mock DLQ Store
+//
+// Configurable per-method via function fields. Each method delegates
+// to its function if non-nil, otherwise returns a safe default.
+// ═══════════════════════════════════════════════════════════════════
+
+type mockDLQStore struct {
+	getFunc          func(ctx context.Context, id string) (domain.DLQEntry, error)
+	listFunc         func(ctx context.Context, f domain.DLQFilter) ([]domain.DLQEntry, error)
+	deleteFunc       func(ctx context.Context, ids []string) (int, error)
+	deleteByFilterFn func(ctx context.Context, f domain.DLQFilter) (int, error)
+	writeFunc        func(ctx context.Context, e domain.DLQEntry) error
+	purgeFunc        func(ctx context.Context, before time.Time) (int, error)
+}
+
+func (m *mockDLQStore) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
+	if m.getFunc != nil {
+		return m.getFunc(ctx, id)
+	}
+	return domain.DLQEntry{}, domain.ErrNotFound
+}
+func (m *mockDLQStore) List(ctx context.Context, f domain.DLQFilter) ([]domain.DLQEntry, error) {
+	if m.listFunc != nil {
+		return m.listFunc(ctx, f)
+	}
+	return nil, nil
+}
+func (m *mockDLQStore) Delete(ctx context.Context, ids []string) (int, error) {
+	if m.deleteFunc != nil {
+		return m.deleteFunc(ctx, ids)
+	}
+	return len(ids), nil
+}
+func (m *mockDLQStore) DeleteByFilter(ctx context.Context, f domain.DLQFilter) (int, error) {
+	if m.deleteByFilterFn != nil {
+		return m.deleteByFilterFn(ctx, f)
+	}
+	return 0, nil
+}
+func (m *mockDLQStore) Write(ctx context.Context, e domain.DLQEntry) error {
+	if m.writeFunc != nil {
+		return m.writeFunc(ctx, e)
+	}
+	return nil
+}
+func (m *mockDLQStore) Purge(ctx context.Context, before time.Time) (int, error) {
+	if m.purgeFunc != nil {
+		return m.purgeFunc(ctx, before)
+	}
+	return 0, nil
+}
+
+func dlqServer(store *mockDLQStore) (*Server, *http.ServeMux) {
+	rt := runtime.New(runtime.WithInstanceID("dlq-test"), runtime.WithDLQStore(store))
+	s := New(rt, testConfig())
+	mux := http.NewServeMux()
+	s.registerAdminRoutes(mux)
+	return s, mux
+}
+
+func dlqReq(method, path, body string) *http.Request {
+	var r *http.Request
+	if body != "" {
+		r = httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+	} else {
+		r = httptest.NewRequest(method, path, nil)
+	}
+	r.Header.Set("X-API-Key", "test-secret-key-0123456789")
+	return r
+}
+
+func dlqDo(mux *http.ServeMux, req *http.Request) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// View conversion tests
+// ═══════════════════════════════════════════════════════════════════
+
+// TestToDLQEntryView_MapsAllFields validates that toDLQEntryView
+// correctly maps all domain fields including Subject from Envelope.
+func TestToDLQEntryView_MapsAllFields(t *testing.T) {
+	e := domain.DLQEntry{
+		ID: "v-1", RouteID: "r1", BindingID: "b1", SessionID: "s1",
+		SourceID: "src1", CorrelationID: "c1", Reason: "timeout",
+		Category: "transient", ErrorCode: "TIMEOUT", LastError: "dial err",
+		FailedAt: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC), Attempts: 5,
+		Envelope: domain.Envelope{Subject: "test/topic"},
+	}
+	v := toDLQEntryView(e)
+	assert.Equal(t, "v-1", v.ID)
+	assert.Equal(t, "r1", v.RouteID)
+	assert.Equal(t, "test/topic", v.Subject)
+	assert.Equal(t, "transient", v.Category)
+	assert.Equal(t, 5, v.Attempts)
+}
+
+// TestToDLQEntryDetailView_IncludesBase64Payload validates that the
+// detail view includes the envelope payload as base64.
+func TestToDLQEntryDetailView_IncludesBase64Payload(t *testing.T) {
+	e := domain.DLQEntry{
+		Envelope: domain.Envelope{Payload: []byte(`{"msg":"hello"}`)},
+	}
+	v := toDLQEntryDetailView(e)
+	decoded, err := base64.StdEncoding.DecodeString(v.Payload)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"msg":"hello"}`, string(decoded))
+}
+
+// TestToDLQEntryDetailView_EmptyPayload validates empty payload produces
+// empty base64 string.
+func TestToDLQEntryDetailView_EmptyPayload(t *testing.T) {
+	v := toDLQEntryDetailView(domain.DLQEntry{})
+	assert.Equal(t, "", v.Payload)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// GET /dlq/messages/{id}
+// ═══════════════════════════════════════════════════════════════════
+
+// TestHandleDLQMessageByID_ReturnsEntry validates a successful get-by-id
+// returns 200 with all dlqEntryDetailView fields including base64 payload.
+func TestHandleDLQMessageByID_ReturnsEntry(t *testing.T) {
+	entry := domain.DLQEntry{
+		ID: "msg-1", RouteID: "r1", Category: "timeout",
+		Envelope: domain.Envelope{
+			Subject: "test/sub",
+			Payload: []byte("binary-data"),
+		},
+		FailedAt: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC),
+	}
+	store := &mockDLQStore{
+		getFunc: func(_ context.Context, id string) (domain.DLQEntry, error) {
+			if id == "msg-1" {
+				return entry, nil
+			}
+			return domain.DLQEntry{}, domain.ErrNotFound
+		},
+	}
+	_, mux := dlqServer(store)
+
+	rec := dlqDo(mux, dlqReq("GET", "/api/v1/admin/dlq/messages/msg-1", ""))
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, "msg-1", body["id"])
+	assert.Equal(t, "r1", body["route_id"])
+	assert.Equal(t, "test/sub", body["subject"])
+	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("binary-data")), body["payload"])
+}
+
+// TestHandleDLQMessageByID_NotFound validates 404 for missing entry.
+func TestHandleDLQMessageByID_NotFound(t *testing.T) {
+	_, mux := dlqServer(&mockDLQStore{})
+	rec := dlqDo(mux, dlqReq("GET", "/api/v1/admin/dlq/messages/nonexistent", ""))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// TestHandleDLQMessageByID_StoreError validates 500 for non-ErrNotFound errors.
+func TestHandleDLQMessageByID_StoreError(t *testing.T) {
+	store := &mockDLQStore{
+		getFunc: func(_ context.Context, _ string) (domain.DLQEntry, error) {
+			return domain.DLQEntry{}, fmt.Errorf("connection lost")
+		},
+	}
+	_, mux := dlqServer(store)
+	rec := dlqDo(mux, dlqReq("GET", "/api/v1/admin/dlq/messages/any", ""))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// POST /dlq/delete
+// ═══════════════════════════════════════════════════════════════════
+
+// TestHandleDLQDeleteByIDs_Success validates successful deletion returns
+// the count of deleted entries.
+func TestHandleDLQDeleteByIDs_Success(t *testing.T) {
+	store := &mockDLQStore{
+		deleteFunc: func(_ context.Context, ids []string) (int, error) {
+			return len(ids), nil
+		},
+	}
+	_, mux := dlqServer(store)
+
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete", `{"ids":["a","b"]}`))
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var body map[string]int
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, 2, body["deleted"])
+}
+
+// TestHandleDLQDeleteByIDs_EmptyIDs validates 400 for empty id array.
+func TestHandleDLQDeleteByIDs_EmptyIDs(t *testing.T) {
+	_, mux := dlqServer(&mockDLQStore{})
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete", `{"ids":[]}`))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandleDLQDeleteByIDs_ExceedsMax validates 400 when exceeding 1000 IDs.
+func TestHandleDLQDeleteByIDs_ExceedsMax(t *testing.T) {
+	ids := make([]string, 1001)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("id-%d", i)
+	}
+	body, _ := json.Marshal(map[string][]string{"ids": ids})
+	_, mux := dlqServer(&mockDLQStore{})
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete", string(body)))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandleDLQDeleteByIDs_InvalidBody validates 400 for non-JSON body.
+func TestHandleDLQDeleteByIDs_InvalidBody(t *testing.T) {
+	_, mux := dlqServer(&mockDLQStore{})
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete", "not-json"))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandleDLQDeleteByIDs_StoreError validates 500 when store fails.
+func TestHandleDLQDeleteByIDs_StoreError(t *testing.T) {
+	store := &mockDLQStore{
+		deleteFunc: func(_ context.Context, _ []string) (int, error) {
+			return 0, fmt.Errorf("db down")
+		},
+	}
+	_, mux := dlqServer(store)
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete", `{"ids":["a"]}`))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// POST /dlq/delete-by-filter
+// ═══════════════════════════════════════════════════════════════════
+
+// TestHandleDLQDeleteByFilter_ByRouteID validates filtering by route_id.
+func TestHandleDLQDeleteByFilter_ByRouteID(t *testing.T) {
+	var captured domain.DLQFilter
+	store := &mockDLQStore{
+		deleteByFilterFn: func(_ context.Context, f domain.DLQFilter) (int, error) {
+			captured = f
+			return 3, nil
+		},
+	}
+	_, mux := dlqServer(store)
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete-by-filter",
+		`{"route_id":"r1"}`))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "r1", captured.RouteID)
+
+	var body map[string]int
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, 3, body["deleted"])
+}
+
+// TestHandleDLQDeleteByFilter_EmptyRequiresConfirm validates the safety
+// guard: empty filter without confirm_delete_all returns 400.
+func TestHandleDLQDeleteByFilter_EmptyRequiresConfirm(t *testing.T) {
+	_, mux := dlqServer(&mockDLQStore{})
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete-by-filter", `{}`))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "confirm_delete_all")
+}
+
+// TestHandleDLQDeleteByFilter_EmptyWithConfirm validates that
+// confirm_delete_all=true allows unfiltered delete.
+func TestHandleDLQDeleteByFilter_EmptyWithConfirm(t *testing.T) {
+	store := &mockDLQStore{
+		deleteByFilterFn: func(_ context.Context, _ domain.DLQFilter) (int, error) {
+			return 42, nil
+		},
+	}
+	_, mux := dlqServer(store)
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete-by-filter",
+		`{"confirm_delete_all":true}`))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var body map[string]int
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, 42, body["deleted"])
+}
+
+// TestHandleDLQDeleteByFilter_InvalidSince validates 400 for bad timestamp.
+func TestHandleDLQDeleteByFilter_InvalidSince(t *testing.T) {
+	_, mux := dlqServer(&mockDLQStore{})
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete-by-filter",
+		`{"since":"not-a-date"}`))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandleDLQDeleteByFilter_InvalidBefore validates 400 for bad timestamp.
+func TestHandleDLQDeleteByFilter_InvalidBefore(t *testing.T) {
+	_, mux := dlqServer(&mockDLQStore{})
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete-by-filter",
+		`{"before":"not-a-date"}`))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandleDLQDeleteByFilter_StoreError validates 500 on store failure.
+func TestHandleDLQDeleteByFilter_StoreError(t *testing.T) {
+	store := &mockDLQStore{
+		deleteByFilterFn: func(_ context.Context, _ domain.DLQFilter) (int, error) {
+			return 0, fmt.Errorf("db error")
+		},
+	}
+	_, mux := dlqServer(store)
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete-by-filter",
+		`{"route_id":"r1"}`))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// TestHandleDLQDeleteByFilter_WithTimeRange validates Since and Before
+// are correctly parsed and passed to the store.
+func TestHandleDLQDeleteByFilter_WithTimeRange(t *testing.T) {
+	var captured domain.DLQFilter
+	store := &mockDLQStore{
+		deleteByFilterFn: func(_ context.Context, f domain.DLQFilter) (int, error) {
+			captured = f
+			return 1, nil
+		},
+	}
+	_, mux := dlqServer(store)
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete-by-filter",
+		`{"route_id":"r1","since":"2024-01-01T00:00:00Z","before":"2024-06-01T00:00:00Z"}`))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "r1", captured.RouteID)
+	assert.False(t, captured.Since.IsZero())
+	assert.False(t, captured.Before.IsZero())
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// GET /dlq/messages (pagination)
+// ═══════════════════════════════════════════════════════════════════
+
+// TestHandleDLQMessages_Pagination validates total reflects pre-slice
+// count and offset/limit are applied correctly.
+func TestHandleDLQMessages_Pagination(t *testing.T) {
+	entries := make([]domain.DLQEntry, 10)
+	for i := range entries {
+		entries[i] = domain.DLQEntry{
+			ID:       fmt.Sprintf("p-%d", i),
+			FailedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Hour),
+		}
+	}
+	store := &mockDLQStore{
+		listFunc: func(_ context.Context, _ domain.DLQFilter) ([]domain.DLQEntry, error) {
+			return entries, nil
+		},
+	}
+	_, mux := dlqServer(store)
+
+	rec := dlqDo(mux, dlqReq("GET", "/api/v1/admin/dlq/messages?limit=3&offset=2", ""))
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, float64(10), body["total"])
+	assert.Equal(t, float64(3), body["limit"])
+	assert.Equal(t, float64(2), body["offset"])
+	msgs := body["messages"].([]any)
+	assert.Len(t, msgs, 3)
+}
+
+// TestHandleDLQMessages_InvalidLimit validates 400 for non-integer limit.
+func TestHandleDLQMessages_InvalidLimit(t *testing.T) {
+	_, mux := dlqServer(&mockDLQStore{})
+	rec := dlqDo(mux, dlqReq("GET", "/api/v1/admin/dlq/messages?limit=abc", ""))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandleDLQMessages_InvalidOffset validates 400 for negative offset.
+func TestHandleDLQMessages_InvalidOffset(t *testing.T) {
+	_, mux := dlqServer(&mockDLQStore{})
+	rec := dlqDo(mux, dlqReq("GET", "/api/v1/admin/dlq/messages?offset=-1", ""))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}

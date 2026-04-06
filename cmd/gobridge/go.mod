@@ -7,6 +7,7 @@ require (
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0
 	github.com/mariotoffia/gobridge/adapters/native/config/file v0.0.0
 	github.com/mariotoffia/gobridge/adapters/native/store v0.0.0
+	github.com/mariotoffia/gobridge/httpapi v0.0.0-00010101000000-000000000000
 )
 
 require (
@@ -42,4 +43,5 @@ replace (
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox => ../../adapters/native/store/memoryoutbox
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq => ../../adapters/native/store/sqlitedlq
 	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox => ../../adapters/native/store/sqliteoutbox
+	github.com/mariotoffia/gobridge/httpapi => ../../httpapi
 )

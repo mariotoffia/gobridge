@@ -258,8 +258,8 @@ func TestWriteIdempotent(t *testing.T) {
 	}
 }
 
-// Verifies Replay succeeds for existing entry IDs.
-func TestReplayMarksEntries(t *testing.T) {
+// Verifies Delete removes existing entries and reports the count.
+func TestDeleteRemovesEntries(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
 	now := time.Now()
@@ -267,33 +267,59 @@ func TestReplayMarksEntries(t *testing.T) {
 	s.Write(ctx, makeEntry("e1", "route-A", "timeout", now))
 	s.Write(ctx, makeEntry("e2", "route-A", "timeout", now))
 
-	if err := s.Replay(ctx, []string{"e1", "e2"}); err != nil {
-		t.Fatalf("unexpected replay error: %v", err)
+	n, err := s.Delete(ctx, []string{"e1", "e2"})
+	if err != nil {
+		t.Fatalf("unexpected delete error: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("deleted count: got %d, want 2", n)
+	}
+
+	entries, err := s.List(ctx, domain.DLQFilter{})
+	if err != nil {
+		t.Fatalf("unexpected list error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries after delete, got %d", len(entries))
 	}
 }
 
-// Verifies Replay returns ErrNotFound when no matching entries exist.
-func TestReplayNotFound(t *testing.T) {
+// Verifies Delete returns 0 when no matching entries exist.
+func TestDeleteNonexistentReturnsZero(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
 
-	err := s.Replay(ctx, []string{"nonexistent"})
-	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound, got %v", err)
+	n, err := s.Delete(ctx, []string{"nonexistent"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("deleted count: got %d, want 0", n)
 	}
 }
 
-// Verifies Replay returns ErrNotFound when any requested ID is missing.
-func TestReplayPartialNotFound(t *testing.T) {
+// Verifies Delete with a mix of existing and nonexistent IDs returns the count of actually deleted entries.
+func TestDeletePartialReturnsCount(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
 	now := time.Now()
 
 	s.Write(ctx, makeEntry("e1", "route-A", "timeout", now))
 
-	err := s.Replay(ctx, []string{"e1", "nonexistent"})
-	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound, got %v", err)
+	n, err := s.Delete(ctx, []string{"e1", "nonexistent"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("deleted count: got %d, want 1", n)
+	}
+
+	entries, err := s.List(ctx, domain.DLQFilter{})
+	if err != nil {
+		t.Fatalf("unexpected list error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries after delete, got %d", len(entries))
 	}
 }
 
@@ -370,7 +396,7 @@ func TestPurgeReturnsZeroWhenEmpty(t *testing.T) {
 	}
 }
 
-// Demonstrates list, replay, and purge behavior across multiple entries and filters.
+// Demonstrates list, delete, and purge behavior across multiple entries and filters.
 func TestFullLifecycle(t *testing.T) {
 	now := time.Now()
 	clock := &atomic.Value{}
@@ -394,36 +420,34 @@ func TestFullLifecycle(t *testing.T) {
 		t.Fatalf("expected 4 entries, got %d", len(entries))
 	}
 
-	if err := s.Replay(ctx, []string{"e1", "e3"}); err != nil {
-		t.Fatalf("replay: %v", err)
+	n, err := s.Delete(ctx, []string{"e1", "e3"})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("deleted count: got %d, want 2", n)
 	}
 
+	// After deleting e1 and e3, only e2 (-2h) and e4 (now) remain.
+	// Purge with cutoff -90min removes e2 (older than cutoff), leaves e4.
 	cutoff := now.Add(-90 * time.Minute)
-	n, err := s.Purge(ctx, cutoff)
+	n, err = s.Purge(ctx, cutoff)
 	if err != nil {
 		t.Fatalf("purge: %v", err)
 	}
-	if n != 2 {
-		t.Fatalf("purged count: got %d, want 2", n)
+	if n != 1 {
+		t.Fatalf("purged count: got %d, want 1", n)
 	}
 
 	entries, err = s.List(ctx, domain.DLQFilter{})
 	if err != nil {
 		t.Fatalf("final list: %v", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 remaining entries, got %d", len(entries))
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 remaining entry, got %d", len(entries))
 	}
-
-	ids := map[string]bool{}
-	for _, e := range entries {
-		ids[e.ID] = true
-	}
-	if !ids["e3"] {
-		t.Error("expected e3 to remain")
-	}
-	if !ids["e4"] {
-		t.Error("expected e4 to remain")
+	if entries[0].ID != "e4" {
+		t.Errorf("remaining entry: got %q, want %q", entries[0].ID, "e4")
 	}
 }
 

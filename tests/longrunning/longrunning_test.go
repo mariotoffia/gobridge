@@ -494,10 +494,20 @@ func (s *lrDLQStore) Write(_ context.Context, entry domain.DLQEntry) error {
 func (s *lrDLQStore) List(_ context.Context, _ domain.DLQFilter) ([]domain.DLQEntry, error) {
 	return nil, nil
 }
-func (s *lrDLQStore) Replay(_ context.Context, _ []string) error { return nil }
-func (s *lrDLQStore) Purge(_ context.Context, _ time.Time) (int, error) {
-	return 0, nil
+func (s *lrDLQStore) Get(_ context.Context, id string) (domain.DLQEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.entries {
+		if e.ID == id {
+			return e, nil
+		}
+	}
+	return domain.DLQEntry{}, domain.ErrNotFound
 }
+
+func (s *lrDLQStore) Delete(_ context.Context, _ []string) (int, error)                 { return 0, nil }
+func (s *lrDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error) { return 0, nil }
+func (s *lrDLQStore) Purge(_ context.Context, _ time.Time) (int, error)                 { return 0, nil }
 
 func (s *lrDLQStore) count() int {
 	s.mu.Lock()

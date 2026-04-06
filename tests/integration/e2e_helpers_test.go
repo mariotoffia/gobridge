@@ -372,8 +372,20 @@ func (s *e2eDLQStore) List(_ context.Context, _ domain.DLQFilter) ([]domain.DLQE
 	return nil, nil
 }
 
-func (s *e2eDLQStore) Replay(_ context.Context, _ []string) error        { return nil }
-func (s *e2eDLQStore) Purge(_ context.Context, _ time.Time) (int, error) { return 0, nil }
+func (s *e2eDLQStore) Get(_ context.Context, id string) (domain.DLQEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.entries {
+		if e.ID == id {
+			return e, nil
+		}
+	}
+	return domain.DLQEntry{}, domain.ErrNotFound
+}
+
+func (s *e2eDLQStore) Delete(_ context.Context, _ []string) (int, error)                    { return 0, nil }
+func (s *e2eDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error)    { return 0, nil }
+func (s *e2eDLQStore) Purge(_ context.Context, _ time.Time) (int, error)                    { return 0, nil }
 
 func (s *e2eDLQStore) count() int {
 	s.mu.Lock()

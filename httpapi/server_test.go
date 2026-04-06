@@ -611,8 +611,8 @@ func TestAuditLogging_DLQPurge(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
-// Verifies POST /api/v1/admin/dlq/replay returns 404 when no DLQ store is configured.
-func TestAuditLogging_DLQReplay(t *testing.T) {
+// Verifies POST /api/v1/admin/dlq/redrive returns 404 when no DLQ store is configured.
+func TestAuditLogging_DLQRedrive(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
 	audit := &recordingAuditLogger{}
@@ -622,7 +622,7 @@ func TestAuditLogging_DLQReplay(t *testing.T) {
 	s.registerAdminRoutes(mux)
 
 	body := `{"ids":["id-1","id-2"]}`
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/dlq/replay", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/dlq/redrive", strings.NewReader(body))
 	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

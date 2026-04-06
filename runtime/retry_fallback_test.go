@@ -64,8 +64,16 @@ func (s *FailOnceDLQStore) List(ctx context.Context, filter domain.DLQFilter) ([
 	return s.inner.List(ctx, filter)
 }
 
-func (s *FailOnceDLQStore) Replay(ctx context.Context, entryIDs []string) error {
-	return s.inner.Replay(ctx, entryIDs)
+func (s *FailOnceDLQStore) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
+	return s.inner.Get(ctx, id)
+}
+
+func (s *FailOnceDLQStore) Delete(ctx context.Context, ids []string) (int, error) {
+	return s.inner.Delete(ctx, ids)
+}
+
+func (s *FailOnceDLQStore) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error) {
+	return s.inner.DeleteByFilter(ctx, filter)
 }
 
 func (s *FailOnceDLQStore) Purge(ctx context.Context, before time.Time) (int, error) {

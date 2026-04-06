@@ -5,9 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
@@ -26,7 +24,10 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET "+prefix+"/dlq", s.requireAdminAuth(s.handleDLQ))
 	mux.HandleFunc("GET "+prefix+"/dlq/messages", s.requireAdminAuth(s.handleDLQMessages))
-	mux.HandleFunc("POST "+prefix+"/dlq/replay", s.requireAdminAuth(s.handleDLQReplay))
+	mux.HandleFunc("GET "+prefix+"/dlq/messages/{id}", s.requireAdminAuth(s.handleDLQMessageByID))
+	mux.HandleFunc("POST "+prefix+"/dlq/redrive", s.requireAdminAuth(s.handleDLQRedrive))
+	mux.HandleFunc("POST "+prefix+"/dlq/delete", s.requireAdminAuth(s.handleDLQDeleteByIDs))
+	mux.HandleFunc("POST "+prefix+"/dlq/delete-by-filter", s.requireAdminAuth(s.handleDLQDeleteByFilter))
 	mux.HandleFunc("POST "+prefix+"/dlq/purge", s.requireAdminAuth(s.handleDLQPurge))
 
 	s.registerConfigRoutes(mux)
@@ -104,226 +105,6 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"routes": views})
-}
-
-// dlqEntryView is the HTTP-layer representation of a DLQ entry.
-// It uses snake_case JSON tags consistent with the rest of the API.
-type dlqEntryView struct {
-	ID            string    `json:"id"`
-	RouteID       string    `json:"route_id"`
-	BindingID     string    `json:"binding_id"`
-	SessionID     string    `json:"session_id"`
-	SourceID      string    `json:"source_id"`
-	CorrelationID string    `json:"correlation_id"`
-	Subject       string    `json:"subject"`
-	Reason        string    `json:"reason"`
-	Category      string    `json:"category"`
-	ErrorCode     string    `json:"error_code"`
-	LastError     string    `json:"last_error"`
-	FailedAt      time.Time `json:"failed_at"`
-	Attempts      int       `json:"attempts"`
-}
-
-func toDLQEntryView(e domain.DLQEntry) dlqEntryView {
-	return dlqEntryView{
-		ID:            e.ID,
-		RouteID:       e.RouteID,
-		BindingID:     e.BindingID,
-		SessionID:     e.SessionID,
-		SourceID:      e.SourceID,
-		CorrelationID: e.CorrelationID,
-		Subject:       e.Envelope.Subject,
-		Reason:        e.Reason,
-		Category:      e.Category,
-		ErrorCode:     e.ErrorCode,
-		LastError:     e.LastError,
-		FailedAt:      e.FailedAt,
-		Attempts:      e.Attempts,
-	}
-}
-
-func toDLQEntryViews(entries []domain.DLQEntry) []dlqEntryView {
-	views := make([]dlqEntryView, len(entries))
-	for i, e := range entries {
-		views[i] = toDLQEntryView(e)
-	}
-	return views
-}
-
-func (s *Server) handleDLQ(w http.ResponseWriter, r *http.Request) {
-	rt := s.currentRuntime()
-	if rt == nil {
-		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
-		return
-	}
-	store := rt.DLQStore()
-	if store == nil {
-		writeErr(w, http.StatusNotFound, "no DLQ store configured")
-		return
-	}
-	entries, err := store.List(r.Context(), domain.DLQFilter{Limit: 100})
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to list DLQ entries")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"configured": true,
-		"count":      len(entries),
-	})
-}
-
-const (
-	defaultDLQLimit = 100
-	maxDLQLimit     = 1000
-)
-
-func (s *Server) handleDLQMessages(w http.ResponseWriter, r *http.Request) {
-	rt := s.currentRuntime()
-	if rt == nil {
-		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
-		return
-	}
-	store := rt.DLQStore()
-	if store == nil {
-		writeErr(w, http.StatusNotFound, "no DLQ store configured")
-		return
-	}
-
-	q := r.URL.Query()
-	limit := defaultDLQLimit
-	if v := q.Get("limit"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 {
-			writeErr(w, http.StatusBadRequest, "limit must be a positive integer")
-			return
-		}
-		if n > maxDLQLimit {
-			n = maxDLQLimit
-		}
-		limit = n
-	}
-
-	offset := 0
-	if v := q.Get("offset"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
-			writeErr(w, http.StatusBadRequest, "offset must be a non-negative integer")
-			return
-		}
-		offset = n
-	}
-
-	filter := domain.DLQFilter{
-		RouteID:  q.Get("route_id"),
-		Category: q.Get("category"),
-		Limit:    limit + offset, // fetch enough to slice
-	}
-
-	if v := q.Get("since"); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, "since must be RFC3339 format")
-			return
-		}
-		filter.Since = t
-	}
-	if v := q.Get("before"); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, "before must be RFC3339 format")
-			return
-		}
-		filter.Before = t
-	}
-
-	entries, err := store.List(r.Context(), filter)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to list DLQ messages")
-		return
-	}
-
-	// Apply offset
-	if offset > len(entries) {
-		entries = nil
-	} else if offset > 0 {
-		entries = entries[offset:]
-	}
-	// Apply limit
-	if len(entries) > limit {
-		entries = entries[:limit]
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"messages": toDLQEntryViews(entries),
-		"total":    len(entries),
-		"limit":    limit,
-		"offset":   offset,
-	})
-}
-
-func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
-	rt := s.currentRuntime()
-	if rt == nil {
-		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
-		return
-	}
-	store := rt.DLQStore()
-	if store == nil {
-		writeErr(w, http.StatusNotFound, "no DLQ store configured")
-		return
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	var body struct {
-		IDs []string `json:"ids"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if len(body.IDs) == 0 {
-		writeErr(w, http.StatusBadRequest, "ids must not be empty")
-		return
-	}
-	const maxReplayIDs = 1000
-	if len(body.IDs) > maxReplayIDs {
-		writeErr(w, http.StatusBadRequest, fmt.Sprintf("ids exceeds maximum of %d", maxReplayIDs))
-		return
-	}
-	if err := store.Replay(r.Context(), body.IDs); err != nil {
-		s.emitAudit(r, "dlq.replay", "dlq", "", "failure", map[string]any{
-			"ids":   body.IDs,
-			"error": err.Error(),
-		})
-		writeErr(w, http.StatusInternalServerError, "DLQ replay failed")
-		return
-	}
-	s.emitAudit(r, "dlq.replay", "dlq", "", "success", map[string]any{
-		"count": len(body.IDs),
-		"ids":   body.IDs,
-	})
-	writeJSON(w, http.StatusOK, map[string]int{"replayed": len(body.IDs)})
-}
-
-func (s *Server) handleDLQPurge(w http.ResponseWriter, r *http.Request) {
-	rt := s.currentRuntime()
-	if rt == nil {
-		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
-		return
-	}
-	store := rt.DLQStore()
-	if store == nil {
-		writeErr(w, http.StatusNotFound, "no DLQ store configured")
-		return
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	count, err := store.Purge(r.Context(), time.Now().UTC())
-	if err != nil {
-		s.emitAudit(r, "dlq.purge", "dlq", "", "failure", map[string]any{"error": err.Error()})
-		writeErr(w, http.StatusInternalServerError, "DLQ purge failed")
-		return
-	}
-	s.emitAudit(r, "dlq.purge", "dlq", "", "success", map[string]any{"purged": count})
-	writeJSON(w, http.StatusOK, map[string]int{"purged": count})
 }
 
 type injectRequest struct {

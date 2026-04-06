@@ -579,7 +579,40 @@ func (s *FakeDLQStore) List(_ context.Context, filter domain.DLQFilter) ([]domai
 	return result, nil
 }
 
-func (s *FakeDLQStore) Replay(_ context.Context, _ []string) error { return nil }
+func (s *FakeDLQStore) Get(_ context.Context, id string) (domain.DLQEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.Entries {
+		if e.ID == id {
+			return e, nil
+		}
+	}
+	return domain.DLQEntry{}, domain.ErrNotFound
+}
+
+func (s *FakeDLQStore) Delete(_ context.Context, ids []string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idSet := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		idSet[id] = struct{}{}
+	}
+	var remaining []domain.DLQEntry
+	var count int
+	for _, e := range s.Entries {
+		if _, ok := idSet[e.ID]; ok {
+			count++
+		} else {
+			remaining = append(remaining, e)
+		}
+	}
+	s.Entries = remaining
+	return count, nil
+}
+
+func (s *FakeDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error) {
+	return 0, nil
+}
 
 func (s *FakeDLQStore) Purge(_ context.Context, _ time.Time) (int, error) { return 0, nil }
 

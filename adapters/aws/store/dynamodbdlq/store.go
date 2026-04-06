@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -34,8 +35,7 @@ const (
 	attrEnvelopeJSON  = "envelope_json"
 	attrFailedAt      = "failed_at"
 	attrAttempts      = "attempts"
-	attrReplayedAt    = "replayed_at"
-	attrTTL           = "ttl"
+	attrTTL = "ttl"
 )
 
 // Store implements ports.DLQStore using DynamoDB with conditional writes
@@ -222,27 +222,40 @@ func (s *Store) listByIndex(
 		":pk_val": &ddbtypes.AttributeValueMemberS{Value: pkValue},
 	}
 
-	if !filter.Since.IsZero() && !filter.Before.IsZero() {
-		keyExpr += " AND #fa >= :since AND #fa < :before"
-		exprNames["#fa"] = attrFailedAt
-		exprValues[":since"] = &ddbtypes.AttributeValueMemberN{Value: i64(filter.Since.UnixMilli())}
-		exprValues[":before"] = &ddbtypes.AttributeValueMemberN{Value: i64(filter.Before.UnixMilli())}
-	} else if !filter.Since.IsZero() {
+	// DynamoDB KeyConditionExpression supports at most one comparison on
+	// the sort key. When both Since and Before are set, put >= :since in
+	// the key condition (efficient index range scan) and < :before in the
+	// FilterExpression (applied post-scan).
+	var filterParts []string
+
+	if !filter.Since.IsZero() {
 		keyExpr += " AND #fa >= :since"
 		exprNames["#fa"] = attrFailedAt
 		exprValues[":since"] = &ddbtypes.AttributeValueMemberN{Value: i64(filter.Since.UnixMilli())}
-	} else if !filter.Before.IsZero() {
-		keyExpr += " AND #fa < :before"
-		exprNames["#fa"] = attrFailedAt
+	}
+	if !filter.Before.IsZero() {
+		if filter.Since.IsZero() {
+			// Only Before set — safe to use in key condition.
+			keyExpr += " AND #fa < :before"
+			exprNames["#fa"] = attrFailedAt
+		} else {
+			// Both Since and Before — move Before to filter expression.
+			filterParts = append(filterParts, "#fa < :before")
+			exprNames["#fa"] = attrFailedAt
+		}
 		exprValues[":before"] = &ddbtypes.AttributeValueMemberN{Value: i64(filter.Before.UnixMilli())}
 	}
 
 	// When querying RouteIndex but category is also set, post-filter on category.
-	var filterExpr *string
 	if filter.RouteID != "" && filter.Category != "" && pkAttr == attrRouteID {
-		filterExpr = aws.String("#cat = :cat_val")
+		filterParts = append(filterParts, "#cat = :cat_val")
 		exprNames["#cat"] = attrCategory
 		exprValues[":cat_val"] = &ddbtypes.AttributeValueMemberS{Value: filter.Category}
+	}
+
+	var filterExpr *string
+	if len(filterParts) > 0 {
+		filterExpr = aws.String(strings.Join(filterParts, " AND "))
 	}
 
 	var entries []domain.DLQEntry
@@ -318,11 +331,7 @@ func (s *Store) listByScan(ctx context.Context, filter domain.DLQFilter) ([]doma
 
 	var filterExpr *string
 	if len(filterParts) > 0 {
-		expr := filterParts[0]
-		for _, p := range filterParts[1:] {
-			expr += " AND " + p
-		}
-		filterExpr = aws.String(expr)
+		filterExpr = aws.String(strings.Join(filterParts, " AND "))
 	}
 
 	var entries []domain.DLQEntry
@@ -371,38 +380,84 @@ func (s *Store) listByScan(ctx context.Context, filter domain.DLQFilter) ([]doma
 	return entries, nil
 }
 
-// Replay marks entries as replayed by setting replayed_at to the current time.
-// Returns domain.ErrNotFound if any entry ID does not exist.
-func (s *Store) Replay(ctx context.Context, entryIDs []string) error {
-	now := s.now()
-	nowMs := now.UnixMilli()
+// Get retrieves a single DLQ entry by ID.
+// Returns domain.ErrNotFound if the entry does not exist.
+func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
+	logging.TraceContext(s.logger, ctx, "dynamodbdlq: get", "entry_id", id)
 
-	for _, id := range entryIDs {
-		_, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+	out, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(s.tableName),
+		Key: map[string]ddbtypes.AttributeValue{
+			attrPK: &ddbtypes.AttributeValueMemberS{Value: dlqKey(id)},
+		},
+	})
+	if err != nil {
+		return domain.DLQEntry{}, fmt.Errorf("dynamodbdlq: get: %w", err)
+	}
+	if out.Item == nil {
+		return domain.DLQEntry{}, domain.ErrNotFound.
+			WithMessage("dlq entry not found").
+			With("entryID", id)
+	}
+
+	return unmarshalEntry(out.Item)
+}
+
+// Delete removes specific DLQ entries by ID. Returns the count of
+// entries actually deleted. Missing IDs are silently skipped.
+func (s *Store) Delete(ctx context.Context, ids []string) (int, error) {
+	logging.TraceContext(s.logger, ctx, "dynamodbdlq: delete", "count", len(ids))
+
+	var count int
+	for _, id := range ids {
+		_, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 			TableName: aws.String(s.tableName),
 			Key: map[string]ddbtypes.AttributeValue{
 				attrPK: &ddbtypes.AttributeValueMemberS{Value: dlqKey(id)},
 			},
-			UpdateExpression:    aws.String("SET #ra = :now"),
 			ConditionExpression: aws.String("attribute_exists(#pk)"),
 			ExpressionAttributeNames: map[string]string{
-				"#ra": attrReplayedAt,
 				"#pk": attrPK,
-			},
-			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
-				":now": &ddbtypes.AttributeValueMemberN{Value: i64(nowMs)},
 			},
 		})
 		if err != nil {
 			if isConditionFailed(err) {
-				return domain.ErrNotFound.
-					WithMessage("DLQ entry not found").
-					With("entryID", id)
+				continue // entry doesn't exist — skip
 			}
-			return fmt.Errorf("dynamodbdlq: replay: %w", err)
+			return count, fmt.Errorf("dynamodbdlq: delete: %w", err)
 		}
+		count++
 	}
-	return nil
+
+	return count, nil
+}
+
+// DeleteByFilter removes all DLQ entries matching the filter criteria.
+// Returns the count of entries deleted.
+func (s *Store) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error) {
+	logging.TraceContext(s.logger, ctx, "dynamodbdlq: delete_by_filter",
+		"route_id", filter.RouteID, "category", filter.Category)
+
+	entries, err := s.List(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("dynamodbdlq: delete_by_filter list: %w", err)
+	}
+
+	var count int
+	for _, e := range entries {
+		_, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+			TableName: aws.String(s.tableName),
+			Key: map[string]ddbtypes.AttributeValue{
+				attrPK: &ddbtypes.AttributeValueMemberS{Value: dlqKey(e.ID)},
+			},
+		})
+		if err != nil {
+			return count, fmt.Errorf("dynamodbdlq: delete_by_filter delete: %w", err)
+		}
+		count++
+	}
+
+	return count, nil
 }
 
 // Purge deletes entries whose failed_at is before the given time.
@@ -457,67 +512,4 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
 	}
 
 	return count, nil
-}
-
-// --- marshaling ---
-
-func unmarshalEntry(item map[string]ddbtypes.AttributeValue) (domain.DLQEntry, error) {
-	var e domain.DLQEntry
-
-	pk := strAttr(item, attrPK)
-	if len(pk) > 4 {
-		e.ID = pk[4:] // strip "DLQ#" prefix
-	}
-
-	e.RouteID = strAttr(item, attrRouteID)
-	e.BindingID = strAttr(item, attrBindingID)
-	e.SessionID = strAttr(item, attrSessionID)
-	e.SourceID = strAttr(item, attrSourceID)
-	e.CorrelationID = strAttr(item, attrCorrelationID)
-	e.Reason = strAttr(item, attrReason)
-	e.Category = strAttr(item, attrCategory)
-	e.ErrorCode = strAttr(item, attrErrorCode)
-	e.LastError = strAttr(item, attrLastError)
-	e.FailedAt = timeFromMillis(numAttrI64(item, attrFailedAt))
-	e.Attempts = int(numAttrI64(item, attrAttempts))
-
-	if envJSON := strAttr(item, attrEnvelopeJSON); envJSON != "" {
-		if err := json.Unmarshal([]byte(envJSON), &e.Envelope); err != nil {
-			return e, fmt.Errorf("dynamodbdlq: unmarshal envelope: %w", err)
-		}
-	}
-
-	return e, nil
-}
-
-// --- attribute helpers ---
-
-func strAttr(item map[string]ddbtypes.AttributeValue, key string) string {
-	if v, ok := item[key].(*ddbtypes.AttributeValueMemberS); ok {
-		return v.Value
-	}
-	return ""
-}
-
-func numAttrI64(item map[string]ddbtypes.AttributeValue, key string) int64 {
-	if v, ok := item[key].(*ddbtypes.AttributeValueMemberN); ok {
-		n, _ := strconv.ParseInt(v.Value, 10, 64)
-		return n
-	}
-	return 0
-}
-
-func i64(n int64) string {
-	return strconv.FormatInt(n, 10)
-}
-
-func timeFromMillis(ms int64) time.Time {
-	if ms == 0 {
-		return time.Time{}
-	}
-	return time.UnixMilli(ms)
-}
-
-func dlqKey(entryID string) string {
-	return "DLQ#" + entryID
 }
