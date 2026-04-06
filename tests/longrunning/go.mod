@@ -22,6 +22,8 @@ require (
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0
+	github.com/mariotoffia/gobridge/processors/circuitbreaker v0.0.0-20260405055210-02d996a46256
+	github.com/mariotoffia/gobridge/processors/transform v0.0.0-20260405055210-02d996a46256
 	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/testutil/sqslocal v0.0.0-00010101000000-000000000000
 	github.com/stretchr/testify v1.11.1
@@ -46,6 +48,7 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/eclipse/paho.golang v0.23.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/ohler55/ojg v1.28.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	golang.org/x/net v0.52.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
