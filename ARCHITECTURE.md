@@ -28,9 +28,14 @@ graph TB
         P["ports/<br/>Port interfaces"]
     end
 
+    subgraph "Utility Ring"
+        O["observability/<br/>Context helpers, slog handler"]
+        L["logging/<br/>Trace and debug log levels"]
+        CB["circuitbreaker/<br/>Standalone circuit breaker"]
+    end
+
     subgraph "Engine Ring"
         R["runtime/<br/>Route execution engine"]
-        O["observability/<br/>Context helpers, slog handler"]
     end
 
     subgraph "Composition Ring"
@@ -47,18 +52,26 @@ graph TB
 
     A --> P
     A --> D
+    A --> CB
     PR --> P
     PR --> D
+    PR --> CB
     H --> R
+    H --> P
+    H --> D
+    H --> O
+    H --> C
     B --> C
     B --> P
     B --> R
     R --> P
     R --> D
     R --> O
+    R --> L
     P --> D
-    C --> D
-    V --> C
+    V --> P
+    V --> D
+    CB --> D
 ```
 
 ### Dependency Rule
@@ -69,13 +82,16 @@ Dependencies point inward. Each layer may only import from layers closer to the 
 |---|---|
 | `domain/` | Nothing from gobridge (pure value types) |
 | `ports/` | `domain` |
-| `runtime/` | `domain`, `ports`, `observability` |
-| `config/` | `domain` |
+| `config/` | Nothing from gobridge (stdlib only) |
+| `observability/` | Nothing from gobridge (stdlib only) |
+| `logging/` | Nothing from gobridge (stdlib only) |
+| `circuitbreaker/` | `domain` |
+| `runtime/` | `domain`, `ports`, `observability`, `logging` |
+| `validate/` | `domain`, `ports` |
 | `bridge/` | `config`, `ports`, `runtime` |
-| `adapters/` | `ports`, `domain` |
-| `processors/` | `ports`, `domain` |
-| `httpapi/` | `runtime` |
-| `observability/` | `domain` |
+| `adapters/` | `ports`, `domain`, `circuitbreaker` |
+| `processors/` | `ports`, `domain`, `circuitbreaker` |
+| `httpapi/` | `runtime`, `config`, `ports`, `domain`, `observability` |
 
 ---
 
@@ -361,12 +377,14 @@ Distributed lease ownership for single-active scenarios. Implementations must us
 
 ```go
 type LeaseStore interface {
-    Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration) (domain.LeaseToken, error)
-    Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration) (domain.LeaseToken, error)
+    Acquire(ctx context.Context, leaseID string, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error)
+    Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error)
     Release(ctx context.Context, leaseID string, token domain.LeaseToken) error
     Current(ctx context.Context, leaseID string) (domain.LeaseInfo, error)
 }
 ```
+
+The `endpoints` parameter on `Acquire` and `Renew` stores the owner's reachable addresses alongside the lease record. Other instances retrieve these via `Current` to discover how to reach the lease owner for cluster-aware routing.
 
 `LeaseToken` contains a monotonically increasing `Version` field that serves as a fencing token, preventing stale owners from continuing to operate after a lease transfer.
 
@@ -680,12 +698,14 @@ gobridge/
 ├── domain/                              # Pure value types (innermost ring)
 ├── ports/                               # Port interfaces
 │   └── storetest/                       # Conformance test suites
+├── circuitbreaker/                      # Standalone circuit breaker state machine
+├── logging/                             # Trace and debug log level utilities
+├── observability/                       # Context helpers, slog handler
+├── config/                              # Declarative config model
+├── validate/                            # Config validation
 ├── runtime/                             # Route execution engine
 ├── bridge/                              # Composition root (Builder)
-├── config/                              # Declarative config model
 ├── httpapi/                             # Admin + monitor HTTP servers
-├── observability/                       # Context helpers, slog handler
-├── validate/                            # Config validation
 ├── adapters/
 │   ├── mqtt/transport/paho/             # MQTT v5 (Paho/autopaho)
 │   ├── aws/
@@ -696,8 +716,10 @@ gobridge/
 │   │   │   └── dynamodbdlq/
 │   │   ├── credentials/ssm/            # AWS SSM credentials
 │   │   ├── metrics/cloudwatch/          # CloudWatch metrics
-│   │   └── config/dynamodb/             # DynamoDB config loader
+│   │   ├── config/dynamodb/             # DynamoDB config loader
+│   │   └── cluster/ecs/                # ECS cluster resolver
 │   ├── azure/transport/servicebus/      # Azure Service Bus
+│   ├── http/transport/                  # HTTP POST ingress, SSE egress
 │   ├── native/
 │   │   ├── store/                       # Memory + SQLite store factory
 │   │   │   ├── memorylease/
@@ -705,14 +727,16 @@ gobridge/
 │   │   │   ├── memorydlq/
 │   │   │   ├── sqliteoutbox/
 │   │   │   └── sqlitedlq/
-│   │   └── credentials/file/           # File-based credentials
+│   │   ├── credentials/file/           # File-based credentials
+│   │   ├── config/file/                # File config loader/watcher
+│   │   └── cluster/                    # Native cluster resolver
 │   └── otel/
 │       ├── metrics/                     # OTel OTLP metrics
 │       └── tracing/                     # OTel OTLP tracing
 ├── processors/
 │   ├── filter/                          # Condition-based filtering
 │   ├── transform/                       # JSON field mapping
-│   ├── circuitbreaker/                  # Circuit breaker
+│   ├── circuitbreaker/                  # Circuit breaker processor (wraps circuitbreaker/)
 │   └── tenant/                          # Multi-tenant validation
 ├── cmd/gobridge/                        # Example binary
 ├── testutil/                            # Docker test helpers

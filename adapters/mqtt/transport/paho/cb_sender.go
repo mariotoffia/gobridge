@@ -7,7 +7,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/processors/circuitbreaker"
+	"github.com/mariotoffia/gobridge/circuitbreaker"
 )
 
 // CBConfig configures the circuit breaker for an MQTT sender.

@@ -5,12 +5,13 @@ import (
 	"testing"
 	"time"
 
+	cb "github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 func BenchmarkBreaker_BeforeAfter_Closed(b *testing.B) {
-	br := NewBreaker("bench", Config{
+	br := cb.NewBreaker("bench", cb.Config{
 		FailureThreshold: 100,
 		SuccessThreshold: 2,
 		ResetTimeout:     time.Second,
@@ -24,7 +25,7 @@ func BenchmarkBreaker_BeforeAfter_Closed(b *testing.B) {
 }
 
 func BenchmarkBreaker_BeforeAfter_Failures(b *testing.B) {
-	br := NewBreaker("bench", Config{
+	br := cb.NewBreaker("bench", cb.Config{
 		FailureThreshold: b.N + 1,
 		SuccessThreshold: 2,
 		ResetTimeout:     time.Second,
@@ -38,7 +39,7 @@ func BenchmarkBreaker_BeforeAfter_Failures(b *testing.B) {
 }
 
 func BenchmarkProcessor_PerKey_Lookup(b *testing.B) {
-	cfg := Config{
+	cfg := cb.Config{
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
 		ResetTimeout:     time.Second,
@@ -59,7 +60,7 @@ func BenchmarkProcessor_PerKey_Lookup(b *testing.B) {
 }
 
 func BenchmarkProcessor_MultiKey(b *testing.B) {
-	cfg := Config{
+	cfg := cb.Config{
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
 		ResetTimeout:     time.Second,

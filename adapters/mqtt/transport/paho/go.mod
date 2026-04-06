@@ -4,7 +4,6 @@ go 1.25.0
 
 require (
 	github.com/mariotoffia/gobridge v0.0.0
-	github.com/mariotoffia/gobridge/processors/circuitbreaker v0.0.0-20260405055210-02d996a46256
 	github.com/stretchr/testify v1.11.1
 )
 

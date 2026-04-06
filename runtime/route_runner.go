@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/bridge/logging"
+	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/observability"
 	"github.com/mariotoffia/gobridge/ports"

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	cb "github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
 )
 
@@ -23,7 +24,7 @@ func envelope(subject string, headers map[string]any) *domain.Envelope {
 
 // Verifies closed-to-open-to-half-open-to-closed transitions under failures and reset timeout.
 func TestStateTransitions_ClosedToOpenToHalfOpenToClosed(t *testing.T) {
-	cfg := Config{FailureThreshold: 3, SuccessThreshold: 2, ResetTimeout: 50 * time.Millisecond}
+	cfg := cb.Config{FailureThreshold: 3, SuccessThreshold: 2, ResetTimeout: 50 * time.Millisecond}
 	p := New("cb", cfg)
 	ctx := context.Background()
 	env := envelope("test", nil)
@@ -68,7 +69,7 @@ func TestStateTransitions_ClosedToOpenToHalfOpenToClosed(t *testing.T) {
 
 // Verifies a failure in half-open reopens the circuit.
 func TestHalfOpen_FailureReopens(t *testing.T) {
-	cfg := Config{FailureThreshold: 2, SuccessThreshold: 2, ResetTimeout: 50 * time.Millisecond}
+	cfg := cb.Config{FailureThreshold: 2, SuccessThreshold: 2, ResetTimeout: 50 * time.Millisecond}
 	p := New("cb", cfg)
 	ctx := context.Background()
 	env := envelope("test", nil)
@@ -97,7 +98,7 @@ func TestHalfOpen_FailureReopens(t *testing.T) {
 
 // Verifies circuit state is isolated per extracted key.
 func TestPerKeyIsolation(t *testing.T) {
-	cfg := Config{FailureThreshold: 2, SuccessThreshold: 1, ResetTimeout: 1 * time.Second}
+	cfg := cb.Config{FailureThreshold: 2, SuccessThreshold: 1, ResetTimeout: 1 * time.Second}
 	p := New("cb", cfg, WithKeyExtractor(SubjectKey))
 	ctx := context.Background()
 	fail := nextErr(errors.New("boom"))
@@ -131,7 +132,7 @@ func TestPerKeyIsolation(t *testing.T) {
 
 // Verifies ErrUnavailable carries RetryAfter bounded by reset timeout.
 func TestRetryAfterPropagation(t *testing.T) {
-	cfg := Config{FailureThreshold: 1, SuccessThreshold: 1, ResetTimeout: 200 * time.Millisecond}
+	cfg := cb.Config{FailureThreshold: 1, SuccessThreshold: 1, ResetTimeout: 200 * time.Millisecond}
 	p := New("cb", cfg)
 	ctx := context.Background()
 	env := envelope("test", nil)
@@ -157,7 +158,7 @@ func TestRetryAfterPropagation(t *testing.T) {
 
 // Verifies Process is safe under concurrent load and metrics count requests.
 func TestConcurrentSafety(t *testing.T) {
-	cfg := Config{FailureThreshold: 100, SuccessThreshold: 1, ResetTimeout: 1 * time.Second}
+	cfg := cb.Config{FailureThreshold: 100, SuccessThreshold: 1, ResetTimeout: 1 * time.Second}
 	p := New("cb", cfg)
 	ctx := context.Background()
 	env := envelope("test", nil)
@@ -228,7 +229,7 @@ func TestKeyExtractors(t *testing.T) {
 
 // Validates default failure threshold opens the circuit after five consecutive failures.
 func TestConfigDefaults(t *testing.T) {
-	p := New("", Config{})
+	p := New("", cb.Config{})
 	ctx := context.Background()
 	env := envelope("test", nil)
 	fail := nextErr(errors.New("boom"))
@@ -254,14 +255,14 @@ func TestConfigDefaults(t *testing.T) {
 // Verifies Name returns the configured value or the default circuitbreaker.
 func TestProcessorName(t *testing.T) {
 	t.Run("custom name", func(t *testing.T) {
-		p := New("my-cb", DefaultConfig())
+		p := New("my-cb", cb.DefaultConfig())
 		if got := p.Name(); got != "my-cb" {
 			t.Errorf("Name() = %q, want %q", got, "my-cb")
 		}
 	})
 
 	t.Run("empty name defaults", func(t *testing.T) {
-		p := New("", DefaultConfig())
+		p := New("", cb.DefaultConfig())
 		if got := p.Name(); got != "circuitbreaker" {
 			t.Errorf("Name() = %q, want %q", got, "circuitbreaker")
 		}
@@ -270,7 +271,7 @@ func TestProcessorName(t *testing.T) {
 
 // Verifies metrics reflect successes, failures, and open state.
 func TestMetrics(t *testing.T) {
-	cfg := Config{FailureThreshold: 3, SuccessThreshold: 1, ResetTimeout: 1 * time.Second}
+	cfg := cb.Config{FailureThreshold: 3, SuccessThreshold: 1, ResetTimeout: 1 * time.Second}
 	p := New("cb", cfg)
 	ctx := context.Background()
 	env := envelope("test", nil)
@@ -310,14 +311,14 @@ func TestMetrics(t *testing.T) {
 
 // Verifies OnStateChange receives closed-to-open, open-to-half-open, and half-open-to-closed transitions.
 func TestOnStateChangeCallback(t *testing.T) {
-	cfg := Config{FailureThreshold: 2, SuccessThreshold: 1, ResetTimeout: 50 * time.Millisecond}
+	cfg := cb.Config{FailureThreshold: 2, SuccessThreshold: 1, ResetTimeout: 50 * time.Millisecond}
 
 	var mu sync.Mutex
-	var transitions []struct{ from, to State }
+	var transitions []struct{ from, to cb.State }
 
-	p := New("cb", cfg, WithOnStateChange(func(key string, from, to State) {
+	p := New("cb", cfg, WithOnStateChange(func(key string, from, to cb.State) {
 		mu.Lock()
-		transitions = append(transitions, struct{ from, to State }{from, to})
+		transitions = append(transitions, struct{ from, to cb.State }{from, to})
 		mu.Unlock()
 	}))
 
@@ -330,7 +331,7 @@ func TestOnStateChangeCallback(t *testing.T) {
 	}
 
 	mu.Lock()
-	if len(transitions) != 1 || transitions[0].from != StateClosed || transitions[0].to != StateOpen {
+	if len(transitions) != 1 || transitions[0].from != cb.StateClosed || transitions[0].to != cb.StateOpen {
 		t.Errorf("expected [closed->open], got %v", transitions)
 	}
 	mu.Unlock()
@@ -344,14 +345,14 @@ func TestOnStateChangeCallback(t *testing.T) {
 	if len(transitions) < 2 {
 		t.Fatalf("expected at least 2 transitions, got %d", len(transitions))
 	}
-	if transitions[1].from != StateOpen || transitions[1].to != StateHalfOpen {
+	if transitions[1].from != cb.StateOpen || transitions[1].to != cb.StateHalfOpen {
 		t.Errorf("expected [open->half-open], got %v", transitions[1])
 	}
 	// SuccessThreshold=1, so same request closes it.
 	if len(transitions) < 3 {
 		t.Fatalf("expected 3 transitions, got %d", len(transitions))
 	}
-	if transitions[2].from != StateHalfOpen || transitions[2].to != StateClosed {
+	if transitions[2].from != cb.StateHalfOpen || transitions[2].to != cb.StateClosed {
 		t.Errorf("expected [half-open->closed], got %v", transitions[2])
 	}
 	mu.Unlock()
@@ -359,7 +360,7 @@ func TestOnStateChangeCallback(t *testing.T) {
 
 // Verifies next-handler errors propagate and count as failures while the circuit stays closed.
 func TestNextErrorPropagation(t *testing.T) {
-	cfg := Config{FailureThreshold: 10, SuccessThreshold: 1, ResetTimeout: 1 * time.Second}
+	cfg := cb.Config{FailureThreshold: 10, SuccessThreshold: 1, ResetTimeout: 1 * time.Second}
 	p := New("cb", cfg)
 	ctx := context.Background()
 	env := envelope("test", nil)

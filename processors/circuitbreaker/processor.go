@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	cb "github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -16,19 +17,19 @@ var _ ports.Processor = (*Processor)(nil)
 // requests when a breaker trips open.
 type Processor struct {
 	name          string
-	config        Config
+	config        cb.Config
 	keyExtractor  KeyExtractor
-	onStateChange func(key string, from, to State)
+	onStateChange func(key string, from, to cb.State)
 	mu            sync.Mutex
-	breakers      map[string]*Breaker
+	breakers      map[string]*cb.Breaker
 }
 
-func New(name string, cfg Config, opts ...Option) *Processor {
+func New(name string, cfg cb.Config, opts ...Option) *Processor {
 	p := &Processor{
 		name:         name,
-		config:       cfg.withDefaults(),
+		config:       cfg.WithDefaults(),
 		keyExtractor: GlobalKey,
-		breakers:     make(map[string]*Breaker),
+		breakers:     make(map[string]*cb.Breaker),
 	}
 	for _, o := range opts {
 		o(p)
@@ -54,7 +55,7 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 		if len(p.breakers) >= maxBreakers {
 			p.evictOldest()
 		}
-		b = NewBreaker(key, p.config, p.onStateChange)
+		b = cb.NewBreaker(key, p.config, p.onStateChange)
 		p.breakers[key] = b
 	}
 	p.mu.Unlock()
@@ -83,7 +84,7 @@ func (p *Processor) evictOldest() {
 	first := true
 	for k, b := range p.breakers {
 		m := b.GetMetrics()
-		if m.State == StateClosed.String() {
+		if m.State == cb.StateClosed.String() {
 			if first || m.LastFailureTime.Before(oldestTime) {
 				oldestKey = k
 				oldestTime = m.LastFailureTime
@@ -99,7 +100,7 @@ func (p *Processor) evictOldest() {
 	// they protect against known-failing dependencies.
 	for k, b := range p.breakers {
 		m := b.GetMetrics()
-		if m.State == StateHalfOpen.String() {
+		if m.State == cb.StateHalfOpen.String() {
 			delete(p.breakers, k)
 			return
 		}
@@ -111,11 +112,11 @@ func (p *Processor) evictOldest() {
 	}
 }
 
-func (p *Processor) Metrics() map[string]BreakerMetrics {
+func (p *Processor) Metrics() map[string]cb.BreakerMetrics {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	m := make(map[string]BreakerMetrics, len(p.breakers))
+	m := make(map[string]cb.BreakerMetrics, len(p.breakers))
 	for k, b := range p.breakers {
 		m[k] = b.GetMetrics()
 	}

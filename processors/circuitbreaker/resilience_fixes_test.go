@@ -1,6 +1,6 @@
 package circuitbreaker
 
-// ═══════════════════════════════════════════════
+// ===============================================
 // Resilience Fix Tests
 //
 // Tests validating circuit breaker resilience improvements:
@@ -10,20 +10,20 @@ package circuitbreaker
 // RES-007: Eviction protects open breakers
 //
 // Summary:
-// ┌──────┬────────────────────────────────────────────┬──────────┐
-// │ ID   │ Description                                │ Status   │
-// ├──────┼────────────────────────────────────────────┼──────────┤
-// │ T001 │ Half-open limits concurrent probes to 1    │ PASS     │
-// │ T002 │ Half-open custom max probes                │ PASS     │
-// │ T003 │ Permanent errors don't trip breaker        │ PASS     │
-// │ T004 │ Mixed errors: only transient counted       │ PASS     │
-// │ T005 │ Custom error classifier                    │ PASS     │
-// │ T006 │ Eviction prefers half-open over open       │ PASS     │
-// │ T007 │ Default config sets HalfOpenMaxProbes      │ PASS     │
-// │ T008 │ Half-open probe released after afterRequest│ PASS     │
-// │ T009 │ Concurrent half-open probes limited        │ PASS     │
-// └──────┴────────────────────────────────────────────┴──────────┘
-// ═══════════════════════════════════════════════
+// +------+--------------------------------------------+----------+
+// | ID   | Description                                | Status   |
+// +------+--------------------------------------------+----------+
+// | T001 | Half-open limits concurrent probes to 1    | PASS     |
+// | T002 | Half-open custom max probes                | PASS     |
+// | T003 | Permanent errors don't trip breaker        | PASS     |
+// | T004 | Mixed errors: only transient counted       | PASS     |
+// | T005 | Custom error classifier                    | PASS     |
+// | T006 | Eviction prefers half-open over open       | PASS     |
+// | T007 | Default config sets HalfOpenMaxProbes      | PASS     |
+// | T008 | Half-open probe released after afterRequest| PASS     |
+// | T009 | Concurrent half-open probes limited        | PASS     |
+// +------+--------------------------------------------+----------+
+// ===============================================
 
 import (
 	"context"
@@ -33,6 +33,7 @@ import (
 	"testing"
 	"time"
 
+	cb "github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -41,13 +42,15 @@ import (
 // requests are allowed through in half-open state (default 1).
 //
 // Scenario:
-// ───────────────────────────────────────────────
-//   Closed ──(3 failures)──▶ Open ──(timeout)──▶ HalfOpen
-//   HalfOpen: probe 1 allowed, probe 2 rejected
-// ───────────────────────────────────────────────
+// -----------------------------------------------
+//
+//	Closed --(3 failures)--> Open --(timeout)--> HalfOpen
+//	HalfOpen: probe 1 allowed, probe 2 rejected
+//
+// -----------------------------------------------
 func TestHalfOpen_LimitsConcurrentProbes(t *testing.T) {
 	cfg := fastConfig()
-	b := NewBreaker("test", cfg, nil)
+	b := cb.NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
@@ -82,7 +85,7 @@ func TestHalfOpen_LimitsConcurrentProbes(t *testing.T) {
 func TestHalfOpen_CustomMaxProbes(t *testing.T) {
 	cfg := fastConfig()
 	cfg.HalfOpenMaxProbes = 3
-	b := NewBreaker("test", cfg, nil)
+	b := cb.NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
@@ -111,13 +114,15 @@ func TestHalfOpen_CustomMaxProbes(t *testing.T) {
 // errors do not count toward the failure threshold (RES-002).
 //
 // Scenario:
-// ───────────────────────────────────────────────
-//   Closed: N permanent errors → still Closed
-//   Only transient errors should trip to Open
-// ───────────────────────────────────────────────
+// -----------------------------------------------
+//
+//	Closed: N permanent errors -> still Closed
+//	Only transient errors should trip to Open
+//
+// -----------------------------------------------
 func TestPermanentErrors_DontTripBreaker(t *testing.T) {
 	cfg := fastConfig()
-	b := NewBreaker("test", cfg, nil)
+	b := cb.NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold*3; i++ {
 		_ = b.BeforeRequest()
@@ -139,7 +144,7 @@ func TestPermanentErrors_DontTripBreaker(t *testing.T) {
 // TestMixedErrors_OnlyTransientCounted validates error classification.
 func TestMixedErrors_OnlyTransientCounted(t *testing.T) {
 	cfg := fastConfig()
-	b := NewBreaker("test", cfg, nil)
+	b := cb.NewBreaker("test", cfg, nil)
 
 	_ = b.BeforeRequest()
 	b.AfterRequest(domain.ErrInvalidPayload)
@@ -165,7 +170,7 @@ func TestCustomErrorClassifier(t *testing.T) {
 	cfg.CountError = func(err error) bool {
 		return true
 	}
-	b := NewBreaker("test", cfg, nil)
+	b := cb.NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
@@ -181,15 +186,17 @@ func TestCustomErrorClassifier(t *testing.T) {
 // TestEviction_PrefersHalfOpenOverOpen validates eviction order (RES-007).
 //
 // Scenario:
-// ───────────────────────────────────────────────
-//   Fill breakers to max:
-//     - some Open (protecting failing deps)
-//     - some HalfOpen (probing)
-//     - some Closed (healthy)
-//   On eviction: prefer Closed > HalfOpen > Open
-// ───────────────────────────────────────────────
+// -----------------------------------------------
+//
+//	Fill breakers to max:
+//	  - some Open (protecting failing deps)
+//	  - some HalfOpen (probing)
+//	  - some Closed (healthy)
+//	On eviction: prefer Closed > HalfOpen > Open
+//
+// -----------------------------------------------
 func TestEviction_PrefersHalfOpenOverOpen(t *testing.T) {
-	cfg := Config{
+	cfg := cb.Config{
 		FailureThreshold: 1,
 		SuccessThreshold: 1,
 		ResetTimeout:     1 * time.Hour,
@@ -199,15 +206,14 @@ func TestEviction_PrefersHalfOpenOverOpen(t *testing.T) {
 	p.mu.Lock()
 	for i := 0; i < maxBreakers; i++ {
 		key := "key-" + string(rune('A'+i%26)) + string(rune('0'+i/26))
-		b := NewBreaker(key, cfg.withDefaults(), nil)
-		b.state = StateOpen
-		b.openedAt = time.Now()
+		b := cb.NewBreaker(key, cfg.WithDefaults(), nil)
+		b.ForceStateForTest(cb.StateOpen, time.Now())
 		p.breakers[key] = b
 	}
 
 	halfOpenKey := "key-halfopen"
-	hb := NewBreaker(halfOpenKey, cfg.withDefaults(), nil)
-	hb.state = StateHalfOpen
+	hb := cb.NewBreaker(halfOpenKey, cfg.WithDefaults(), nil)
+	hb.ForceStateForTest(cb.StateHalfOpen, time.Time{})
 	p.breakers[halfOpenKey] = hb
 
 	p.evictOldest()
@@ -221,7 +227,7 @@ func TestEviction_PrefersHalfOpenOverOpen(t *testing.T) {
 
 // TestDefaultConfig_SetsHalfOpenMaxProbes validates defaults.
 func TestDefaultConfig_SetsHalfOpenMaxProbes(t *testing.T) {
-	cfg := DefaultConfig().withDefaults()
+	cfg := cb.DefaultConfig().WithDefaults()
 	if cfg.HalfOpenMaxProbes != 1 {
 		t.Fatalf("expected HalfOpenMaxProbes=1, got %d", cfg.HalfOpenMaxProbes)
 	}
@@ -234,7 +240,7 @@ func TestDefaultConfig_SetsHalfOpenMaxProbes(t *testing.T) {
 // half-open probe releases the slot for the next request.
 func TestHalfOpen_ProbeReleasedAfterResponse(t *testing.T) {
 	cfg := fastConfig()
-	b := NewBreaker("test", cfg, nil)
+	b := cb.NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
@@ -260,12 +266,12 @@ func TestHalfOpen_ProbeReleasedAfterResponse(t *testing.T) {
 // TestHalfOpen_ConcurrentProbesLimited validates concurrent probe limiting
 // under contention.
 func TestHalfOpen_ConcurrentProbesLimited(t *testing.T) {
-	cfg := Config{
+	cfg := cb.Config{
 		FailureThreshold: 3,
 		SuccessThreshold: 2,
 		ResetTimeout:     50 * time.Millisecond,
 	}
-	b := NewBreaker("test", cfg, nil)
+	b := cb.NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
@@ -310,7 +316,7 @@ func TestHalfOpen_ConcurrentProbesLimited(t *testing.T) {
 // TestProcessor_PermanentError_PassesThrough validates that permanent errors
 // from the next handler are returned but don't trip the circuit.
 func TestProcessor_PermanentError_PassesThrough(t *testing.T) {
-	cfg := Config{
+	cfg := cb.Config{
 		FailureThreshold: 2,
 		SuccessThreshold: 1,
 		ResetTimeout:     time.Second,

@@ -134,8 +134,8 @@ From `ports/stores.go`:
 
 ```go
 type LeaseStore interface {
-    Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration) (domain.LeaseToken, error)
-    Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration) (domain.LeaseToken, error)
+    Acquire(ctx context.Context, leaseID string, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error)
+    Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error)
     Release(ctx context.Context, leaseID string, token domain.LeaseToken) error
     Current(ctx context.Context, leaseID string) (domain.LeaseInfo, error)
 }

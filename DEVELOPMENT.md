@@ -22,12 +22,14 @@ gobridge/
 ├── domain/                 # Core value types -- innermost hexagonal ring
 ├── ports/                  # Port interfaces -- driven (secondary) ports
 │   └── storetest/          # Conformance test suites for store implementations
-├── runtime/                # Route execution engine
-├── bridge/                 # Composition root (Builder)
+├── circuitbreaker/         # Standalone circuit breaker state machine
+├── logging/                # Trace and debug log level utilities
+├── observability/          # Context helpers, correlation slog handler
 ├── config/                 # Declarative YAML/JSON config model
 ├── validate/               # Startup config validation
+├── runtime/                # Route execution engine
+├── bridge/                 # Composition root (Builder)
 ├── httpapi/                # Admin + monitor HTTP servers
-├── observability/          # Context helpers, correlation slog handler
 │
 ├── adapters/               # Port implementations (separate go.mod per adapter)
 │   ├── mqtt/transport/paho/
@@ -39,7 +41,9 @@ gobridge/
 │   ├── aws/credentials/ssm/
 │   ├── aws/metrics/cloudwatch/
 │   ├── aws/config/dynamodb/
+│   ├── aws/cluster/ecs/          # ECS cluster resolver
 │   ├── azure/transport/servicebus/
+│   ├── http/transport/            # HTTP POST ingress, SSE egress
 │   ├── native/store/             # Memory + SQLite store factory
 │   │   ├── memorylease/
 │   │   ├── memoryoutbox/
@@ -47,6 +51,8 @@ gobridge/
 │   │   ├── sqliteoutbox/
 │   │   └── sqlitedlq/
 │   ├── native/credentials/file/
+│   ├── native/config/file/       # File config loader/watcher
+│   ├── native/cluster/           # Native cluster resolver
 │   └── otel/
 │       ├── metrics/
 │       └── tracing/
@@ -54,7 +60,7 @@ gobridge/
 ├── processors/             # ports.Processor implementations (separate go.mod each)
 │   ├── filter/
 │   ├── transform/
-│   ├── circuitbreaker/
+│   ├── circuitbreaker/     # Processor wrapper (uses root circuitbreaker/)
 │   └── tenant/
 │
 ├── cmd/gobridge/           # Example binary
@@ -195,9 +201,15 @@ When adding a new adapter or processor module:
 
 - **domain/** must NOT import from any other gobridge package
 - **ports/** imports domain/ only
-- **runtime/** imports domain/, ports/, observability/
-- **adapters/** import ports/ and domain/ -- never runtime/ or bridge/
-- **processors/** import ports/ and domain/ -- never runtime/ or bridge/
+- **config/** has no gobridge imports (stdlib only)
+- **observability/** has no gobridge imports (stdlib only)
+- **logging/** has no gobridge imports (stdlib only)
+- **circuitbreaker/** imports domain/ only
+- **validate/** imports domain/ and ports/
+- **runtime/** imports domain/, ports/, observability/, logging/
+- **adapters/** import ports/, domain/, circuitbreaker/ -- never runtime/ or bridge/
+- **processors/** import ports/, domain/, circuitbreaker/ -- never runtime/ or bridge/
+- **httpapi/** imports runtime/, config/, ports/, domain/, observability/
 - **bridge/** imports config/, ports/, runtime/ -- it is the composition root
 
 ### Package Documentation

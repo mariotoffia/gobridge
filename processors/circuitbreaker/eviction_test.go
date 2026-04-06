@@ -7,12 +7,13 @@ import (
 	"testing"
 	"time"
 
+	cb "github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 func TestProcessor_EvictsOldestWhenAtCapacity(t *testing.T) {
-	cfg := Config{
+	cfg := cb.Config{
 		FailureThreshold: 100,
 		SuccessThreshold: 1,
 		ResetTimeout:     time.Hour,
@@ -46,7 +47,7 @@ func TestProcessor_EvictsOldestWhenAtCapacity(t *testing.T) {
 }
 
 func TestProcessor_EvictsClosedBreakerPreferentially(t *testing.T) {
-	cfg := Config{
+	cfg := cb.Config{
 		FailureThreshold: 2,
 		SuccessThreshold: 1,
 		ResetTimeout:     time.Hour,
@@ -76,7 +77,7 @@ func TestProcessor_EvictsClosedBreakerPreferentially(t *testing.T) {
 	for len(p.breakers) < maxBreakers {
 		key := fmt.Sprintf("filler-%d", i)
 		i++
-		p.breakers[key] = NewBreaker(key, cfg, nil)
+		p.breakers[key] = cb.NewBreaker(key, cfg, nil)
 	}
 	p.mu.Unlock()
 

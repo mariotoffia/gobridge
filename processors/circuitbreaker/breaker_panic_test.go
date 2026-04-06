@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	cb "github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
 )
 
@@ -15,12 +16,12 @@ import (
 // usage without the Processor's defer guard), the halfOpenInFlight counter
 // stays elevated, blocking subsequent probes.
 func TestBreaker_PanicInNext_LeavesHalfOpenProbeStuck(t *testing.T) {
-	cfg := Config{
+	cfg := cb.Config{
 		FailureThreshold: 1,
 		SuccessThreshold: 1,
 		ResetTimeout:     10 * time.Millisecond,
 	}
-	b := NewBreaker("panic-test", cfg, nil)
+	b := cb.NewBreaker("panic-test", cfg, nil)
 
 	if err := b.BeforeRequest(); err != nil {
 		t.Fatalf("beforeRequest in closed state: %v", err)
@@ -42,7 +43,7 @@ func TestBreaker_PanicInNext_LeavesHalfOpenProbeStuck(t *testing.T) {
 	// happens when next() panics in Process() — afterRequest is never
 	// called because it is not deferred.
 
-	if got := b.halfOpenInFlight.Load(); got != 1 {
+	if got := b.HalfOpenInFlight(); got != 1 {
 		t.Fatalf("halfOpenInFlight = %d, want 1 (stuck probe)", got)
 	}
 
@@ -59,7 +60,7 @@ func TestBreaker_PanicInNext_LeavesHalfOpenProbeStuck(t *testing.T) {
 // inside Process(), the deferred afterRequest is still called so the breaker
 // transitions correctly (panic counts as a failure).
 func TestProcessor_PanicInNext_RecoversProperly(t *testing.T) {
-	cfg := Config{
+	cfg := cb.Config{
 		FailureThreshold: 1,
 		SuccessThreshold: 1,
 		ResetTimeout:     10 * time.Millisecond,
@@ -96,12 +97,12 @@ func TestProcessor_PanicInNext_RecoversProperly(t *testing.T) {
 // for undefined state values.
 func TestState_String_UnknownValue(t *testing.T) {
 	tests := []struct {
-		state State
+		state cb.State
 		want  string
 	}{
-		{State(-1), "unknown"},
-		{State(3), "unknown"},
-		{State(99), "unknown"},
+		{cb.State(-1), "unknown"},
+		{cb.State(3), "unknown"},
+		{cb.State(99), "unknown"},
 	}
 
 	for _, tc := range tests {
@@ -126,15 +127,15 @@ func TestHalfOpen_MaxProbesDefaultsToOne(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := Config{
+			cfg := cb.Config{
 				FailureThreshold:  3,
 				SuccessThreshold:  2,
 				ResetTimeout:      50 * time.Millisecond,
 				HalfOpenMaxProbes: tc.value,
 			}
-			b := NewBreaker("defaults", cfg, nil)
-			if b.config.HalfOpenMaxProbes != 1 {
-				t.Errorf("HalfOpenMaxProbes = %d, want 1", b.config.HalfOpenMaxProbes)
+			b := cb.NewBreaker("defaults", cfg, nil)
+			if b.InternalConfig().HalfOpenMaxProbes != 1 {
+				t.Errorf("HalfOpenMaxProbes = %d, want 1", b.InternalConfig().HalfOpenMaxProbes)
 			}
 		})
 	}

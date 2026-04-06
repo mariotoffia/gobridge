@@ -5,12 +5,14 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	cb "github.com/mariotoffia/gobridge/circuitbreaker"
 )
 
 var errTest = errors.New("test failure")
 
-func fastConfig() Config {
-	return Config{
+func fastConfig() cb.Config {
+	return cb.Config{
 		FailureThreshold: 3,
 		SuccessThreshold: 2,
 		ResetTimeout:     50 * time.Millisecond,
@@ -18,7 +20,7 @@ func fastConfig() Config {
 }
 
 func TestBreaker_StartsInClosedState(t *testing.T) {
-	b := NewBreaker("test", fastConfig(), nil)
+	b := cb.NewBreaker("test", fastConfig(), nil)
 	m := b.GetMetrics()
 	if m.State != "closed" {
 		t.Fatalf("expected closed, got %s", m.State)
@@ -27,7 +29,7 @@ func TestBreaker_StartsInClosedState(t *testing.T) {
 
 func TestBreaker_OpensAfterFailureThreshold(t *testing.T) {
 	cfg := fastConfig()
-	b := NewBreaker("test", cfg, nil)
+	b := cb.NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		if err := b.BeforeRequest(); err != nil {
@@ -44,7 +46,7 @@ func TestBreaker_OpensAfterFailureThreshold(t *testing.T) {
 
 func TestBreaker_OpenRejectsRequests(t *testing.T) {
 	cfg := fastConfig()
-	b := NewBreaker("test", cfg, nil)
+	b := cb.NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
@@ -59,7 +61,7 @@ func TestBreaker_OpenRejectsRequests(t *testing.T) {
 
 func TestBreaker_TransitionsToHalfOpenAfterTimeout(t *testing.T) {
 	cfg := fastConfig()
-	b := NewBreaker("test", cfg, nil)
+	b := cb.NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
@@ -81,7 +83,7 @@ func TestBreaker_TransitionsToHalfOpenAfterTimeout(t *testing.T) {
 
 func TestBreaker_HalfOpenToClosedAfterSuccessThreshold(t *testing.T) {
 	cfg := fastConfig()
-	b := NewBreaker("test", cfg, nil)
+	b := cb.NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
@@ -105,7 +107,7 @@ func TestBreaker_HalfOpenToClosedAfterSuccessThreshold(t *testing.T) {
 
 func TestBreaker_HalfOpenToOpenOnFailure(t *testing.T) {
 	cfg := fastConfig()
-	b := NewBreaker("test", cfg, nil)
+	b := cb.NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
@@ -125,7 +127,7 @@ func TestBreaker_HalfOpenToOpenOnFailure(t *testing.T) {
 
 func TestBreaker_SuccessResetsConsecutiveFailures(t *testing.T) {
 	cfg := fastConfig()
-	b := NewBreaker("test", cfg, nil)
+	b := cb.NewBreaker("test", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold-1; i++ {
 		_ = b.BeforeRequest()
@@ -145,13 +147,13 @@ func TestBreaker_SuccessResetsConsecutiveFailures(t *testing.T) {
 }
 
 func TestBreaker_OnStateChangeCallback(t *testing.T) {
-	var transitions []struct{ from, to State }
+	var transitions []struct{ from, to cb.State }
 	var mu sync.Mutex
 
 	cfg := fastConfig()
-	b := NewBreaker("cb-test", cfg, func(key string, from, to State) {
+	b := cb.NewBreaker("cb-test", cfg, func(key string, from, to cb.State) {
 		mu.Lock()
-		transitions = append(transitions, struct{ from, to State }{from, to})
+		transitions = append(transitions, struct{ from, to cb.State }{from, to})
 		mu.Unlock()
 	})
 
@@ -164,7 +166,7 @@ func TestBreaker_OnStateChangeCallback(t *testing.T) {
 	if len(transitions) != 1 {
 		t.Fatalf("expected 1 transition, got %d", len(transitions))
 	}
-	if transitions[0].from != StateClosed || transitions[0].to != StateOpen {
+	if transitions[0].from != cb.StateClosed || transitions[0].to != cb.StateOpen {
 		t.Fatalf("expected closed->open, got %v->%v", transitions[0].from, transitions[0].to)
 	}
 	mu.Unlock()
@@ -172,7 +174,7 @@ func TestBreaker_OnStateChangeCallback(t *testing.T) {
 
 func TestBreaker_MetricsCounters(t *testing.T) {
 	cfg := fastConfig()
-	b := NewBreaker("metrics-test", cfg, nil)
+	b := cb.NewBreaker("metrics-test", cfg, nil)
 
 	_ = b.BeforeRequest()
 	b.AfterRequest(nil)
@@ -192,12 +194,12 @@ func TestBreaker_MetricsCounters(t *testing.T) {
 }
 
 func TestBreaker_ConcurrentAccess(t *testing.T) {
-	cfg := Config{
+	cfg := cb.Config{
 		FailureThreshold: 100,
 		SuccessThreshold: 10,
 		ResetTimeout:     50 * time.Millisecond,
 	}
-	b := NewBreaker("concurrent", cfg, nil)
+	b := cb.NewBreaker("concurrent", cfg, nil)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
@@ -224,7 +226,7 @@ func TestBreaker_ConcurrentAccess(t *testing.T) {
 
 func TestBreaker_BoundaryOneFailureBelowThreshold(t *testing.T) {
 	cfg := fastConfig()
-	b := NewBreaker("boundary", cfg, nil)
+	b := cb.NewBreaker("boundary", cfg, nil)
 
 	for i := 0; i < cfg.FailureThreshold-1; i++ {
 		_ = b.BeforeRequest()

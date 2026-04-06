@@ -16,6 +16,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
+	cb "github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/processors/circuitbreaker"
 	"github.com/mariotoffia/gobridge/processors/transform"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -87,7 +88,7 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 	// Placed AFTER CB in chain so CB observes the error from next().
 	errorByHeaderProc := &headerErrorProcessor{}
 
-	cbProc := circuitbreaker.New("gap-cb", circuitbreaker.Config{
+	cbProc := circuitbreaker.New("gap-cb", cb.Config{
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
 		ResetTimeout:     3 * time.Second,

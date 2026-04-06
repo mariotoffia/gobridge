@@ -187,3 +187,30 @@ func (b *Breaker) GetMetrics() BreakerMetrics {
 		LastFailureTime:      b.lastFailureTime,
 	}
 }
+
+// --- Test helpers (exported for cross-package testing) ---
+
+// ForceStateForTest sets the breaker state directly. Intended for test code only.
+func (b *Breaker) ForceStateForTest(state State, openedAt time.Time) {
+	b.mu.Lock()
+	b.state = state
+	b.openedAt = openedAt
+	b.mu.Unlock()
+}
+
+// SetOnStateChangeForTest replaces the state change callback after construction.
+func (b *Breaker) SetOnStateChangeForTest(fn func(string, State, State)) {
+	b.mu.Lock()
+	b.onStateChange = fn
+	b.mu.Unlock()
+}
+
+// HalfOpenInFlight returns the current number of in-flight half-open probes.
+func (b *Breaker) HalfOpenInFlight() int32 {
+	return b.halfOpenInFlight.Load()
+}
+
+// InternalConfig returns the breaker's internal configuration for assertions.
+func (b *Breaker) InternalConfig() Config {
+	return b.config
+}

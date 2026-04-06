@@ -188,7 +188,7 @@ and mappings are applied on top. When `true`, only mapped fields appear in outpu
 
 ## Circuit Breaker Processor
 
-**Package:** `processors/circuitbreaker` | **Config type:** `circuitbreaker.Config`
+**Package:** `circuitbreaker` (standalone state machine) + `processors/circuitbreaker` (processor wrapper) | **Config type:** `circuitbreaker.Config`
 
 Tracks downstream failures per key and short-circuits requests when a breaker
 trips open, protecting the system from hammering a failing dependency.
