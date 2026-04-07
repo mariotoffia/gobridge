@@ -223,26 +223,24 @@ func (s *Store) listByIndex(
 	}
 
 	// DynamoDB KeyConditionExpression supports at most one comparison on
-	// the sort key. When both Since and Before are set, put >= :since in
-	// the key condition (efficient index range scan) and < :before in the
-	// FilterExpression (applied post-scan).
+	// the sort key, and sort key attributes cannot appear in
+	// FilterExpression. When both Since and Before are set, use BETWEEN
+	// with Before-1ms to achieve a half-open range [Since, Before).
 	var filterParts []string
 
-	if !filter.Since.IsZero() {
+	if !filter.Since.IsZero() && !filter.Before.IsZero() {
+		// Both bounds: BETWEEN :since AND :before_excl (Before - 1ms for half-open range).
+		keyExpr += " AND #fa BETWEEN :since AND :before_excl"
+		exprNames["#fa"] = attrFailedAt
+		exprValues[":since"] = &ddbtypes.AttributeValueMemberN{Value: i64(filter.Since.UnixMilli())}
+		exprValues[":before_excl"] = &ddbtypes.AttributeValueMemberN{Value: i64(filter.Before.UnixMilli() - 1)}
+	} else if !filter.Since.IsZero() {
 		keyExpr += " AND #fa >= :since"
 		exprNames["#fa"] = attrFailedAt
 		exprValues[":since"] = &ddbtypes.AttributeValueMemberN{Value: i64(filter.Since.UnixMilli())}
-	}
-	if !filter.Before.IsZero() {
-		if filter.Since.IsZero() {
-			// Only Before set — safe to use in key condition.
-			keyExpr += " AND #fa < :before"
-			exprNames["#fa"] = attrFailedAt
-		} else {
-			// Both Since and Before — move Before to filter expression.
-			filterParts = append(filterParts, "#fa < :before")
-			exprNames["#fa"] = attrFailedAt
-		}
+	} else if !filter.Before.IsZero() {
+		keyExpr += " AND #fa < :before"
+		exprNames["#fa"] = attrFailedAt
 		exprValues[":before"] = &ddbtypes.AttributeValueMemberN{Value: i64(filter.Before.UnixMilli())}
 	}
 

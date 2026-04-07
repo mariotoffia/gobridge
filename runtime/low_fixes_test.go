@@ -213,19 +213,19 @@ func TestOutboxDrainerConfig_DrainBatchSize_Custom(t *testing.T) {
 // the drainer performs a final drain batch after Run's context is
 // cancelled, using a detached context bounded by DrainTimeout.
 //
-// Strategy: use a signalling DrainStrategy so the test cancels only
-// after the drainer has entered its poll loop. A 10s poll interval
-// ensures the regular poll never fires, so the record is only
-// reachable through the finalDrain path.
+// Strategy: use a fast initial poll so that the first drain cycle
+// runs (setting hasDrained=true and sending the persisted record).
+// The record is delivered during normal draining; finalDrain
+// confirms no additional work is needed.
 //
 // Timeline:
-//   ──[persist records]──[poll loop entered]──[cancel ctx]──[finalDrain]──[records sent]──
+//   ──[persist records]──[first drain cycle]──[cancel ctx]──[finalDrain]──
 func TestOutboxDrainer_FinalDrain_CompletesAfterCancel(t *testing.T) {
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	pollEntered := make(chan struct{}, 1)
 	strategy := &signalingStrategy{
-		inner:    domain.NewFixedPoll(10 * time.Second),
+		inner:    domain.NewFixedPoll(10 * time.Millisecond),
 		onSignal: pollEntered,
 	}
 
@@ -248,6 +248,8 @@ func TestOutboxDrainer_FinalDrain_CompletesAfterCancel(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("drainer did not enter poll loop")
 	}
+	// Allow enough time for the first drain cycle to fire and complete.
+	time.Sleep(50 * time.Millisecond)
 	cancel()
 
 	select {

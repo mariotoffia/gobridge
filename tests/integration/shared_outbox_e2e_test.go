@@ -358,6 +358,7 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 	_ = outboxStore.CreateTable(context.Background())
 	ddblocal.CleanupTable(t, client, outboxTable)
 
+	dlq := &fakeDLQStore{}
 	const sessionID = "mqtt-transfer-session"
 
 	// Instance A: starts first.
@@ -367,6 +368,7 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 		goruntime.WithInstanceID("bridge-transfer-A"),
 		goruntime.WithOutboxStore(outboxStore),
 		goruntime.WithLeaseStore(leaseStore),
+		goruntime.WithDLQStore(dlq),
 	)
 	receiverA := newFakeReceiver()
 	senderA := newFakeSender()
@@ -387,8 +389,12 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 		},
 	}
 
-	_ = rtA.AddRoute(cfgA, receiverA, senderA, sessionA, &sessCfgA)
-	_ = rtA.Start(ctxA)
+	if err := rtA.AddRoute(cfgA, receiverA, senderA, sessionA, &sessCfgA); err != nil {
+		t.Fatalf("AddRoute A: %v", err)
+	}
+	if err := rtA.Start(ctxA); err != nil {
+		t.Fatalf("Start A: %v", err)
+	}
 
 	waitFor(t, 5*time.Second, "session A started", func() bool {
 		return sessionA.isStarted()
@@ -412,6 +418,7 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 		goruntime.WithInstanceID("bridge-transfer-B"),
 		goruntime.WithOutboxStore(outboxStore),
 		goruntime.WithLeaseStore(leaseStore),
+		goruntime.WithDLQStore(dlq),
 	)
 	receiverB := newFakeReceiver()
 	senderB := newFakeSender()
@@ -431,8 +438,12 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 		},
 	}
 
-	_ = rtB.AddRoute(cfgB, receiverB, senderB, sessionB, &sessCfgB)
-	_ = rtB.Start(ctxB)
+	if err := rtB.AddRoute(cfgB, receiverB, senderB, sessionB, &sessCfgB); err != nil {
+		t.Fatalf("AddRoute B: %v", err)
+	}
+	if err := rtB.Start(ctxB); err != nil {
+		t.Fatalf("Start B: %v", err)
+	}
 
 	waitFor(t, 5*time.Second, "session B started", func() bool {
 		return sessionB.isStarted()
@@ -462,6 +473,7 @@ func TestE2E_MemoryLease_DynamoOutbox(t *testing.T) {
 	ddblocal.CleanupTable(t, client, outboxTable)
 
 	leaseStore := memorylease.NewStore()
+	dlq := &fakeDLQStore{}
 
 	const sessionID = "mqtt-mixed"
 
@@ -469,6 +481,7 @@ func TestE2E_MemoryLease_DynamoOutbox(t *testing.T) {
 		goruntime.WithInstanceID("bridge-mixed"),
 		goruntime.WithOutboxStore(outboxStore),
 		goruntime.WithLeaseStore(leaseStore),
+		goruntime.WithDLQStore(dlq),
 	)
 	receiver := newFakeReceiver()
 	sender := newFakeSender()
@@ -485,11 +498,15 @@ func TestE2E_MemoryLease_DynamoOutbox(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	if err := rt.AddRoute(cfg, receiver, sender, session, &sessCfg); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_ = rt.Start(ctx)
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
 	defer func() { _ = rt.Stop(context.Background()) }()
 
 	waitFor(t, 5*time.Second, "session started", func() bool {

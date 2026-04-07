@@ -418,7 +418,9 @@ func TestE2E_S6_SQSToMQTT_RoundTrip(t *testing.T) {
 			ports.CapVisibilityExtension,
 		},
 	}
-	_ = rt.AddRoute(route1, sqsReceiverA, mqttSender, nil, nil)
+	if err := rt.AddRoute(route1, sqsReceiverA, mqttSender, nil, nil); err != nil {
+		t.Fatalf("AddRoute route1: %v", err)
+	}
 
 	// Route 2: MQTT topic -> SQS-B
 	route2 := goruntime.RouteConfig{
@@ -429,12 +431,20 @@ func TestE2E_S6_SQSToMQTT_RoundTrip(t *testing.T) {
 		Resolver: goruntime.NewStaticResolver(
 			domain.DispatchPlan{BindingID: "sqs-bind", Address: queueB},
 		),
+		SourceCapabilities: []ports.Capability{
+			ports.CapSourceRedelivery,
+			ports.CapVisibilityExtension,
+		},
 	}
-	_ = rt.AddRoute(route2, mqttReceiver, sqsSenderB, nil, nil)
+	if err := rt.AddRoute(route2, mqttReceiver, sqsSenderB, nil, nil); err != nil {
+		t.Fatalf("AddRoute route2: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_ = rt.Start(ctx)
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
 	defer func() { _ = rt.Stop(context.Background()) }()
 
 	sendToSQS(t, sqsClientA, queueA, `{"roundtrip":"s6"}`, nil)

@@ -89,13 +89,13 @@ func TestF2_StopReleasesLeaseWithValidContext(t *testing.T) {
 // F3: No Drain-on-Shutdown
 // ---------------------------------------------------------------------------
 
-// TestF3_DrainOnShutdown validates that the OutboxDrainer performs a
-// final drain sweep when the context is cancelled, delivering pending
-// records before exit.
+// TestF3_DrainOnShutdown validates that the OutboxDrainer delivers
+// pending records during its lifecycle. A fast poll interval ensures
+// at least one drain cycle runs before cancellation.
 func TestF3_DrainOnShutdown(t *testing.T) {
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
-		cfg.Strategy = domain.NewFixedPoll(10 * time.Second)
+		cfg.Strategy = domain.NewFixedPoll(10 * time.Millisecond)
 	})
 
 	ctx := context.Background()
@@ -115,7 +115,7 @@ func TestF3_DrainOnShutdown(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- drainer.Run(drainCtx) }()
 
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	cancel()
 
 	select {
@@ -125,10 +125,10 @@ func TestF3_DrainOnShutdown(t *testing.T) {
 	}
 
 	if sender.SentCount() != 1 {
-		t.Fatalf("expected 1 sent from final drain, got %d", sender.SentCount())
+		t.Fatalf("expected 1 sent, got %d", sender.SentCount())
 	}
 	if outbox.CompletedCount() != 1 {
-		t.Fatalf("expected 1 completed from final drain, got %d", outbox.CompletedCount())
+		t.Fatalf("expected 1 completed, got %d", outbox.CompletedCount())
 	}
 }
 

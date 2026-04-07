@@ -39,6 +39,10 @@ func setupSQSQueue(t *testing.T, prefix string) (string, *awssqs.Client) {
 
 func newSQSReceiver(t *testing.T, queueURL string) *sqsadapter.Receiver {
 	t.Helper()
+	// The SQS adapter builds its own AWS client via LoadDefaultConfig.
+	// Provide static credentials so tests don't depend on host AWS config.
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 	ep := sqslocal.Endpoint(t)
 	r, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          queueURL,
@@ -56,6 +60,8 @@ func newSQSReceiver(t *testing.T, queueURL string) *sqsadapter.Receiver {
 
 func newSQSSender(t *testing.T, queueURL string) *sqsadapter.Sender {
 	t.Helper()
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 	ep := sqslocal.Endpoint(t)
 	s, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueURL: queueURL,
@@ -116,6 +122,8 @@ func pollSQS(t *testing.T, client *awssqs.Client, queueURL string, count int, ti
 
 func newSQSSenderFIFO(t *testing.T, queueURL, groupID string) *sqsadapter.Sender {
 	t.Helper()
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 	ep := sqslocal.Endpoint(t)
 	s, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueURL:       queueURL,
@@ -133,6 +141,8 @@ func newSQSSenderFIFO(t *testing.T, queueURL, groupID string) *sqsadapter.Sender
 
 func newSQSReceiverWithVisibility(t *testing.T, queueURL string, visibilityTimeout int32) *sqsadapter.Receiver {
 	t.Helper()
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 	ep := sqslocal.Endpoint(t)
 	autoExtend := false
 	r, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{

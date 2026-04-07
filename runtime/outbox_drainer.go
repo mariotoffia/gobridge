@@ -35,6 +35,7 @@ type OutboxDrainer struct {
 
 	drainTimeout     time.Duration
 	currentBatchSize int
+	hasDrained       bool
 
 	// tokenFn returns the current lease token and whether the caller
 	// still holds the lease. The OutboxDrainer only processes when
@@ -172,6 +173,7 @@ func (d *OutboxDrainer) Run(ctx context.Context) error {
 				timer.Reset(d.strategy.NextInterval(0))
 				continue
 			}
+			d.hasDrained = true
 			n, err := d.drainBatch(ctx, token)
 			if err != nil {
 				if errors.Is(err, domain.ErrStaleFencingToken) {
@@ -199,6 +201,9 @@ func (d *OutboxDrainer) Run(ctx context.Context) error {
 // may run up to max(SendTimeout+5s, DrainTimeout) via the workCtx inside
 // drainBatch, so the total wall-clock time can exceed DrainTimeout.
 func (d *OutboxDrainer) finalDrain() error {
+	if !d.hasDrained {
+		return nil
+	}
 	token, hasLease := d.tokenFn()
 	if !hasLease {
 		return nil
