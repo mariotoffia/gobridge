@@ -1,0 +1,107 @@
+package bootstrap
+
+import (
+	"context"
+	"net/http"
+	"testing"
+
+	"github.com/mariotoffia/gobridge/bridge"
+	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
+	"github.com/stretchr/testify/assert"
+)
+
+// stubFactory is a minimal bridge.TransportFactory for swap mode detection tests.
+type stubFactory struct {
+	capabilities []ports.Capability
+}
+
+var _ bridge.TransportFactory = (*stubFactory)(nil)
+
+func (f *stubFactory) NewSession(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+	return nil, nil
+}
+func (f *stubFactory) NewReceiver(_ context.Context, _ config.ReceiverDef, _ ports.Session) (ports.Receiver, error) {
+	return nil, nil
+}
+func (f *stubFactory) NewSender(_ context.Context, _ config.SenderDef, _ ports.Session) (ports.Sender, error) {
+	return nil, nil
+}
+func (f *stubFactory) Capabilities() []ports.Capability {
+	return f.capabilities
+}
+
+func TestDetectSwapMode_OverlapWhenNoExclusiveIdentity(t *testing.T) {
+	reg := &factoryRegistry{
+		cfg: &config.BridgeConfig{
+			Sessions: []config.SessionDef{
+				{ID: "http-sess", Transport: "http"},
+			},
+		},
+		transports: map[string]bridge.TransportFactory{
+			"http": &stubFactory{capabilities: []ports.Capability{ports.CapHTTPEndpoint}},
+		},
+	}
+
+	mode := reg.detectSwapMode(reg.cfg)
+	assert.Equal(t, swapModeOverlap, mode)
+}
+
+func TestDetectSwapMode_PrepareCommitWhenExclusiveIdentity(t *testing.T) {
+	reg := &factoryRegistry{
+		cfg: &config.BridgeConfig{
+			Sessions: []config.SessionDef{
+				{ID: "mqtt-sess", Transport: "mqtt"},
+			},
+		},
+		transports: map[string]bridge.TransportFactory{
+			"mqtt": &stubFactory{capabilities: []ports.Capability{ports.CapExclusiveIdentity}},
+		},
+	}
+
+	mode := reg.detectSwapMode(reg.cfg)
+	assert.Equal(t, swapModePrepareCommit, mode)
+}
+
+func TestDetectSwapMode_UnknownTransportSkipped(t *testing.T) {
+	reg := &factoryRegistry{
+		cfg: &config.BridgeConfig{
+			Sessions: []config.SessionDef{
+				{ID: "unknown-sess", Transport: "unknown"},
+			},
+		},
+		transports: map[string]bridge.TransportFactory{},
+	}
+
+	mode := reg.detectSwapMode(reg.cfg)
+	assert.Equal(t, swapModeOverlap, mode)
+}
+
+func TestTransportHandler_ReturnsNotFoundWhenNoHTTPEndpoints(t *testing.T) {
+	reg := &factoryRegistry{
+		cfg: &config.BridgeConfig{
+			Receivers: []config.ReceiverDef{
+				{ID: "rx", Transport: "mqtt"},
+			},
+		},
+		http: nil,
+	}
+
+	handler := reg.transportHandler()
+	assert.NotNil(t, handler)
+
+	rec := &fakeResponseWriter{code: 0, headers: http.Header{}}
+	req, _ := http.NewRequest(http.MethodGet, "/", nil)
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.code)
+}
+
+type fakeResponseWriter struct {
+	code    int
+	headers http.Header
+	body    []byte
+}
+
+func (w *fakeResponseWriter) Header() http.Header        { return w.headers }
+func (w *fakeResponseWriter) Write(b []byte) (int, error) { w.body = append(w.body, b...); return len(b), nil }
+func (w *fakeResponseWriter) WriteHeader(code int)        { w.code = code }

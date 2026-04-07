@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsssm "github.com/aws/aws-sdk-go-v2/service/ssm"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/model"
+	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/testutil/localstack"
 	"github.com/stretchr/testify/require"
 )
@@ -30,7 +30,7 @@ func TestIntegration_AppStartsWithLocalstackSSMSecrets(t *testing.T) {
 	putSecureString(t, ssmClient, "/gobridge/monitor", "monitor-secret-key-123")
 
 	cfgPath := t.TempDir() + "/bridge.yaml"
-	app := NewApp(model.BootstrapConfig{
+	app := NewApp(deployinfra.BootstrapConfig{
 		BridgeID:           "bridge-integration",
 		ConfigFilePath:     cfgPath,
 		PollInterval:       "100ms",
@@ -41,6 +41,7 @@ func TestIntegration_AppStartsWithLocalstackSSMSecrets(t *testing.T) {
 		MonitorAPIKeyParam: "/gobridge/monitor",
 		AWSRegion:          "us-east-1",
 		SSMEndpoint:        localstack.Endpoint(t),
+		DevMode:            true,
 	})
 
 	require.NoError(t, app.Start(t.Context()))

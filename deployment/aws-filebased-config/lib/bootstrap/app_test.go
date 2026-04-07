@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/config"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/model"
+	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,7 +26,7 @@ func (r staticParameterResolver) ResolveString(_ context.Context, ref string) (s
 
 func TestApp_StartsWithMissingFileAndServesAdminConfig(t *testing.T) {
 	cfgPath := t.TempDir() + "/bridge.yaml"
-	app := NewApp(model.BootstrapConfig{
+	app := NewApp(deployinfra.BootstrapConfig{
 		BridgeID:           "bridge-a",
 		ConfigFilePath:     cfgPath,
 		PollInterval:       "100ms",
@@ -60,7 +60,7 @@ func TestApp_StartsWithMissingFileAndServesAdminConfig(t *testing.T) {
 
 func TestApp_ReloadsWhenConfigFileAppearsAndRejectsInvalidChanges(t *testing.T) {
 	cfgPath := t.TempDir() + "/bridge.yaml"
-	app := NewApp(model.BootstrapConfig{
+	app := NewApp(deployinfra.BootstrapConfig{
 		BridgeID:          "bridge-b",
 		ConfigFilePath:    cfgPath,
 		PollInterval:      "100ms",
@@ -127,7 +127,7 @@ func TestResolveInputs_InjectsHTTPSecretsWithoutMutatingLogicalConfig(t *testing
 		"/monitor": "monitor-secret-key-123",
 		"/rx-key":  "receiver-secret",
 		"/tx-key":  "sender-secret",
-	}, model.BootstrapConfig{
+	}, deployinfra.BootstrapConfig{
 		BridgeID:                 "bridge-c",
 		ConfigFilePath:           "/tmp/bridge.yaml",
 		AdminAPIKeyParam:         "/admin",
@@ -156,7 +156,7 @@ func TestResolveInputs_ErrorOnMissingAdminKey(t *testing.T) {
 
 	_, err := resolveInputs(context.Background(), staticParameterResolver{
 		"/monitor": "monitor-secret-key-123",
-	}, model.BootstrapConfig{
+	}, deployinfra.BootstrapConfig{
 		BridgeID:           "bridge-e",
 		ConfigFilePath:     "/tmp/bridge.yaml",
 		AdminAPIKeyParam:   "/admin",
@@ -182,7 +182,7 @@ func TestResolveInputs_ErrorOnMissingReceiverKey(t *testing.T) {
 	_, err := resolveInputs(context.Background(), staticParameterResolver{
 		"/admin":   "admin-key",
 		"/monitor": "monitor-key",
-	}, model.BootstrapConfig{
+	}, deployinfra.BootstrapConfig{
 		BridgeID:                 "bridge-f",
 		ConfigFilePath:           "/tmp/bridge.yaml",
 		AdminAPIKeyParam:         "/admin",
@@ -196,11 +196,11 @@ func TestResolveInputs_ErrorOnMissingReceiverKey(t *testing.T) {
 }
 
 func TestValidateFilesystemProfile_RejectsUnsupportedClusterFeatures(t *testing.T) {
-	replicated := model.BootstrapConfig{
+	replicated := deployinfra.BootstrapConfig{
 		BridgeID:         "bridge-d",
 		ConfigFilePath:   "/tmp/bridge.yaml",
 		AdminAPIKeyParam: "/admin",
-		Topology:         model.TopologyFilesystemReplicated,
+		Topology:         deployinfra.TopologyFilesystemReplicated,
 	}
 
 	// Clustered deployment_mode is allowed on filesystem profiles;

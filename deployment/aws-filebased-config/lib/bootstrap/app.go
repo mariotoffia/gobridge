@@ -10,7 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/model"
+	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/httpapi"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -31,7 +31,7 @@ func WithCredentialStore(store ports.CredentialStore) Option {
 }
 
 type App struct {
-	cfg model.BootstrapConfig
+	cfg deployinfra.BootstrapConfig
 
 	logger            *slog.Logger
 	parameterResolver parameterResolver
@@ -48,12 +48,14 @@ type App struct {
 	handlerRef *transportHandlerRef
 
 	watchCancel context.CancelFunc
+	watchWg     sync.WaitGroup
 
+	// mu protects started, watchCancel, and serializes config reloads.
 	mu      sync.Mutex
 	started bool
 }
 
-func NewApp(cfg model.BootstrapConfig, opts ...Option) *App {
+func NewApp(cfg deployinfra.BootstrapConfig, opts ...Option) *App {
 	cfg = cfg.Normalized()
 	app := &App{
 		cfg:        cfg,
@@ -85,7 +87,11 @@ func (a *App) Start(ctx context.Context) error {
 		a.parameterResolver = resolver
 	}
 	if a.credentialStore == nil {
-		a.credentialStore = newDefaultCredentialStore(a.cfg)
+		store, err := newDefaultCredentialStore(ctx, a.cfg)
+		if err != nil {
+			return err
+		}
+		a.credentialStore = store
 	}
 
 	source := newOptionalFileSource(a.cfg.ConfigFilePath, func() *config.BridgeConfig {
@@ -139,11 +145,13 @@ func (a *App) Start(ctx context.Context) error {
 		return fmt.Errorf("bootstrap: start config watcher: %w", err)
 	}
 
-	watchCtx, watchCancel := context.WithCancel(context.Background())
+	watchCtx, watchCancel := context.WithCancel(ctx)
 	a.watchCancel = watchCancel
 	a.started = true
 
-	go a.watchLoop(watchCtx, watchCh)
+	a.watchWg.Go(func() {
+		a.watchLoop(watchCtx, watchCh)
+	})
 
 	return nil
 }
@@ -159,12 +167,17 @@ func (a *App) Stop(ctx context.Context) error {
 		a.watchCancel()
 		a.watchCancel = nil
 	}
+	a.mu.Unlock()
+
+	// Wait for watchLoop goroutine to finish before tearing down resources
+	// it may still be using (e.g. mid-applyLogicalConfig).
+	a.watchWg.Wait()
+
 	manager := a.manager
 	httpServer := a.httpServer
 	transportServer := a.transportServer
 	currentRuntime := a.runtimeRef.Get()
 	currentApplied := a.appliedRef.Get()
-	a.mu.Unlock()
 
 	if manager != nil {
 		manager.Stop()
@@ -243,7 +256,13 @@ func (a *App) watchLoop(ctx context.Context, watchCh <-chan *config.BridgeConfig
 				return
 			}
 			a.logicalRef.Set(logicalCfg)
-			if err := a.applyLogicalConfig(ctx, logicalCfg); err != nil {
+
+			// Serialize config reloads to prevent concurrent
+			// applyLogicalConfig calls from racing on runtime swap.
+			a.mu.Lock()
+			err := a.applyLogicalConfig(ctx, logicalCfg)
+			a.mu.Unlock()
+			if err != nil {
 				a.logger.Warn("bootstrap: config reload rejected; keeping last good runtime", "error", err)
 			}
 		}
@@ -334,7 +353,16 @@ func (a *App) applyOverlap(
 		return fmt.Errorf("bootstrap: start runtime: %w", err)
 	}
 
+	// If anything below panics, ensure the started runtime is cleaned up.
+	installed := false
+	defer func() {
+		if !installed {
+			_ = stopRuntime(plan.runtime, plan.logical)
+		}
+	}()
+
 	a.installPlan(plan)
+	installed = true
 
 	if oldRuntime != nil {
 		if err := stopRuntime(oldRuntime, oldApplied); err != nil {

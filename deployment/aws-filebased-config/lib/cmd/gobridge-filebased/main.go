@@ -9,8 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/bootstrap"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/model"
 )
 
 func main() {
@@ -36,7 +36,7 @@ func main() {
 	}
 }
 
-func loadConfig(path string) (model.BootstrapConfig, error) {
+func loadConfig(path string) (infra.BootstrapConfig, error) {
 	if path != "" {
 		return bootstrap.LoadBootstrapConfigFile(path)
 	}

@@ -1,10 +1,15 @@
-package model
+// Package infra contains shared deployment types used by both the CDK
+// constructs (infrastructure-as-code) and the runtime bootstrap library.
+// This module has zero external dependencies so CDK consumers can import
+// it without pulling in the full runtime dependency tree.
+package infra
 
 import (
 	"fmt"
 	"time"
 )
 
+// NodeRole identifies the role of a bridge node in a multi-node deployment.
 type NodeRole string
 
 const (
@@ -12,6 +17,7 @@ const (
 	NodeRoleWorker  NodeRole = "worker"
 )
 
+// Topology describes how multiple bridge replicas share configuration.
 type Topology string
 
 const (
@@ -59,6 +65,7 @@ type BootstrapConfig struct {
 	DevMode bool `json:"dev_mode,omitempty"`
 }
 
+// Normalized returns a copy with defaults applied for any unset fields.
 func (c BootstrapConfig) Normalized() BootstrapConfig {
 	out := c
 	if out.NodeRole == "" {
@@ -85,6 +92,9 @@ func (c BootstrapConfig) Normalized() BootstrapConfig {
 	return out
 }
 
+// EffectivePollInterval returns the config file poll interval as a
+// time.Duration, falling back to DefaultPollInterval on parse error
+// or non-positive values.
 func (c BootstrapConfig) EffectivePollInterval() time.Duration {
 	if c.PollInterval == "" {
 		return DefaultPollInterval
@@ -96,30 +106,32 @@ func (c BootstrapConfig) EffectivePollInterval() time.Duration {
 	return d
 }
 
+// Validate checks that all required fields are set and enum values are valid.
+// Call Normalized() before Validate() to fill in defaults.
 func (c BootstrapConfig) Validate() error {
 	switch c.NodeRole {
 	case NodeRoleControl, NodeRoleWorker:
 	default:
-		return fmt.Errorf("bootstrap: unsupported node_role %q (call Normalized() first)", c.NodeRole)
+		return fmt.Errorf("infra: unsupported node_role %q (call Normalized() first)", c.NodeRole)
 	}
 
 	switch c.Topology {
 	case TopologySingle, TopologyFilesystemReplicated:
 	default:
-		return fmt.Errorf("bootstrap: unsupported topology %q (call Normalized() first)", c.Topology)
+		return fmt.Errorf("infra: unsupported topology %q (call Normalized() first)", c.Topology)
 	}
 
 	if c.BridgeID == "" {
-		return fmt.Errorf("bootstrap: bridge_id is required")
+		return fmt.Errorf("infra: bridge_id is required")
 	}
 	if c.ConfigFilePath == "" {
-		return fmt.Errorf("bootstrap: config_file_path is required")
+		return fmt.Errorf("infra: config_file_path is required")
 	}
 	if c.AdminAPIKeyParam == "" {
-		return fmt.Errorf("bootstrap: admin_api_key_param is required")
+		return fmt.Errorf("infra: admin_api_key_param is required")
 	}
 	if c.SSMEndpoint != "" && !c.DevMode {
-		return fmt.Errorf("bootstrap: ssm_endpoint requires dev_mode to be true; refusing to use a custom SSM endpoint without explicit dev_mode flag")
+		return fmt.Errorf("infra: ssm_endpoint requires dev_mode to be true; refusing to use a custom SSM endpoint without explicit dev_mode flag")
 	}
 	return nil
 }

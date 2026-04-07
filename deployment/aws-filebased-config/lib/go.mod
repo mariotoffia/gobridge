@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.12
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.68.3
 	github.com/mariotoffia/gobridge v0.0.0
+	github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra v0.0.0
 	github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm v0.0.0
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0
@@ -58,6 +59,7 @@ require (
 
 replace (
 	github.com/mariotoffia/gobridge => ../../..
+	github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra => ../infra
 	github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm => ../../../adapters/aws/credentials/ssm
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs => ../../../adapters/aws/transport/sqs
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho => ../../../adapters/mqtt/transport/paho

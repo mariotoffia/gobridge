@@ -4,24 +4,24 @@ import (
 	"testing"
 
 	"github.com/mariotoffia/gobridge/config"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/model"
+	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestValidateFilesystemProfile_AdditionalCases(t *testing.T) {
-	replicated := model.BootstrapConfig{
+	replicated := deployinfra.BootstrapConfig{
 		BridgeID:         "bridge-v",
 		ConfigFilePath:   "/tmp/bridge.yaml",
 		AdminAPIKeyParam: "/admin",
-		Topology:         model.TopologyFilesystemReplicated,
+		Topology:         deployinfra.TopologyFilesystemReplicated,
 	}
 
-	single := model.BootstrapConfig{
+	single := deployinfra.BootstrapConfig{
 		BridgeID:         "bridge-v",
 		ConfigFilePath:   "/tmp/bridge.yaml",
 		AdminAPIKeyParam: "/admin",
-		Topology:         model.TopologySingle,
+		Topology:         deployinfra.TopologySingle,
 	}
 
 	t.Run("rejects route.session under filesystem_replicated topology", func(t *testing.T) {

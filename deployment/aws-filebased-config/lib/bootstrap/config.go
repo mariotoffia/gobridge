@@ -12,47 +12,58 @@ import (
 
 	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	"github.com/mariotoffia/gobridge/config"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/model"
+	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 )
+
+// maxBootstrapFileSize limits the bootstrap config file to 1 MiB to prevent
+// accidental or malicious memory exhaustion.
+const maxBootstrapFileSize = 1 << 20
 
 const (
 	EnvBootstrapJSON = "GOBRIDGE_FILEBASED_BOOTSTRAP_JSON"
 	EnvBootstrapFile = "GOBRIDGE_FILEBASED_BOOTSTRAP_FILE"
 )
 
-func LoadBootstrapConfigFromEnv() (model.BootstrapConfig, error) {
+func LoadBootstrapConfigFromEnv() (deployinfra.BootstrapConfig, error) {
 	if inline := strings.TrimSpace(os.Getenv(EnvBootstrapJSON)); inline != "" {
 		return LoadBootstrapConfigJSON([]byte(inline))
 	}
 
 	path := strings.TrimSpace(os.Getenv(EnvBootstrapFile))
 	if path == "" {
-		return model.BootstrapConfig{}, fmt.Errorf("bootstrap: neither %s nor %s is set", EnvBootstrapJSON, EnvBootstrapFile)
+		return deployinfra.BootstrapConfig{}, fmt.Errorf("bootstrap: neither %s nor %s is set", EnvBootstrapJSON, EnvBootstrapFile)
 	}
 
-	data, err := os.ReadFile(path)
+	return LoadBootstrapConfigFile(path)
+}
+
+func LoadBootstrapConfigFile(path string) (deployinfra.BootstrapConfig, error) {
+	data, err := readBoundedFile(path, maxBootstrapFileSize)
 	if err != nil {
-		return model.BootstrapConfig{}, fmt.Errorf("bootstrap: read %s: %w", path, err)
+		return deployinfra.BootstrapConfig{}, fmt.Errorf("bootstrap: read %s: %w", path, err)
 	}
 	return LoadBootstrapConfigJSON(data)
 }
 
-func LoadBootstrapConfigFile(path string) (model.BootstrapConfig, error) {
-	data, err := os.ReadFile(path)
+func readBoundedFile(path string, maxSize int64) ([]byte, error) {
+	info, err := os.Stat(path)
 	if err != nil {
-		return model.BootstrapConfig{}, fmt.Errorf("bootstrap: read %s: %w", path, err)
+		return nil, err
 	}
-	return LoadBootstrapConfigJSON(data)
+	if info.Size() > maxSize {
+		return nil, fmt.Errorf("file %s exceeds maximum size (%d > %d bytes)", path, info.Size(), maxSize)
+	}
+	return os.ReadFile(path)
 }
 
-func LoadBootstrapConfigJSON(data []byte) (model.BootstrapConfig, error) {
-	var cfg model.BootstrapConfig
+func LoadBootstrapConfigJSON(data []byte) (deployinfra.BootstrapConfig, error) {
+	var cfg deployinfra.BootstrapConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return model.BootstrapConfig{}, fmt.Errorf("bootstrap: decode bootstrap config: %w", err)
+		return deployinfra.BootstrapConfig{}, fmt.Errorf("bootstrap: decode bootstrap config: %w", err)
 	}
 	cfg = cfg.Normalized()
 	if err := cfg.Validate(); err != nil {
-		return model.BootstrapConfig{}, err
+		return deployinfra.BootstrapConfig{}, err
 	}
 	return cfg, nil
 }
@@ -77,7 +88,7 @@ func (s *optionalFileSource) Load(_ context.Context) (*config.BridgeConfig, erro
 	return nil, err
 }
 
-func newPollWatcher(cfg model.BootstrapConfig, logger *slog.Logger) config.Watcher {
+func newPollWatcher(cfg deployinfra.BootstrapConfig, logger *slog.Logger) config.Watcher {
 	var opts []fileconfig.WatcherOption
 	opts = append(opts,
 		fileconfig.WithMode(fileconfig.ModePoll),
@@ -89,7 +100,7 @@ func newPollWatcher(cfg model.BootstrapConfig, logger *slog.Logger) config.Watch
 	return fileconfig.NewWatcher(cfg.ConfigFilePath, opts...)
 }
 
-func defaultLogicalConfig(cfg model.BootstrapConfig) *config.BridgeConfig {
+func defaultLogicalConfig(cfg deployinfra.BootstrapConfig) *config.BridgeConfig {
 	return &config.BridgeConfig{
 		Bridge: config.BridgeSettings{
 			ID:              cfg.BridgeID,
@@ -128,12 +139,12 @@ func hasHTTPTransportEndpoints(cfg *config.BridgeConfig) bool {
 	return false
 }
 
-func validateFilesystemProfile(cfg model.BootstrapConfig, logical *config.BridgeConfig) error {
+func validateFilesystemProfile(cfg deployinfra.BootstrapConfig, logical *config.BridgeConfig) error {
 	if logical == nil {
 		return fmt.Errorf("bootstrap: logical config is nil")
 	}
 
-	if cfg.Topology != model.TopologyFilesystemReplicated {
+	if cfg.Topology != deployinfra.TopologyFilesystemReplicated {
 		return nil
 	}
 

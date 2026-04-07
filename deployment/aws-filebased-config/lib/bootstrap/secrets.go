@@ -13,7 +13,7 @@ import (
 
 	ssmrepo "github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm"
 	"github.com/mariotoffia/gobridge/config"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/model"
+	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -25,7 +25,7 @@ type ssmParameterResolver struct {
 	client *awsssm.Client
 }
 
-func newSSMParameterResolver(ctx context.Context, cfg model.BootstrapConfig) (parameterResolver, error) {
+func newSSMParameterResolver(ctx context.Context, cfg deployinfra.BootstrapConfig) (parameterResolver, error) {
 	opts := []func(*awsconfig.LoadOptions) error{}
 	region := cfg.AWSRegion
 	if region == "" && cfg.SSMEndpoint != "" {
@@ -34,10 +34,10 @@ func newSSMParameterResolver(ctx context.Context, cfg model.BootstrapConfig) (pa
 	if region != "" {
 		opts = append(opts, awsconfig.WithRegion(region))
 	}
-	if cfg.SSMEndpoint != "" {
+	if cfg.SSMEndpoint != "" && cfg.DevMode {
 		// Static test credentials for local emulation (e.g. LocalStack).
-		// If SSMEndpoint is accidentally set in production, real IAM
-		// credentials will be bypassed.
+		// Only active when DevMode is explicitly enabled; Validate()
+		// rejects SSMEndpoint without DevMode to prevent production bypass.
 		opts = append(opts, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")))
 	}
 
@@ -72,7 +72,7 @@ func (r *ssmParameterResolver) ResolveString(ctx context.Context, ref string) (s
 	return *out.Parameter.Value, nil
 }
 
-func newDefaultCredentialStore(cfg model.BootstrapConfig) *runtime.CredentialResolver {
+func newDefaultCredentialStore(ctx context.Context, cfg deployinfra.BootstrapConfig) (*runtime.CredentialResolver, error) {
 	resolver := runtime.NewCredentialResolver()
 
 	var opts []ssmrepo.Option
@@ -86,9 +86,35 @@ func newDefaultCredentialStore(cfg model.BootstrapConfig) *runtime.CredentialRes
 	if cfg.SSMEndpoint != "" {
 		opts = append(opts, ssmrepo.WithEndpoint(cfg.SSMEndpoint))
 	}
+	if cfg.SSMEndpoint != "" && cfg.DevMode {
+		// In DevMode, build a pre-configured SSM client with static test
+		// credentials so the credential store is consistent with the
+		// parameter resolver (both use the same auth for LocalStack).
+		client, err := buildDevModeSSMClient(ctx, region, cfg.SSMEndpoint)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap: build dev-mode SSM client for credential store: %w", err)
+		}
+		opts = append(opts, ssmrepo.WithClient(client))
+	}
 
 	resolver.Register(ssmrepo.New(opts...))
-	return resolver
+	return resolver, nil
+}
+
+func buildDevModeSSMClient(ctx context.Context, region, endpoint string) (*awsssm.Client, error) {
+	cfgOpts := []func(*awsconfig.LoadOptions) error{
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")),
+	}
+	if region != "" {
+		cfgOpts = append(cfgOpts, awsconfig.WithRegion(region))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, cfgOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return awsssm.NewFromConfig(awsCfg, func(o *awsssm.Options) {
+		o.BaseEndpoint = aws.String(endpoint)
+	}), nil
 }
 
 type resolvedInputs struct {
@@ -100,7 +126,7 @@ type resolvedInputs struct {
 func resolveInputs(
 	ctx context.Context,
 	resolver parameterResolver,
-	bootstrapCfg model.BootstrapConfig,
+	bootstrapCfg deployinfra.BootstrapConfig,
 	logical *config.BridgeConfig,
 ) (*resolvedInputs, error) {
 	adminKey, err := resolver.ResolveString(ctx, bootstrapCfg.AdminAPIKeyParam)

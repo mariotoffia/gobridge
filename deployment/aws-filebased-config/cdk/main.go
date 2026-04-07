@@ -1,44 +1,63 @@
 package main
 
 import (
-	"encoding/json"
-	"flag"
-	"fmt"
 	"os"
 
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/infra"
+	"github.com/aws/aws-cdk-go/awscdk/v2"
+	"github.com/aws/jsii-runtime-go"
+
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 )
 
 func main() {
-	var specPath string
-	flag.StringVar(&specPath, "spec", "", "path to the deployment spec JSON file")
-	flag.Parse()
+	defer jsii.Close()
 
-	if specPath == "" {
-		fmt.Fprintln(os.Stderr, "missing -spec")
-		os.Exit(1)
-	}
+	app := awscdk.NewApp(nil)
 
-	data, err := os.ReadFile(specPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "read spec: %v\n", err)
-		os.Exit(1)
-	}
+	serviceName := envOrDefault("GOBRIDGE_SERVICE_NAME", "gobridge")
+	imageURI := envOrDefault("GOBRIDGE_IMAGE_URI", "gobridge:latest")
+	stackName := envOrDefault("GOBRIDGE_STACK_NAME", "GoBridge")
+	bridgeID := envOrDefault("GOBRIDGE_BRIDGE_ID", "gobridge-main")
+	configPath := envOrDefault("GOBRIDGE_CONFIG_PATH", "/mnt/gobridge/bridge.yaml")
+	adminKeyParam := envOrDefault("GOBRIDGE_ADMIN_KEY_PARAM", "/gobridge/admin-api-key")
+	vpcID := os.Getenv("GOBRIDGE_VPC_ID")
 
-	var spec infra.AppSpec
-	if err := json.Unmarshal(data, &spec); err != nil {
-		fmt.Fprintf(os.Stderr, "decode spec: %v\n", err)
-		os.Exit(1)
-	}
+	NewGoBridgeStack(app, stackName, &GoBridgeStackProps{
+		StackProps: awscdk.StackProps{
+			Env: env(),
+		},
+		ServiceName: serviceName,
+		ImageURI:    imageURI,
+		VpcID:       vpcID,
+		Bootstrap: infra.BootstrapConfig{
+			BridgeID:         bridgeID,
+			ConfigFilePath:   configPath,
+			AdminAPIKeyParam: adminKeyParam,
+		},
+		Exposure: infra.Exposure{
+			Admin:   true,
+			Monitor: true,
+		},
+	})
 
-	spec = spec.Normalized()
-	if err := spec.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "validate spec: %v\n", err)
-		os.Exit(1)
-	}
+	app.Synth(nil)
+}
 
-	if err := json.NewEncoder(os.Stdout).Encode(spec); err != nil {
-		fmt.Fprintf(os.Stderr, "write normalized spec: %v\n", err)
-		os.Exit(1)
+func env() *awscdk.Environment {
+	region := os.Getenv("CDK_DEFAULT_REGION")
+	account := os.Getenv("CDK_DEFAULT_ACCOUNT")
+	if region == "" && account == "" {
+		return nil
 	}
+	return &awscdk.Environment{
+		Region:  jsii.String(region),
+		Account: jsii.String(account),
+	}
+}
+
+func envOrDefault(key, defaultVal string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return defaultVal
 }
