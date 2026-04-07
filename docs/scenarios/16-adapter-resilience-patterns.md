@@ -69,7 +69,7 @@ receivers:
   - id: sqs-in
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123/input
+      queue_url: https://sqs.us-west-1.amazonaws.com/123/input
       # wait_time_seconds defaults to 20 (long-polling)
       # auto_extend defaults to true with adaptive ticker
 

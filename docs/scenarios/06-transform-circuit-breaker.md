@@ -42,8 +42,8 @@ receivers:
   - id: sqs-in
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/raw-events
-      region: us-east-1
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/raw-events
+      region: us-west-1
       max_messages: 10
       wait_time_seconds: 20
       visibility_timeout: 60
@@ -52,8 +52,8 @@ senders:
   - id: sqs-out
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/processed-events
-      region: us-east-1
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/processed-events
+      region: us-west-1
       batch_size: 10
 
 bindings:

@@ -29,7 +29,7 @@ func integrationClient(t testing.TB) *cwsdk.Client {
 	t.Helper()
 	ep := localstack.Endpoint(t)
 	cfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-		awsconfig.WithRegion("us-east-1"),
+		awsconfig.WithRegion("us-west-1"),
 		awsconfig.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider("test", "test", ""),
 		),

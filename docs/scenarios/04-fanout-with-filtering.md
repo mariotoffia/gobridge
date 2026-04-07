@@ -60,15 +60,15 @@ senders:
   - id: sqs-temp
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/temperature-events
-      region: us-east-1
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/temperature-events
+      region: us-west-1
       batch_size: 10
 
   - id: sqs-humid
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/humidity-events
-      region: us-east-1
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/humidity-events
+      region: us-west-1
       batch_size: 10
 
 bindings:
@@ -355,8 +355,8 @@ senders:
   - id: sqs-archive
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/sensor-archive
-      region: us-east-1
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/sensor-archive
+      region: us-west-1
 
 bindings:
   - id: to-temperature

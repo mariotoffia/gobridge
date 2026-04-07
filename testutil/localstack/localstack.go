@@ -205,7 +205,7 @@ func WaitUntilReady(t testing.TB) {
 
 func newAWSConfig(ep string) aws.Config {
 	cfg, _ := awsconfig.LoadDefaultConfig(context.Background(),
-		awsconfig.WithRegion("us-east-1"),
+		awsconfig.WithRegion("us-west-1"),
 		awsconfig.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider("test", "test", ""),
 		),

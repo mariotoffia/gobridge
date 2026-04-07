@@ -39,7 +39,7 @@ func TestIntegration_AppStartsWithLocalstackSSMSecrets(t *testing.T) {
 		TransportHTTPAddr:  ":0",
 		AdminAPIKeyParam:   "/gobridge/admin",
 		MonitorAPIKeyParam: "/gobridge/monitor",
-		AWSRegion:          "us-east-1",
+		AWSRegion:          "us-west-1",
 		SSMEndpoint:        localstack.Endpoint(t),
 		DevMode:            true,
 	})

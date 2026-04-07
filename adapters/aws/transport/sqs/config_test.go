@@ -32,7 +32,7 @@ func TestReceiverConfigFromOptions_Defaults(t *testing.T) {
 func TestReceiverConfigFromOptions_AllFields(t *testing.T) {
 	autoExtend := true
 	cfg := ReceiverConfigFromOptions(map[string]any{
-		"queue_url":          "https://sqs.us-east-1.amazonaws.com/123456789/test",
+		"queue_url":          "https://sqs.us-west-1.amazonaws.com/123456789/test",
 		"queue_name":         "test-queue",
 		"region":             "eu-west-1",
 		"endpoint":           "http://localhost:4566",
@@ -44,7 +44,7 @@ func TestReceiverConfigFromOptions_AllFields(t *testing.T) {
 		"sns_unwrap":         true,
 	})
 
-	if cfg.QueueURL != "https://sqs.us-east-1.amazonaws.com/123456789/test" {
+	if cfg.QueueURL != "https://sqs.us-west-1.amazonaws.com/123456789/test" {
 		t.Fatalf("QueueURL: got %q", cfg.QueueURL)
 	}
 	if cfg.QueueName != "test-queue" {
@@ -102,7 +102,7 @@ func TestSenderConfigFromOptions_Defaults(t *testing.T) {
 // option keys are mapped correctly.
 func TestSenderConfigFromOptions_AllFields(t *testing.T) {
 	cfg := SenderConfigFromOptions(map[string]any{
-		"queue_url":        "https://sqs.us-east-1.amazonaws.com/123456789/test.fifo",
+		"queue_url":        "https://sqs.us-west-1.amazonaws.com/123456789/test.fifo",
 		"queue_name":       "test-queue",
 		"region":           "ap-southeast-1",
 		"endpoint":         "http://localhost:4566",
@@ -114,7 +114,7 @@ func TestSenderConfigFromOptions_AllFields(t *testing.T) {
 		"fifo":             true,
 	})
 
-	if cfg.QueueURL != "https://sqs.us-east-1.amazonaws.com/123456789/test.fifo" {
+	if cfg.QueueURL != "https://sqs.us-west-1.amazonaws.com/123456789/test.fifo" {
 		t.Fatalf("QueueURL: got %q", cfg.QueueURL)
 	}
 	if cfg.QueueName != "test-queue" {

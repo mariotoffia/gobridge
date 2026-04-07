@@ -29,7 +29,7 @@ func newSSMParameterResolver(ctx context.Context, cfg deployinfra.BootstrapConfi
 	opts := []func(*awsconfig.LoadOptions) error{}
 	region := cfg.AWSRegion
 	if region == "" && cfg.SSMEndpoint != "" {
-		region = "us-east-1"
+		region = "us-west-1"
 	}
 	if region != "" {
 		opts = append(opts, awsconfig.WithRegion(region))
@@ -78,7 +78,7 @@ func newDefaultCredentialStore(ctx context.Context, cfg deployinfra.BootstrapCon
 	var opts []ssmrepo.Option
 	region := cfg.AWSRegion
 	if region == "" && cfg.SSMEndpoint != "" {
-		region = "us-east-1"
+		region = "us-west-1"
 	}
 	if region != "" {
 		opts = append(opts, ssmrepo.WithRegion(region))

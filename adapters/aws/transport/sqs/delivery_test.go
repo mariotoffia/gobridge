@@ -294,7 +294,7 @@ func TestDelivery_MultipleStopsAreSafe(t *testing.T) {
 func TestNewDelivery_WithQueueURLAndHandle(t *testing.T) {
 	mock := &mockSQSClient{}
 	env := &domain.Envelope{ID: "msg-1"}
-	d := newDelivery(context.Background(), env, mock, "https://sqs.us-east-1.amazonaws.com/123/my-queue", "handle-abc", 30, false, nil, nil, nil)
+	d := newDelivery(context.Background(), env, mock, "https://sqs.us-west-1.amazonaws.com/123/my-queue", "handle-abc", 30, false, nil, nil, nil)
 
 	if err := d.Ack(context.Background()); err != nil {
 		t.Fatalf("Ack failed: %v", err)
@@ -303,7 +303,7 @@ func TestNewDelivery_WithQueueURLAndHandle(t *testing.T) {
 	if len(mock.DeleteCalls) == 0 {
 		t.Fatal("expected at least 1 DeleteMessage call")
 	}
-	if *mock.DeleteCalls[0].QueueUrl != "https://sqs.us-east-1.amazonaws.com/123/my-queue" {
+	if *mock.DeleteCalls[0].QueueUrl != "https://sqs.us-west-1.amazonaws.com/123/my-queue" {
 		t.Fatal("queue URL not passed correctly")
 	}
 	if *mock.DeleteCalls[0].ReceiptHandle != "handle-abc" {

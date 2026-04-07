@@ -39,7 +39,7 @@ func sqsReceiverOpts(queueURL, endpoint string) map[string]any {
 	return map[string]any{
 		"queue_url":          queueURL,
 		"endpoint":           endpoint,
-		"region":             "us-east-1",
+		"region":             "us-west-1",
 		"max_messages":       int32(10),
 		"wait_time_seconds":  int32(1),
 		"visibility_timeout": int32(5),
@@ -51,7 +51,7 @@ func sqsSenderOpts(queueURL, endpoint string) map[string]any {
 	return map[string]any{
 		"queue_url": queueURL,
 		"endpoint":  endpoint,
-		"region":    "us-east-1",
+		"region":    "us-west-1",
 	}
 }
 
@@ -61,9 +61,11 @@ func sqsSenderOpts(queueURL, endpoint string) map[string]any {
 //
 // Scenario:
 // -----------------------------------------------
-//   Base: SQS rx-in (queue-A) → SQS tx-out (queue-B)
-//   DDB v2: rx-in switches to queue-C
-//   After swap: messages on queue-C reach queue-B
+//
+//	Base: SQS rx-in (queue-A) → SQS tx-out (queue-B)
+//	DDB v2: rx-in switches to queue-C
+//	After swap: messages on queue-C reach queue-B
+//
 // -----------------------------------------------
 func TestDDBTransport_SQS_ConfigChangeSwapsQueue(t *testing.T) {
 	setTestAWSCredentials(t)
@@ -180,9 +182,11 @@ func TestDDBTransport_SQS_ConfigChangeSwapsQueue(t *testing.T) {
 //
 // Scenario:
 // -----------------------------------------------
-//   Base: r1 (queue-A → queue-B)
-//   DDB v2: adds r2 (queue-C → queue-D)
-//   After swap: both routes work
+//
+//	Base: r1 (queue-A → queue-B)
+//	DDB v2: adds r2 (queue-C → queue-D)
+//	After swap: both routes work
+//
 // -----------------------------------------------
 func TestDDBTransport_SQS_NewRouteAdded(t *testing.T) {
 	setTestAWSCredentials(t)
@@ -307,10 +311,12 @@ func TestDDBTransport_SQS_NewRouteAdded(t *testing.T) {
 //
 // Scenario:
 // -----------------------------------------------
-//   Base: bridge settings only (no routes)
-//   DDB v1: r1 (queue-A → queue-B) + r2 (queue-C → queue-D)
-//   DDB v2: r1 only
-//   After swap: r2 messages on queue-C are NOT forwarded
+//
+//	Base: bridge settings only (no routes)
+//	DDB v1: r1 (queue-A → queue-B) + r2 (queue-C → queue-D)
+//	DDB v2: r1 only
+//	After swap: r2 messages on queue-C are NOT forwarded
+//
 // -----------------------------------------------
 func TestDDBTransport_ConfigRemovesRoute(t *testing.T) {
 	setTestAWSCredentials(t)

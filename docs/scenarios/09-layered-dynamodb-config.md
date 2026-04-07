@@ -75,7 +75,7 @@ senders:
   - id: sqs-out
     transport: sqs
     options:
-      region: us-east-1
+      region: us-west-1
       batch_size: 10
 
 bindings:
@@ -124,7 +124,7 @@ The overlay is stored as a single DynamoDB item. Only the fields that differ fro
     {
       "id": "sqs-out",
       "options": {
-        "queue_url": "https://sqs.us-east-1.amazonaws.com/123456789/telemetry-events"
+        "queue_url": "https://sqs.us-west-1.amazonaws.com/123456789/telemetry-events"
       }
     }
   ],

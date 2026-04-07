@@ -21,7 +21,7 @@ import (
 // BenchmarkReceiveMessageInput_Allocation measures per-poll allocation cost
 // of constructing ReceiveMessageInput (the struct rebuilt each iteration).
 func BenchmarkReceiveMessageInput_Allocation(b *testing.B) {
-	queueURL := "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue"
+	queueURL := "https://sqs.us-west-1.amazonaws.com/123456789012/test-queue"
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -117,7 +117,7 @@ func BenchmarkBuildSendInput(b *testing.B) {
 	for _, tc := range tests {
 		b.Run(tc.name, func(b *testing.B) {
 			s := &Sender{
-				queueURL: "https://sqs.us-east-1.amazonaws.com/123/q",
+				queueURL: "https://sqs.us-west-1.amazonaws.com/123/q",
 			}
 			env := &domain.Envelope{
 				ID:      "bench-id",

@@ -105,8 +105,8 @@ senders:
   - id: sqs-out
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/processed
-      region: us-east-1
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/processed
+      region: us-west-1
 
 bindings:
   - id: to-sqs
@@ -260,7 +260,7 @@ import cwmetrics "github.com/mariotoffia/gobridge/adapters/aws/metrics/cloudwatc
 
 metrics, err := cwmetrics.New(ctx,
     cwmetrics.WithNamespace("GoBridge"),
-    cwmetrics.WithRegion("us-east-1"),
+    cwmetrics.WithRegion("us-west-1"),
 )
 ```
 

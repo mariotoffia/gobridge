@@ -19,7 +19,7 @@ func TestSenderEnsureClientConcurrentS14(t *testing.T) {
 	sender, err := NewSender(SenderConfig{
 		Client:   mock,
 		QueueURL: "https://test-queue",
-		Region:   "us-east-1",
+		Region:   "us-west-1",
 	})
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)

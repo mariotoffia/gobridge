@@ -237,7 +237,7 @@ senders:
   - id: sqs-out
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456/events
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456/events
       batch_size: 10
 ```
 

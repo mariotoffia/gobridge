@@ -213,7 +213,7 @@ func newBatchSender(t *testing.T, queueURL string) *sqsadapter.Sender {
 	s, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueURL: queueURL,
 		Endpoint: ep,
-		Region:   "us-east-1",
+		Region:   "us-west-1",
 		Timeout:  10 * time.Second,
 	})
 	if err != nil {

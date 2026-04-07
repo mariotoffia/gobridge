@@ -33,7 +33,7 @@ tags:
   - name: Routes
     description: Route listing and message injection
   - name: DLQ
-    description: Dead-letter queue summary, browsing, replay, and purge
+    description: Dead-letter queue summary, browsing, redrive, delete, and purge
   - name: Health
     description: Unauthenticated health, liveness, and readiness probes
   - name: Monitor
@@ -89,8 +89,20 @@ components:
       $ref: "components.yaml#/schemas/DLQMessagesResponse"
     InjectRequest:
       $ref: "components.yaml#/schemas/InjectRequest"
-    DLQReplayRequest:
-      $ref: "components.yaml#/schemas/DLQReplayRequest"
+    DLQEntryDetailView:
+      $ref: "components.yaml#/schemas/DLQEntryDetailView"
+    DLQRedriveRequest:
+      $ref: "components.yaml#/schemas/DLQRedriveRequest"
+    DLQRedriveResponse:
+      $ref: "components.yaml#/schemas/DLQRedriveResponse"
+    DLQRedriveError:
+      $ref: "components.yaml#/schemas/DLQRedriveError"
+    DLQDeleteRequest:
+      $ref: "components.yaml#/schemas/DLQDeleteRequest"
+    DLQDeleteResponse:
+      $ref: "components.yaml#/schemas/DLQDeleteResponse"
+    DLQDeleteByFilterRequest:
+      $ref: "components.yaml#/schemas/DLQDeleteByFilterRequest"
     DeepHealthResponse:
       $ref: "components.yaml#/schemas/DeepHealthResponse"
     DeepHealthSession:
@@ -374,12 +386,115 @@ paths:
         "503":
           $ref: "#/components/responses/RuntimeUnavailable"
 
-  /api/v1/admin/dlq/replay:
-    post:
-      operationId: replayDLQMessages
-      summary: Replay DLQ messages
+  /api/v1/admin/dlq/messages/{id}:
+    get:
+      operationId: getDLQMessageByID
+      summary: Get a single DLQ entry
       description: >
-        Re-injects specific DLQ messages by ID. Body limited to 1 MB.
+        Returns a single DLQ entry by ID, including the base64-encoded
+        envelope payload. Returns 404 if the entry does not exist.
+      tags: [DLQ]
+      parameters:
+        - $ref: "components.yaml#/parameters/DLQMessageID"
+      responses:
+        "200":
+          description: DLQ entry returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DLQEntryDetailView"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: DLQ entry not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example: { "error": "DLQ entry not found" }
+        "500":
+          description: Failed to get DLQ entry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example: { "error": "failed to get DLQ entry" }
+        "503":
+          $ref: "#/components/responses/RuntimeUnavailable"
+
+  /api/v1/admin/dlq/redrive:
+    post:
+      operationId: redriveDLQMessages
+      summary: Redrive DLQ messages
+      description: >
+        Re-injects specific DLQ messages by ID into their original routes.
+        Successfully redriven entries are automatically deleted from the
+        DLQ store. Duplicate IDs in the request are deduplicated. Body
+        limited to 1 MB. Maximum 100 IDs per call.
+
+
+        Partial success is possible — the response includes per-entry
+        error details for any entries that could not be redriven (e.g.
+        entry not found, route not found).
+      tags: [DLQ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DLQRedriveRequest"
+      responses:
+        "200":
+          description: >
+            Redrive operation completed. Check `redriven` and `failed`
+            counts to determine if all entries were processed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DLQRedriveResponse"
+              examples:
+                allSuccess:
+                  summary: All entries redriven
+                  value: { "redriven": 2, "failed": 0 }
+                partialFailure:
+                  summary: Some entries failed
+                  value:
+                    redriven: 1
+                    failed: 1
+                    errors:
+                      - { id: "dlq-002", error: "entry not found" }
+                withWarning:
+                  summary: Redriven but cleanup failed
+                  value:
+                    redriven: 2
+                    failed: 0
+                    warning: "failed to delete redriven entries"
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidBody:
+                  value: { "error": "invalid request body" }
+                emptyIDs:
+                  value: { "error": "ids must not be empty" }
+                tooManyIDs:
+                  value: { "error": "ids exceeds maximum of 100" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NoDLQStore"
+        "503":
+          $ref: "#/components/responses/RuntimeUnavailable"
+
+  /api/v1/admin/dlq/delete:
+    post:
+      operationId: deleteDLQByIDs
+      summary: Delete DLQ entries by ID
+      description: >
+        Deletes specific DLQ entries by their IDs. Body limited to 1 MB.
         Maximum 1000 IDs per call.
       tags: [DLQ]
       requestBody:
@@ -387,20 +502,15 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DLQReplayRequest"
+              $ref: "#/components/schemas/DLQDeleteRequest"
       responses:
         "200":
-          description: Messages replayed successfully.
+          description: Entries deleted successfully.
           content:
             application/json:
               schema:
-                type: object
-                required: [replayed]
-                properties:
-                  replayed:
-                    type: integer
-                    description: Number of messages replayed.
-              example: { "replayed": 2 }
+                $ref: "#/components/schemas/DLQDeleteResponse"
+              example: { "deleted": 2 }
         "400":
           description: Invalid request body.
           content:
@@ -419,12 +529,65 @@ paths:
         "404":
           $ref: "#/components/responses/NoDLQStore"
         "500":
-          description: Replay failed.
+          description: Delete failed.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-              example: { "error": "DLQ replay failed" }
+              example: { "error": "DLQ delete failed" }
+        "503":
+          $ref: "#/components/responses/RuntimeUnavailable"
+
+  /api/v1/admin/dlq/delete-by-filter:
+    post:
+      operationId: deleteDLQByFilter
+      summary: Delete DLQ entries by filter
+      description: >
+        Deletes DLQ entries matching the specified filter criteria. When
+        no filter fields are provided, `confirm_delete_all` must be set
+        to true as a safety guard against accidental mass deletion. Body
+        limited to 1 MB.
+      tags: [DLQ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DLQDeleteByFilterRequest"
+      responses:
+        "200":
+          description: Matching entries deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DLQDeleteResponse"
+              example: { "deleted": 42 }
+        "400":
+          description: Invalid request body or missing confirmation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidBody:
+                  value: { "error": "invalid request body" }
+                badSince:
+                  value: { "error": "since must be RFC3339 format" }
+                badBefore:
+                  value: { "error": "before must be RFC3339 format" }
+                noConfirm:
+                  value: { "error": "empty filter would delete all entries; set confirm_delete_all=true to proceed" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NoDLQStore"
+        "500":
+          description: Delete by filter failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example: { "error": "DLQ delete by filter failed" }
         "503":
           $ref: "#/components/responses/RuntimeUnavailable"
 

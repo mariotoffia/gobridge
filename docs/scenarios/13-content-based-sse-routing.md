@@ -327,8 +327,8 @@ senders:
   - id: sqs-archive
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/sensor-archive
-      region: us-east-1
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/sensor-archive
+      region: us-west-1
 
 bindings:
   - id: to-archive

@@ -65,8 +65,8 @@ senders:
   - id: sqs-out
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/telemetry-events
-      region: us-east-1
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/telemetry-events
+      region: us-west-1
       batch_size: 10
 
 bindings:
@@ -161,7 +161,7 @@ receivers:
   - id: sqs-in
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/raw-events
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/raw-events
       sns_unwrap: true
 ```
 
@@ -174,7 +174,7 @@ senders:
   - id: sqs-out
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/telemetry-events
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/telemetry-events
       batch_size: 10      # max messages per API call
       timeout: 15s        # per-call timeout
 
@@ -210,7 +210,7 @@ senders:
   - id: sqs-out
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/delayed-events
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/delayed-events
       delay_seconds: 300  # 5-minute delay before visible
 ```
 

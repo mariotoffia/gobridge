@@ -104,8 +104,8 @@ senders:
   - id: sqs-out
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/sensor-events
-      region: us-east-1
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/sensor-events
+      region: us-west-1
       batch_size: 10
 
 bindings:
@@ -328,12 +328,12 @@ stores:
     type: dynamodb
     options:
       table_name: gobridge-outbox
-      region: us-east-1
+      region: us-west-1
   lease:
     type: dynamodb
     options:
       table_name: gobridge-leases
-      region: us-east-1
+      region: us-west-1
 ```
 
 ### Adaptive Backoff Drain Strategy

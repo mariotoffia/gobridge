@@ -12,7 +12,7 @@ import (
 // Verifies EnsureAlarms issues one PutMetricAlarm call per definition.
 func TestEnsureAlarms_CreatesAlarms(t *testing.T) {
 	mock := &mockCloudWatch{}
-	alarms := DefaultAlarms("TestNS", "arn:aws:sns:us-east-1:123:topic")
+	alarms := DefaultAlarms("TestNS", "arn:aws:sns:us-west-1:123:topic")
 
 	err := EnsureAlarms(context.Background(), mock, alarms)
 	if err != nil {

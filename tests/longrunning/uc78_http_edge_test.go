@@ -51,7 +51,7 @@ func TestUC79_FIFOMultiGroupConcurrent(t *testing.T) {
 	fifoRcv, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          fifoURL,
 		Endpoint:          sqslocal.Endpoint(t),
-		Region:            "us-east-1",
+		Region:            "us-west-1",
 		MaxMessages:       10,
 		WaitTimeSeconds:   1,
 		VisibilityTimeout: 30,

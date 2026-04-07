@@ -286,7 +286,7 @@ sessions:
 import ssmcreds "github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm"
 
 ssmRepo := ssmcreds.New(
-    ssmcreds.WithRegion("us-east-1"),
+    ssmcreds.WithRegion("us-west-1"),
     ssmcreds.WithNamespace("prod"),
 )
 resolver.Register(ssmRepo)

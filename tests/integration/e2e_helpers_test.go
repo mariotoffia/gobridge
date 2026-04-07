@@ -11,9 +11,9 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
-	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	dblease "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease"
 	dboutbox "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
+	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -43,7 +43,7 @@ func newSQSReceiver(t *testing.T, queueURL string) *sqsadapter.Receiver {
 	r, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          queueURL,
 		Endpoint:          ep,
-		Region:            "us-east-1",
+		Region:            "us-west-1",
 		MaxMessages:       10,
 		WaitTimeSeconds:   1,
 		VisibilityTimeout: 5,
@@ -60,7 +60,7 @@ func newSQSSender(t *testing.T, queueURL string) *sqsadapter.Sender {
 	s, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueURL: queueURL,
 		Endpoint: ep,
-		Region:   "us-east-1",
+		Region:   "us-west-1",
 		Timeout:  5 * time.Second,
 	})
 	if err != nil {
@@ -120,7 +120,7 @@ func newSQSSenderFIFO(t *testing.T, queueURL, groupID string) *sqsadapter.Sender
 	s, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueURL:       queueURL,
 		Endpoint:       ep,
-		Region:         "us-east-1",
+		Region:         "us-west-1",
 		Timeout:        5 * time.Second,
 		FIFO:           true,
 		MessageGroupID: groupID,
@@ -138,7 +138,7 @@ func newSQSReceiverWithVisibility(t *testing.T, queueURL string, visibilityTimeo
 	r, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          queueURL,
 		Endpoint:          ep,
-		Region:            "us-east-1",
+		Region:            "us-west-1",
 		MaxMessages:       1,
 		WaitTimeSeconds:   1,
 		VisibilityTimeout: visibilityTimeout,
@@ -383,9 +383,11 @@ func (s *e2eDLQStore) Get(_ context.Context, id string) (domain.DLQEntry, error)
 	return domain.DLQEntry{}, domain.ErrNotFound
 }
 
-func (s *e2eDLQStore) Delete(_ context.Context, _ []string) (int, error)                    { return 0, nil }
-func (s *e2eDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error)    { return 0, nil }
-func (s *e2eDLQStore) Purge(_ context.Context, _ time.Time) (int, error)                    { return 0, nil }
+func (s *e2eDLQStore) Delete(_ context.Context, _ []string) (int, error) { return 0, nil }
+func (s *e2eDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error) {
+	return 0, nil
+}
+func (s *e2eDLQStore) Purge(_ context.Context, _ time.Time) (int, error) { return 0, nil }
 
 func (s *e2eDLQStore) count() int {
 	s.mu.Lock()

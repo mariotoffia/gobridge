@@ -31,8 +31,8 @@ receivers:
   - id: sqs-in
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/ingestion-events
-      region: us-east-1
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/ingestion-events
+      region: us-west-1
       max_messages: 10
       wait_time_seconds: 20
       visibility_timeout: 60
@@ -42,8 +42,8 @@ senders:
   - id: sqs-out
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/processing-events
-      region: us-east-1
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/processing-events
+      region: us-west-1
       batch_size: 10
 
 bindings:
@@ -70,7 +70,7 @@ SQS is a **stateless** transport. Unlike MQTT, there's no persistent connection 
 
 ### `receivers`
 - **`queue_url`** -- Fully qualified SQS queue URL. Alternatively use `queue_name` for automatic URL resolution.
-- **`region: us-east-1`** -- AWS region. If omitted, uses the SDK default chain (env vars, instance profile, etc.).
+- **`region: us-west-1`** -- AWS region. If omitted, uses the SDK default chain (env vars, instance profile, etc.).
 - **`max_messages: 10`** -- Maximum messages per `ReceiveMessage` call (SQS max is 10).
 - **`wait_time_seconds: 20`** -- Long polling. The API call waits up to 20 seconds for messages before returning empty. This reduces cost and latency vs short polling.
 - **`visibility_timeout: 60`** -- After receiving a message, it becomes invisible to other consumers for 60 seconds. If not acknowledged in time, SQS re-delivers it.
@@ -126,7 +126,7 @@ receivers:
     transport: sqs
     options:
       queue_name: ingestion-events
-      region: us-east-1
+      region: us-west-1
 ```
 
 ### Custom Endpoint (LocalStack)
@@ -140,7 +140,7 @@ receivers:
     options:
       queue_url: http://localhost:4566/000000000000/ingestion-events
       endpoint: http://localhost:4566
-      region: us-east-1
+      region: us-west-1
 ```
 
 ### FIFO Queues
@@ -152,7 +152,7 @@ senders:
   - id: sqs-out
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/events.fifo
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/events.fifo
       fifo: true
       message_group_id: default-group
       batch_size: 10
@@ -169,7 +169,7 @@ receivers:
   - id: sqs-in
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/events
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/events
       sns_unwrap: true
 ```
 
@@ -183,6 +183,6 @@ receivers:
     transport: sqs
     options:
       queue_name: ingestion-events
-      region: us-east-1
+      region: us-west-1
       profile: production
 ```

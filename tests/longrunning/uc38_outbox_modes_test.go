@@ -31,10 +31,10 @@ import (
 func TestUC38_OutboxDepthLimit(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 500
-		maxDepth = 100
-		pollTimeout  = 120 * time.Second
-		outTopic = "uc38/output/data"
+		msgCount    = 500
+		maxDepth    = 100
+		pollTimeout = 120 * time.Second
+		outTopic    = "uc38/output/data"
 	)
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc38-in")
@@ -118,9 +118,9 @@ func TestUC38_OutboxDepthLimit(t *testing.T) {
 func TestUC39_AckAfterOutboxPersist(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 2000
-		pollTimeout  = 120 * time.Second
-		outTopic = "uc39/output/data"
+		msgCount    = 2000
+		pollTimeout = 120 * time.Second
+		outTopic    = "uc39/output/data"
 	)
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc39-in")
@@ -228,7 +228,7 @@ func TestUC40_AdaptiveDrain_Backoff(t *testing.T) {
 		secondBatch = 500
 		totalMsg    = firstBatch + secondBatch
 		idleWait    = 15 * time.Second
-		pollTimeout     = 120 * time.Second
+		pollTimeout = 120 * time.Second
 		outTopic    = "uc40/output/data"
 	)
 
@@ -334,8 +334,8 @@ func (p *uc41SlowFirstN) Process(
 func TestUC41_IdempotentOutbox_Persist(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 200
-		pollTimeout  = 120 * time.Second
+		msgCount    = 200
+		pollTimeout = 120 * time.Second
 	)
 
 	sqsInClient := sqslocal.Client(t)
@@ -355,7 +355,7 @@ func TestUC41_IdempotentOutbox_Persist(t *testing.T) {
 	sqsRx, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          sqsInURL,
 		Endpoint:          ep,
-		Region:            "us-east-1",
+		Region:            "us-west-1",
 		MaxMessages:       10,
 		WaitTimeSeconds:   1,
 		VisibilityTimeout: 3,

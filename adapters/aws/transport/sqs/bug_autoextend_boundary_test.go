@@ -33,7 +33,7 @@ func TestAutoExtend_Boundary_Timeout1_Disabled(t *testing.T) {
 		parentCtx,
 		env,
 		mock,
-		"https://sqs.us-east-1.amazonaws.com/q",
+		"https://sqs.us-west-1.amazonaws.com/q",
 		"handle-1",
 		1, // visibilityTimeout = 1 → no auto-extend
 		true,
@@ -80,7 +80,7 @@ func TestAutoExtend_Boundary_Timeout2_Enabled(t *testing.T) {
 		parentCtx,
 		env,
 		mock,
-		"https://sqs.us-east-1.amazonaws.com/q",
+		"https://sqs.us-west-1.amazonaws.com/q",
 		"handle-2",
 		2, // visibilityTimeout = 2 → auto-extend at 1s interval
 		true,

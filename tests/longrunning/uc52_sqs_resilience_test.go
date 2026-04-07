@@ -32,7 +32,7 @@ func TestUC52_VisibilityTimeoutExpiry(t *testing.T) {
 	receiver, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          queueURL,
 		Endpoint:          sqslocal.Endpoint(t),
-		Region:            "us-east-1",
+		Region:            "us-west-1",
 		MaxMessages:       10,
 		WaitTimeSeconds:   1,
 		VisibilityTimeout: 3,
@@ -94,7 +94,7 @@ func TestUC53_AutoExtendUnderLoad(t *testing.T) {
 	receiver, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          queueURL,
 		Endpoint:          sqslocal.Endpoint(t),
-		Region:            "us-east-1",
+		Region:            "us-west-1",
 		MaxMessages:       10,
 		WaitTimeSeconds:   1,
 		VisibilityTimeout: 5,

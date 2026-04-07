@@ -465,7 +465,7 @@ senders:
   - id: sqs-sender
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123/my-queue
+      queue_url: https://sqs.us-west-1.amazonaws.com/123/my-queue
 
 bindings:
   - id: to-sqs

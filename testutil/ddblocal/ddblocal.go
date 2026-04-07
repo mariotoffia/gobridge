@@ -233,7 +233,7 @@ func WaitUntilReady(t testing.TB) {
 
 func newClient(ep string) *dynamodb.Client {
 	cfg, _ := config.LoadDefaultConfig(context.Background(),
-		config.WithRegion("us-east-1"),
+		config.WithRegion("us-west-1"),
 		config.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider("test", "test", ""),
 		),

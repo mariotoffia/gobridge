@@ -75,8 +75,8 @@ receivers:
   - id: sqs-in
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/platform-events
-      region: us-east-1
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/platform-events
+      region: us-west-1
       wait_time_seconds: 20
       max_messages: 10
 
@@ -94,15 +94,15 @@ senders:
   - id: sqs-high-priority
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/high-priority
-      region: us-east-1
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/high-priority
+      region: us-west-1
       batch_size: 10
 
   - id: sqs-catch-all
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/catch-all
-      region: us-east-1
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/catch-all
+      region: us-west-1
 
 bindings:
   - id: to-enterprise-critical

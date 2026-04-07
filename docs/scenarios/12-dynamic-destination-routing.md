@@ -72,8 +72,8 @@ receivers:
   - id: sqs-in
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/factory-events
-      region: us-east-1
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/factory-events
+      region: us-west-1
 
 senders:
   - id: mqtt-out
@@ -367,7 +367,7 @@ routes:
               value: high
             - field: $.metadata.region
               operator: in
-              value: ["us-east-1", "eu-west-1"]
+              value: ["us-west-1", "eu-west-1"]
 ```
 
 The payload is parsed lazily on first `$.` access and cached for all subsequent condition evaluations within the same message.

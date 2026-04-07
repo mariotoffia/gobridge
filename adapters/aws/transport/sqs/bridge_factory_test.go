@@ -60,7 +60,7 @@ func TestBridgeFactory_NewReceiver(t *testing.T) {
 		Transport: "sqs",
 		SessionID: "",
 		Options: map[string]any{
-			"queue_url":          "https://sqs.us-east-1.amazonaws.com/123456789/test-queue",
+			"queue_url":          "https://sqs.us-west-1.amazonaws.com/123456789/test-queue",
 			"max_messages":       5,
 			"wait_time_seconds":  10,
 			"visibility_timeout": 60,
@@ -85,7 +85,7 @@ func TestBridgeFactory_NewSender(t *testing.T) {
 		Transport: "sqs",
 		SessionID: "",
 		Options: map[string]any{
-			"queue_url":  "https://sqs.us-east-1.amazonaws.com/123456789/test-queue",
+			"queue_url":  "https://sqs.us-west-1.amazonaws.com/123456789/test-queue",
 			"batch_size": 5,
 			"fifo":       true,
 		},
@@ -108,7 +108,7 @@ func TestBridgeFactory_NewReceiver_OptionsPassthrough(t *testing.T) {
 		ID:        "recv-opts",
 		Transport: "sqs",
 		Options: map[string]any{
-			"queue_url":          "https://sqs.us-east-1.amazonaws.com/123456789/q",
+			"queue_url":          "https://sqs.us-west-1.amazonaws.com/123456789/q",
 			"max_messages":       3,
 			"visibility_timeout": 45,
 			"sns_unwrap":         true,
@@ -132,7 +132,7 @@ func TestBridgeFactory_NewSender_OptionsPassthrough(t *testing.T) {
 		ID:        "send-opts",
 		Transport: "sqs",
 		Options: map[string]any{
-			"queue_url":        "https://sqs.us-east-1.amazonaws.com/123456789/q",
+			"queue_url":        "https://sqs.us-west-1.amazonaws.com/123456789/q",
 			"delay_seconds":    10,
 			"message_group_id": "group-a",
 		},

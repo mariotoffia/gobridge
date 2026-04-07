@@ -22,6 +22,14 @@ parameters:
     schema:
       type: string
     example: mqtt-to-sqs
+  DLQMessageID:
+    name: id
+    in: path
+    required: true
+    description: Unique identifier of a DLQ entry.
+    schema:
+      type: string
+    example: dlq-001
 
 responses:
   Unauthorized:
@@ -368,19 +376,129 @@ schemas:
           `X-Bridge-*` are automatically stripped by the server.
         example: { "source": "api-inject" }
 
-  DLQReplayRequest:
+  DLQEntryDetailView:
+    description: A single DLQ entry with base64-encoded envelope payload.
+    allOf:
+      - $ref: "#/schemas/DLQEntryView"
+      - type: object
+        required: [payload]
+        properties:
+          payload:
+            type: string
+            format: byte
+            description: >
+              Base64-encoded envelope payload (standard encoding, RFC 4648).
+              Empty string when the original message had no payload.
+            example: eyJ0ZW1wIjoyMi41fQ==
+
+  DLQRedriveRequest:
     type: object
     required: [ids]
-    description: Request body for replaying specific DLQ messages.
+    description: >
+      Request body for redriving specific DLQ messages. Each entry is
+      looked up, re-injected into its original route, and deleted from
+      the DLQ on success. Duplicate IDs are deduplicated automatically.
     properties:
       ids:
         type: array
-        description: DLQ entry IDs to replay.
+        description: DLQ entry IDs to redrive.
+        minItems: 1
+        maxItems: 100
+        items:
+          type: string
+        example: ["dlq-001", "dlq-002"]
+
+  DLQRedriveResponse:
+    type: object
+    required: [redriven, failed]
+    description: Result of a DLQ redrive. Partial success is possible.
+    properties:
+      redriven:
+        type: integer
+        description: Messages successfully re-injected and deleted from the DLQ.
+        example: 2
+      failed:
+        type: integer
+        description: Messages that could not be redriven.
+        example: 1
+      errors:
+        type: array
+        description: Per-entry error details. Present only when failed > 0.
+        items:
+          $ref: "#/schemas/DLQRedriveError"
+      warning:
+        type: string
+        description: Warning when redriven entries could not be deleted from the DLQ.
+        example: failed to delete redriven entries
+
+  DLQRedriveError:
+    type: object
+    required: [id, error]
+    description: Error detail for a single failed redrive.
+    properties:
+      id:
+        type: string
+        example: dlq-003
+      error:
+        type: string
+        example: entry not found
+
+  DLQDeleteRequest:
+    type: object
+    required: [ids]
+    description: Request body for deleting specific DLQ entries by ID.
+    properties:
+      ids:
+        type: array
+        description: DLQ entry IDs to delete.
         minItems: 1
         maxItems: 1000
         items:
           type: string
         example: ["dlq-001", "dlq-002"]
+
+  DLQDeleteResponse:
+    type: object
+    required: [deleted]
+    description: Result of a DLQ delete operation.
+    properties:
+      deleted:
+        type: integer
+        description: Number of entries deleted.
+        example: 2
+
+  DLQDeleteByFilterRequest:
+    type: object
+    description: >
+      Delete DLQ entries by filter. When no filter fields are set,
+      `confirm_delete_all` must be true as a safety guard.
+    properties:
+      route_id:
+        type: string
+        description: Filter by route ID.
+        example: mqtt-to-sqs
+      category:
+        type: string
+        description: Filter by error category.
+        example: transient
+      since:
+        type: string
+        format: date-time
+        description: Only delete entries failed at or after this time (RFC 3339).
+        example: "2025-12-01T00:00:00Z"
+      before:
+        type: string
+        format: date-time
+        description: Only delete entries failed before this time (RFC 3339).
+        example: "2025-12-31T23:59:59Z"
+      limit:
+        type: integer
+        description: Maximum number of entries to delete.
+        example: 100
+      confirm_delete_all:
+        type: boolean
+        description: Must be true when no filter fields are set.
+        default: false
 
   DeepHealthResponse:
     type: object

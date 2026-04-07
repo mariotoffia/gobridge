@@ -15,7 +15,7 @@ func TestReceiverFactory_NewReceiver_OptionsPassthrough(t *testing.T) {
 	spec := ports.ReceiverSpec{
 		ID: "r1",
 		Options: map[string]any{
-			"queue_url":          "https://sqs.us-east-1.amazonaws.com/123/test",
+			"queue_url":          "https://sqs.us-west-1.amazonaws.com/123/test",
 			"max_messages":       5,
 			"wait_time_seconds":  10,
 			"visibility_timeout": 45,
@@ -34,7 +34,7 @@ func TestReceiverFactory_NewReceiver_OptionsPassthrough(t *testing.T) {
 	if !ok {
 		t.Fatal("expected *Receiver")
 	}
-	if r.cfg.QueueURL != "https://sqs.us-east-1.amazonaws.com/123/test" {
+	if r.cfg.QueueURL != "https://sqs.us-west-1.amazonaws.com/123/test" {
 		t.Fatalf("QueueURL not passed through: got %q", r.cfg.QueueURL)
 	}
 	if r.cfg.MaxMessages != 5 {
@@ -50,7 +50,7 @@ func TestSenderFactory_NewSender_OptionsPassthrough(t *testing.T) {
 	spec := ports.SenderSpec{
 		ID: "s1",
 		Options: map[string]any{
-			"queue_url":        "https://sqs.us-east-1.amazonaws.com/123/test.fifo",
+			"queue_url":        "https://sqs.us-west-1.amazonaws.com/123/test.fifo",
 			"batch_size":       3,
 			"delay_seconds":    10,
 			"message_group_id": "grp-a",
@@ -70,7 +70,7 @@ func TestSenderFactory_NewSender_OptionsPassthrough(t *testing.T) {
 	if !ok {
 		t.Fatal("expected *Sender")
 	}
-	if s.cfg.QueueURL != "https://sqs.us-east-1.amazonaws.com/123/test.fifo" {
+	if s.cfg.QueueURL != "https://sqs.us-west-1.amazonaws.com/123/test.fifo" {
 		t.Fatalf("QueueURL not passed through: got %q", s.cfg.QueueURL)
 	}
 	if s.cfg.BatchSize != 3 {

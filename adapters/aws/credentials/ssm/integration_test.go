@@ -31,7 +31,7 @@ func uniqueURI(prefix string) string {
 // Verifies full Create → Get round-trip for password credentials against LocalStack SSM.
 func TestIntegration_SSM_CreateAndGet_Password(t *testing.T) {
 	ep := localstack.Endpoint(t)
-	repo := New(WithEndpoint(ep), WithRegion("us-east-1"))
+	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
 	ctx := context.Background()
 	uri := uniqueURI("password")
 
@@ -54,7 +54,7 @@ func TestIntegration_SSM_CreateAndGet_Password(t *testing.T) {
 // Verifies full Create → Get round-trip for TLS credentials against LocalStack SSM.
 func TestIntegration_SSM_CreateAndGet_TLS(t *testing.T) {
 	ep := localstack.Endpoint(t)
-	repo := New(WithEndpoint(ep), WithRegion("us-east-1"))
+	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
 	ctx := context.Background()
 	uri := uniqueURI("tls")
 
@@ -81,7 +81,7 @@ func TestIntegration_SSM_CreateAndGet_TLS(t *testing.T) {
 // Verifies Create on an existing parameter returns ErrAlreadyExists.
 func TestIntegration_SSM_Create_AlreadyExists(t *testing.T) {
 	ep := localstack.Endpoint(t)
-	repo := New(WithEndpoint(ep), WithRegion("us-east-1"))
+	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
 	ctx := context.Background()
 	uri := uniqueURI("dup")
 
@@ -98,7 +98,7 @@ func TestIntegration_SSM_Create_AlreadyExists(t *testing.T) {
 // Verifies Update overwrites the parameter and Get returns the new value.
 func TestIntegration_SSM_Update(t *testing.T) {
 	ep := localstack.Endpoint(t)
-	repo := New(WithEndpoint(ep), WithRegion("us-east-1"))
+	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
 	ctx := context.Background()
 	uri := uniqueURI("update")
 
@@ -122,7 +122,7 @@ func TestIntegration_SSM_Update(t *testing.T) {
 // Verifies Delete removes the parameter so Get returns ErrNotFound.
 func TestIntegration_SSM_Delete(t *testing.T) {
 	ep := localstack.Endpoint(t)
-	repo := New(WithEndpoint(ep), WithRegion("us-east-1"))
+	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
 	ctx := context.Background()
 	uri := uniqueURI("delete")
 
@@ -141,7 +141,7 @@ func TestIntegration_SSM_Delete(t *testing.T) {
 // Verifies Get on a non-existent parameter returns ErrNotFound.
 func TestIntegration_SSM_Get_NotFound(t *testing.T) {
 	ep := localstack.Endpoint(t)
-	repo := New(WithEndpoint(ep), WithRegion("us-east-1"))
+	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
 	ctx := context.Background()
 
 	_, err := repo.Get(ctx, uniqueURI("nonexistent"))
@@ -153,7 +153,7 @@ func TestIntegration_SSM_Get_NotFound(t *testing.T) {
 func TestIntegration_SSM_List(t *testing.T) {
 	ep := localstack.Endpoint(t)
 	ns := fmt.Sprintf("listns-%d", time.Now().UnixNano())
-	repo := New(WithEndpoint(ep), WithRegion("us-east-1"), WithNamespace(ns))
+	repo := New(WithEndpoint(ep), WithRegion("us-west-1"), WithNamespace(ns))
 	ctx := context.Background()
 
 	creds := &domain.CredentialSet{
@@ -180,7 +180,7 @@ func TestIntegration_SSM_List(t *testing.T) {
 // Verifies Update with version mismatch returns ErrVersionMismatch.
 func TestIntegration_SSM_Update_VersionMismatch(t *testing.T) {
 	ep := localstack.Endpoint(t)
-	repo := New(WithEndpoint(ep), WithRegion("us-east-1"))
+	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
 	ctx := context.Background()
 	uri := uniqueURI("vcheck")
 

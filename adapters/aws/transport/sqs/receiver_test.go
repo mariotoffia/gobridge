@@ -151,7 +151,7 @@ func TestReceiver_RunStripsReservedHeaders(t *testing.T) {
 // Verifies SNS-wrapped bodies are unwrapped into subject, payload, and topic metadata.
 func TestReceiver_RunSNSUnwrap(t *testing.T) {
 	snsMsg := map[string]string{
-		"TopicArn": "arn:aws:sns:us-east-1:123:my-topic",
+		"TopicArn": "arn:aws:sns:us-west-1:123:my-topic",
 		"Subject":  "Test Subject",
 		"Message":  `{"inner":"data"}`,
 	}
@@ -205,7 +205,7 @@ func TestReceiver_RunSNSUnwrap(t *testing.T) {
 	if string(env.Payload) != `{"inner":"data"}` {
 		t.Fatalf("expected unwrapped SNS message body, got %q", string(env.Payload))
 	}
-	if env.Headers["sns.topic_arn"] != "arn:aws:sns:us-east-1:123:my-topic" {
+	if env.Headers["sns.topic_arn"] != "arn:aws:sns:us-west-1:123:my-topic" {
 		t.Fatal("SNS topic ARN should be in headers")
 	}
 }

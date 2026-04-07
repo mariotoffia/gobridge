@@ -21,7 +21,7 @@ func TestSendBatch_NilSlice_ReturnsZeroNil(t *testing.T) {
 	mock := &mockSQSClient{}
 	s := &Sender{
 		client:   mock,
-		queueURL: "https://sqs.us-east-1.amazonaws.com/123456789012/test",
+		queueURL: "https://sqs.us-west-1.amazonaws.com/123456789012/test",
 		cfg:      SenderConfig{BatchSize: 10, Timeout: 30},
 	}
 
@@ -34,7 +34,7 @@ func TestSendBatch_EmptySlice_ReturnsZeroNil(t *testing.T) {
 	mock := &mockSQSClient{}
 	s := &Sender{
 		client:   mock,
-		queueURL: "https://sqs.us-east-1.amazonaws.com/123456789012/test",
+		queueURL: "https://sqs.us-west-1.amazonaws.com/123456789012/test",
 		cfg:      SenderConfig{BatchSize: 10, Timeout: 30},
 	}
 

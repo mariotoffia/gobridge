@@ -40,7 +40,7 @@ receivers:
   - id: sqs-rx
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/orders
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/orders
 
 senders:
   - id: mqtt-tx

@@ -28,7 +28,7 @@ func TestBug4_ApplyDefaults_WaitTimeSecondsZero_StaysZero(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := ReceiverConfig{
-				QueueURL:        "https://sqs.us-east-1.amazonaws.com/123/q",
+				QueueURL:        "https://sqs.us-west-1.amazonaws.com/123/q",
 				WaitTimeSeconds: tc.input,
 			}
 			cfg.applyDefaults()
@@ -46,7 +46,7 @@ func TestBug4_ApplyDefaults_WaitTimeSecondsZero_StaysZero(t *testing.T) {
 // MaxMessages which IS correctly defaulted to 10 when zero.
 func TestBug4_ApplyDefaults_MaxMessages_CorrectlyDefaulted(t *testing.T) {
 	cfg := ReceiverConfig{
-		QueueURL:    "https://sqs.us-east-1.amazonaws.com/123/q",
+		QueueURL:    "https://sqs.us-west-1.amazonaws.com/123/q",
 		MaxMessages: 0,
 	}
 	cfg.applyDefaults()

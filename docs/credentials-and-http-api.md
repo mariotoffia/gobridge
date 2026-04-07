@@ -121,7 +121,7 @@ both key sets are present.
 import ssmcreds "github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm"
 
 repo := ssmcreds.New(
-    ssmcreds.WithRegion("us-east-1"),
+    ssmcreds.WithRegion("us-west-1"),
     ssmcreds.WithNamespace("prod"),
 )
 ```
@@ -485,7 +485,7 @@ senders:
   - id: sqs-out
     transport: sqs
     options:
-      queue_url: https://sqs.us-east-1.amazonaws.com/123456789012/events
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789012/events
       credentials_uri: pms://prod/aws/sqs-creds
 
 bindings:
@@ -555,7 +555,7 @@ func main() {
     }
 
     ssmRepo := ssmcreds.New(
-        ssmcreds.WithRegion("us-east-1"),
+        ssmcreds.WithRegion("us-west-1"),
         ssmcreds.WithNamespace("prod"),
     )
 

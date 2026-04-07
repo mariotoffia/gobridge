@@ -155,8 +155,8 @@ func extractSeq(env *domain.Envelope) int {
 func TestUC28_VisibilityTimeout_Race(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 500
-		pollTimeout  = 180 * time.Second
+		msgCount    = 500
+		pollTimeout = 180 * time.Second
 	)
 
 	// Create SQS queue with short visibility timeout (5s).
@@ -177,7 +177,7 @@ func TestUC28_VisibilityTimeout_Race(t *testing.T) {
 	sqsRx, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          inQueueURL,
 		Endpoint:          ep,
-		Region:            "us-east-1",
+		Region:            "us-west-1",
 		MaxMessages:       10,
 		WaitTimeSeconds:   1,
 		VisibilityTimeout: 5,
@@ -250,8 +250,8 @@ func TestUC28_VisibilityTimeout_Race(t *testing.T) {
 func TestUC29_MessageTTL_Expiry(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 500
-		pollTimeout  = 120 * time.Second
+		msgCount    = 500
+		pollTimeout = 120 * time.Second
 	)
 
 	collector := newMQTTCollector(t, "uc29/output/data", "uc29-col")
