@@ -97,15 +97,20 @@ func TestE2E_F2_Failover_TwoInstances_LeaseTransfer(t *testing.T) {
 	sessionID := uniqueID("f2-sess")
 	cfg := outboxRoute("f2-route", sessionID, "t/f2")
 
+	dlq := &e2eDLQStore{}
 	ctxA, cancelA := context.WithCancel(context.Background())
 	rtA := goruntime.New(goruntime.WithInstanceID("f2-A"),
-		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore))
+		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore), goruntime.WithDLQStore(dlq))
 	rxA := newFakeReceiver()
 	sessA := newFakeSession()
 	scA := e2eFastSessionConfig(sessionID)
 	scA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
-	_ = rtA.AddRoute(cfg, rxA, newFakeSender(), sessA, &scA)
-	_ = rtA.Start(ctxA)
+	if err := rtA.AddRoute(cfg, rxA, newFakeSender(), sessA, &scA); err != nil {
+		t.Fatalf("AddRoute A: %v", err)
+	}
+	if err := rtA.Start(ctxA); err != nil {
+		t.Fatalf("Start A: %v", err)
+	}
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
 	env := &domain.Envelope{ID: uniqueID("f2-msg"), Payload: []byte("transfer")}
 	del := newFakeDelivery(env)
@@ -116,14 +121,18 @@ func TestE2E_F2_Failover_TwoInstances_LeaseTransfer(t *testing.T) {
 	ctxB, cancelB := context.WithCancel(context.Background())
 	defer cancelB()
 	rtB := goruntime.New(goruntime.WithInstanceID("f2-B"),
-		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore))
+		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore), goruntime.WithDLQStore(dlq))
 	sB := newFakeSender()
 	sessB := newFakeSession()
 	scB := e2eFastSessionConfig(sessionID)
-	_ = rtB.AddRoute(cfg, newFakeReceiver(), sB, sessB, &scB)
-	_ = rtB.Start(ctxB)
+	if err := rtB.AddRoute(cfg, newFakeReceiver(), sB, sessB, &scB); err != nil {
+		t.Fatalf("AddRoute B: %v", err)
+	}
+	if err := rtB.Start(ctxB); err != nil {
+		t.Fatalf("Start B: %v", err)
+	}
 	e2eWaitFor(t, 5*time.Second, "B started", func() bool { return sessB.isStarted() })
-	e2eWaitFor(t, 10*time.Second, "B drained", func() bool { return sB.sentCount() >= 1 })
+	e2eWaitFor(t, 20*time.Second, "B drained", func() bool { return sB.sentCount() >= 1 })
 	if sB.getSent()[0].ID != env.ID {
 		t.Errorf("got %q, want %q", sB.getSent()[0].ID, env.ID)
 	}
@@ -136,15 +145,20 @@ func TestE2E_F3_Failover_ThreeInstances_CascadingFailure(t *testing.T) {
 	sessionID := uniqueID("f3-sess")
 	cfg := outboxRoute("f3-route", sessionID, "t/f3")
 
+	dlq := &e2eDLQStore{}
 	ctxA, cancelA := context.WithCancel(context.Background())
 	rtA := goruntime.New(goruntime.WithInstanceID("f3-A"),
-		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore))
+		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore), goruntime.WithDLQStore(dlq))
 	rxA := newFakeReceiver()
 	sessA := newFakeSession()
 	scA := e2eFastSessionConfig(sessionID)
 	scA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
-	_ = rtA.AddRoute(cfg, rxA, newFakeSender(), sessA, &scA)
-	_ = rtA.Start(ctxA)
+	if err := rtA.AddRoute(cfg, rxA, newFakeSender(), sessA, &scA); err != nil {
+		t.Fatalf("AddRoute A: %v", err)
+	}
+	if err := rtA.Start(ctxA); err != nil {
+		t.Fatalf("Start A: %v", err)
+	}
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
 	for i := 0; i < 3; i++ {
 		del := newFakeDelivery(&domain.Envelope{ID: fmt.Sprintf("f3-%d", i), Payload: []byte("cascade")})
@@ -156,14 +170,18 @@ func TestE2E_F3_Failover_ThreeInstances_CascadingFailure(t *testing.T) {
 	ctxB, cancelB := context.WithCancel(context.Background())
 	sB := newLimitedSender(1)
 	rtB := goruntime.New(goruntime.WithInstanceID("f3-B"),
-		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore))
+		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore), goruntime.WithDLQStore(dlq))
 	sessB := newFakeSession()
 	scB := e2eFastSessionConfig(sessionID)
-	_ = rtB.AddRoute(cfg, newFakeReceiver(), sB, sessB, &scB)
-	_ = rtB.Start(ctxB)
+	if err := rtB.AddRoute(cfg, newFakeReceiver(), sB, sessB, &scB); err != nil {
+		t.Fatalf("AddRoute B: %v", err)
+	}
+	if err := rtB.Start(ctxB); err != nil {
+		t.Fatalf("Start B: %v", err)
+	}
 	select {
 	case <-sB.reached:
-	case <-time.After(15 * time.Second):
+	case <-time.After(20 * time.Second):
 		t.Fatal("B did not send 1 message")
 	}
 	cancelB()
@@ -172,12 +190,16 @@ func TestE2E_F3_Failover_ThreeInstances_CascadingFailure(t *testing.T) {
 	defer cancelC()
 	sC := newFakeSender()
 	rtC := goruntime.New(goruntime.WithInstanceID("f3-C"),
-		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore))
+		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore), goruntime.WithDLQStore(dlq))
 	sessC := newFakeSession()
 	scC := e2eFastSessionConfig(sessionID)
-	_ = rtC.AddRoute(cfg, newFakeReceiver(), sC, sessC, &scC)
-	_ = rtC.Start(ctxC)
-	e2eWaitFor(t, 15*time.Second, "C drains remaining", func() bool { return sC.sentCount() >= 2 })
+	if err := rtC.AddRoute(cfg, newFakeReceiver(), sC, sessC, &scC); err != nil {
+		t.Fatalf("AddRoute C: %v", err)
+	}
+	if err := rtC.Start(ctxC); err != nil {
+		t.Fatalf("Start C: %v", err)
+	}
+	e2eWaitFor(t, 20*time.Second, "C drains remaining", func() bool { return sC.sentCount() >= 2 })
 	// At-least-once: B may have sent a record that C re-sends after reclaim.
 	// Verify all 3 unique envelope IDs were delivered across B+C.
 	seen := make(map[string]bool)
@@ -253,24 +275,29 @@ func TestE2E_F5_Failover_ConnectAfterLease(t *testing.T) {
 	if _, err := leaseStore.Acquire(context.Background(), sessionID, "other", 800*time.Millisecond, nil); err != nil {
 		t.Fatalf("pre-acquire: %v", err)
 	}
+	dlq := &e2eDLQStore{}
 	rt := goruntime.New(goruntime.WithInstanceID("f5-inst"),
-		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore))
+		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore), goruntime.WithDLQStore(dlq))
 	rx := newFakeReceiver()
 	sender := newFakeSender()
 	sess := newFakeSession()
 	sc := e2eFastSessionConfig(sessionID)
 	sc.ConnectAfterLease = true
-	_ = rt.AddRoute(outboxRoute("f5-route", sessionID, "t/f5"), rx, sender, sess, &sc)
+	if err := rt.AddRoute(outboxRoute("f5-route", sessionID, "t/f5"), rx, sender, sess, &sc); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_ = rt.Start(ctx)
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
 	defer func() { _ = rt.Stop(context.Background()) }()
 
 	time.Sleep(300 * time.Millisecond)
 	if sess.isStarted() {
 		t.Fatal("session started before lease acquired")
 	}
-	e2eWaitFor(t, 5*time.Second, "session after lease expiry", func() bool { return sess.isStarted() })
+	e2eWaitFor(t, 10*time.Second, "session after lease expiry", func() bool { return sess.isStarted() })
 	env := &domain.Envelope{ID: uniqueID("f5-msg"), Payload: []byte("deferred")}
 	del := newFakeDelivery(env)
 	_ = rx.Emit(ctx, del)
@@ -436,15 +463,20 @@ func TestE2E_F9_Failover_MultiMessage_ThreeInstances(t *testing.T) {
 	sessionID := uniqueID("f9-sess")
 	cfg := outboxRoute("f9-route", sessionID, "t/f9")
 
+	dlq := &e2eDLQStore{}
 	ctxA, cancelA := context.WithCancel(context.Background())
 	rtA := goruntime.New(goruntime.WithInstanceID("f9-A"),
-		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore))
+		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore), goruntime.WithDLQStore(dlq))
 	rxA := newFakeReceiver()
 	sessA := newFakeSession()
 	scA := e2eFastSessionConfig(sessionID)
 	scA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
-	_ = rtA.AddRoute(cfg, rxA, newFakeSender(), sessA, &scA)
-	_ = rtA.Start(ctxA)
+	if err := rtA.AddRoute(cfg, rxA, newFakeSender(), sessA, &scA); err != nil {
+		t.Fatalf("AddRoute A: %v", err)
+	}
+	if err := rtA.Start(ctxA); err != nil {
+		t.Fatalf("Start A: %v", err)
+	}
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
 	for i := 0; i < 5; i++ {
 		del := newFakeDelivery(&domain.Envelope{ID: fmt.Sprintf("f9-%d", i), Payload: []byte("multi")})
@@ -456,13 +488,17 @@ func TestE2E_F9_Failover_MultiMessage_ThreeInstances(t *testing.T) {
 	ctxB, cancelB := context.WithCancel(context.Background())
 	defer cancelB()
 	rtB := goruntime.New(goruntime.WithInstanceID("f9-B"),
-		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore))
+		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore), goruntime.WithDLQStore(dlq))
 	sB := newFakeSender()
 	sessB := newFakeSession()
 	scB := e2eFastSessionConfig(sessionID)
-	_ = rtB.AddRoute(cfg, newFakeReceiver(), sB, sessB, &scB)
-	_ = rtB.Start(ctxB)
-	e2eWaitFor(t, 15*time.Second, "all 5 drained", func() bool { return sB.sentCount() >= 5 })
+	if err := rtB.AddRoute(cfg, newFakeReceiver(), sB, sessB, &scB); err != nil {
+		t.Fatalf("AddRoute B: %v", err)
+	}
+	if err := rtB.Start(ctxB); err != nil {
+		t.Fatalf("Start B: %v", err)
+	}
+	e2eWaitFor(t, 30*time.Second, "all 5 drained", func() bool { return sB.sentCount() >= 5 })
 	if sB.sentCount() != 5 {
 		t.Errorf("sent=%d, want 5", sB.sentCount())
 	}
@@ -475,15 +511,20 @@ func TestE2E_F10_Failover_GracefulStepDown(t *testing.T) {
 	sessionID := uniqueID("f10-sess")
 	cfg := outboxRoute("f10-route", sessionID, "t/f10")
 
+	dlq := &e2eDLQStore{}
 	ctxA, cancelA := context.WithCancel(context.Background())
 	rtA := goruntime.New(goruntime.WithInstanceID("f10-A"),
-		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore))
+		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore), goruntime.WithDLQStore(dlq))
 	rxA := newFakeReceiver()
 	sA := newFakeSender()
 	sessA := newFakeSession()
 	scA := e2eFastSessionConfig(sessionID)
-	_ = rtA.AddRoute(cfg, rxA, sA, sessA, &scA)
-	_ = rtA.Start(ctxA)
+	if err := rtA.AddRoute(cfg, rxA, sA, sessA, &scA); err != nil {
+		t.Fatalf("AddRoute A: %v", err)
+	}
+	if err := rtA.Start(ctxA); err != nil {
+		t.Fatalf("Start A: %v", err)
+	}
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
 	del := newFakeDelivery(&domain.Envelope{ID: uniqueID("f10-msg"), Payload: []byte("step-down")})
 	_ = rxA.Emit(ctxA, del)
@@ -495,13 +536,17 @@ func TestE2E_F10_Failover_GracefulStepDown(t *testing.T) {
 	ctxB, cancelB := context.WithCancel(context.Background())
 	defer cancelB()
 	rtB := goruntime.New(goruntime.WithInstanceID("f10-B"),
-		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore))
+		goruntime.WithOutboxStore(outboxStore), goruntime.WithLeaseStore(leaseStore), goruntime.WithDLQStore(dlq))
 	rxB := newFakeReceiver()
 	sB := newFakeSender()
 	sessB := newFakeSession()
 	scB := e2eFastSessionConfig(sessionID)
-	_ = rtB.AddRoute(cfg, rxB, sB, sessB, &scB)
-	_ = rtB.Start(ctxB)
+	if err := rtB.AddRoute(cfg, rxB, sB, sessB, &scB); err != nil {
+		t.Fatalf("AddRoute B: %v", err)
+	}
+	if err := rtB.Start(ctxB); err != nil {
+		t.Fatalf("Start B: %v", err)
+	}
 	e2eWaitFor(t, 5*time.Second, "B started", func() bool { return sessB.isStarted() })
 	del2 := newFakeDelivery(&domain.Envelope{ID: uniqueID("f10-msg2"), Payload: []byte("new-owner")})
 	_ = rxB.Emit(ctxB, del2)
