@@ -41,14 +41,55 @@ build-azure: ## Build Azure module only
 # ============================================================================
 
 test: ## Run unit tests only (no Docker, integration tests skipped)
-	@echo "Running unit tests..."
-	go test -short -race -timeout 120s ./...
-	cd httpapi && go test -short -race -timeout 120s ./...
+	@mkdir -p reports
+	@echo "Running unit tests across all modules..."
+	@echo "Report will be saved to: reports/test-unit.log"
+	@bash -c 'set -o pipefail; status=0; \
+	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
+		dir=$$(dirname "$$modfile"); \
+		echo "--- Testing $$dir ---"; \
+		(cd "$$dir" && go test -short -race -timeout 120s ./...) || status=1; \
+	done 2>&1 | tee reports/test-unit.log; \
+	rc=$${PIPESTATUS[0]:-$$status}; \
+	echo ""; \
+	echo "========================================"; \
+	echo "  Test Report: reports/test-unit.log"; \
+	echo "========================================"; \
+	if [ $$rc -ne 0 ]; then \
+		echo ""; \
+		echo "FAILED tests:"; \
+		grep -E "^--- FAIL:|--- FAIL:" reports/test-unit.log || true; \
+		echo ""; \
+		echo "FAILED packages:"; \
+		grep -E "^FAIL\s" reports/test-unit.log || true; \
+	fi; \
+	exit $$rc'
 
 test-integration: ## Run all tests including integration (requires Docker)
-	@echo "Running all tests (unit + integration)..."
-	AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
-		go test -race -timeout 600s -v ./...
+	@mkdir -p reports
+	@echo "Running all tests (unit + integration) across all modules..."
+	@echo "Report will be saved to: reports/test-integration.log"
+	@bash -c 'set -o pipefail; status=0; \
+	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
+		dir=$$(dirname "$$modfile"); \
+		echo "--- Testing $$dir ---"; \
+		(cd "$$dir" && AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+			go test -race -timeout 600s -v ./...) || status=1; \
+	done 2>&1 | tee reports/test-integration.log; \
+	rc=$${PIPESTATUS[0]:-$$status}; \
+	echo ""; \
+	echo "========================================"; \
+	echo "  Test Report: reports/test-integration.log"; \
+	echo "========================================"; \
+	if [ $$rc -ne 0 ]; then \
+		echo ""; \
+		echo "FAILED tests:"; \
+		grep -E "^--- FAIL:|--- FAIL:" reports/test-integration.log || true; \
+		echo ""; \
+		echo "FAILED packages:"; \
+		grep -E "^FAIL\s" reports/test-integration.log || true; \
+	fi; \
+	exit $$rc'
 
 test-long-running: ## Run long-running stress tests (requires Docker, -tags=longrunning)
 	@mkdir -p reports
