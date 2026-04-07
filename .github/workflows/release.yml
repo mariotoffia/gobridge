@@ -8,6 +8,9 @@ on:
       - 'transport/aws/v*'      # AWS module: transport/aws/v1.0.0
       - 'transport/azure/v*'    # Azure module: transport/azure/v1.0.0
 
+permissions:
+  contents: write
+
 jobs:
   release:
     runs-on: ubuntu-latest
