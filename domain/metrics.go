@@ -100,6 +100,28 @@ const (
 	MetricClusterForwards     = "ClusterForwards"
 )
 
+// AMQP 0-9-1 metric names.
+const (
+	MetricAMQP091ConnectLatency   = "AMQP091ConnectLatency"
+	MetricAMQP091ReconcileLatency = "AMQP091ReconcileLatency"
+	MetricAMQP091PublishLatency   = "AMQP091PublishLatency"
+	MetricAMQP091ConsumeLatency   = "AMQP091ConsumeLatency"
+	MetricAMQP091AckLatency       = "AMQP091AckLatency"
+	MetricAMQP091Reconnects       = "AMQP091Reconnects"
+	MetricAMQP091EventDropped     = "AMQP091EventDropped"
+)
+
+// AMQP 1.0 metric names.
+const (
+	MetricAMQP10ConnectLatency   = "AMQP10ConnectLatency"
+	MetricAMQP10ReconcileLatency = "AMQP10ReconcileLatency"
+	MetricAMQP10SendLatency      = "AMQP10SendLatency"
+	MetricAMQP10ReceiveLatency   = "AMQP10ReceiveLatency"
+	MetricAMQP10AcceptLatency    = "AMQP10AcceptLatency"
+	MetricAMQP10Reconnects       = "AMQP10Reconnects"
+	MetricAMQP10EventDropped     = "AMQP10EventDropped"
+)
+
 // Standard dimension key names for metric tags.
 const (
 	TagKeyLeaseID   = "lease_id"

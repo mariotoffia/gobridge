@@ -2,7 +2,7 @@
 
 ## 1. System Overview
 
-GoBridge is a message-bridge framework written in Go. It routes messages between heterogeneous transports -- MQTT, AWS SQS, Azure Service Bus -- with pluggable middleware processing, durable outbox delivery, dead-letter queue management, and full observability.
+GoBridge is a message-bridge framework written in Go. It routes messages between heterogeneous transports -- MQTT, AWS SQS, Azure Service Bus, RabbitMQ (AMQP 0-9-1), AMQP 1.0 brokers (Artemis, Solace, Qpid) -- with pluggable middleware processing, durable outbox delivery, dead-letter queue management, and full observability.
 
 The core module (`domain/`, `ports/`, `runtime/`, `bridge/`, `config/`) has zero external dependencies. Transport, store, and processor adapters live in separate Go modules within a `go.work` workspace so consumers only import what they need.
 

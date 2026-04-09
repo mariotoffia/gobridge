@@ -1,10 +1,10 @@
 # gobridge
 
-A message-bridge framework for Go. Route messages between MQTT, AWS SQS, Azure Service Bus, and other transports with pluggable processors, durable outbox delivery, dead-letter queue management, and observability.
+A message-bridge framework for Go. Route messages between MQTT, AWS SQS, Azure Service Bus, RabbitMQ (AMQP 0-9-1), AMQP 1.0 brokers, and other transports with pluggable processors, durable outbox delivery, dead-letter queue management, and observability.
 
 ## Features
 
-- **Multi-transport routing**: MQTT v5, AWS SQS, Azure Service Bus with a clean port/adapter model
+- **Multi-transport routing**: MQTT v5, AWS SQS, Azure Service Bus, RabbitMQ (AMQP 0-9-1), AMQP 1.0 with a clean port/adapter model
 - **Delivery guarantees**: DirectHold (send-then-ack) and SharedOutbox (persist-then-ack with durable outbox drainer)
 - **Processor chain**: Middleware for filtering, transformation, circuit breaking, and tenant isolation
 - **Pluggable stores**: LeaseStore, OutboxStore, DLQStore with Memory, SQLite, and DynamoDB implementations
@@ -74,6 +74,12 @@ go get github.com/mariotoffia/gobridge/adapters/aws/transport/sqs
 # Azure Service Bus transport adapter
 go get github.com/mariotoffia/gobridge/adapters/azure/transport/servicebus
 
+# RabbitMQ (AMQP 0-9-1) transport adapter
+go get github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091
+
+# AMQP 1.0 transport adapter (Artemis, Solace, Qpid, etc.)
+go get github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10
+
 # Native stores (memory, SQLite)
 go get github.com/mariotoffia/gobridge/adapters/native/store
 
@@ -96,10 +102,10 @@ go get github.com/mariotoffia/gobridge/adapters/aws/store
 |-------|-------------|
 | [Configuration Overview](docs/configuration-overview.md) | Configuration lifecycle, sources, layered config, dynamic reconfiguration |
 | [Configuration Reference](docs/configuration-reference.md) | Field-by-field reference for `BridgeConfig` |
-| [Transport Configuration](docs/transport-configuration.md) | MQTT, SQS, Azure Service Bus, HTTP transport options |
+| [Transport Configuration](docs/transport-configuration.md) | MQTT, SQS, Azure Service Bus, RabbitMQ, AMQP 1.0, HTTP transport options |
 | [Processors and Stores](docs/processors-and-stores.md) | Processor chain (filter, transform, circuit breaker, tenant) and store backends |
 | [Credentials and HTTP API](docs/credentials-and-http-api.md) | URI-based credential resolution and Admin/Monitor HTTP API |
-| [Scenarios](docs/scenarios/) | 14 progressive walkthroughs from basic MQTT forwarding to multi-tenant priority routing |
+| [Scenarios](docs/scenarios/) | Progressive walkthroughs from basic MQTT forwarding to cross-protocol AMQP bridging |
 
 ## Project Structure
 
@@ -115,13 +121,14 @@ gobridge/
 ├── adapters/
 │   ├── mqtt/         MQTT v5 via Paho
 │   ├── aws/          SQS, DynamoDB stores, SSM credentials, CloudWatch, ECS cluster
+│   ├── amqp/         RabbitMQ (AMQP 0-9-1) and AMQP 1.0 (Artemis, Solace, Qpid)
 │   ├── azure/        Azure Service Bus
 │   ├── http/         HTTP POST ingress, SSE egress
 │   ├── native/       Memory and SQLite stores, file credentials, file config
 │   └── otel/         OpenTelemetry metrics and tracing
 ├── processors/       Filter, transform, circuit breaker, tenant
 ├── cmd/gobridge/     Example binary
-└── testutil/         Docker test helpers (DynamoDB, SQS, ASB, S3)
+└── testutil/         Docker test helpers (DynamoDB, SQS, ASB, RabbitMQ, Artemis, S3)
 ```
 
 ## Transports
@@ -131,6 +138,8 @@ gobridge/
 | MQTT v5 | `adapters/mqtt/transport/paho` | Shared sessions, QoS 0/1/2, topic wildcards, autopaho reconnect |
 | AWS SQS | `adapters/aws/transport/sqs` | Long polling, batch send, visibility extension, FIFO support |
 | Azure Service Bus | `adapters/azure/transport/servicebus` | Queues, topics/subscriptions, batch send, auto-extend lock |
+| RabbitMQ (AMQP 0-9-1) | `adapters/amqp/transport/amqp091` | Exchanges, queues, bindings, publisher confirms, prefetch, reconnect |
+| AMQP 1.0 | `adapters/amqp/transport/amqp10` | Artemis/Solace/Qpid, link credit flow, reconnect, settlement mapping |
 | HTTP | `adapters/http/transport` (root module) | POST ingress, SSE egress, path-based routing |
 
 ## Stores

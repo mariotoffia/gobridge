@@ -23,7 +23,7 @@ flowchart TD
     Session -.->|"bound to"| Receiver
     Session -.->|"bound to"| Sender
 
-    subgraph Stateful ["Stateful Transports (MQTT)"]
+    subgraph Stateful ["Stateful Transports (MQTT, AMQP 0-9-1, AMQP 1.0)"]
         Session
     end
 
@@ -33,9 +33,10 @@ flowchart TD
     end
 ```
 
-Stateful transports (like MQTT) create a real `Session` that receivers and
-senders share. Stateless transports (SQS, Azure Service Bus, HTTP) return
-`nil` from `NewSession` -- receivers and senders manage their own connections.
+Stateful transports (MQTT, AMQP 0-9-1, AMQP 1.0) create a real `Session`
+that receivers and senders share. Stateless transports (SQS, Azure Service
+Bus, HTTP) return `nil` from `NewSession` -- receivers and senders manage
+their own connections.
 
 ---
 
@@ -476,18 +477,290 @@ The HTTP factory accepts functional options at registration time:
 
 ---
 
+## RabbitMQ (AMQP 0-9-1)
+
+**Transport name:** `amqp091`
+**Factory:** `amqp091.NewBridgeFactory(logger)`
+**Capabilities:** `stateful_session`, `source_redelivery`
+
+RabbitMQ uses a stateful session. A `Session` owns a single AMQP connection
+with automatic reconnection. Receivers and senders each open their own
+channel on that connection. `Reconcile` declares exchanges, queues, and
+bindings from the `SessionPlan`.
+
+### YAML Example
+
+```yaml
+sessions:
+  - id: rabbit-conn
+    transport: amqp091
+    options:
+      broker_url: "amqp://guest:guest@localhost:5672/"
+      heartbeat: "10s"
+      connect_timeout: "30s"
+      reconnect_delay: "1s"
+      tls:
+        enable: false
+
+receivers:
+  - id: order-consumer
+    transport: amqp091
+    session_id: rabbit-conn
+    topics:
+      - topic: "order-queue"
+        options:
+          exchange: "orders"
+          exchange_type: "direct"
+          routing_key: "new-order"
+          durable: true
+    options:
+      queue_name: "order-queue"
+      prefetch_count: 20
+      auto_ack: false
+
+senders:
+  - id: notification-publisher
+    transport: amqp091
+    session_id: rabbit-conn
+    options:
+      exchange: "notifications"
+      routing_key: "order.confirmed"
+      timeout: "30s"
+```
+
+### Session Options Reference
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `broker_url` | string | -- (required) | AMQP URI, e.g. `amqp://user:pass@host:5672/vhost` |
+| `username` | string | -- | Injected into broker URL if no userinfo present |
+| `password` | string | -- | Injected into broker URL if no userinfo present |
+| `vhost` | string | -- | AMQP virtual host |
+| `heartbeat` | duration | `10s` | Connection heartbeat interval |
+| `connect_timeout` | duration | `30s` | Dial timeout per attempt |
+| `reconnect_delay` | duration | `1s` | Initial delay before reconnect (grows to 30s) |
+| `tls.enable` | bool | `false` | Enable TLS (`amqp091.DialTLS`) |
+| `tls.ca_cert_file` | string | -- | CA certificate PEM file path |
+| `tls.cert_file` | string | -- | Client certificate PEM file path |
+| `tls.key_file` | string | -- | Client private key PEM file path |
+| `tls.insecure_skip_verify` | bool | `false` | Skip server certificate verification |
+
+### Receiver Options Reference
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `queue_name` | string | -- | Queue to consume from |
+| `consumer_tag` | string | auto-generated | Consumer tag identifier |
+| `auto_ack` | bool | `false` | Automatic acknowledgement (disables manual settlement) |
+| `exclusive` | bool | `false` | Exclusive consumer |
+| `prefetch_count` | int | `10` | QoS prefetch count |
+| `prefetch_size` | int | `0` | QoS prefetch size in bytes |
+
+### Sender Options Reference
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `exchange` | string | `""` | Target exchange name |
+| `routing_key` | string | `""` | Routing key; falls back to `envelope.Subject` |
+| `mandatory` | bool | `false` | Return unroutable messages |
+| `immediate` | bool | `false` | Return messages when no consumer is ready |
+| `timeout` | duration | `30s` | Per-publish timeout (applied when context has no deadline) |
+
+### Topology Declaration (Reconcile)
+
+AMQP 0-9-1 sessions support automatic topology declaration via `Reconcile`.
+When a receiver has `topics[]` entries with `options`, the session declares
+the exchange, queue, and binding during startup and after each reconnect.
+
+```yaml
+topics:
+  - topic: "my-queue"
+    options:
+      exchange: "my-exchange"
+      exchange_type: "direct"
+      routing_key: "events"
+      durable: true
+```
+
+This declares:
+
+1. Exchange `my-exchange` of type `direct` (durable)
+2. Queue `my-queue` (durable)
+3. Binding from `my-exchange` to `my-queue` with routing key `events`
+
+### Settlement Mapping
+
+| `ports.Delivery` method | AMQP 0-9-1 operation | Notes |
+|---|---|---|
+| `Ack(ctx)` | `delivery.Ack(false)` | Single-message acknowledgement |
+| `Retry(ctx, after, err)` | `delivery.Nack(false, true)` | Requeue; `after` is logged but not enforced |
+| `Extend(ctx, deadline)` | -- | Returns `ErrNotSupported` |
+
+### Resilience Behavior
+
+- **Automatic reconnection.** On connection loss, the session retries with
+  exponential backoff (1s initial, 30s cap) plus 25% jitter. After
+  reconnecting, it re-runs `Reconcile` to redeclare topology.
+- **Publisher confirms.** The sender opens its channel in confirm mode.
+  Each `Send` waits for the broker to confirm receipt before returning.
+- **Channel isolation.** Each receiver and sender opens its own channel.
+  A channel-level error (e.g., queue deleted) does not affect other
+  receivers and senders on the same connection.
+
+---
+
+## AMQP 1.0
+
+**Transport name:** `amqp10`
+**Factory:** `amqp10.NewBridgeFactory(logger)`
+**Capabilities:** `stateful_session`
+
+The AMQP 1.0 adapter works with any broker that speaks the AMQP 1.0 wire
+protocol: Apache ActiveMQ Artemis, Solace PubSub+, Apache Qpid, Azure
+Event Hubs (direct AMQP), and AWS MQ for ActiveMQ. Built on
+[github.com/Azure/go-amqp](https://github.com/Azure/go-amqp).
+
+A `Session` owns the TCP connection and AMQP session. Receivers and senders
+create links on that session. Topology (queues, topics) is broker-managed --
+AMQP 1.0 does not declare exchanges or queues.
+
+### YAML Example
+
+```yaml
+sessions:
+  - id: artemis-conn
+    transport: amqp10
+    options:
+      address: "amqp://localhost:5672"
+      container_id: "bridge-node-01"
+      connect_timeout: "30s"
+      reconnect_delay: "1s"
+      idle_timeout: "2m"
+      max_frame_size: 65536
+      username: "admin"
+      password: "admin"
+
+receivers:
+  - id: order-receiver
+    transport: amqp10
+    session_id: artemis-conn
+    options:
+      address: "queue://orders"
+      link_credit: 20
+      durability_mode: 0
+
+senders:
+  - id: event-publisher
+    transport: amqp10
+    session_id: artemis-conn
+    options:
+      address: "topic://events"
+      timeout: "30s"
+      durability_mode: 0
+```
+
+### Session Options Reference
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `address` | string | -- (required) | Broker URL, e.g. `amqp://host:5672` or `amqps://host:5671` |
+| `container_id` | string | -- | AMQP container ID; identifies this client to the broker |
+| `connect_timeout` | duration | `30s` | Dial timeout per connection attempt |
+| `reconnect_delay` | duration | `1s` | Initial delay before reconnect (grows to 30s) |
+| `idle_timeout` | duration | `2m` | Connection idle timeout sent to broker |
+| `max_frame_size` | int | `65536` | Maximum AMQP frame size in bytes |
+| `username` | string | -- | SASL PLAIN username |
+| `password` | string | -- | SASL PLAIN password |
+| `tls.enable` | bool | `false` | Enable TLS |
+| `tls.ca_cert_file` | string | -- | CA certificate PEM file path |
+| `tls.cert_file` | string | -- | Client certificate PEM file path |
+| `tls.key_file` | string | -- | Client private key PEM file path |
+| `tls.insecure_skip_verify` | bool | `false` | Skip server certificate verification |
+
+### Receiver Options Reference
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `address` | string | -- (required) | Queue or topic address to consume from |
+| `link_credit` | int | `10` | Prefetch credit; how many messages the broker sends ahead |
+| `durability_mode` | int | `0` | AMQP durability level for the receiver link |
+
+### Sender Options Reference
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `address` | string | -- (required) | Target address to publish to |
+| `timeout` | duration | `30s` | Send timeout per message |
+| `durability_mode` | int | `0` | AMQP durability level for the sender link |
+
+### Settlement Mapping
+
+| `ports.Delivery` method | AMQP 1.0 disposition | Notes |
+|---|---|---|
+| `Ack(ctx)` | `AcceptMessage` (accepted) | Message removed from queue |
+| `Retry(ctx, 0, err)` | `ReleaseMessage` (released) | Immediate redelivery to any consumer |
+| `Retry(ctx, >0, err)` | `ModifyMessage` (delivery-failed=true) | Signals broker to schedule retry |
+| `Extend(ctx, deadline)` | -- | Returns `ErrNotSupported` |
+
+Settlement is idempotent. Only the first call on a `Delivery` performs the
+disposition; subsequent calls are no-ops.
+
+### AMQP 1.0 vs AMQP 0-9-1
+
+| Aspect | AMQP 1.0 | AMQP 0-9-1 (RabbitMQ) |
+|--------|----------|----------------------|
+| Topology | Broker-managed (no declare) | Client declares exchanges, queues, bindings |
+| Retry with delay | `ModifyMessage` (broker-dependent) | Nack+requeue only (no native delay) |
+| Flow control | Link credit (prefetch) | Channel-level QoS prefetch |
+| Batch send | Individual messages over link | Individual messages with publisher confirms |
+| Session model | Connection + AMQP session + links | Connection + channels |
+
+### Resilience Behavior
+
+- **Automatic reconnection.** On connection loss or link detach, the
+  session reconnects with exponential backoff (1s initial, 30s cap, 25%
+  jitter). Links re-create themselves on the next operation.
+- **Link lifecycle.** Receivers and senders detect link errors and notify
+  the session, which triggers reconnection. After reconnect, `Reconcile`
+  runs again if a plan exists.
+- **Idempotent settlement.** A `Delivery` can only be settled once. Repeat
+  calls to `Ack` or `Retry` are safe no-ops.
+
+### AWS MQ (Managed AMQP 1.0)
+
+AWS MQ for ActiveMQ supports the AMQP 1.0 protocol. Connect using the
+broker's AMQP endpoint with TLS:
+
+```yaml
+sessions:
+  - id: aws-mq-conn
+    transport: amqp10
+    options:
+      address: "amqps://b-xxxx-xxxx.mq.eu-west-1.amazonaws.com:5671"
+      container_id: "bridge-aws-mq"
+      username: "admin"
+      password: "your-password"
+      tls:
+        enable: true
+```
+
+AWS MQ manages broker topology (queues, topics) through the ActiveMQ admin
+console or API. The bridge connects as a standard AMQP 1.0 client.
+
+---
+
 ## Transport Capabilities Matrix
 
 Each transport declares its capabilities at registration time. The runtime
 uses these to validate routes and enable transport-specific features.
 
-| Capability | MQTT | SQS | Azure SB | HTTP | Description |
-|------------|:----:|:---:|:--------:|:----:|-------------|
-| `stateful_session` | Yes | -- | -- | -- | Persistent session across reconnects |
-| `exclusive_identity` | Yes | -- | -- | -- | Lease-based single-holder session |
-| `visibility_extension` | -- | Yes | Yes | -- | Auto-renew message lock / visibility |
-| `source_redelivery` | -- | Yes | -- | -- | Broker redelivers unacknowledged messages |
-| `http_endpoint` | -- | -- | -- | Yes | Exposes HTTP endpoints |
+| Capability | MQTT | SQS | Azure SB | AMQP 0-9-1 | AMQP 1.0 | HTTP | Description |
+|------------|:----:|:---:|:--------:|:----------:|:--------:|:----:|-------------|
+| `stateful_session` | Yes | -- | -- | Yes | Yes | -- | Persistent session across reconnects |
+| `exclusive_identity` | Yes | -- | -- | -- | -- | -- | Lease-based single-holder session |
+| `visibility_extension` | -- | Yes | Yes | -- | -- | -- | Auto-renew message lock / visibility |
+| `source_redelivery` | -- | Yes | -- | Yes | -- | -- | Broker redelivers unacknowledged messages |
+| `http_endpoint` | -- | -- | -- | -- | -- | Yes | Exposes HTTP endpoints |
 
 Additional capabilities defined in `ports.Capability` but not currently
 declared by any built-in transport: `delayed_send`, `shared_consumer`.
@@ -505,6 +778,8 @@ rt, err := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
     RegisterTransport("mqtt", paho.NewBridgeFactory(logger)).
     RegisterTransport("sqs", sqs.NewBridgeFactory(logger)).
     RegisterTransport("servicebus", servicebus.NewBridgeFactory(logger)).
+    RegisterTransport("amqp091", amqp091.NewBridgeFactory(logger)).
+    RegisterTransport("amqp10", amqp10.NewBridgeFactory(logger)).
     RegisterTransport("http", httptransport.NewBridgeFactory(
         httptransport.WithFactoryLogger(logger),
     )).
@@ -516,6 +791,8 @@ sup := bridge.NewSupervisor()
 sup.RegisterTransport("mqtt", paho.NewBridgeFactory(logger))
 sup.RegisterTransport("sqs", sqs.NewBridgeFactory(logger))
 sup.RegisterTransport("servicebus", servicebus.NewBridgeFactory(logger))
+sup.RegisterTransport("amqp091", amqp091.NewBridgeFactory(logger))
+sup.RegisterTransport("amqp10", amqp10.NewBridgeFactory(logger))
 sup.RegisterTransport("http", httptransport.NewBridgeFactory(
     httptransport.WithFactoryLogger(logger),
 ))
