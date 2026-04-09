@@ -61,6 +61,7 @@ func newTestReceiver(t *testing.T, cfg servicebus.ReceiverConfig) *servicebus.Re
 func collectMessages(ctx context.Context, recv *servicebus.Receiver, count int, timeout time.Duration) ([]ports.Delivery, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	defer recv.Close(context.Background()) //nolint:errcheck
 
 	var mu sync.Mutex
 	var deliveries []ports.Delivery
@@ -196,6 +197,9 @@ func TestIntegration_AckRetryExtend(t *testing.T) {
 			t.Fatalf("Retry: %v", err)
 		}
 
+		// Close the first receiver after all deliveries are settled.
+		recv.Close(context.Background()) //nolint:errcheck
+
 		// Re-receive the same message.
 		recv2 := newTestReceiver(t, servicebus.ReceiverConfig{
 			QueueName: asblocal.TestQueue,
@@ -327,6 +331,7 @@ func TestIntegration_AutoExtend(t *testing.T) {
 		LockDuration: 15 * time.Second,
 		AutoExtend:   &autoExtend,
 	})
+	defer recv.Close(context.Background()) //nolint:errcheck
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer recvCancel()

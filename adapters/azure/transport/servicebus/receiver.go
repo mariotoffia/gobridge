@@ -25,6 +25,7 @@ type Receiver struct {
 	logger    *slog.Logger
 	metrics   ports.MetricsExporter
 	initMu    sync.Mutex
+	closeOnce sync.Once
 }
 
 func NewReceiver(cfg ReceiverConfig, logger *slog.Logger) (*Receiver, error) {
@@ -50,6 +51,28 @@ func (r *Receiver) entityName() string {
 	return r.cfg.TopicName
 }
 
+// Close releases the AMQP client, receiver, and scheduler resources.
+// It is safe to call multiple times; only the first call performs cleanup.
+// Callers must call Close after all outstanding deliveries have been
+// settled (Ack/Retry) to avoid tearing down the AMQP link while
+// settlement operations are still in progress.
+func (r *Receiver) Close(ctx context.Context) error {
+	r.closeOnce.Do(func() {
+		if closer, ok := r.client.(interface{ Close(context.Context) error }); ok {
+			_ = closer.Close(ctx)
+		}
+		if r.scheduler != nil {
+			if closer, ok := r.scheduler.(interface{ Close(context.Context) error }); ok {
+				_ = closer.Close(ctx)
+			}
+		}
+		if r.asbClient != nil {
+			_ = r.asbClient.Close(ctx)
+		}
+	})
+	return nil
+}
+
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
 	if err := r.ensureClient(ctx); err != nil {
 		return err
@@ -61,22 +84,6 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		"lock_duration", r.cfg.LockDuration,
 		"auto_extend", r.cfg.autoExtendEnabled(),
 	)
-
-	defer func() {
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer closeCancel()
-		if closer, ok := r.client.(interface{ Close(context.Context) error }); ok {
-			_ = closer.Close(closeCtx)
-		}
-		if r.scheduler != nil {
-			if closer, ok := r.scheduler.(interface{ Close(context.Context) error }); ok {
-				_ = closer.Close(closeCtx)
-			}
-		}
-		if r.asbClient != nil {
-			_ = r.asbClient.Close(closeCtx)
-		}
-	}()
 
 	return r.pollLoop(ctx, emit)
 }

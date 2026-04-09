@@ -25,6 +25,7 @@ func TestIntegration_ReceiverClose_GracefulShutdown(t *testing.T) {
 	recv := newTestReceiver(t, servicebus.ReceiverConfig{
 		QueueName: queue,
 	})
+	defer recv.Close(context.Background()) //nolint:errcheck
 
 	runCtx, runCancel := context.WithCancel(ctx)
 
@@ -49,9 +50,8 @@ func TestIntegration_ReceiverClose_GracefulShutdown(t *testing.T) {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("Run returned unexpected error: %v", err)
 		}
-		// Shutdown must complete well within the 10s close timeout.
 		if elapsed > 12*time.Second {
-			t.Fatalf("graceful shutdown took %v, expected < 12s (10s timeout + tolerance)", elapsed)
+			t.Fatalf("graceful shutdown took %v, expected < 12s", elapsed)
 		}
 		t.Logf("graceful shutdown completed in %v", elapsed)
 	case <-time.After(15 * time.Second):
@@ -83,6 +83,7 @@ func TestIntegration_ReceiverClose_ReceiveThenShutdown(t *testing.T) {
 	recv := newTestReceiver(t, servicebus.ReceiverConfig{
 		QueueName: queue,
 	})
+	defer recv.Close(context.Background()) //nolint:errcheck
 
 	runCtx, runCancel := context.WithCancel(ctx)
 	var received []ports.Delivery

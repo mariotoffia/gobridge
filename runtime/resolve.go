@@ -357,7 +357,37 @@ func copyHeaders(opts map[string]any) map[string]any {
 	}
 	cp := make(map[string]any, len(opts))
 	for k, v := range opts {
-		cp[k] = v
+		cp[k] = deepCopyHeaderValue(v)
 	}
 	return cp
+}
+
+func deepCopyHeaderValue(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		cp := make(map[string]any, len(val))
+		for k, v := range val {
+			cp[k] = deepCopyHeaderValue(v)
+		}
+		return cp
+	case []any:
+		s := make([]any, len(val))
+		for i, elem := range val {
+			s[i] = deepCopyHeaderValue(elem)
+		}
+		return s
+	case []string:
+		s := make([]string, len(val))
+		copy(s, val)
+		return s
+	case []byte:
+		if val == nil {
+			return val
+		}
+		s := make([]byte, len(val))
+		copy(s, val)
+		return s
+	default:
+		return v
+	}
 }

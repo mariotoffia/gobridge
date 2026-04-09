@@ -182,6 +182,12 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 	mu.Unlock()
 	wg.Wait()
 
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer closeCancel()
+	if closer, ok := r.receiver.(interface{ Close(context.Context) error }); ok {
+		_ = closer.Close(closeCtx)
+	}
+
 	return err
 }
 

@@ -219,6 +219,20 @@ func condToFloat64(v any) (float64, error) {
 		f = float64(val)
 	case int32:
 		f = float64(val)
+	case int16:
+		f = float64(val)
+	case int8:
+		f = float64(val)
+	case uint:
+		f = float64(val)
+	case uint64:
+		f = float64(val)
+	case uint32:
+		f = float64(val)
+	case uint16:
+		f = float64(val)
+	case uint8:
+		f = float64(val)
 	case string:
 		f, err = strconv.ParseFloat(val, 64)
 		if err != nil {

@@ -62,6 +62,12 @@ func deepCopyValue(v any) any {
 	switch val := v.(type) {
 	case map[string]any:
 		return deepCopyHeaders(val)
+	case map[string]string:
+		cp := make(map[string]string, len(val))
+		for k, v := range val {
+			cp[k] = v
+		}
+		return cp
 	case []any:
 		s := make([]any, len(val))
 		for i, elem := range val {
@@ -77,6 +83,22 @@ func deepCopyValue(v any) any {
 			return val
 		}
 		s := make([]byte, len(val))
+		copy(s, val)
+		return s
+	case []int:
+		s := make([]int, len(val))
+		copy(s, val)
+		return s
+	case []int64:
+		s := make([]int64, len(val))
+		copy(s, val)
+		return s
+	case []float64:
+		s := make([]float64, len(val))
+		copy(s, val)
+		return s
+	case []float32:
+		s := make([]float32, len(val))
 		copy(s, val)
 		return s
 	default:

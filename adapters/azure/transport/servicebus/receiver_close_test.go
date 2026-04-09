@@ -13,12 +13,12 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Tests for BUG-12: Receiver close with bounded context
+// Tests for Receiver.Close lifecycle
 // ---------------------------------------------------------------------------
 
-// verifies that when Run is cancelled, the close context has a deadline set
-// approximately 10 seconds from the close time (bounded, not unbounded).
-func TestReceiver_Close_UsesTimeoutContext(t *testing.T) {
+// verifies that Close forwards the caller-provided context to the
+// underlying resource close operations, preserving any deadline.
+func TestReceiver_Close_UsesCallerContext(t *testing.T) {
 	t.Parallel()
 
 	var capturedDeadline time.Time
@@ -47,31 +47,28 @@ func TestReceiver_Close_UsesTimeoutContext(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
-	}()
+	cancel()
 
 	_ = recv.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
 		return nil
 	})
 
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer closeCancel()
+	_ = recv.Close(closeCtx)
+
 	if !deadlineOK {
 		t.Fatal("close context should have a deadline set (not unbounded)")
 	}
 
-	// The deadline should be approximately 10 seconds from now (within a
-	// tolerance band). Since close happens shortly after cancellation,
-	// the deadline should be within 9-11 seconds of the current time.
 	remaining := time.Until(capturedDeadline)
 	if remaining < 8*time.Second || remaining > 12*time.Second {
 		t.Fatalf("close context deadline should be ~10s from now, got %v remaining", remaining)
 	}
 }
 
-// verifies that if close operations take longer than 10 seconds, the
-// context is cancelled (deadline exceeded).
+// verifies that if close operations take longer than the caller's
+// timeout, the context is cancelled (deadline exceeded).
 func TestReceiver_Close_TimeoutCancelsSlowClose(t *testing.T) {
 	t.Parallel()
 
@@ -86,9 +83,6 @@ func TestReceiver_Close_TimeoutCancelsSlowClose(t *testing.T) {
 			},
 		},
 		closeFn: func(ctx context.Context) error {
-			// Simulate a slow close that exceeds the 10s timeout.
-			// We wait for the context to be cancelled rather than
-			// waiting the full 10s to keep the test fast.
 			select {
 			case <-ctx.Done():
 				closeErr = ctx.Err()
@@ -111,17 +105,22 @@ func TestReceiver_Close_TimeoutCancelsSlowClose(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately to trigger cleanup
+	cancel()
 
-	start := time.Now()
 	_ = recv.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
 		return nil
 	})
+
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer closeCancel()
+
+	start := time.Now()
+	_ = recv.Close(closeCtx)
 	elapsed := time.Since(start)
 
 	select {
 	case <-closeDone:
-	case <-time.After(15 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("close function did not complete within expected time")
 	}
 
@@ -132,10 +131,8 @@ func TestReceiver_Close_TimeoutCancelsSlowClose(t *testing.T) {
 		t.Fatalf("expected DeadlineExceeded, got %v", closeErr)
 	}
 
-	// The entire Run + cleanup should complete within approximately 10s
-	// (the timeout) plus some tolerance.
-	if elapsed > 12*time.Second {
-		t.Fatalf("Run took %v, expected close to be bounded by ~10s timeout", elapsed)
+	if elapsed > 2*time.Second {
+		t.Fatalf("Close took %v, expected it to be bounded by ~500ms timeout", elapsed)
 	}
 }
 
@@ -170,28 +167,29 @@ func TestReceiver_Close_FastCloseSucceeds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	start := time.Now()
 	runErr := recv.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
 		return nil
 	})
-	elapsed := time.Since(start)
 
 	if !errors.Is(runErr, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", runErr)
 	}
 
+	start := time.Now()
+	_ = recv.Close(context.Background())
+	elapsed := time.Since(start)
+
 	if !closeCalled.Load() {
-		t.Fatal("Close should have been called during cleanup")
+		t.Fatal("Close should have been called")
 	}
 
-	// A fast close should complete almost instantly.
 	if elapsed > 2*time.Second {
 		t.Fatalf("fast close took %v, expected < 2s", elapsed)
 	}
 }
 
 // verifies that all three closeable resources (client, scheduler, asbClient)
-// are closed during Run cleanup.
+// are closed by Close.
 func TestReceiver_Close_AllResourcesClosed(t *testing.T) {
 	t.Parallel()
 
@@ -215,7 +213,6 @@ func TestReceiver_Close_AllResourcesClosed(t *testing.T) {
 		t.Fatalf("NewReceiver: %v", err)
 	}
 
-	// Inject the scheduler to simulate a fully-initialized receiver.
 	recv.scheduler = schedulerMock
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -224,6 +221,8 @@ func TestReceiver_Close_AllResourcesClosed(t *testing.T) {
 	_ = recv.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
 		return nil
 	})
+
+	_ = recv.Close(context.Background())
 
 	if clientMock.closeCalls.Load() != 1 {
 		t.Fatalf("client Close called %d times, want 1", clientMock.closeCalls.Load())
@@ -234,7 +233,7 @@ func TestReceiver_Close_AllResourcesClosed(t *testing.T) {
 	}
 }
 
-// verifies that a nil scheduler does not cause a panic during cleanup.
+// verifies that a nil scheduler does not cause a panic during Close.
 func TestReceiver_Close_NilSchedulerNoPanic(t *testing.T) {
 	t.Parallel()
 
@@ -263,17 +262,18 @@ func TestReceiver_Close_NilSchedulerNoPanic(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	// This should not panic.
 	_ = recv.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
 		return nil
 	})
+
+	_ = recv.Close(context.Background())
 
 	if mock.closeCalls.Load() != 1 {
 		t.Fatalf("client Close called %d times, want 1", mock.closeCalls.Load())
 	}
 }
 
-// verifies that a nil asbClient does not cause a panic during cleanup.
+// verifies that a nil asbClient does not cause a panic during Close.
 func TestReceiver_Close_NilAsbClientNoPanic(t *testing.T) {
 	t.Parallel()
 
@@ -302,19 +302,19 @@ func TestReceiver_Close_NilAsbClientNoPanic(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	// This should not panic.
 	_ = recv.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
 		return nil
 	})
+
+	_ = recv.Close(context.Background())
 
 	if mock.closeCalls.Load() != 1 {
 		t.Fatalf("client Close called %d times, want 1", mock.closeCalls.Load())
 	}
 }
 
-// verifies that the close context uses context.Background as the parent,
-// not the cancelled Run context (i.e., close succeeds even when Run ctx
-// is already cancelled).
+// verifies that Close with a fresh context works after Run exits with a
+// cancelled context (close context is independent of Run context).
 func TestReceiver_Close_ContextNotDerivedFromRunContext(t *testing.T) {
 	t.Parallel()
 
@@ -328,9 +328,6 @@ func TestReceiver_Close_ContextNotDerivedFromRunContext(t *testing.T) {
 			},
 		},
 		closeFn: func(ctx context.Context) error {
-			// At the time Close is called, the Run context is already
-			// cancelled. The close context must NOT be derived from it,
-			// otherwise it would already be cancelled.
 			closeCtxErr = ctx.Err()
 			return nil
 		},
@@ -346,24 +343,25 @@ func TestReceiver_Close_ContextNotDerivedFromRunContext(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel before Run so the context is already done.
+	cancel()
 
 	_ = recv.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
 		return nil
 	})
 
+	_ = recv.Close(context.Background())
+
 	if closeCtxErr != nil {
 		t.Fatalf("close context should NOT be cancelled at call time (err = %v); "+
-			"it must use context.Background as parent", closeCtxErr)
+			"caller must use a fresh context", closeCtxErr)
 	}
 }
 
 // verifies that when the client does not implement Close, cleanup still
-// proceeds without errors (the type assertion in Run handles this case).
+// proceeds without errors (the type assertion in Close handles this case).
 func TestReceiver_Close_ClientWithoutCloseInterface(t *testing.T) {
 	t.Parallel()
 
-	// Plain mockASBClient does NOT implement Close(context.Context) error.
 	mock := &mockASBClient{
 		ReceiveMessagesFn: func(ctx context.Context, count int, options *azservicebus.ReceiveMessagesOptions) ([]*azservicebus.ReceivedMessage, error) {
 			<-ctx.Done()
@@ -383,14 +381,15 @@ func TestReceiver_Close_ClientWithoutCloseInterface(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	// Should not panic even though the mock does not implement Close.
 	_ = recv.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
 		return nil
 	})
+
+	// Should not panic even though the mock does not implement Close.
+	_ = recv.Close(context.Background())
 }
 
-// verifies that when close returns an error, Run still completes
-// (errors from close are intentionally ignored).
+// verifies that Close returns nil even when underlying close returns an error.
 func TestReceiver_Close_ErrorsAreIgnored(t *testing.T) {
 	t.Parallel()
 
@@ -418,7 +417,6 @@ func TestReceiver_Close_ErrorsAreIgnored(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	// Run should return the poll loop error, not the close error.
 	runErr := recv.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
 		return nil
 	})
@@ -427,7 +425,51 @@ func TestReceiver_Close_ErrorsAreIgnored(t *testing.T) {
 		t.Fatalf("expected context.Canceled from Run, got %v", runErr)
 	}
 
+	closeErr := recv.Close(context.Background())
+	if closeErr != nil {
+		t.Fatalf("Close should return nil even when underlying close fails, got %v", closeErr)
+	}
+
 	if mock.closeCalls.Load() != 1 {
 		t.Fatalf("Close should have been called exactly once, got %d", mock.closeCalls.Load())
+	}
+}
+
+// verifies that calling Close multiple times is idempotent — the
+// underlying resources are closed exactly once.
+func TestReceiver_Close_Idempotent(t *testing.T) {
+	t.Parallel()
+
+	mock := &closeableASBClient{
+		mockASBClient: mockASBClient{
+			ReceiveMessagesFn: func(ctx context.Context, count int, options *azservicebus.ReceiveMessagesOptions) ([]*azservicebus.ReceivedMessage, error) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		},
+	}
+
+	recv, err := NewReceiver(ReceiverConfig{
+		QueueName:  "test-queue",
+		AutoExtend: boolPtr(false),
+		Client:     mock,
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_ = recv.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
+		return nil
+	})
+
+	_ = recv.Close(context.Background())
+	_ = recv.Close(context.Background())
+	_ = recv.Close(context.Background())
+
+	if mock.closeCalls.Load() != 1 {
+		t.Fatalf("client Close called %d times, want exactly 1", mock.closeCalls.Load())
 	}
 }
