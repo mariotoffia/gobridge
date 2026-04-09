@@ -617,14 +617,19 @@ func (rt *Runtime) DeepHealth(ctx context.Context) DeepHealth {
 
 // minServiceLevel returns the lower of two service levels.
 // Order: None < Degraded < Full. Empty string is treated as None.
-func minServiceLevel(a, b ports.ServiceLevel) ports.ServiceLevel {
-	order := map[ports.ServiceLevel]int{
-		ports.ServiceLevelNone:     0,
-		"":                         0,
-		ports.ServiceLevelDegraded: 1,
-		ports.ServiceLevelFull:     2,
+func serviceLevelOrd(s ports.ServiceLevel) int {
+	switch s {
+	case ports.ServiceLevelFull:
+		return 2
+	case ports.ServiceLevelDegraded:
+		return 1
+	default:
+		return 0
 	}
-	if order[a] < order[b] {
+}
+
+func minServiceLevel(a, b ports.ServiceLevel) ports.ServiceLevel {
+	if serviceLevelOrd(a) < serviceLevelOrd(b) {
 		return a
 	}
 	return b

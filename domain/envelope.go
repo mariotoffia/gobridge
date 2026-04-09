@@ -72,6 +72,13 @@ func deepCopyValue(v any) any {
 		s := make([]string, len(val))
 		copy(s, val)
 		return s
+	case []byte:
+		if val == nil {
+			return val
+		}
+		s := make([]byte, len(val))
+		copy(s, val)
+		return s
 	default:
 		return v
 	}

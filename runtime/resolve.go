@@ -317,12 +317,21 @@ func RenderAddress(template string, vars map[string]any) (string, error) {
 	return result, nil
 }
 
-// ValidateMQTTTopic rejects MQTT wildcard characters, empty segments, and null
-// bytes in a rendered topic string. Call this on resolved addresses before
+const maxMQTTTopicLen = 65535
+
+// ValidateMQTTTopic rejects MQTT wildcard characters, empty segments, null
+// bytes, reserved $-prefixed topics, and topics exceeding the spec maximum
+// length in a rendered topic string. Call this on resolved addresses before
 // publishing to MQTT.
 func ValidateMQTTTopic(topic string) error {
 	if topic == "" {
 		return fmt.Errorf("MQTT topic must not be empty")
+	}
+	if len(topic) > maxMQTTTopicLen {
+		return fmt.Errorf("MQTT topic exceeds maximum length of %d bytes", maxMQTTTopicLen)
+	}
+	if strings.HasPrefix(topic, "$") {
+		return fmt.Errorf("MQTT publish topic must not start with '$' (reserved)")
 	}
 	if strings.ContainsRune(topic, '+') {
 		return fmt.Errorf("MQTT publish topic must not contain wildcard '+'")

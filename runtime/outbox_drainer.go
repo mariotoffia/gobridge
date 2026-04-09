@@ -283,6 +283,13 @@ loop:
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+			defer func() {
+				if r := recover(); r != nil {
+					d.log(batchCtx, slog.LevelError, "panic in drain goroutine",
+						"record_id", rec.ID, "panic", r)
+					d.metrics.Counter(domain.MetricOutboxRecordFailures, 1, routeTag)
+				}
+			}()
 			if err := d.processRecord(batchCtx, rec, token); err != nil {
 				if errors.Is(err, domain.ErrStaleFencingToken) {
 					staleDetected.Store(true)
