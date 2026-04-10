@@ -228,12 +228,13 @@ func TestSession_PushEvent_Overflow(t *testing.T) {
 func TestSession_NotifyDisconnect(t *testing.T) {
 	// verifies notifyDisconnect clears connection state and signals reconnectCh
 	s := newTestSession()
+	mc := &mockConn{}
 	s.mu.Lock()
-	s.conn = &mockConn{}
+	s.conn = mc
 	s.connected = true
 	s.mu.Unlock()
 
-	s.notifyDisconnect(errors.New("link detached"))
+	s.notifyDisconnect(mc, errors.New("link detached"))
 
 	s.mu.Lock()
 	conn := s.conn
@@ -268,13 +269,14 @@ func TestSession_NotifyDisconnect(t *testing.T) {
 func TestSession_NotifyDisconnect_AlreadyClosed(t *testing.T) {
 	// verifies notifyDisconnect is a no-op on a closed session
 	s := newTestSession()
+	mc := &mockConn{}
 	s.mu.Lock()
 	s.closed = true
-	s.conn = &mockConn{}
+	s.conn = mc
 	s.connected = true
 	s.mu.Unlock()
 
-	s.notifyDisconnect(errors.New("link detached"))
+	s.notifyDisconnect(mc, errors.New("link detached"))
 
 	s.mu.Lock()
 	conn := s.conn

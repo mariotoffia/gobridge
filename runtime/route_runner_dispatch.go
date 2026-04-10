@@ -83,12 +83,14 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 
 		rc := receiveCount(env)
 		if r.policy.MaxReplayAttempts > 0 && rc >= r.policy.MaxReplayAttempts {
-			logging.Debug(r.logger, "max replay attempts exceeded in direct_hold",
-				"route", r.routeID,
-				"envelope_id", env.ID,
-				"receive_count", rc,
-				"max_replay_attempts", r.policy.MaxReplayAttempts,
-			)
+			if logging.DebugEnabled(r.logger) {
+				r.logger.Log(context.Background(), logging.LevelDebug, "max replay attempts exceeded in direct_hold",
+					"route", r.routeID,
+					"envelope_id", env.ID,
+					"receive_count", rc,
+					"max_replay_attempts", r.policy.MaxReplayAttempts,
+				)
+			}
 			poisonErr := domain.NewBridgeError(domain.ErrCodePoisonMessage, domain.ErrorPermanent,
 				fmt.Sprintf("direct_hold: receive count %d >= max replay attempts %d", rc, r.policy.MaxReplayAttempts))
 			if dlqErr := r.dlq.Route(ctx, env, r.routeID, plan.BindingID,
@@ -106,12 +108,14 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, plan.BindingID, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
 		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
 	}
-	logging.Debug(r.logger, "routed to DLQ",
-		"route", r.routeID,
-		"envelope_id", env.ID,
-		"binding_id", plan.BindingID,
-		"error", sendErr,
-	)
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(context.Background(), logging.LevelDebug, "routed to DLQ",
+			"route", r.routeID,
+			"envelope_id", env.ID,
+			"binding_id", plan.BindingID,
+			"error", sendErr,
+		)
+	}
 	r.emitDLQ("permanent")
 	return del.Ack(ctx)
 }

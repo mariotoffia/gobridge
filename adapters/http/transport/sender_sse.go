@@ -145,8 +145,10 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err == nil && !local && node != nil {
 			httpEndpoint, ok := node.Endpoints["http"]
 			if ok {
-				logging.Debug(s.cfg.logger, "sse: redirecting to peer",
+				if logging.DebugEnabled(s.cfg.logger) {
+				s.cfg.logger.Log(context.Background(), logging.LevelDebug, "sse: redirecting to peer",
 					"route_id", rid, "peer", node.InstanceID)
+			}
 				http.Redirect(w, r, httpEndpoint+s.cfg.path, http.StatusTemporaryRedirect)
 				return
 			}
@@ -169,8 +171,10 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	count := len(s.clients)
 	s.mu.Unlock()
 	s.cfg.metrics.Gauge(domain.MetricSSEClients, float64(count))
-	logging.Debug(s.cfg.logger, "sse: client connected",
-		"client_id", clientID, "total_clients", count)
+	if logging.DebugEnabled(s.cfg.logger) {
+		s.cfg.logger.Log(context.Background(), logging.LevelDebug, "sse: client connected",
+			"client_id", clientID, "total_clients", count)
+	}
 
 	defer func() {
 		s.mu.Lock()
@@ -178,8 +182,10 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		count := len(s.clients)
 		s.mu.Unlock()
 		s.cfg.metrics.Gauge(domain.MetricSSEClients, float64(count))
-		logging.Debug(s.cfg.logger, "sse: client disconnected",
-			"client_id", clientID, "total_clients", count)
+		if logging.DebugEnabled(s.cfg.logger) {
+			s.cfg.logger.Log(context.Background(), logging.LevelDebug, "sse: client disconnected",
+				"client_id", clientID, "total_clients", count)
+		}
 	}()
 
 	w.Header().Set("Content-Type", "text/event-stream")

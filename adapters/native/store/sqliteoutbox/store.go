@@ -82,7 +82,9 @@ func partitionKey(r *domain.OutboxRecord) string {
 }
 
 func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) error {
-	logging.TraceContext(s.logger, ctx, "sqliteoutbox: persist", "count", len(records))
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: persist", "count", len(records))
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -152,7 +154,9 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 }
 
 func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error) {
-	logging.TraceContext(s.logger, ctx, "sqliteoutbox: claim", "partition_key", pk, "limit", limit)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: claim", "partition_key", pk, "limit", limit)
+	}
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id FROM outbox
@@ -206,7 +210,9 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 }
 
 func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.LeaseToken) error {
-	logging.TraceContext(s.logger, ctx, "sqliteoutbox: complete", "count", len(recordIDs))
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: complete", "count", len(recordIDs))
+	}
 
 	if len(recordIDs) == 0 {
 		return nil
@@ -241,7 +247,9 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.L
 }
 
 func (s *Store) Expire(ctx context.Context, before time.Time) (int, error) {
-	logging.TraceContext(s.logger, ctx, "sqliteoutbox: expire")
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: expire")
+	}
 
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE outbox SET status = 'expired'
@@ -256,7 +264,9 @@ func (s *Store) Expire(ctx context.Context, before time.Time) (int, error) {
 }
 
 func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]domain.OutboxRecord, error) {
-	logging.TraceContext(s.logger, ctx, "sqliteoutbox: query_pending", "partition_key", pk, "limit", limit)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: query_pending", "partition_key", pk, "limit", limit)
+	}
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, partition_key, route_id, envelope_id, binding_id, session_id,

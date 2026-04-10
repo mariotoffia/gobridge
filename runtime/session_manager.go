@@ -178,11 +178,13 @@ func (m *SessionManager) runExclusiveDeferred(ctx context.Context) error {
 
 		m.log(ctx, slog.LevelInfo, "lease acquired (deferred connect)", "version", token.Version)
 
-		logging.Debug(m.logger, "lease acquired",
-			"session_id", m.sessionID,
-			"owner_id", m.ownerID,
-			"lease_version", token.Version,
-		)
+		if logging.DebugEnabled(m.logger) {
+			m.logger.Log(context.Background(), logging.LevelDebug, "lease acquired",
+				"session_id", m.sessionID,
+				"owner_id", m.ownerID,
+				"lease_version", token.Version,
+			)
+		}
 
 		if !sessionStarted {
 			if err := m.session.Start(ctx); err != nil {
@@ -238,11 +240,13 @@ func (m *SessionManager) runExclusive(ctx context.Context) error {
 
 		m.log(ctx, slog.LevelInfo, "lease acquired", "version", token.Version)
 
-		logging.Debug(m.logger, "lease acquired",
-			"session_id", m.sessionID,
-			"owner_id", m.ownerID,
-			"lease_version", token.Version,
-		)
+		if logging.DebugEnabled(m.logger) {
+			m.logger.Log(context.Background(), logging.LevelDebug, "lease acquired",
+				"session_id", m.sessionID,
+				"owner_id", m.ownerID,
+				"lease_version", token.Version,
+			)
+		}
 
 		if err := m.session.Reconcile(ctx, m.plan); err != nil {
 			return err
@@ -342,10 +346,12 @@ func (m *SessionManager) renewLoop(ctx context.Context) error {
 func (m *SessionManager) stepDown(ctx context.Context) error {
 	m.log(ctx, slog.LevelWarn, "stepping down from lease")
 
-	logging.Debug(m.logger, "step-down initiated",
-		"session_id", m.sessionID,
-		"reason", "renewal failures exceeded max",
-	)
+	if logging.DebugEnabled(m.logger) {
+		m.logger.Log(context.Background(), logging.LevelDebug, "step-down initiated",
+			"session_id", m.sessionID,
+			"reason", "renewal failures exceeded max",
+		)
+	}
 
 	m.mu.Lock()
 	token := m.token
@@ -401,10 +407,12 @@ func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.Sessio
 		if m.connectedOnce.Swap(true) {
 			m.metrics.Counter(domain.MetricMQTTReconnects, 1, sessionTag)
 		}
-		logging.Debug(m.logger, "session reconcile",
-			"session_id", m.sessionID,
-			"subscription_count", len(m.plan.Subscriptions),
-		)
+		if logging.DebugEnabled(m.logger) {
+			m.logger.Log(context.Background(), logging.LevelDebug, "session reconcile",
+				"session_id", m.sessionID,
+				"subscription_count", len(m.plan.Subscriptions),
+			)
+		}
 		if err := m.session.Reconcile(ctx, m.plan); err != nil {
 			m.log(ctx, slog.LevelError, "reconcile failed on reconnect", "error", err)
 			m.metrics.Counter(domain.MetricReconcileFailures, 1, sessionTag)
@@ -450,7 +458,7 @@ func (m *SessionManager) clampedInterval() time.Duration {
 }
 
 func (m *SessionManager) log(ctx context.Context, level slog.Level, msg string, args ...any) {
-	if m.logger == nil {
+	if m.logger == nil || !m.logger.Enabled(ctx, level) {
 		return
 	}
 	allArgs := append([]any{"session_id", m.sessionID}, args...)

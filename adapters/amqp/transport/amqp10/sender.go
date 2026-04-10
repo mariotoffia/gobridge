@@ -51,12 +51,10 @@ func NewSender(cfg SenderConfig, session *Session) (*Sender, error) {
 	}, nil
 }
 
-// Send publishes a single envelope to the AMQP 1.0 broker.
+// Send publishes a single envelope to the AMQP 1.0 broker. The entire
+// ensure-link + send cycle is serialized under the mutex to prevent
+// use-after-close races when handleLinkError clears the link concurrently.
 func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
-	if err := s.ensureLink(ctx); err != nil {
-		return err
-	}
-
 	msg := s.buildMessage(env)
 
 	sendCtx, cancel := s.applyTimeout(ctx)
@@ -70,25 +68,38 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 		)
 	}
 
-	start := time.Now()
-
 	s.mu.Lock()
+	if s.link == nil {
+		if err := s.createLink(ctx); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
 	link := s.link
 	s.mu.Unlock()
 
-	if link == nil {
-		return domain.ErrUnavailable.WithMessage("amqp10: sender link not available")
-	}
+	start := time.Now()
 
 	if err := link.Send(sendCtx, msg, nil); err != nil {
 		s.handleLinkError(err)
-		logging.DebugContext(s.logger, ctx, "amqp10: send failed",
-			"address", s.cfg.Address, "error", err)
+		if logging.DebugEnabled(s.logger) {
+			s.logger.Log(ctx, logging.LevelDebug, "amqp10: send failed",
+				"address", s.cfg.Address, "error", err)
+		}
 		return MapError(err)
 	}
 
-	s.metrics.Timer(domain.MetricAMQP10SendLatency, time.Since(start),
+	elapsed := time.Since(start)
+	s.metrics.Timer(domain.MetricAMQP10SendLatency, elapsed,
 		domain.Tag{Key: domain.TagKeyEntity, Value: s.cfg.Address})
+
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "amqp10: send complete",
+			"address", s.cfg.Address,
+			"envelope_id", env.ID,
+			"duration", elapsed,
+		)
+	}
 
 	return nil
 }
@@ -130,7 +141,9 @@ func (s *Sender) createLink(ctx context.Context) error {
 		return domain.ErrUnavailable.WithMessage("amqp10: session not connected")
 	}
 
-	opts := &amqp.SenderOptions{}
+	opts := &amqp.SenderOptions{
+		TargetCapabilities: []string{s.cfg.Routing.capability()},
+	}
 	if s.cfg.DurabilityMode > 0 {
 		opts.Durability = amqp.Durability(s.cfg.DurabilityMode)
 	}
@@ -142,8 +155,10 @@ func (s *Sender) createLink(ctx context.Context) error {
 
 	s.link = sender
 
-	logging.DebugContext(s.logger, ctx, "amqp10: sender link created",
-		"address", s.cfg.Address)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "amqp10: sender link created",
+			"address", s.cfg.Address)
+	}
 
 	return nil
 }
@@ -196,7 +211,8 @@ func (s *Sender) handleLinkError(err error) {
 		bridgeErr := MapError(err)
 		if bridgeErr != nil && (bridgeErr.Code == domain.ErrCodeConnectionLost ||
 			bridgeErr.Code == domain.ErrCodeUnavailable) {
-			s.session.notifyDisconnect(err)
+			conn := s.session.Conn()
+			s.session.notifyDisconnect(conn, err)
 		}
 	}
 }

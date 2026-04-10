@@ -133,8 +133,6 @@ func TestMapError_StringPatterns(t *testing.T) {
 		{"unauthorized access", domain.ErrCodeNotAuthorized},
 		{"forbidden resource", domain.ErrCodeNotAuthorized},
 		{"access denied", domain.ErrCodeNotAuthorized},
-		{"HTTP 401", domain.ErrCodeNotAuthorized},
-		{"HTTP 403", domain.ErrCodeNotAuthorized},
 		{"entity not found", domain.ErrCodeNotFound},
 		{"queue does not exist", domain.ErrCodeNotFound},
 		{"HTTP 404", domain.ErrCodeNotFound},

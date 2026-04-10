@@ -33,8 +33,10 @@ func NewReceiver(id string, session *Session) *Receiver {
 // message is converted to a Delivery and passed to emit. The call to emit
 // blocks, which naturally applies backpressure to the MQTT client.
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
-	logging.DebugContext(r.logger, ctx, "mqtt: receiver starting",
-		"receiver_id", r.id)
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelDebug, "mqtt: receiver starting",
+			"receiver_id", r.id)
+	}
 
 	// Use a child context so we can cancel the handler when emit fails.
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -54,8 +56,10 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		env := EnvelopeFromPublish(pub)
 		del := NewDelivery(env)
 		if err := emit(runCtx, del); err != nil {
-			logging.DebugContext(r.logger, runCtx, "mqtt: emit error",
-				"receiver_id", r.id, "error", err)
+			if logging.DebugEnabled(r.logger) {
+				r.logger.Log(runCtx, logging.LevelDebug, "mqtt: emit error",
+					"receiver_id", r.id, "error", err)
+			}
 			// Signal the error and cancel so the handler unblocks.
 			select {
 			case errCh <- err:
@@ -71,17 +75,23 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		// Check if it was an emit error or parent cancellation.
 		select {
 		case err := <-errCh:
-			logging.DebugContext(r.logger, ctx, "mqtt: receiver stopped",
-				"receiver_id", r.id, "reason", "emit_error")
+			if logging.DebugEnabled(r.logger) {
+				r.logger.Log(ctx, logging.LevelDebug, "mqtt: receiver stopped",
+					"receiver_id", r.id, "reason", "emit_error")
+			}
 			return err
 		default:
-			logging.DebugContext(r.logger, ctx, "mqtt: receiver stopped",
-				"receiver_id", r.id, "reason", "context_cancelled")
+			if logging.DebugEnabled(r.logger) {
+				r.logger.Log(ctx, logging.LevelDebug, "mqtt: receiver stopped",
+					"receiver_id", r.id, "reason", "context_cancelled")
+			}
 			return ctx.Err()
 		}
 	case err := <-errCh:
-		logging.DebugContext(r.logger, ctx, "mqtt: receiver stopped",
-			"receiver_id", r.id, "reason", "emit_error")
+		if logging.DebugEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelDebug, "mqtt: receiver stopped",
+				"receiver_id", r.id, "reason", "emit_error")
+		}
 		return err
 	}
 }

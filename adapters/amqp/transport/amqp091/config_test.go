@@ -98,14 +98,12 @@ func TestSessionOptionsFromMap(t *testing.T) {
 	}
 }
 
-// verifies SessionOptionsFromMap applies defaults when the map is nil.
+// verifies SessionOptionsFromMap returns validation error when the map is nil
+// (broker_url is required).
 func TestSessionOptionsFromMap_Nil(t *testing.T) {
-	opts, err := SessionOptionsFromMap(nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if opts.Heartbeat != 10*time.Second {
-		t.Errorf("Heartbeat = %v, want 10s", opts.Heartbeat)
+	_, err := SessionOptionsFromMap(nil)
+	if err == nil {
+		t.Fatal("expected validation error for nil map (missing broker_url)")
 	}
 }
 
@@ -307,7 +305,7 @@ func TestBuildTLSConfig_Nil(t *testing.T) {
 
 // verifies BuildTLSConfig sets InsecureSkipVerify from the input.
 func TestBuildTLSConfig_InsecureSkipVerify(t *testing.T) {
-	cfg, err := BuildTLSConfig(&TLSConfig{InsecureSkipVerify: true})
+	cfg, err := BuildTLSConfig(&TLSConfig{Enable: true, InsecureSkipVerify: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -316,9 +314,20 @@ func TestBuildTLSConfig_InsecureSkipVerify(t *testing.T) {
 	}
 }
 
+// verifies BuildTLSConfig returns nil when Enable is false.
+func TestBuildTLSConfig_EnableFalse(t *testing.T) {
+	cfg, err := BuildTLSConfig(&TLSConfig{Enable: false, InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg != nil {
+		t.Error("expected nil tls.Config when Enable is false")
+	}
+}
+
 // verifies BuildTLSConfig returns an error for a non-existent CA cert file.
 func TestBuildTLSConfig_BadCACert(t *testing.T) {
-	_, err := BuildTLSConfig(&TLSConfig{CACertFile: "/nonexistent/ca.pem"})
+	_, err := BuildTLSConfig(&TLSConfig{Enable: true, CACertFile: "/nonexistent/ca.pem"})
 	if err == nil {
 		t.Fatal("expected error for bad CA cert path")
 	}
@@ -327,6 +336,7 @@ func TestBuildTLSConfig_BadCACert(t *testing.T) {
 // verifies BuildTLSConfig returns an error for a non-existent client cert pair.
 func TestBuildTLSConfig_BadClientCert(t *testing.T) {
 	_, err := BuildTLSConfig(&TLSConfig{
+		Enable:   true,
 		CertFile: "/nonexistent/client.pem",
 		KeyFile:  "/nonexistent/client.key",
 	})
@@ -335,19 +345,29 @@ func TestBuildTLSConfig_BadClientCert(t *testing.T) {
 	}
 }
 
-// verifies SessionOptionsFromMap ignores keys with wrong types.
+// verifies SessionOptionsFromMap rejects maps with wrong-typed broker_url.
 func TestSessionOptionsFromMap_WrongTypes(t *testing.T) {
 	m := map[string]any{
 		"broker_url": 42,
 		"heartbeat":  "not-a-duration",
 	}
 
+	_, err := SessionOptionsFromMap(m)
+	if err == nil {
+		t.Fatal("expected error: wrong-typed broker_url should fail validation")
+	}
+}
+
+// verifies SessionOptionsFromMap ignores wrong-typed optional fields gracefully.
+func TestSessionOptionsFromMap_WrongOptionalTypes(t *testing.T) {
+	m := map[string]any{
+		"broker_url": "amqp://localhost/",
+		"heartbeat":  "not-a-duration",
+	}
+
 	opts, err := SessionOptionsFromMap(m)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if opts.BrokerURL != "" {
-		t.Errorf("BrokerURL = %q, want empty (wrong type)", opts.BrokerURL)
 	}
 	if opts.Heartbeat != 10*time.Second {
 		t.Errorf("Heartbeat = %v, want default 10s", opts.Heartbeat)

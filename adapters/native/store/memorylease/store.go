@@ -54,8 +54,10 @@ func NewStore(opts ...Option) *Store {
 }
 
 func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
-	logging.TraceContext(s.logger, ctx, "memorylease: acquire",
-		"lease_id", leaseID, "owner_id", ownerID)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memorylease: acquire",
+			"lease_id", leaseID, "owner_id", ownerID)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -79,8 +81,10 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 }
 
 func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
-	logging.TraceContext(s.logger, ctx, "memorylease: renew",
-		"lease_id", leaseID, "owner_id", token.Owner)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memorylease: renew",
+			"lease_id", leaseID, "owner_id", token.Owner)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -107,8 +111,10 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseTok
 }
 
 func (s *Store) Release(ctx context.Context, leaseID string, token domain.LeaseToken) error {
-	logging.TraceContext(s.logger, ctx, "memorylease: release",
-		"lease_id", leaseID)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memorylease: release",
+			"lease_id", leaseID)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

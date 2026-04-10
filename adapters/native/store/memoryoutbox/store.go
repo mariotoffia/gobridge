@@ -56,8 +56,10 @@ func partitionKey(r *domain.OutboxRecord) string {
 }
 
 func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) error {
-	logging.TraceContext(s.logger, ctx, "memoryoutbox: persist",
-		"count", len(records))
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: persist",
+			"count", len(records))
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -85,8 +87,10 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 }
 
 func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error) {
-	logging.TraceContext(s.logger, ctx, "memoryoutbox: claim",
-		"partition_key", pk, "owner_id", ownerID, "limit", limit)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: claim",
+			"partition_key", pk, "owner_id", ownerID, "limit", limit)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -126,8 +130,10 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 }
 
 func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.LeaseToken) error {
-	logging.TraceContext(s.logger, ctx, "memoryoutbox: complete",
-		"count", len(recordIDs))
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: complete",
+			"count", len(recordIDs))
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -167,8 +173,10 @@ func (s *Store) Expire(_ context.Context, before time.Time) (int, error) {
 }
 
 func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]domain.OutboxRecord, error) {
-	logging.TraceContext(s.logger, ctx, "memoryoutbox: query_pending",
-		"partition_key", pk, "limit", limit)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: query_pending",
+			"partition_key", pk, "limit", limit)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

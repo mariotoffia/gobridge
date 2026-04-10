@@ -249,11 +249,13 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 			}
 			d.metrics.Counter(domain.MetricSQSAutoExtends, 1,
 				domain.Tag{Key: domain.TagKeyQueueURL, Value: d.queueURL})
-			logging.TraceContext(d.logger, ctx, "sqs: auto-extended",
-				"queue_url", d.queueURL,
-				"message_id", d.env.ID,
-				"visibility_timeout", vis,
-			)
+			if logging.TraceEnabled(d.logger) {
+				d.logger.Log(ctx, logging.LevelTrace, "sqs: auto-extended",
+					"queue_url", d.queueURL,
+					"message_id", d.env.ID,
+					"visibility_timeout", vis,
+				)
+			}
 		}
 	}
 }

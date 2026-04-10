@@ -62,10 +62,12 @@ func (r *Receiver) SetRouteID(routeID string) {
 // Run stores the emit callback and blocks until ctx is cancelled.
 // Safe to call multiple times (idempotent ready signal).
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
-	logging.DebugContext(r.cfg.logger, ctx, "http: receiver ready",
-		"receiver_id", r.cfg.id,
-		"path", r.cfg.path,
-	)
+	if logging.DebugEnabled(r.cfg.logger) {
+		r.cfg.logger.Log(ctx, logging.LevelDebug, "http: receiver ready",
+			"receiver_id", r.cfg.id,
+			"path", r.cfg.path,
+		)
+	}
 
 	r.mu.Lock()
 	r.emit = emit

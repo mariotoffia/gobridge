@@ -34,7 +34,10 @@ type Delivery struct {
 	settle  settler
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
-	once    sync.Once
+
+	mu       sync.Mutex
+	settled  bool
+	settleOK bool
 }
 
 // NewDelivery wraps an AMQP 1.0 message as a ports.Delivery.
@@ -60,23 +63,39 @@ func NewDelivery(
 func (d *Delivery) Envelope() *domain.Envelope { return d.env }
 
 // Ack settles the message with an accepted disposition. The settlement
-// is idempotent — only the first call performs the operation.
+// is idempotent — only the first successful call performs the operation.
+// If a prior settlement attempt failed, subsequent calls return
+// ErrUnavailable to signal the unsettled state.
 func (d *Delivery) Ack(ctx context.Context) error {
-	var err error
-	d.once.Do(func() {
-		if logging.TraceEnabled(d.logger) {
-			d.logger.Log(ctx, logging.LevelTrace, "amqp10: accepting message",
-				"envelope_id", d.env.ID,
-			)
+	d.mu.Lock()
+	if d.settled {
+		ok := d.settleOK
+		d.mu.Unlock()
+		if ok {
+			return nil
 		}
+		return domain.ErrUnavailable.WithMessage("amqp10: delivery already settled with error")
+	}
+	d.settled = true
+	d.mu.Unlock()
 
-		start := time.Now()
-		err = d.settle.AcceptMessage(ctx, d.msg)
-		d.metrics.Timer(domain.MetricAMQP10AcceptLatency, time.Since(start))
-	})
+	if logging.TraceEnabled(d.logger) {
+		d.logger.Log(ctx, logging.LevelTrace, "amqp10: accepting message",
+			"envelope_id", d.env.ID,
+		)
+	}
+
+	start := time.Now()
+	err := d.settle.AcceptMessage(ctx, d.msg)
+	d.metrics.Timer(domain.MetricAMQP10AcceptLatency, time.Since(start))
+
 	if err != nil {
 		return MapError(err)
 	}
+
+	d.mu.Lock()
+	d.settleOK = true
+	d.mu.Unlock()
 	return nil
 }
 
@@ -84,32 +103,49 @@ func (d *Delivery) Ack(ctx context.Context) error {
 // When after is zero, the message is released for immediate redelivery.
 // When after is positive, the message is modified with DeliveryFailed=true
 // to signal the broker that a retry is needed.
+// If a prior settlement attempt failed, subsequent calls return
+// ErrUnavailable.
 func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) error {
-	var err error
-	d.once.Do(func() {
-		if after > 0 {
-			if logging.TraceEnabled(d.logger) {
-				d.logger.Log(ctx, logging.LevelTrace, "amqp10: modifying message for retry",
-					"envelope_id", d.env.ID,
-					"delay", after,
-				)
-			}
-			err = d.settle.ModifyMessage(ctx, d.msg, &amqp.ModifyMessageOptions{
-				DeliveryFailed:    true,
-				UndeliverableHere: false,
-			})
-		} else {
-			if logging.TraceEnabled(d.logger) {
-				d.logger.Log(ctx, logging.LevelTrace, "amqp10: releasing message",
-					"envelope_id", d.env.ID,
-				)
-			}
-			err = d.settle.ReleaseMessage(ctx, d.msg)
+	d.mu.Lock()
+	if d.settled {
+		ok := d.settleOK
+		d.mu.Unlock()
+		if ok {
+			return nil
 		}
-	})
+		return domain.ErrUnavailable.WithMessage("amqp10: delivery already settled with error")
+	}
+	d.settled = true
+	d.mu.Unlock()
+
+	var err error
+	if after > 0 {
+		if logging.TraceEnabled(d.logger) {
+			d.logger.Log(ctx, logging.LevelTrace, "amqp10: modifying message for retry",
+				"envelope_id", d.env.ID,
+				"delay", after,
+			)
+		}
+		err = d.settle.ModifyMessage(ctx, d.msg, &amqp.ModifyMessageOptions{
+			DeliveryFailed:    true,
+			UndeliverableHere: false,
+		})
+	} else {
+		if logging.TraceEnabled(d.logger) {
+			d.logger.Log(ctx, logging.LevelTrace, "amqp10: releasing message",
+				"envelope_id", d.env.ID,
+			)
+		}
+		err = d.settle.ReleaseMessage(ctx, d.msg)
+	}
+
 	if err != nil {
 		return MapError(err)
 	}
+
+	d.mu.Lock()
+	d.settleOK = true
+	d.mu.Unlock()
 	return nil
 }
 

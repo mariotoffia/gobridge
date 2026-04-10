@@ -76,8 +76,10 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	if err != nil {
 		s.metrics.Timer(domain.MetricMQTTPublishLatency, elapsed, sessionTag)
 		s.metrics.Counter(domain.MetricMQTTPublishFailures, 1, sessionTag)
-		logging.DebugContext(s.logger, ctx, "mqtt: publish failed",
-			"topic", topic, "error", err)
+		if logging.DebugEnabled(s.logger) {
+			s.logger.Log(ctx, logging.LevelDebug, "mqtt: publish failed",
+				"topic", topic, "error", err)
+		}
 		return MapError(err)
 	}
 
@@ -85,9 +87,11 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 		if berr := MapPublishReasonCode(resp.ReasonCode); berr != nil {
 			s.metrics.Timer(domain.MetricMQTTPublishLatency, elapsed, sessionTag)
 			s.metrics.Counter(domain.MetricMQTTPublishFailures, 1, sessionTag)
-			logging.DebugContext(s.logger, ctx, "mqtt: publish rejected",
-				"topic", topic,
-				"reason_code", fmt.Sprintf("0x%02X", resp.ReasonCode))
+			if logging.DebugEnabled(s.logger) {
+				s.logger.Log(ctx, logging.LevelDebug, "mqtt: publish rejected",
+					"topic", topic,
+					"reason_code", fmt.Sprintf("0x%02X", resp.ReasonCode))
+			}
 			result := berr.With("topic", topic).
 				With("reason_code", fmt.Sprintf("0x%02X", resp.ReasonCode))
 			// Hint the route runner to back off on quota/throttle errors.

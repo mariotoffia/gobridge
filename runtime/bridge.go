@@ -236,11 +236,13 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		return err
 	}
 
-	logging.Debug(rt.logger, "runtime starting",
-		"instance_id", rt.instanceID,
-		"route_count", len(rt.entries),
-		"session_count", len(rt.sessionMgrs)+len(rt.sessionSenders),
-	)
+	if logging.DebugEnabled(rt.logger) {
+		rt.logger.Log(context.Background(), logging.LevelDebug, "runtime starting",
+			"instance_id", rt.instanceID,
+			"route_count", len(rt.entries),
+			"session_count", len(rt.sessionMgrs)+len(rt.sessionSenders),
+		)
+	}
 
 	ctx, rt.cancel = context.WithCancel(ctx)
 
@@ -411,9 +413,11 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	cancel := rt.cancel
 	rt.mu.Unlock()
 
-	logging.Debug(rt.logger, "runtime stopping",
-		"instance_id", rt.instanceID,
-	)
+	if logging.DebugEnabled(rt.logger) {
+		rt.logger.Log(context.Background(), logging.LevelDebug, "runtime stopping",
+			"instance_id", rt.instanceID,
+		)
+	}
 
 	if cancel != nil {
 		cancel()
@@ -755,7 +759,9 @@ func (d *syntheticDelivery) Retry(_ context.Context, _ time.Duration, _ error) e
 func (d *syntheticDelivery) Extend(_ context.Context, _ time.Time) error { return nil }
 
 func (rt *Runtime) startBackground(ctx context.Context, name string, fn func(context.Context) error) {
-	logging.Trace(rt.logger, "background started", "name", name)
+	if logging.TraceEnabled(rt.logger) {
+		rt.logger.Log(context.Background(), logging.LevelTrace, "background started", "name", name)
+	}
 	rt.wg.Add(1)
 	go func() {
 		defer rt.wg.Done()

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -316,8 +317,8 @@ func (s *Server) requestLogMW(next http.Handler) http.Handler {
 		start := time.Now()
 		rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rw, r)
-		if s.logger != nil {
-			s.logger.Debug("http request",
+		if logging.DebugEnabled(s.logger) {
+			s.logger.Log(r.Context(), logging.LevelDebug, "http request",
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", rw.status,

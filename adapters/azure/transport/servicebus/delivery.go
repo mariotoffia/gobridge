@@ -233,9 +233,11 @@ func (d *asbDelivery) autoExtendLoop(ctx context.Context, interval time.Duration
 			}
 			consecutiveFailures = 0
 			d.metrics.Counter(domain.MetricASBLockRenewals, 1)
-			logging.TraceContext(d.logger, ctx, "servicebus: lock renewed",
-				"message_id", d.msg.MessageID,
-			)
+			if logging.TraceEnabled(d.logger) {
+				d.logger.Log(ctx, logging.LevelTrace, "servicebus: lock renewed",
+					"message_id", d.msg.MessageID,
+				)
+			}
 		}
 	}
 }

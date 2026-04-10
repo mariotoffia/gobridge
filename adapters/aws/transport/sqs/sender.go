@@ -77,8 +77,10 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	start := time.Now()
 	_, err := s.client.SendMessage(sendCtx, input)
 	if err != nil {
-		logging.DebugContext(s.logger, ctx, "sqs: send failed",
-			"queue_url", s.queueURL, "error", err)
+		if logging.DebugEnabled(s.logger) {
+			s.logger.Log(ctx, logging.LevelDebug, "sqs: send failed",
+				"queue_url", s.queueURL, "error", err)
+		}
 		return MapError(err)
 	}
 
@@ -110,11 +112,13 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 		}
 		batch := envs[i:end]
 
-		logging.DebugContext(s.logger, ctx, "sqs: sending batch",
-			"queue_url", s.queueURL,
-			"chunk_size", len(batch),
-			"chunk_offset", i,
-		)
+		if logging.DebugEnabled(s.logger) {
+			s.logger.Log(ctx, logging.LevelDebug, "sqs: sending batch",
+				"queue_url", s.queueURL,
+				"chunk_size", len(batch),
+				"chunk_offset", i,
+			)
+		}
 
 		entries := make([]sqstypes.SendMessageBatchRequestEntry, 0, len(batch))
 		for j, env := range batch {
@@ -143,11 +147,13 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 		sent += len(result.Successful)
 
 		if len(result.Failed) > 0 {
-			logging.DebugContext(s.logger, ctx, "sqs: batch partial failure",
-				"queue_url", s.queueURL,
-				"sent", len(result.Successful),
-				"failed", len(result.Failed),
-			)
+			if logging.DebugEnabled(s.logger) {
+				s.logger.Log(ctx, logging.LevelDebug, "sqs: batch partial failure",
+					"queue_url", s.queueURL,
+					"sent", len(result.Successful),
+					"failed", len(result.Failed),
+				)
+			}
 			for _, f := range result.Failed {
 				base := domain.ErrUnavailable
 				if f.SenderFault {
@@ -287,10 +293,12 @@ func (s *Sender) ensureClient(ctx context.Context) error {
 	}
 	s.queueURL = url
 
-	logging.DebugContext(s.logger, ctx, "sqs: sender initialized",
-		"queue_url", s.queueURL,
-		"region", s.cfg.Region,
-	)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "sqs: sender initialized",
+			"queue_url", s.queueURL,
+			"region", s.cfg.Region,
+		)
+	}
 
 	return nil
 }

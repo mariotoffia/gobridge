@@ -98,10 +98,12 @@ func (s *Session) Start(ctx context.Context) error {
 	s.starting = true
 	s.mu.Unlock()
 
-	logging.DebugContext(s.logger, ctx, "amqp091: session connecting",
-		"broker", s.safeBrokerURL(),
-		"session_mode", s.mode,
-	)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "amqp091: session connecting",
+			"broker", s.safeBrokerURL(),
+			"session_mode", s.mode,
+		)
+	}
 	connectStart := time.Now()
 
 	connectCtx, connectCancel := context.WithTimeout(ctx, s.opts.ConnectTimeout)
@@ -112,8 +114,10 @@ func (s *Session) Start(ctx context.Context) error {
 		s.mu.Lock()
 		s.starting = false
 		s.mu.Unlock()
-		logging.DebugContext(s.logger, ctx, "amqp091: connect failed",
-			"broker", s.safeBrokerURL(), "error", err)
+		if logging.DebugEnabled(s.logger) {
+			s.logger.Log(ctx, logging.LevelDebug, "amqp091: connect failed",
+				"broker", s.safeBrokerURL(), "error", err)
+		}
 		return MapError(err)
 	}
 
@@ -130,8 +134,10 @@ func (s *Session) Start(ctx context.Context) error {
 	elapsed := time.Since(connectStart)
 	s.metrics.Timer(domain.MetricAMQP091ConnectLatency, elapsed,
 		domain.Tag{Key: domain.TagKeySessionID, Value: safeBroker})
-	logging.DebugContext(s.logger, ctx, "amqp091: session connected",
-		"broker", safeBroker, "connect_latency", elapsed)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "amqp091: session connected",
+			"broker", safeBroker, "connect_latency", elapsed)
+	}
 
 	// Defer SessionConnected until after reconcile when a plan is present,
 	// so consumers don't act on a connection that isn't fully set up.
@@ -141,8 +147,10 @@ func (s *Session) Start(ctx context.Context) error {
 
 	if plan != nil {
 		if err := s.reconcile(ctx, conn, *plan); err != nil {
-			logging.DebugContext(s.logger, ctx, "amqp091: reconcile on start failed",
-				"broker", safeBroker, "error", err)
+			if logging.DebugEnabled(s.logger) {
+				s.logger.Log(ctx, logging.LevelDebug, "amqp091: reconcile on start failed",
+					"broker", safeBroker, "error", err)
+			}
 		}
 	}
 
@@ -179,10 +187,12 @@ func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error 
 func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan domain.SessionPlan) error {
 	reconcileStart := time.Now()
 
-	logging.DebugContext(s.logger, ctx, "amqp091: reconcile",
-		"subscriptions", len(plan.Subscriptions),
-		"publishers", len(plan.Publishers),
-	)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "amqp091: reconcile",
+			"subscriptions", len(plan.Subscriptions),
+			"publishers", len(plan.Publishers),
+		)
+	}
 
 	ch, err := conn.Channel()
 	if err != nil {
@@ -245,11 +255,13 @@ func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan domai
 	elapsed := time.Since(reconcileStart)
 	s.metrics.Timer(domain.MetricAMQP091ReconcileLatency, elapsed,
 		domain.Tag{Key: domain.TagKeySessionID, Value: s.safeBrokerURL()})
-	logging.DebugContext(s.logger, ctx, "amqp091: reconcile done",
-		"subscriptions", len(plan.Subscriptions),
-		"publishers", len(plan.Publishers),
-		"duration", elapsed,
-	)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "amqp091: reconcile done",
+			"subscriptions", len(plan.Subscriptions),
+			"publishers", len(plan.Publishers),
+			"duration", elapsed,
+		)
+	}
 
 	s.pushEvent(ports.SessionReconciled, nil)
 	return nil
@@ -299,8 +311,15 @@ func (s *Session) Events() <-chan ports.SessionEvent {
 // Close gracefully closes the AMQP connection and stops the reconnection
 // loop. It is safe to call Close multiple times.
 func (s *Session) Close(_ context.Context) error {
-	logging.Debug(s.logger, "amqp091: session closing",
-		"broker", s.safeBrokerURL())
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(context.Background(), logging.LevelTrace,
+			"amqp091: session close initiated",
+			"broker", s.safeBrokerURL())
+	}
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(context.Background(), logging.LevelDebug, "amqp091: session closing",
+			"broker", s.safeBrokerURL())
+	}
 
 	s.mu.Lock()
 	if s.closed {
@@ -351,6 +370,12 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 		select {
 		case s.events <- ev:
 		default:
+			if logging.TraceEnabled(s.logger) {
+				s.logger.Log(context.Background(), logging.LevelTrace,
+					"amqp091: event dropped, channel full",
+					"event_type", t,
+				)
+			}
 			s.metrics.Counter(domain.MetricAMQP091EventDropped, 1)
 		}
 	}
@@ -402,9 +427,15 @@ func (s *Session) reconnectLoop(ctx context.Context) {
 				connErr = amqpErr
 			}
 
-			s.pushEvent(ports.SessionDisconnected, MapError(connErr))
-			logging.Debug(s.logger, "amqp091: connection lost, reconnecting",
-				"broker", s.safeBrokerURL(), "error", connErr)
+			var evErr error
+			if connErr != nil {
+				evErr = MapError(connErr)
+			}
+			s.pushEvent(ports.SessionDisconnected, evErr)
+			if logging.DebugEnabled(s.logger) {
+				s.logger.Log(context.Background(), logging.LevelDebug, "amqp091: connection lost, reconnecting",
+					"broker", s.safeBrokerURL(), "error", connErr)
+			}
 
 			s.doReconnect(ctx)
 		}
@@ -427,10 +458,17 @@ func (s *Session) doReconnect(ctx context.Context) {
 
 		s.pushEvent(ports.SessionReconnecting, nil)
 		safeBroker := s.safeBrokerURL()
+		if logging.TraceEnabled(s.logger) {
+			s.logger.Log(ctx, logging.LevelTrace, "amqp091: reconnect attempt starting",
+				"broker", safeBroker,
+				"attempt", attempt+1,
+				"delay", delay,
+			)
+		}
 		s.metrics.Counter(domain.MetricAMQP091Reconnects, 1,
 			domain.Tag{Key: domain.TagKeySessionID, Value: safeBroker})
 
-		jitter := time.Duration(rand.Int64N(int64(delay) / 4))
+		jitter := time.Duration(float64(delay) * 0.25 * (2*rand.Float64() - 1))
 		sleepDur := delay + jitter
 
 		select {
@@ -444,11 +482,13 @@ func (s *Session) doReconnect(ctx context.Context) {
 		connectCancel()
 
 		if err != nil {
-			logging.Debug(s.logger, "amqp091: reconnect attempt failed",
-				"broker", safeBroker,
-				"attempt", attempt+1,
-				"error", err,
-			)
+			if logging.DebugEnabled(s.logger) {
+				s.logger.Log(context.Background(), logging.LevelDebug, "amqp091: reconnect attempt failed",
+					"broker", safeBroker,
+					"attempt", attempt+1,
+					"error", err,
+				)
+			}
 			delay = time.Duration(math.Min(
 				float64(delay)*reconnectMult,
 				float64(reconnectMax),
@@ -462,8 +502,10 @@ func (s *Session) doReconnect(ctx context.Context) {
 		plan := s.plan
 		s.mu.Unlock()
 
-		logging.Debug(s.logger, "amqp091: reconnected",
-			"broker", safeBroker, "attempt", attempt+1)
+		if logging.DebugEnabled(s.logger) {
+			s.logger.Log(context.Background(), logging.LevelDebug, "amqp091: reconnected",
+				"broker", safeBroker, "attempt", attempt+1)
+		}
 
 		if plan != nil {
 			reconCtx, reconCancel := context.WithTimeout(ctx, s.opts.ConnectTimeout)

@@ -106,20 +106,24 @@ func (f *HTTPForwarder) Forward(
 	}()
 
 	if resp.StatusCode >= 500 {
-		logging.DebugContext(f.logger, ctx, "http: forward failed (server error)",
-			"target_instance", target.InstanceID,
-			"route_id", routeID,
-			"status_code", resp.StatusCode,
-		)
+		if logging.DebugEnabled(f.logger) {
+			f.logger.Log(ctx, logging.LevelDebug, "http: forward failed (server error)",
+				"target_instance", target.InstanceID,
+				"route_id", routeID,
+				"status_code", resp.StatusCode,
+			)
+		}
 		return domain.ErrUnavailable.WithMessage(
 			fmt.Sprintf("remote returned %d", resp.StatusCode),
 		)
 	} else if resp.StatusCode >= 400 {
-		logging.DebugContext(f.logger, ctx, "http: forward failed (client error)",
-			"target_instance", target.InstanceID,
-			"route_id", routeID,
-			"status_code", resp.StatusCode,
-		)
+		if logging.DebugEnabled(f.logger) {
+			f.logger.Log(ctx, logging.LevelDebug, "http: forward failed (client error)",
+				"target_instance", target.InstanceID,
+				"route_id", routeID,
+				"status_code", resp.StatusCode,
+			)
+		}
 		return domain.NewBridgeError(
 			domain.ErrCodeForwardFailed, domain.ErrorPermanent,
 			fmt.Sprintf("remote returned %d", resp.StatusCode),

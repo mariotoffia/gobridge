@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"time"
 
@@ -34,11 +35,34 @@ type TLSConfig struct {
 	InsecureSkipVerify bool
 }
 
+// RoutingType controls how Artemis (and compatible brokers) route
+// messages on auto-created addresses.
+type RoutingType int
+
+const (
+	// RoutingAnycast uses point-to-point (queue) semantics: messages
+	// are stored in a queue and consumed by exactly one receiver.
+	RoutingAnycast RoutingType = iota
+	// RoutingMulticast uses pub-sub (topic) semantics: messages are
+	// fanned out to all active subscriptions at send time.
+	RoutingMulticast
+)
+
+func (rt RoutingType) capability() string {
+	switch rt {
+	case RoutingMulticast:
+		return "topic"
+	default:
+		return "queue"
+	}
+}
+
 // ReceiverConfig configures an AMQP 1.0 receiver link.
 type ReceiverConfig struct {
 	Address        string
 	LinkCredit     uint32
 	DurabilityMode uint32
+	Routing        RoutingType
 	Session        *Session
 	Logger         *slog.Logger
 	Metrics        ports.MetricsExporter
@@ -49,6 +73,7 @@ type SenderConfig struct {
 	Address        string
 	Timeout        time.Duration
 	DurabilityMode uint32
+	Routing        RoutingType
 	Session        *Session
 	Logger         *slog.Logger
 	Metrics        ports.MetricsExporter
@@ -131,6 +156,9 @@ func (o *SessionOptions) applyDefaults() {
 func (c *ReceiverConfig) validate() error {
 	if c.Address == "" {
 		return domain.ErrInvalidPayload.WithMessage("amqp10: receiver Address is required")
+	}
+	if c.LinkCredit > math.MaxInt32 {
+		return domain.ErrInvalidPayload.WithMessage("amqp10: link_credit exceeds int32 max")
 	}
 	return nil
 }
@@ -217,6 +245,9 @@ func ReceiverConfigFromOptions(m map[string]any) ReceiverConfig {
 	if v, ok := optUint32(m, "durability_mode"); ok {
 		cfg.DurabilityMode = v
 	}
+	if v, ok := optString(m, "routing"); ok && v == "multicast" {
+		cfg.Routing = RoutingMulticast
+	}
 	return cfg
 }
 
@@ -232,6 +263,9 @@ func SenderConfigFromOptions(m map[string]any) SenderConfig {
 	}
 	if v, ok := optUint32(m, "durability_mode"); ok {
 		cfg.DurabilityMode = v
+	}
+	if v, ok := optString(m, "routing"); ok && v == "multicast" {
+		cfg.Routing = RoutingMulticast
 	}
 	return cfg
 }
@@ -261,7 +295,7 @@ func optUint32(m map[string]any, key string) (uint32, bool) {
 	}
 	switch n := v.(type) {
 	case int:
-		if n < 0 {
+		if n < 0 || n > math.MaxUint32 {
 			return 0, false
 		}
 		return uint32(n), true
@@ -271,14 +305,14 @@ func optUint32(m map[string]any, key string) (uint32, bool) {
 		}
 		return uint32(n), true
 	case int64:
-		if n < 0 {
+		if n < 0 || n > math.MaxUint32 {
 			return 0, false
 		}
 		return uint32(n), true
 	case uint32:
 		return n, true
 	case float64:
-		if n < 0 {
+		if n < 0 || math.IsNaN(n) || math.IsInf(n, 0) || n > math.MaxUint32 {
 			return 0, false
 		}
 		return uint32(n), true
@@ -294,18 +328,30 @@ func optDuration(m map[string]any, key string) (time.Duration, bool) {
 	}
 	switch d := v.(type) {
 	case time.Duration:
+		if d < 0 {
+			return 0, false
+		}
 		return d, true
 	case string:
 		parsed, err := time.ParseDuration(d)
-		if err != nil {
+		if err != nil || parsed < 0 {
 			return 0, false
 		}
 		return parsed, true
 	case int:
+		if d < 0 {
+			return 0, false
+		}
 		return time.Duration(d) * time.Second, true
 	case int64:
+		if d < 0 {
+			return 0, false
+		}
 		return time.Duration(d) * time.Second, true
 	case float64:
+		if d < 0 || math.IsNaN(d) || math.IsInf(d, 0) {
+			return 0, false
+		}
 		return time.Duration(d * float64(time.Second)), true
 	default:
 		return 0, false

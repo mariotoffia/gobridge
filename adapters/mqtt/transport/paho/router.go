@@ -149,19 +149,23 @@ func (r *router) Register(id string, h func(*pahov5.Publish)) {
 	r.mu.Lock()
 	r.handlers[id] = h
 	r.mu.Unlock()
-	logging.Debug(r.logger, "mqtt: handler registered",
-		"handler_id", id,
-		"total_handlers", r.HandlerCount(),
-	)
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(context.Background(), logging.LevelDebug, "mqtt: handler registered",
+			"handler_id", id,
+			"total_handlers", r.HandlerCount(),
+		)
+	}
 }
 
 func (r *router) Unregister(id string) {
 	r.mu.Lock()
 	delete(r.handlers, id)
 	r.mu.Unlock()
-	logging.Debug(r.logger, "mqtt: handler unregistered",
-		"handler_id", id,
-	)
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(context.Background(), logging.LevelDebug, "mqtt: handler unregistered",
+			"handler_id", id,
+		)
+	}
 }
 
 // HandlerCount returns the number of registered handlers.

@@ -82,8 +82,10 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	msg := s.buildMessage(env)
 	start := time.Now()
 	if err := s.client.SendMessage(sendCtx, msg, nil); err != nil {
-		logging.DebugContext(s.logger, ctx, "servicebus: send failed",
-			"entity", s.entityName(), "error", err)
+		if logging.DebugEnabled(s.logger) {
+			s.logger.Log(ctx, logging.LevelDebug, "servicebus: send failed",
+				"entity", s.entityName(), "error", err)
+		}
 		return MapError(err)
 	}
 
@@ -114,10 +116,12 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 		}
 		chunk := envs[i:end]
 
-		logging.DebugContext(s.logger, ctx, "servicebus: sending batch",
-			"entity", s.entityName(),
-			"chunk_size", len(chunk),
-		)
+		if logging.DebugEnabled(s.logger) {
+			s.logger.Log(ctx, logging.LevelDebug, "servicebus: sending batch",
+				"entity", s.entityName(),
+				"chunk_size", len(chunk),
+			)
+		}
 
 		start := time.Now()
 		msgBatch, err := s.client.NewMessageBatch(sendCtx, nil)
@@ -139,8 +143,10 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 				return sent, MapError(addErr)
 			}
 
-			logging.DebugContext(s.logger, ctx, "servicebus: message overflow, sending individually",
-				"entity", s.entityName())
+			if logging.DebugEnabled(s.logger) {
+				s.logger.Log(ctx, logging.LevelDebug, "servicebus: message overflow, sending individually",
+					"entity", s.entityName())
+			}
 
 			if msgBatch.NumMessages() > 0 {
 				if err := s.client.SendMessageBatch(sendCtx, msgBatch, nil); err != nil {
@@ -177,8 +183,10 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 
 // Close tears down the Service Bus sender and the underlying AMQP connection.
 func (s *Sender) Close(ctx context.Context) error {
-	logging.DebugContext(s.logger, ctx, "servicebus: sender closing",
-		"entity", s.entityName())
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "servicebus: sender closing",
+			"entity", s.entityName())
+	}
 
 	var firstErr error
 	if s.client != nil {
@@ -216,8 +224,10 @@ func (s *Sender) ensureClient(ctx context.Context) error {
 	s.client = sender
 	s.asbClient = asbClient
 
-	logging.DebugContext(s.logger, ctx, "servicebus: sender initialized",
-		"entity", entityName)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "servicebus: sender initialized",
+			"entity", entityName)
+	}
 
 	return nil
 }

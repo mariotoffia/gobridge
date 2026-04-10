@@ -46,25 +46,31 @@ func NewReceiver(cfg ReceiverConfig) *Receiver {
 // or connection errors, it waits for the session to reconnect and
 // re-establishes the consumer.
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
-	logging.DebugContext(r.logger, ctx, "amqp091: receiver starting",
-		"queue", r.cfg.QueueName,
-		"consumer_tag", r.cfg.ConsumerTag,
-	)
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelDebug, "amqp091: receiver starting",
+			"queue", r.cfg.QueueName,
+			"consumer_tag", r.cfg.ConsumerTag,
+		)
+	}
 
 	for {
 		err := r.consumeLoop(ctx, emit)
 		if err == nil || ctx.Err() != nil {
-			logging.DebugContext(r.logger, ctx, "amqp091: receiver stopped",
-				"queue", r.cfg.QueueName, "reason", "context_cancelled")
+			if logging.DebugEnabled(r.logger) {
+				r.logger.Log(ctx, logging.LevelDebug, "amqp091: receiver stopped",
+					"queue", r.cfg.QueueName, "reason", "context_cancelled")
+			}
 			return ctx.Err()
 		}
 
 		if r.isEmitError(err) {
-			return err
+			return errors.Unwrap(err)
 		}
 
-		logging.DebugContext(r.logger, ctx, "amqp091: consumer channel lost, waiting for reconnect",
-			"queue", r.cfg.QueueName, "error", err)
+		if logging.DebugEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelDebug, "amqp091: consumer channel lost, waiting for reconnect",
+				"queue", r.cfg.QueueName, "error", err)
+		}
 
 		if !r.waitForReconnect(ctx) {
 			return ctx.Err()
@@ -72,14 +78,18 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 	}
 }
 
+// emitError wraps errors from the emit callback so they can be
+// distinguished from transport-layer errors.
+type emitError struct{ err error }
+
+func (e *emitError) Error() string { return e.err.Error() }
+func (e *emitError) Unwrap() error { return e.err }
+
 // isEmitError returns true when the error originated from the emit callback
 // rather than from the AMQP transport layer.
 func (r *Receiver) isEmitError(err error) bool {
-	var be *domain.BridgeError
-	if errors.As(err, &be) {
-		return false
-	}
-	return true
+	var ee *emitError
+	return errors.As(err, &ee)
 }
 
 func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
@@ -126,10 +136,10 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 			if amqpErr != nil {
 				return MapError(amqpErr)
 			}
-			return nil
+			return domain.ErrConnectionLost.WithMessage("amqp091: channel closed by broker")
 		case d, ok := <-deliveries:
 			if !ok {
-				return nil
+				return domain.ErrConnectionLost.WithMessage("amqp091: delivery channel closed")
 			}
 			if err := r.handleDelivery(ctx, d, emit); err != nil {
 				return err
@@ -152,9 +162,11 @@ func (r *Receiver) handleDelivery(ctx context.Context, d amqp.Delivery, emit fun
 	del := NewDelivery(env, d, r.logger, r.metrics)
 
 	if err := emit(ctx, del); err != nil {
-		logging.DebugContext(r.logger, ctx, "amqp091: emit error",
-			"queue", r.cfg.QueueName, "error", err)
-		return err
+		if logging.DebugEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelDebug, "amqp091: emit error",
+				"queue", r.cfg.QueueName, "error", err)
+		}
+		return &emitError{err: err}
 	}
 	return nil
 }
@@ -167,7 +179,17 @@ func (r *Receiver) openChannel() (*amqp.Channel, error) {
 	if conn == nil {
 		return nil, domain.ErrUnavailable.WithMessage("amqp091: session not connected")
 	}
-	return conn.Channel()
+	ch, err := conn.Channel()
+	if err != nil {
+		return nil, err
+	}
+	if logging.TraceEnabled(r.logger) {
+		r.logger.Log(context.Background(), logging.LevelTrace,
+			"amqp091: receiver channel opened",
+			"queue", r.cfg.QueueName,
+		)
+	}
+	return ch, nil
 }
 
 func (r *Receiver) waitForReconnect(ctx context.Context) bool {
@@ -184,6 +206,13 @@ func (r *Receiver) waitForReconnect(ctx context.Context) bool {
 				return false
 			}
 			if ev.Type == ports.SessionConnected || ev.Type == ports.SessionReconciled {
+				if logging.TraceEnabled(r.logger) {
+					r.logger.Log(context.Background(), logging.LevelTrace,
+						"amqp091: receiver reconnect signal received",
+						"queue", r.cfg.QueueName,
+						"event_type", ev.Type,
+					)
+				}
 				return true
 			}
 		}

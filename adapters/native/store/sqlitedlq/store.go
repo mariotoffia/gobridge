@@ -74,8 +74,10 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
-	logging.TraceContext(s.logger, ctx, "sqlitedlq: write",
-		"route_id", entry.RouteID, "entry_id", entry.ID)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: write",
+			"route_id", entry.RouteID, "entry_id", entry.ID)
+	}
 	envJSON, err := json.Marshal(entry.Envelope)
 	if err != nil {
 		return fmt.Errorf("sqlitedlq: marshal envelope: %w", err)
@@ -101,8 +103,10 @@ func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
 }
 
 func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error) {
-	logging.TraceContext(s.logger, ctx, "sqlitedlq: list",
-		"route_id", filter.RouteID, "limit", filter.Limit)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: list",
+			"route_id", filter.RouteID, "limit", filter.Limit)
+	}
 	var clauses []string
 	var args []any
 
@@ -144,7 +148,9 @@ func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQ
 }
 
 func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
-	logging.TraceContext(s.logger, ctx, "sqlitedlq: get", "entry_id", id)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: get", "entry_id", id)
+	}
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, route_id, binding_id, session_id, source_id, correlation_id,
@@ -173,7 +179,9 @@ func (s *Store) Delete(ctx context.Context, ids []string) (int, error) {
 		return 0, nil
 	}
 
-	logging.TraceContext(s.logger, ctx, "sqlitedlq: delete", "count", len(ids))
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: delete", "count", len(ids))
+	}
 
 	placeholders := make([]string, len(ids))
 	args := make([]any, len(ids))
@@ -196,8 +204,10 @@ func (s *Store) Delete(ctx context.Context, ids []string) (int, error) {
 }
 
 func (s *Store) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error) {
-	logging.TraceContext(s.logger, ctx, "sqlitedlq: delete_by_filter",
-		"route_id", filter.RouteID, "category", filter.Category)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: delete_by_filter",
+			"route_id", filter.RouteID, "category", filter.Category)
+	}
 
 	var clauses []string
 	var args []any
@@ -251,8 +261,10 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (in
 }
 
 func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
-	logging.TraceContext(s.logger, ctx, "sqlitedlq: purge",
-		"before", before)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: purge",
+			"before", before)
+	}
 	res, err := s.db.ExecContext(ctx,
 		`DELETE FROM dlq WHERE failed_at < ?`,
 		before.UnixMilli(),

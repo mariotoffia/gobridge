@@ -37,7 +37,7 @@ func MapError(err error) *domain.BridgeError {
 	if containsAny(msg, "throttl", "busy", "overload", "too many") {
 		return domain.ErrThrottled.Wrap(err)
 	}
-	if containsAny(msg, "unauthorized", "forbidden", "access denied", "401", "403") {
+	if containsAny(msg, "unauthorized", "forbidden", "access denied") {
 		return domain.ErrNotAuthorized.Wrap(err)
 	}
 	if containsAny(msg, "not found", "does not exist", "404") {

@@ -38,6 +38,7 @@ type Session struct {
 	events    chan ports.SessionEvent
 	closed    bool
 	connected bool
+	starting  bool
 	plan      *domain.SessionPlan
 
 	// stopMonitor cancels the background health-monitoring goroutine.
@@ -93,16 +94,26 @@ func (s *Session) Start(ctx context.Context) error {
 		s.mu.Unlock()
 		return nil
 	}
+	if s.starting {
+		s.mu.Unlock()
+		return nil
+	}
+	s.starting = true
 	s.mu.Unlock()
 
-	logging.DebugContext(s.logger, ctx, "amqp10: session connecting",
-		"address", redactURL(s.opts.Address),
-		"session_mode", s.mode,
-	)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "amqp10: session connecting",
+			"address", redactURL(s.opts.Address),
+			"session_mode", s.mode,
+		)
+	}
 
 	connectStart := time.Now()
 
 	if err := s.connect(ctx); err != nil {
+		s.mu.Lock()
+		s.starting = false
+		s.mu.Unlock()
 		return err
 	}
 
@@ -110,14 +121,17 @@ func (s *Session) Start(ctx context.Context) error {
 	s.metrics.Timer(domain.MetricAMQP10ConnectLatency, elapsed,
 		domain.Tag{Key: domain.TagKeySessionID, Value: s.opts.ContainerID})
 
-	logging.DebugContext(s.logger, ctx, "amqp10: session connected",
-		"address", redactURL(s.opts.Address),
-		"connect_latency", elapsed,
-	)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "amqp10: session connected",
+			"address", redactURL(s.opts.Address),
+			"connect_latency", elapsed,
+		)
+	}
 
 	monCtx, monCancel := context.WithCancel(context.Background())
 	s.mu.Lock()
 	s.stopMonitor = monCancel
+	s.starting = false
 	s.mu.Unlock()
 
 	go s.monitorLoop(monCtx)
@@ -169,10 +183,19 @@ func (s *Session) connect(ctx context.Context) error {
 		_ = conn.Close()
 		return domain.ErrUnavailable.WithMessage("amqp10: session closed during connect")
 	}
+	oldConn := s.conn
+	oldSess := s.amqpSess
 	s.conn = conn
 	s.amqpSess = sess
 	s.connected = true
 	s.mu.Unlock()
+
+	if oldSess != nil {
+		_ = oldSess.Close(context.Background())
+	}
+	if oldConn != nil {
+		_ = oldConn.Close()
+	}
 
 	s.pushEvent(ports.SessionConnected, nil)
 	return nil
@@ -193,10 +216,12 @@ func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error 
 		return domain.ErrUnavailable.WithMessage("amqp10: session not connected")
 	}
 
-	logging.DebugContext(s.logger, ctx, "amqp10: reconcile",
-		"subscriptions", len(plan.Subscriptions),
-		"publishers", len(plan.Publishers),
-	)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "amqp10: reconcile",
+			"subscriptions", len(plan.Subscriptions),
+			"publishers", len(plan.Publishers),
+		)
+	}
 
 	s.pushEvent(ports.SessionReconciled, nil)
 
@@ -246,8 +271,14 @@ func (s *Session) Events() <-chan ports.SessionEvent {
 // Close gracefully disconnects the AMQP 1.0 session. It is safe to call
 // Close multiple times.
 func (s *Session) Close(ctx context.Context) error {
-	logging.DebugContext(s.logger, ctx, "amqp10: session closing",
-		"address", redactURL(s.opts.Address))
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "amqp10: session close initiated",
+			"address", redactURL(s.opts.Address))
+	}
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "amqp10: session closing",
+			"address", redactURL(s.opts.Address))
+	}
 
 	s.mu.Lock()
 	if s.closed {
@@ -303,6 +334,12 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 		select {
 		case s.events <- ev:
 		default:
+			if logging.TraceEnabled(s.logger) {
+				s.logger.Log(context.Background(), logging.LevelTrace,
+					"amqp10: event dropped, channel full",
+					"event_type", t,
+				)
+			}
 			s.metrics.Counter(domain.MetricAMQP10EventDropped, 1)
 		}
 	}
@@ -337,13 +374,17 @@ func (s *Session) tryReconnect(ctx context.Context) {
 
 	if conn == nil {
 		s.handleReconnect(ctx)
+	} else if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "amqp10: tryReconnect skipped, connection alive")
 	}
 }
 
 func (s *Session) handleReconnect(ctx context.Context) {
 	s.pushEvent(ports.SessionReconnecting, nil)
-	logging.Debug(s.logger, "amqp10: attempting reconnect",
-		"address", redactURL(s.opts.Address))
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(context.Background(), logging.LevelDebug, "amqp10: attempting reconnect",
+			"address", redactURL(s.opts.Address))
+	}
 
 	delay := s.opts.ReconnectDelay
 	if delay <= 0 {
@@ -371,22 +412,25 @@ func (s *Session) handleReconnect(ctx context.Context) {
 		if err == nil {
 			s.metrics.Counter(domain.MetricAMQP10Reconnects, 1,
 				domain.Tag{Key: domain.TagKeySessionID, Value: s.opts.ContainerID})
-			logging.Debug(s.logger, "amqp10: reconnected",
-				"address", redactURL(s.opts.Address))
+			if logging.DebugEnabled(s.logger) {
+				s.logger.Log(context.Background(), logging.LevelDebug, "amqp10: reconnected",
+					"address", redactURL(s.opts.Address))
+			}
 
-		s.mu.Lock()
-		plan := s.plan
-		s.mu.Unlock()
-		if plan != nil {
-			reconCtx, reconCancel := context.WithTimeout(ctx, s.opts.ConnectTimeout)
-			if err := s.Reconcile(reconCtx, *plan); err != nil {
-				if s.logger != nil {
-					s.logger.Warn("amqp10: reconcile on reconnect failed",
-						"error", err)
+			s.mu.Lock()
+			plan := s.plan
+			s.mu.Unlock()
+			if plan != nil {
+				reconCtx, reconCancel := context.WithTimeout(ctx, s.opts.ConnectTimeout)
+				reconcileErr := s.Reconcile(reconCtx, *plan)
+				reconCancel()
+				if reconcileErr != nil {
+					if s.logger != nil {
+						s.logger.Warn("amqp10: reconcile on reconnect failed",
+							"error", reconcileErr)
+					}
 				}
 			}
-			reconCancel()
-		}
 			return
 		}
 
@@ -424,9 +468,12 @@ func redactURL(addr string) string {
 // notifyDisconnect is called by receivers/senders when they detect
 // a link or session error indicating connection loss. It clears the
 // connection state so the monitor goroutine triggers reconnection.
-func (s *Session) notifyDisconnect(err error) {
+// The failedConn parameter identifies which connection instance failed;
+// if the session has already reconnected to a new connection, the stale
+// notification is ignored to prevent destroying a valid connection.
+func (s *Session) notifyDisconnect(failedConn amqpConn, err error) {
 	s.mu.Lock()
-	if s.closed || s.conn == nil {
+	if s.closed || s.conn == nil || s.conn != failedConn {
 		s.mu.Unlock()
 		return
 	}
@@ -438,7 +485,12 @@ func (s *Session) notifyDisconnect(err error) {
 	s.mu.Unlock()
 
 	_ = conn.Close()
-	s.pushEvent(ports.SessionDisconnected, MapError(err))
+
+	var evErr error
+	if err != nil {
+		evErr = MapError(err)
+	}
+	s.pushEvent(ports.SessionDisconnected, evErr)
 
 	select {
 	case s.reconnectCh <- struct{}{}:

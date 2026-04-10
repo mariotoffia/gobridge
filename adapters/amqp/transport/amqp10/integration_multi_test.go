@@ -155,7 +155,7 @@ func TestIntegration_CompetingReceivers(t *testing.T) {
 			defer wg.Done()
 			_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
 				collected <- del.Envelope().ID
-				if err := del.Ack(recvCtx); err != nil {
+				if err := del.Ack(ctx); err != nil {
 					t.Errorf("Ack() error = %v", err)
 				}
 				return nil

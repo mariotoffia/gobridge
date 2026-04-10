@@ -225,10 +225,12 @@ func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken)
 	sessionTag := domain.Tag{Key: domain.TagKeySessionID, Value: d.partitionKey}
 	routeTag := domain.Tag{Key: domain.TagKeyRouteID, Value: d.routeID}
 
-	logging.Debug(d.logger, "drain batch starting",
-		"partition_key", d.partitionKey,
-		"batch_size", d.currentBatchSize,
-	)
+	if logging.DebugEnabled(d.logger) {
+		d.logger.Log(context.Background(), logging.LevelDebug, "drain batch starting",
+			"partition_key", d.partitionKey,
+			"batch_size", d.currentBatchSize,
+		)
+	}
 
 	records, err := d.outboxStore.Claim(ctx, d.partitionKey, d.ownerID, token, d.currentBatchSize)
 	if err != nil {
@@ -238,10 +240,12 @@ func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken)
 		return 0, nil
 	}
 
-	logging.Debug(d.logger, "claimed records",
-		"count", len(records),
-		"partition_key", d.partitionKey,
-	)
+	if logging.DebugEnabled(d.logger) {
+		d.logger.Log(context.Background(), logging.LevelDebug, "claimed records",
+			"count", len(records),
+			"partition_key", d.partitionKey,
+		)
+	}
 
 	sem := make(chan struct{}, d.maxConcurrency)
 	var wg sync.WaitGroup
@@ -321,11 +325,13 @@ loop:
 		return int(atomic.LoadInt64(&successCount)), domain.ErrStaleFencingToken
 	}
 
-	logging.Debug(d.logger, "drain batch complete",
-		"partition_key", d.partitionKey,
-		"success_count", atomic.LoadInt64(&successCount),
-		"duration", time.Since(start),
-	)
+	if logging.DebugEnabled(d.logger) {
+		d.logger.Log(context.Background(), logging.LevelDebug, "drain batch complete",
+			"partition_key", d.partitionKey,
+			"success_count", atomic.LoadInt64(&successCount),
+			"duration", time.Since(start),
+		)
+	}
 
 	return int(atomic.LoadInt64(&successCount)), nil
 }
@@ -426,7 +432,7 @@ func (d *OutboxDrainer) handlePoison(ctx context.Context, rec *domain.OutboxReco
 }
 
 func (d *OutboxDrainer) log(ctx context.Context, level slog.Level, msg string, args ...any) {
-	if d.logger == nil {
+	if d.logger == nil || !d.logger.Enabled(ctx, level) {
 		return
 	}
 	allArgs := append([]any{"partition", d.partitionKey, "route", d.routeID}, args...)

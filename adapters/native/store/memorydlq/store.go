@@ -49,7 +49,9 @@ func NewStore(opts ...Option) *Store {
 }
 
 func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
-	logging.TraceContext(s.logger, ctx, "memorydlq: store", "entryID", entry.ID)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memorydlq: store", "entryID", entry.ID)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -65,7 +67,9 @@ func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
 }
 
 func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
-	logging.TraceContext(s.logger, ctx, "memorydlq: get", "entryID", id)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memorydlq: get", "entryID", id)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -81,8 +85,10 @@ func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
 }
 
 func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error) {
-	logging.TraceContext(s.logger, ctx, "memorydlq: query",
-		"routeID", filter.RouteID, "category", filter.Category, "limit", filter.Limit)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memorydlq: query",
+			"routeID", filter.RouteID, "category", filter.Category, "limit", filter.Limit)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -106,7 +112,9 @@ func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQ
 }
 
 func (s *Store) Delete(ctx context.Context, ids []string) (int, error) {
-	logging.TraceContext(s.logger, ctx, "memorydlq: delete", "count", len(ids))
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memorydlq: delete", "count", len(ids))
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -123,8 +131,10 @@ func (s *Store) Delete(ctx context.Context, ids []string) (int, error) {
 }
 
 func (s *Store) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error) {
-	logging.TraceContext(s.logger, ctx, "memorydlq: delete_by_filter",
-		"routeID", filter.RouteID, "category", filter.Category)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memorydlq: delete_by_filter",
+			"routeID", filter.RouteID, "category", filter.Category)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -153,7 +163,9 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (in
 }
 
 func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
-	logging.TraceContext(s.logger, ctx, "memorydlq: purge")
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memorydlq: purge")
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

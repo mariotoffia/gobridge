@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"time"
 
@@ -78,6 +79,9 @@ func DefaultSenderOptions() SenderConfig {
 func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	opts := DefaultSessionOptions()
 	if m == nil {
+		if err := opts.validate(); err != nil {
+			return opts, err
+		}
 		return opts, nil
 	}
 
@@ -108,6 +112,10 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	}
 	if v, ok := m["tls"].(map[string]any); ok {
 		opts.TLS = tlsConfigFromMap(v)
+	}
+
+	if err := opts.validate(); err != nil {
+		return opts, err
 	}
 
 	return opts, nil
@@ -200,8 +208,9 @@ func (c *SenderConfig) applyDefaults() {
 }
 
 // BuildTLSConfig creates a *tls.Config from TLSConfig.
+// Returns nil if cfg is nil or TLS is not enabled.
 func BuildTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
-	if cfg == nil {
+	if cfg == nil || !cfg.Enable {
 		return nil, nil
 	}
 
@@ -264,11 +273,61 @@ func optBool(m map[string]any, key string) (bool, bool) {
 }
 
 func optInt(m map[string]any, key string) (int, bool) {
-	v, ok := m[key].(int)
-	return v, ok
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		if n > math.MaxInt || n < math.MinInt {
+			return 0, false
+		}
+		return int(n), true
+	case float64:
+		if math.IsNaN(n) || math.IsInf(n, 0) || n > float64(math.MaxInt) || n < float64(math.MinInt) {
+			return 0, false
+		}
+		return int(n), true
+	default:
+		return 0, false
+	}
 }
 
 func optDuration(m map[string]any, key string) (time.Duration, bool) {
-	v, ok := m[key].(time.Duration)
-	return v, ok
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	switch d := v.(type) {
+	case time.Duration:
+		if d < 0 {
+			return 0, false
+		}
+		return d, true
+	case string:
+		parsed, err := time.ParseDuration(d)
+		if err != nil || parsed < 0 {
+			return 0, false
+		}
+		return parsed, true
+	case int:
+		if d < 0 {
+			return 0, false
+		}
+		return time.Duration(d) * time.Second, true
+	case int64:
+		if d < 0 {
+			return 0, false
+		}
+		return time.Duration(d) * time.Second, true
+	case float64:
+		if d < 0 || math.IsNaN(d) || math.IsInf(d, 0) {
+			return 0, false
+		}
+		return time.Duration(d * float64(time.Second)), true
+	default:
+		return 0, false
+	}
 }

@@ -279,10 +279,12 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		)
 	}
 
-	logging.Debug(r.logger, "dispatching",
-		"route", r.routeID,
-		"mode", string(r.policy.DeliveryMode),
-	)
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(context.Background(), logging.LevelDebug, "dispatching",
+			"route", r.routeID,
+			"mode", string(r.policy.DeliveryMode),
+		)
+	}
 
 	var deliveryErr error
 	switch r.policy.DeliveryMode {

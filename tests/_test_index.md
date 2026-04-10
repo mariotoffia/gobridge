@@ -1213,3 +1213,34 @@ Catalog of all test functions in the gobridge repository.
 | TestConfigAPI_Redaction_GetConfig_HidesAPIKeys | validates API keys redacted in GET /config | integration | config_api | pass |
 | TestConfigAPI_Redaction_PatchPreview_HidesAPIKeys | validates API keys redacted in PATCH preview | integration | config_api | pass |
 | TestConfigAPI_TTL_MaxClampedTo30m | validates TTL exceeding max is clamped to 30m | integration | config_api | pass |
+| TestIntegration_Edge_EmptyPayload | validates send/receive with nil and zero-length payloads | integration | amqp10_edge | pass |
+| TestIntegration_Edge_LargePayload | validates 1 MB payload integrity via SHA-256 checksum | integration | amqp10_edge | pass |
+| TestIntegration_Edge_SendContextTimeout | validates send with cancelled context returns error | integration | amqp10_edge | pass |
+| TestIntegration_Edge_ReceiveContextCancel | validates clean receiver shutdown on context cancel | integration | amqp10_edge | pass |
+| TestIntegration_Edge_DoubleAck | validates idempotent double ack via sync.Once | integration | amqp10_edge | pass |
+| TestIntegration_Edge_DoubleRetry | validates idempotent double retry via sync.Once | integration | amqp10_edge | pass |
+| TestIntegration_Edge_AckThenRetry | validates only first settlement takes effect | integration | amqp10_edge | pass |
+| TestIntegration_Edge_SendAfterSessionClose | validates send on closed session returns error | integration | amqp10_edge | pass |
+| TestIntegration_Edge_ReceiverOnClosedSession | validates receiver on closed session returns error | integration | amqp10_edge | pass |
+| TestIntegration_Edge_WrongCredentials | validates auth error with invalid credentials | integration | amqp10_edge | pass |
+| TestIntegration_Edge_SessionHealthTransitions | validates Health at before-start, after-start, after-close | integration | amqp10_edge | pass |
+| TestIntegration_Edge_MulticastRouting | validates fan-out delivery with RoutingMulticast | integration | amqp10_edge | pass |
+| TestIntegration_Edge_SendBatchPartialVerify | validates all batch messages received with correct IDs | integration | amqp10_edge | pass |
+| TestIntegration_Edge_HeaderUnicodeAndLongValues | validates unicode and long header value round-trip | integration | amqp10_edge | pass |
+| TestIntegration_Edge_EnvelopeFieldsRoundTrip | validates all envelope fields survive send/receive | integration | amqp10_edge | pass |
+| TestIntegration_Edge_EmptyPayload | validates send/receive with nil and zero-length payloads | integration | amqp091_edge | pass |
+| TestIntegration_Edge_LargePayload | validates 1 MB payload integrity via SHA-256 checksum | integration | amqp091_edge | pass |
+| TestIntegration_Edge_SendContextTimeout | validates send with cancelled context returns error | integration | amqp091_edge | pass |
+| TestIntegration_Edge_ReceiveContextCancel | validates clean receiver shutdown on context cancel | integration | amqp091_edge | pass |
+| TestIntegration_Edge_DoubleAck | validates idempotent double ack via sync.Once | integration | amqp091_edge | pass |
+| TestIntegration_Edge_DoubleRetry | validates idempotent double retry via sync.Once | integration | amqp091_edge | pass |
+| TestIntegration_Edge_AckThenRetry | validates only first settlement takes effect | integration | amqp091_edge | pass |
+| TestIntegration_Edge_SendAfterSessionClose | validates send on closed session returns error | integration | amqp091_edge | pass |
+| TestIntegration_Edge_ReceiverOnClosedSession | validates receiver on closed session returns error | integration | amqp091_edge | pass |
+| TestIntegration_Edge_WrongCredentials | validates auth error with invalid credentials | integration | amqp091_edge | pass |
+| TestIntegration_Edge_SessionHealthTransitions | validates Health at before-start, after-start, after-close | integration | amqp091_edge | pass |
+| TestIntegration_Edge_ExchangeRouting | validates end-to-end message flow through exchange/binding | integration | amqp091_edge | pass |
+| TestIntegration_Edge_ReconcilePlan | validates Reconcile stores subscriptions and Health reflects count | integration | amqp091_edge | pass |
+| TestIntegration_Edge_SendBatchAllReceived | validates all batch messages received with correct IDs | integration | amqp091_edge | pass |
+| TestIntegration_Edge_HeaderRoundTrip | validates unicode and long header value round-trip | integration | amqp091_edge | pass |
+| TestIntegration_Edge_PrefetchHonored | validates PrefetchCount=1 limits in-flight to 1 | integration | amqp091_edge | pass |

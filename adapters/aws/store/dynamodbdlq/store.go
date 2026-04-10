@@ -90,7 +90,9 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 // EnsureTable creates the DynamoDB table with the required schema and GSIs.
 // It is idempotent: if the table already exists, it returns nil.
 func (s *Store) EnsureTable(ctx context.Context) error {
-	logging.DebugContext(s.logger, ctx, "dynamodbdlq: create_table")
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "dynamodbdlq: create_table")
+	}
 
 	_, err := s.client.CreateTable(ctx, &dynamodb.CreateTableInput{
 		TableName: aws.String(s.tableName),
@@ -139,8 +141,10 @@ func (s *Store) EnsureTable(ctx context.Context) error {
 // Write stores a DLQ entry. The write is idempotent: if an entry with the
 // same ID already exists, domain.ErrDuplicateRecord is returned.
 func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
-	logging.TraceContext(s.logger, ctx, "dynamodbdlq: write",
-		"entry_id", entry.ID, "route_id", entry.RouteID, "category", entry.Category)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "dynamodbdlq: write",
+			"entry_id", entry.ID, "route_id", entry.RouteID, "category", entry.Category)
+	}
 
 	envJSON, err := json.Marshal(&entry.Envelope)
 	if err != nil {
@@ -193,8 +197,10 @@ func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
 //   - Both          → RouteIndex GSI with post-filter on category
 //   - Neither       → full table Scan
 func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error) {
-	logging.TraceContext(s.logger, ctx, "dynamodbdlq: list",
-		"route_id", filter.RouteID, "category", filter.Category, "limit", filter.Limit)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "dynamodbdlq: list",
+			"route_id", filter.RouteID, "category", filter.Category, "limit", filter.Limit)
+	}
 
 	switch {
 	case filter.RouteID != "":
@@ -381,7 +387,9 @@ func (s *Store) listByScan(ctx context.Context, filter domain.DLQFilter) ([]doma
 // Get retrieves a single DLQ entry by ID.
 // Returns domain.ErrNotFound if the entry does not exist.
 func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
-	logging.TraceContext(s.logger, ctx, "dynamodbdlq: get", "entry_id", id)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "dynamodbdlq: get", "entry_id", id)
+	}
 
 	out, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(s.tableName),
@@ -404,7 +412,9 @@ func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
 // Delete removes specific DLQ entries by ID. Returns the count of
 // entries actually deleted. Missing IDs are silently skipped.
 func (s *Store) Delete(ctx context.Context, ids []string) (int, error) {
-	logging.TraceContext(s.logger, ctx, "dynamodbdlq: delete", "count", len(ids))
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "dynamodbdlq: delete", "count", len(ids))
+	}
 
 	var count int
 	for _, id := range ids {
@@ -433,8 +443,10 @@ func (s *Store) Delete(ctx context.Context, ids []string) (int, error) {
 // DeleteByFilter removes all DLQ entries matching the filter criteria.
 // Returns the count of entries deleted.
 func (s *Store) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error) {
-	logging.TraceContext(s.logger, ctx, "dynamodbdlq: delete_by_filter",
-		"route_id", filter.RouteID, "category", filter.Category)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "dynamodbdlq: delete_by_filter",
+			"route_id", filter.RouteID, "category", filter.Category)
+	}
 
 	entries, err := s.List(ctx, filter)
 	if err != nil {
@@ -461,7 +473,9 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (in
 // Purge deletes entries whose failed_at is before the given time.
 // Returns the count of deleted items.
 func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
-	logging.TraceContext(s.logger, ctx, "dynamodbdlq: purge", "before", before)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "dynamodbdlq: purge", "before", before)
+	}
 
 	beforeMs := before.UnixMilli()
 	count := 0

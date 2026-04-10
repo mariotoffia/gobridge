@@ -2,8 +2,11 @@ package amqp10
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"io"
 	"log/slog"
-	"math/rand/v2"
+	mathrand "math/rand/v2"
 	"sync"
 	"time"
 
@@ -54,10 +57,12 @@ func NewReceiver(cfg ReceiverConfig, session *Session) (*Receiver, error) {
 // Run creates a receiver link and enters the receive loop. It blocks until
 // the context is cancelled or emit returns an error.
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
-	logging.DebugContext(r.logger, ctx, "amqp10: receiver starting",
-		"address", r.cfg.Address,
-		"link_credit", r.cfg.LinkCredit,
-	)
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelDebug, "amqp10: receiver starting",
+			"address", r.cfg.Address,
+			"link_credit", r.cfg.LinkCredit,
+		)
+	}
 
 	if err := r.ensureLink(ctx); err != nil {
 		return err
@@ -74,6 +79,10 @@ func (r *Receiver) closeLink() {
 	r.mu.Unlock()
 
 	if link != nil {
+		if logging.TraceEnabled(r.logger) {
+			r.logger.Log(context.Background(), logging.LevelTrace, "amqp10: closing receiver link",
+				"address", r.cfg.Address)
+		}
 		_ = link.Close(context.Background())
 	}
 }
@@ -96,7 +105,8 @@ func (r *Receiver) createLink(ctx context.Context) error {
 	}
 
 	opts := &amqp.ReceiverOptions{
-		Credit: int32(r.cfg.LinkCredit),
+		Credit:             int32(r.cfg.LinkCredit),
+		SourceCapabilities: []string{r.cfg.Routing.capability()},
 	}
 	if r.cfg.DurabilityMode > 0 {
 		opts.Durability = amqp.Durability(r.cfg.DurabilityMode)
@@ -198,6 +208,10 @@ func (r *Receiver) convertMessage(ctx context.Context, msg *amqp.Message, link *
 		}
 	}
 
+	if msgID == "" {
+		msgID = generateEnvelopeID()
+	}
+
 	env := &domain.Envelope{
 		ID:        msgID,
 		Subject:   subject,
@@ -235,7 +249,8 @@ func (r *Receiver) handleLinkError(err error) {
 		bridgeErr := MapError(err)
 		if bridgeErr != nil && (bridgeErr.Code == domain.ErrCodeConnectionLost ||
 			bridgeErr.Code == domain.ErrCodeUnavailable) {
-			r.session.notifyDisconnect(err)
+			conn := r.session.Conn()
+			r.session.notifyDisconnect(conn, err)
 		}
 	}
 }
@@ -262,8 +277,10 @@ func (r *Receiver) waitAndReconnect(ctx context.Context) error {
 
 	err := r.createLink(ctx)
 	if err != nil {
-		logging.DebugContext(r.logger, ctx, "amqp10: receiver link re-creation failed",
-			"address", r.cfg.Address, "error", err)
+		if logging.DebugEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelDebug, "amqp10: receiver link re-creation failed",
+				"address", r.cfg.Address, "error", err)
+		}
 
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -271,6 +288,9 @@ func (r *Receiver) waitAndReconnect(ctx context.Context) error {
 		if !domain.IsRecoverableError(err) {
 			return err
 		}
+	} else if logging.TraceEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelTrace, "amqp10: receiver link re-created",
+			"address", r.cfg.Address)
 	}
 	return nil
 }
@@ -292,7 +312,7 @@ func newBackoff() *backoff {
 
 func (b *backoff) next() time.Duration {
 	delay := b.current
-	jitter := time.Duration(float64(delay) * 0.25 * (2*rand.Float64() - 1))
+	jitter := time.Duration(float64(delay) * 0.25 * (2*mathrand.Float64() - 1))
 	delay += jitter
 
 	b.current *= backoffMultiplier
@@ -305,4 +325,12 @@ func (b *backoff) next() time.Duration {
 
 func (b *backoff) reset() {
 	b.current = backoffInitial
+}
+
+func generateEnvelopeID() string {
+	b := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		panic("amqp10: crypto/rand unavailable: " + err.Error())
+	}
+	return hex.EncodeToString(b)
 }

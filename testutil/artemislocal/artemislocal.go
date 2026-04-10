@@ -27,15 +27,17 @@
 package artemislocal
 
 import (
+	"context"
 	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Azure/go-amqp"
 )
 
 const (
@@ -118,7 +120,7 @@ func Endpoint(t testing.TB) string {
 		} else {
 			endpoint, consoleURL, cleanupFn, initErr = startContainer()
 		}
-	} else if !fromEnv && containerName != "" {
+	} else if initErr == nil && !fromEnv && containerName != "" {
 		if !isContainerRunning(containerName) {
 			if cleanupFn != nil {
 				cleanupFn()
@@ -242,17 +244,15 @@ func startContainer() (string, string, func(), error) {
 		"--name", name,
 		"-p", fmt.Sprintf("127.0.0.1:%d:5672", amqpPort),
 		"-p", fmt.Sprintf("127.0.0.1:%d:8161", webPort),
-		"-e", "AMQ_USER="+user(),
-		"-e", "AMQ_PASSWORD="+password(),
-		"-e", "AMQ_EXTRA_ARGS=--relax-jolokia",
+		"-e", "ARTEMIS_USER="+user(),
+		"-e", "ARTEMIS_PASSWORD="+password(),
+		"-e", "EXTRA_ARGS=--relax-jolokia",
 		imageName(),
 	).CombinedOutput()
 	if err != nil {
 		cleanup()
 		return "", "", nil, fmt.Errorf("docker run: %w\n%s", err, out)
 	}
-
-	containerName = name
 
 	if err := waitForContainerHealthy(name, 30*time.Second); err != nil {
 		logContainerFailure(name)
@@ -266,41 +266,16 @@ func startContainer() (string, string, func(), error) {
 		return "", "", nil, fmt.Errorf("AMQP port: %w", err)
 	}
 
-	console := fmt.Sprintf("http://127.0.0.1:%d", webPort)
-	if err := waitForConsole(console, 60*time.Second); err != nil {
-		logContainerFailure(name)
-		cleanup()
-		return "", "", nil, fmt.Errorf("web console: %w", err)
-	}
-
 	if err := stabilize(amqpPort); err != nil {
 		logContainerFailure(name)
 		cleanup()
 		return "", "", nil, fmt.Errorf("stabilization: %w", err)
 	}
 
+	containerName = name
+	console := fmt.Sprintf("http://127.0.0.1:%d", webPort)
 	ep := fmt.Sprintf("amqp://127.0.0.1:%d", amqpPort)
 	return ep, console, cleanup, nil
-}
-
-func waitForConsole(baseURL string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	url := baseURL + "/console"
-	var lastErr error
-	for time.Now().Before(deadline) {
-		resp, err := http.Get(url)
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode < 500 {
-				return nil
-			}
-		}
-		if err != nil {
-			lastErr = err
-		}
-		time.Sleep(time.Second)
-	}
-	return fmt.Errorf("console not ready within %v: %v", timeout, lastErr)
 }
 
 func removeOrphans(prefix string) {
@@ -367,7 +342,30 @@ func stabilize(port int) error {
 		_ = conn.Close()
 		time.Sleep(500 * time.Millisecond)
 	}
-	return nil
+
+	ep := fmt.Sprintf("amqp://127.0.0.1:%d", port)
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if tryAMQPConnect(ep) {
+			return nil
+		}
+		time.Sleep(time.Second)
+	}
+	return fmt.Errorf("AMQP protocol not ready on port %d within 30s", port)
+}
+
+func tryAMQPConnect(ep string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := amqp.Dial(ctx, ep, &amqp.ConnOptions{
+		SASLType: amqp.SASLTypePlain(user(), password()),
+	})
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func logContainerFailure(name string) {

@@ -102,11 +102,13 @@ func (s *Session) Start(ctx context.Context) error {
 	s.starting = true
 	s.mu.Unlock()
 
-	logging.DebugContext(s.logger, ctx, "mqtt: session connecting",
-		"client_id", s.opts.ClientID,
-		"broker_count", len(s.opts.BrokerURLs),
-		"session_mode", s.mode,
-	)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "mqtt: session connecting",
+			"client_id", s.opts.ClientID,
+			"broker_count", len(s.opts.BrokerURLs),
+			"session_mode", s.mode,
+		)
+	}
 	connectStart := time.Now()
 
 	serverURLs, err := parseURLs(s.opts.BrokerURLs)
@@ -126,8 +128,10 @@ func (s *Session) Start(ctx context.Context) error {
 			s.connected = true
 			s.mu.Unlock()
 			s.pushEvent(ports.SessionConnected, nil)
-			logging.Debug(s.logger, "mqtt: connection up",
-				"client_id", s.opts.ClientID)
+			if logging.DebugEnabled(s.logger) {
+				s.logger.Log(context.Background(), logging.LevelDebug, "mqtt: connection up",
+					"client_id", s.opts.ClientID)
+			}
 			s.mu.Lock()
 			oldSubs := s.activeSubs
 			s.activeSubs = make(map[string]byte)
@@ -166,8 +170,10 @@ func (s *Session) Start(ctx context.Context) error {
 			s.connected = false
 			s.mu.Unlock()
 			s.pushEvent(ports.SessionDisconnected, nil)
-			logging.Debug(s.logger, "mqtt: connection down",
-				"client_id", s.opts.ClientID)
+			if logging.DebugEnabled(s.logger) {
+				s.logger.Log(context.Background(), logging.LevelDebug, "mqtt: connection down",
+					"client_id", s.opts.ClientID)
+			}
 			return true // always attempt reconnect
 		},
 
@@ -258,8 +264,10 @@ func (s *Session) Start(ctx context.Context) error {
 		s.mu.Lock()
 		s.starting = false
 		s.mu.Unlock()
-		logging.DebugContext(s.logger, ctx, "mqtt: connect failed",
-			"client_id", s.opts.ClientID, "error", err)
+		if logging.DebugEnabled(s.logger) {
+			s.logger.Log(ctx, logging.LevelDebug, "mqtt: connect failed",
+				"client_id", s.opts.ClientID, "error", err)
+		}
 		return MapError(err)
 	}
 
@@ -274,8 +282,10 @@ func (s *Session) Start(ctx context.Context) error {
 	elapsed := time.Since(connectStart)
 	s.metrics.Timer(domain.MetricMQTTConnectLatency, elapsed,
 		domain.Tag{Key: domain.TagKeySessionID, Value: s.opts.ClientID})
-	logging.DebugContext(s.logger, ctx, "mqtt: session connected",
-		"client_id", s.opts.ClientID, "connect_latency", elapsed)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "mqtt: session connected",
+			"client_id", s.opts.ClientID, "connect_latency", elapsed)
+	}
 
 	return nil
 }
@@ -323,11 +333,13 @@ func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager,
 	}
 	s.mu.Unlock()
 
-	logging.DebugContext(s.logger, ctx, "mqtt: reconcile",
-		"client_id", s.opts.ClientID,
-		"desired", len(desired),
-		"active", len(current),
-	)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "mqtt: reconcile",
+			"client_id", s.opts.ClientID,
+			"desired", len(desired),
+			"active", len(current),
+		)
+	}
 
 	// Unsubscribe topics no longer desired
 	var toUnsub []string
@@ -398,12 +410,14 @@ func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager,
 	elapsed := time.Since(reconcileStart)
 	s.metrics.Timer(domain.MetricMQTTReconcileLatency, elapsed,
 		domain.Tag{Key: domain.TagKeySessionID, Value: s.opts.ClientID})
-	logging.DebugContext(s.logger, ctx, "mqtt: reconcile done",
-		"client_id", s.opts.ClientID,
-		"unsubscribed", len(toUnsub),
-		"subscribed", len(toSub),
-		"duration", elapsed,
-	)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "mqtt: reconcile done",
+			"client_id", s.opts.ClientID,
+			"unsubscribed", len(toUnsub),
+			"subscribed", len(toSub),
+			"duration", elapsed,
+		)
+	}
 
 	return nil
 }
@@ -478,8 +492,10 @@ func (s *Session) Events() <-chan ports.SessionEvent {
 //  3. Close s.events channel — safe because step 1 guarantees no
 //     concurrent sender can reach the channel send.
 func (s *Session) Close(ctx context.Context) error {
-	logging.DebugContext(s.logger, ctx, "mqtt: session closing",
-		"client_id", s.opts.ClientID)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "mqtt: session closing",
+			"client_id", s.opts.ClientID)
+	}
 
 	s.mu.Lock()
 	if s.closed {

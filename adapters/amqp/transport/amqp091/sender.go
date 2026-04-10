@@ -89,8 +89,10 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 		s.resetChannelLocked()
 		s.mu.Unlock()
 		s.metrics.Timer(domain.MetricAMQP091PublishLatency, time.Since(start), sessionTag)
-		logging.DebugContext(s.logger, ctx, "amqp091: publish failed",
-			"exchange", exchange, "routing_key", routingKey, "error", err)
+		if logging.DebugEnabled(s.logger) {
+			s.logger.Log(ctx, logging.LevelDebug, "amqp091: publish failed",
+				"exchange", exchange, "routing_key", routingKey, "error", err)
+		}
 		return MapError(err)
 	}
 
@@ -156,6 +158,13 @@ func (s *Sender) ensureChannelLocked() (*amqp.Channel, error) {
 	s.ch = ch
 	s.conf = ch.NotifyPublish(make(chan amqp.Confirmation, 1))
 
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(context.Background(), logging.LevelTrace,
+			"amqp091: sender channel opened with confirms",
+			"exchange", s.cfg.Exchange,
+		)
+	}
+
 	return ch, nil
 }
 
@@ -176,6 +185,11 @@ func (s *Sender) waitConfirmLocked(ctx context.Context, confCh chan amqp.Confirm
 		}
 		if !confirmation.Ack {
 			return domain.ErrUnavailable.WithMessage("amqp091: publish nacked by broker")
+		}
+		if logging.TraceEnabled(s.logger) {
+			s.logger.Log(ctx, logging.LevelTrace, "amqp091: publish confirmed",
+				"delivery_tag", confirmation.DeliveryTag,
+			)
 		}
 		return nil
 	}

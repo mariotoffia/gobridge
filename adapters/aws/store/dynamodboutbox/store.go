@@ -106,7 +106,9 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 // CreateTable creates the DynamoDB table with the required schema and GSIs.
 // It is idempotent: if the table already exists, it returns nil.
 func (s *Store) CreateTable(ctx context.Context) error {
-	logging.DebugContext(s.logger, ctx, "dynamodboutbox: create_table")
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "dynamodboutbox: create_table")
+	}
 
 	_, err := s.client.CreateTable(ctx, &dynamodb.CreateTableInput{
 		TableName: aws.String(s.table),
@@ -170,7 +172,9 @@ func (s *Store) CreateTable(ctx context.Context) error {
 // PutItem with a condition to reject duplicates. For multiple records
 // (fan-out), it uses TransactWriteItems to ensure atomicity.
 func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) error {
-	logging.TraceContext(s.logger, ctx, "dynamodboutbox: persist", "count", len(records))
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: persist", "count", len(records))
+	}
 
 	if len(records) == 0 {
 		return nil
@@ -246,7 +250,9 @@ func (s *Store) persistFanOut(ctx context.Context, records []domain.OutboxRecord
 // Limit+Filter interaction (Limit caps evaluated items, not filtered results).
 // Records that have exceeded the max replay count are skipped.
 func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error) {
-	logging.TraceContext(s.logger, ctx, "dynamodboutbox: claim", "partition_key", partitionKey, "limit", limit)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: claim", "partition_key", partitionKey, "limit", limit)
+	}
 
 	now := s.now()
 	staleThreshold := now.Add(-s.staleClaim)
@@ -356,7 +362,9 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, 
 // Complete marks the given records as completed after successful target delivery.
 // The caller's fencing token must match the claim_version on each record.
 func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.LeaseToken) error {
-	logging.TraceContext(s.logger, ctx, "dynamodboutbox: complete", "count", len(recordIDs))
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: complete", "count", len(recordIDs))
+	}
 
 	if len(recordIDs) == 0 {
 		return nil
@@ -506,7 +514,9 @@ func (s *Store) expireByStatus(ctx context.Context, status string, beforeMs, ttl
 // by creation time (oldest first). Uses strongly consistent reads and
 // paginates past DynamoDB's Limit+Filter interaction.
 func (s *Store) QueryPending(ctx context.Context, partitionKey string, limit int) ([]domain.OutboxRecord, error) {
-	logging.TraceContext(s.logger, ctx, "dynamodboutbox: query_pending", "partition_key", partitionKey, "limit", limit)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: query_pending", "partition_key", partitionKey, "limit", limit)
+	}
 
 	var records []domain.OutboxRecord
 	var startKey map[string]ddbtypes.AttributeValue

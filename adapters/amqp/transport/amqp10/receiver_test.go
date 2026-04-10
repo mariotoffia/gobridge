@@ -146,8 +146,8 @@ func TestReceiver_ConvertMessage_NonStringMessageID(t *testing.T) {
 	}
 
 	del := r.convertMessage(context.Background(), msg, nil)
-	if del.Envelope().ID != "" {
-		t.Fatalf("ID = %q, want empty for non-string MessageID", del.Envelope().ID)
+	if del.Envelope().ID == "" {
+		t.Fatal("ID should be auto-generated for non-string MessageID")
 	}
 }
 

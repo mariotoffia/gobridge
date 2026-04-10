@@ -78,12 +78,14 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		return err
 	}
 
-	logging.DebugContext(r.logger, ctx, "servicebus: receiver starting",
-		"entity", r.entityName(),
-		"max_messages", r.cfg.MaxMessages,
-		"lock_duration", r.cfg.LockDuration,
-		"auto_extend", r.cfg.autoExtendEnabled(),
-	)
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelDebug, "servicebus: receiver starting",
+			"entity", r.entityName(),
+			"max_messages", r.cfg.MaxMessages,
+			"lock_duration", r.cfg.LockDuration,
+			"auto_extend", r.cfg.autoExtendEnabled(),
+		)
+	}
 
 	return r.pollLoop(ctx, emit)
 }
@@ -163,10 +165,12 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 
 	r.asbClient = asbClient
 
-	logging.DebugContext(r.logger, ctx, "servicebus: client initialized",
-		"entity", entityName,
-		"session_id", r.cfg.SessionID,
-	)
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelDebug, "servicebus: client initialized",
+			"entity", entityName,
+			"session_id", r.cfg.SessionID,
+		)
+	}
 
 	return nil
 }

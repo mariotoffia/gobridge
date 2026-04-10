@@ -66,12 +66,14 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		return err
 	}
 
-	logging.DebugContext(r.logger, ctx, "sqs: receiver starting",
-		"queue_url", queueURL,
-		"max_messages", r.cfg.MaxMessages,
-		"visibility_timeout", r.cfg.VisibilityTimeout,
-		"auto_extend", r.cfg.autoExtendEnabled(),
-	)
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelDebug, "sqs: receiver starting",
+			"queue_url", queueURL,
+			"max_messages", r.cfg.MaxMessages,
+			"visibility_timeout", r.cfg.VisibilityTimeout,
+			"auto_extend", r.cfg.autoExtendEnabled(),
+		)
+	}
 
 	return r.pollLoop(ctx, queueURL, emit)
 }
@@ -268,10 +270,12 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 	}
 	r.client = awssqs.NewFromConfig(cfg)
 
-	logging.DebugContext(r.logger, ctx, "sqs: receiver initialized",
-		"region", r.cfg.Region,
-		"endpoint", r.cfg.Endpoint,
-	)
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelDebug, "sqs: receiver initialized",
+			"region", r.cfg.Region,
+			"endpoint", r.cfg.Endpoint,
+		)
+	}
 
 	return nil
 }

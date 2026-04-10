@@ -308,6 +308,7 @@ How the Supervisor transitions between old and new runtimes:
 
 | Document | Description |
 |----------|-------------|
+| [Configuration Stores](config-stores.md) | File, DynamoDB, and custom config backends; Manager layering; persistence |
 | [Configuration Reference](configuration-reference.md) | Every config field documented |
 | [Transport Configuration](transport-configuration.md) | MQTT, SQS, Azure SB, HTTP options |
 | [Processors & Stores](processors-and-stores.md) | Filter, transform, circuit breaker, tenant; store backends |
