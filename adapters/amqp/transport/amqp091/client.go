@@ -20,21 +20,26 @@ var _ amqpConnection = (*amqp.Connection)(nil)
 // dialFunc abstracts the AMQP dial operation for test-double injection.
 type dialFunc func(url string) (amqpConnection, error)
 
-// defaultDialFromOpts returns a dialFunc that honours TLS configuration.
-// When TLS is enabled, it builds a *tls.Config from opts.TLS and uses
-// amqp091.DialTLS; otherwise it falls back to amqp091.Dial.
+// defaultDialFromOpts returns a dialFunc that honours TLS and heartbeat
+// configuration. When TLS is enabled, it builds a *tls.Config and uses
+// amqp091.DialTLS_Config; otherwise it uses amqp091.DialConfig with the
+// configured heartbeat interval.
 func defaultDialFromOpts(opts SessionOptions) dialFunc {
+	cfg := amqp.Config{
+		Heartbeat: opts.Heartbeat,
+	}
 	if opts.TLS != nil && opts.TLS.Enable {
 		return func(brokerURL string) (amqpConnection, error) {
 			tlsCfg, err := BuildTLSConfig(opts.TLS)
 			if err != nil {
 				return nil, err
 			}
-			return amqp.DialTLS(brokerURL, tlsCfg)
+			cfg.TLSClientConfig = tlsCfg
+			return amqp.DialConfig(brokerURL, cfg)
 		}
 	}
 	return func(brokerURL string) (amqpConnection, error) {
-		return amqp.Dial(brokerURL)
+		return amqp.DialConfig(brokerURL, cfg)
 	}
 }
 

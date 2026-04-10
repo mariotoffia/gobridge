@@ -62,7 +62,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "amqp10: sending",
-			"address", s.cfg.Address,
+			"address", redactURL(s.cfg.Address),
 			"envelope_id", env.ID,
 			"payload_len", len(env.Payload),
 		)
@@ -75,19 +75,21 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 			return err
 		}
 	}
-	link := s.link
-	s.mu.Unlock()
 
 	start := time.Now()
 
-	if err := link.Send(sendCtx, msg, nil); err != nil {
-		s.handleLinkError(err)
+	err := s.link.Send(sendCtx, msg, nil)
+	if err != nil {
+		s.resetLinkLocked()
+		s.mu.Unlock()
+		s.notifySessionIfConnectionLost(err)
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(ctx, logging.LevelDebug, "amqp10: send failed",
-				"address", s.cfg.Address, "error", err)
+				"address", redactURL(s.cfg.Address), "error", err)
 		}
 		return MapError(err)
 	}
+	s.mu.Unlock()
 
 	elapsed := time.Since(start)
 	s.metrics.Timer(domain.MetricAMQP10SendLatency, elapsed,
@@ -95,7 +97,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "amqp10: send complete",
-			"address", s.cfg.Address,
+			"address", redactURL(s.cfg.Address),
 			"envelope_id", env.ID,
 			"duration", elapsed,
 		)
@@ -197,23 +199,29 @@ func (s *Sender) buildMessage(env *domain.Envelope) *amqp.Message {
 	return msg
 }
 
-func (s *Sender) handleLinkError(err error) {
-	s.mu.Lock()
+// resetLinkLocked nils and closes the current link. Caller must hold s.mu.
+func (s *Sender) resetLinkLocked() {
 	link := s.link
 	s.link = nil
-	s.mu.Unlock()
-
 	if link != nil {
-		_ = link.Close(context.Background())
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = link.Close(closeCtx)
+		closeCancel()
 	}
+}
 
-	if s.session != nil {
-		bridgeErr := MapError(err)
-		if bridgeErr != nil && (bridgeErr.Code == domain.ErrCodeConnectionLost ||
-			bridgeErr.Code == domain.ErrCodeUnavailable) {
-			conn := s.session.Conn()
-			s.session.notifyDisconnect(conn, err)
-		}
+// notifySessionIfConnectionLost signals the session for connection-level
+// errors (connection lost or unclassified unavailable). Business-logic
+// errors like ErrCodeInvalidPayload are NOT escalated.
+func (s *Sender) notifySessionIfConnectionLost(err error) {
+	if s.session == nil {
+		return
+	}
+	bridgeErr := MapError(err)
+	if bridgeErr != nil && (bridgeErr.Code == domain.ErrCodeConnectionLost ||
+		bridgeErr.Code == domain.ErrCodeUnavailable) {
+		conn := s.session.Conn()
+		s.session.notifyDisconnect(conn, err)
 	}
 }
 

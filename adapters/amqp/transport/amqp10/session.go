@@ -43,6 +43,8 @@ type Session struct {
 
 	// stopMonitor cancels the background health-monitoring goroutine.
 	stopMonitor context.CancelFunc
+	// monitorDone is closed when the monitor goroutine exits.
+	monitorDone chan struct{}
 	// reconnectCh is signalled by notifyDisconnect to trigger immediate reconnect.
 	reconnectCh chan struct{}
 }
@@ -129,12 +131,17 @@ func (s *Session) Start(ctx context.Context) error {
 	}
 
 	monCtx, monCancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	s.mu.Lock()
 	s.stopMonitor = monCancel
+	s.monitorDone = done
 	s.starting = false
 	s.mu.Unlock()
 
-	go s.monitorLoop(monCtx)
+	go func() {
+		defer close(done)
+		s.monitorLoop(monCtx)
+	}()
 
 	return nil
 }
@@ -191,7 +198,9 @@ func (s *Session) connect(ctx context.Context) error {
 	s.mu.Unlock()
 
 	if oldSess != nil {
-		_ = oldSess.Close(context.Background())
+		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = oldSess.Close(cleanCtx)
+		cleanCancel()
 	}
 	if oldConn != nil {
 		_ = oldConn.Close()
@@ -293,10 +302,15 @@ func (s *Session) Close(ctx context.Context) error {
 	s.amqpSess = nil
 	stopMon := s.stopMonitor
 	s.stopMonitor = nil
+	done := s.monitorDone
+	s.monitorDone = nil
 	s.mu.Unlock()
 
 	if stopMon != nil {
 		stopMon()
+	}
+	if done != nil {
+		<-done
 	}
 
 	var firstErr error

@@ -4,6 +4,8 @@ go 1.25.0
 
 replace (
 	github.com/mariotoffia/gobridge => ../..
+	github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091 => ../../adapters/amqp/transport/amqp091
+	github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10 => ../../adapters/amqp/transport/amqp10
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease => ../../adapters/aws/store/dynamodblease
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox => ../../adapters/aws/store/dynamodboutbox
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs => ../../adapters/aws/transport/sqs
@@ -12,7 +14,9 @@ replace (
 	github.com/mariotoffia/gobridge/adapters/native/store/memorylease => ../../adapters/native/store/memorylease
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox => ../../adapters/native/store/memoryoutbox
 	github.com/mariotoffia/gobridge/httpapi => ../../httpapi
+	github.com/mariotoffia/gobridge/testutil/artemislocal => ../../testutil/artemislocal
 	github.com/mariotoffia/gobridge/testutil/ddblocal => ../../testutil/ddblocal
+	github.com/mariotoffia/gobridge/testutil/rabbitmqlocal => ../../testutil/rabbitmqlocal
 	github.com/mariotoffia/gobridge/testutil/sqslocal => ../../testutil/sqslocal
 )
 
@@ -20,6 +24,8 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.41.4
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.24
 	github.com/mariotoffia/gobridge v0.0.0
+	github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091 v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10 v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0-00010101000000-000000000000
@@ -27,12 +33,15 @@ require (
 	github.com/mariotoffia/gobridge/httpapi v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/processors/circuitbreaker v0.0.0-20260405055210-02d996a46256
 	github.com/mariotoffia/gobridge/processors/transform v0.0.0-20260405055210-02d996a46256
+	github.com/mariotoffia/gobridge/testutil/artemislocal v0.0.0
 	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge/testutil/rabbitmqlocal v0.0.0
 	github.com/mariotoffia/gobridge/testutil/sqslocal v0.0.0-00010101000000-000000000000
 	github.com/stretchr/testify v1.11.1
 )
 
 require (
+	github.com/Azure/go-amqp v1.5.1 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.32.12 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.12 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.20 // indirect
@@ -53,6 +62,7 @@ require (
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/ohler55/ojg v1.28.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
+	github.com/rabbitmq/amqp091-go v1.10.0 // indirect
 	golang.org/x/net v0.52.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

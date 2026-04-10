@@ -105,7 +105,9 @@ func edge091SendRecv(t *testing.T, e edge091Env, env *domain.Envelope,
 	defer recvCancel()
 
 	var received *domain.Envelope
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
 			received = del.Envelope()
 			_ = del.Ack(recvCtx)
@@ -114,7 +116,7 @@ func edge091SendRecv(t *testing.T, e edge091Env, env *domain.Envelope,
 		})
 	}()
 
-	<-recvCtx.Done()
+	<-done
 	if received == nil {
 		t.Fatal("no message received")
 	}

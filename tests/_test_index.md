@@ -1244,3 +1244,11 @@ Catalog of all test functions in the gobridge repository.
 | TestIntegration_Edge_SendBatchAllReceived | validates all batch messages received with correct IDs | integration | amqp091_edge | pass |
 | TestIntegration_Edge_HeaderRoundTrip | validates unicode and long header value round-trip | integration | amqp091_edge | pass |
 | TestIntegration_Edge_PrefetchHonored | validates PrefetchCount=1 limits in-flight to 1 | integration | amqp091_edge | pass |
+| TestUC90_SQS_To_RabbitMQ_SharedOutbox | validates end-to-end 1000 msg pipeline SQS -> RabbitMQ (SharedOutbox) | longrunning | amqp091_pipeline | pass |
+| TestUC91_SQS_To_Artemis_SharedOutbox | validates end-to-end 1000 msg pipeline SQS -> Artemis (SharedOutbox) | longrunning | amqp10_pipeline | pass |
+| TestUC92_RabbitMQ_BrokerKillRestart | validates SharedOutbox recovery after RabbitMQ broker kill/restart | longrunning | amqp091_resilience | pass |
+| TestUC93_Artemis_BrokerKillRestart | validates SharedOutbox recovery after Artemis broker kill/restart | longrunning | amqp10_resilience | skip |
+| TestUC94_AMQP091_HighThroughput | validates 5000 msg throughput through RabbitMQ pipeline | longrunning | amqp091_throughput | pass |
+| TestUC95_AMQP10_HighThroughput | validates 5000 msg throughput through Artemis pipeline | longrunning | amqp10_throughput | pass |
+| TestUC96_CrossProtocol_RabbitMQ_Artemis | validates cross-protocol message flow RabbitMQ + Artemis | longrunning | amqp_cross_protocol | pass |
+| TestUC97_AMQP091_MultiConsumer_CompetingConsumers | validates 3 competing consumers on same RabbitMQ queue | longrunning | amqp091_multi_consumer | pass |

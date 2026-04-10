@@ -23,8 +23,10 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
+	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
 
@@ -58,8 +60,19 @@ func TestMain(m *testing.M) {
 		sqslocal.WithMemory(sqsMem),
 		sqslocal.WithCPUs(sqsCPU),
 	)
+	rabbitmqlocal.Configure(
+		rabbitmqlocal.WithCleanOrphans(true),
+	)
+	artemislocal.Configure(
+		artemislocal.WithCleanOrphans(true),
+	)
 
-	os.Exit(m.Run())
+	code := m.Run()
+
+	rabbitmqlocal.Shutdown()
+	artemislocal.Shutdown()
+
+	os.Exit(code)
 }
 
 func envOr(key, fallback string) string {

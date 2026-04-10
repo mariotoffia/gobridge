@@ -214,6 +214,10 @@ func BuildTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 		return nil, nil
 	}
 
+	if cfg.InsecureSkipVerify {
+		slog.Warn("amqp091: TLS certificate verification disabled — not recommended for production")
+	}
+
 	tlsCfg := &tls.Config{
 		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // caller-controlled

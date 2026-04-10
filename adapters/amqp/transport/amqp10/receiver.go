@@ -59,7 +59,7 @@ func NewReceiver(cfg ReceiverConfig, session *Session) (*Receiver, error) {
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
 	if logging.DebugEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelDebug, "amqp10: receiver starting",
-			"address", r.cfg.Address,
+			"address", redactURL(r.cfg.Address),
 			"link_credit", r.cfg.LinkCredit,
 		)
 	}
@@ -81,7 +81,7 @@ func (r *Receiver) closeLink() {
 	if link != nil {
 		if logging.TraceEnabled(r.logger) {
 			r.logger.Log(context.Background(), logging.LevelTrace, "amqp10: closing receiver link",
-				"address", r.cfg.Address)
+				"address", redactURL(r.cfg.Address))
 		}
 		_ = link.Close(context.Background())
 	}
@@ -156,7 +156,7 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 			delay := backoff.next()
 			if r.logger != nil {
 				r.logger.Warn("amqp10: receive failed, retrying",
-					"address", r.cfg.Address,
+					"address", redactURL(r.cfg.Address),
 					"error", err,
 					"retry_after", delay,
 				)
@@ -226,7 +226,7 @@ func (r *Receiver) convertMessage(ctx context.Context, msg *amqp.Message, link *
 
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelTrace, "amqp10: received message",
-			"address", r.cfg.Address,
+			"address", redactURL(r.cfg.Address),
 			"message_id", msgID,
 			"body_len", len(body),
 		)
@@ -242,7 +242,9 @@ func (r *Receiver) handleLinkError(err error) {
 	r.mu.Unlock()
 
 	if link != nil {
-		_ = link.Close(context.Background())
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = link.Close(closeCtx)
+		closeCancel()
 	}
 
 	if r.session != nil {
@@ -279,7 +281,7 @@ func (r *Receiver) waitAndReconnect(ctx context.Context) error {
 	if err != nil {
 		if logging.DebugEnabled(r.logger) {
 			r.logger.Log(ctx, logging.LevelDebug, "amqp10: receiver link re-creation failed",
-				"address", r.cfg.Address, "error", err)
+				"address", redactURL(r.cfg.Address), "error", err)
 		}
 
 		if ctx.Err() != nil {
@@ -290,7 +292,7 @@ func (r *Receiver) waitAndReconnect(ctx context.Context) error {
 		}
 	} else if logging.TraceEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelTrace, "amqp10: receiver link re-created",
-			"address", r.cfg.Address)
+			"address", redactURL(r.cfg.Address))
 	}
 	return nil
 }

@@ -38,6 +38,8 @@ type Session struct {
 
 	// cancel stops the reconnection goroutine on Close.
 	cancel context.CancelFunc
+	// bgDone is closed when the background reconnect goroutine exits.
+	bgDone chan struct{}
 }
 
 var _ ports.Session = (*Session)(nil)
@@ -156,7 +158,15 @@ func (s *Session) Start(ctx context.Context) error {
 
 	s.pushEvent(ports.SessionConnected, nil)
 
-	go s.reconnectLoop(bgCtx)
+	done := make(chan struct{})
+	s.mu.Lock()
+	s.bgDone = done
+	s.mu.Unlock()
+
+	go func() {
+		defer close(done)
+		s.reconnectLoop(bgCtx)
+	}()
 
 	return nil
 }
@@ -332,10 +342,15 @@ func (s *Session) Close(_ context.Context) error {
 	s.conn = nil
 	cancel := s.cancel
 	s.cancel = nil
+	done := s.bgDone
+	s.bgDone = nil
 	s.mu.Unlock()
 
 	if cancel != nil {
 		cancel()
+	}
+	if done != nil {
+		<-done
 	}
 
 	var closeErr error
@@ -509,13 +524,13 @@ func (s *Session) doReconnect(ctx context.Context) {
 
 		if plan != nil {
 			reconCtx, reconCancel := context.WithTimeout(ctx, s.opts.ConnectTimeout)
+			defer reconCancel()
 			if err := s.reconcile(reconCtx, conn, *plan); err != nil {
 				if s.logger != nil {
 					s.logger.Warn("amqp091: reconcile on reconnect failed",
 						"error", err)
 				}
 			}
-			reconCancel()
 		}
 
 		s.pushEvent(ports.SessionConnected, nil)
