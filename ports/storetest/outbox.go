@@ -459,7 +459,7 @@ func outboxCompleteAfterTokenChange(t *testing.T, store ports.OutboxStore) {
 
 	_, err = store.Claim(ctx, pk, "owner-B", tok2, 10)
 	if err != nil && !errors.Is(err, domain.ErrStaleFencingToken) {
-		// New claim with higher version is fine - may return empty or error
+		t.Fatalf("unexpected error on reclaim with higher token: %v", err)
 	}
 
 	err = store.Complete(ctx, []string{recs[0].ID}, tok1)
