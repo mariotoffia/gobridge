@@ -53,9 +53,9 @@ func NewHTTPForwarder(pathPrefix string, timeout time.Duration, clusterKey ...st
 // SetLogger configures the forwarder's logger for trace/debug output.
 func (f *HTTPForwarder) SetLogger(l *slog.Logger) { f.logger = l }
 
-// Forward sends an envelope to a remote instance for the given route.
+// Forward sends an envelope to a remote instance's receiver endpoint.
 func (f *HTTPForwarder) Forward(
-	ctx context.Context, target *domain.PeerInfo, routeID string, env *domain.Envelope,
+	ctx context.Context, target *domain.PeerInfo, receiverID string, env *domain.Envelope,
 ) error {
 	httpEndpoint, ok := target.Endpoints["http"]
 	if !ok {
@@ -65,7 +65,7 @@ func (f *HTTPForwarder) Forward(
 	if logging.TraceEnabled(f.logger) {
 		f.logger.Log(ctx, logging.LevelTrace, "http: forwarding",
 			"target_instance", target.InstanceID,
-			"route_id", routeID,
+			"receiver_id", receiverID,
 			"endpoint", httpEndpoint,
 		)
 	}
@@ -84,7 +84,7 @@ func (f *HTTPForwarder) Forward(
 		return domain.ErrForwardFailed.Wrap(err)
 	}
 
-	url := httpEndpoint + f.pathPrefix + "/receivers/" + routeID + "/messages"
+	url := httpEndpoint + f.pathPrefix + "/receivers/" + receiverID + "/messages"
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
@@ -109,7 +109,7 @@ func (f *HTTPForwarder) Forward(
 		if logging.DebugEnabled(f.logger) {
 			f.logger.Log(ctx, logging.LevelDebug, "http: forward failed (server error)",
 				"target_instance", target.InstanceID,
-				"route_id", routeID,
+				"receiver_id", receiverID,
 				"status_code", resp.StatusCode,
 			)
 		}
@@ -120,7 +120,7 @@ func (f *HTTPForwarder) Forward(
 		if logging.DebugEnabled(f.logger) {
 			f.logger.Log(ctx, logging.LevelDebug, "http: forward failed (client error)",
 				"target_instance", target.InstanceID,
-				"route_id", routeID,
+				"receiver_id", receiverID,
 				"status_code", resp.StatusCode,
 			)
 		}

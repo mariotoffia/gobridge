@@ -41,14 +41,14 @@ type recordingForwarder struct {
 }
 
 type forwardCall struct {
-	Peer    *domain.PeerInfo
-	RouteID string
-	Env     *domain.Envelope
+	Peer       *domain.PeerInfo
+	ReceiverID string
+	Env        *domain.Envelope
 }
 
-func (f *recordingForwarder) Forward(_ context.Context, peer *domain.PeerInfo, routeID string, env *domain.Envelope) error {
+func (f *recordingForwarder) Forward(_ context.Context, peer *domain.PeerInfo, receiverID string, env *domain.Envelope) error {
 	f.mu.Lock()
-	f.calls = append(f.calls, forwardCall{Peer: peer, RouteID: routeID, Env: env})
+	f.calls = append(f.calls, forwardCall{Peer: peer, ReceiverID: receiverID, Env: env})
 	f.mu.Unlock()
 	if f.returnFn != nil {
 		return f.returnFn()
@@ -381,8 +381,8 @@ func TestReceiver_ClusterForward(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 forward call, got %d", len(calls))
 	}
-	if calls[0].RouteID != "cluster" {
-		t.Fatalf("expected receiver ID cluster (used for URL path), got %q", calls[0].RouteID)
+	if calls[0].ReceiverID != "cluster" {
+		t.Fatalf("expected receiver ID cluster (used for URL path), got %q", calls[0].ReceiverID)
 	}
 }
 

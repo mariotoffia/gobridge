@@ -17,8 +17,10 @@ type RouteLocator interface {
 
 // MessageForwarder sends a message to another gobridge instance for processing.
 // The HTTP transport adapter implements this using HTTP POST.
+// The receiverID identifies the remote receiver's mounted path, which may differ
+// from the route ID when a route references a receiver with a different name.
 type MessageForwarder interface {
-	Forward(ctx context.Context, peer *domain.PeerInfo, routeID string, env *domain.Envelope) error
+	Forward(ctx context.Context, peer *domain.PeerInfo, receiverID string, env *domain.Envelope) error
 }
 
 // EndpointResolver discovers this instance's externally-reachable address.
