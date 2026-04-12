@@ -3,6 +3,7 @@ package sqs
 import (
 	"errors"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
@@ -191,7 +192,7 @@ func SenderConfigFromOptions(opts map[string]any) SenderConfig {
 	cfg.Profile, _ = optString(opts, "profile")
 	cfg.DelaySeconds = optInt32(opts, "delay_seconds", 0)
 	cfg.BatchSize = int(optInt32(opts, "batch_size", 10))
-	if v, ok := opts["timeout"].(time.Duration); ok && v > 0 {
+	if v, ok := optDuration(opts, "timeout"); ok && v > 0 {
 		cfg.Timeout = v
 	}
 	cfg.MessageGroupID, _ = optString(opts, "message_group_id")
@@ -233,5 +234,42 @@ func optInt32(m map[string]any, key string, fallback int32) int32 {
 		return int32(n)
 	default:
 		return fallback
+	}
+}
+
+func optDuration(m map[string]any, key string) (time.Duration, bool) {
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	switch d := v.(type) {
+	case time.Duration:
+		if d < 0 {
+			return 0, false
+		}
+		return d, true
+	case string:
+		parsed, err := time.ParseDuration(d)
+		if err != nil || parsed < 0 {
+			return 0, false
+		}
+		return parsed, true
+	case int:
+		if d < 0 {
+			return 0, false
+		}
+		return time.Duration(d) * time.Second, true
+	case int64:
+		if d < 0 {
+			return 0, false
+		}
+		return time.Duration(d) * time.Second, true
+	case float64:
+		if d < 0 || math.IsNaN(d) || math.IsInf(d, 0) {
+			return 0, false
+		}
+		return time.Duration(d * float64(time.Second)), true
+	default:
+		return 0, false
 	}
 }

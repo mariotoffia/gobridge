@@ -95,6 +95,14 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseTok
 			With("leaseID", leaseID)
 	}
 
+	now := s.now()
+	if !now.Before(e.expiresAt) {
+		return domain.LeaseToken{}, domain.ErrStaleFencingToken.
+			WithMessage("lease expired, must re-acquire").
+			With("leaseID", leaseID).
+			With("expiredAt", e.expiresAt)
+	}
+
 	if e.version != token.Version || e.owner != token.Owner {
 		return domain.LeaseToken{}, domain.ErrStaleFencingToken.
 			WithMessage("lease token mismatch on renew").
@@ -103,7 +111,7 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseTok
 			With("givenVersion", token.Version)
 	}
 
-	e.expiresAt = s.now().Add(ttl)
+	e.expiresAt = now.Add(ttl)
 	if endpoints != nil {
 		e.endpoints = endpoints
 	}

@@ -285,6 +285,15 @@ func (rt *Runtime) Start(ctx context.Context) error {
 			DepthCacheTTL: entry.config.Policy.DepthCacheTTL,
 		})
 
+		if rt.locator != nil {
+			if setter, ok := entry.receiver.(interface{ SetRouteID(string) }); ok {
+				setter.SetRouteID(entry.config.ID)
+			}
+			if setter, ok := entry.sender.(interface{ SetRouteID(string) }); ok {
+				setter.SetRouteID(entry.config.ID)
+			}
+		}
+
 		if entry.session != nil && entry.sessCfg != nil {
 			sid := entry.sessCfg.SessionID
 			if _, exists := rt.sessionMgrs[sid]; !exists {

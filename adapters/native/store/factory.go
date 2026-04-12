@@ -46,9 +46,8 @@ func NewSQLiteStoreFactory() *SQLiteStoreFactory {
 	return &SQLiteStoreFactory{}
 }
 
-// No SQLite lease store adapter exists.
 func (f *SQLiteStoreFactory) NewLeaseStore(_ context.Context, _ config.StoreConfig) (ports.LeaseStore, error) {
-	return nil, nil
+	return nil, fmt.Errorf("nativestore: SQLite lease store is not implemented; use \"memory\" for single-instance or \"dynamodb\" for clustered deployments")
 }
 
 func (f *SQLiteStoreFactory) NewOutboxStore(_ context.Context, cfg config.StoreConfig) (ports.OutboxStore, error) {

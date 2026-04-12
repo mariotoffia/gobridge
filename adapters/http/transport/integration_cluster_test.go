@@ -538,3 +538,104 @@ func TestIntegration_Cluster_ForwardPreservesEnvelope(t *testing.T) {
 		t.Error("Bridge A emit must not be called")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 3.6 — Forwarding with divergent receiver ID vs route ID.
+// ---------------------------------------------------------------------------
+
+// Exposes a bug where the forwarder constructs the remote URL using the route
+// ID instead of the receiver ID. When the two differ, Bridge B never receives
+// the forwarded message because the factory mounts the handler at
+// /receivers/{receiverID}/messages but the forwarder targets
+// /receivers/{routeID}/messages — resulting in a 404 on the remote peer.
+func TestIntegration_Cluster_ForwardDivergentReceiverID(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const (
+		receiverID = "recv-orders"
+		routeID    = "route-alpha"
+	)
+
+	// Bridge B — receiver registered under receiverID, runtime route under routeID.
+	factoryB := transport.NewBridgeFactory()
+	recvB, err := factoryB.NewReceiver(ctx, config.ReceiverDef{ID: receiverID}, nil)
+	if err != nil {
+		t.Fatalf("NewReceiver B: %v", err)
+	}
+	senderB := &fakeSender{}
+
+	rtB := runtime.New(runtime.WithInstanceID("bridge-b"))
+	if err := rtB.AddRoute(directHoldRouteConfig(routeID, nil), recvB, senderB, nil, nil); err != nil {
+		t.Fatalf("AddRoute B: %v", err)
+	}
+	if err := rtB.Start(ctx); err != nil {
+		t.Fatalf("Start B: %v", err)
+	}
+	defer func() { _ = rtB.Stop(context.Background()) }()
+	time.Sleep(50 * time.Millisecond)
+
+	serverB := httptest.NewServer(factoryB.Handler())
+	defer serverB.Close()
+
+	// Bridge A — locator says remote(B), forwards via HTTPForwarder.
+	locA := &stubLocator{
+		peer:  &domain.PeerInfo{InstanceID: "bridge-b", Endpoints: map[string]string{"http": serverB.URL}},
+		local: false,
+	}
+	fwdA := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
+	factoryA := transport.NewBridgeFactory(
+		transport.WithRouteLocator(locA),
+		transport.WithMessageForwarder(fwdA),
+	)
+	recvA, err := factoryA.NewReceiver(ctx, config.ReceiverDef{ID: receiverID}, nil)
+	if err != nil {
+		t.Fatalf("NewReceiver A: %v", err)
+	}
+	setRouteID(t, recvA, routeID)
+	var emitCalled atomic.Bool
+	var wgA sync.WaitGroup
+	wgA.Add(1)
+	go func() {
+		defer wgA.Done()
+		_ = recvA.Run(ctx, func(_ context.Context, _ ports.Delivery) error {
+			emitCalled.Store(true)
+			return nil
+		})
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	serverA := httptest.NewServer(factoryA.Handler())
+	defer serverA.Close()
+
+	resp := httpPostJSON(t, serverA.URL+"/transport/http/receivers/"+receiverID+"/messages", map[string]any{
+		"subject": "orders.created",
+		"payload": json.RawMessage(`{"order":"divergent-1"}`),
+	})
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	waitFor(t, 2*time.Second, "Bridge B sender receives 1 message", func() bool {
+		return len(senderB.getSent()) > 0
+	})
+
+	envs := senderB.getSent()
+	if len(envs) != 1 {
+		t.Fatalf("expected exactly 1 envelope, got %d", len(envs))
+	}
+	if envs[0].Subject != "orders.created" {
+		t.Fatalf("subject: got %q, want orders.created", envs[0].Subject)
+	}
+	if string(envs[0].Payload) != `{"order":"divergent-1"}` {
+		t.Fatalf("payload mismatch: %s", envs[0].Payload)
+	}
+
+	cancel()
+	wgA.Wait()
+	if emitCalled.Load() {
+		t.Error("Bridge A emit must not be called when forwarding")
+	}
+}

@@ -356,6 +356,40 @@ func TestBuilder_Standalone_NonDistributedStore_OK(t *testing.T) {
 	require.NotNil(t, rt)
 }
 
+// nilLeaseStoreFactory simulates the SQLite bug where NewLeaseStore returns
+// (nil, nil) instead of a valid store or an error.
+type nilLeaseStoreFactory struct{}
+
+func (f *nilLeaseStoreFactory) NewLeaseStore(_ context.Context, _ config.StoreConfig) (ports.LeaseStore, error) {
+	return nil, nil
+}
+func (f *nilLeaseStoreFactory) NewOutboxStore(_ context.Context, _ config.StoreConfig) (ports.OutboxStore, error) {
+	return &fakeOutboxStore{}, nil
+}
+func (f *nilLeaseStoreFactory) NewDLQStore(_ context.Context, _ config.StoreConfig) (ports.DLQStore, error) {
+	return nil, nil
+}
+func (f *nilLeaseStoreFactory) IsDistributed() bool { return true }
+
+// Verifies Build rejects clustered deployment when the lease store factory
+// returns (nil, nil), which is the SQLite adapter bug where a nil store
+// silently passes validation.
+func TestBuilder_ClusteredMode_NilLeaseStore_RejectsStartup(t *testing.T) {
+	cfg := testConfig()
+	cfg.Bridge.DeploymentMode = "clustered"
+	cfg.Stores.Lease = &config.StoreConfig{Type: "sqlite"}
+
+	_, err := NewBuilder(cfg).
+		RegisterTransport("mqtt", &fakeTransportFactory{}).
+		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterStoreFactory("sqlite", &nilLeaseStoreFactory{}).
+		RegisterStoreFactory("memory", &fakeDistributedStoreFactory{}).
+		Build(context.Background())
+
+	require.Error(t, err, "Build must reject a nil lease store in clustered mode")
+	assert.Contains(t, err.Error(), "lease")
+}
+
 // Verifies Build fails when session options reference credentials_uri but no credential store was provided.
 func TestBuilder_CredentialsURIWithoutStore(t *testing.T) {
 	cfg := testConfig()

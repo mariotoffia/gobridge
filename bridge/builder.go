@@ -355,6 +355,9 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create lease store: %w", err)
 		}
+		if s == nil {
+			return nil, fmt.Errorf("bridge: store factory %q returned nil lease store without error", sc.Type)
+		}
 		res.lease = s
 		res.leaseDist = isDistributedFactory(sf)
 	}

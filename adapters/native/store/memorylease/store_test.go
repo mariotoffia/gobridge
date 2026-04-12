@@ -132,6 +132,31 @@ func TestRenewSuccess(t *testing.T) {
 	}
 }
 
+// Verifies Renew returns ErrStaleFencingToken when the lease has expired (bug exposure test).
+func TestRenewExpiredLease(t *testing.T) {
+	now := time.Now()
+	clock := &atomic.Value{}
+	clock.Store(now)
+
+	s := memorylease.NewStore(memorylease.WithClock(func() time.Time {
+		return clock.Load().(time.Time)
+	}))
+	ctx := context.Background()
+
+	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 10*time.Second, nil)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+
+	// Advance past expiry.
+	clock.Store(now.Add(11 * time.Second))
+
+	_, err = s.Renew(ctx, "lease-1", tok, 10*time.Second, nil)
+	if !errors.Is(err, domain.ErrStaleFencingToken) {
+		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
+	}
+}
+
 // Verifies Renew returns ErrStaleFencingToken when the version does not match.
 func TestRenewStaleToken(t *testing.T) {
 	s := memorylease.NewStore()

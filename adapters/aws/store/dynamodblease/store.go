@@ -213,7 +213,7 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseTok
 		Key: map[string]ddbtypes.AttributeValue{
 			attrPK: &ddbtypes.AttributeValueMemberS{Value: pk},
 		},
-		ConditionExpression:       aws.String("#own = :owner AND #ver = :ver"),
+		ConditionExpression:       aws.String("#own = :owner AND #ver = :ver AND #exp >= :now_ms"),
 		UpdateExpression:          aws.String(updateExpr),
 		ExpressionAttributeNames:  exprNames,
 		ExpressionAttributeValues: exprValues,

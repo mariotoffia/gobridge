@@ -66,6 +66,9 @@ func RunLeaseStoreTests(t *testing.T, store ports.LeaseStore, opts *LeaseTestOpt
 	t.Run("RenewNonExistent", func(t *testing.T) {
 		leaseRenewNonExistent(t, store)
 	})
+	t.Run("RenewExpiredLease", func(t *testing.T) {
+		leaseRenewExpiredLease(t, store, opts)
+	})
 	t.Run("ReleaseSuccess", func(t *testing.T) {
 		leaseReleaseSuccess(t, store)
 	})
@@ -194,6 +197,23 @@ func leaseRenewNonExistent(t *testing.T, store ports.LeaseStore) {
 	_, err := store.Renew(ctx, "lt-rne-no-such-lease", domain.LeaseToken{Version: 1, Owner: "x"}, 30*time.Second, nil)
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func leaseRenewExpiredLease(t *testing.T, store ports.LeaseStore, opts *LeaseTestOptions) {
+	ctx := context.Background()
+	ttl := opts.leaseTTL()
+
+	tok, err := store.Acquire(ctx, "lt-rel-1", "owner-A", ttl, nil)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+
+	opts.waitForExpiry(ttl)
+
+	_, err = store.Renew(ctx, "lt-rel-1", tok, ttl, nil)
+	if !errors.Is(err, domain.ErrStaleFencingToken) {
+		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
 	}
 }
 

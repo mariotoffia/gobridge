@@ -381,8 +381,8 @@ func TestReceiver_ClusterForward(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 forward call, got %d", len(calls))
 	}
-	if calls[0].RouteID != "route-A" {
-		t.Fatalf("expected routeID route-A, got %q", calls[0].RouteID)
+	if calls[0].RouteID != "cluster" {
+		t.Fatalf("expected receiver ID cluster (used for URL path), got %q", calls[0].RouteID)
 	}
 }
 

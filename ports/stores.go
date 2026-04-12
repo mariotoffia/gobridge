@@ -13,6 +13,10 @@ import (
 // The endpoints parameter on Acquire and Renew stores the owner's reachable
 // addresses alongside the lease record. Other instances retrieve these via
 // Current to discover how to reach the lease owner for cluster-aware routing.
+//
+// Renew must return ErrStaleFencingToken if the lease has already expired.
+// A paused owner must not be able to silently re-establish an expired lease;
+// it must re-acquire through Acquire instead.
 type LeaseStore interface {
 	Acquire(ctx context.Context, leaseID string, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error)
 	Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error)

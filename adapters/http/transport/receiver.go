@@ -155,7 +155,7 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 			r.cfg.metrics.Counter(domain.MetricClusterForwards, 1)
 			fwdStart := time.Now()
-			if err := r.cfg.forwarder.Forward(ctx, node, routeID, env); err != nil {
+			if err := r.cfg.forwarder.Forward(ctx, node, r.cfg.id, env); err != nil {
 				r.cfg.metrics.Timer(domain.MetricHTTPForwardLatency, time.Since(fwdStart))
 				if r.cfg.logger != nil {
 					r.cfg.logger.Error("forward failed", "route", routeID, "peer", node.InstanceID, "error", err)

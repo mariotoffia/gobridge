@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"math"
 	"os"
 	"time"
 )
@@ -97,13 +98,13 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 		}
 		opts.KeepAlive = uint16(v)
 	}
-	if v, ok := m["connect_timeout"].(time.Duration); ok {
+	if v, ok := optDuration(m, "connect_timeout"); ok {
 		opts.ConnectTimeout = v
 	}
-	if v, ok := m["reconnect_timeout"].(time.Duration); ok {
+	if v, ok := optDuration(m, "reconnect_timeout"); ok {
 		opts.ReconnectTimeout = v
 	}
-	if v, ok := m["reconnect_delay"].(time.Duration); ok {
+	if v, ok := optDuration(m, "reconnect_delay"); ok {
 		opts.ReconnectDelay = v
 	}
 	if v, ok := m["clean_start"].(bool); ok {
@@ -155,7 +156,7 @@ func SenderOptionsFromMap(m map[string]any) (SenderOptions, error) {
 	if v, ok := m["retain"].(bool); ok {
 		opts.Retain = v
 	}
-	if v, ok := m["timeout"].(time.Duration); ok {
+	if v, ok := optDuration(m, "timeout"); ok {
 		opts.Timeout = v
 	}
 
@@ -218,4 +219,41 @@ func BuildTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 	}
 
 	return tlsCfg, nil
+}
+
+func optDuration(m map[string]any, key string) (time.Duration, bool) {
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	switch d := v.(type) {
+	case time.Duration:
+		if d < 0 {
+			return 0, false
+		}
+		return d, true
+	case string:
+		parsed, err := time.ParseDuration(d)
+		if err != nil || parsed < 0 {
+			return 0, false
+		}
+		return parsed, true
+	case int:
+		if d < 0 {
+			return 0, false
+		}
+		return time.Duration(d) * time.Second, true
+	case int64:
+		if d < 0 {
+			return 0, false
+		}
+		return time.Duration(d) * time.Second, true
+	case float64:
+		if d < 0 || math.IsNaN(d) || math.IsInf(d, 0) {
+			return 0, false
+		}
+		return time.Duration(d * float64(time.Second)), true
+	default:
+		return 0, false
+	}
 }

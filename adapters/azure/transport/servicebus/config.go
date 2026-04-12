@@ -3,6 +3,7 @@ package servicebus
 import (
 	"errors"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
@@ -163,13 +164,13 @@ func ReceiverConfigFromOptions(opts map[string]any) ReceiverConfig {
 	cfg.SubscriptionName, _ = optString(opts, "subscription_name")
 	cfg.SessionID, _ = optString(opts, "session_id")
 	cfg.MaxMessages = optInt(opts, "max_messages", 10)
-	if v, ok := opts["max_wait_time"].(time.Duration); ok && v > 0 {
+	if v, ok := optDuration(opts, "max_wait_time"); ok && v > 0 {
 		cfg.MaxWaitTime = v
 	}
 	cfg.Prefetch = optInt32(opts, "prefetch", 0)
 	cfg.ReceiveMode, _ = optString(opts, "receive_mode")
 	cfg.SubQueue, _ = optString(opts, "sub_queue")
-	if v, ok := opts["lock_duration"].(time.Duration); ok && v > 0 {
+	if v, ok := optDuration(opts, "lock_duration"); ok && v > 0 {
 		cfg.LockDuration = v
 	}
 	if v, ok := optBool(opts, "auto_extend"); ok {
@@ -187,7 +188,7 @@ func SenderConfigFromOptions(opts map[string]any) SenderConfig {
 	cfg.TopicName, _ = optString(opts, "topic_name")
 	cfg.DefaultSessionID, _ = optString(opts, "default_session_id")
 	cfg.BatchSize = optInt(opts, "batch_size", 10)
-	if v, ok := opts["timeout"].(time.Duration); ok && v > 0 {
+	if v, ok := optDuration(opts, "timeout"); ok && v > 0 {
 		cfg.Timeout = v
 	}
 	cfg.Connection = connectionFromOptions(opts)
@@ -260,5 +261,42 @@ func optInt32(m map[string]any, key string, fallback int32) int32 {
 		return int32(n)
 	default:
 		return fallback
+	}
+}
+
+func optDuration(m map[string]any, key string) (time.Duration, bool) {
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	switch d := v.(type) {
+	case time.Duration:
+		if d < 0 {
+			return 0, false
+		}
+		return d, true
+	case string:
+		parsed, err := time.ParseDuration(d)
+		if err != nil || parsed < 0 {
+			return 0, false
+		}
+		return parsed, true
+	case int:
+		if d < 0 {
+			return 0, false
+		}
+		return time.Duration(d) * time.Second, true
+	case int64:
+		if d < 0 {
+			return 0, false
+		}
+		return time.Duration(d) * time.Second, true
+	case float64:
+		if d < 0 || math.IsNaN(d) || math.IsInf(d, 0) {
+			return 0, false
+		}
+		return time.Duration(d * float64(time.Second)), true
+	default:
+		return 0, false
 	}
 }
