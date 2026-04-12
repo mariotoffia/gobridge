@@ -45,14 +45,14 @@ func TestMemoryStoreFactory_NewDLQStore(t *testing.T) {
 }
 
 // Verifies the SQLite store factory returns a nil lease store.
-func TestSQLiteStoreFactory_NewLeaseStore_ReturnsNil(t *testing.T) {
+func TestSQLiteStoreFactory_NewLeaseStore_ReturnsError(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
 	s, err := f.NewLeaseStore(context.Background(), config.StoreConfig{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error for unimplemented SQLite lease store")
 	}
 	if s != nil {
-		t.Fatal("expected nil LeaseStore for SQLite factory")
+		t.Fatal("expected nil LeaseStore when error is returned")
 	}
 }
 

@@ -283,28 +283,25 @@ func TestKeepAlive_NotProvided(t *testing.T) {
 }
 
 // TestKeepAlive_WrongType_String validates that a string value for keep_alive
-// is silently ignored (type assertion fails), keeping the default.
+// is rejected with a descriptive error.
 func TestKeepAlive_WrongType_String(t *testing.T) {
 	m := map[string]any{"keep_alive": "30"}
-	opts, err := SessionOptionsFromMap(m)
-	if err != nil {
-		t.Fatalf("string keep_alive should be silently ignored, got error: %v", err)
-	}
-	if opts.KeepAlive != 30 {
-		t.Errorf("KeepAlive = %d, want default 30 (string should be ignored)", opts.KeepAlive)
+	_, err := SessionOptionsFromMap(m)
+	if err == nil {
+		t.Fatal("string keep_alive should return error")
 	}
 }
 
-// TestKeepAlive_WrongType_Float validates that a float64 value for keep_alive
-// is silently ignored (type assertion fails), keeping the default.
-func TestKeepAlive_WrongType_Float(t *testing.T) {
+// TestKeepAlive_Float64 validates that a float64 value for keep_alive is
+// accepted (JSON/YAML deserialize numbers as float64).
+func TestKeepAlive_Float64(t *testing.T) {
 	m := map[string]any{"keep_alive": 30.0}
 	opts, err := SessionOptionsFromMap(m)
 	if err != nil {
-		t.Fatalf("float64 keep_alive should be silently ignored, got error: %v", err)
+		t.Fatalf("float64 keep_alive should be accepted, got error: %v", err)
 	}
 	if opts.KeepAlive != 30 {
-		t.Errorf("KeepAlive = %d, want default 30 (float64 should be ignored)", opts.KeepAlive)
+		t.Errorf("KeepAlive = %d, want 30", opts.KeepAlive)
 	}
 }
 
@@ -362,12 +359,16 @@ func TestQoS_WrongType_String(t *testing.T) {
 	}
 }
 
-// TestQoS_WrongType_Float64 validates that QoS as float64 1.0 returns error.
-func TestQoS_WrongType_Float64(t *testing.T) {
+// TestQoS_Float64_ValidValue validates that QoS as float64 1.0 is accepted
+// (JSON/YAML deserialize numbers as float64).
+func TestQoS_Float64_ValidValue(t *testing.T) {
 	m := map[string]any{"qos": 1.0}
-	_, err := SenderOptionsFromMap(m)
-	if err == nil {
-		t.Fatal("expected error for float64 QoS, got nil")
+	opts, err := SenderOptionsFromMap(m)
+	if err != nil {
+		t.Fatalf("float64 QoS=1.0 should be accepted, got error: %v", err)
+	}
+	if opts.QoS != 1 {
+		t.Fatalf("expected QoS=1, got %d", opts.QoS)
 	}
 }
 
@@ -404,8 +405,8 @@ func TestQoS_Factory_NewSender_InvalidQoS(t *testing.T) {
 	}{
 		{"out_of_range", 5},
 		{"string_type", "1"},
-		{"float_type", 1.0},
 		{"negative", -1},
+		{"float_out_of_range", 5.0},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

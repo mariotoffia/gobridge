@@ -387,6 +387,18 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		}
 	}
 
+	if len(rt.sessionMgrs) > 0 {
+		mgrs := rt.sessionMgrs
+		dlq.SetTokenFn(func() (domain.LeaseToken, bool) {
+			for _, mgr := range mgrs {
+				if tok, held := mgr.Token(); held {
+					return tok, true
+				}
+			}
+			return domain.LeaseToken{}, false
+		})
+	}
+
 	for sid, mgr := range rt.sessionMgrs {
 		rt.startBackground(ctx, "session:"+sid, mgr.Run)
 	}
@@ -720,6 +732,8 @@ func (rt *Runtime) Role() string {
 
 // DLQStore returns the DLQ store if configured, or nil.
 func (rt *Runtime) DLQStore() ports.DLQStore {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
 	return rt.dlqStore
 }
 

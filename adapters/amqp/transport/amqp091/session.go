@@ -524,8 +524,9 @@ func (s *Session) doReconnect(ctx context.Context) {
 
 		if plan != nil {
 			reconCtx, reconCancel := context.WithTimeout(ctx, s.opts.ConnectTimeout)
-			defer reconCancel()
-			if err := s.reconcile(reconCtx, conn, *plan); err != nil {
+			err := s.reconcile(reconCtx, conn, *plan)
+			reconCancel()
+			if err != nil {
 				if s.logger != nil {
 					s.logger.Warn("amqp091: reconcile on reconnect failed",
 						"error", err)

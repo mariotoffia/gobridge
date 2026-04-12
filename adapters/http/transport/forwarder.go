@@ -96,38 +96,59 @@ func (f *HTTPForwarder) Forward(
 		req.Header.Set("X-API-Key", f.clusterKey)
 	}
 
-	resp, err := f.client.Do(req)
-	if err != nil {
-		return domain.ErrForwardFailed.Wrap(err)
-	}
-	defer func() {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16)) //nolint:errcheck
-		_ = resp.Body.Close()
-	}()
+	const maxRetries = 2
+	retryDelays := [...]time.Duration{100 * time.Millisecond, 200 * time.Millisecond}
 
-	if resp.StatusCode >= 500 {
-		if logging.DebugEnabled(f.logger) {
-			f.logger.Log(ctx, logging.LevelDebug, "http: forward failed (server error)",
-				"target_instance", target.InstanceID,
-				"receiver_id", receiverID,
-				"status_code", resp.StatusCode,
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return domain.ErrForwardFailed.Wrap(ctx.Err())
+			case <-time.After(retryDelays[attempt-1]):
+			}
+			req = req.Clone(ctx)
+			req.Body = io.NopCloser(bytes.NewReader(body))
+		}
+
+		var resp *http.Response
+		resp, lastErr = f.client.Do(req)
+		if lastErr != nil {
+			continue
+		}
+
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+
+		if resp.StatusCode >= 500 {
+			if logging.DebugEnabled(f.logger) {
+				f.logger.Log(ctx, logging.LevelDebug, "http: forward failed (server error)",
+					"target_instance", target.InstanceID,
+					"receiver_id", receiverID,
+					"status_code", resp.StatusCode,
+					"attempt", attempt+1,
+				)
+			}
+			lastErr = domain.ErrUnavailable.WithMessage(
+				fmt.Sprintf("remote returned %d", resp.StatusCode),
+			)
+			continue
+		}
+		if resp.StatusCode >= 400 {
+			if logging.DebugEnabled(f.logger) {
+				f.logger.Log(ctx, logging.LevelDebug, "http: forward failed (client error)",
+					"target_instance", target.InstanceID,
+					"receiver_id", receiverID,
+					"status_code", resp.StatusCode,
+				)
+			}
+			return domain.NewBridgeError(
+				domain.ErrCodeForwardFailed, domain.ErrorPermanent,
+				fmt.Sprintf("remote returned %d", resp.StatusCode),
 			)
 		}
-		return domain.ErrUnavailable.WithMessage(
-			fmt.Sprintf("remote returned %d", resp.StatusCode),
-		)
-	} else if resp.StatusCode >= 400 {
-		if logging.DebugEnabled(f.logger) {
-			f.logger.Log(ctx, logging.LevelDebug, "http: forward failed (client error)",
-				"target_instance", target.InstanceID,
-				"receiver_id", receiverID,
-				"status_code", resp.StatusCode,
-			)
-		}
-		return domain.NewBridgeError(
-			domain.ErrCodeForwardFailed, domain.ErrorPermanent,
-			fmt.Sprintf("remote returned %d", resp.StatusCode),
-		)
+		return nil
 	}
-	return nil
+
+	return domain.ErrForwardFailed.Wrap(lastErr)
 }

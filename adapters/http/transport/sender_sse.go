@@ -109,6 +109,7 @@ func (s *SSESender) Send(ctx context.Context, env *domain.Envelope) error {
 			return ctx.Err()
 		case c.events <- eventBytes:
 		default:
+			s.cfg.metrics.Counter(domain.MetricSSEDroppedEvents, 1)
 			if s.cfg.logger != nil {
 				s.cfg.logger.Warn("sse: client buffer full, dropping event",
 					"client", c.id, "event_id", env.ID)

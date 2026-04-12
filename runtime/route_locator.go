@@ -3,10 +3,22 @@ package runtime
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+const (
+	locateCacheTTL       = 2 * time.Second
+	locateMaxFailures    = 3
+	locateCooldownPeriod = 5 * time.Second
+)
+
+type cachedLease struct {
+	info      domain.LeaseInfo
+	fetchedAt time.Time
+}
 
 // routeLocator implements ports.RouteLocator by combining lease ownership
 // with the route-to-session mapping to determine which instance handles a route.
@@ -16,6 +28,11 @@ type routeLocator struct {
 
 	mu              sync.RWMutex
 	routeSessionMap map[string]string // routeID → sessionID (exclusive routes only)
+	cache           map[string]cachedLease
+
+	failMu              sync.Mutex
+	consecutiveFailures int
+	lastFailure         time.Time
 }
 
 func newRouteLocator(instanceID string, leaseStore ports.LeaseStore) *routeLocator {
@@ -23,6 +40,7 @@ func newRouteLocator(instanceID string, leaseStore ports.LeaseStore) *routeLocat
 		instanceID:      instanceID,
 		leaseStore:      leaseStore,
 		routeSessionMap: make(map[string]string),
+		cache:           make(map[string]cachedLease),
 	}
 }
 
@@ -46,10 +64,46 @@ func (rl *routeLocator) Locate(ctx context.Context, routeID string) (*domain.Pee
 		return nil, true, nil
 	}
 
+	now := time.Now()
+
+	rl.mu.RLock()
+	cached, hasCached := rl.cache[sessionID]
+	rl.mu.RUnlock()
+
+	if hasCached && now.Sub(cached.fetchedAt) < locateCacheTTL {
+		if cached.info.Owner == rl.instanceID {
+			return nil, true, nil
+		}
+		return &domain.PeerInfo{
+			InstanceID: cached.info.Owner,
+			Endpoints:  cached.info.Endpoints,
+		}, false, nil
+	}
+
+	if rl.isCircuitOpen(now) {
+		return nil, true, nil
+	}
+
 	info, err := rl.leaseStore.Current(ctx, sessionID)
 	if err != nil {
+		rl.recordFailure(now)
+		if hasCached {
+			if cached.info.Owner == rl.instanceID {
+				return nil, true, nil
+			}
+			return &domain.PeerInfo{
+				InstanceID: cached.info.Owner,
+				Endpoints:  cached.info.Endpoints,
+			}, false, nil
+		}
 		return nil, false, err
 	}
+
+	rl.recordSuccess()
+
+	rl.mu.Lock()
+	rl.cache[sessionID] = cachedLease{info: info, fetchedAt: now}
+	rl.mu.Unlock()
 
 	if info.Owner == rl.instanceID {
 		return nil, true, nil
@@ -59,4 +113,26 @@ func (rl *routeLocator) Locate(ctx context.Context, routeID string) (*domain.Pee
 		InstanceID: info.Owner,
 		Endpoints:  info.Endpoints,
 	}, false, nil
+}
+
+func (rl *routeLocator) isCircuitOpen(now time.Time) bool {
+	rl.failMu.Lock()
+	defer rl.failMu.Unlock()
+	if rl.consecutiveFailures < locateMaxFailures {
+		return false
+	}
+	return now.Sub(rl.lastFailure) < locateCooldownPeriod
+}
+
+func (rl *routeLocator) recordFailure(now time.Time) {
+	rl.failMu.Lock()
+	rl.consecutiveFailures++
+	rl.lastFailure = now
+	rl.failMu.Unlock()
+}
+
+func (rl *routeLocator) recordSuccess() {
+	rl.failMu.Lock()
+	rl.consecutiveFailures = 0
+	rl.failMu.Unlock()
 }

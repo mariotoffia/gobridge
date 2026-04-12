@@ -385,6 +385,9 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRec
 	sendErr := d.sender.Send(sendCtx, env)
 	if sendErr == nil {
 		if completeErr := d.outboxStore.Complete(ctx, []string{rec.ID}, token); completeErr != nil {
+			d.metrics.Counter(domain.MetricOutboxDuplicateRisk, 1, routeTag)
+			d.log(ctx, slog.LevelError, "complete failed after successful send, message may be re-delivered",
+				"record_id", rec.ID, "error", completeErr)
 			return completeErr
 		}
 		d.metrics.Counter(domain.MetricOutboxCompletions, 1, routeTag)

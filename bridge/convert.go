@@ -254,7 +254,7 @@ func buildResolver(def *config.ResolverDef, bindings []domain.DestinationBinding
 			return runtime.NewBindingResolver(bindings,
 				runtime.MatchByID(bindings[0].ID)), nil
 		}
-		return nil, nil
+		return nil, fmt.Errorf("static resolver requires at least one binding")
 
 	case "rules":
 		rules := make([]runtime.MatchRule, len(def.Rules))

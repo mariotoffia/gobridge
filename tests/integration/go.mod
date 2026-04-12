@@ -5,6 +5,7 @@ go 1.25.0
 replace (
 	github.com/mariotoffia/gobridge => ../..
 	github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb => ../../adapters/aws/config/dynamodb
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq => ../../adapters/aws/store/dynamodbdlq
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease => ../../adapters/aws/store/dynamodblease
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox => ../../adapters/aws/store/dynamodboutbox
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs => ../../adapters/aws/transport/sqs
@@ -22,6 +23,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.24
 	github.com/mariotoffia/gobridge v0.0.0
 	github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb v0.0.0
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0-00010101000000-000000000000

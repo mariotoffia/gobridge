@@ -69,6 +69,9 @@ func RunLeaseStoreTests(t *testing.T, store ports.LeaseStore, opts *LeaseTestOpt
 	t.Run("RenewExpiredLease", func(t *testing.T) {
 		leaseRenewExpiredLease(t, store, opts)
 	})
+	t.Run("ConcurrentRenew", func(t *testing.T) {
+		leaseConcurrentRenew(t, store)
+	})
 	t.Run("ReleaseSuccess", func(t *testing.T) {
 		leaseReleaseSuccess(t, store)
 	})
@@ -340,6 +343,35 @@ func leaseConcurrentAcquire(t *testing.T, store ports.LeaseStore) {
 	}
 	if l := losses.Load(); l != goroutines-1 {
 		t.Fatalf("all others should lose: got %d", l)
+	}
+}
+
+func leaseConcurrentRenew(t *testing.T, store ports.LeaseStore) {
+	ctx := context.Background()
+	tok, err := store.Acquire(ctx, "lt-cr-1", "owner-A", 30*time.Second, nil)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+
+	const goroutines = 10
+	var successes, failures atomic.Int32
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			_, err := store.Renew(ctx, "lt-cr-1", tok, 30*time.Second, nil)
+			if err == nil {
+				successes.Add(1)
+			} else {
+				failures.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if s := successes.Load(); s == 0 {
+		t.Fatal("at least one renewal should succeed")
 	}
 }
 

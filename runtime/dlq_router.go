@@ -30,6 +30,7 @@ type DLQRouter struct {
 	stopped      bool
 	done         chan struct{}    // closed by Close() to signal Route() to exit select
 	sendWg       sync.WaitGroup  // tracks goroutines in the Route select
+	tokenFn      func() (domain.LeaseToken, bool)
 }
 
 // DLQRouterConfig configures the async DLQ router.
@@ -88,6 +89,13 @@ func NewDLQRouterFromConfig(cfg DLQRouterConfig) *DLQRouter {
 // HasStore returns true if a DLQ store is configured.
 func (r *DLQRouter) HasStore() bool {
 	return r.store != nil
+}
+
+// SetTokenFn sets the function used to check lease validity before DLQ writes.
+func (r *DLQRouter) SetTokenFn(fn func() (domain.LeaseToken, bool)) {
+	r.mu.Lock()
+	r.tokenFn = fn
+	r.mu.Unlock()
 }
 
 // Start launches background workers that drain the buffer to the store.
@@ -203,23 +211,43 @@ func (r *DLQRouter) writeDirect(ctx context.Context, entry domain.DLQEntry) erro
 func (r *DLQRouter) runWorker(_ context.Context) {
 	defer r.wg.Done()
 	for entry := range r.buffer {
-		// Use context.Background for the write deadline so buffered entries
-		// are still persisted after the runtime context is cancelled during
-		// Stop(). The runtime calls cancel() before dlqRouter.Close(), so
-		// the parent ctx is already dead by the time we drain remaining
-		// entries. Using Background ensures the writeTimeout applies cleanly.
-		writeCtx, cancel := context.WithTimeout(context.Background(), r.writeTimeout)
-		if err := r.store.Write(writeCtx, entry); err != nil {
+		if r.tokenFn != nil {
+			if _, hasLease := r.tokenFn(); !hasLease {
+				if r.logger != nil {
+					r.logger.Warn("DLQ write skipped, lease not held",
+						"entry_id", entry.ID,
+						"route_id", entry.RouteID,
+					)
+				}
+				r.metrics.Counter(domain.MetricDLQWriteFailures, 1)
+				continue
+			}
+		}
+
+		const maxAttempts = 3
+		var writeErr error
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			if attempt > 0 {
+				time.Sleep(500 * time.Millisecond)
+			}
+			writeCtx, cancel := context.WithTimeout(context.Background(), r.writeTimeout)
+			writeErr = r.store.Write(writeCtx, entry)
+			cancel()
+			if writeErr == nil {
+				break
+			}
+		}
+		if writeErr != nil {
 			r.metrics.Counter(domain.MetricDLQWriteFailures, 1)
 			if r.logger != nil {
-				r.logger.Error("DLQ write failed",
+				r.logger.Error("DLQ write failed after retries",
 					"entry_id", entry.ID,
 					"route_id", entry.RouteID,
-					"error", err,
+					"error", writeErr,
+					"attempts", maxAttempts,
 				)
 			}
 		}
-		cancel()
 	}
 }
 

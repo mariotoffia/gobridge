@@ -14,11 +14,12 @@ import (
 // Store implements ports.OutboxStore in memory for unit tests.
 // It is not safe for production deployments.
 type Store struct {
-	mu      sync.Mutex
-	records map[string]*domain.OutboxRecord // keyed by record ID
-	dedup   map[string]bool                 // keyed by "EnvelopeID\x00BindingID"
-	now     func() time.Time
-	logger  *slog.Logger
+	mu            sync.Mutex
+	records       map[string]*domain.OutboxRecord // keyed by record ID
+	dedup         map[string]bool                 // keyed by "EnvelopeID\x00BindingID"
+	now           func() time.Time
+	logger        *slog.Logger
+	latestVersion map[string]uint64 // per-partition fencing token version
 }
 
 // Option configures a Store.
@@ -37,9 +38,10 @@ func WithLogger(l *slog.Logger) Option {
 // NewStore creates a new in-memory OutboxStore.
 func NewStore(opts ...Option) *Store {
 	s := &Store{
-		records: make(map[string]*domain.OutboxRecord),
-		dedup:   make(map[string]bool),
-		now:     time.Now,
+		records:       make(map[string]*domain.OutboxRecord),
+		dedup:         make(map[string]bool),
+		now:           time.Now,
+		latestVersion: make(map[string]uint64),
 	}
 	for _, o := range opts {
 		o(s)
@@ -93,6 +95,14 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if token.Version < s.latestVersion[pk] {
+		return nil, domain.ErrStaleFencingToken.
+			WithMessage("claim rejected: token version is stale").
+			With("givenVersion", token.Version).
+			With("latestVersion", s.latestVersion[pk])
+	}
+	s.latestVersion[pk] = token.Version
 
 	var candidates []*domain.OutboxRecord
 	for _, r := range s.records {

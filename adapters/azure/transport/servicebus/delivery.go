@@ -227,6 +227,13 @@ func (d *asbDelivery) autoExtendLoop(ctx context.Context, interval time.Duration
 					)
 				}
 				if consecutiveFailures >= autoExtendMaxFailures {
+					if d.logger != nil {
+						d.logger.Error("servicebus: auto-extend max failures reached, cancelling processing",
+							"message_id", d.msg.MessageID,
+							"consecutive_failures", consecutiveFailures,
+						)
+					}
+					d.cancel()
 					return
 				}
 				continue

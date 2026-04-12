@@ -120,7 +120,22 @@ func headersToMessage(headers map[string]any) *azservicebus.Message {
 		}
 	}
 	if v, ok := headers[asbHeaderTTL]; ok {
-		if d, ok := v.(time.Duration); ok {
+		var d time.Duration
+		switch val := v.(type) {
+		case time.Duration:
+			d = val
+		case string:
+			if parsed, err := time.ParseDuration(val); err == nil {
+				d = parsed
+			}
+		case int:
+			d = time.Duration(val) * time.Second
+		case int64:
+			d = time.Duration(val) * time.Second
+		case float64:
+			d = time.Duration(val * float64(time.Second))
+		}
+		if d > 0 {
 			msg.TimeToLive = &d
 		}
 	}

@@ -373,6 +373,9 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create outbox store: %w", err)
 		}
+		if s == nil {
+			return nil, fmt.Errorf("bridge: store factory %q returned nil outbox store without error", sc.Type)
+		}
 		res.outbox = s
 		res.outboxDist = isDistributedFactory(sf)
 	}
@@ -384,6 +387,9 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		s, err := sf.NewDLQStore(ctx, *sc)
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create dlq store: %w", err)
+		}
+		if s == nil {
+			return nil, fmt.Errorf("bridge: store factory %q returned nil dlq store without error", sc.Type)
 		}
 		res.dlq = s
 		res.dlqDist = isDistributedFactory(sf)

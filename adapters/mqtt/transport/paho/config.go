@@ -83,8 +83,19 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 		return opts, nil
 	}
 
-	if v, ok := m["broker_urls"].([]string); ok {
+	switch v := m["broker_urls"].(type) {
+	case []string:
 		opts.BrokerURLs = v
+	case []any:
+		urls := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				urls = append(urls, s)
+			}
+		}
+		if len(urls) > 0 {
+			opts.BrokerURLs = urls
+		}
 	}
 	if v, ok := m["broker_url"].(string); ok && len(opts.BrokerURLs) == 0 {
 		opts.BrokerURLs = []string{v}
@@ -92,7 +103,18 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	if v, ok := m["client_id"].(string); ok {
 		opts.ClientID = v
 	}
-	if v, ok := m["keep_alive"].(int); ok {
+	if raw, exists := m["keep_alive"]; exists {
+		var v int
+		switch n := raw.(type) {
+		case int:
+			v = n
+		case int64:
+			v = int(n)
+		case float64:
+			v = int(n)
+		default:
+			return opts, fmt.Errorf("keep_alive must be a number, got %T", raw)
+		}
 		if v < 0 || v > 65535 {
 			return opts, fmt.Errorf("keep_alive must be 0..65535, got %d", v)
 		}
@@ -110,11 +132,17 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	if v, ok := m["clean_start"].(bool); ok {
 		opts.CleanStart = v
 	}
-	if v, ok := m["session_expiry_interval"].(int); ok {
-		opts.SessionExpiryInterval = uint32(v)
-	}
-	if v, ok := m["session_expiry_interval"].(uint32); ok {
-		opts.SessionExpiryInterval = v
+	if raw, exists := m["session_expiry_interval"]; exists {
+		switch n := raw.(type) {
+		case int:
+			opts.SessionExpiryInterval = uint32(n)
+		case int64:
+			opts.SessionExpiryInterval = uint32(n)
+		case uint32:
+			opts.SessionExpiryInterval = n
+		case float64:
+			opts.SessionExpiryInterval = uint32(n)
+		}
 	}
 	if v, ok := m["username"].(string); ok {
 		opts.Username = v
@@ -144,9 +172,16 @@ func SenderOptionsFromMap(m map[string]any) (SenderOptions, error) {
 		opts.DefaultTopic = v
 	}
 	if raw, exists := m["qos"]; exists {
-		v, ok := raw.(int)
-		if !ok {
-			return opts, fmt.Errorf("qos must be an int, got %T", raw)
+		var v int
+		switch n := raw.(type) {
+		case int:
+			v = n
+		case int64:
+			v = int(n)
+		case float64:
+			v = int(n)
+		default:
+			return opts, fmt.Errorf("qos must be a number, got %T", raw)
 		}
 		if v < 0 || v > 2 {
 			return opts, fmt.Errorf("qos must be 0, 1, or 2, got %d", v)

@@ -17,12 +17,14 @@ type outboxDepthCache struct {
 	mu      sync.RWMutex
 	entries map[string]depthEntry
 	ttl     time.Duration
+	now     func() time.Time
 }
 
 func newOutboxDepthCache(ttl time.Duration) *outboxDepthCache {
 	return &outboxDepthCache{
 		entries: make(map[string]depthEntry),
 		ttl:     ttl,
+		now:     time.Now,
 	}
 }
 
@@ -37,7 +39,7 @@ func (c *outboxDepthCache) isUnderCapacity(partitionKey string) bool {
 	if !ok {
 		return false
 	}
-	if time.Since(entry.checkedAt) > c.ttl {
+	if c.now().Sub(entry.checkedAt) > c.ttl {
 		return false
 	}
 	return !entry.atCapacity
@@ -46,7 +48,7 @@ func (c *outboxDepthCache) isUnderCapacity(partitionKey string) bool {
 const depthCacheMaxEntries = 1000
 
 func (c *outboxDepthCache) update(partitionKey string, atCapacity bool) {
-	now := time.Now()
+	now := c.now()
 	c.mu.Lock()
 	c.entries[partitionKey] = depthEntry{
 		atCapacity: atCapacity,

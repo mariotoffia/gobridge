@@ -6,6 +6,7 @@ package storetest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -78,6 +79,9 @@ func RunOutboxStoreTests(t *testing.T, store ports.OutboxStore) {
 	})
 	t.Run("IdempotentPersist", func(t *testing.T) {
 		testIdempotentPersist(t, store)
+	})
+	t.Run("CompleteAfterTokenChange", func(t *testing.T) {
+		outboxCompleteAfterTokenChange(t, store)
 	})
 }
 
@@ -423,6 +427,47 @@ func testIdempotentPersist(t *testing.T, store ports.OutboxStore) {
 	}
 	if len(pending) != 1 {
 		t.Fatalf("expected exactly 1 record (no duplicate), got %d", len(pending))
+	}
+}
+
+func outboxCompleteAfterTokenChange(t *testing.T, store ports.OutboxStore) {
+	ctx := context.Background()
+	tok1 := domain.LeaseToken{Version: 100, Owner: "owner-A"}
+	tok2 := domain.LeaseToken{Version: 200, Owner: "owner-B"}
+
+	pk := domain.OutboxPartitionKey("sess-catc", "")
+	recs := []domain.OutboxRecord{
+		{
+			ID:         fmt.Sprintf("ox-catc-%d", time.Now().UnixNano()),
+			EnvelopeID: "env-catc-1",
+			SessionID:  "sess-catc",
+			Envelope:   domain.Envelope{ID: "env-catc-1", Subject: "test"},
+			Status:     domain.OutboxPending,
+		},
+	}
+	if err := store.Persist(ctx, recs); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	claimed, err := store.Claim(ctx, pk, "owner-A", tok1, 10)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if len(claimed) == 0 {
+		t.Fatal("expected at least 1 claimed record")
+	}
+
+	_, err = store.Claim(ctx, pk, "owner-B", tok2, 10)
+	if err != nil && !errors.Is(err, domain.ErrStaleFencingToken) {
+		// New claim with higher version is fine - may return empty or error
+	}
+
+	err = store.Complete(ctx, []string{recs[0].ID}, tok1)
+	if err == nil {
+		t.Fatal("expected error when completing with old token after new claim")
+	}
+	if !errors.Is(err, domain.ErrStaleFencingToken) {
+		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
 	}
 }
 

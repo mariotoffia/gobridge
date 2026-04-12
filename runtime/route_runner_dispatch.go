@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/mariotoffia/gobridge/logging"
@@ -216,15 +217,27 @@ func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, e
 }
 
 // receiveCount extracts the transport-level receive count from envelope
-// headers. SQS populates this as "sqs.ApproximateReceiveCount" (int).
-// Returns 0 when the header is absent or not an int.
+// headers. SQS populates this as "sqs.ApproximateReceiveCount".
+// Handles int, int64, float64, and string representations.
+// Returns 0 when the header is absent or not convertible.
 func receiveCount(env *domain.Envelope) int {
 	if env.Headers == nil {
 		return 0
 	}
-	if v, ok := env.Headers["sqs.ApproximateReceiveCount"]; ok {
-		if n, ok := v.(int); ok {
-			return n
+	v, ok := env.Headers["sqs.ApproximateReceiveCount"]
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case string:
+		if i, err := strconv.Atoi(n); err == nil {
+			return i
 		}
 	}
 	return 0

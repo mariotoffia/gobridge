@@ -158,7 +158,13 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: claim", "partition_key", pk, "limit", limit)
 	}
 
-	rows, err := s.db.QueryContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("sqliteoutbox: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	rows, err := tx.QueryContext(ctx,
 		`SELECT id FROM outbox
 		 WHERE partition_key = ? AND (status = 'pending' OR (status = 'claimed' AND claim_version < ?))
 		 ORDER BY created_at
@@ -195,7 +201,7 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 		args = append(args, id)
 	}
 
-	_, err = s.db.ExecContext(ctx,
+	_, err = tx.ExecContext(ctx,
 		fmt.Sprintf(
 			`UPDATE outbox SET status = 'claimed', claimed_by = ?, claim_version = ?,
 			 replay_count = replay_count + 1
@@ -204,6 +210,10 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 	)
 	if err != nil {
 		return nil, fmt.Errorf("sqliteoutbox: update claim: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("sqliteoutbox: commit claim: %w", err)
 	}
 
 	return s.fetchByIDs(ctx, ids)

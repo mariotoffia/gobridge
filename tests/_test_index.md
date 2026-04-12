@@ -1252,3 +1252,28 @@ Catalog of all test functions in the gobridge repository.
 | TestUC95_AMQP10_HighThroughput | validates 5000 msg throughput through Artemis pipeline | longrunning | amqp10_throughput | pass |
 | TestUC96_CrossProtocol_RabbitMQ_Artemis | validates cross-protocol message flow RabbitMQ + Artemis | longrunning | amqp_cross_protocol | pass |
 | TestUC97_AMQP091_MultiConsumer_CompetingConsumers | validates 3 competing consumers on same RabbitMQ queue | longrunning | amqp091_multi_consumer | pass |
+| TestIntegration_SQS_Delivery_AckRemovesMessage | validates Ack deletes message from SQS queue | integration | sqs_delivery | pass |
+| TestIntegration_SQS_Delivery_RetryMakesMessageReappear | validates Retry with zero delay causes redelivery | integration | sqs_delivery | pass |
+| TestIntegration_SQS_Delivery_ExtendPreventsRedelivery | validates Extend pushes visibility timeout forward | integration | sqs_delivery | pass |
+| TestIntegration_SQS_HeaderRoundTrip | validates custom headers survive send→receive round-trip | integration | sqs_delivery | pass |
+| TestIntegration_SQS_AutoExtendKeepsMessageInvisible | validates auto-extend prevents redelivery during long processing | integration | sqs_delivery | pass |
+| TestIntegration_OutboxDrainer_FullLifecycle | validates persist→claim→send→complete with real DynamoDB | integration | outbox_drainer | pass |
+| TestIntegration_OutboxDrainer_StaleFencingToken | validates stale token rejected by DynamoDB conditional writes | integration | outbox_drainer | pass |
+| TestIntegration_OutboxDrainer_ExpiredRecordRoutesDLQ | validates expired records route to DLQ and complete | integration | outbox_drainer | pass |
+| TestIntegration_OutboxDrainer_PoisonMessageRoutesDLQ | validates poison messages route to DLQ and complete | integration | outbox_drainer | pass |
+| TestIntegration_OutboxDrainer_ConcurrentDrainers | validates concurrent drainers do not produce duplicate sends | integration | outbox_drainer | pass |
+| TestIntegration_OutboxDrainer_AdaptiveBatchSize | validates batch size scales with throughput | integration | outbox_drainer | pass |
+| TestIntegration_DLQRouter_RouteStoresEntry | validates Route creates DLQ entry in DynamoDB with all fields | integration | dlq_router | pass |
+| TestIntegration_DLQRouter_AsyncBufferDrains | validates async buffer entries drain to DynamoDB via workers | integration | dlq_router | pass |
+| TestIntegration_DLQRouter_ErrorClassification | validates error category and code persisted correctly | integration | dlq_router | pass |
+| TestIntegration_DLQRouter_CloseDrainsBuffer | validates Close drains remaining buffer entries | integration | dlq_router | pass |
+| TestIntegration_DLQRouter_ConcurrentRoutes | validates concurrent Route calls all persist safely | integration | dlq_router | pass |
+| TestIntegration_SQS_Sender_QueueNameResolution | validates Sender resolves QueueName to URL on first Send | integration | sqs_queuename | pass |
+| TestIntegration_SQS_Receiver_QueueNameResolution | validates Receiver resolves QueueName to URL on Run | integration | sqs_queuename | pass |
+| TestIntegration_SQS_SenderReceiver_FullRoundTrip | validates Sender→SQS→Receiver round-trip with Subject and headers | integration | sqs_queuename | pass |
+| TestIntegration_SQS_Sender_BatchThenReceive | validates batch-sent messages all received by Receiver | integration | sqs_queuename | pass |
+| TestIntegration_OutboxDrainer_RealSQSSender_FullCycle | validates persist→drain→real SQS send→verify in queue | integration | outbox_drainer_sqs | pass |
+| TestIntegration_OutboxDrainer_RealSQSSender_ExpiredToDLQ | validates expired record skips SQS, lands in DLQ | integration | outbox_drainer_sqs | pass |
+| TestIntegration_OutboxDrainer_RealSQSSender_HeaderPreservation | validates DispatchHeaders survive outbox→SQS pipeline | integration | outbox_drainer_sqs | pass |
+| TestGap_AMQP091_To_SQS_CrossTransport | validates AMQP 0-9-1→bridge→SQS cross-transport routing | longrunning | amqp_cross_transport | pass |
+| TestGap_AMQP091_To_MQTT_CrossTransport | validates AMQP 0-9-1→bridge→MQTT cross-transport routing | longrunning | amqp_cross_transport | pass |

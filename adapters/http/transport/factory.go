@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"sync"
 	"time"
@@ -207,10 +208,34 @@ func optDuration(opts map[string]any, key string, fallback time.Duration) time.D
 	if !ok {
 		return fallback
 	}
-	if s, ok := v.(string); ok {
-		if d, err := time.ParseDuration(s); err == nil {
-			return d
+	switch d := v.(type) {
+	case time.Duration:
+		if d < 0 {
+			return fallback
 		}
+		return d
+	case string:
+		parsed, err := time.ParseDuration(d)
+		if err != nil || parsed < 0 {
+			return fallback
+		}
+		return parsed
+	case int:
+		if d < 0 {
+			return fallback
+		}
+		return time.Duration(d) * time.Second
+	case int64:
+		if d < 0 {
+			return fallback
+		}
+		return time.Duration(d) * time.Second
+	case float64:
+		if d < 0 || math.IsNaN(d) || math.IsInf(d, 0) {
+			return fallback
+		}
+		return time.Duration(d * float64(time.Second))
+	default:
+		return fallback
 	}
-	return fallback
 }

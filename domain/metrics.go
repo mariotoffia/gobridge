@@ -28,6 +28,7 @@ const (
 	MetricOutboxExpiredBeforeSend = "OutboxExpiredBeforeSend"
 	MetricOutboxReplayCount       = "OutboxReplayCount"
 	MetricOutboxRecordFailures    = "OutboxRecordFailures"
+	MetricOutboxDuplicateRisk     = "OutboxDuplicateRisk"
 )
 
 // SQS metric names.
@@ -98,6 +99,7 @@ const (
 	MetricSSEClients          = "SSEClients"
 	MetricSSEBroadcastLatency = "SSEBroadcastLatency"
 	MetricClusterForwards     = "ClusterForwards"
+	MetricSSEDroppedEvents    = "SSEDroppedEvents"
 )
 
 // AMQP 0-9-1 metric names.
