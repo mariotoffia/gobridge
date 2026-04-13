@@ -251,3 +251,59 @@ func TestValidateSessionDurations_InvalidStepDownGrace(t *testing.T) {
 		t.Errorf("expected invalid-duration error for step_down_grace, got: %v", ve.Errors)
 	}
 }
+
+// TestValidatePolicyDurations_InvalidSendTimeout validates that an
+// unparseable send_timeout string produces a validation error.
+func TestValidatePolicyDurations_InvalidSendTimeout(t *testing.T) {
+	cfg := s12ValidConfig()
+	cfg.Routes[0].Policy.SendTimeout = "not-a-duration"
+
+	_, err := ValidateWithWarnings(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for invalid send_timeout")
+	}
+	ve := err.(*ValidationError)
+	found := false
+	for _, e := range ve.Errors {
+		if strings.Contains(e, "send_timeout") && strings.Contains(e, "invalid duration") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected invalid-duration error for send_timeout, got: %v", ve.Errors)
+	}
+}
+
+// TestValidatePolicyDurations_InvalidDepthCacheTTL validates that an
+// unparseable depth_cache_ttl string produces a validation error.
+func TestValidatePolicyDurations_InvalidDepthCacheTTL(t *testing.T) {
+	cfg := s12ValidConfig()
+	cfg.Routes[0].Policy.DepthCacheTTL = "garbage"
+
+	_, err := ValidateWithWarnings(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for invalid depth_cache_ttl")
+	}
+	ve := err.(*ValidationError)
+	found := false
+	for _, e := range ve.Errors {
+		if strings.Contains(e, "depth_cache_ttl") && strings.Contains(e, "invalid duration") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected invalid-duration error for depth_cache_ttl, got: %v", ve.Errors)
+	}
+}
+
+// TestValidatePolicyDurations_ValidSendTimeout validates that a valid
+// send_timeout string passes validation without errors.
+func TestValidatePolicyDurations_ValidSendTimeout(t *testing.T) {
+	cfg := s12ValidConfig()
+	cfg.Routes[0].Policy.SendTimeout = "10s"
+
+	_, err := ValidateWithWarnings(cfg)
+	if err != nil {
+		t.Fatalf("expected no error for valid send_timeout, got: %v", err)
+	}
+}

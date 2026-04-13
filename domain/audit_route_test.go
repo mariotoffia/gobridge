@@ -22,12 +22,10 @@ import (
 //
 // ═══════════════════════════════════════════════════════════════════
 // DefaultBackoffPolicy is a mutable `var`. Mutation changes all
-// subsequent WithDefaults() calls globally.
-//
-// DefaultBackoffPolicy.Multiplier = 99.0
-//   → RoutePolicy{}.WithDefaults().Backoff.Multiplier == 99.0
-// ═══════════════════════════════════════════════════════════════════
-func TestDefaultBackoffPolicy_MutableGlobal(t *testing.T) {
+// subsequent WithDefaults() calls globally. After the fix to use
+// NewDefaultBackoffPolicy(), mutating the global no longer affects
+// WithDefaults() output.
+func TestDefaultBackoffPolicy_MutableGlobalDoesNotAffectWithDefaults(t *testing.T) {
 	orig := domain.DefaultBackoffPolicy
 
 	defer func() {
@@ -37,8 +35,9 @@ func TestDefaultBackoffPolicy_MutableGlobal(t *testing.T) {
 	domain.DefaultBackoffPolicy.Multiplier = 99.0
 
 	p := domain.RoutePolicy{}.WithDefaults()
-	if p.Backoff.Multiplier != 99.0 {
-		t.Fatalf("expected mutated multiplier 99.0, got %f", p.Backoff.Multiplier)
+	expected := domain.NewDefaultBackoffPolicy().Multiplier
+	if p.Backoff.Multiplier != expected {
+		t.Fatalf("expected immutable default multiplier %f, got %f", expected, p.Backoff.Multiplier)
 	}
 }
 

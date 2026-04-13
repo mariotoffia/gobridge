@@ -115,6 +115,77 @@ func TestToSessionConfig_NilReturnsNil(t *testing.T) {
 	}
 }
 
+// TestToRoutePolicy_SendTimeoutAndDepthCacheTTL validates that the new
+// duration fields are parsed and mapped correctly.
+func TestToRoutePolicy_SendTimeoutAndDepthCacheTTL(t *testing.T) {
+	rd := config.RouteDef{
+		Policy: config.PolicyDef{
+			SendTimeout:   "5s",
+			DepthCacheTTL: "200ms",
+		},
+	}
+	p, err := toRoutePolicyE(rd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.SendTimeout != 5*time.Second {
+		t.Fatalf("SendTimeout: got %v, want 5s", p.SendTimeout)
+	}
+	if p.DepthCacheTTL != 200*time.Millisecond {
+		t.Fatalf("DepthCacheTTL: got %v, want 200ms", p.DepthCacheTTL)
+	}
+}
+
+// TestToRoutePolicy_AllowFlags validates that AllowUnfenced and AllowRetryDrop
+// are wired from config to domain.
+func TestToRoutePolicy_AllowFlags(t *testing.T) {
+	rd := config.RouteDef{
+		Policy: config.PolicyDef{
+			AllowUnfenced:  true,
+			AllowRetryDrop: true,
+		},
+	}
+	p := toRoutePolicy(rd)
+	if !p.AllowUnfenced {
+		t.Fatal("AllowUnfenced should be true")
+	}
+	if !p.AllowRetryDrop {
+		t.Fatal("AllowRetryDrop should be true")
+	}
+}
+
+// TestToRoutePolicy_InvalidSendTimeout validates that invalid send_timeout
+// duration strings return an error.
+func TestToRoutePolicy_InvalidSendTimeout(t *testing.T) {
+	rd := config.RouteDef{
+		Policy: config.PolicyDef{SendTimeout: "banana"},
+	}
+	_, err := toRoutePolicyE(rd)
+	if err == nil {
+		t.Fatal("expected error for invalid send_timeout")
+	}
+}
+
+// TestToSessionConfig_DrainMaxFields validates that DrainMaxBatchSize and
+// DrainMaxConcurrency are wired from config to runtime.
+func TestToSessionConfig_DrainMaxFields(t *testing.T) {
+	rs := &config.RouteSessionDef{
+		SessionID:           "s1",
+		DrainMaxBatchSize:   200,
+		DrainMaxConcurrency: 5,
+	}
+	sc := toSessionConfig(rs)
+	if sc == nil {
+		t.Fatal("expected non-nil SessionConfig")
+	}
+	if sc.DrainMaxBatchSize != 200 {
+		t.Fatalf("DrainMaxBatchSize: got %d, want 200", sc.DrainMaxBatchSize)
+	}
+	if sc.DrainMaxConcurrency != 5 {
+		t.Fatalf("DrainMaxConcurrency: got %d, want 5", sc.DrainMaxConcurrency)
+	}
+}
+
 // TestToDrainStrategy_FixedPoll validates fixed_poll drain strategy construction.
 // FixedPoll applies ±25% jitter, so we check within tolerance.
 func TestToDrainStrategy_FixedPoll(t *testing.T) {

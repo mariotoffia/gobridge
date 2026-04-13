@@ -65,15 +65,28 @@ const (
 	DefaultMaxOutboxDepth    = 10000
 	DefaultSendTimeout       = 30 * time.Second
 	DefaultDepthCacheTTL     = 1 * time.Second
+	DefaultStepDownGrace     = 15 * time.Second
 )
 
 // DefaultBackoffPolicy holds the default backoff configuration.
-// NOTE: This is a mutable package-level var. Callers should avoid modifying it
-// as changes affect all subsequent WithDefaults() calls globally.
+// Deprecated: use NewDefaultBackoffPolicy() to get an immutable copy.
+// This variable is kept for backward compatibility but callers should
+// not mutate it.
 var DefaultBackoffPolicy = BackoffPolicy{
 	InitialInterval: 1 * time.Second,
 	MaxInterval:     30 * time.Second,
 	Multiplier:      2.0,
+}
+
+// NewDefaultBackoffPolicy returns a fresh BackoffPolicy with the
+// recommended defaults. Unlike the DefaultBackoffPolicy var, the
+// returned value is safe to mutate without global side effects.
+func NewDefaultBackoffPolicy() BackoffPolicy {
+	return BackoffPolicy{
+		InitialInterval: 1 * time.Second,
+		MaxInterval:     30 * time.Second,
+		Multiplier:      2.0,
+	}
 }
 
 // RoutePolicy defines per-route delivery, retry, and backpressure configuration.
@@ -105,14 +118,15 @@ func (p RoutePolicy) WithDefaults() RoutePolicy {
 	if p.MaxOutboxDepth <= 0 {
 		p.MaxOutboxDepth = DefaultMaxOutboxDepth
 	}
+	defaults := NewDefaultBackoffPolicy()
 	if p.Backoff.InitialInterval == 0 {
-		p.Backoff.InitialInterval = DefaultBackoffPolicy.InitialInterval
+		p.Backoff.InitialInterval = defaults.InitialInterval
 	}
 	if p.Backoff.MaxInterval == 0 {
-		p.Backoff.MaxInterval = DefaultBackoffPolicy.MaxInterval
+		p.Backoff.MaxInterval = defaults.MaxInterval
 	}
 	if p.Backoff.Multiplier == 0 {
-		p.Backoff.Multiplier = DefaultBackoffPolicy.Multiplier
+		p.Backoff.Multiplier = defaults.Multiplier
 	}
 	if p.OnExpired == "" {
 		p.OnExpired = ExpiredDLQ

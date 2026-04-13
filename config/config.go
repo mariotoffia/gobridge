@@ -188,10 +188,12 @@ type RouteSessionDef struct {
 	// releasing the lease (e.g. "15s"). Empty means use the runtime default.
 	StepDownGrace string `yaml:"step_down_grace,omitempty" json:"step_down_grace,omitempty"`
 
-	DrainInterval     string            `yaml:"drain_interval,omitempty" json:"drain_interval,omitempty"`
-	DrainBatchSize    int               `yaml:"drain_batch_size,omitempty" json:"drain_batch_size,omitempty"`
-	DrainStrategy     *DrainStrategyDef `yaml:"drain_strategy,omitempty" json:"drain_strategy,omitempty"`
-	ConnectAfterLease bool              `yaml:"connect_after_lease,omitempty" json:"connect_after_lease,omitempty"`
+	DrainInterval       string            `yaml:"drain_interval,omitempty" json:"drain_interval,omitempty"`
+	DrainBatchSize      int               `yaml:"drain_batch_size,omitempty" json:"drain_batch_size,omitempty"`
+	DrainMaxBatchSize   int               `yaml:"drain_max_batch_size,omitempty" json:"drain_max_batch_size,omitempty"`
+	DrainMaxConcurrency int               `yaml:"drain_max_concurrency,omitempty" json:"drain_max_concurrency,omitempty"`
+	DrainStrategy       *DrainStrategyDef `yaml:"drain_strategy,omitempty" json:"drain_strategy,omitempty"`
+	ConnectAfterLease   bool              `yaml:"connect_after_lease,omitempty" json:"connect_after_lease,omitempty"`
 }
 
 // DrainStrategyDef configures the outbox drain polling strategy.
@@ -214,6 +216,10 @@ type PolicyDef struct {
 	OnExpired          string     `yaml:"on_expired,omitempty" json:"on_expired,omitempty"`
 	OnPermanentFailure string     `yaml:"on_permanent_failure,omitempty" json:"on_permanent_failure,omitempty"`
 	Backoff            BackoffDef `yaml:"backoff,omitempty" json:"backoff,omitempty"`
+	SendTimeout        string     `yaml:"send_timeout,omitempty" json:"send_timeout,omitempty"`
+	DepthCacheTTL      string     `yaml:"depth_cache_ttl,omitempty" json:"depth_cache_ttl,omitempty"`
+	AllowUnfenced      bool       `yaml:"allow_unfenced,omitempty" json:"allow_unfenced,omitempty"`
+	AllowRetryDrop     bool       `yaml:"allow_retry_drop,omitempty" json:"allow_retry_drop,omitempty"`
 }
 
 // BackoffDef defines retry backoff as YAML-friendly strings.

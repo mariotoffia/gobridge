@@ -4,11 +4,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
-)
 
-// defaultStepDownGrace must match runtime.DefaultSessionConfig().StepDownGrace.
-// It is duplicated here because config cannot import runtime (circular dep).
-const defaultStepDownGrace = 15 * time.Second
+	"github.com/mariotoffia/gobridge/domain"
+)
 
 // ValidationError collects multiple validation problems.
 type ValidationError struct {
@@ -195,6 +193,20 @@ func validate(cfg *BridgeConfig) *ValidationError {
 			validateEnum(ve, fmt.Sprintf("routes[%d].policy.on_permanent_failure", i), r.Policy.OnPermanentFailure,
 				"drop", "dlq")
 		}
+		if r.Policy.SendTimeout != "" {
+			if d, err := time.ParseDuration(r.Policy.SendTimeout); err != nil {
+				ve.addf("routes[%d].policy.send_timeout: invalid duration %q: %v", i, r.Policy.SendTimeout, err)
+			} else if d <= 0 {
+				ve.addf("routes[%d].policy.send_timeout: must be positive, got %s", i, r.Policy.SendTimeout)
+			}
+		}
+		if r.Policy.DepthCacheTTL != "" {
+			if d, err := time.ParseDuration(r.Policy.DepthCacheTTL); err != nil {
+				ve.addf("routes[%d].policy.depth_cache_ttl: invalid duration %q: %v", i, r.Policy.DepthCacheTTL, err)
+			} else if d <= 0 {
+				ve.addf("routes[%d].policy.depth_cache_ttl: must be positive, got %s", i, r.Policy.DepthCacheTTL)
+			}
+		}
 
 		if len(r.Bindings) == 0 {
 			ve.addf("routes[%d] (%s): at least one binding is required", i, r.ID)
@@ -373,12 +385,12 @@ func validateStaleClaimDuration(ve *ValidationError, cfg *BridgeConfig) {
 		return
 	}
 
-	maxGrace := defaultStepDownGrace
+	maxGrace := domain.DefaultStepDownGrace
 	for _, r := range cfg.Routes {
 		if r.Session == nil {
 			continue
 		}
-		grace := defaultStepDownGrace
+		grace := domain.DefaultStepDownGrace
 		if r.Session.StepDownGrace != "" {
 			if d, err := time.ParseDuration(r.Session.StepDownGrace); err == nil {
 				grace = d

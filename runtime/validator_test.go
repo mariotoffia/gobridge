@@ -427,6 +427,88 @@ func TestValidator_DirectHold_FanOutStillRejectedWithResolver(t *testing.T) {
 	}
 }
 
+// TestValidator_SharedOutbox_FanOutExceedsTransactionLimit verifies that
+// shared_outbox rejects fan-out when binding count exceeds the outbox
+// transaction limit.
+func TestValidator_SharedOutbox_FanOutExceedsTransactionLimit(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	rt := runtime.New(
+		runtime.WithInstanceID("test-bridge"),
+		runtime.WithOutboxStore(outbox),
+		runtime.WithDLQStore(NewFakeDLQStore()),
+	)
+
+	bindings := make([]domain.DestinationBinding, 101)
+	for i := range bindings {
+		bindings[i] = domain.DestinationBinding{
+			ID:       "b" + strings.Repeat("x", i),
+			SenderID: "sender-1",
+		}
+	}
+
+	cfg := runtime.RouteConfig{
+		ID: "fanout-overflow",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+			DispatchMode: domain.DispatchFanOut,
+		},
+		Bindings: bindings,
+	}
+	sessCfg := runtime.DefaultSessionConfig("sess", false)
+
+	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rt.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected validation error for fan-out exceeding transaction limit")
+	}
+	if !strings.Contains(err.Error(), "transaction limit") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestValidator_SharedOutbox_FanOutAtLimit verifies shared_outbox accepts
+// fan-out when binding count equals the transaction limit.
+func TestValidator_SharedOutbox_FanOutAtLimit(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	rt := runtime.New(
+		runtime.WithInstanceID("test-bridge"),
+		runtime.WithOutboxStore(outbox),
+		runtime.WithDLQStore(NewFakeDLQStore()),
+	)
+
+	bindings := make([]domain.DestinationBinding, 100)
+	for i := range bindings {
+		bindings[i] = domain.DestinationBinding{
+			ID:       "b" + strings.Repeat("x", i),
+			SenderID: "sender-1",
+		}
+	}
+
+	cfg := runtime.RouteConfig{
+		ID: "fanout-at-limit",
+		Policy: domain.RoutePolicy{
+			DeliveryMode: domain.DeliverySharedOutbox,
+			DispatchMode: domain.DispatchFanOut,
+		},
+		Bindings: bindings,
+	}
+	sessCfg := runtime.DefaultSessionConfig("sess", false)
+
+	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := rt.Start(ctx)
+	if err != nil && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("expected pass for fan-out at limit, got: %v", err)
+	}
+}
+
 // TestValidator_DirectHold_HTTPSourceAccepted verifies that HTTP sources
 // (CapHTTPEndpoint) are accepted in direct_hold without CapVisibilityExtension.
 func TestValidator_DirectHold_HTTPSourceAccepted(t *testing.T) {

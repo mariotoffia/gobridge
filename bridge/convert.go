@@ -25,6 +25,22 @@ func toRoutePolicyE(r config.RouteDef) (domain.RoutePolicy, error) {
 		AckAfter:           domain.AckBoundary(r.Policy.AckAfter),
 		OnExpired:          domain.ExpiredAction(r.Policy.OnExpired),
 		OnPermanentFailure: domain.FailureAction(r.Policy.OnPermanentFailure),
+		AllowUnfenced:      r.Policy.AllowUnfenced,
+		AllowRetryDrop:     r.Policy.AllowRetryDrop,
+	}
+	if r.Policy.SendTimeout != "" {
+		d, err := time.ParseDuration(r.Policy.SendTimeout)
+		if err != nil {
+			return p, fmt.Errorf("invalid send_timeout %q: %w", r.Policy.SendTimeout, err)
+		}
+		p.SendTimeout = d
+	}
+	if r.Policy.DepthCacheTTL != "" {
+		d, err := time.ParseDuration(r.Policy.DepthCacheTTL)
+		if err != nil {
+			return p, fmt.Errorf("invalid depth_cache_ttl %q: %w", r.Policy.DepthCacheTTL, err)
+		}
+		p.DepthCacheTTL = d
 	}
 	if r.Policy.Backoff.InitialInterval != "" {
 		d, err := time.ParseDuration(r.Policy.Backoff.InitialInterval)
@@ -91,6 +107,12 @@ func toSessionConfigE(rs *config.RouteSessionDef) (*runtime.SessionConfig, error
 	sc.DrainStrategy = ds
 	if rs.DrainBatchSize > 0 {
 		sc.DrainBatchSize = rs.DrainBatchSize
+	}
+	if rs.DrainMaxBatchSize > 0 {
+		sc.DrainMaxBatchSize = rs.DrainMaxBatchSize
+	}
+	if rs.DrainMaxConcurrency > 0 {
+		sc.DrainMaxConcurrency = rs.DrainMaxConcurrency
 	}
 
 	return &sc, nil

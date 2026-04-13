@@ -90,7 +90,11 @@ func validateDirectHold(ve *ValidationError, prefix string, entry *routeEntry, p
 	}
 }
 
-func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry, _ domain.RoutePolicy, hasOutboxStore, hasLeaseStore bool) {
+// outboxTransactionLimit is the maximum number of records atomically
+// persisted in a single OutboxStore.Persist call (DynamoDB BatchWriteItem).
+const outboxTransactionLimit = 100
+
+func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry, policy domain.RoutePolicy, hasOutboxStore, hasLeaseStore bool) {
 	if !hasOutboxStore {
 		ve.add(prefix + "shared_outbox invalid: no OutboxStore configured")
 	}
@@ -99,8 +103,11 @@ func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry,
 		ve.add(prefix + "shared_outbox invalid: no LeaseStore configured for exclusive session")
 	}
 
-	// TODO(T3): validate idempotency key processor or source-guaranteed Envelope.ID
-	// TODO(T3): validate fan-out cardinality does not exceed OutboxStore transaction limit (100)
+	if policy.DispatchMode == domain.DispatchFanOut && len(entry.config.Bindings) > outboxTransactionLimit {
+		ve.add(prefix + fmt.Sprintf(
+			"shared_outbox invalid: fan-out cardinality (%d) exceeds OutboxStore transaction limit (%d)",
+			len(entry.config.Bindings), outboxTransactionLimit))
+	}
 }
 
 // validateRetryFallback checks that routes whose source cannot retry

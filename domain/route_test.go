@@ -303,9 +303,10 @@ func TestRoutePolicy_WithDefaults_AllDefaults(t *testing.T) {
 	}
 }
 
-// TestDefaultBackoffPolicy_IsMutableVar documents the risk that DefaultBackoffPolicy
-// is a package-level mutable var. Mutating it affects all subsequent WithDefaults calls.
-func TestDefaultBackoffPolicy_IsMutableVar(t *testing.T) {
+// TestDefaultBackoffPolicy_MutationDoesNotAffectWithDefaults verifies that
+// mutating the global DefaultBackoffPolicy var does not affect WithDefaults().
+// WithDefaults() uses NewDefaultBackoffPolicy() for immutable defaults.
+func TestDefaultBackoffPolicy_MutationDoesNotAffectWithDefaults(t *testing.T) {
 	saved := domain.DefaultBackoffPolicy
 	t.Cleanup(func() { domain.DefaultBackoffPolicy = saved })
 
@@ -316,13 +317,14 @@ func TestDefaultBackoffPolicy_IsMutableVar(t *testing.T) {
 	}
 
 	p := domain.RoutePolicy{}.WithDefaults()
-	if p.Backoff.InitialInterval != 999*time.Millisecond {
-		t.Fatalf("expected mutated InitialInterval 999ms, got %v", p.Backoff.InitialInterval)
+	defaults := domain.NewDefaultBackoffPolicy()
+	if p.Backoff.InitialInterval != defaults.InitialInterval {
+		t.Fatalf("expected immutable InitialInterval %v, got %v", defaults.InitialInterval, p.Backoff.InitialInterval)
 	}
-	if p.Backoff.MaxInterval != 999*time.Millisecond {
-		t.Fatalf("expected mutated MaxInterval 999ms, got %v", p.Backoff.MaxInterval)
+	if p.Backoff.MaxInterval != defaults.MaxInterval {
+		t.Fatalf("expected immutable MaxInterval %v, got %v", defaults.MaxInterval, p.Backoff.MaxInterval)
 	}
-	if p.Backoff.Multiplier != 99.0 {
-		t.Fatalf("expected mutated Multiplier 99.0, got %v", p.Backoff.Multiplier)
+	if p.Backoff.Multiplier != defaults.Multiplier {
+		t.Fatalf("expected immutable Multiplier %v, got %v", defaults.Multiplier, p.Backoff.Multiplier)
 	}
 }

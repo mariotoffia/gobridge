@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
@@ -33,6 +34,14 @@ type TransportFactory interface {
 	// Capabilities returns the transport capabilities relevant for
 	// startup validation (e.g. visibility extension, stateful session).
 	Capabilities() []ports.Capability
+}
+
+// VisibilityTimeoutProvider is an optional interface that TransportFactory
+// implementations may satisfy to declare the source visibility timeout.
+// The runtime validator uses this value to check that SendTimeout does not
+// exceed half the visibility window, which would cause duplicate processing.
+type VisibilityTimeoutProvider interface {
+	VisibilityTimeout() time.Duration
 }
 
 // DistributedStoreFactory is an optional interface that StoreFactory

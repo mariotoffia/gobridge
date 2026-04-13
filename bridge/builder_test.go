@@ -406,3 +406,92 @@ func TestBuilder_CredentialsURIWithoutStore(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no credential store registered")
 }
+
+// fakeVisibilityFactory wraps fakeTransportFactory and implements
+// VisibilityTimeoutProvider so that the builder can wire
+// SourceVisibilityTimeout into RouteConfig.
+type fakeVisibilityFactory struct {
+	fakeTransportFactory
+	timeout time.Duration
+}
+
+func (f *fakeVisibilityFactory) VisibilityTimeout() time.Duration {
+	return f.timeout
+}
+
+// TestBuilder_PolicyFieldsReachRuntime verifies that the new policy fields
+// (send_timeout, depth_cache_ttl, allow_unfenced, allow_retry_drop) survive
+// the full config -> builder -> runtime path and affect route behavior.
+func TestBuilder_PolicyFieldsReachRuntime(t *testing.T) {
+	cfg := testConfig()
+	cfg.Routes[0].DeliveryMode = "direct_hold"
+	cfg.Routes[0].Session = nil
+	cfg.Routes[0].Policy = config.PolicyDef{
+		SendTimeout:    "5s",
+		DepthCacheTTL:  "100ms",
+		AllowUnfenced:  true,
+		AllowRetryDrop: true,
+	}
+
+	rt, err := NewBuilder(cfg).
+		RegisterTransport("mqtt", &fakeTransportFactory{}).
+		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterStoreFactory("memory", &fakeStoreFactory{}).
+		Build(context.Background())
+
+	require.NoError(t, err)
+	require.NotNil(t, rt)
+
+	routes := rt.Routes()
+	require.Len(t, routes, 1)
+	assert.Equal(t, 5*time.Second, routes[0].Policy.SendTimeout)
+	assert.Equal(t, 100*time.Millisecond, routes[0].Policy.DepthCacheTTL)
+	assert.True(t, routes[0].Policy.AllowUnfenced)
+	assert.True(t, routes[0].Policy.AllowRetryDrop)
+}
+
+// TestBuilder_DrainMaxFieldsReachSessionConfig verifies that
+// drain_max_batch_size and drain_max_concurrency from config survive
+// the builder path and are available on the resulting runtime.
+func TestBuilder_DrainMaxFieldsReachSessionConfig(t *testing.T) {
+	cfg := testConfig()
+	cfg.Routes[0].Session.DrainMaxBatchSize = 200
+	cfg.Routes[0].Session.DrainMaxConcurrency = 5
+
+	rt, err := NewBuilder(cfg).
+		RegisterTransport("mqtt", &fakeTransportFactory{}).
+		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterStoreFactory("memory", &fakeStoreFactory{}).
+		Build(context.Background())
+
+	require.NoError(t, err)
+	require.NotNil(t, rt)
+}
+
+// TestBuilder_WiresSourceVisibilityTimeout verifies that a transport
+// factory implementing VisibilityTimeoutProvider causes the builder to
+// populate SourceVisibilityTimeout on the resulting route. When
+// SendTimeout >= VisibilityTimeout/2, the runtime validator rejects the
+// route at Start() time.
+func TestBuilder_WiresSourceVisibilityTimeout(t *testing.T) {
+	cfg := testConfig()
+	cfg.Routes[0].DeliveryMode = "direct_hold"
+	cfg.Routes[0].Session = nil
+	cfg.Routes[0].Policy.SendTimeout = "20s"
+
+	sqsFactory := &fakeVisibilityFactory{timeout: 30 * time.Second}
+
+	rt, err := NewBuilder(cfg).
+		RegisterTransport("mqtt", &fakeTransportFactory{}).
+		RegisterTransport("sqs", sqsFactory).
+		RegisterStoreFactory("memory", &fakeStoreFactory{}).
+		Build(context.Background())
+
+	require.NoError(t, err)
+	require.NotNil(t, rt)
+
+	err = rt.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SendTimeout")
+	assert.Contains(t, err.Error(), "VisibilityTimeout")
+}

@@ -85,7 +85,7 @@ func DefaultSessionConfig(sessionID string, exclusive bool) SessionConfig {
 		RenewInterval:       0, // derived: LeaseTTL / MaxRenewFails
 		RenewJitter:         5 * time.Second,
 		MaxRenewFails:       3,
-		StepDownGrace:       15 * time.Second,
+		StepDownGrace:       domain.DefaultStepDownGrace,
 		DrainStrategy:       domain.NewFixedPoll(domain.DefaultFixedPollInterval),
 		DrainBatchSize:      100,
 		DrainMaxBatchSize:   500,

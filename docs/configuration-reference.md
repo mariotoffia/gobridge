@@ -306,17 +306,21 @@ Routes define the message flow from a receiver through processors to bindings.
 |-------|------|----------|---------|-------------|
 | `max_in_flight` | int | no | 100 | Max concurrent messages in this route |
 | `ack_after` | string | no | `target_accept` | `target_accept` or `outbox_persist` |
-| `max_replay_attempts` | int | no | 3 | Max retry attempts for failed messages |
-| `max_outbox_depth` | int | no | 0 (unlimited) | Max pending outbox records |
-| `on_expired` | string | no | `drop` | `drop` or `dlq` |
-| `on_permanent_failure` | string | no | `drop` | `drop` or `dlq` |
+| `max_replay_attempts` | int | no | 5 | Max retry attempts for failed messages |
+| `max_outbox_depth` | int | no | 10000 | Max pending outbox records before backpressure |
+| `on_expired` | string | no | `dlq` | `drop` or `dlq` |
+| `on_permanent_failure` | string | no | `dlq` | `drop` or `dlq` |
+| `send_timeout` | duration | no | `30s` | Timeout for individual send operations |
+| `depth_cache_ttl` | duration | no | `1s` | How long outbox depth counts are cached |
+| `allow_unfenced` | bool | no | false | Allow direct_hold with shared consumer sources (risk: no fencing) |
+| `allow_retry_drop` | bool | no | false | Suppress error when source cannot retry and no DLQ is configured |
 
 ### `routes[].policy.backoff` -- Retry Backoff
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `initial_interval` | duration | no | `1s` | First retry delay |
-| `max_interval` | duration | no | `60s` | Maximum retry delay |
+| `max_interval` | duration | no | `30s` | Maximum retry delay |
 | `multiplier` | float | no | 2.0 | Exponential backoff multiplier |
 
 ### `routes[].session` -- Route Session Management
@@ -332,7 +336,9 @@ For routes targeting exclusive sessions. Manages lease acquisition and outbox dr
 | `max_renew_fails` | int | no | 3 | Consecutive renewal failures before step-down |
 | `step_down_grace` | duration | no | `15s` | Grace period before releasing lease |
 | `drain_interval` | duration | no | -- | Fixed outbox drain poll interval (mutually exclusive with drain_strategy) |
-| `drain_batch_size` | int | no | 10 | Records per drain poll |
+| `drain_batch_size` | int | no | 100 | Records per drain poll |
+| `drain_max_batch_size` | int | no | 500 | Upper limit for adaptive batch scaling |
+| `drain_max_concurrency` | int | no | 10 | Max concurrent send goroutines per drain cycle |
 | `drain_strategy` | object | no | -- | Advanced drain polling strategy |
 | `connect_after_lease` | bool | no | false | Delay transport connection until lease acquired |
 

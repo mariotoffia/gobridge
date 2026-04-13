@@ -219,6 +219,7 @@ func (b *Builder) wireRoutes(
 		var routeSession ports.Session
 		var routeSender ports.Sender
 		var caps []ports.Capability
+		var sourceVisTimeout time.Duration
 
 		recvDef := findReceiver(b.cfg, routeDef.ReceiverID)
 		if recvDef != nil {
@@ -230,6 +231,9 @@ func (b *Builder) wireRoutes(
 			}
 			if tf, ok := b.transports[transport]; ok {
 				caps = tf.Capabilities()
+				if vtp, ok := tf.(VisibilityTimeoutProvider); ok {
+					sourceVisTimeout = vtp.VisibilityTimeout()
+				}
 			}
 		}
 
@@ -265,11 +269,12 @@ func (b *Builder) wireRoutes(
 		}
 
 		rcfg := runtime.RouteConfig{
-			ID:                 routeDef.ID,
-			Policy:             policy,
-			Bindings:           bindings,
-			Processors:         procs,
-			SourceCapabilities: caps,
+			ID:                      routeDef.ID,
+			Policy:                  policy,
+			Bindings:                bindings,
+			Processors:              procs,
+			SourceCapabilities:      caps,
+			SourceVisibilityTimeout: sourceVisTimeout,
 		}
 
 		// Build content-based resolver from config if present.

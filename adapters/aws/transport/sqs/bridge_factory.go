@@ -3,13 +3,17 @@ package sqs
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-var _ bridge.TransportFactory = (*BridgeFactory)(nil)
+var (
+	_ bridge.TransportFactory          = (*BridgeFactory)(nil)
+	_ bridge.VisibilityTimeoutProvider = (*BridgeFactory)(nil)
+)
 
 // BridgeFactory adapts the SQS ReceiverFactory and SenderFactory to the
 // bridge.TransportFactory interface used by bridge.Builder.
@@ -62,4 +66,11 @@ func (f *BridgeFactory) Capabilities() []ports.Capability {
 		ports.CapVisibilityExtension,
 		ports.CapSourceRedelivery,
 	}
+}
+
+// VisibilityTimeout returns the default SQS visibility timeout (30s).
+// The runtime validator uses this to check that SendTimeout does not
+// exceed half the visibility window.
+func (f *BridgeFactory) VisibilityTimeout() time.Duration {
+	return 30 * time.Second
 }
