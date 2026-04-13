@@ -31,6 +31,7 @@ type OutboxDrainer struct {
 	maxBatchSize   int
 	maxConcurrency int
 	metrics        ports.MetricsExporter
+	hook           ports.DeliveryHook
 	logger         *slog.Logger
 
 	drainTimeout     time.Duration
@@ -66,6 +67,7 @@ type OutboxDrainerConfig struct {
 	DrainMaxConcurrency int
 	DrainTimeout        time.Duration
 	Metrics        ports.MetricsExporter
+	Hook           ports.DeliveryHook
 	Logger         *slog.Logger
 	TokenFn        func() (domain.LeaseToken, bool)
 
@@ -122,6 +124,10 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 	if m == nil {
 		m = &ports.NoopExporter{}
 	}
+	hk := cfg.Hook
+	if hk == nil {
+		hk = ports.NoopDeliveryHook{}
+	}
 	return &OutboxDrainer{
 		outboxStore:      cfg.OutboxStore,
 		leaseStore:       cfg.LeaseStore,
@@ -139,6 +145,7 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 		drainTimeout:     cfg.DrainTimeout,
 		currentBatchSize: cfg.DrainBatchSize,
 		metrics:          m,
+		hook:             hk,
 		logger:           cfg.Logger,
 		tokenFn:          cfg.TokenFn,
 		readyFn:          cfg.ReadyFn,
@@ -362,6 +369,7 @@ func (d *OutboxDrainer) adaptBatchSize(drained int) {
 func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRecord, token domain.LeaseToken) error {
 	env := &rec.Envelope
 	routeTag := domain.Tag{Key: domain.TagKeyRouteID, Value: d.routeID}
+	attempt := rec.ReplayCount + 1
 
 	if env.HasExpiry() && env.IsExpired() {
 		d.metrics.Counter(domain.MetricOutboxExpiredBeforeSend, 1, routeTag)
@@ -383,6 +391,17 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRec
 	defer sendCancel()
 
 	sendErr := d.sender.Send(sendCtx, env)
+
+	d.hook.OnAttempt(ctx, ports.DeliveryAttempt{
+		Direction:   ports.DirectionEgress,
+		RouteID:     d.routeID,
+		BindingID:   rec.BindingID,
+		Envelope:    env,
+		Attempt:     attempt,
+		MaxAttempts: d.policy.MaxReplayAttempts,
+		Err:         sendErr,
+	})
+
 	if sendErr == nil {
 		if completeErr := d.outboxStore.Complete(ctx, []string{rec.ID}, token); completeErr != nil {
 			d.metrics.Counter(domain.MetricOutboxDuplicateRisk, 1, routeTag)
@@ -392,6 +411,15 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRec
 		}
 		d.metrics.Counter(domain.MetricOutboxCompletions, 1, routeTag)
 		d.metrics.Counter(domain.MetricMessagesSent, 1, routeTag)
+		d.hook.OnSettled(ctx, ports.DeliveryOutcome{
+			Direction:   ports.DirectionEgress,
+			RouteID:     d.routeID,
+			BindingID:   rec.BindingID,
+			Envelope:    env,
+			Attempt:     attempt,
+			MaxAttempts: d.policy.MaxReplayAttempts,
+			Terminal:    true,
+		})
 		return nil
 	}
 
@@ -402,6 +430,16 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRec
 				"record_id", rec.ID, "dlq_error", dlqErr)
 			return dlqErr
 		}
+		d.hook.OnSettled(ctx, ports.DeliveryOutcome{
+			Direction:   ports.DirectionEgress,
+			RouteID:     d.routeID,
+			BindingID:   rec.BindingID,
+			Envelope:    env,
+			Attempt:     attempt,
+			MaxAttempts: d.policy.MaxReplayAttempts,
+			Err:         sendErr,
+			Terminal:    true,
+		})
 		return d.outboxStore.Complete(ctx, []string{rec.ID}, token)
 	}
 
@@ -422,6 +460,16 @@ func (d *OutboxDrainer) handleExpired(ctx context.Context, rec *domain.OutboxRec
 			return dlqErr
 		}
 	}
+	d.hook.OnSettled(ctx, ports.DeliveryOutcome{
+		Direction:   ports.DirectionEgress,
+		RouteID:     d.routeID,
+		BindingID:   rec.BindingID,
+		Envelope:    env,
+		Attempt:     rec.ReplayCount + 1,
+		MaxAttempts: d.policy.MaxReplayAttempts,
+		Err:         domain.ErrMessageExpired,
+		Terminal:    true,
+	})
 	return d.outboxStore.Complete(ctx, []string{rec.ID}, token)
 }
 
@@ -431,6 +479,16 @@ func (d *OutboxDrainer) handlePoison(ctx context.Context, rec *domain.OutboxReco
 	if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID, rec.SessionID, "", poisonErr, rec.ReplayCount); dlqErr != nil {
 		return dlqErr
 	}
+	d.hook.OnSettled(ctx, ports.DeliveryOutcome{
+		Direction:   ports.DirectionEgress,
+		RouteID:     d.routeID,
+		BindingID:   rec.BindingID,
+		Envelope:    env,
+		Attempt:     rec.ReplayCount + 1,
+		MaxAttempts: d.policy.MaxReplayAttempts,
+		Err:         poisonErr,
+		Terminal:    true,
+	})
 	return d.outboxStore.Complete(ctx, []string{rec.ID}, token)
 }
 

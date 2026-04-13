@@ -33,6 +33,7 @@ type RouteRunner struct {
 	instanceID  string
 	metrics     ports.MetricsExporter
 	tracer      ports.Tracer
+	hook        ports.DeliveryHook
 	logger      *slog.Logger
 	sem         chan struct{}
 	globalSem   chan struct{}
@@ -54,6 +55,7 @@ type RouteRunnerConfig struct {
 	InstanceID    string
 	Metrics       ports.MetricsExporter
 	Tracer        ports.Tracer
+	Hook          ports.DeliveryHook
 	Logger        *slog.Logger
 	GlobalSem     chan struct{}
 	DepthCacheTTL time.Duration
@@ -76,6 +78,10 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 	t := cfg.Tracer
 	if t == nil {
 		t = &ports.NoopTracer{}
+	}
+	h := cfg.Hook
+	if h == nil {
+		h = ports.NoopDeliveryHook{}
 	}
 	policy := cfg.Policy.WithDefaults()
 
@@ -102,6 +108,7 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 		instanceID:  cfg.InstanceID,
 		metrics:     m,
 		tracer:      t,
+		hook:        h,
 		logger:      cfg.Logger,
 		globalSem:   cfg.GlobalSem,
 		depthCache:  dc,
@@ -255,6 +262,14 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		ctx = observability.WithTraceID(ctx, tc.TraceID)
 		ctx = observability.WithSpanID(ctx, tc.SpanID)
 	}
+
+	r.hook.OnAttempt(ctx, ports.DeliveryAttempt{
+		Direction:   ports.DirectionIngress,
+		RouteID:     r.routeID,
+		Envelope:    env,
+		Attempt:     1,
+		MaxAttempts: r.policy.MaxReplayAttempts,
+	})
 
 	if env.IsExpired() {
 		err := r.handleExpired(ctx, del, env)

@@ -28,6 +28,7 @@ type Runtime struct {
 	metrics           ports.MetricsExporter
 	audit             ports.AuditLogger
 	tracer            ports.Tracer
+	hook              ports.DeliveryHook
 	logger            *slog.Logger
 	globalMaxInFlight  int
 	clusterEndpoints   map[string]string
@@ -110,6 +111,14 @@ func WithTracer(t ports.Tracer) Option {
 	return func(rt *Runtime) { rt.tracer = t }
 }
 
+// WithDeliveryHook sets the delivery hook for observing message lifecycle
+// events. The hook is called on every ingress receive, every egress send
+// attempt, and once when a message reaches its terminal state (delivered,
+// DLQ'd, dropped, or expired). Defaults to NoopDeliveryHook if not set.
+func WithDeliveryHook(h ports.DeliveryHook) Option {
+	return func(rt *Runtime) { rt.hook = h }
+}
+
 // WithLogger sets the structured logger.
 func WithLogger(logger *slog.Logger) Option {
 	return func(rt *Runtime) { rt.logger = logger }
@@ -145,6 +154,7 @@ func New(opts ...Option) *Runtime {
 		healthy:        true,
 		audit:          ports.NoopAuditLogger{},
 		tracer:         &ports.NoopTracer{},
+		hook:           ports.NoopDeliveryHook{},
 	}
 	for _, opt := range opts {
 		opt(rt)
@@ -280,6 +290,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 			InstanceID:    rt.instanceID,
 			Metrics:       m,
 			Tracer:        rt.tracer,
+			Hook:          rt.hook,
 			Logger:        rt.logger,
 			GlobalSem:     rt.globalSem,
 			DepthCacheTTL: entry.config.Policy.DepthCacheTTL,
@@ -326,6 +337,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					DrainMaxBatchSize:   entry.sessCfg.DrainMaxBatchSize,
 					DrainMaxConcurrency: entry.sessCfg.DrainMaxConcurrency,
 					Metrics:             m,
+					Hook:                rt.hook,
 					Logger:         rt.logger,
 					TokenFn:        mgr.Token,
 					ReadyFn: func() bool {
@@ -376,6 +388,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					DrainMaxBatchSize:   sse.config.DrainMaxBatchSize,
 					DrainMaxConcurrency: sse.config.DrainMaxConcurrency,
 					Metrics:             m,
+					Hook:                rt.hook,
 					Logger:         rt.logger,
 					TokenFn:        mgr.Token,
 					ReadyFn: func() bool {

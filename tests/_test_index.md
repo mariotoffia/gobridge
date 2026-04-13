@@ -1277,3 +1277,21 @@ Catalog of all test functions in the gobridge repository.
 | TestIntegration_OutboxDrainer_RealSQSSender_HeaderPreservation | validates DispatchHeaders survive outbox→SQS pipeline | integration | outbox_drainer_sqs | pass |
 | TestGap_AMQP091_To_SQS_CrossTransport | validates AMQP 0-9-1→bridge→SQS cross-transport routing | longrunning | amqp_cross_transport | pass |
 | TestGap_AMQP091_To_MQTT_CrossTransport | validates AMQP 0-9-1→bridge→MQTT cross-transport routing | longrunning | amqp_cross_transport | pass |
+| TestDeliveryHook_DirectHold_Success | validates OnAttempt ingress+egress and OnSettled on successful direct hold delivery | unit | delivery_hook | pass |
+| TestDeliveryHook_DirectHold_PermanentFailure_DLQ | validates OnSettled carries error when permanent send failure routes to DLQ | unit | delivery_hook | pass |
+| TestDeliveryHook_DirectHold_NoHook_NoopSafe | validates delivery works when no hook is registered (noop default) | unit | delivery_hook | pass |
+| TestDeliveryHook_DirectHold_TransientRetry_NoSettled | validates transient failure fires OnAttempt but not OnSettled when retry succeeds | unit | delivery_hook | pass |
+| TestDeliveryHook_DirectHold_AttemptCarriesReceiveCount | validates Attempt field uses receiveCount+1 from envelope headers | unit | delivery_hook | pass |
+| TestDeliveryHook_DirectHold_MaxAttemptFromPolicy | validates MaxAttempts field matches policy MaxReplayAttempts | unit | delivery_hook | pass |
+| TestDeliveryHook_DirectHold_Drop_NoDLQ_RetryUnsupported | validates OnSettled fires with error when message is dropped | unit | delivery_hook | pass |
+| TestDeliveryHook_DirectHold_ExpiredMessage_NoEgressHook | validates expired message fires ingress OnAttempt but no egress hooks | unit | delivery_hook | pass |
+| TestDeliveryHook_DirectHold_SettledCarriesBindingID | validates OnSettled BindingID matches the dispatch plan binding | unit | delivery_hook | pass |
+| TestDeliveryHook_DirectHold_ConcurrentDeliveries | validates concurrent deliveries each get independent hook calls | unit | delivery_hook | pass |
+| TestDeliveryHook_SharedOutbox_Success | validates OnAttempt+OnSettled on successful outbox drain | unit | delivery_hook | pass |
+| TestDeliveryHook_SharedOutbox_Poison | validates OnSettled fires with poison error when replay count exceeded | unit | delivery_hook | pass |
+| TestDeliveryHook_SharedOutbox_Expired | validates OnSettled fires with ErrMessageExpired for expired records | unit | delivery_hook | pass |
+| TestDeliveryHook_SharedOutbox_PermanentSendError | validates OnSettled fires when permanent send error routes to DLQ | unit | delivery_hook | pass |
+| TestDeliveryHook_SharedOutbox_TransientNoSettled | validates transient send failure fires OnAttempt but not OnSettled | unit | delivery_hook | pass |
+| TestDeliveryHook_SharedOutbox_AttemptIsReplayCountPlusOne | validates Attempt field is ReplayCount+1 in drainer hooks | unit | delivery_hook | pass |
+| TestDeliveryHook_SharedOutbox_MultipleBatchRecords | validates each record in a drain batch fires independent hook calls | unit | delivery_hook | pass |
+| TestDeliveryHook_Builder_RegisterPropagates | validates RegisterDeliveryHook on builder propagates to runtime | unit | delivery_hook | pass |

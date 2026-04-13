@@ -65,7 +65,21 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	sendCtx, sendCancel := context.WithTimeout(ctx, r.policy.SendTimeout)
 	defer sendCancel()
 
+	rc := receiveCount(env)
+	attempt := rc + 1
+
 	sendErr := sender.Send(sendCtx, env)
+
+	r.hook.OnAttempt(ctx, ports.DeliveryAttempt{
+		Direction:   ports.DirectionEgress,
+		RouteID:     r.routeID,
+		BindingID:   plan.BindingID,
+		Envelope:    env,
+		Attempt:     attempt,
+		MaxAttempts: r.policy.MaxReplayAttempts,
+		Err:         sendErr,
+	})
+
 	if sendErr == nil {
 		r.metrics.Counter(domain.MetricMessagesSent, 1,
 			domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID})
@@ -75,6 +89,15 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 				"envelope_id", env.ID,
 			)
 		}
+		r.hook.OnSettled(ctx, ports.DeliveryOutcome{
+			Direction:   ports.DirectionEgress,
+			RouteID:     r.routeID,
+			BindingID:   plan.BindingID,
+			Envelope:    env,
+			Attempt:     attempt,
+			MaxAttempts: r.policy.MaxReplayAttempts,
+			Terminal:    true,
+		})
 		return del.Ack(ctx)
 	}
 
@@ -82,7 +105,6 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		r.metrics.Counter(domain.MetricRouteErrors, 1,
 			domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID})
 
-		rc := receiveCount(env)
 		if r.policy.MaxReplayAttempts > 0 && rc >= r.policy.MaxReplayAttempts {
 			if logging.DebugEnabled(r.logger) {
 				r.logger.Log(context.Background(), logging.LevelDebug, "max replay attempts exceeded in direct_hold",
@@ -99,6 +121,16 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 				return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
 			}
 			r.emitDLQ("max_retries")
+			r.hook.OnSettled(ctx, ports.DeliveryOutcome{
+				Direction:   ports.DirectionEgress,
+				RouteID:     r.routeID,
+				BindingID:   plan.BindingID,
+				Envelope:    env,
+				Attempt:     attempt,
+				MaxAttempts: r.policy.MaxReplayAttempts,
+				Err:         poisonErr,
+				Terminal:    true,
+			})
 			return del.Ack(ctx)
 		}
 
@@ -118,6 +150,16 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		)
 	}
 	r.emitDLQ("permanent")
+	r.hook.OnSettled(ctx, ports.DeliveryOutcome{
+		Direction:   ports.DirectionEgress,
+		RouteID:     r.routeID,
+		BindingID:   plan.BindingID,
+		Envelope:    env,
+		Attempt:     attempt,
+		MaxAttempts: r.policy.MaxReplayAttempts,
+		Err:         sendErr,
+		Terminal:    true,
+	})
 	return del.Ack(ctx)
 }
 
@@ -211,6 +253,15 @@ func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, e
 			r.logger.Warn("message dropped: retry unsupported and no DLQ configured",
 				"route", r.routeID, "envelope_id", env.ID)
 		}
+		r.hook.OnSettled(ctx, ports.DeliveryOutcome{
+			Direction:   ports.DirectionEgress,
+			RouteID:     r.routeID,
+			Envelope:    env,
+			Attempt:     receiveCount(env) + 1,
+			MaxAttempts: r.policy.MaxReplayAttempts,
+			Err:         reason,
+			Terminal:    true,
+		})
 	}
 	r.emitDLQ("retry_unsupported")
 	return del.Ack(ctx)

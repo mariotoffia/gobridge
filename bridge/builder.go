@@ -20,6 +20,7 @@ type Builder struct {
 	logger           *slog.Logger
 	credStore        ports.CredentialStore
 	endpointResolver ports.EndpointResolver
+	hook             ports.DeliveryHook
 }
 
 // BuilderOption configures a Builder.
@@ -79,6 +80,14 @@ func (b *Builder) RegisterEndpointResolver(r ports.EndpointResolver) *Builder {
 	return b
 }
 
+// RegisterDeliveryHook sets a hook that observes message delivery lifecycle
+// events (ingress receive, egress send attempts, and final outcomes).
+// Returns the builder for chaining.
+func (b *Builder) RegisterDeliveryHook(h ports.DeliveryHook) *Builder {
+	b.hook = h
+	return b
+}
+
 // TransportHandlers returns HTTP handlers from transport factories that
 // implement HTTPMountable. The map keys are transport names.
 func (b *Builder) TransportHandlers() map[string]HTTPMountable {
@@ -124,6 +133,9 @@ func (b *Builder) Prepare(ctx context.Context) (*PreparedBuild, error) {
 	}
 	if b.logger != nil {
 		rtOpts = append(rtOpts, runtime.WithLogger(b.logger))
+	}
+	if b.hook != nil {
+		rtOpts = append(rtOpts, runtime.WithDeliveryHook(b.hook))
 	}
 
 	endpoints := b.resolveClusterEndpoints(ctx)

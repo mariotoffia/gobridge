@@ -538,6 +538,112 @@ graph LR
 
 Solid arrows are required references. Dashed arrows are optional. The validator rejects configs with broken references.
 
+## Delivery Hooks (Programmatic API)
+
+Delivery hooks are registered programmatically via the builder or runtime options -- they are not configured in YAML. A hook observes message lifecycle events without modifying the message or control flow.
+
+### Registration
+
+```go
+hook := &myAuditHook{}
+
+rt, err := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
+    RegisterTransport("mqtt", paho.NewBridgeFactory(logger)).
+    RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).
+    RegisterDeliveryHook(hook).
+    Build(ctx)
+```
+
+Or at the runtime level:
+
+```go
+rt := runtime.New(
+    runtime.WithDeliveryHook(hook),
+    // ... other options
+)
+```
+
+### Interface
+
+```go
+type DeliveryHook interface {
+    OnAttempt(ctx context.Context, evt DeliveryAttempt)
+    OnSettled(ctx context.Context, evt DeliveryOutcome)
+}
+```
+
+### When hooks fire
+
+| Event | Direction | When | Fields |
+|-------|-----------|------|--------|
+| `OnAttempt` | `ingress` | Every time a message is received from a source transport | `RouteID`, `Envelope`, `Attempt=1` |
+| `OnAttempt` | `egress` | Every send attempt (DirectHold) or drain attempt (SharedOutbox) | `RouteID`, `BindingID`, `Envelope`, `Attempt`, `MaxAttempts`, `Err` |
+| `OnSettled` | `egress` | Message delivered successfully | `Err=nil`, `Terminal=true` |
+| `OnSettled` | `egress` | Permanent failure routed to DLQ | `Err` set, `Terminal=true` |
+| `OnSettled` | `egress` | Max retries exceeded (poison) | `Err` set, `Terminal=true` |
+| `OnSettled` | `egress` | Message dropped (no DLQ, retry unsupported) | `Err` set, `Terminal=true` |
+| `OnSettled` | `egress` | Message expired before send | `Err=ErrMessageExpired`, `Terminal=true` |
+
+`OnAttempt` fires on **every** attempt including retries. `OnSettled` fires **exactly once** when the message reaches a terminal state.
+
+### Event structs
+
+- `DeliveryAttempt.Attempt` -- 1-based attempt number. For DirectHold this is `receiveCount + 1`; for SharedOutbox this is `replayCount + 1`.
+- `DeliveryAttempt.MaxAttempts` -- from the route policy `max_replay_attempts`. Zero means unknown.
+- `DeliveryAttempt.Err` -- nil on successful attempt, non-nil on failure.
+- `DeliveryOutcome.Terminal` -- always `true` (distinguishes settled events from attempt events in shared logging code).
+
+### Thread safety
+
+Hook methods may be called concurrently from multiple delivery goroutines. Implementations must be safe for concurrent use. Hooks are called synchronously on the delivery goroutine -- a slow hook directly increases delivery latency.
+
+### Hooks vs Processors
+
+Hooks and processors serve different purposes:
+
+| Concern | Processor | Hook |
+|---------|-----------|------|
+| Can mutate the envelope | Yes | No |
+| Can short-circuit the pipeline | Yes | No |
+| Called per attempt or per message | Per message (before send) | Per attempt and on final outcome |
+| Registration | Config YAML (`processors:`) | Programmatic (`RegisterDeliveryHook`) |
+| Use case | Filtering, transformation, enrichment | Audit logging, observability, external notification |
+
+### Example: audit logging hook
+
+```go
+type auditHook struct {
+    logger *slog.Logger
+}
+
+func (h *auditHook) OnAttempt(ctx context.Context, evt ports.DeliveryAttempt) {
+    if evt.Direction == ports.DirectionEgress && evt.Err != nil {
+        h.logger.Warn("egress attempt failed",
+            "route", evt.RouteID,
+            "binding", evt.BindingID,
+            "envelope_id", evt.Envelope.ID,
+            "attempt", evt.Attempt,
+            "max_attempts", evt.MaxAttempts,
+            "error", evt.Err,
+        )
+    }
+}
+
+func (h *auditHook) OnSettled(ctx context.Context, evt ports.DeliveryOutcome) {
+    level := slog.LevelInfo
+    if evt.Err != nil {
+        level = slog.LevelError
+    }
+    h.logger.Log(ctx, level, "delivery settled",
+        "route", evt.RouteID,
+        "binding", evt.BindingID,
+        "envelope_id", evt.Envelope.ID,
+        "attempts", evt.Attempt,
+        "error", evt.Err,
+    )
+}
+```
+
 ## Validation Rules Summary
 
 Errors from `config.Validate()`:
