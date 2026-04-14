@@ -29,10 +29,11 @@ type Manager struct {
 	mergeFn  MergeFunc
 	logger   *slog.Logger
 
-	mu       sync.Mutex
-	configs  map[string]*BridgeConfig // cached per-layer configs
-	stopCh   chan struct{}
-	running  bool
+	mu      sync.Mutex
+	configs map[string]*BridgeConfig // cached per-layer configs
+	stopCh  chan struct{}
+	doneCh  chan struct{} // closed when watchLoop exits
+	running bool
 }
 
 // ManagerOption configures a Manager.
@@ -120,34 +121,41 @@ func (m *Manager) Watch(ctx context.Context) (<-chan *BridgeConfig, error) {
 	}
 	m.running = true
 	m.stopCh = make(chan struct{})
+	m.doneCh = make(chan struct{})
+	stopCh := m.stopCh
+	doneCh := m.doneCh
 	m.mu.Unlock()
 
 	out := make(chan *BridgeConfig, 1)
 	ctx, cancel := context.WithCancel(ctx)
 
-	go m.watchLoop(ctx, cancel, out)
+	go m.watchLoop(ctx, cancel, out, stopCh, doneCh)
 	return out, nil
 }
 
-// Stop stops all active watchers.
+// Stop stops all active watchers and waits for the watch loop to exit.
 func (m *Manager) Stop() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if !m.running {
+		m.mu.Unlock()
 		return
 	}
 	close(m.stopCh)
+	doneCh := m.doneCh
+	m.mu.Unlock()
+
+	<-doneCh // wait for watchLoop goroutine to exit
+
+	m.mu.Lock()
 	m.running = false
+	m.mu.Unlock()
 }
 
-func (m *Manager) watchLoop(ctx context.Context, cancel context.CancelFunc, out chan<- *BridgeConfig) {
+func (m *Manager) watchLoop(ctx context.Context, cancel context.CancelFunc, out chan *BridgeConfig, stopCh <-chan struct{}, doneCh chan struct{}) {
 	defer func() {
 		cancel()
 		close(out)
-		m.mu.Lock()
-		m.running = false
-		m.mu.Unlock()
+		close(doneCh)
 	}()
 
 	type layerEvent struct {
@@ -195,7 +203,7 @@ func (m *Manager) watchLoop(ctx context.Context, cancel context.CancelFunc, out 
 
 	for {
 		select {
-		case <-m.stopCh:
+		case <-stopCh:
 			cancel()
 			return
 		case <-ctx.Done():
@@ -216,10 +224,12 @@ func (m *Manager) watchLoop(ctx context.Context, cancel context.CancelFunc, out 
 				continue
 			}
 
+			// Drain stale config so the consumer always gets the latest.
 			select {
-			case out <- merged:
+			case <-out:
 			default:
 			}
+			out <- merged
 		}
 	}
 }

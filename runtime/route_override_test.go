@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -162,6 +164,99 @@ func TestDirectHold_HeaderRouteOverride_InvalidBinding_FallsThrough(t *testing.T
 	if len(defaultSender.GetSent()) != 1 {
 		t.Fatalf("expected fallthrough to default sender, got %d sent", len(defaultSender.GetSent()))
 	}
+}
+
+// ---------------------------------------------------------------------------
+// TestDirectHold_Override_RenderAddressError_RoutesDLQ
+// ---------------------------------------------------------------------------
+
+func TestDirectHold_Override_RenderAddressError_RoutesDLQ(t *testing.T) {
+	sender := NewFakeSender()
+	dlqStore := NewFakeDLQStore()
+
+	bindings := []domain.DestinationBinding{
+		{ID: "bind-template", Address: "devices/{tenant}/events"},
+	}
+
+	receiver := NewFakeReceiver()
+	cfg := runtime.RouteRunnerConfig{
+		RouteID:  "render-err-route",
+		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Receiver: receiver,
+		Sender:   sender,
+		Senders:  map[string]ports.Sender{"bind-template": sender},
+		DLQ:      runtime.NewDLQRouter(dlqStore),
+		Bindings: bindings,
+		Processors: []ports.Processor{
+			&overrideProcessor{targetBinding: "bind-template"},
+		},
+	}
+	runner := runtime.NewRouteRunnerFromConfig(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = runner.Run(ctx) }()
+	<-receiver.Ready()
+
+	// Envelope has no "tenant" header -> RenderAddress fails.
+	env := &domain.Envelope{ID: "missing-header-msg", Subject: "test"}
+	del := NewFakeDelivery(env)
+	_ = receiver.Emit(ctx, del)
+	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)
+
+	// Must go to DLQ, not be sent with raw template address.
+	assert.Equal(t, 0, sender.SentCount(),
+		"sender must not be called when address template fails")
+	assert.Equal(t, 1, dlqStore.Count(),
+		"expected 1 DLQ entry for address template error")
+}
+
+// ---------------------------------------------------------------------------
+// TestDirectHold_Override_MQTTValidation_RoutesDLQ
+// ---------------------------------------------------------------------------
+
+func TestDirectHold_Override_MQTTValidation_RoutesDLQ(t *testing.T) {
+	sender := NewFakeSender()
+	dlqStore := NewFakeDLQStore()
+
+	bindings := []domain.DestinationBinding{
+		{ID: "mqtt-bind", Transport: "mqtt", Address: "devices/{topic}/events"},
+	}
+
+	receiver := NewFakeReceiver()
+	cfg := runtime.RouteRunnerConfig{
+		RouteID:  "mqtt-validate-route",
+		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Receiver: receiver,
+		Sender:   sender,
+		Senders:  map[string]ports.Sender{"mqtt-bind": sender},
+		DLQ:      runtime.NewDLQRouter(dlqStore),
+		Bindings: bindings,
+		Processors: []ports.Processor{
+			&overrideProcessor{targetBinding: "mqtt-bind"},
+		},
+	}
+	runner := runtime.NewRouteRunnerFromConfig(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = runner.Run(ctx) }()
+	<-receiver.Ready()
+
+	// Header value produces invalid MQTT topic (contains wildcard).
+	env := &domain.Envelope{
+		ID:      "bad-mqtt-msg",
+		Subject: "test",
+		Headers: map[string]any{"topic": "factory/+/data"},
+	}
+	del := NewFakeDelivery(env)
+	_ = receiver.Emit(ctx, del)
+	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)
+
+	assert.Equal(t, 0, sender.SentCount(),
+		"sender must not be called for invalid MQTT topic")
+	assert.Equal(t, 1, dlqStore.Count(),
+		"expected 1 DLQ entry for invalid MQTT topic")
 }
 
 // ---------------------------------------------------------------------------

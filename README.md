@@ -7,7 +7,7 @@ A message-bridge framework for Go. Route messages between MQTT, AWS SQS, Azure S
 - **Multi-transport routing**: MQTT v5, AWS SQS, Azure Service Bus, RabbitMQ (AMQP 0-9-1), AMQP 1.0 with a clean port/adapter model
 - **Delivery guarantees**: DirectHold (send-then-ack) and SharedOutbox (persist-then-ack with durable outbox drainer)
 - **Processor chain**: Middleware for filtering, transformation, circuit breaking, and tenant isolation
-- **Pluggable stores**: LeaseStore, OutboxStore, DLQStore with Memory, SQLite, and DynamoDB implementations
+- **Pluggable stores**: LeaseStore, OutboxStore, DLQStore with Memory and DynamoDB implementations; SQLite for OutboxStore and DLQStore
 - **Credential management**: URI-based resolution (file://, pms://) with scheme dispatch and caching
 - **HTTP APIs**: Admin server for bridge lifecycle, route injection, and DLQ management; Monitor server for health probes and topology
 - **Observability**: OpenTelemetry metrics and tracing, CloudWatch metrics, correlation-aware structured logging via slog
@@ -147,7 +147,7 @@ gobridge/
 | Store | Module | Use Case |
 |-------|--------|----------|
 | Memory | `adapters/native/store/memory*` | Development and testing |
-| SQLite | `adapters/native/store/sqlite*` | Single-process deployments |
+| SQLite | `adapters/native/store/sqlite*` | Single-process deployments (OutboxStore, DLQStore only) |
 | DynamoDB | `adapters/aws/store/dynamodb*` | Production, clustered deployments |
 
 ## Development

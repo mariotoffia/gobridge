@@ -208,6 +208,106 @@ func TestManager_Watch_AlreadyRunning(t *testing.T) {
 	mgr.Stop()
 }
 
+func TestManager_StopWaitsForLoopExit(t *testing.T) {
+	base := minimalValidConfig("bridge1")
+	watchCh := make(chan *BridgeConfig, 1)
+
+	mgr := NewManager(Layer{
+		Name:    "file",
+		Loader:  &stubLoader{cfg: base},
+		Watcher: &stubWatcher{ch: watchCh},
+	})
+
+	_, err := mgr.Load(context.Background())
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	_, err = mgr.Watch(ctx)
+	require.NoError(t, err)
+
+	mgr.Stop()
+
+	// After Stop returns, Watch must succeed immediately —
+	// the old loop is fully exited, running is false.
+	out, err := mgr.Watch(ctx)
+	require.NoError(t, err, "Watch after Stop should succeed because old loop has exited")
+	require.NotNil(t, out)
+
+	mgr.Stop()
+}
+
+func TestManager_StopThenWatch_NoRace(t *testing.T) {
+	base := minimalValidConfig("bridge1")
+	watchCh := make(chan *BridgeConfig, 1)
+
+	mgr := NewManager(Layer{
+		Name:    "file",
+		Loader:  &stubLoader{cfg: base},
+		Watcher: &stubWatcher{ch: watchCh},
+	})
+
+	_, err := mgr.Load(context.Background())
+	require.NoError(t, err)
+
+	// Rapid stop/restart cycles must not race.
+	for i := 0; i < 20; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		out, err := mgr.Watch(ctx)
+		require.NoError(t, err)
+
+		mgr.Stop()
+		// Output channel must be closed after Stop returns.
+		_, open := <-out
+		assert.False(t, open, "output channel should be closed after Stop")
+		cancel()
+	}
+}
+
+func TestManager_Watch_SlowConsumer_GetsLatestConfig(t *testing.T) {
+	base := minimalValidConfig("bridge1")
+	watchCh := make(chan *BridgeConfig, 4)
+
+	mgr := NewManager(Layer{
+		Name:    "file",
+		Loader:  &stubLoader{cfg: base},
+		Watcher: &stubWatcher{ch: watchCh},
+	})
+
+	_, err := mgr.Load(context.Background())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out, err := mgr.Watch(ctx)
+	require.NoError(t, err)
+
+	// Push three configs rapidly without consuming.
+	cfg1 := minimalValidConfig("v1")
+	cfg2 := minimalValidConfig("v2")
+	cfg3 := minimalValidConfig("v3")
+
+	watchCh <- cfg1
+	time.Sleep(50 * time.Millisecond)
+	watchCh <- cfg2
+	time.Sleep(50 * time.Millisecond)
+	watchCh <- cfg3
+	time.Sleep(50 * time.Millisecond)
+
+	// Now read: should get the latest config (v3), not v1.
+	select {
+	case cfg := <-out:
+		require.NotNil(t, cfg)
+		assert.Equal(t, "v3", cfg.Bridge.ID,
+			"slow consumer should receive latest config, not stale one")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for config")
+	}
+
+	mgr.Stop()
+}
+
 func TestManager_CustomMergeFunc(t *testing.T) {
 	base := minimalValidConfig("bridge1")
 	overlay := &BridgeConfig{

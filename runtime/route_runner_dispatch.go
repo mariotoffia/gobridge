@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mariotoffia/gobridge/logging"
@@ -20,8 +21,18 @@ func (r *RouteRunner) sendDirectHoldForBinding(ctx context.Context, del ports.De
 			addr := b.Address
 			if addr != "" {
 				rendered, err := RenderAddress(addr, env.Headers)
-				if err == nil {
-					addr = rendered
+				if err != nil {
+					addrErr := domain.ErrInvalidTopic.
+						WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
+					return r.handleResolveError(ctx, del, env, addrErr)
+				}
+				addr = rendered
+			}
+			if strings.EqualFold(b.Transport, "mqtt") && addr != "" {
+				if err := ValidateMQTTTopic(addr); err != nil {
+					topicErr := domain.ErrInvalidTopic.
+						WithMessage(fmt.Sprintf("binding %q: %v", b.ID, err))
+					return r.handleResolveError(ctx, del, env, topicErr)
 				}
 			}
 			return r.sendDirectHold(ctx, del, env, domain.DispatchPlan{
