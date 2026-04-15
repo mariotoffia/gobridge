@@ -18,8 +18,36 @@ import (
 // Compile-time check.
 var _ ports.Delivery = (*sqsDelivery)(nil)
 
-// sqsDelivery wraps a received SQS message and maps Ack/Retry/Extend
-// to the corresponding SQS receipt-handle operations.
+// sqsDelivery wraps a received SQS message and maps the ports.Delivery
+// lifecycle (Ack, Retry, Extend) to SQS receipt-handle operations.
+//
+// # Context hierarchy
+//
+// The receiver's poll loop creates a three-level context tree per message:
+//
+//	pollLoop ctx (caller-owned, e.g. test WithTimeout)
+//	  └─ deliveryCtx (WithCancel) — passed to emit() and to newDelivery
+//	       └─ autoExtendCtx (WithCancel) — scoped to the auto-extend goroutine
+//
+//   - deliveryCtx is canceled by cleanupContext() after the Ack/Retry SQS
+//     call completes, to reclaim the context node.
+//   - autoExtendCtx is canceled by stopAutoExtend() before the SQS call,
+//     so the goroutine stops before we delete/re-queue the message.
+//   - If auto-extend fails 3 consecutive times, it calls processingCancel
+//     (= deliveryCtx cancel) so the emit callback receives a canceled ctx.
+//
+// # Why separate stopAutoExtend and cleanupContext
+//
+// Ack and Retry must stop the auto-extend goroutine before calling the
+// SQS API (otherwise the goroutine might race a ChangeMessageVisibility
+// against the DeleteMessage). But they must NOT cancel deliveryCtx before
+// the API call, because the caller passes deliveryCtx as the ctx argument
+// to Ack/Retry. Canceling it early would make the SQS call fail with
+// "context canceled". Therefore:
+//
+//   - stopAutoExtend runs first  → stops the goroutine only
+//   - SQS API call runs          → uses the still-live deliveryCtx
+//   - cleanupContext runs (defer) → frees the deliveryCtx node
 type sqsDelivery struct {
 	env               *domain.Envelope
 	client            sqsAPI
@@ -29,15 +57,22 @@ type sqsDelivery struct {
 	logger            *slog.Logger
 	metrics           ports.MetricsExporter
 
-	cancel           context.CancelFunc // stops auto-extend goroutine
-	processingCancel context.CancelFunc // cancels the processing goroutine on extend failure
-	once             sync.Once          // ensures cancel runs exactly once
+	cancel           context.CancelFunc // cancels autoExtendCtx (stops the goroutine)
+	processingCancel context.CancelFunc // cancels deliveryCtx (frees the context node)
+	once             sync.Once          // ensures stopAutoExtend is idempotent
 }
 
 // newDelivery creates a delivery for a received SQS message.
-// When autoExtend is true a background goroutine periodically extends
-// visibility at 50 % of visibilityTimeout until the delivery is
-// acknowledged, retried, or the parent context is cancelled.
+//
+// When autoExtend is true and visibilityTimeout > 1s, a background
+// goroutine (autoExtendLoop) periodically calls ChangeMessageVisibility
+// at 50% of visibilityTimeout. This keeps the message invisible to
+// other consumers while the bridge processes it. The loop runs until
+// the delivery is finalized (Ack or Retry) or the parent context is
+// canceled.
+//
+// processingCancel is the cancel func for deliveryCtx (see context
+// hierarchy on sqsDelivery). It may be nil in tests.
 func newDelivery(
 	parentCtx context.Context,
 	env *domain.Envelope,
@@ -79,7 +114,8 @@ func (d *sqsDelivery) Envelope() *domain.Envelope { return d.env }
 
 // Ack deletes the SQS message, confirming successful processing.
 func (d *sqsDelivery) Ack(ctx context.Context) error {
-	d.stop()
+	d.stopAutoExtend()
+	defer d.cleanupContext()
 
 	if logging.TraceEnabled(d.logger) {
 		d.logger.Log(ctx, logging.LevelTrace, "sqs: acking",
@@ -104,7 +140,8 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 // Retry makes the message visible again after the given delay.
 // A zero delay makes the message immediately available for re-delivery.
 func (d *sqsDelivery) Retry(ctx context.Context, after time.Duration, _ error) error {
-	d.stop()
+	d.stopAutoExtend()
+	defer d.cleanupContext()
 
 	timeout := int32(after.Seconds())
 	if timeout < 0 {
@@ -138,8 +175,14 @@ func (d *sqsDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 
 // Extend pushes the visibility timeout to the given absolute time.
 // The delta from now is clamped to [0, 43200] seconds (SQS maximum).
-// Also updates the stored timeout used by auto-extend to prevent it
-// from resetting visibility to a shorter value on the next tick.
+//
+// When auto-extend is running, Extend also updates the stored timeout
+// atomically so the next auto-extend tick uses the new value. Without
+// this, auto-extend would reset visibility to the old (shorter) value
+// on the next tick, effectively undoing the Extend.
+//
+// Extend does NOT stop auto-extend — the goroutine keeps running and
+// will maintain the new timeout. Call Ack or Retry to finalize.
 func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
 	timeout := int32(time.Until(until).Seconds())
 	if timeout < 0 {
@@ -173,28 +216,75 @@ func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
 	return nil
 }
 
-// stop cancels the auto-extend goroutine (idempotent).
-func (d *sqsDelivery) stop() {
+// stopAutoExtend cancels autoExtendCtx, which terminates the background
+// goroutine. Idempotent — safe to call multiple times.
+//
+// Called before the SQS API call in Ack/Retry so that the goroutine
+// cannot race a ChangeMessageVisibility against a DeleteMessage.
+func (d *sqsDelivery) stopAutoExtend() {
 	d.once.Do(func() {
 		if d.cancel != nil {
 			d.cancel()
 		}
-		// Also cancel the per-delivery context created by the receiver's
-		// Run loop. Without this, each successfully-processed message
-		// leaves a dangling context node in the Go runtime's context tree,
-		// growing monotonically over the receiver's lifetime.
-		if d.processingCancel != nil {
-			d.processingCancel()
-		}
 	})
+}
+
+// cleanupContext cancels deliveryCtx, freeing the context tree node
+// that the receiver's pollLoop allocated for this message.
+//
+// Called via defer after the SQS API call in Ack/Retry. Must NOT be
+// called before the API call — the caller passes deliveryCtx as the
+// ctx argument, so an early cancel would break the SQS request.
+func (d *sqsDelivery) cleanupContext() {
+	if d.processingCancel != nil {
+		d.processingCancel()
+	}
 }
 
 const autoExtendMaxFailures = 3
 
-// autoExtendLoop extends visibility at 50 % of the configured timeout
-// until the context is cancelled (via Ack, Retry, or parent shutdown).
-// Tolerates up to autoExtendMaxFailures consecutive transient errors
-// before giving up.
+// autoExtendLoop is the background goroutine that keeps the message
+// invisible to other consumers while processing is in progress.
+//
+// # How it works
+//
+// SQS makes a message invisible for VisibilityTimeout seconds after it
+// is received. If the consumer doesn't delete (Ack) the message within
+// that window, SQS redelivers it. For slow processors this creates a
+// problem: the message becomes visible while the bridge is still working
+// on it, causing a duplicate delivery.
+//
+// autoExtendLoop prevents this by calling ChangeMessageVisibility at
+// 50% of the visibility timeout (the "tick interval"). Each call resets
+// the invisibility clock to the full timeout value, giving the processor
+// another full window to finish.
+//
+//	visibility = 30s → tick at 15s → extends to 30s from now → repeat
+//
+// # Dynamic visibility timeout
+//
+// If the caller calls Extend() (the ports.Delivery method), the stored
+// visibilityTimeout is updated atomically. On the next tick the loop
+// reads the new value and adjusts both the SQS call and its own tick
+// interval. This is safe because ChangeMessageVisibility is idempotent
+// per receipt handle — the last writer wins. Typical use case: a
+// processor discovers it needs more time and calls Extend(now + 5m),
+// which bumps visibilityTimeout to 300s and the tick to 150s.
+//
+// # Failure handling
+//
+// Transient SQS errors (network blip, throttle) are tolerated up to
+// autoExtendMaxFailures consecutive times. The counter resets on each
+// success, so interleaved failures do not accumulate. If the limit is
+// reached, the loop calls processingCancel (cancels deliveryCtx),
+// which signals the emit callback that processing should abort — the
+// message will become visible again and SQS will redeliver it.
+//
+// # Lifetime
+//
+// The loop exits when ctx (autoExtendCtx) is canceled, which happens
+// via stopAutoExtend() in Ack/Retry, or via parent context cancellation
+// during graceful shutdown.
 func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 	interval := time.Duration(d.visibilityTimeout.Load()) * time.Second / 2
 

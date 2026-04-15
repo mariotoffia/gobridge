@@ -321,7 +321,10 @@ func TestIntegration_OutboxDrainer_ConcurrentDrainers(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	store := newDDBOutboxStore(t, "od5")
+	// Use a realistic stale claim duration so freshly-claimed records
+	// aren't immediately re-claimable by a concurrent drainer. In
+	// production, this is derived from StepDownGrace + 15s.
+	store := newDDBOutboxStoreWithStaleDuration(t, "od5", 5*time.Second)
 	ctx := context.Background()
 	pk := domain.OutboxPartitionKey("sess-od5", "")
 
@@ -452,11 +455,16 @@ func TestIntegration_OutboxDrainer_AdaptiveBatchSize(t *testing.T) {
 
 func newDDBOutboxStore(t *testing.T, prefix string) *dboutbox.Store {
 	t.Helper()
+	return newDDBOutboxStoreWithStaleDuration(t, prefix, 0)
+}
+
+func newDDBOutboxStoreWithStaleDuration(t *testing.T, prefix string, staleDuration time.Duration) *dboutbox.Store {
+	t.Helper()
 	client := ddblocal.Client(t)
 	tableName := ddblocal.UniqueTable(prefix + "-outbox")
 	store := dboutbox.NewStore(client,
 		dboutbox.WithTableName(tableName),
-		dboutbox.WithStaleClaimDuration(0),
+		dboutbox.WithStaleClaimDuration(staleDuration),
 	)
 	if err := store.CreateTable(context.Background()); err != nil {
 		t.Fatalf("create outbox table: %v", err)

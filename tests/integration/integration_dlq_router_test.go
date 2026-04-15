@@ -165,9 +165,9 @@ func TestIntegration_DLQRouter_ErrorClassification(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Permanent error
+	// Permanent error (ErrNotFound has ErrorPermanent class)
 	env1 := &domain.Envelope{ID: "env-dr3-perm", Subject: "test", Payload: []byte("x")}
-	permErr := domain.ErrInvalidPayload.WithMessage("bad format")
+	permErr := domain.ErrNotFound.WithMessage("resource gone")
 	if err := router.Route(ctx, env1, "route-dr3", "b1", "s1", "", permErr, 1); err != nil {
 		t.Fatalf("Route perm: %v", err)
 	}

@@ -113,6 +113,7 @@ func TestBug3_Delivery_AutoExtendExhaustsCancelsProcessing(t *testing.T) {
 		t.Errorf("expected at least 3 extend calls, got %d", extendCalls)
 	}
 
-	// Clean up: stop the delivery to cancel its internal context.
-	del.stop()
+	// Clean up: stop auto-extend and release the delivery context.
+	del.stopAutoExtend()
+	del.cleanupContext()
 }

@@ -31,7 +31,7 @@ func TestAutoExtendRetriesTransientThenSucceedsS15(t *testing.T) {
 	ctx := context.Background()
 	env := &domain.Envelope{ID: "e1", Payload: []byte("x"), CreatedAt: time.Now()}
 	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-1", 2, true, nil, nil, nil)
-	defer d.stop()
+	defer func() { d.stopAutoExtend(); d.cleanupContext() }()
 
 	time.Sleep(3500 * time.Millisecond)
 
@@ -62,7 +62,7 @@ func TestAutoExtendInterleavedFailSuccessS15(t *testing.T) {
 	ctx := context.Background()
 	env := &domain.Envelope{ID: "e3", Payload: []byte("z"), CreatedAt: time.Now()}
 	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-3", 2, true, nil, nil, nil)
-	defer d.stop()
+	defer func() { d.stopAutoExtend(); d.cleanupContext() }()
 
 	time.Sleep(5 * time.Second)
 
@@ -85,7 +85,7 @@ func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
 	ctx := context.Background()
 	env := &domain.Envelope{ID: "e2", Payload: []byte("y"), CreatedAt: time.Now()}
 	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-2", 2, true, nil, nil, nil)
-	defer d.stop()
+	defer func() { d.stopAutoExtend(); d.cleanupContext() }()
 
 	time.Sleep(4 * time.Second)
 

@@ -200,13 +200,9 @@ func (d *OutboxDrainer) Run(ctx context.Context) error {
 	}
 }
 
-// finalDrain performs one last drain batch after the Run context has been
-// cancelled. It intentionally uses context.Background() as the parent so
-// that the drain can complete during the shutdown grace period even though
-// the caller's context is already done. The Claim call is bounded by
-// DrainTimeout (default 10s). Once records are claimed, in-flight sends
-// may run up to max(SendTimeout+5s, DrainTimeout) via the workCtx inside
-// drainBatch, so the total wall-clock time can exceed DrainTimeout.
+// finalDrain performs one last drain after Run's context is cancelled.
+// Uses context.Background() so the drain can complete during shutdown.
+// Claim is bounded by DrainTimeout; in-flight sends may exceed it.
 func (d *OutboxDrainer) finalDrain() error {
 	if !d.hasDrained {
 		return nil
@@ -385,6 +381,11 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRec
 	}
 	if rec.DispatchHeaders != nil {
 		env.Headers = domain.MergeHeaders(env.Headers, rec.DispatchHeaders, true)
+	}
+
+	// Re-check lease before sending to minimize duplicate delivery window.
+	if _, hasLease := d.tokenFn(); !hasLease {
+		return domain.ErrStaleFencingToken
 	}
 
 	sendCtx, sendCancel := context.WithTimeout(ctx, d.policy.SendTimeout)

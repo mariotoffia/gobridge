@@ -136,7 +136,24 @@ func TestDDBTransport_SQS_ConfigChangeSwapsQueue(t *testing.T) {
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)
 	defer func() { cancel(); watchCancel(); <-errCh }()
 
-	waitForSupervisorRuntime(t, s, 10*time.Second)
+	// Poll for runtime, but also check errCh for early failure.
+	{
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if rt := s.Runtime(); rt != nil {
+				break
+			}
+			select {
+			case err := <-errCh:
+				t.Fatalf("supervisor failed early: %v", err)
+			default:
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if s.Runtime() == nil {
+			t.Fatal("timed out waiting for supervisor runtime")
+		}
+	}
 
 	// Verify initial routing: send to queue-A, receive from queue-B.
 	sendToSQS(t, sqsClient, queueA, `{"test":"initial"}`, nil)

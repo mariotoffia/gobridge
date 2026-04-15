@@ -74,8 +74,9 @@ func TestOutboxDrainer_WorkCtxNotCappedBySendTimeout(t *testing.T) {
 		}.WithDefaults(),
 		Strategy:     domain.NewFixedPoll(50 * time.Millisecond),
 		DrainTimeout: 500 * time.Millisecond,
+		// Threshold: 1 (Run loop) + 1 (pre-send check) = 2.
 		TokenFn: func() (domain.LeaseToken, bool) {
-			if tokenCalls.Add(1) <= 1 {
+			if tokenCalls.Add(1) <= 2 {
 				return token, true
 			}
 			return domain.LeaseToken{}, false
@@ -151,8 +152,9 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 		Policy:       domain.RoutePolicy{}.WithDefaults(),
 		Strategy:     domain.NewFixedPoll(50 * time.Millisecond),
 		Metrics:      rec,
+		// Threshold: 1 (Run loop) + 1 (pre-send check) = 2.
 		TokenFn: func() (domain.LeaseToken, bool) {
-			if tokenCalls.Add(1) <= 1 {
+			if tokenCalls.Add(1) <= 2 {
 				return token, true
 			}
 			return domain.LeaseToken{}, false

@@ -79,7 +79,8 @@ func TestBugM6_AutoExtend_TickerResetsAfterVisibilityChange(t *testing.T) {
 			"change to 20s (10s interval), got %d new calls", newCalls)
 	}
 
-	d.stop()
+	d.stopAutoExtend()
+	d.cleanupContext()
 }
 
 // TestBugM6_AutoExtend_SameTimeout_NoReset verifies that when the
@@ -102,7 +103,8 @@ func TestBugM6_AutoExtend_SameTimeout_NoReset(t *testing.T) {
 
 	// Wait for at least 2 ticks (~2s with 1s interval).
 	time.Sleep(2500 * time.Millisecond)
-	d.stop()
+	d.stopAutoExtend()
+	d.cleanupContext()
 
 	count := extendCount.Load()
 	if count < 2 {

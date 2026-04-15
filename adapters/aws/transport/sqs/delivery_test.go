@@ -160,7 +160,8 @@ func TestDelivery_AutoExtend_CallsChangeVisibility(t *testing.T) {
 	// Wait for at least one auto-extend to fire.
 	time.Sleep(1500 * time.Millisecond)
 
-	d.stop()
+	d.stopAutoExtend()
+	d.cleanupContext()
 	time.Sleep(100 * time.Millisecond)
 
 	count := extendCount.Load()
@@ -238,7 +239,8 @@ func TestDelivery_NoAutoExtend(t *testing.T) {
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 2, false, nil, nil, nil)
 
 	time.Sleep(1500 * time.Millisecond)
-	d.stop()
+	d.stopAutoExtend()
+	d.cleanupContext()
 
 	if extendCount.Load() > 0 {
 		t.Fatal("auto-extend should not fire when disabled")
@@ -265,7 +267,8 @@ func TestDelivery_AutoExtend_UsesCorrectTimeout(t *testing.T) {
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 10, true, nil, nil, nil)
 
 	time.Sleep(5500 * time.Millisecond)
-	d.stop()
+	d.stopAutoExtend()
+	d.cleanupContext()
 
 	if callCount.Load() == 0 {
 		t.Fatal("expected at least 1 auto-extend call")
@@ -281,9 +284,12 @@ func TestDelivery_MultipleStopsAreSafe(t *testing.T) {
 	env := &domain.Envelope{ID: "msg-1"}
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 30, true, nil, nil, nil)
 
-	d.stop()
-	d.stop()
-	d.stop()
+	d.stopAutoExtend()
+	d.cleanupContext()
+	d.stopAutoExtend()
+	d.cleanupContext()
+	d.stopAutoExtend()
+	d.cleanupContext()
 
 	if err := d.Ack(context.Background()); err != nil {
 		t.Fatalf("Ack after multiple stops should succeed: %v", err)

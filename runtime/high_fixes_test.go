@@ -225,8 +225,10 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 		return nil
 	}
 
-	// Only allow one drain batch; after the first call, revoke the token
-	// so the drainer does not re-process records on subsequent poll cycles.
+	// Only allow one drain batch; after the first call + per-record
+	// pre-send checks, revoke the token so the drainer does not
+	// re-process records on subsequent poll cycles.
+	// Threshold: 1 (Run loop) + 2 (pre-send checks for 2 records) = 3.
 	var tokenCalls atomic.Int32
 	cfg := goruntime.OutboxDrainerConfig{
 		OutboxStore:         outbox,
@@ -241,7 +243,7 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 		Strategy:            domain.NewFixedPoll(50 * time.Millisecond),
 		DrainMaxConcurrency: 2,
 		TokenFn: func() (domain.LeaseToken, bool) {
-			if tokenCalls.Add(1) <= 1 {
+			if tokenCalls.Add(1) <= 3 {
 				return token, true
 			}
 			return domain.LeaseToken{}, false
@@ -311,6 +313,7 @@ func TestOutboxDrainer_StaleFencingToken_PropagatedToRunLoop(t *testing.T) {
 		return domain.ErrStaleFencingToken
 	}
 
+	// Threshold: 1 (Run loop) + 1 (pre-send check for 1 record) = 2.
 	var tokenCalls atomic.Int32
 	cfg := goruntime.OutboxDrainerConfig{
 		OutboxStore:  outbox,
@@ -324,7 +327,7 @@ func TestOutboxDrainer_StaleFencingToken_PropagatedToRunLoop(t *testing.T) {
 		Policy:       domain.RoutePolicy{}.WithDefaults(),
 		Strategy:     domain.NewFixedPoll(50 * time.Millisecond),
 		TokenFn: func() (domain.LeaseToken, bool) {
-			if tokenCalls.Add(1) <= 1 {
+			if tokenCalls.Add(1) <= 2 {
 				return token, true
 			}
 			return domain.LeaseToken{}, false
