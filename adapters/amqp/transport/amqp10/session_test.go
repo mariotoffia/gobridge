@@ -317,7 +317,7 @@ func TestSession_RedactURL(t *testing.T) {
 		{
 			name:  "invalid URL",
 			input: "://bad",
-			want:  "***",
+			want:  "<invalid-url>",
 		},
 		{
 			name:  "username only",

@@ -105,9 +105,14 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 		}
 	}
 
-	consumerTag := r.cfg.ConsumerTag
-	if consumerTag == "" {
-		consumerTag = generateConsumerTag()
+	// Generate a fresh tag per consume attempt. Even when the user
+	// supplies a base tag, append a unique suffix so that reconnecting
+	// after a connection drop never collides with the broker's stale
+	// view of the previous consumer (RabbitMQ only frees a tag once it
+	// detects the prior connection is dead, which can lag the client).
+	consumerTag := generateConsumerTag()
+	if r.cfg.ConsumerTag != "" {
+		consumerTag = r.cfg.ConsumerTag + "-" + consumerTag
 	}
 
 	consumeStart := time.Now()
@@ -129,6 +134,17 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 	chanClose := ch.NotifyClose(make(chan *amqp.Error, 1))
 
 	for {
+		// Priority check: if the caller has cancelled the context, return
+		// before the normal multi-way select picks a delivery or
+		// channel-close event randomly. Without this, the runtime's
+		// fair scheduling of select cases would let the loop process
+		// pending deliveries even after cancellation, defeating
+		// graceful shutdown under load.
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
 		select {
 		case <-ctx.Done():
 			return nil
@@ -196,7 +212,30 @@ func (r *Receiver) waitForReconnect(ctx context.Context) bool {
 	if r.session == nil {
 		return false
 	}
-	events := r.session.Events()
+	// Use Subscribe so multiple receivers (and any user-side observer
+	// reading from Events()) all receive the SessionConnected event
+	// independently. Reading from Events() directly would steal the
+	// notification from siblings and cause them to hang forever.
+	events, unsub := r.session.Subscribe()
+	defer unsub()
+
+	// Race window: between the receiver's consumeLoop returning (channel
+	// lost) and reaching this point, the session may have ALREADY
+	// reconnected and emitted SessionConnected. That event was delivered
+	// to whatever subscribers existed at the time and is gone — we
+	// subscribed too late. Probe the current health up front so we
+	// proceed immediately when the session is already healthy, instead
+	// of hanging until ctx expires.
+	if h := r.session.Health(ctx); h.Connected {
+		if logging.TraceEnabled(r.logger) {
+			r.logger.Log(context.Background(), logging.LevelTrace,
+				"amqp091: receiver reconnect probe found session already connected",
+				"queue", r.cfg.QueueName,
+			)
+		}
+		return true
+	}
+
 	for {
 		select {
 		case <-ctx.Done():

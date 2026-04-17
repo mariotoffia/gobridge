@@ -133,16 +133,33 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 		opts.CleanStart = v
 	}
 	if raw, exists := m["session_expiry_interval"]; exists {
+		// MQTT v5 SessionExpiryInterval is an unsigned 32-bit value
+		// (seconds; 0xFFFFFFFF = "never expire"). Reject negative
+		// inputs so a stray -1 is not silently coerced into "never
+		// expire" via two's-complement wrap-around.
+		var v int64
 		switch n := raw.(type) {
 		case int:
-			opts.SessionExpiryInterval = uint32(n)
+			v = int64(n)
 		case int64:
-			opts.SessionExpiryInterval = uint32(n)
+			v = n
 		case uint32:
-			opts.SessionExpiryInterval = n
+			v = int64(n)
 		case float64:
-			opts.SessionExpiryInterval = uint32(n)
+			if math.IsNaN(n) || math.IsInf(n, 0) {
+				return opts, fmt.Errorf("session_expiry_interval must be a finite number, got %v", n)
+			}
+			v = int64(n)
+		default:
+			return opts, fmt.Errorf("session_expiry_interval must be a number, got %T", raw)
 		}
+		if v < 0 {
+			return opts, fmt.Errorf("session_expiry_interval must be ≥ 0, got %d", v)
+		}
+		if v > math.MaxUint32 {
+			return opts, fmt.Errorf("session_expiry_interval must be ≤ %d, got %d", uint32(math.MaxUint32), v)
+		}
+		opts.SessionExpiryInterval = uint32(v)
 	}
 	if v, ok := m["username"].(string); ok {
 		opts.Username = v

@@ -30,6 +30,12 @@ type Receiver struct {
 
 	mu   sync.Mutex
 	link *amqp.Receiver
+	// linkConn captures WHICH session connection the current link was
+	// created on. handleLinkError passes this (not the session's CURRENT
+	// connection) to notifyDisconnect so a stale link error surfacing
+	// AFTER the session has already reconnected to a new connection
+	// cannot incorrectly tear down the new connection.
+	linkConn amqpConn
 }
 
 // NewReceiver creates an AMQP 1.0 Receiver.
@@ -76,6 +82,7 @@ func (r *Receiver) closeLink() {
 	r.mu.Lock()
 	link := r.link
 	r.link = nil
+	r.linkConn = nil
 	r.mu.Unlock()
 
 	if link != nil {
@@ -103,6 +110,10 @@ func (r *Receiver) createLink(ctx context.Context) error {
 	if sess == nil {
 		return domain.ErrUnavailable.WithMessage("amqp10: session not connected")
 	}
+	// Capture the connection THIS link is being created on so a later
+	// failure carries the right identity to notifyDisconnect, even if
+	// the session has reconnected in the meantime (see handleLinkError).
+	conn := r.session.Conn()
 
 	opts := &amqp.ReceiverOptions{
 		Credit:             int32(r.cfg.LinkCredit),
@@ -118,6 +129,7 @@ func (r *Receiver) createLink(ctx context.Context) error {
 	}
 
 	r.link = recv
+	r.linkConn = conn
 	return nil
 }
 
@@ -235,10 +247,20 @@ func (r *Receiver) convertMessage(ctx context.Context, msg *amqp.Message, link *
 	return NewDelivery(env, msg, link, r.logger, r.metrics)
 }
 
+// handleLinkError detaches the receiver's link after a non-transient
+// failure. When the failure is connection-level it forwards a disconnect
+// notification to the session, identifying the failed connection by the
+// pointer captured at link-creation time (NOT the session's CURRENT
+// connection). This ensures a stale link error from the previous
+// connection lifecycle cannot tear down a freshly-reconnected
+// connection — the session's stale-pointer guard would otherwise match
+// the current connection and incorrectly destroy it.
 func (r *Receiver) handleLinkError(err error) {
 	r.mu.Lock()
 	link := r.link
 	r.link = nil
+	failedConn := r.linkConn
+	r.linkConn = nil
 	r.mu.Unlock()
 
 	if link != nil {
@@ -251,8 +273,7 @@ func (r *Receiver) handleLinkError(err error) {
 		bridgeErr := MapError(err)
 		if bridgeErr != nil && (bridgeErr.Code == domain.ErrCodeConnectionLost ||
 			bridgeErr.Code == domain.ErrCodeUnavailable) {
-			conn := r.session.Conn()
-			r.session.notifyDisconnect(conn, err)
+			r.session.notifyDisconnect(failedConn, err)
 		}
 	}
 }

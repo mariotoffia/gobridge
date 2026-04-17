@@ -1,0 +1,358 @@
+// Validates resilience scenarios that surface bugs only under realistic
+// broker behaviour: multi-receiver reconnect fan-out, mandatory-return
+// detection, and consumer-tag reuse across reconnects.
+package amqp091
+
+import (
+	"context"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	amqp "github.com/rabbitmq/amqp091-go"
+
+	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
+)
+
+// TestIntegration_TwoReceivers_BothResumeAfterReconnect validates that
+// when two receivers share a session and the underlying connection drops,
+// both receivers re-establish their consumer after the session reconnects.
+//
+// Without event fan-out, only one receiver would observe the
+// SessionConnected event and resume; the other would hang until ctx
+// expires.
+//
+// Scenario:
+// ───────────────────────────────────────────────
+//   r1 ──┐                          ┌──▶ resumes
+//        ├──[shared session]──drop──┤
+//   r2 ──┘                          └──▶ resumes (regression: hung)
+// ───────────────────────────────────────────────
+func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
+	ep := rabbitmqlocal.Endpoint(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	queueA := rabbitmqlocal.UniqueQueue("dual-recon-a")
+	queueB := rabbitmqlocal.UniqueQueue("dual-recon-b")
+	exchange := rabbitmqlocal.UniqueExchange("dual-recon-ex")
+
+	sess := NewSession(
+		SessionOptions{
+			BrokerURL:      ep,
+			ReconnectDelay: 100 * time.Millisecond,
+		},
+		domain.SessionEphemeral,
+		nil,
+	)
+	if err := sess.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer sess.Close(context.Background())
+
+	plan := domain.SessionPlan{
+		Subscriptions: []domain.SubscriptionPlan{
+			{Topic: queueA, Options: map[string]any{"exchange": exchange, "routing_key": queueA}},
+			{Topic: queueB, Options: map[string]any{"exchange": exchange, "routing_key": queueB}},
+		},
+		Publishers: []domain.PublisherPlan{{Topic: exchange}},
+	}
+	if err := sess.Reconcile(ctx, plan); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	r1 := NewReceiver(ReceiverConfig{QueueName: queueA, PrefetchCount: 1, Session: sess})
+	r2 := NewReceiver(ReceiverConfig{QueueName: queueB, PrefetchCount: 1, Session: sess})
+
+	runCtx, runCancel := context.WithTimeout(ctx, 50*time.Second)
+	defer runCancel()
+
+	var receivedA, receivedB atomic.Int32
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		_ = r1.Run(runCtx, func(_ context.Context, d ports.Delivery) error {
+			receivedA.Add(1)
+			return d.Ack(runCtx)
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		_ = r2.Run(runCtx, func(_ context.Context, d ports.Delivery) error {
+			receivedB.Add(1)
+			return d.Ack(runCtx)
+		})
+	}()
+
+	time.Sleep(500 * time.Millisecond)
+
+	sender := NewSender(SenderConfig{Exchange: exchange, Session: sess, Timeout: 5 * time.Second})
+	if err := sender.Send(ctx, &domain.Envelope{ID: "pre-A", Subject: queueA, Payload: []byte("a1")}); err != nil {
+		t.Fatalf("send pre-A: %v", err)
+	}
+	if err := sender.Send(ctx, &domain.Envelope{ID: "pre-B", Subject: queueB, Payload: []byte("b1")}); err != nil {
+		t.Fatalf("send pre-B: %v", err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for (receivedA.Load() < 1 || receivedB.Load() < 1) && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if receivedA.Load() < 1 || receivedB.Load() < 1 {
+		t.Fatalf("pre-drop: A=%d B=%d (want >=1 each)", receivedA.Load(), receivedB.Load())
+	}
+
+	// Drop the underlying TCP connection by closing it directly. The
+	// session's reconnect loop should observe this via NotifyClose, then
+	// reconnect and emit SessionConnected — both receivers must observe it.
+	conn := sess.Connection()
+	if conn == nil {
+		t.Fatal("connection nil before drop")
+	}
+	if err := conn.Close(); err != nil {
+		t.Logf("conn.Close (expected): %v", err)
+	}
+
+	// Wait for session to come back.
+	reconnDeadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(reconnDeadline) {
+		if h := sess.Health(ctx); h.Connected {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !sess.Health(ctx).Connected {
+		t.Fatal("session did not reconnect within 15s")
+	}
+
+	// Re-run reconcile after reconnect to ensure new sender channel is open
+	// and queue exists (it does; we just need a fresh sender after drop).
+	sender2 := NewSender(SenderConfig{Exchange: exchange, Session: sess, Timeout: 5 * time.Second})
+
+	postDeadline := time.Now().Add(15 * time.Second)
+	startA := receivedA.Load()
+	startB := receivedB.Load()
+	for time.Now().Before(postDeadline) {
+		_ = sender2.Send(ctx, &domain.Envelope{ID: "post-A", Subject: queueA, Payload: []byte("a2")})
+		_ = sender2.Send(ctx, &domain.Envelope{ID: "post-B", Subject: queueB, Payload: []byte("b2")})
+
+		if receivedA.Load() > startA && receivedB.Load() > startB {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	if receivedA.Load() <= startA {
+		t.Errorf("receiver A did not resume after reconnect (received %d, was %d before drop)",
+			receivedA.Load(), startA)
+	}
+	if receivedB.Load() <= startB {
+		t.Errorf("receiver B did not resume after reconnect (received %d, was %d before drop)",
+			receivedB.Load(), startB)
+	}
+
+	runCancel()
+	wg.Wait()
+}
+
+// TestIntegration_Sender_MandatoryUnroutable_ReturnsError validates that
+// sending with Mandatory=true to a routing key that matches no binding
+// surfaces an error. Without basic.return handling the publish would
+// silently succeed.
+func TestIntegration_Sender_MandatoryUnroutable_ReturnsError(t *testing.T) {
+	ep := rabbitmqlocal.Endpoint(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	exchange := rabbitmqlocal.UniqueExchange("mand-unrouted-ex")
+
+	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, nil)
+	if err := sess.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer sess.Close(ctx)
+
+	plan := domain.SessionPlan{
+		Publishers: []domain.PublisherPlan{{Topic: exchange}},
+	}
+	if err := sess.Reconcile(ctx, plan); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	sender := NewSender(SenderConfig{
+		Exchange:   exchange,
+		RoutingKey: "this.key.has.no.binding",
+		Mandatory:  true,
+		Timeout:    5 * time.Second,
+		Session:    sess,
+	})
+	defer sender.Close(ctx)
+
+	err := sender.Send(ctx, &domain.Envelope{
+		ID:      "unrouted-1",
+		Subject: "unused",
+		Payload: []byte("nobody home"),
+	})
+	if err == nil {
+		t.Fatal("Send with Mandatory=true to unbound routing key should return an error " +
+			"(broker returned the message via basic.return)")
+	}
+	t.Logf("got expected error: %v", err)
+}
+
+// TestIntegration_Sender_MandatoryRouted_Succeeds validates that a
+// mandatory message that does have a route is delivered normally.
+func TestIntegration_Sender_MandatoryRouted_Succeeds(t *testing.T) {
+	ep := rabbitmqlocal.Endpoint(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	queue := rabbitmqlocal.UniqueQueue("mand-routed")
+	exchange := rabbitmqlocal.UniqueExchange("mand-routed-ex")
+
+	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, nil)
+	if err := sess.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer sess.Close(ctx)
+
+	plan := domain.SessionPlan{
+		Subscriptions: []domain.SubscriptionPlan{
+			{Topic: queue, Options: map[string]any{"exchange": exchange, "routing_key": queue}},
+		},
+		Publishers: []domain.PublisherPlan{{Topic: exchange}},
+	}
+	if err := sess.Reconcile(ctx, plan); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	sender := NewSender(SenderConfig{
+		Exchange:   exchange,
+		RoutingKey: queue,
+		Mandatory:  true,
+		Timeout:    5 * time.Second,
+		Session:    sess,
+	})
+	defer sender.Close(ctx)
+
+	if err := sender.Send(ctx, &domain.Envelope{
+		ID:      "routed-1",
+		Subject: queue,
+		Payload: []byte("delivered"),
+	}); err != nil {
+		t.Fatalf("send mandatory routed: %v", err)
+	}
+}
+
+// TestIntegration_ConsumerTag_ReuseAfterReconnect validates that a
+// receiver with a user-supplied ConsumerTag survives a connection drop:
+// the broker may still believe the previous tag is alive, so the receiver
+// must avoid colliding with itself when re-consuming.
+func TestIntegration_ConsumerTag_ReuseAfterReconnect(t *testing.T) {
+	ep := rabbitmqlocal.Endpoint(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	queue := rabbitmqlocal.UniqueQueue("tagreuse")
+	exchange := rabbitmqlocal.UniqueExchange("tagreuse-ex")
+	tag := "user-supplied-tag"
+
+	sess := NewSession(
+		SessionOptions{BrokerURL: ep, ReconnectDelay: 100 * time.Millisecond},
+		domain.SessionEphemeral,
+		nil,
+	)
+	if err := sess.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer sess.Close(context.Background())
+
+	plan := domain.SessionPlan{
+		Subscriptions: []domain.SubscriptionPlan{
+			{Topic: queue, Options: map[string]any{"exchange": exchange, "routing_key": queue}},
+		},
+		Publishers: []domain.PublisherPlan{{Topic: exchange}},
+	}
+	if err := sess.Reconcile(ctx, plan); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	recv := NewReceiver(ReceiverConfig{
+		QueueName:     queue,
+		ConsumerTag:   tag,
+		PrefetchCount: 1,
+		Session:       sess,
+	})
+
+	runCtx, runCancel := context.WithTimeout(ctx, 45*time.Second)
+	defer runCancel()
+
+	var received atomic.Int32
+	go func() {
+		_ = recv.Run(runCtx, func(_ context.Context, d ports.Delivery) error {
+			received.Add(1)
+			return d.Ack(runCtx)
+		})
+	}()
+
+	time.Sleep(500 * time.Millisecond)
+
+	sender := NewSender(SenderConfig{Exchange: exchange, RoutingKey: queue, Session: sess, Timeout: 5 * time.Second})
+	if err := sender.Send(ctx, &domain.Envelope{ID: "tag-pre", Payload: []byte("pre")}); err != nil {
+		t.Fatalf("send pre: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for received.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if received.Load() < 1 {
+		t.Fatal("did not receive pre-drop message")
+	}
+
+	// Drop the connection without giving the broker time to clean up.
+	conn := sess.Connection()
+	if conn == nil {
+		t.Fatal("conn nil before drop")
+	}
+	_ = conn.(*amqp.Connection).Close()
+
+	// Wait for reconnect.
+	reconnDeadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(reconnDeadline) {
+		if sess.Health(ctx).Connected {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !sess.Health(ctx).Connected {
+		t.Fatal("session did not reconnect within 15s")
+	}
+
+	postSender := NewSender(SenderConfig{Exchange: exchange, RoutingKey: queue, Session: sess, Timeout: 5 * time.Second})
+	startCount := received.Load()
+	postDeadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(postDeadline) {
+		_ = postSender.Send(ctx, &domain.Envelope{ID: "tag-post", Payload: []byte("post")})
+		if received.Load() > startCount {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	if received.Load() <= startCount {
+		t.Errorf("receiver did not resume after reconnect with reused consumer tag "+
+			"(received %d, was %d before drop)", received.Load(), startCount)
+	}
+
+	runCancel()
+}

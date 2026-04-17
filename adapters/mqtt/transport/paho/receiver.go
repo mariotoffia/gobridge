@@ -3,9 +3,11 @@ package paho
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
+	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -15,10 +17,18 @@ import (
 // MQTT publishes to Delivery values, calling the emit callback
 // synchronously to apply backpressure. Messages are only dropped when
 // the context is cancelled (shutdown).
+//
+// A Receiver is single-flight per instance: only one Run may be active
+// at any time. A second concurrent Run on the same Receiver returns
+// ErrUnavailable immediately and does NOT touch the router. This
+// prevents handler theft caused by both Runs registering under the
+// same id and the first Run's deferred Unregister removing the
+// second Run's handler.
 type Receiver struct {
 	id      string
 	session *Session
 	logger  *slog.Logger
+	running atomic.Bool // true while a Run is in flight
 }
 
 var _ ports.Receiver = (*Receiver)(nil)
@@ -32,7 +42,16 @@ func NewReceiver(id string, session *Session) *Receiver {
 // ctx is cancelled or emit returns a non-nil error. Each incoming MQTT
 // message is converted to a Delivery and passed to emit. The call to emit
 // blocks, which naturally applies backpressure to the MQTT client.
+//
+// Concurrent Run calls on the same Receiver return ErrUnavailable; see
+// the type-level documentation for the rationale.
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
+	if !r.running.CompareAndSwap(false, true) {
+		return domain.ErrUnavailable.WithMessage(
+			"mqtt receiver " + r.id + ": Run already in flight; receivers are single-flight per instance")
+	}
+	defer r.running.Store(false)
+
 	if logging.DebugEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelDebug, "mqtt: receiver starting",
 			"receiver_id", r.id)

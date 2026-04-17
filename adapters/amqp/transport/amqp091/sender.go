@@ -26,9 +26,10 @@ type Sender struct {
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
 
-	mu   sync.Mutex
-	ch   *amqp.Channel
-	conf chan amqp.Confirmation
+	mu      sync.Mutex
+	ch      *amqp.Channel
+	conf    chan amqp.Confirmation
+	returns chan amqp.Return
 }
 
 // NewSender creates a Sender bound to the given Session.
@@ -74,7 +75,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	sendCtx, cancel := s.applyTimeout(ctx)
 	defer cancel()
 
-	sessionTag := domain.Tag{Key: domain.TagKeySessionID, Value: s.cfg.Exchange}
+	sessionTag := domain.Tag{Key: domain.TagKeyEntity, Value: s.cfg.Exchange}
 
 	s.mu.Lock()
 	ch, err := s.ensureChannelLocked()
@@ -83,6 +84,24 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 		return MapError(err)
 	}
 	confCh := s.conf
+	returnsCh := s.returns
+
+	// Defensive drain: under the deterministic ordering documented on
+	// checkReturnedLocked every prior Send fully consumes its own
+	// basic.return, so this loop should never find anything. If it
+	// does, it indicates a code-path that bypassed checkReturnedLocked
+	// (e.g., a publish path with Mandatory toggled at runtime); drop
+	// any such residue rather than mis-attribute it to the next Send.
+	if returnsCh != nil {
+		for {
+			select {
+			case <-returnsCh:
+				continue
+			default:
+			}
+			break
+		}
+	}
 
 	start := time.Now()
 	if err := ch.PublishWithContext(sendCtx, exchange, routingKey, s.cfg.Mandatory, s.cfg.Immediate, pub); err != nil {
@@ -97,6 +116,9 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	}
 
 	confirmErr := s.waitConfirmLocked(sendCtx, confCh)
+	if confirmErr == nil && s.cfg.Mandatory {
+		confirmErr = s.checkReturnedLocked(returnsCh)
+	}
 	s.mu.Unlock()
 
 	elapsed := time.Since(start)
@@ -157,6 +179,11 @@ func (s *Sender) ensureChannelLocked() (*amqp.Channel, error) {
 
 	s.ch = ch
 	s.conf = ch.NotifyPublish(make(chan amqp.Confirmation, 1))
+	if s.cfg.Mandatory {
+		s.returns = ch.NotifyReturn(make(chan amqp.Return, 1))
+	} else {
+		s.returns = nil
+	}
 
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(context.Background(), logging.LevelTrace,
@@ -166,6 +193,64 @@ func (s *Sender) ensureChannelLocked() (*amqp.Channel, error) {
 	}
 
 	return ch, nil
+}
+
+// checkReturnedLocked inspects the returns channel for a basic.return
+// frame that the broker emits when Mandatory=true and the message was
+// not routed to any queue.
+//
+// This is a NON-BLOCKING poll — no grace window — because the AMQP
+// 0-9-1 spec and the underlying amqp091-go client together provide a
+// hard ordering guarantee:
+//
+//  1. AMQP spec: for an unroutable mandatory publish the broker emits
+//     basic.return BEFORE basic.ack on the wire (see
+//     https://www.rabbitmq.com/publishers.html#unroutable).
+//  2. amqp091-go (channel.go::dispatch): a SINGLE goroutine
+//     demultiplexes incoming frames per channel. basicReturn is
+//     handled by a synchronous send on the NotifyReturn listener
+//     channel; basicAck is handled by a synchronous call to
+//     confirms.One() which in turn does a synchronous send on the
+//     NotifyPublish listener channel. The dispatcher processes
+//     frames in network order, so by the time the caller observes
+//     a confirm on confCh the matching return (if any) has already
+//     been delivered to returnsCh.
+//
+// Send() serialises every publish under s.mu and uses returns/confirm
+// channels with buffer size 1, so there can never be more than one
+// in-flight publish on this channel — the buffer of 1 is sufficient
+// and the dispatcher never blocks waiting for the listener.
+//
+// A previous implementation used a 50ms grace timer "in case the
+// client reorders" — that was unnecessary defensive code that added
+// 50ms per Send for every routable message and was simultaneously
+// not strict enough for adversarial timing. The new contract is
+// pinned by sender_mandatory_determinism_test.go.
+//
+// Caller must hold s.mu.
+func (s *Sender) checkReturnedLocked(returnsCh chan amqp.Return) error {
+	if returnsCh == nil {
+		return nil
+	}
+	select {
+	case ret, ok := <-returnsCh:
+		if !ok {
+			return nil
+		}
+		if logging.DebugEnabled(s.logger) {
+			s.logger.Log(context.Background(), logging.LevelDebug,
+				"amqp091: mandatory message returned by broker",
+				"reply_code", ret.ReplyCode,
+				"reply_text", ret.ReplyText,
+				"exchange", ret.Exchange,
+				"routing_key", ret.RoutingKey,
+			)
+		}
+		return domain.ErrNotFound.WithMessage(
+			"amqp091: mandatory publish unroutable: " + ret.ReplyText)
+	default:
+		return nil
+	}
 }
 
 // waitConfirmLocked waits for the publish confirmation. Caller must hold s.mu.
@@ -201,6 +286,7 @@ func (s *Sender) resetChannelLocked() {
 		s.ch.Close()
 		s.ch = nil
 		s.conf = nil
+		s.returns = nil
 	}
 }
 

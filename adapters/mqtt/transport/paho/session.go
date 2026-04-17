@@ -89,8 +89,17 @@ func (s *Session) Router() *router {
 // Start connects to the MQTT broker and emits a SessionConnected event
 // once the initial connection is established. Calling Start on an
 // already-started session is a no-op (idempotent).
+//
+// A Session is single-use: once Close has been called, Start returns
+// ErrUnavailable and does NOT attempt a new connection. This prevents
+// a "zombie" state where a freshly attached cm coexists with an
+// already-closed events channel.
 func (s *Session) Start(ctx context.Context) error {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return domain.ErrUnavailable.WithMessage("mqtt session is closed; Start is not allowed after Close")
+	}
 	if s.cm != nil {
 		s.mu.Unlock()
 		return nil
@@ -242,10 +251,21 @@ func (s *Session) Start(ctx context.Context) error {
 	// We derive a background context that is only cancelled by Close().
 	cmCtx, cmCancel := context.WithCancel(context.Background())
 
+	// BUG-A fix: assign s.startCtx BEFORE NewConnection so that the
+	// OnConnectionUp callback (which may fire from an autopaho goroutine
+	// before AwaitConnection returns) always observes a non-nil parent
+	// context when deriving the reconcile timeout. Otherwise, if a prior
+	// Reconcile call had stashed s.plan, the callback would panic on
+	// context.WithTimeout(nil, ...).
+	s.mu.Lock()
+	s.startCtx = cmCtx
+	s.mu.Unlock()
+
 	cm, err := autopaho.NewConnection(cmCtx, cfg)
 	if err != nil {
 		cmCancel()
 		s.mu.Lock()
+		s.startCtx = nil
 		s.starting = false
 		s.mu.Unlock()
 		return MapError(err)
@@ -262,6 +282,7 @@ func (s *Session) Start(ctx context.Context) error {
 		cmCancel()
 		_ = cm.Disconnect(context.Background())
 		s.mu.Lock()
+		s.startCtx = nil
 		s.starting = false
 		s.mu.Unlock()
 		if logging.DebugEnabled(s.logger) {
@@ -274,7 +295,7 @@ func (s *Session) Start(ctx context.Context) error {
 	s.mu.Lock()
 	s.cm = cm
 	s.cmCancel = cmCancel
-	s.startCtx = cmCtx
+	// startCtx was already assigned before NewConnection (BUG-A fix).
 	s.connected = true
 	s.starting = false
 	s.mu.Unlock()
@@ -386,25 +407,23 @@ func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager,
 		if err != nil {
 			return MapError(err)
 		}
-		var succeeded []pahov5.SubscribeOptions
-		for i, opt := range toSub {
-			if i < len(sa.Reasons) {
-				if berr := MapSubscribeReasonCode(sa.Reasons[i]); berr != nil {
-					s.mu.Lock()
-					for _, sub := range succeeded {
-						s.activeSubs[sub.Topic] = sub.QoS
-					}
-					s.mu.Unlock()
-					return berr.With("topic", opt.Topic)
-				}
+		// Walk every reason code so we persist EVERY accepted topic
+		// even when an earlier one was rejected. Without this, an
+		// early-return on the first rejected reason would leave the
+		// broker holding subscriptions our local activeSubs map does
+		// not know about (BUG-RPS) — the next reconcile delta would
+		// then re-subscribe and the delta accounting would be wrong.
+		succeeded, firstErr, errTopic := classifySubackReasons(toSub, sa.Reasons)
+		if len(succeeded) > 0 {
+			s.mu.Lock()
+			for _, opt := range succeeded {
+				s.activeSubs[opt.Topic] = opt.QoS
 			}
-			succeeded = append(succeeded, opt)
+			s.mu.Unlock()
 		}
-		s.mu.Lock()
-		for _, opt := range succeeded {
-			s.activeSubs[opt.Topic] = opt.QoS
+		if firstErr != nil {
+			return firstErr.With("topic", errTopic)
 		}
-		s.mu.Unlock()
 	}
 
 	elapsed := time.Since(reconcileStart)
@@ -564,6 +583,35 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+// classifySubackReasons walks the SUBACK reason codes one-to-one with
+// the requested subscriptions and partitions them into accepted and
+// rejected. The first rejection's classified BridgeError is returned
+// alongside the offending topic so the caller can surface a meaningful
+// failure, but EVERY accepted topic is included in the succeeded slice
+// so the caller can persist a faithful view of broker state.
+//
+// Topics whose reason index is out of range (broker returned a short
+// SUBACK) are conservatively treated as accepted — matching the
+// previous implementation and avoiding gratuitous unsubscribe loops.
+func classifySubackReasons(toSub []pahov5.SubscribeOptions, reasons []byte) (
+	succeeded []pahov5.SubscribeOptions, firstErr *domain.BridgeError, errTopic string,
+) {
+	succeeded = make([]pahov5.SubscribeOptions, 0, len(toSub))
+	for i, opt := range toSub {
+		if i < len(reasons) {
+			if berr := MapSubscribeReasonCode(reasons[i]); berr != nil {
+				if firstErr == nil {
+					firstErr = berr
+					errTopic = opt.Topic
+				}
+				continue
+			}
+		}
+		succeeded = append(succeeded, opt)
+	}
+	return succeeded, firstErr, errTopic
+}
 
 func parseURLs(raw []string) ([]*url.URL, error) {
 	if len(raw) == 0 {

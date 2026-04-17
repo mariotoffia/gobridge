@@ -47,6 +47,13 @@ type Session struct {
 	monitorDone chan struct{}
 	// reconnectCh is signalled by notifyDisconnect to trigger immediate reconnect.
 	reconnectCh chan struct{}
+
+	// startDone / startErr coordinate concurrent Start calls so that
+	// only the first caller dials and later callers block on the same
+	// outcome instead of returning success while the dial is still
+	// running.
+	startDone chan struct{}
+	startErr  error
 }
 
 var _ ports.Session = (*Session)(nil)
@@ -86,6 +93,11 @@ func (s *Session) AMQPSession() *amqp.Session {
 
 // Start connects to the AMQP 1.0 broker, creates an AMQP session, and
 // starts a background goroutine to monitor connection health.
+//
+// Concurrent callers do not race the connection: the first caller takes
+// the "starting" slot and performs the dial; later callers block on the
+// same outcome (success, dial error, or session-closed-during-start) so
+// that "Start returned nil" reliably means "session is connected".
 func (s *Session) Start(ctx context.Context) error {
 	s.mu.Lock()
 	if s.closed {
@@ -97,11 +109,37 @@ func (s *Session) Start(ctx context.Context) error {
 		return nil
 	}
 	if s.starting {
+		startDone := s.startDone
 		s.mu.Unlock()
-		return nil
+		if startDone == nil {
+			return nil
+		}
+		select {
+		case <-startDone:
+			s.mu.Lock()
+			err := s.startErr
+			closed := s.closed
+			s.mu.Unlock()
+			if closed && err == nil {
+				return domain.ErrUnavailable.WithMessage("amqp10: session closed during start")
+			}
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	s.starting = true
+	s.startDone = make(chan struct{})
+	s.startErr = nil
+	startDone := s.startDone
 	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		s.starting = false
+		s.mu.Unlock()
+		close(startDone)
+	}()
 
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "amqp10: session connecting",
@@ -114,7 +152,7 @@ func (s *Session) Start(ctx context.Context) error {
 
 	if err := s.connect(ctx); err != nil {
 		s.mu.Lock()
-		s.starting = false
+		s.startErr = err
 		s.mu.Unlock()
 		return err
 	}
@@ -135,7 +173,6 @@ func (s *Session) Start(ctx context.Context) error {
 	s.mu.Lock()
 	s.stopMonitor = monCancel
 	s.monitorDone = done
-	s.starting = false
 	s.mu.Unlock()
 
 	go func() {
@@ -466,12 +503,14 @@ func (s *Session) handleReconnect(ctx context.Context) {
 	}
 }
 
-// redactURL masks any userinfo (credentials) in a broker URL so it
-// is safe for logging.
+// redactURL masks any userinfo (credentials) in a broker URL so it is
+// safe for logging. Returns "<invalid-url>" for unparseable input,
+// matching the amqp091 transport so cross-transport log assertions are
+// stable.
 func redactURL(addr string) string {
 	u, err := url.Parse(addr)
 	if err != nil {
-		return "***"
+		return "<invalid-url>"
 	}
 	if u.User != nil {
 		u.User = url.User("***")

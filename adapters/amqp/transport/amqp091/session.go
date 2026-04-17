@@ -40,6 +40,20 @@ type Session struct {
 	cancel context.CancelFunc
 	// bgDone is closed when the background reconnect goroutine exits.
 	bgDone chan struct{}
+	// startDone is created when a Start call begins the connection
+	// process and is closed by that caller once dial completes (with
+	// startErr capturing the outcome). Concurrent callers wait on it
+	// instead of returning success while the connection is still being
+	// established.
+	startDone chan struct{}
+	startErr  error
+
+	// eventSubs holds per-subscriber channels for fan-out delivery of
+	// session lifecycle events. Reading from the legacy Events() channel
+	// drains the shared buffer, so every Receiver and observer that
+	// needs reconnect notifications must Subscribe to receive its own
+	// independent stream.
+	eventSubs []chan ports.SessionEvent
 }
 
 var _ ports.Session = (*Session)(nil)
@@ -83,6 +97,11 @@ func (s *Session) Connection() amqpConnection {
 
 // Start connects to the AMQP broker and starts the reconnection loop.
 // Calling Start on an already-started session is a no-op (idempotent).
+//
+// Concurrent callers do not race the connection: the first caller takes
+// the "starting" slot and performs the dial; later callers block on the
+// same outcome (success, dial error, or session-closed-during-start) so
+// that "Start returned nil" reliably means "session is connected".
 func (s *Session) Start(ctx context.Context) error {
 	s.mu.Lock()
 	if s.closed {
@@ -94,11 +113,37 @@ func (s *Session) Start(ctx context.Context) error {
 		return nil
 	}
 	if s.starting {
+		startDone := s.startDone
 		s.mu.Unlock()
-		return nil
+		if startDone == nil {
+			return nil
+		}
+		select {
+		case <-startDone:
+			s.mu.Lock()
+			err := s.startErr
+			closed := s.closed
+			s.mu.Unlock()
+			if closed && err == nil {
+				return domain.ErrUnavailable.WithMessage("amqp091: session closed during start")
+			}
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	s.starting = true
+	s.startDone = make(chan struct{})
+	s.startErr = nil
+	startDone := s.startDone
 	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		s.starting = false
+		s.mu.Unlock()
+		close(startDone)
+	}()
 
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "amqp091: session connecting",
@@ -113,23 +158,25 @@ func (s *Session) Start(ctx context.Context) error {
 
 	conn, err := s.dialWithTimeout(connectCtx)
 	if err != nil {
+		mappedErr := MapError(err)
 		s.mu.Lock()
-		s.starting = false
+		s.startErr = mappedErr
 		s.mu.Unlock()
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(ctx, logging.LevelDebug, "amqp091: connect failed",
 				"broker", s.safeBrokerURL(), "error", err)
 		}
-		return MapError(err)
+		return mappedErr
 	}
 
 	bgCtx, bgCancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 
 	s.mu.Lock()
 	s.conn = conn
 	s.connected = true
-	s.starting = false
 	s.cancel = bgCancel
+	s.bgDone = done
 	s.mu.Unlock()
 
 	safeBroker := s.safeBrokerURL()
@@ -158,11 +205,6 @@ func (s *Session) Start(ctx context.Context) error {
 
 	s.pushEvent(ports.SessionConnected, nil)
 
-	done := make(chan struct{})
-	s.mu.Lock()
-	s.bgDone = done
-	s.mu.Unlock()
-
 	go func() {
 		defer close(done)
 		s.reconnectLoop(bgCtx)
@@ -175,20 +217,20 @@ func (s *Session) Start(ctx context.Context) error {
 // SubscriptionPlan.Topic maps to the queue name. Supported options per
 // subscription: "exchange", "routing_key", "exchange_type" (default "direct"),
 // "durable", "auto_delete".
+//
+// The supplied plan unconditionally replaces the prior plan, including
+// publisher-only updates and plans that intentionally clear all
+// subscriptions. Pass an empty SessionPlan{} to clear; pass a plan with
+// only Publishers to declare exchanges without changing subscriptions
+// from a prior call (the prior plan's subscriptions are dropped).
 func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error {
 	s.mu.Lock()
-	hasPriorPlan := s.plan != nil
-	if len(plan.Subscriptions) > 0 || !hasPriorPlan {
-		s.plan = &plan
-	}
+	s.plan = &plan
 	conn := s.conn
 	s.mu.Unlock()
 
 	if conn == nil {
 		return domain.ErrUnavailable.WithMessage("session not started")
-	}
-	if len(plan.Subscriptions) == 0 && hasPriorPlan {
-		return nil
 	}
 
 	return s.reconcile(ctx, conn, plan)
@@ -204,61 +246,22 @@ func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan domai
 		)
 	}
 
-	ch, err := conn.Channel()
-	if err != nil {
-		return MapError(err)
-	}
-	defer ch.Close()
+	// activeSubs is recomputed from the new plan rather than appended to
+	// so that subscriptions removed from the plan are reflected in
+	// Health() reporting.
+	s.mu.Lock()
+	s.activeSubs = make(map[string]bool, len(plan.Subscriptions))
+	s.mu.Unlock()
 
 	for _, sub := range plan.Subscriptions {
-		queueName := sub.Topic
-		exchangeName, _ := optString(sub.Options, "exchange")
-		routingKey, _ := optString(sub.Options, "routing_key")
-		exchangeType := "direct"
-		if et, ok := optString(sub.Options, "exchange_type"); ok {
-			exchangeType = et
+		if err := s.declareSubscription(conn, sub); err != nil {
+			return err
 		}
-		durable, _ := optBool(sub.Options, "durable")
-		autoDelete, _ := optBool(sub.Options, "auto_delete")
-
-		if exchangeName != "" {
-			if err := ch.ExchangeDeclare(exchangeName, exchangeType, durable, autoDelete, false, false, nil); err != nil {
-				return MapError(err)
-			}
-		}
-
-		_, err := ch.QueueDeclare(queueName, durable, autoDelete, false, false, nil)
-		if err != nil {
-			return MapError(err)
-		}
-
-		if exchangeName != "" {
-			if routingKey == "" {
-				routingKey = queueName
-			}
-			if err := ch.QueueBind(queueName, routingKey, exchangeName, false, nil); err != nil {
-				return MapError(err)
-			}
-		}
-
-		s.mu.Lock()
-		s.activeSubs[queueName] = true
-		s.mu.Unlock()
 	}
 
 	for _, pub := range plan.Publishers {
-		exchangeName := pub.Topic
-		exchangeType := "direct"
-		if et, ok := optString(pub.Options, "exchange_type"); ok {
-			exchangeType = et
-		}
-		durable, _ := optBool(pub.Options, "durable")
-		autoDelete, _ := optBool(pub.Options, "auto_delete")
-
-		if exchangeName != "" {
-			if err := ch.ExchangeDeclare(exchangeName, exchangeType, durable, autoDelete, false, false, nil); err != nil {
-				return MapError(err)
-			}
+		if err := s.declarePublisher(conn, pub); err != nil {
+			return err
 		}
 	}
 
@@ -274,6 +277,79 @@ func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan domai
 	}
 
 	s.pushEvent(ports.SessionReconciled, nil)
+	return nil
+}
+
+// declareSubscription opens a fresh AMQP channel for a single subscription's
+// declarations (exchange, queue, bind). A separate channel per subscription
+// ensures that a PRECONDITION_FAILED error on one declaration does not
+// poison the channel for subsequent subscriptions in the same plan, since
+// AMQP closes the channel on any soft error.
+func (s *Session) declareSubscription(conn amqpConnection, sub domain.SubscriptionPlan) error {
+	queueName := sub.Topic
+	exchangeName, _ := optString(sub.Options, "exchange")
+	routingKey, _ := optString(sub.Options, "routing_key")
+	exchangeType := "direct"
+	if et, ok := optString(sub.Options, "exchange_type"); ok {
+		exchangeType = et
+	}
+	durable, _ := optBool(sub.Options, "durable")
+	autoDelete, _ := optBool(sub.Options, "auto_delete")
+
+	ch, err := conn.Channel()
+	if err != nil {
+		return MapError(err)
+	}
+	defer ch.Close()
+
+	if exchangeName != "" {
+		if err := ch.ExchangeDeclare(exchangeName, exchangeType, durable, autoDelete, false, false, nil); err != nil {
+			return MapError(err)
+		}
+	}
+
+	if _, err := ch.QueueDeclare(queueName, durable, autoDelete, false, false, nil); err != nil {
+		return MapError(err)
+	}
+
+	if exchangeName != "" {
+		if routingKey == "" {
+			routingKey = queueName
+		}
+		if err := ch.QueueBind(queueName, routingKey, exchangeName, false, nil); err != nil {
+			return MapError(err)
+		}
+	}
+
+	s.mu.Lock()
+	s.activeSubs[queueName] = true
+	s.mu.Unlock()
+	return nil
+}
+
+// declarePublisher opens a fresh channel for a single publisher's exchange
+// declaration. See declareSubscription for the rationale.
+func (s *Session) declarePublisher(conn amqpConnection, pub domain.PublisherPlan) error {
+	exchangeName := pub.Topic
+	if exchangeName == "" {
+		return nil
+	}
+	exchangeType := "direct"
+	if et, ok := optString(pub.Options, "exchange_type"); ok {
+		exchangeType = et
+	}
+	durable, _ := optBool(pub.Options, "durable")
+	autoDelete, _ := optBool(pub.Options, "auto_delete")
+
+	ch, err := conn.Channel()
+	if err != nil {
+		return MapError(err)
+	}
+	defer ch.Close()
+
+	if err := ch.ExchangeDeclare(exchangeName, exchangeType, durable, autoDelete, false, false, nil); err != nil {
+		return MapError(err)
+	}
 	return nil
 }
 
@@ -314,8 +390,69 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 }
 
 // Events returns the channel on which session lifecycle events are emitted.
+//
+// The returned channel is shared. Each event is delivered to exactly one
+// reader, so callers that need to react independently to lifecycle events
+// (for example, multiple receivers waiting for SessionConnected after a
+// reconnect) MUST use Subscribe instead.
 func (s *Session) Events() <-chan ports.SessionEvent {
 	return s.events
+}
+
+// Subscribe returns a private buffered channel that receives every
+// subsequent session lifecycle event, plus an unsubscribe function that
+// removes the subscription and closes the channel. Use this when more
+// than one consumer needs to observe session events; the legacy Events
+// channel delivers each value to a single reader and would otherwise
+// starve other consumers.
+//
+// The returned channel has buffer size 16. If a slow subscriber lets it
+// fill up, additional events are dropped (non-blocking send) so a slow
+// reader cannot stall pushEvent or other subscribers.
+//
+// Unsubscribe is safe to call at most once and after the session has
+// been closed; it is also safe to invoke from defer.
+func (s *Session) Subscribe() (<-chan ports.SessionEvent, func()) {
+	ch := make(chan ports.SessionEvent, 16)
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		close(ch)
+		return ch, func() {}
+	}
+	s.eventSubs = append(s.eventSubs, ch)
+	s.mu.Unlock()
+
+	var once sync.Once
+	unsub := func() {
+		once.Do(func() {
+			s.mu.Lock()
+			removed := false
+			for i, sub := range s.eventSubs {
+				if sub == ch {
+					s.eventSubs = append(s.eventSubs[:i], s.eventSubs[i+1:]...)
+					removed = true
+					break
+				}
+			}
+			s.mu.Unlock()
+			// Only close the channel if we removed it ourselves;
+			// otherwise Close() already drained and closed it.
+			if removed {
+				close(ch)
+			}
+		})
+	}
+	return ch, unsub
+}
+
+// subscriberCount reports the number of active Subscribe channels.
+// Intended for tests.
+func (s *Session) subscriberCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.eventSubs)
 }
 
 // Close gracefully closes the AMQP connection and stops the reconnection
@@ -344,6 +481,8 @@ func (s *Session) Close(_ context.Context) error {
 	s.cancel = nil
 	done := s.bgDone
 	s.bgDone = nil
+	subs := s.eventSubs
+	s.eventSubs = nil
 	s.mu.Unlock()
 
 	if cancel != nil {
@@ -359,6 +498,9 @@ func (s *Session) Close(_ context.Context) error {
 	}
 
 	close(s.events)
+	for _, sub := range subs {
+		close(sub)
+	}
 
 	if closeErr != nil {
 		return MapError(closeErr)
@@ -391,6 +533,14 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 					"event_type", t,
 				)
 			}
+			s.metrics.Counter(domain.MetricAMQP091EventDropped, 1)
+		}
+	}
+
+	for _, sub := range s.eventSubs {
+		select {
+		case sub <- ev:
+		default:
 			s.metrics.Counter(domain.MetricAMQP091EventDropped, 1)
 		}
 	}
