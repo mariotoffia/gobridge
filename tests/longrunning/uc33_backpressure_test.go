@@ -73,8 +73,6 @@ func TestUC33_MaxInFlight1_Serial(t *testing.T) {
 		return collector.count() >= msgCount
 	})
 
-	time.Sleep(1 * time.Second)
-
 	gotMax := tracker.maxConcurrency()
 	require.Equal(t, int64(1), gotMax,
 		"max concurrency should be 1, got %d", gotMax)

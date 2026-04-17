@@ -81,6 +81,8 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 
 	sendErr := sender.Send(sendCtx, env)
 
+	r.invokeOnDelivery(env, sendErr)
+
 	r.hook.OnAttempt(ctx, ports.DeliveryAttempt{
 		Direction:   ports.DirectionEgress,
 		RouteID:     r.routeID,
@@ -109,7 +111,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 			MaxAttempts: r.policy.MaxReplayAttempts,
 			Terminal:    true,
 		})
-		return del.Ack(ctx)
+		return r.ackDelivery(ctx, del)
 	}
 
 	if domain.IsRecoverableError(sendErr) {
@@ -142,7 +144,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 				Err:         poisonErr,
 				Terminal:    true,
 			})
-			return del.Ack(ctx)
+			return r.ackDelivery(ctx, del)
 		}
 
 		retryAfter := domain.GetRetryAfter(sendErr)
@@ -171,7 +173,43 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		Err:         sendErr,
 		Terminal:    true,
 	})
-	return del.Ack(ctx)
+	return r.ackDelivery(ctx, del)
+}
+
+// invokeOnDelivery calls the optional OnDelivery callback if configured,
+// recovering from any panic so a misbehaving callback cannot kill the
+// delivery goroutine.
+func (r *RouteRunner) invokeOnDelivery(env *domain.Envelope, err error) {
+	if r.onDelivery == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	r.onDelivery(env, err)
+}
+
+// invokeOnAck calls the optional OnAck callback if configured, recovering
+// from any panic so a misbehaving callback cannot kill the delivery
+// goroutine.
+func (r *RouteRunner) invokeOnAck(env *domain.Envelope, err error) {
+	if r.onAck == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	r.onAck(env, err)
+}
+
+// ackDelivery wraps del.Ack so OnAck observes the result.
+func (r *RouteRunner) ackDelivery(ctx context.Context, del ports.Delivery) error {
+	err := del.Ack(ctx)
+	r.invokeOnAck(del.Envelope(), err)
+	return err
+}
+
+// retryDelivery wraps del.Retry so OnAck observes the result.
+func (r *RouteRunner) retryDelivery(ctx context.Context, del ports.Delivery, after time.Duration, reason error) error {
+	err := del.Retry(ctx, after, reason)
+	r.invokeOnAck(del.Envelope(), err)
+	return err
 }
 
 // senderForBinding returns the binding-specific sender if one is registered,
@@ -207,7 +245,7 @@ func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env
 		}
 		r.emitDLQ("expired")
 	}
-	return del.Ack(ctx)
+	return r.ackDelivery(ctx, del)
 }
 
 func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delivery, env *domain.Envelope, err error) error {
@@ -218,7 +256,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 			}
 			r.emitDLQ("filtered")
 		}
-		return del.Ack(ctx)
+		return r.ackDelivery(ctx, del)
 	}
 	if domain.IsRecoverableError(err) {
 		r.metrics.Counter(domain.MetricRouteErrors, 1,
@@ -230,7 +268,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
 	}
 	r.emitDLQ("permanent")
-	return del.Ack(ctx)
+	return r.ackDelivery(ctx, del)
 }
 
 func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery, env *domain.Envelope, err error) error {
@@ -240,7 +278,7 @@ func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery
 			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
 		}
 		r.emitDLQ("rejected")
-		return del.Ack(ctx)
+		return r.ackDelivery(ctx, del)
 	}
 	return r.retryOrFallback(ctx, del, env, 0, err)
 }
@@ -249,7 +287,7 @@ func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery
 // support retry (ErrNotSupported), it falls back to DLQ routing with
 // category "retry_unsupported" so the message is not silently lost.
 func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, env *domain.Envelope, after time.Duration, reason error) error {
-	retryErr := del.Retry(ctx, after, reason)
+	retryErr := r.retryDelivery(ctx, del, after, reason)
 	if retryErr == nil || !errors.Is(retryErr, domain.ErrNotSupported) {
 		return retryErr
 	}
@@ -275,7 +313,7 @@ func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, e
 		})
 	}
 	r.emitDLQ("retry_unsupported")
-	return del.Ack(ctx)
+	return r.ackDelivery(ctx, del)
 }
 
 // receiveCount extracts the transport-level receive count from envelope

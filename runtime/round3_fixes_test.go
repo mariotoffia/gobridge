@@ -73,7 +73,7 @@ func TestOutboxDrainer_WorkCtxNotCappedBySendTimeout(t *testing.T) {
 			SendTimeout: 2 * time.Second,
 		}.WithDefaults(),
 		Strategy:     domain.NewFixedPoll(50 * time.Millisecond),
-		DrainTimeout: 500 * time.Millisecond,
+		DrainTimeout: 5 * time.Second,
 		// Threshold: 1 (Run loop) + 1 (pre-send check) = 2.
 		TokenFn: func() (domain.LeaseToken, bool) {
 			if tokenCalls.Add(1) <= 2 {

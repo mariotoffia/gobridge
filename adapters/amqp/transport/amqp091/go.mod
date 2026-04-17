@@ -6,9 +6,12 @@ replace github.com/mariotoffia/gobridge => ../../../..
 
 replace github.com/mariotoffia/gobridge/testutil/rabbitmqlocal => ../../../../testutil/rabbitmqlocal
 
+replace github.com/mariotoffia/gobridge/testutil/wait => ../../../../testutil/wait
+
 require (
 	github.com/mariotoffia/gobridge v0.0.0
 	github.com/mariotoffia/gobridge/testutil/rabbitmqlocal v0.0.0
+	github.com/mariotoffia/gobridge/testutil/wait v0.0.0
 	github.com/rabbitmq/amqp091-go v1.10.0
 )
 

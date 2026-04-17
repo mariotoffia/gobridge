@@ -8,6 +8,7 @@
 .PHONY: install vulncheck update update-major outdated
 .PHONY: docker-up docker-down docker-clean
 .PHONY: hooks hooks-install hooks-uninstall
+.PHONY: audit-timings audit-test-timings
 
 # Default target
 all: build test
@@ -40,7 +41,7 @@ build-azure: ## Build Azure module only
 # Test targets
 # ============================================================================
 
-test: ## Run unit tests only (no Docker, integration tests skipped)
+test: audit-timings audit-test-timings ## Run unit tests only (no Docker, integration tests skipped)
 	@mkdir -p reports
 	@echo "Running unit tests across all modules..."
 	@echo "Report will be saved to: reports/test-unit.log"
@@ -64,7 +65,7 @@ test: ## Run unit tests only (no Docker, integration tests skipped)
 		exit 1; \
 	fi'
 
-test-integration: ## Run all tests including integration (requires Docker)
+test-integration: audit-timings audit-test-timings ## Run all tests including integration (requires Docker)
 	@mkdir -p reports
 	@echo "Running all tests (unit + integration) across all modules..."
 	@echo "Report will be saved to: reports/test-integration.log"
@@ -89,7 +90,7 @@ test-integration: ## Run all tests including integration (requires Docker)
 		exit 1; \
 	fi'
 
-test-long-running: ## Run long-running stress tests (requires Docker, -tags=longrunning)
+test-long-running: audit-timings audit-test-timings ## Run long-running stress tests (requires Docker, -tags=longrunning)
 	@mkdir -p reports
 	@echo "Running long-running stress tests..."
 	@echo "Report will be saved to: reports/test-long-running.log"
@@ -171,9 +172,50 @@ install: ## Install all development and CI tools
 	go install github.com/psampaz/go-mod-outdated@latest
 	go install github.com/loov/goda@latest
 
-check: build lint test ## Run full CI check (no Docker, integration skipped)
+check: build lint test audit-timings audit-test-timings ## Run full CI check (no Docker, integration skipped)
 
-check-all: build lint test-integration ## Run full CI check including integration (Docker required)
+check-all: build lint test-integration audit-timings audit-test-timings ## Run full CI check including integration (Docker required)
+
+# ============================================================================
+# Audit targets
+# ============================================================================
+
+TIMING_DIRS := adapters runtime bridge processors circuitbreaker httpapi
+
+audit-timings: ## Check for unauthorized timing calls in production code
+	@echo "Checking for unauthorized timing calls..."
+	@VIOLATIONS=$$(rg --no-heading -n -g '!*_test.go' -g '!testutil/**' \
+		'time\.(Sleep|After|NewTicker|NewTimer|Tick)\(' \
+		$(TIMING_DIRS) 2>/dev/null \
+		| grep -v -F -f scripts/timing_allowlist_patterns.txt \
+		|| true); \
+	if [ -n "$$VIOLATIONS" ]; then \
+		echo "$$VIOLATIONS"; \
+		COUNT=$$(echo "$$VIOLATIONS" | wc -l | tr -d ' '); \
+		echo ""; \
+		echo "$$COUNT unauthorized timing call(s) found."; \
+		echo "Add to scripts/timing_allowlist.txt with justification"; \
+		echo "and to scripts/timing_allowlist_patterns.txt for the CI check."; \
+		exit 1; \
+	else \
+		echo "All timing calls are authorized."; \
+	fi
+
+audit-test-timings: ## Check for new time.Sleep calls in test code
+	@echo "Checking for new time.Sleep calls in tests..."
+	@VIOLATIONS=$$(rg --no-heading -n -g '*_test.go' -g '!testutil/wait/*' \
+		'time\.Sleep\(' . \
+		| sort \
+		| grep -v -F -f scripts/test_timing_allowlist.txt); \
+	if [ -n "$$VIOLATIONS" ]; then \
+		echo "$$VIOLATIONS"; \
+		COUNT=$$(echo "$$VIOLATIONS" | wc -l | tr -d ' '); \
+		echo ""; \
+		echo "$$COUNT new time.Sleep call(s) in tests. Remove or add to scripts/test_timing_allowlist.txt."; \
+		exit 1; \
+	else \
+		echo "No new test timing violations."; \
+	fi
 
 # ============================================================================
 # Git hooks

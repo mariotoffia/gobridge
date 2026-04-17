@@ -356,10 +356,11 @@ func TestUC25_FilterProcessor_90Percent_Drop(t *testing.T) {
 	t.Logf("UC25: sent %d messages, expecting %d kept, %d dropped", totalMsgs, keepCount, dropCount)
 
 	lrWaitFor(t, pollTimeout,
-		fmt.Sprintf("collector(%d) + DLQ(%d) = %d", keepCount, dropCount, totalMsgs),
-		func() bool { return collector.count()+dlqStore.count() >= totalMsgs },
+		fmt.Sprintf("collector==%d && DLQ==%d", keepCount, dropCount),
+		func() bool {
+			return collector.count() == keepCount && dlqStore.count() == dropCount
+		},
 	)
-	time.Sleep(2 * time.Second)
 
 	require.Equal(t, keepCount, collector.count(), "MQTT kept count")
 	require.Equal(t, dropCount, dlqStore.count(), "DLQ drop count")

@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	goruntime "runtime"
 	"sync"
 	"testing"
 	"time"
@@ -58,8 +59,8 @@ func TestDLQRouter_ConcurrentCloseAndRoute(t *testing.T) {
 		}()
 	}
 
-	// Give routers a head start, then close.
-	time.Sleep(5 * time.Millisecond)
+	// Yield so Route goroutines get scheduled before Close.
+	goruntime.Gosched()
 	router.Close()
 
 	// All Route goroutines must finish without panic.

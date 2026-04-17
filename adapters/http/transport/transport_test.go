@@ -104,7 +104,7 @@ func TestHTTPDelivery_AckSignalsCompletion(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	// ServeHTTP blocks until Ack/Retry, so POST in a goroutine.
 	type httpResult struct {
@@ -169,7 +169,7 @@ func TestHTTPDelivery_RetrySignalsError(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	type httpResult struct {
 		rec *httptest.ResponseRecorder
@@ -228,7 +228,7 @@ func TestHTTPDelivery_ExtendReturnsNotSupported(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	go func() {
 		data, _ := json.Marshal(map[string]any{
@@ -279,7 +279,7 @@ func TestReceiver_LocalProcessing(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	type httpResult struct {
 		rec *httptest.ResponseRecorder
@@ -358,7 +358,7 @@ func TestReceiver_ClusterForward(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	rec := postJSON(t, factory.Handler(), "/transport/http/receivers/cluster/messages", map[string]any{
 		"subject": "test.forward",
@@ -423,7 +423,7 @@ func TestReceiver_ForwardedRequestNotReforwarded(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	type httpResult struct {
 		rec *httptest.ResponseRecorder

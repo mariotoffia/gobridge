@@ -21,6 +21,7 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ---------------------------------------------------------------------------
@@ -323,14 +324,7 @@ func e2eFastSessionConfig(sessionID string) goruntime.SessionConfig {
 
 func e2eWaitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if fn() {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for: %s", desc)
+	wait.Until(t, timeout, desc, fn)
 }
 
 // gobridgesync waits until all runtimes report ReadyForTraffic and

@@ -52,6 +52,11 @@ func newReceiver(cfg receiverConfig) *Receiver {
 	}
 }
 
+// Started returns a channel that is closed once Run has stored the
+// emit callback and the receiver is ready to accept HTTP requests.
+// It satisfies ports.ReceiverStartedSignaler.
+func (r *Receiver) Started() <-chan struct{} { return r.ready }
+
 // SetRouteID associates this receiver with a route for cluster-aware routing.
 func (r *Receiver) SetRouteID(routeID string) {
 	r.mu.Lock()

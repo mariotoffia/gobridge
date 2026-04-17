@@ -9,20 +9,28 @@ import (
 	"os"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 // SessionOptions holds AMQP 0-9-1 connection and session configuration.
 // These values are typically extracted from ports.SessionSpec.Options.
 type SessionOptions struct {
-	BrokerURL      string
-	Heartbeat      time.Duration
-	ConnectTimeout time.Duration
-	ReconnectDelay time.Duration
-	Username       string
-	Password       string
-	TLS            *TLSConfig
-	Vhost          string
+	BrokerURL           string
+	Heartbeat           time.Duration
+	ConnectTimeout      time.Duration
+	ReconnectDelay      time.Duration
+	ReconnectMaxDelay   time.Duration
+	ReconnectMultiplier float64
+	Username            string
+	Password            string
+	TLS                 *TLSConfig
+	Vhost               string
+
+	// Clock drives the reconnect backoff wait. When nil defaults to
+	// clock.System (wall clock). Tests may inject a clocktest.Fake to
+	// control the backoff sleep deterministically.
+	Clock clock.Clock
 }
 
 // TLSConfig holds TLS settings for the AMQP connection.
@@ -62,9 +70,11 @@ type SenderConfig struct {
 // DefaultSessionOptions returns SessionOptions with recommended defaults.
 func DefaultSessionOptions() SessionOptions {
 	return SessionOptions{
-		Heartbeat:      10 * time.Second,
-		ConnectTimeout: 30 * time.Second,
-		ReconnectDelay: 1 * time.Second,
+		Heartbeat:           10 * time.Second,
+		ConnectTimeout:      30 * time.Second,
+		ReconnectDelay:      1 * time.Second,
+		ReconnectMaxDelay:   30 * time.Second,
+		ReconnectMultiplier: 2.0,
 	}
 }
 
@@ -105,6 +115,12 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	}
 	if v, ok := optDuration(m, "reconnect_delay"); ok {
 		opts.ReconnectDelay = v
+	}
+	if v, ok := optDuration(m, "reconnect_max_delay"); ok {
+		opts.ReconnectMaxDelay = v
+	}
+	if v, ok := optFloat64(m, "reconnect_multiplier"); ok {
+		opts.ReconnectMultiplier = v
 	}
 
 	if v, ok := m["tls"].(*TLSConfig); ok {
@@ -194,6 +210,15 @@ func (o *SessionOptions) applyDefaults() {
 	}
 	if o.ReconnectDelay == 0 {
 		o.ReconnectDelay = 1 * time.Second
+	}
+	if o.ReconnectMaxDelay <= 0 {
+		o.ReconnectMaxDelay = 30 * time.Second
+	}
+	if o.ReconnectMultiplier <= 0 {
+		o.ReconnectMultiplier = 2.0
+	}
+	if o.Clock == nil {
+		o.Clock = clock.System
 	}
 }
 
@@ -331,6 +356,26 @@ func optDuration(m map[string]any, key string) (time.Duration, bool) {
 			return 0, false
 		}
 		return time.Duration(d * float64(time.Second)), true
+	default:
+		return 0, false
+	}
+}
+
+func optFloat64(m map[string]any, key string) (float64, bool) {
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case float64:
+		if math.IsNaN(n) || math.IsInf(n, 0) {
+			return 0, false
+		}
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
 	default:
 		return 0, false
 	}

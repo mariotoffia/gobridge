@@ -28,6 +28,9 @@ type Receiver struct {
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
 
+	started     chan struct{}
+	startedOnce sync.Once
+
 	mu   sync.Mutex
 	link *amqp.Receiver
 	// linkConn captures WHICH session connection the current link was
@@ -57,8 +60,14 @@ func NewReceiver(cfg ReceiverConfig, session *Session) (*Receiver, error) {
 		session: session,
 		logger:  l,
 		metrics: m,
+		started: make(chan struct{}),
 	}, nil
 }
+
+// Started returns a channel that is closed once the receiver's link
+// has been created and the receive loop is live. It satisfies
+// ports.ReceiverStartedSignaler.
+func (r *Receiver) Started() <-chan struct{} { return r.started }
 
 // Run creates a receiver link and enters the receive loop. It blocks until
 // the context is cancelled or emit returns an error.
@@ -74,6 +83,8 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		return err
 	}
 	defer r.closeLink()
+
+	r.startedOnce.Do(func() { close(r.started) })
 
 	return r.receiveLoop(ctx, emit)
 }
@@ -286,11 +297,50 @@ func (r *Receiver) waitAndReconnect(ctx context.Context) error {
 	}
 	r.mu.Unlock()
 
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(1 * time.Second):
+	if r.session == nil {
+		return domain.ErrUnavailable.WithMessage("amqp10: no session")
 	}
+
+	// Use Subscribe so multiple receivers (and any user-side observer
+	// reading from Events()) all receive the SessionConnected event
+	// independently.
+	events, unsub := r.session.Subscribe()
+	defer unsub()
+
+	// Race window: between the receiver's Receive failing and reaching
+	// this point, the session may have ALREADY reconnected and emitted
+	// SessionConnected. That event was delivered to whatever subscribers
+	// existed at the time and is gone — we subscribed too late. Probe
+	// the current health up front so we proceed immediately when the
+	// session is already healthy, instead of waiting indefinitely.
+	if h := r.session.Health(ctx); h.Connected {
+		if logging.TraceEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelTrace,
+				"amqp10: receiver reconnect probe found session already connected",
+				"address", redactURL(r.cfg.Address))
+		}
+	} else {
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case ev, ok := <-events:
+				if !ok {
+					return domain.ErrUnavailable.WithMessage("amqp10: session closed")
+				}
+				if ev.Type == ports.SessionConnected || ev.Type == ports.SessionReconciled {
+					if logging.TraceEnabled(r.logger) {
+						r.logger.Log(ctx, logging.LevelTrace,
+							"amqp10: receiver reconnect signal received",
+							"address", redactURL(r.cfg.Address),
+							"event_type", ev.Type)
+					}
+					goto connected
+				}
+			}
+		}
+	}
+connected:
 
 	r.mu.Lock()
 	defer r.mu.Unlock()

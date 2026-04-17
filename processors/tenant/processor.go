@@ -74,9 +74,13 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 			return fmt.Errorf("tenant in-flight tracking failed: %w", err)
 		}
 		defer func() {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = p.tracker.IncrementInFlight(cleanupCtx, tenantID, -1)
+			decrementCtx := ctx
+			if ctx.Err() != nil {
+				var cancel context.CancelFunc
+				decrementCtx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+			}
+			_ = p.tracker.IncrementInFlight(decrementCtx, tenantID, -1)
 		}()
 	}
 

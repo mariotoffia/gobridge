@@ -28,6 +28,13 @@ func WithHTTPClient(c *http.Client) Option {
 	return func(r *EcsEndpointResolver) { r.client = c }
 }
 
+// WithHTTPTimeout sets the timeout on the default HTTP client used
+// to query the ECS metadata endpoint. Default 5s. Ignored when
+// WithHTTPClient is also used (last option wins).
+func WithHTTPTimeout(d time.Duration) Option {
+	return func(r *EcsEndpointResolver) { r.client.Timeout = d }
+}
+
 // NewEcsEndpointResolver creates a resolver that queries the ECS task metadata
 // v4 endpoint to discover the container's network address.
 func NewEcsEndpointResolver(opts ...Option) *EcsEndpointResolver {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -25,11 +26,14 @@ var _ ports.Receiver = (*Receiver)(nil)
 // messages and emits each as a ports.Delivery whose Ack/Retry/Extend
 // operations map to the SQS receipt-handle lifecycle.
 type Receiver struct {
-	cfg     ReceiverConfig
-	client  sqsAPI
-	logger  *slog.Logger
-	metrics ports.MetricsExporter
-	initMu  sync.Mutex
+	cfg         ReceiverConfig
+	client      sqsAPI
+	logger      *slog.Logger
+	metrics     ports.MetricsExporter
+	clk         clock.Clock
+	initMu      sync.Mutex
+	started     chan struct{}
+	startedOnce sync.Once
 }
 
 // NewReceiver creates an SQS Receiver.
@@ -46,15 +50,24 @@ func NewReceiver(cfg ReceiverConfig, logger *slog.Logger) (*Receiver, error) {
 	if m == nil {
 		m = &ports.NoopExporter{}
 	}
-	return &Receiver{cfg: cfg, logger: l, metrics: m}, nil
+	clk := cfg.Clock
+	if clk == nil {
+		clk = clock.System
+	}
+	return &Receiver{cfg: cfg, logger: l, metrics: m, clk: clk, started: make(chan struct{})}, nil
 }
+
+// Started returns a channel that is closed once the receiver's poll
+// loop is live and ready to process messages. It satisfies
+// ports.ReceiverStartedSignaler.
+func (r *Receiver) Started() <-chan struct{} { return r.started }
 
 // Run starts the long-poll loop. For each received SQS message it
 // creates a Delivery and calls emit synchronously, providing natural
 // backpressure. Run blocks until ctx is cancelled or an unrecoverable
 // error occurs.
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
-	initCtx, initCancel := context.WithTimeout(ctx, 30*time.Second)
+	initCtx, initCancel := context.WithTimeout(ctx, r.cfg.InitTimeout)
 	defer initCancel()
 
 	if err := r.ensureClient(initCtx); err != nil {
@@ -83,8 +96,10 @@ func (r *Receiver) pollLoop(
 	queueURL string,
 	emit func(context.Context, ports.Delivery) error,
 ) error {
-	backoff := newPollBackoff()
+	backoff := newPollBackoffFromConfig(r.cfg)
 	pollTimeout := time.Duration(r.cfg.WaitTimeSeconds+10) * time.Second
+
+	r.startedOnce.Do(func() { close(r.started) })
 
 	for {
 		if ctx.Err() != nil {
@@ -118,7 +133,7 @@ func (r *Receiver) pollLoop(
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(delay):
+			case <-r.clk.After(delay):
 			}
 			continue
 		}
@@ -157,17 +172,19 @@ func (r *Receiver) pollLoop(
 
 // pollBackoff implements exponential backoff with jitter for poll loops.
 type pollBackoff struct {
-	current time.Duration
+	initial    time.Duration
+	max        time.Duration
+	multiplier float64
+	current    time.Duration
 }
 
-const (
-	pollBackoffInitial    = time.Second
-	pollBackoffMax        = 30 * time.Second
-	pollBackoffMultiplier = 2
-)
-
-func newPollBackoff() *pollBackoff {
-	return &pollBackoff{current: pollBackoffInitial}
+func newPollBackoffFromConfig(cfg ReceiverConfig) *pollBackoff {
+	return &pollBackoff{
+		initial:    cfg.PollBackoffInitial,
+		max:        cfg.PollBackoffMax,
+		multiplier: cfg.PollBackoffMultiplier,
+		current:    cfg.PollBackoffInitial,
+	}
 }
 
 func (b *pollBackoff) next() time.Duration {
@@ -176,16 +193,16 @@ func (b *pollBackoff) next() time.Duration {
 	jitter := time.Duration(float64(delay) * 0.25 * (2*rand.Float64() - 1))
 	delay += jitter
 
-	b.current *= pollBackoffMultiplier
-	if b.current > pollBackoffMax {
-		b.current = pollBackoffMax
+	b.current = time.Duration(float64(b.current) * b.multiplier)
+	if b.current > b.max {
+		b.current = b.max
 	}
 
 	return delay
 }
 
 func (b *pollBackoff) reset() {
-	b.current = pollBackoffInitial
+	b.current = b.initial
 }
 
 func (r *Receiver) convertMessage(
@@ -249,6 +266,7 @@ func (r *Receiver) convertMessage(
 		processingCancel,
 		r.logger,
 		r.metrics,
+		r.cfg.Clock,
 	)
 }
 

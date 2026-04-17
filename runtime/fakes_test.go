@@ -236,6 +236,12 @@ func (s *FakeSession) SetReconcileErr(err error) {
 	s.ReconcileErr = err
 }
 
+func (s *FakeSession) PlanCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.Plans)
+}
+
 // ---------------------------------------------------------------------------
 // FakeLeaseStore
 // ---------------------------------------------------------------------------

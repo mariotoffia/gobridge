@@ -8,13 +8,14 @@ import (
 
 // Config holds the configuration for the CloudWatch metrics exporter.
 type Config struct {
-	Region        string        `json:"region,omitempty"`
-	Namespace     string        `json:"namespace"`
-	DefaultTags   []domain.Tag  `json:"defaultTags,omitempty"`
-	FlushInterval time.Duration `json:"flushInterval,omitempty"`
-	BufferSize    int           `json:"bufferSize,omitempty"`
-	MaxBatchSize  int           `json:"maxBatchSize,omitempty"`
-	Endpoint      string        `json:"endpoint,omitempty"`
+	Region         string        `json:"region,omitempty"`
+	Namespace      string        `json:"namespace"`
+	DefaultTags    []domain.Tag  `json:"defaultTags,omitempty"`
+	FlushInterval  time.Duration `json:"flushInterval,omitempty"`
+	FlushRPCTimeout time.Duration `json:"flushRPCTimeout,omitempty"`
+	BufferSize     int           `json:"bufferSize,omitempty"`
+	MaxBatchSize   int           `json:"maxBatchSize,omitempty"`
+	Endpoint       string        `json:"endpoint,omitempty"`
 }
 
 // Option is a functional option for configuring the exporter.
@@ -54,6 +55,12 @@ func WithClient(client cloudWatchAPI) Option {
 	}
 }
 
+// WithFlushRPCTimeout sets the per-RPC timeout used when flushing
+// metrics to CloudWatch. Defaults to FlushInterval / 2.
+func WithFlushRPCTimeout(d time.Duration) Option {
+	return func(e *Exporter) { e.config.FlushRPCTimeout = d }
+}
+
 // WithEndpoint sets a custom endpoint URL (e.g. for LocalStack).
 func WithEndpoint(endpoint string) Option {
 	return func(e *Exporter) { e.config.Endpoint = endpoint }
@@ -62,6 +69,9 @@ func WithEndpoint(endpoint string) Option {
 func applyDefaults(cfg *Config) {
 	if cfg.FlushInterval == 0 {
 		cfg.FlushInterval = 60 * time.Second
+	}
+	if cfg.FlushRPCTimeout <= 0 {
+		cfg.FlushRPCTimeout = cfg.FlushInterval / 2
 	}
 	if cfg.BufferSize == 0 {
 		cfg.BufferSize = 1000

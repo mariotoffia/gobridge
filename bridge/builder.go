@@ -629,10 +629,6 @@ func (b *Builder) resolveClusterEndpoints(ctx context.Context) map[string]string
 	return nil
 }
 
-// staleClaimBuffer is the safety margin added on top of StepDownGrace
-// when deriving the outbox stale claim duration.
-const staleClaimBuffer = 15 * time.Second
-
 // injectStaleClaimDuration derives stale_claim_duration from the
 // session StepDownGrace values across all routes and injects it into
 // the outbox store config options. This keeps the outbox reclaim
@@ -650,7 +646,7 @@ func (b *Builder) injectStaleClaimDuration(sc *config.StoreConfig) error {
 		}
 	}
 
-	maxGrace := runtime.DefaultSessionConfig("", true).StepDownGrace
+	maxStepDownGrace := runtime.DefaultSessionConfig("", true).StepDownGrace
 	for _, r := range b.cfg.Routes {
 		if r.Session == nil {
 			continue
@@ -659,16 +655,21 @@ func (b *Builder) injectStaleClaimDuration(sc *config.StoreConfig) error {
 		if err != nil {
 			return fmt.Errorf("bridge: route %q: %w", r.ID, err)
 		}
-		if sessCfg != nil && sessCfg.StepDownGrace > maxGrace {
-			maxGrace = sessCfg.StepDownGrace
+		if sessCfg != nil && sessCfg.StepDownGrace > maxStepDownGrace {
+			maxStepDownGrace = sessCfg.StepDownGrace
 		}
+	}
+
+	staleClaimBuffer := 2 * maxStepDownGrace
+	if staleClaimBuffer < 15*time.Second {
+		staleClaimBuffer = 15 * time.Second
 	}
 
 	opts := make(map[string]any, len(sc.Options)+1)
 	for k, v := range sc.Options {
 		opts[k] = v
 	}
-	opts["stale_claim_duration"] = maxGrace + staleClaimBuffer
+	opts["stale_claim_duration"] = maxStepDownGrace + staleClaimBuffer
 	sc.Options = opts
 	return nil
 }

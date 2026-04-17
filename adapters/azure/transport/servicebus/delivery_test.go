@@ -17,7 +17,7 @@ func TestDelivery_Envelope(t *testing.T) {
 	env := &domain.Envelope{ID: "msg-1", Subject: "test"}
 	mock := &mockASBClient{}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil, nil)
 
 	if d.Envelope() != env {
 		t.Fatal("Envelope() should return the original envelope")
@@ -29,7 +29,7 @@ func TestDelivery_Ack_CompletesMessage(t *testing.T) {
 	mock := &mockASBClient{}
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil, nil)
 
 	if err := d.Ack(context.Background()); err != nil {
 		t.Fatalf("Ack failed: %v", err)
@@ -56,7 +56,7 @@ func TestDelivery_Ack_Error(t *testing.T) {
 	}
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil, nil)
 
 	err := d.Ack(context.Background())
 	if err == nil {
@@ -73,7 +73,7 @@ func TestDelivery_Retry_AbandonsMessage(t *testing.T) {
 	mock := &mockASBClient{}
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil, nil)
 
 	if err := d.Retry(context.Background(), 0, errors.New("transient")); err != nil {
 		t.Fatalf("Retry failed: %v", err)
@@ -100,7 +100,7 @@ func TestDelivery_Retry_Error(t *testing.T) {
 	}
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil, nil)
 
 	err := d.Retry(context.Background(), 0, nil)
 	if err == nil {
@@ -117,7 +117,7 @@ func TestDelivery_Extend_RenewsLock(t *testing.T) {
 	mock := &mockASBClient{}
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil, nil)
 
 	if err := d.Extend(context.Background(), time.Now().Add(60*time.Second)); err != nil {
 		t.Fatalf("Extend failed: %v", err)
@@ -144,7 +144,7 @@ func TestDelivery_Extend_Error(t *testing.T) {
 	}
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil, nil)
 
 	err := d.Extend(context.Background(), time.Now().Add(60*time.Second))
 	if err == nil {
@@ -168,7 +168,7 @@ func TestDelivery_AutoExtend_CallsRenew(t *testing.T) {
 
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil)
 
 	time.Sleep(1500 * time.Millisecond)
 	d.stop()
@@ -192,7 +192,7 @@ func TestDelivery_AutoExtend_StopsOnAck(t *testing.T) {
 
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil)
 
 	if err := d.Ack(context.Background()); err != nil {
 		t.Fatalf("Ack failed: %v", err)
@@ -218,7 +218,7 @@ func TestDelivery_AutoExtend_StopsOnRetry(t *testing.T) {
 
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil)
 
 	if err := d.Retry(context.Background(), 0, nil); err != nil {
 		t.Fatalf("Retry failed: %v", err)
@@ -244,7 +244,7 @@ func TestDelivery_NoAutoExtend(t *testing.T) {
 
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, false, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, false, nil, nil, nil)
 
 	time.Sleep(1500 * time.Millisecond)
 	d.stop()
@@ -259,7 +259,7 @@ func TestDelivery_MultipleStopsAreSafe(t *testing.T) {
 	mock := &mockASBClient{}
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, true, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, true, nil, nil, nil)
 
 	d.stop()
 	d.stop()
@@ -286,7 +286,7 @@ func TestDelivery_AutoExtend_UsesLockedUntil(t *testing.T) {
 		MessageID:  "test-msg",
 		LockedUntil: &lockedUntil,
 	}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, true, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, true, nil, nil, nil)
 
 	time.Sleep(2500 * time.Millisecond)
 	d.stop()

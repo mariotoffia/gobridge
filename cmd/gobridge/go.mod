@@ -44,4 +44,5 @@ replace (
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq => ../../adapters/native/store/sqlitedlq
 	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox => ../../adapters/native/store/sqliteoutbox
 	github.com/mariotoffia/gobridge/httpapi => ../../httpapi
+	github.com/mariotoffia/gobridge/testutil/wait => ../../testutil/wait
 )

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -33,10 +34,22 @@ type OutboxDrainer struct {
 	metrics        ports.MetricsExporter
 	hook           ports.DeliveryHook
 	logger         *slog.Logger
+	clk            clock.Clock
 
 	drainTimeout     time.Duration
 	currentBatchSize int
 	hasDrained       bool
+	// hadPending tracks whether the most recent Claim returned records.
+	// Used to ensure OnDrained fires only on the transition from
+	// "pending records" to "caught up", not on every empty cycle.
+	hadPending bool
+
+	// onBatchComplete is invoked after each drain batch with the number
+	// of records successfully sent+completed. Optional.
+	onBatchComplete func(n int)
+	// onDrained is invoked on the transition to an empty pending set.
+	// Optional.
+	onDrained func()
 
 	// tokenFn returns the current lease token and whether the caller
 	// still holds the lease. The OutboxDrainer only processes when
@@ -69,6 +82,7 @@ type OutboxDrainerConfig struct {
 	Metrics        ports.MetricsExporter
 	Hook           ports.DeliveryHook
 	Logger         *slog.Logger
+	Clock          clock.Clock
 	TokenFn        func() (domain.LeaseToken, bool)
 
 	// ReadyFn optionally gates drain cycles on egress transport
@@ -76,6 +90,16 @@ type OutboxDrainerConfig struct {
 	// drains prevents replay_count from being exhausted by
 	// repeated failed Claim+Send cycles during broker downtime.
 	ReadyFn func() bool
+
+	// OnBatchComplete is invoked after each drain batch with the number
+	// of records successfully sent+completed. Non-blocking; callers must
+	// not block in the callback. Optional.
+	OnBatchComplete func(n int)
+
+	// OnDrained is invoked when the drain loop observes an empty pending
+	// set (the queue is caught up), after previously having seen pending
+	// records. Non-blocking. Optional.
+	OnDrained func()
 }
 
 // NewOutboxDrainerFromConfig creates an OutboxDrainer from a config struct.
@@ -128,6 +152,10 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 	if hk == nil {
 		hk = ports.NoopDeliveryHook{}
 	}
+	clk := cfg.Clock
+	if clk == nil {
+		clk = clock.System
+	}
 	return &OutboxDrainer{
 		outboxStore:      cfg.OutboxStore,
 		leaseStore:       cfg.LeaseStore,
@@ -147,16 +175,38 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 		metrics:          m,
 		hook:             hk,
 		logger:           cfg.Logger,
+		clk:              clk,
 		tokenFn:          cfg.TokenFn,
 		readyFn:          cfg.ReadyFn,
+		onBatchComplete:  cfg.OnBatchComplete,
+		onDrained:        cfg.OnDrained,
 	}
+}
+
+// fireBatchComplete invokes the OnBatchComplete callback with a panic
+// guard so a faulty callback cannot kill the drain loop.
+func (d *OutboxDrainer) fireBatchComplete(n int) {
+	if d.onBatchComplete == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	d.onBatchComplete(n)
+}
+
+// fireDrained invokes the OnDrained callback with a panic guard.
+func (d *OutboxDrainer) fireDrained() {
+	if d.onDrained == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	d.onDrained()
 }
 
 // Run polls the outbox for pending records and sends them. It blocks
 // until the context is cancelled or a fencing error occurs. The polling
 // interval is determined by the configured DrainStrategy.
 func (d *OutboxDrainer) Run(ctx context.Context) error {
-	timer := time.NewTimer(d.strategy.NextInterval(0))
+	timer := d.clk.NewTimer(d.strategy.NextInterval(0))
 	defer timer.Stop()
 
 	for {
@@ -166,7 +216,7 @@ func (d *OutboxDrainer) Run(ctx context.Context) error {
 				d.log(ctx, slog.LevelWarn, "final drain error during shutdown", "error", drainErr)
 			}
 			return ctx.Err()
-		case <-timer.C:
+		case <-timer.C():
 			token, hasLease := d.tokenFn()
 			if !hasLease {
 				timer.Reset(d.strategy.NextInterval(0))
@@ -240,8 +290,13 @@ func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken)
 		return 0, err
 	}
 	if len(records) == 0 {
+		if d.hadPending {
+			d.hadPending = false
+			d.fireDrained()
+		}
 		return 0, nil
 	}
+	d.hadPending = true
 
 	if logging.DebugEnabled(d.logger) {
 		d.logger.Log(context.Background(), logging.LevelDebug, "claimed records",
@@ -259,8 +314,11 @@ func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken)
 	// their send+complete operations even after the parent ctx is cancelled.
 	// The timeout is derived from SendTimeout (plus a buffer for Complete)
 	// so that the configured SendTimeout is not silently capped.
-	batchTimeout := d.policy.SendTimeout + 5*time.Second
-	if batchTimeout < d.drainTimeout {
+	batchTimeout := time.Duration(float64(d.policy.SendTimeout) * 1.5)
+	if batchTimeout < 2*time.Second {
+		batchTimeout = 2 * time.Second
+	}
+	if batchTimeout > d.drainTimeout {
 		batchTimeout = d.drainTimeout
 	}
 	workCtx, workCancel := context.WithTimeout(context.Background(), batchTimeout)
@@ -316,6 +374,9 @@ loop:
 	workCancel()
 
 	d.metrics.Timer(domain.MetricOutboxDrainLatency, time.Since(start), sessionTag)
+
+	successTotal := int(atomic.LoadInt64(&successCount))
+	d.fireBatchComplete(successTotal)
 
 	if staleDetected.Load() {
 		if logging.TraceEnabled(d.logger) {

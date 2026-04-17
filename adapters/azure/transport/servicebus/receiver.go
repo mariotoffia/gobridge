@@ -18,14 +18,16 @@ import (
 var _ ports.Receiver = (*Receiver)(nil)
 
 type Receiver struct {
-	cfg       ReceiverConfig
-	client    asbAPI
-	scheduler retryScheduler
-	asbClient *azservicebus.Client
-	logger    *slog.Logger
-	metrics   ports.MetricsExporter
-	initMu    sync.Mutex
-	closeOnce sync.Once
+	cfg         ReceiverConfig
+	client      asbAPI
+	scheduler   retryScheduler
+	asbClient   *azservicebus.Client
+	logger      *slog.Logger
+	metrics     ports.MetricsExporter
+	initMu      sync.Mutex
+	closeOnce   sync.Once
+	started     chan struct{}
+	startedOnce sync.Once
 }
 
 func NewReceiver(cfg ReceiverConfig, logger *slog.Logger) (*Receiver, error) {
@@ -41,8 +43,13 @@ func NewReceiver(cfg ReceiverConfig, logger *slog.Logger) (*Receiver, error) {
 	if m == nil {
 		m = &ports.NoopExporter{}
 	}
-	return &Receiver{cfg: cfg, logger: l, metrics: m}, nil
+	return &Receiver{cfg: cfg, logger: l, metrics: m, started: make(chan struct{})}, nil
 }
+
+// Started returns a channel that is closed once the receiver's poll
+// loop is live and ready to process messages. It satisfies
+// ports.ReceiverStartedSignaler.
+func (r *Receiver) Started() <-chan struct{} { return r.started }
 
 func (r *Receiver) entityName() string {
 	if r.cfg.QueueName != "" {
@@ -178,6 +185,8 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
 	backoff := newPollBackoff()
 
+	r.startedOnce.Do(func() { close(r.started) })
+
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -299,5 +308,7 @@ func (r *Receiver) convertMessage(ctx context.Context, msg *azservicebus.Receive
 		r.cfg.autoExtendEnabled(),
 		r.logger,
 		r.metrics,
+		r.cfg.Clock,
+		r.cfg.MinAutoExtendInterval,
 	)
 }

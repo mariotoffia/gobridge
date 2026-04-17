@@ -17,9 +17,34 @@ import (
 
 var _ ports.MessageForwarder = (*HTTPForwarder)(nil)
 
+// ForwarderConfig holds tuning knobs for HTTPForwarder.
+type ForwarderConfig struct {
+	Timeout             time.Duration
+	IdleConnTimeout     time.Duration
+	MaxRetries          int
+	RetryInitialDelay   time.Duration
+	RetryMaxDelay       time.Duration
+	MaxIdleConnsPerHost int
+	MaxConnsPerHost     int
+}
+
+// DefaultForwarderConfig returns production-safe defaults.
+func DefaultForwarderConfig() ForwarderConfig {
+	return ForwarderConfig{
+		Timeout:             30 * time.Second,
+		IdleConnTimeout:     90 * time.Second,
+		MaxRetries:          2,
+		RetryInitialDelay:   100 * time.Millisecond,
+		RetryMaxDelay:       200 * time.Millisecond,
+		MaxIdleConnsPerHost: 32,
+		MaxConnsPerHost:     64,
+	}
+}
+
 // HTTPForwarder implements ports.MessageForwarder using HTTP POST
 // to forward messages to other gobridge instances in the cluster.
 type HTTPForwarder struct {
+	cfg        ForwarderConfig
 	client     *http.Client
 	pathPrefix string
 	clusterKey string
@@ -30,16 +55,46 @@ type HTTPForwarder struct {
 // The optional clusterKey is sent as X-API-Key on forwarded requests to
 // authenticate with the receiving peer's API key check.
 func NewHTTPForwarder(pathPrefix string, timeout time.Duration, clusterKey ...string) *HTTPForwarder {
-	if timeout == 0 {
-		timeout = 30 * time.Second
+	cfg := DefaultForwarderConfig()
+	if timeout > 0 {
+		cfg.Timeout = timeout
+	}
+	return NewHTTPForwarderWithConfig(pathPrefix, cfg, clusterKey...)
+}
+
+// NewHTTPForwarderWithConfig creates a forwarder with explicit configuration.
+// The optional clusterKey is sent as X-API-Key on forwarded requests.
+func NewHTTPForwarderWithConfig(pathPrefix string, cfg ForwarderConfig, clusterKey ...string) *HTTPForwarder {
+	defaults := DefaultForwarderConfig()
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = defaults.Timeout
+	}
+	if cfg.IdleConnTimeout <= 0 {
+		cfg.IdleConnTimeout = defaults.IdleConnTimeout
+	}
+	if cfg.MaxRetries < 0 {
+		cfg.MaxRetries = defaults.MaxRetries
+	}
+	if cfg.RetryInitialDelay <= 0 {
+		cfg.RetryInitialDelay = defaults.RetryInitialDelay
+	}
+	if cfg.RetryMaxDelay <= 0 {
+		cfg.RetryMaxDelay = defaults.RetryMaxDelay
+	}
+	if cfg.MaxIdleConnsPerHost <= 0 {
+		cfg.MaxIdleConnsPerHost = defaults.MaxIdleConnsPerHost
+	}
+	if cfg.MaxConnsPerHost <= 0 {
+		cfg.MaxConnsPerHost = defaults.MaxConnsPerHost
 	}
 	f := &HTTPForwarder{
+		cfg: cfg,
 		client: &http.Client{
-			Timeout: timeout,
+			Timeout: cfg.Timeout,
 			Transport: &http.Transport{
-				MaxIdleConnsPerHost: 32,
-				MaxConnsPerHost:     64,
-				IdleConnTimeout:     90 * time.Second,
+				MaxIdleConnsPerHost: cfg.MaxIdleConnsPerHost,
+				MaxConnsPerHost:     cfg.MaxConnsPerHost,
+				IdleConnTimeout:     cfg.IdleConnTimeout,
 			},
 		},
 		pathPrefix: pathPrefix,
@@ -52,6 +107,20 @@ func NewHTTPForwarder(pathPrefix string, timeout time.Duration, clusterKey ...st
 
 // SetLogger configures the forwarder's logger for trace/debug output.
 func (f *HTTPForwarder) SetLogger(l *slog.Logger) { f.logger = l }
+
+// retryDelay returns a linearly interpolated delay between
+// RetryInitialDelay and RetryMaxDelay for the given 1-based attempt.
+func (f *HTTPForwarder) retryDelay(attempt int) time.Duration {
+	if f.cfg.MaxRetries <= 1 || attempt <= 1 {
+		return f.cfg.RetryInitialDelay
+	}
+	frac := float64(attempt-1) / float64(f.cfg.MaxRetries-1)
+	d := f.cfg.RetryInitialDelay + time.Duration(frac*float64(f.cfg.RetryMaxDelay-f.cfg.RetryInitialDelay))
+	if d > f.cfg.RetryMaxDelay {
+		d = f.cfg.RetryMaxDelay
+	}
+	return d
+}
 
 // Forward sends an envelope to a remote instance's receiver endpoint.
 func (f *HTTPForwarder) Forward(
@@ -96,16 +165,14 @@ func (f *HTTPForwarder) Forward(
 		req.Header.Set("X-API-Key", f.clusterKey)
 	}
 
-	const maxRetries = 2
-	retryDelays := [...]time.Duration{100 * time.Millisecond, 200 * time.Millisecond}
-
 	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; attempt <= f.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
+			delay := f.retryDelay(attempt)
 			select {
 			case <-ctx.Done():
 				return domain.ErrForwardFailed.Wrap(ctx.Err())
-			case <-time.After(retryDelays[attempt-1]):
+			case <-time.After(delay):
 			}
 			req = req.Clone(ctx)
 			req.Body = io.NopCloser(bytes.NewReader(body))

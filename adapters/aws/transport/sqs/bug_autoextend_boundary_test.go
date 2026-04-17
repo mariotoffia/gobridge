@@ -40,6 +40,7 @@ func TestAutoExtend_Boundary_Timeout1_Disabled(t *testing.T) {
 		func() {}, // processingCancel
 		nil,
 		&ports.NoopExporter{},
+		nil,
 	)
 
 	// Wait enough time for auto-extend to have fired if enabled.
@@ -87,6 +88,7 @@ func TestAutoExtend_Boundary_Timeout2_Enabled(t *testing.T) {
 		func() {}, // processingCancel
 		nil,
 		&ports.NoopExporter{},
+		nil,
 	)
 
 	// Wait long enough for at least one auto-extend tick.

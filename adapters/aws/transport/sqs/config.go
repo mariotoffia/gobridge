@@ -6,6 +6,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -45,6 +46,21 @@ type ReceiverConfig struct {
 	// at 50 % of VisibilityTimeout. Default true.
 	AutoExtend *bool
 
+	// InitTimeout is the timeout for the initialisation phase (client
+	// creation and queue-URL resolution). Default 30s.
+	InitTimeout time.Duration
+
+	// PollBackoffInitial is the starting delay after a failed
+	// ReceiveMessage call. Default 1s.
+	PollBackoffInitial time.Duration
+
+	// PollBackoffMax is the maximum delay between retries. Default 30s.
+	PollBackoffMax time.Duration
+
+	// PollBackoffMultiplier is the exponential growth factor for the
+	// backoff delay. Default 2.0.
+	PollBackoffMultiplier float64
+
 	// SNSUnwrap, when true, detects SNS notification wrappers and
 	// extracts the inner message body. Default false.
 	SNSUnwrap bool
@@ -58,6 +74,11 @@ type ReceiverConfig struct {
 
 	// Metrics is an optional metrics exporter for adapter-internal metrics.
 	Metrics ports.MetricsExporter
+
+	// Clock drives the delivery auto-extend ticker. When nil defaults
+	// to clock.System (wall clock). Tests may inject a clocktest.Fake
+	// to control tick firing deterministically.
+	Clock clock.Clock
 }
 
 // SenderConfig configures an SQS Sender.
@@ -130,6 +151,21 @@ func (c *ReceiverConfig) applyDefaults() {
 	if c.AutoExtend == nil {
 		t := true
 		c.AutoExtend = &t
+	}
+	if c.InitTimeout <= 0 {
+		c.InitTimeout = 30 * time.Second
+	}
+	if c.PollBackoffInitial <= 0 {
+		c.PollBackoffInitial = time.Second
+	}
+	if c.PollBackoffMax <= 0 {
+		c.PollBackoffMax = 30 * time.Second
+	}
+	if c.PollBackoffMultiplier <= 0 {
+		c.PollBackoffMultiplier = 2.0
+	}
+	if c.Clock == nil {
+		c.Clock = clock.System
 	}
 }
 

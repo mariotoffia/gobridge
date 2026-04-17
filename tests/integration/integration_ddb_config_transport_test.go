@@ -10,6 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ===============================================================
@@ -96,7 +97,8 @@ func TestDDBTransport_SQS_ConfigChangeSwapsQueue(t *testing.T) {
 		},
 		Routes: []config.RouteDef{
 			{ID: "r1", ReceiverID: "rx-in", DeliveryMode: "direct_hold",
-				Bindings: []string{"bind-1"}},
+				Bindings: []string{"bind-1"},
+				Policy:   config.PolicyDef{SendTimeout: "10s"}},
 		},
 	}
 
@@ -134,7 +136,14 @@ func TestDDBTransport_SQS_ConfigChangeSwapsQueue(t *testing.T) {
 	s.RegisterStoreFactory("memory", &cfgFakeStoreFactory{})
 
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)
-	defer func() { cancel(); watchCancel(); <-errCh }()
+	defer func() {
+		cancel()
+		watchCancel()
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+		}
+	}()
 
 	// Poll for runtime, but also check errCh for early failure.
 	{
@@ -183,8 +192,13 @@ func TestDDBTransport_SQS_ConfigChangeSwapsQueue(t *testing.T) {
 		t.Fatal("timed out waiting for swap")
 	}
 
-	// Brief pause for new receiver to start polling.
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the new runtime to be running before sending. The downstream
+	// pollSQS has its own 10s timeout that absorbs any remaining poll-loop
+	// startup delay, so we only need an observable "runtime running" gate.
+	wait.Until(t, 2*time.Second, "post-swap runtime running", func() bool {
+		rt := s.Runtime()
+		return rt != nil && rt.IsRunning()
+	})
 
 	// Send to queue-C; should arrive at queue-B.
 	sendToSQS(t, sqsClient, queueC, `{"test":"swapped"}`, nil)
@@ -234,7 +248,8 @@ func TestDDBTransport_SQS_NewRouteAdded(t *testing.T) {
 		},
 		Routes: []config.RouteDef{
 			{ID: "r1", ReceiverID: "rx-1", DeliveryMode: "direct_hold",
-				Bindings: []string{"bind-1"}},
+				Bindings: []string{"bind-1"},
+				Policy:   config.PolicyDef{SendTimeout: "10s"}},
 		},
 	}
 
@@ -268,7 +283,14 @@ func TestDDBTransport_SQS_NewRouteAdded(t *testing.T) {
 	s.RegisterStoreFactory("memory", &cfgFakeStoreFactory{})
 
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)
-	defer func() { cancel(); watchCancel(); <-errCh }()
+	defer func() {
+		cancel()
+		watchCancel()
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+		}
+	}()
 
 	waitForSupervisorRuntime(t, s, 10*time.Second)
 
@@ -286,7 +308,8 @@ func TestDDBTransport_SQS_NewRouteAdded(t *testing.T) {
 		},
 		Routes: []config.RouteDef{
 			{ID: "r2", ReceiverID: "rx-2", DeliveryMode: "direct_hold",
-				Bindings: []string{"bind-2"}},
+				Bindings: []string{"bind-2"},
+				Policy:   config.PolicyDef{SendTimeout: "10s"}},
 		},
 	}
 	if err := loader.Save(ctx, overlay2); err != nil {
@@ -373,9 +396,11 @@ func TestDDBTransport_ConfigRemovesRoute(t *testing.T) {
 		},
 		Routes: []config.RouteDef{
 			{ID: "r1", ReceiverID: "rx-1", DeliveryMode: "direct_hold",
-				Bindings: []string{"bind-1"}},
+				Bindings: []string{"bind-1"},
+				Policy:   config.PolicyDef{SendTimeout: "10s"}},
 			{ID: "r2", ReceiverID: "rx-2", DeliveryMode: "direct_hold",
-				Bindings: []string{"bind-2"}},
+				Bindings: []string{"bind-2"},
+				Policy:   config.PolicyDef{SendTimeout: "10s"}},
 		},
 	}
 	if err := loader.Save(ctx, overlayV1); err != nil {
@@ -407,7 +432,14 @@ func TestDDBTransport_ConfigRemovesRoute(t *testing.T) {
 	s.RegisterStoreFactory("memory", &cfgFakeStoreFactory{})
 
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)
-	defer func() { cancel(); watchCancel(); <-errCh }()
+	defer func() {
+		cancel()
+		watchCancel()
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+		}
+	}()
 
 	waitForSupervisorRuntime(t, s, 10*time.Second)
 
@@ -432,7 +464,8 @@ func TestDDBTransport_ConfigRemovesRoute(t *testing.T) {
 		},
 		Routes: []config.RouteDef{
 			{ID: "r1", ReceiverID: "rx-1", DeliveryMode: "direct_hold",
-				Bindings: []string{"bind-1"}},
+				Bindings: []string{"bind-1"},
+				Policy:   config.PolicyDef{SendTimeout: "10s"}},
 		},
 	}
 	if err := loader.Save(ctx, overlayV2); err != nil {

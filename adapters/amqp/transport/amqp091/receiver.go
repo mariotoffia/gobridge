@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -22,10 +23,12 @@ var _ ports.Receiver = (*Receiver)(nil)
 // messages from a queue via the Session's connection and emits
 // each message as a ports.Delivery.
 type Receiver struct {
-	cfg     ReceiverConfig
-	session *Session
-	logger  *slog.Logger
-	metrics ports.MetricsExporter
+	cfg         ReceiverConfig
+	session     *Session
+	logger      *slog.Logger
+	metrics     ports.MetricsExporter
+	started     chan struct{}
+	startedOnce sync.Once
 }
 
 // NewReceiver creates a Receiver bound to the given Session.
@@ -38,8 +41,19 @@ func NewReceiver(cfg ReceiverConfig) *Receiver {
 	if l == nil && cfg.Session != nil {
 		l = cfg.Session.logger
 	}
-	return &Receiver{cfg: cfg, session: cfg.Session, logger: l, metrics: m}
+	return &Receiver{
+		cfg:     cfg,
+		session: cfg.Session,
+		logger:  l,
+		metrics: m,
+		started: make(chan struct{}),
+	}
 }
+
+// Started returns a channel that is closed once the receiver's
+// channel and consumer have been set up and the consume loop is live.
+// It satisfies ports.ReceiverStartedSignaler.
+func (r *Receiver) Started() <-chan struct{} { return r.started }
 
 // Run starts consuming messages from the configured queue. It blocks
 // until ctx is cancelled or an unrecoverable error occurs. On channel
@@ -130,6 +144,8 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 	}
 	r.metrics.Timer(domain.MetricAMQP091ConsumeLatency, time.Since(consumeStart),
 		domain.Tag{Key: domain.TagKeyEntity, Value: r.cfg.QueueName})
+
+	r.startedOnce.Do(func() { close(r.started) })
 
 	chanClose := ch.NotifyClose(make(chan *amqp.Error, 1))
 

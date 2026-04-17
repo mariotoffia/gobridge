@@ -30,7 +30,7 @@ func TestAutoExtendRetriesTransientThenSucceeds(t *testing.T) {
 
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil)
 	defer d.stop()
 
 	time.Sleep(4500 * time.Millisecond)
@@ -53,7 +53,7 @@ func TestAutoExtendStopsAfterMaxConsecutiveFailures(t *testing.T) {
 
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil)
 	defer d.stop()
 
 	time.Sleep(4 * time.Second)
@@ -86,7 +86,7 @@ func TestAutoExtendInterleavedFailSuccessASB(t *testing.T) {
 
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil)
 	defer d.stop()
 
 	time.Sleep(5 * time.Second)

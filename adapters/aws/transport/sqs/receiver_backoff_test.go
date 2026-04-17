@@ -11,13 +11,20 @@ func jitterBand(base time.Duration) (low, high time.Duration) {
 	return low, high
 }
 
-// TestPollBackoffNextInitialS10 verifies the first next() delay is near 1s
-// within the jitter window.
+func defaultBackoffConfig() ReceiverConfig {
+	cfg := ReceiverConfig{}
+	cfg.applyDefaults()
+	return cfg
+}
+
+// TestPollBackoffNextInitialS10 verifies the first next() delay is near the
+// configured initial delay within the jitter window.
 func TestPollBackoffNextInitialS10(t *testing.T) {
 	t.Parallel()
 
-	b := newPollBackoff()
-	low, high := jitterBand(pollBackoffInitial)
+	cfg := defaultBackoffConfig()
+	b := newPollBackoffFromConfig(cfg)
+	low, high := jitterBand(cfg.PollBackoffInitial)
 	d := b.next()
 	if d < low || d > high {
 		t.Fatalf("first delay %v want within [%v, %v]", d, low, high)
@@ -29,17 +36,18 @@ func TestPollBackoffNextInitialS10(t *testing.T) {
 func TestPollBackoffDoublingAndCapS10(t *testing.T) {
 	t.Parallel()
 
+	cfg := defaultBackoffConfig()
 	bases := []time.Duration{
-		pollBackoffInitial,
+		cfg.PollBackoffInitial,
 		2 * time.Second,
 		4 * time.Second,
 		8 * time.Second,
 		16 * time.Second,
-		pollBackoffMax,
-		pollBackoffMax,
+		cfg.PollBackoffMax,
+		cfg.PollBackoffMax,
 	}
 
-	b := newPollBackoff()
+	b := newPollBackoffFromConfig(cfg)
 	for i, base := range bases {
 		low, high := jitterBand(base)
 		d := b.next()
@@ -50,16 +58,17 @@ func TestPollBackoffDoublingAndCapS10(t *testing.T) {
 }
 
 // TestPollBackoffResetS10 verifies reset restores the backoff to the initial
-// 1s scale on the following next() call.
+// scale on the following next() call.
 func TestPollBackoffResetS10(t *testing.T) {
 	t.Parallel()
 
-	b := newPollBackoff()
+	cfg := defaultBackoffConfig()
+	b := newPollBackoffFromConfig(cfg)
 	_ = b.next()
 	_ = b.next()
 	b.reset()
 
-	low, high := jitterBand(pollBackoffInitial)
+	low, high := jitterBand(cfg.PollBackoffInitial)
 	d := b.next()
 	if d < low || d > high {
 		t.Fatalf("after reset delay %v want within [%v, %v]", d, low, high)

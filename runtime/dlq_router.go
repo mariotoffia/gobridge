@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -25,12 +26,15 @@ type DLQRouter struct {
 	wg           sync.WaitGroup
 	logger       *slog.Logger
 	metrics      ports.MetricsExporter
+	clk          clock.Clock
 	mu           sync.Mutex // guards started, stopped, and sendWg.Add
 	started      bool
 	stopped      bool
-	done         chan struct{}    // closed by Close() to signal Route() to exit select
-	sendWg       sync.WaitGroup  // tracks goroutines in the Route select
-	tokenFn      func() (domain.LeaseToken, bool)
+	done              chan struct{}    // closed by Close() to signal Route() to exit select
+	sendWg            sync.WaitGroup  // tracks goroutines in the Route select
+	tokenFn           func() (domain.LeaseToken, bool)
+	writeMaxAttempts  int
+	writeRetryBackoff domain.BackoffPolicy
 }
 
 // DLQRouterConfig configures the async DLQ router.
@@ -42,6 +46,10 @@ type DLQRouterConfig struct {
 	Workers      int           // background writer goroutines, default 2
 	Logger       *slog.Logger
 	Metrics      ports.MetricsExporter
+	Clock        clock.Clock
+
+	WriteMaxAttempts  int
+	WriteRetryBackoff domain.BackoffPolicy
 }
 
 const (
@@ -75,14 +83,33 @@ func NewDLQRouterFromConfig(cfg DLQRouterConfig) *DLQRouter {
 	if m == nil {
 		m = &ports.NoopExporter{}
 	}
+	clk := cfg.Clock
+	if clk == nil {
+		clk = clock.System
+	}
+	if cfg.WriteMaxAttempts <= 0 {
+		cfg.WriteMaxAttempts = 3
+	}
+	if cfg.WriteRetryBackoff.InitialInterval <= 0 {
+		cfg.WriteRetryBackoff.InitialInterval = 500 * time.Millisecond
+	}
+	if cfg.WriteRetryBackoff.MaxInterval <= 0 {
+		cfg.WriteRetryBackoff.MaxInterval = 5 * time.Second
+	}
+	if cfg.WriteRetryBackoff.Multiplier <= 0 {
+		cfg.WriteRetryBackoff.Multiplier = 2.0
+	}
 	return &DLQRouter{
-		store:        cfg.Store,
-		bufferSize:   cfg.BufferSize,
-		writeTimeout: cfg.WriteTimeout,
-		enqTimeout:   cfg.EnqTimeout,
-		workers:      cfg.Workers,
-		logger:       cfg.Logger,
-		metrics:      m,
+		store:             cfg.Store,
+		bufferSize:        cfg.BufferSize,
+		writeTimeout:      cfg.WriteTimeout,
+		enqTimeout:        cfg.EnqTimeout,
+		workers:           cfg.Workers,
+		logger:            cfg.Logger,
+		metrics:           m,
+		clk:               clk,
+		writeMaxAttempts:  cfg.WriteMaxAttempts,
+		writeRetryBackoff: cfg.WriteRetryBackoff,
 	}
 }
 
@@ -159,7 +186,7 @@ func (r *DLQRouter) Route(
 	r.mu.Unlock()
 	defer r.sendWg.Done()
 
-	timer := time.NewTimer(r.enqTimeout)
+	timer := r.clk.NewTimer(r.enqTimeout)
 	defer timer.Stop()
 
 	select {
@@ -169,7 +196,7 @@ func (r *DLQRouter) Route(
 		return ctx.Err()
 	case <-r.done:
 		return r.writeDirect(ctx, entry)
-	case <-timer.C:
+	case <-timer.C():
 		r.metrics.Counter(domain.MetricDLQBufferOverflow, 1)
 		return fmt.Errorf("DLQ buffer full after %s", r.enqTimeout)
 	}
@@ -224,11 +251,20 @@ func (r *DLQRouter) runWorker(_ context.Context) {
 			}
 		}
 
-		const maxAttempts = 3
+		maxAttempts := r.writeMaxAttempts
+		delay := r.writeRetryBackoff.InitialInterval
 		var writeErr error
 		for attempt := 0; attempt < maxAttempts; attempt++ {
 			if attempt > 0 {
-				time.Sleep(500 * time.Millisecond)
+				select {
+				case <-r.done:
+					return
+				case <-r.clk.After(delay):
+				}
+				delay = time.Duration(float64(delay) * r.writeRetryBackoff.Multiplier)
+				if delay > r.writeRetryBackoff.MaxInterval {
+					delay = r.writeRetryBackoff.MaxInterval
+				}
 			}
 			writeCtx, cancel := context.WithTimeout(context.Background(), r.writeTimeout)
 			writeErr = r.store.Write(writeCtx, entry)

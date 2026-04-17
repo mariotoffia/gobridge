@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -22,6 +23,7 @@ import (
 // closes sessions.
 type Runtime struct {
 	instanceID        string
+	clk               clock.Clock
 	leaseStore        ports.LeaseStore
 	outboxStore       ports.OutboxStore
 	dlqStore          ports.DLQStore
@@ -33,6 +35,8 @@ type Runtime struct {
 	globalMaxInFlight  int
 	clusterEndpoints   map[string]string
 	locator            *routeLocator
+
+	shutdownTimeout time.Duration
 
 	mu              sync.Mutex
 	entries         []*routeEntry
@@ -131,6 +135,24 @@ func WithClusterEndpoints(endpoints map[string]string) Option {
 	return func(rt *Runtime) { rt.clusterEndpoints = endpoints }
 }
 
+// WithShutdownTimeout sets the timeout used during graceful shutdown for
+// closing sessions and flushing metrics. Zero or negative values fall back
+// to a default of 5 seconds.
+func WithShutdownTimeout(d time.Duration) Option {
+	return func(rt *Runtime) { rt.shutdownTimeout = d }
+}
+
+// WithClock sets the clock used by all runtime components. When nil or
+// not set, the runtime defaults to clock.System (real wall-clock time).
+func WithClock(c clock.Clock) Option {
+	return func(rt *Runtime) {
+		if c == nil {
+			return
+		}
+		rt.clk = c
+	}
+}
+
 // WithGlobalMaxInFlight sets a host-level concurrency limit that is shared
 // across all routes. When set to a positive value, the runtime creates a
 // shared semaphore that each RouteRunner must acquire in addition to its
@@ -158,6 +180,9 @@ func New(opts ...Option) *Runtime {
 	}
 	for _, opt := range opts {
 		opt(rt)
+	}
+	if rt.clk == nil {
+		rt.clk = clock.System
 	}
 	return rt
 }
@@ -256,7 +281,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 	ctx, rt.cancel = context.WithCancel(ctx)
 
-	dlq := NewDLQRouter(rt.dlqStore)
+	dlq := NewDLQRouterFromConfig(DLQRouterConfig{Store: rt.dlqStore, Clock: rt.clk})
 	dlq.Start(ctx)
 	rt.dlqRouter = dlq
 
@@ -270,7 +295,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	}
 
 	if rt.leaseStore != nil {
-		rt.locator = newRouteLocator(rt.instanceID, rt.leaseStore)
+		rt.locator = newRouteLocator(rt.instanceID, rt.leaseStore, DefaultRouteLocatorConfig(), rt.clk)
 	}
 
 	drainerSessions := make(map[string]bool)
@@ -294,6 +319,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 			Logger:        rt.logger,
 			GlobalSem:     rt.globalSem,
 			DepthCacheTTL: entry.config.Policy.DepthCacheTTL,
+			Clock:         rt.clk,
 		})
 
 		if rt.locator != nil {
@@ -308,7 +334,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		if entry.session != nil && entry.sessCfg != nil {
 			sid := entry.sessCfg.SessionID
 			if _, exists := rt.sessionMgrs[sid]; !exists {
-				mgr := newSessionManagerWithMetrics(*entry.sessCfg, entry.session, rt.leaseStore, rt.instanceID, rt.logger, m)
+				mgr := newSessionManagerWithMetrics(*entry.sessCfg, entry.session, rt.leaseStore, rt.instanceID, rt.logger, m, rt.clk)
 				mgr.SetAudit(rt.audit)
 				mgr.endpoints = rt.clusterEndpoints
 				rt.sessionMgrs[sid] = mgr
@@ -340,6 +366,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					Hook:                rt.hook,
 					Logger:         rt.logger,
 					TokenFn:        mgr.Token,
+					Clock:          rt.clk,
 					ReadyFn: func() bool {
 						return sess.Health(context.Background()).Connected
 					},
@@ -364,7 +391,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				}
 
 				if _, exists := rt.sessionMgrs[sid]; !exists {
-					mgr := newSessionManagerWithMetrics(sse.config, sse.session, rt.leaseStore, rt.instanceID, rt.logger, m)
+					mgr := newSessionManagerWithMetrics(sse.config, sse.session, rt.leaseStore, rt.instanceID, rt.logger, m, rt.clk)
 					mgr.SetAudit(rt.audit)
 					mgr.endpoints = rt.clusterEndpoints
 					rt.sessionMgrs[sid] = mgr
@@ -391,6 +418,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					Hook:                rt.hook,
 					Logger:         rt.logger,
 					TokenFn:        mgr.Token,
+					Clock:          rt.clk,
 					ReadyFn: func() bool {
 						return fanSess.Health(context.Background()).Connected
 					},
@@ -476,7 +504,11 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		rt.dlqRouter.Close()
 	}
 
-	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	closeTimeout := rt.shutdownTimeout
+	if closeTimeout <= 0 {
+		closeTimeout = 5 * time.Second
+	}
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), closeTimeout)
 	defer closeCancel()
 
 	rt.mu.Lock()
@@ -489,7 +521,11 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	rt.mu.Unlock()
 
 	if metrics != nil {
-		flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		flushTimeout := rt.shutdownTimeout / 2
+		if flushTimeout <= 0 {
+			flushTimeout = 5 * time.Second
+		}
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), flushTimeout)
 		defer flushCancel()
 		if err := metrics.Flush(flushCtx); err != nil {
 			errs = append(errs, err)

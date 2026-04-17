@@ -10,6 +10,25 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
+// TestRuntime_WithClock_NilIgnored regresses the contract that
+// WithClock(nil) must not overwrite the default clock with nil — otherwise
+// every subsequent ticker/timer dereference panics. The fix is in
+// runtime/bridge.go's WithClock option.
+func TestRuntime_WithClock_NilIgnored(t *testing.T) {
+	rt := goruntime.New(
+		goruntime.WithInstanceID("nil-clock-test"),
+		goruntime.WithClock(nil),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("Start with nil clock option: %v", err)
+	}
+	if err := rt.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
 // Verifies that the runtime starts and stops cleanly with a single route.
 func TestRuntime_StartStop(t *testing.T) {
 	rt := goruntime.New(
@@ -34,7 +53,7 @@ func TestRuntime_StartStop(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	<-receiver.Ready()
 
 	stopCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
@@ -141,7 +160,7 @@ func TestRuntime_Inject_HappyPath(t *testing.T) {
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	time.Sleep(50 * time.Millisecond)
+	<-receiver.Ready()
 
 	env := &domain.Envelope{
 		ID:      "injected-1",
@@ -181,7 +200,7 @@ func TestRuntime_Inject_UnknownRoute(t *testing.T) {
 	_ = rt.Start(context.Background())
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	time.Sleep(50 * time.Millisecond)
+	<-receiver.Ready()
 
 	err := rt.Inject(context.Background(), "nonexistent", &domain.Envelope{ID: "x"})
 	if err == nil {
@@ -217,7 +236,7 @@ func TestRuntime_Inject_AssignsIDWhenEmpty(t *testing.T) {
 	_ = rt.Start(context.Background())
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	time.Sleep(50 * time.Millisecond)
+	<-receiver.Ready()
 
 	env := &domain.Envelope{Payload: []byte("no-id")}
 	if err := rt.Inject(context.Background(), "id-route", env); err != nil {
@@ -257,7 +276,7 @@ func TestRuntime_Inject_DoesNotMutateOriginal(t *testing.T) {
 	_ = rt.Start(context.Background())
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	time.Sleep(50 * time.Millisecond)
+	<-receiver.Ready()
 
 	env := &domain.Envelope{
 		ID:      "orig-id",
@@ -320,7 +339,7 @@ func TestRuntime_SharedOutboxEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	_ = rt.Start(ctx)
 
-	time.Sleep(200 * time.Millisecond)
+	<-receiver.Ready()
 
 	env := &domain.Envelope{ID: "outbox-msg", Payload: []byte("outbox-data")}
 	del := NewFakeDelivery(env)

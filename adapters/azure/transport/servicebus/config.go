@@ -6,6 +6,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -54,6 +55,10 @@ type ReceiverConfig struct {
 	// message lock at 50 % of the lock duration. Default true.
 	AutoExtend *bool
 
+	// MinAutoExtendInterval is the floor for the computed
+	// auto-extend renewal interval. Default 1s.
+	MinAutoExtendInterval time.Duration
+
 	// Connection holds Azure Service Bus connection/credential settings.
 	Connection ConnectionConfig
 
@@ -66,6 +71,11 @@ type ReceiverConfig struct {
 
 	// Metrics is an optional metrics exporter for adapter-internal metrics.
 	Metrics ports.MetricsExporter
+
+	// Clock drives the delivery lock-renewal (auto-extend) ticker.
+	// When nil defaults to clock.System (wall clock). Tests may inject
+	// a clocktest.Fake to control tick firing deterministically.
+	Clock clock.Clock
 }
 
 // SenderConfig configures an Azure Service Bus Sender.
@@ -129,6 +139,12 @@ func (c *ReceiverConfig) applyDefaults() {
 	if c.AutoExtend == nil {
 		t := true
 		c.AutoExtend = &t
+	}
+	if c.MinAutoExtendInterval <= 0 {
+		c.MinAutoExtendInterval = time.Second
+	}
+	if c.Clock == nil {
+		c.Clock = clock.System
 	}
 }
 

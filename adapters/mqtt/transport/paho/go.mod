@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/mariotoffia/gobridge v0.0.0
+	github.com/mariotoffia/gobridge/testutil/wait v0.0.0
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -20,3 +21,5 @@ require (
 )
 
 replace github.com/mariotoffia/gobridge => ../../../..
+
+replace github.com/mariotoffia/gobridge/testutil/wait => ../../../../testutil/wait

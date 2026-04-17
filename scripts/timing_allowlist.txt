@@ -1,0 +1,85 @@
+# Timing Allowlist
+#
+# Production code locations that are ALLOWED to use time.Sleep, time.After,
+# time.NewTicker, time.NewTimer, or time.Tick directly instead of the Clock
+# abstraction. Each entry must have a justification.
+#
+# Format:
+#   # ESSENTIAL: <reason>
+#   <file>:<line-pattern>
+#
+# To add a new entry: open a PR with justification explaining why the Clock
+# abstraction cannot be used at this call site.
+
+# ---------------------------------------------------------------------------
+# runtime/session_manager.go — lease acquisition & renewal loops
+# ---------------------------------------------------------------------------
+# ESSENTIAL: Retry backoff for lease acquisition; runs in a tight
+#            select loop where Clock injection would add complexity
+#            without testability gain (context cancellation is the
+#            primary test lever).
+runtime/session_manager.go:time.After(m.clampedInterval())
+runtime/session_manager.go:time.NewTimer(m.clampedInterval())
+
+# ---------------------------------------------------------------------------
+# runtime/outbox_drainer.go — outbox polling loop
+# ---------------------------------------------------------------------------
+# ESSENTIAL: Drain strategy already controls the interval value;
+#            the timer is a simple select driver and not a unit-test
+#            concern (integration tests cover drain behavior).
+runtime/outbox_drainer.go:time.NewTimer(d.strategy.NextInterval(
+
+# ---------------------------------------------------------------------------
+# runtime/dlq_router.go — DLQ buffer enqueue & retry write
+# ---------------------------------------------------------------------------
+# ESSENTIAL: Enqueue timeout for the bounded DLQ buffer channel.
+runtime/dlq_router.go:time.NewTimer(r.enqTimeout)
+# ESSENTIAL: Short fixed retry sleep between DLQ store write attempts;
+#            only 500ms × 3 attempts, not worth abstracting.
+runtime/dlq_router.go:time.Sleep(500 * time.Millisecond)
+
+# ---------------------------------------------------------------------------
+# bridge/reconfig_strategy.go — config debounce / windowed strategy
+# ---------------------------------------------------------------------------
+# ESSENTIAL: Debounce and windowed timers that gate configuration
+#            reloads. Timer is created-then-stopped immediately
+#            (init pattern); testability comes from feeding the
+#            input channel, not from controlling wall-clock time.
+bridge/reconfig_strategy.go:time.NewTimer(0)
+
+# ---------------------------------------------------------------------------
+# adapters/azure/transport/servicebus — receiver
+# ---------------------------------------------------------------------------
+# ESSENTIAL: Retry backoff select in receiver reconnect loop.
+adapters/azure/transport/servicebus/receiver.go:time.After(delay)
+
+# ---------------------------------------------------------------------------
+# adapters/native/config/file/watcher.go — file-system config watcher
+# ---------------------------------------------------------------------------
+# ESSENTIAL: Debounce timer for rapid FS events and poll-interval
+#            ticker for fallback polling.
+adapters/native/config/file/watcher.go:time.NewTimer(w.debounce)
+adapters/native/config/file/watcher.go:time.NewTicker(w.pollInterval)
+
+# ---------------------------------------------------------------------------
+# adapters/aws — DynamoDB loader, CloudWatch exporter, SQS receiver/delivery
+# ---------------------------------------------------------------------------
+# ESSENTIAL: Poll ticker for DynamoDB config loader.
+adapters/aws/config/dynamodb/loader.go:time.NewTicker(l.pollInterval)
+# ESSENTIAL: Flush-interval ticker for CloudWatch metrics exporter.
+adapters/aws/metrics/cloudwatch/exporter.go:time.NewTicker(e.config.FlushInterval)
+# ---------------------------------------------------------------------------
+# adapters/amqp — AMQP 1.0 receiver/session (remaining essential sites)
+# ---------------------------------------------------------------------------
+# ESSENTIAL: Retry backoff in AMQP 1.0 receiver reconnect loop.
+adapters/amqp/transport/amqp10/receiver.go:time.After(delay)
+# ESSENTIAL: Heartbeat fallback ticker in AMQP 1.0 session.
+adapters/amqp/transport/amqp10/session.go:time.NewTicker(30 * time.Second)
+
+# ---------------------------------------------------------------------------
+# adapters/http/transport — HTTP forwarder & SSE sender
+# ---------------------------------------------------------------------------
+# ESSENTIAL: Retry backoff in HTTP forwarder send loop.
+adapters/http/transport/forwarder.go:time.After(delay)
+# ESSENTIAL: Heartbeat ticker for SSE keep-alive.
+adapters/http/transport/sender_sse.go:time.NewTicker(s.cfg.heartbeatInterval)

@@ -8,8 +8,9 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -22,10 +23,14 @@ type asbDelivery struct {
 	msg       *azservicebus.ReceivedMessage
 	logger    *slog.Logger
 	metrics   ports.MetricsExporter
+	clk       clock.Clock
 	cancel    context.CancelFunc
 	once      sync.Once
 }
 
+// newDelivery constructs an asbDelivery. clk drives the auto-extend
+// (lock renewal) ticker; when nil it defaults to clock.System. Tests
+// pass a clocktest.Fake to control tick firing deterministically.
 func newDelivery(
 	parentCtx context.Context,
 	env *domain.Envelope,
@@ -36,9 +41,14 @@ func newDelivery(
 	autoExtend bool,
 	logger *slog.Logger,
 	metrics ports.MetricsExporter,
+	clk clock.Clock,
+	minAutoExtendInterval ...time.Duration,
 ) *asbDelivery {
 	if metrics == nil {
 		metrics = &ports.NoopExporter{}
+	}
+	if clk == nil {
+		clk = clock.System
 	}
 
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -50,6 +60,7 @@ func newDelivery(
 		msg:       msg,
 		logger:    logger,
 		metrics:   metrics,
+		clk:       clk,
 		cancel:    cancel,
 	}
 
@@ -61,8 +72,12 @@ func newDelivery(
 			interval = remaining / 2
 		}
 
-		if interval < time.Second {
-			interval = time.Second
+		floor := time.Second
+		if len(minAutoExtendInterval) > 0 && minAutoExtendInterval[0] > 0 {
+			floor = minAutoExtendInterval[0]
+		}
+		if interval < floor {
+			interval = floor
 		}
 
 		go d.autoExtendLoop(ctx, interval)
@@ -204,7 +219,7 @@ const autoExtendMaxFailures = 3
 // the context is cancelled. Tolerates up to autoExtendMaxFailures
 // consecutive transient errors before giving up.
 func (d *asbDelivery) autoExtendLoop(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
+	ticker := d.clk.NewTicker(interval)
 	defer ticker.Stop()
 
 	consecutiveFailures := 0
@@ -213,7 +228,7 @@ func (d *asbDelivery) autoExtendLoop(ctx context.Context, interval time.Duration
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticker.C():
 			if err := d.client.RenewMessageLock(ctx, d.msg, nil); err != nil {
 				if ctx.Err() != nil {
 					return

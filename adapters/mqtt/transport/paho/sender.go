@@ -96,7 +96,11 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 				With("reason_code", fmt.Sprintf("0x%02X", resp.ReasonCode))
 			// Hint the route runner to back off on quota/throttle errors.
 			if resp.ReasonCode == 0x93 || resp.ReasonCode == 0x97 || resp.ReasonCode == 0xA1 {
-				result = result.WithRetryAfter(500 * time.Millisecond)
+				hint := s.opts.ThrottleRetryAfter
+				if hint <= 0 {
+					hint = 500 * time.Millisecond
+				}
+				result = result.WithRetryAfter(hint)
 			}
 			return result
 		}

@@ -3,6 +3,7 @@ package paho
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 
 	pahov5 "github.com/eclipse/paho.golang/paho"
@@ -25,18 +26,30 @@ import (
 // same id and the first Run's deferred Unregister removing the
 // second Run's handler.
 type Receiver struct {
-	id      string
-	session *Session
-	logger  *slog.Logger
-	running atomic.Bool // true while a Run is in flight
+	id          string
+	session     *Session
+	logger      *slog.Logger
+	running     atomic.Bool // true while a Run is in flight
+	started     chan struct{}
+	startedOnce sync.Once
 }
 
 var _ ports.Receiver = (*Receiver)(nil)
 
 // NewReceiver creates a Receiver bound to the given Session.
 func NewReceiver(id string, session *Session) *Receiver {
-	return &Receiver{id: id, session: session, logger: session.logger}
+	return &Receiver{
+		id:      id,
+		session: session,
+		logger:  session.logger,
+		started: make(chan struct{}),
+	}
 }
+
+// Started returns a channel that is closed once the receiver has
+// registered its router handler and is ready to process messages.
+// It satisfies ports.ReceiverStartedSignaler.
+func (r *Receiver) Started() <-chan struct{} { return r.started }
 
 // Run registers a message handler on the session router and blocks until
 // ctx is cancelled or emit returns a non-nil error. Each incoming MQTT
@@ -88,6 +101,8 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		}
 	})
 	defer r.session.Router().Unregister(r.id)
+
+	r.startedOnce.Do(func() { close(r.started) })
 
 	select {
 	case <-runCtx.Done():

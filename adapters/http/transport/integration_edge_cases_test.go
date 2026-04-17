@@ -37,7 +37,7 @@ func TestEdge_ReceiverDoubleRunNoPanic(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(30 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 	cancel1()
 
 	select {
@@ -57,7 +57,7 @@ func TestEdge_ReceiverDoubleRunNoPanic(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(30 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 	cancel2()
 
 	select {
@@ -90,7 +90,7 @@ func TestEdge_SubjectRequired(t *testing.T) {
 			return d.Ack(context.Background())
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	rec := postJSON(t, factory.Handler(), "/transport/http/receivers/no-subj2/messages",
 		map[string]any{"payload": json.RawMessage(`{}`)}, nil)
@@ -124,7 +124,7 @@ func TestEdge_ReservedHeadersStrippedAtIngress(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	type httpResult struct {
 		rec *httptest.ResponseRecorder
@@ -375,7 +375,7 @@ func TestEdge_LocatorErrorReturns502(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	rec := postJSON(t, factory.Handler(), "/transport/http/receivers/loc-err/messages",
 		map[string]any{"subject": "test", "payload": json.RawMessage(`{}`)}, nil)
@@ -435,7 +435,7 @@ func TestEdge_ErrorResponsesAreGeneric(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	rec := postJSON(t, factory.Handler(), "/transport/http/receivers/generic-err/messages",
 		map[string]any{"subject": "test", "payload": json.RawMessage(`{}`)}, nil)

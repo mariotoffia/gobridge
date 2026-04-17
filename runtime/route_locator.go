@@ -6,14 +6,25 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-const (
-	locateCacheTTL       = 2 * time.Second
-	locateMaxFailures    = 3
-	locateCooldownPeriod = 5 * time.Second
-)
+// RouteLocatorConfig configures the cluster-aware route locator.
+type RouteLocatorConfig struct {
+	CacheTTL       time.Duration
+	MaxFailures    int
+	CooldownPeriod time.Duration
+}
+
+// DefaultRouteLocatorConfig returns a RouteLocatorConfig with recommended defaults.
+func DefaultRouteLocatorConfig() RouteLocatorConfig {
+	return RouteLocatorConfig{
+		CacheTTL:       2 * time.Second,
+		MaxFailures:    3,
+		CooldownPeriod: 5 * time.Second,
+	}
+}
 
 type cachedLease struct {
 	info      domain.LeaseInfo
@@ -23,8 +34,12 @@ type cachedLease struct {
 // routeLocator implements ports.RouteLocator by combining lease ownership
 // with the route-to-session mapping to determine which instance handles a route.
 type routeLocator struct {
-	instanceID string
-	leaseStore ports.LeaseStore
+	instanceID     string
+	leaseStore     ports.LeaseStore
+	cacheTTL       time.Duration
+	maxFailures    int
+	cooldownPeriod time.Duration
+	clk            clock.Clock
 
 	mu              sync.RWMutex
 	routeSessionMap map[string]string // routeID → sessionID (exclusive routes only)
@@ -35,10 +50,27 @@ type routeLocator struct {
 	lastFailure         time.Time
 }
 
-func newRouteLocator(instanceID string, leaseStore ports.LeaseStore) *routeLocator {
+func newRouteLocator(instanceID string, leaseStore ports.LeaseStore, cfg RouteLocatorConfig, clk clock.Clock) *routeLocator {
+	defaults := DefaultRouteLocatorConfig()
+	if cfg.CacheTTL <= 0 {
+		cfg.CacheTTL = defaults.CacheTTL
+	}
+	if cfg.MaxFailures <= 0 {
+		cfg.MaxFailures = defaults.MaxFailures
+	}
+	if cfg.CooldownPeriod <= 0 {
+		cfg.CooldownPeriod = defaults.CooldownPeriod
+	}
+	if clk == nil {
+		clk = clock.System
+	}
 	return &routeLocator{
 		instanceID:      instanceID,
 		leaseStore:      leaseStore,
+		cacheTTL:        cfg.CacheTTL,
+		maxFailures:     cfg.MaxFailures,
+		cooldownPeriod:  cfg.CooldownPeriod,
+		clk:             clk,
 		routeSessionMap: make(map[string]string),
 		cache:           make(map[string]cachedLease),
 	}
@@ -64,13 +96,13 @@ func (rl *routeLocator) Locate(ctx context.Context, routeID string) (*domain.Pee
 		return nil, true, nil
 	}
 
-	now := time.Now()
+	now := rl.clk.Now()
 
 	rl.mu.RLock()
 	cached, hasCached := rl.cache[sessionID]
 	rl.mu.RUnlock()
 
-	if hasCached && now.Sub(cached.fetchedAt) < locateCacheTTL {
+	if hasCached && now.Sub(cached.fetchedAt) < rl.cacheTTL {
 		if cached.info.Owner == rl.instanceID {
 			return nil, true, nil
 		}
@@ -118,10 +150,10 @@ func (rl *routeLocator) Locate(ctx context.Context, routeID string) (*domain.Pee
 func (rl *routeLocator) isCircuitOpen(now time.Time) bool {
 	rl.failMu.Lock()
 	defer rl.failMu.Unlock()
-	if rl.consecutiveFailures < locateMaxFailures {
+	if rl.consecutiveFailures < rl.maxFailures {
 		return false
 	}
-	return now.Sub(rl.lastFailure) < locateCooldownPeriod
+	return now.Sub(rl.lastFailure) < rl.cooldownPeriod
 }
 
 func (rl *routeLocator) recordFailure(now time.Time) {

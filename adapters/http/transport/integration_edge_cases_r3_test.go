@@ -94,7 +94,7 @@ func TestEdgeR3_InvalidExpiresAtReturns400(t *testing.T) {
 			return d.Ack(context.Background())
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -137,7 +137,7 @@ func TestEdgeR3_ValidExpiresAtAccepted(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	type httpResult struct{ rec *httptest.ResponseRecorder }
 	resultCh := make(chan httpResult, 1)
@@ -248,7 +248,7 @@ func TestEdgeR3_ConcurrentPOSTProcessing(t *testing.T) {
 			return d.Ack(context.Background())
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
@@ -316,7 +316,7 @@ func TestEdgeR3_CustomPathPrefix(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	type httpResult struct{ rec *httptest.ResponseRecorder }
 	resultCh := make(chan httpResult, 1)
@@ -404,7 +404,7 @@ func TestEdgeR3_NilPayload(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	cases := []struct {
 		name string
@@ -481,7 +481,7 @@ func TestEdgeR3_RemoteRouteNoForwarderReturns502(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	rec := postJSON(t, factory.Handler(), "/transport/http/receivers/nofwd/messages",
 		map[string]any{"subject": "test", "payload": json.RawMessage(`{}`)}, nil)

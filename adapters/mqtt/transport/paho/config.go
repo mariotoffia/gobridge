@@ -41,11 +41,12 @@ type ReceiverOptions struct {
 
 // SenderOptions holds MQTT sender-specific configuration.
 type SenderOptions struct {
-	DefaultTopic   string
-	QoS            byte
-	Retain         bool
-	Timeout        time.Duration
-	CircuitBreaker *CBConfig // nil = disabled (opt-in)
+	DefaultTopic     string
+	QoS              byte
+	Retain           bool
+	Timeout          time.Duration
+	ThrottleRetryAfter time.Duration
+	CircuitBreaker   *CBConfig // nil = disabled (opt-in)
 }
 
 // TLSConfig holds TLS settings for the MQTT connection.
@@ -70,8 +71,9 @@ func DefaultSessionOptions() SessionOptions {
 // DefaultSenderOptions returns SenderOptions with recommended defaults.
 func DefaultSenderOptions() SenderOptions {
 	return SenderOptions{
-		QoS:     1,
-		Timeout: 30 * time.Second,
+		QoS:                1,
+		Timeout:            30 * time.Second,
+		ThrottleRetryAfter: 500 * time.Millisecond,
 	}
 }
 
@@ -210,6 +212,9 @@ func SenderOptionsFromMap(m map[string]any) (SenderOptions, error) {
 	}
 	if v, ok := optDuration(m, "timeout"); ok {
 		opts.Timeout = v
+	}
+	if v, ok := optDuration(m, "throttle_retry_after"); ok {
+		opts.ThrottleRetryAfter = v
 	}
 
 	return opts, nil

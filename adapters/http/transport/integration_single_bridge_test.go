@@ -55,6 +55,21 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	t.Fatalf("timeout waiting for %s", desc)
 }
 
+// waitReceiverReady blocks until recv signals it is live, or fails the test
+// after timeout. No-ops for receivers that don't implement the signaler.
+func waitReceiverReady(t *testing.T, recv any, timeout time.Duration) {
+	t.Helper()
+	s, ok := recv.(ports.ReceiverStartedSignaler)
+	if !ok {
+		return
+	}
+	select {
+	case <-s.Started():
+	case <-time.After(timeout):
+		t.Fatalf("receiver did not become ready within %s", timeout)
+	}
+}
+
 type filterProcessor struct {
 	dropFn func(*domain.Envelope) bool
 }
@@ -315,7 +330,7 @@ func TestIntegration_HTTPPost_APIKeyAuth(t *testing.T) {
 					return nil
 				})
 			}()
-			time.Sleep(20 * time.Millisecond)
+			waitReceiverReady(t, recv, 2*time.Second)
 
 			rec := postJSON(t, factory.Handler(), "/transport/http/receivers/auth-"+tc.name+"/messages",
 				map[string]any{"subject": "test", "payload": json.RawMessage(`{}`)}, tc.headers)
@@ -348,7 +363,7 @@ func TestIntegration_HTTPPost_BodyTooLarge(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	bigPayload := strings.Repeat("x", 1024)
 	body, _ := json.Marshal(map[string]any{"subject": "big", "payload": bigPayload})
@@ -391,7 +406,7 @@ func TestIntegration_HTTPPost_InvalidJSON(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

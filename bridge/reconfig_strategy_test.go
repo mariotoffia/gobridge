@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,14 +17,7 @@ func stratCfg(id string) *config.BridgeConfig {
 
 func mustRecv(t *testing.T, ch <-chan *config.BridgeConfig, timeout time.Duration) *config.BridgeConfig {
 	t.Helper()
-	select {
-	case cfg, ok := <-ch:
-		require.True(t, ok, "channel closed unexpectedly")
-		return cfg
-	case <-time.After(timeout):
-		t.Fatal("timeout waiting for emission")
-		return nil
-	}
+	return wait.RequireReceive(t, ch, timeout)
 }
 
 func mustClose(t *testing.T, ch <-chan *config.BridgeConfig, timeout time.Duration) {
@@ -36,13 +30,9 @@ func mustClose(t *testing.T, ch <-chan *config.BridgeConfig, timeout time.Durati
 	}
 }
 
-func assertNoEmission(t *testing.T, ch <-chan *config.BridgeConfig, wait time.Duration) {
+func assertNoEmission(t *testing.T, ch <-chan *config.BridgeConfig, window time.Duration) {
 	t.Helper()
-	select {
-	case cfg := <-ch:
-		t.Fatalf("unexpected emission: %+v", cfg)
-	case <-time.After(wait):
-	}
+	wait.Silent(t, ch, window)
 }
 
 // --- Direct Strategy ---

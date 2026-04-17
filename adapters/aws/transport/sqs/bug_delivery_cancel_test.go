@@ -42,6 +42,7 @@ func TestBug3_Delivery_ProcessingCancelSetAfterConstruction(t *testing.T) {
 		cancel,
 		nil,
 		&ports.NoopExporter{},
+		nil,
 	)
 
 	if del.processingCancel == nil {
@@ -89,6 +90,7 @@ func TestBug3_Delivery_AutoExtendExhaustsCancelsProcessing(t *testing.T) {
 		processingCancel,
 		nil,
 		&ports.NoopExporter{},
+		nil,
 	)
 
 	// processingCancel is set — verify the fix.

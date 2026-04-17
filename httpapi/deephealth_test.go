@@ -11,6 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -93,7 +94,7 @@ func TestHandleDeepHealth_Running(t *testing.T) {
 
 	require.NoError(t, rt.Start(context.Background()))
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
-	time.Sleep(50 * time.Millisecond)
+	wait.RequireClosed(t, receiver.ready, 2*time.Second)
 
 	cfg := testConfig()
 	s := New(rt, cfg)
@@ -141,7 +142,7 @@ func TestHandleDeepHealth_WithSession(t *testing.T) {
 
 	require.NoError(t, rt.Start(context.Background()))
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
-	time.Sleep(50 * time.Millisecond)
+	wait.RequireClosed(t, receiver.ready, 2*time.Second)
 
 	cfg := testConfig()
 	s := New(rt, cfg)

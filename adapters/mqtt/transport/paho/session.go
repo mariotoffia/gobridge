@@ -196,23 +196,26 @@ func (s *Session) Start(ctx context.Context) error {
 		cfg.ReconnectBackoff = autopaho.NewConstantBackoff(s.opts.ReconnectDelay)
 	}
 
-	// Set ReceiveMaximum via ConnectPacketBuilder to avoid exceeding the
-	// broker's per-client inflight quota under high throughput.
-	if s.opts.ReceiveMaximum > 0 {
-		rm := s.opts.ReceiveMaximum
-		cfg.ConnectPacketBuilder = func(cp *pahov5.Connect, _ *url.URL) (*pahov5.Connect, error) {
-			if cp.Properties == nil {
-				cp.Properties = &pahov5.ConnectProperties{}
-			}
-			cp.Properties.ReceiveMaximum = &rm
-			return cp, nil
-		}
-	}
+	// ConnectPacketBuilder customisations are accumulated here and merged
+	// into a single builder below.
+	//
+	// ephemeralCleanStart: autopaho's CleanStartOnInitialConnection only
+	// sends CleanStart=true on the FIRST connect; subsequent reconnects
+	// send CleanStart=false. For SessionEphemeral that is wrong: after a
+	// broker restart the server-side session is gone, but the client
+	// claims to resume → the broker replies CONNACK SessionPresent=false
+	// while the client's in-flight packet tracking still holds stale
+	// state, causing QoS ≥ 1 publishes to hang waiting for a PUBACK
+	// that will never arrive. Fix: force CleanStart=true on EVERY
+	// connect via ConnectPacketBuilder.
+	ephemeralCleanStart := false
+	rm := s.opts.ReceiveMaximum
 
 	switch s.mode {
 	case domain.SessionEphemeral:
 		cfg.CleanStartOnInitialConnection = true
 		cfg.SessionExpiryInterval = 0
+		ephemeralCleanStart = true
 	case domain.SessionPersistent, domain.SessionExclusive:
 		if s.opts.CleanStart && s.mode == domain.SessionExclusive {
 			// CleanStart + Exclusive is a misconfiguration: autopaho reconnects
@@ -229,6 +232,21 @@ func (s *Session) Start(ctx context.Context) error {
 			cfg.CleanStartOnInitialConnection = s.opts.CleanStart
 		}
 		cfg.SessionExpiryInterval = s.opts.SessionExpiryInterval
+	}
+
+	if ephemeralCleanStart || rm > 0 {
+		cfg.ConnectPacketBuilder = func(cp *pahov5.Connect, _ *url.URL) (*pahov5.Connect, error) {
+			if ephemeralCleanStart {
+				cp.CleanStart = true
+			}
+			if rm > 0 {
+				if cp.Properties == nil {
+					cp.Properties = &pahov5.ConnectProperties{}
+				}
+				cp.Properties.ReceiveMaximum = &rm
+			}
+			return cp, nil
+		}
 	}
 
 	if s.opts.Username != "" {

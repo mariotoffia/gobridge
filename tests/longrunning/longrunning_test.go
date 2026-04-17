@@ -28,6 +28,7 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ---------------------------------------------------------------------------
@@ -372,14 +373,7 @@ func lrWaitFor(
 	t *testing.T, timeout time.Duration, desc string, fn func() bool,
 ) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if fn() {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for: %s", desc)
+	wait.Until(t, timeout, desc, fn)
 }
 
 // ---------------------------------------------------------------------------

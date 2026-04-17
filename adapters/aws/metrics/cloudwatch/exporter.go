@@ -156,7 +156,7 @@ func (e *Exporter) flushLoop() {
 		case <-e.stopCh:
 			return
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), e.config.FlushRPCTimeout)
 			_ = e.Flush(ctx)
 			cancel()
 		}
@@ -164,7 +164,7 @@ func (e *Exporter) flushLoop() {
 }
 
 func (e *Exporter) asyncFlush() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), e.config.FlushRPCTimeout)
 	defer cancel()
 	_ = e.Flush(ctx)
 }

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/observability"
@@ -36,9 +37,14 @@ type RouteRunner struct {
 	tracer      ports.Tracer
 	hook        ports.DeliveryHook
 	logger      *slog.Logger
-	sem         chan struct{}
-	globalSem   chan struct{}
-	depthCache  *outboxDepthCache
+	clk                  clock.Clock
+	sem                  chan struct{}
+	globalSem            chan struct{}
+	depthCache           *outboxDepthCache
+	panicRetryTimeout    time.Duration
+	receiverCloseTimeout time.Duration
+	onDelivery           func(env *domain.Envelope, err error)
+	onAck                func(env *domain.Envelope, err error)
 }
 
 // RouteRunnerConfig holds the configuration for a RouteRunner.
@@ -57,9 +63,20 @@ type RouteRunnerConfig struct {
 	Metrics       ports.MetricsExporter
 	Tracer        ports.Tracer
 	Hook          ports.DeliveryHook
-	Logger        *slog.Logger
-	GlobalSem     chan struct{}
-	DepthCacheTTL time.Duration
+	Logger               *slog.Logger
+	GlobalSem            chan struct{}
+	DepthCacheTTL        time.Duration
+	PanicRetryTimeout    time.Duration
+	ReceiverCloseTimeout time.Duration
+	Clock                clock.Clock
+	// OnDelivery is invoked (non-blocking) for each envelope the RouteRunner
+	// has successfully dispatched (sent to the target). Receives the envelope
+	// and any error from the send pipeline (nil on success). Optional.
+	OnDelivery func(env *domain.Envelope, err error)
+	// OnAck is invoked (non-blocking) after the source delivery is acked or
+	// retried. Receives the envelope and the ack error (nil on successful ack).
+	// Optional.
+	OnAck func(env *domain.Envelope, err error)
 }
 
 // NewRouteRunnerFromConfig creates a RouteRunner from a config struct.
@@ -95,24 +112,43 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 		dc = newOutboxDepthCache(depthTTL)
 	}
 
+	panicRetry := cfg.PanicRetryTimeout
+	if panicRetry <= 0 {
+		panicRetry = 5 * time.Second
+	}
+	recvClose := cfg.ReceiverCloseTimeout
+	if recvClose <= 0 {
+		recvClose = 10 * time.Second
+	}
+
+	clk := cfg.Clock
+	if clk == nil {
+		clk = clock.System
+	}
+
 	r := &RouteRunner{
-		routeID:     cfg.RouteID,
-		policy:      policy,
-		receiver:    cfg.Receiver,
-		sender:      cfg.Sender,
-		senders:     cfg.Senders,
-		outboxStore: cfg.OutboxStore,
-		dlq:         dlq,
-		resolver:    cfg.Resolver,
-		processors:  cfg.Processors,
-		bindings:    cfg.Bindings,
-		instanceID:  cfg.InstanceID,
-		metrics:     m,
-		tracer:      t,
-		hook:        h,
-		logger:      cfg.Logger,
-		globalSem:   cfg.GlobalSem,
-		depthCache:  dc,
+		routeID:              cfg.RouteID,
+		policy:               policy,
+		receiver:             cfg.Receiver,
+		sender:               cfg.Sender,
+		senders:              cfg.Senders,
+		outboxStore:          cfg.OutboxStore,
+		dlq:                  dlq,
+		resolver:             cfg.Resolver,
+		processors:           cfg.Processors,
+		bindings:             cfg.Bindings,
+		instanceID:           cfg.InstanceID,
+		metrics:              m,
+		tracer:               t,
+		hook:                 h,
+		logger:               cfg.Logger,
+		clk:                  clk,
+		globalSem:            cfg.GlobalSem,
+		depthCache:           dc,
+		panicRetryTimeout:    panicRetry,
+		receiverCloseTimeout: recvClose,
+		onDelivery:           cfg.OnDelivery,
+		onAck:                cfg.OnAck,
 	}
 	if r.policy.MaxInFlight > 0 {
 		r.sem = make(chan struct{}, r.policy.MaxInFlight)
@@ -170,8 +206,8 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 						r.metrics.Counter(domain.MetricDeliveryPanics, 1,
 							domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID},
 						)
-						retryCtx, retryCancel := context.WithTimeout(context.Background(), 5*time.Second)
-						retryErr := del.Retry(retryCtx, 0, fmt.Errorf("panic recovered in route %s: %v", r.routeID, rec))
+						retryCtx, retryCancel := context.WithTimeout(context.Background(), r.panicRetryTimeout)
+						retryErr := r.retryDelivery(retryCtx, del, 0, fmt.Errorf("panic recovered in route %s: %v", r.routeID, rec))
 						retryCancel()
 						if retryErr != nil && r.logger != nil {
 							r.logger.Error("retry after panic failed",
@@ -190,7 +226,7 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 	mu.Unlock()
 	wg.Wait()
 
-	closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), r.receiverCloseTimeout)
 	defer closeCancel()
 	if closer, ok := r.receiver.(interface{ Close(context.Context) error }); ok {
 		_ = closer.Close(closeCtx)
@@ -421,11 +457,11 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 	persistErr := r.outboxStore.Persist(ctx, records)
 	if persistErr != nil {
 		if errors.Is(persistErr, domain.ErrDuplicateRecord) {
-			return del.Ack(ctx)
+			return r.ackDelivery(ctx, del)
 		}
 		return r.retryOrFallback(ctx, del, env, 0, persistErr)
 	}
 
-	return del.Ack(ctx)
+	return r.ackDelivery(ctx, del)
 }
 

@@ -24,6 +24,16 @@ type Receiver interface {
 	Run(ctx context.Context, emit func(context.Context, Delivery) error) error
 }
 
+// ReceiverStartedSignaler is an optional interface. Receivers that
+// expose a readiness signal close the returned channel once their
+// receive loop is live and ready to process messages. Callers
+// type-assert to use it; the channel is initialized at construction
+// time so it is safe to read even before Run has been called (the read
+// simply blocks until the receiver becomes ready).
+type ReceiverStartedSignaler interface {
+	Started() <-chan struct{}
+}
+
 // Sender submits envelopes to a transport.
 type Sender interface {
 	Send(ctx context.Context, env *domain.Envelope) error

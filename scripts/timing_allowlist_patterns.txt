@@ -1,0 +1,12 @@
+adapters/amqp/transport/amqp10/receiver.go:193:
+adapters/amqp/transport/amqp10/session.go:484:
+adapters/aws/config/dynamodb/loader.go:303:
+adapters/aws/metrics/cloudwatch/exporter.go:151:
+adapters/azure/transport/servicebus/receiver.go:211:
+adapters/http/transport/forwarder.go:175:
+adapters/http/transport/sender_sse.go:200:
+adapters/native/config/file/watcher.go:205:
+adapters/native/config/file/watcher.go:238:
+bridge/reconfig_strategy.go:153:
+bridge/reconfig_strategy.go:159:
+bridge/reconfig_strategy.go:76:

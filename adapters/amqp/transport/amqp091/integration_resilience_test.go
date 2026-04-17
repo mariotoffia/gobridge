@@ -15,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // TestIntegration_TwoReceivers_BothResumeAfterReconnect validates that
@@ -90,7 +91,8 @@ func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(500 * time.Millisecond)
+	wait.RequireClosed(t, r1.Started(), 5*time.Second)
+	wait.RequireClosed(t, r2.Started(), 5*time.Second)
 
 	sender := NewSender(SenderConfig{Exchange: exchange, Session: sess, Timeout: 5 * time.Second})
 	if err := sender.Send(ctx, &domain.Envelope{ID: "pre-A", Subject: queueA, Payload: []byte("a1")}); err != nil {
@@ -100,13 +102,9 @@ func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 		t.Fatalf("send pre-B: %v", err)
 	}
 
-	deadline := time.Now().Add(10 * time.Second)
-	for (receivedA.Load() < 1 || receivedB.Load() < 1) && time.Now().Before(deadline) {
-		time.Sleep(100 * time.Millisecond)
-	}
-	if receivedA.Load() < 1 || receivedB.Load() < 1 {
-		t.Fatalf("pre-drop: A=%d B=%d (want >=1 each)", receivedA.Load(), receivedB.Load())
-	}
+	wait.Until(t, 10*time.Second, "receivers A and B each got >=1 message", func() bool {
+		return receivedA.Load() >= 1 && receivedB.Load() >= 1
+	})
 
 	// Drop the underlying TCP connection by closing it directly. The
 	// session's reconnect loop should observe this via NotifyClose, then
@@ -119,17 +117,9 @@ func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 		t.Logf("conn.Close (expected): %v", err)
 	}
 
-	// Wait for session to come back.
-	reconnDeadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(reconnDeadline) {
-		if h := sess.Health(ctx); h.Connected {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if !sess.Health(ctx).Connected {
-		t.Fatal("session did not reconnect within 15s")
-	}
+	wait.Until(t, 15*time.Second, "session reconnected", func() bool {
+		return sess.Health(ctx).Connected
+	})
 
 	// Re-run reconcile after reconnect to ensure new sender channel is open
 	// and queue exists (it does; we just need a fresh sender after drop).
@@ -304,20 +294,16 @@ func TestIntegration_ConsumerTag_ReuseAfterReconnect(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(500 * time.Millisecond)
+	wait.RequireClosed(t, recv.Started(), 5*time.Second)
 
 	sender := NewSender(SenderConfig{Exchange: exchange, RoutingKey: queue, Session: sess, Timeout: 5 * time.Second})
 	if err := sender.Send(ctx, &domain.Envelope{ID: "tag-pre", Payload: []byte("pre")}); err != nil {
 		t.Fatalf("send pre: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for received.Load() < 1 && time.Now().Before(deadline) {
-		time.Sleep(100 * time.Millisecond)
-	}
-	if received.Load() < 1 {
-		t.Fatal("did not receive pre-drop message")
-	}
+	wait.Until(t, 5*time.Second, "receiver got pre-drop message", func() bool {
+		return received.Load() >= 1
+	})
 
 	// Drop the connection without giving the broker time to clean up.
 	conn := sess.Connection()
@@ -326,17 +312,9 @@ func TestIntegration_ConsumerTag_ReuseAfterReconnect(t *testing.T) {
 	}
 	_ = conn.(*amqp.Connection).Close()
 
-	// Wait for reconnect.
-	reconnDeadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(reconnDeadline) {
-		if sess.Health(ctx).Connected {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if !sess.Health(ctx).Connected {
-		t.Fatal("session did not reconnect within 15s")
-	}
+	wait.Until(t, 15*time.Second, "session reconnected", func() bool {
+		return sess.Health(ctx).Connected
+	})
 
 	postSender := NewSender(SenderConfig{Exchange: exchange, RoutingKey: queue, Session: sess, Timeout: 5 * time.Second})
 	startCount := received.Load()

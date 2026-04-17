@@ -11,15 +11,14 @@ import (
 	"github.com/Azure/go-amqp"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 const (
-	reconnectInitial    = 1 * time.Second
-	reconnectMax        = 30 * time.Second
-	reconnectMultiplier = 2.0
-	eventChannelSize    = 16
+	reconnectInitial = 1 * time.Second
+	eventChannelSize = 16
 )
 
 // Session implements ports.Session for AMQP 1.0, owning the broker
@@ -31,6 +30,7 @@ type Session struct {
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
 	dial    dialFunc
+	clk     clock.Clock
 
 	mu        sync.Mutex
 	conn      amqpConn
@@ -54,6 +54,13 @@ type Session struct {
 	// running.
 	startDone chan struct{}
 	startErr  error
+
+	// eventSubs holds per-subscriber channels for fan-out delivery of
+	// session lifecycle events. Reading from the legacy Events() channel
+	// drains the shared buffer, so every Receiver and observer that
+	// needs reconnect notifications must Subscribe to receive its own
+	// independent stream.
+	eventSubs []chan ports.SessionEvent
 }
 
 var _ ports.Session = (*Session)(nil)
@@ -71,6 +78,7 @@ func NewSession(opts SessionOptions, mode domain.SessionMode, logger *slog.Logge
 		logger:      logger,
 		metrics:     m,
 		dial:        defaultDial,
+		clk:         opts.Clock,
 		events:      make(chan ports.SessionEvent, eventChannelSize),
 		reconnectCh: make(chan struct{}, 1),
 	}
@@ -310,8 +318,67 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 }
 
 // Events returns the channel on which session lifecycle events are emitted.
+//
+// The returned channel is shared. Each event is delivered to exactly one
+// reader, so callers that need to react independently to lifecycle events
+// (for example, multiple receivers waiting for SessionConnected after a
+// reconnect) MUST use Subscribe instead.
 func (s *Session) Events() <-chan ports.SessionEvent {
 	return s.events
+}
+
+// Subscribe returns a private buffered channel that receives every
+// subsequent session lifecycle event, plus an unsubscribe function that
+// removes the subscription and closes the channel. Use this when more
+// than one consumer needs to observe session events; the legacy Events
+// channel delivers each value to a single reader and would otherwise
+// starve other consumers.
+//
+// The returned channel has buffer size 16. If a slow subscriber lets it
+// fill up, additional events are dropped (non-blocking send) so a slow
+// reader cannot stall pushEvent or other subscribers.
+//
+// Unsubscribe is safe to call at most once and after the session has
+// been closed; it is also safe to invoke from defer.
+func (s *Session) Subscribe() (<-chan ports.SessionEvent, func()) {
+	ch := make(chan ports.SessionEvent, eventChannelSize)
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		close(ch)
+		return ch, func() {}
+	}
+	s.eventSubs = append(s.eventSubs, ch)
+	s.mu.Unlock()
+
+	var once sync.Once
+	unsub := func() {
+		once.Do(func() {
+			s.mu.Lock()
+			removed := false
+			for i, sub := range s.eventSubs {
+				if sub == ch {
+					s.eventSubs = append(s.eventSubs[:i], s.eventSubs[i+1:]...)
+					removed = true
+					break
+				}
+			}
+			s.mu.Unlock()
+			if removed {
+				close(ch)
+			}
+		})
+	}
+	return ch, unsub
+}
+
+// subscriberCount reports the number of active Subscribe channels.
+// Intended for tests.
+func (s *Session) subscriberCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.eventSubs)
 }
 
 // Close gracefully disconnects the AMQP 1.0 session. It is safe to call
@@ -341,6 +408,8 @@ func (s *Session) Close(ctx context.Context) error {
 	s.stopMonitor = nil
 	done := s.monitorDone
 	s.monitorDone = nil
+	subs := s.eventSubs
+	s.eventSubs = nil
 	s.mu.Unlock()
 
 	if stopMon != nil {
@@ -363,6 +432,9 @@ func (s *Session) Close(ctx context.Context) error {
 	}
 
 	close(s.events)
+	for _, sub := range subs {
+		close(sub)
+	}
 	return firstErr
 }
 
@@ -394,22 +466,56 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 			s.metrics.Counter(domain.MetricAMQP10EventDropped, 1)
 		}
 	}
+
+	for _, sub := range s.eventSubs {
+		select {
+		case sub <- ev:
+		default:
+			s.metrics.Counter(domain.MetricAMQP10EventDropped, 1)
+		}
+	}
 }
 
 // monitorLoop watches for connection loss and attempts automatic
-// reconnection with exponential backoff.
+// reconnection. It selects on the connection's Done() channel for
+// immediate disconnect detection, falling back to a 30s ticker as a
+// sanity check.
 func (s *Session) monitorLoop(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
+	fallback := time.NewTicker(30 * time.Second)
+	defer fallback.Stop()
 
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-s.reconnectCh:
-			s.tryReconnect(ctx)
-		case <-ticker.C:
-			s.tryReconnect(ctx)
+		s.mu.Lock()
+		conn := s.conn
+		s.mu.Unlock()
+
+		var connDone <-chan struct{}
+		if conn != nil {
+			if cd, ok := conn.(interface{ Done() <-chan struct{} }); ok {
+				connDone = cd.Done()
+			}
+		}
+
+		if connDone != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-s.reconnectCh:
+				s.tryReconnect(ctx)
+			case <-connDone:
+				s.tryReconnect(ctx)
+			case <-fallback.C:
+				s.tryReconnect(ctx)
+			}
+		} else {
+			select {
+			case <-ctx.Done():
+				return
+			case <-s.reconnectCh:
+				s.tryReconnect(ctx)
+			case <-fallback.C:
+				s.tryReconnect(ctx)
+			}
 		}
 	}
 }
@@ -493,12 +599,12 @@ func (s *Session) handleReconnect(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(sleepDur):
+		case <-s.clk.After(sleepDur):
 		}
 
-		delay = time.Duration(float64(delay) * reconnectMultiplier)
-		if delay > reconnectMax {
-			delay = reconnectMax
+		delay = time.Duration(float64(delay) * s.opts.ReconnectMultiplier)
+		if delay > s.opts.ReconnectMaxDelay {
+			delay = s.opts.ReconnectMaxDelay
 		}
 	}
 }

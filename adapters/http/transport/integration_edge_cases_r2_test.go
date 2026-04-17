@@ -37,7 +37,7 @@ func TestEdgeR2_EmitReturnsError(t *testing.T) {
 			return errors.New("queue full")
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	rec := postJSON(t, factory.Handler(), "/transport/http/receivers/emit-err-r2/messages",
 		map[string]any{
@@ -72,7 +72,7 @@ func TestEdgeR2_RequestTimeout504(t *testing.T) {
 			return nil // don't Ack — handler blocks on del.done
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	reqCtx, reqCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer reqCancel()
@@ -268,7 +268,7 @@ func TestEdgeR2_CaseInsensitiveHeaderStripping(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	type httpResult struct{ rec *httptest.ResponseRecorder }
 	resultCh := make(chan httpResult, 1)

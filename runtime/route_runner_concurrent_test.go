@@ -94,8 +94,6 @@ func TestRouteRunner_ConcurrentDelivery(t *testing.T) {
 	}
 
 	emitWg.Wait()
-	time.Sleep(200 * time.Millisecond)
-
 	cancel()
 	runWg.Wait()
 

@@ -12,6 +12,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -25,6 +26,7 @@ type Session struct {
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
 	dial    dialFunc
+	clk     clock.Clock
 
 	mu        sync.Mutex
 	conn      amqpConnection
@@ -48,6 +50,10 @@ type Session struct {
 	startDone chan struct{}
 	startErr  error
 
+	// reconnected signals the reconnectLoop when doReconnect has
+	// re-established the connection, replacing the 250ms poll.
+	reconnected chan struct{}
+
 	// eventSubs holds per-subscriber channels for fan-out delivery of
 	// session lifecycle events. Reading from the legacy Events() channel
 	// drains the shared buffer, so every Receiver and observer that
@@ -67,13 +73,15 @@ func NewSession(opts SessionOptions, mode domain.SessionMode, logger *slog.Logge
 	}
 	opts.applyDefaults()
 	return &Session{
-		opts:       opts,
-		mode:       mode,
-		logger:     logger,
-		metrics:    m,
-		dial:       defaultDialFromOpts(opts),
-		events:     make(chan ports.SessionEvent, 16),
-		activeSubs: make(map[string]bool),
+		opts:        opts,
+		mode:        mode,
+		logger:      logger,
+		metrics:     m,
+		dial:        defaultDialFromOpts(opts),
+		clk:         opts.Clock,
+		events:      make(chan ports.SessionEvent, 16),
+		activeSubs:  make(map[string]bool),
+		reconnected: make(chan struct{}, 1),
 	}
 }
 
@@ -548,8 +556,6 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 
 const (
 	reconnectInitial = 1 * time.Second
-	reconnectMax     = 30 * time.Second
-	reconnectMult    = 2.0
 )
 
 func (s *Session) reconnectLoop(ctx context.Context) {
@@ -566,7 +572,7 @@ func (s *Session) reconnectLoop(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(250 * time.Millisecond):
+			case <-s.reconnected:
 			}
 			continue
 		}
@@ -639,7 +645,7 @@ func (s *Session) doReconnect(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(sleepDur):
+		case <-s.clk.After(sleepDur):
 		}
 
 		connectCtx, connectCancel := context.WithTimeout(ctx, s.opts.ConnectTimeout)
@@ -655,8 +661,8 @@ func (s *Session) doReconnect(ctx context.Context) {
 				)
 			}
 			delay = time.Duration(math.Min(
-				float64(delay)*reconnectMult,
-				float64(reconnectMax),
+				float64(delay)*s.opts.ReconnectMultiplier,
+				float64(s.opts.ReconnectMaxDelay),
 			))
 			continue
 		}
@@ -685,6 +691,11 @@ func (s *Session) doReconnect(ctx context.Context) {
 		}
 
 		s.pushEvent(ports.SessionConnected, nil)
+
+		select {
+		case s.reconnected <- struct{}{}:
+		default:
+		}
 
 		return
 	}

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -34,6 +35,7 @@ type SessionManager struct {
 	metrics           ports.MetricsExporter
 	audit             ports.AuditLogger
 	logger            *slog.Logger
+	clk               clock.Clock
 
 	mu            sync.Mutex
 	token         domain.LeaseToken
@@ -46,9 +48,12 @@ func NewSessionManagerFromConfig(cfg SessionConfig, session ports.Session, lease
 	return newSessionManager(cfg, session, leaseStore, ownerID, logger)
 }
 
-func newSessionManagerWithMetrics(cfg SessionConfig, session ports.Session, leaseStore ports.LeaseStore, ownerID string, logger *slog.Logger, metrics ports.MetricsExporter) *SessionManager {
+func newSessionManagerWithMetrics(cfg SessionConfig, session ports.Session, leaseStore ports.LeaseStore, ownerID string, logger *slog.Logger, metrics ports.MetricsExporter, clk clock.Clock) *SessionManager {
 	mgr := newSessionManager(cfg, session, leaseStore, ownerID, logger)
 	mgr.metrics = metrics
+	if clk != nil {
+		mgr.clk = clk
+	}
 	return mgr
 }
 
@@ -92,6 +97,7 @@ func newSessionManager(cfg SessionConfig, session ports.Session, leaseStore port
 		metrics:           &ports.NoopExporter{},
 		audit:             ports.NoopAuditLogger{},
 		logger:            logger,
+		clk:               clock.System,
 	}
 }
 
@@ -279,7 +285,7 @@ func (m *SessionManager) acquireLeaseWithRetry(ctx context.Context) (domain.Leas
 		select {
 		case <-ctx.Done():
 			return domain.LeaseToken{}, ctx.Err()
-		case <-time.After(m.clampedInterval()):
+		case <-m.clk.After(m.clampedInterval()):
 		}
 	}
 }
@@ -288,7 +294,7 @@ func (m *SessionManager) renewLoop(ctx context.Context) error {
 	consecutiveFailures := 0
 	events := m.session.Events()
 
-	timer := time.NewTimer(m.clampedInterval())
+	timer := m.clk.NewTimer(m.clampedInterval())
 	defer timer.Stop()
 
 	for {
@@ -304,7 +310,7 @@ func (m *SessionManager) renewLoop(ctx context.Context) error {
 				return err
 			}
 
-		case <-timer.C:
+		case <-timer.C():
 			m.mu.Lock()
 			token := m.token
 			m.mu.Unlock()
@@ -369,7 +375,11 @@ func (m *SessionManager) stepDown(ctx context.Context) error {
 	}
 
 	if m.leaseStore != nil {
-		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		releaseTimeout := m.stepDownGrace
+		if releaseTimeout <= 0 {
+			releaseTimeout = 5 * time.Second
+		}
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), releaseTimeout)
 		defer releaseCancel()
 		if err := m.leaseStore.Release(releaseCtx, m.sessionID, token); err != nil {
 			m.emitLeaseAudit(ctx, "lease.release", "failure", token, err)

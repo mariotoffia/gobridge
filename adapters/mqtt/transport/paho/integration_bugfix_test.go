@@ -12,6 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -417,7 +418,7 @@ func TestIntegration_ConcurrentReconcile_ActiveSubsIntegrity(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	wait.RequireClosed(t, recv.Started(), 5*time.Second)
 	if err := sender.Send(ctx, &domain.Envelope{
 		Subject: verifyTopic,
 		Payload: []byte("verify"),

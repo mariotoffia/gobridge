@@ -62,11 +62,18 @@ func TestRes_ConcurrentSendAndClose_NoPanicOrHang(t *testing.T) {
 	const perSender = 50
 
 	var (
-		wg       sync.WaitGroup
-		sendErrs atomic.Int64
-		sendOK   atomic.Int64
-		panics   atomic.Int64
+		wg           sync.WaitGroup
+		sendErrs     atomic.Int64
+		sendOK       atomic.Int64
+		panics       atomic.Int64
+		sendAttempts atomic.Int64
 	)
+
+	// Deterministic race-window signal: closed once every sender has
+	// issued its first Send, replacing the previous arbitrary 50ms sleep.
+	// We fire Close after this point so it necessarily races with Sends
+	// that are either in-flight or about to be issued.
+	midFlight := make(chan struct{})
 
 	wg.Add(senders)
 	for s := 0; s < senders; s++ {
@@ -79,6 +86,9 @@ func TestRes_ConcurrentSendAndClose_NoPanicOrHang(t *testing.T) {
 				}
 			}()
 			for i := 0; i < perSender; i++ {
+				if sendAttempts.Add(1) == int64(senders) {
+					close(midFlight)
+				}
 				err := sender.Send(ctx, &domain.Envelope{
 					Subject: "res/send-close",
 					Payload: []byte(fmt.Sprintf("s%d-i%d", id, i)),
@@ -92,10 +102,10 @@ func TestRes_ConcurrentSendAndClose_NoPanicOrHang(t *testing.T) {
 		}(s)
 	}
 
-	// Trigger Close partway through. Use a short delay so we hit the
-	// race window where Sends are mid-flight.
+	// Trigger Close once all senders have begun issuing Sends so the
+	// Close races against in-flight/about-to-flight Sends.
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		<-midFlight
 		closeCtx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer ccancel()
 		_ = sess.Close(closeCtx)

@@ -36,7 +36,7 @@ func TestBugReceiver_RejectsNonJSONContentType(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	body, _ := json.Marshal(map[string]any{
 		"subject": "test.ct",
@@ -76,7 +76,7 @@ func TestBugReceiver_AcceptsJSONContentType(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	type httpResult struct {
 		rec *httptest.ResponseRecorder
@@ -126,7 +126,7 @@ func TestBugReceiver_AcceptsMissingContentType(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	body, _ := json.Marshal(map[string]any{
 		"subject": "test.ct.empty",
@@ -181,7 +181,7 @@ func TestBugReceiver_AcceptsJSONWithCharset(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	body, _ := json.Marshal(map[string]any{
 		"subject": "test.ct.charset",
@@ -241,7 +241,7 @@ func TestBugReceiver_GeneratesIDWhenEmpty(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	type httpResult struct {
 		rec *httptest.ResponseRecorder
@@ -301,7 +301,7 @@ func TestBugReceiver_PreservesExplicitID(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	type httpResult struct {
 		rec *httptest.ResponseRecorder
@@ -358,7 +358,7 @@ func TestBugReceiver_GeneratedIDsAreUnique(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	const count = 5
 	for i := 0; i < count; i++ {

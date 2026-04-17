@@ -8,16 +8,13 @@ import (
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
-// ═══════════════════════════════════════════════════════════════════════
-// S12 Builder Tests — injectStaleClaimDuration
-//
-// Validates that the builder derives stale_claim_duration from the
-// maximum StepDownGrace across all route sessions and injects it
-// into the outbox store config options.
-//
-//   max(StepDownGrace) + 15s = stale_claim_duration
-//
-// ═══════════════════════════════════════════════════════════════════════
+func computeStaleClaimBuffer(maxStepDownGrace time.Duration) time.Duration {
+	buf := 2 * maxStepDownGrace
+	if buf < 15*time.Second {
+		buf = 15 * time.Second
+	}
+	return buf
+}
 
 // TestInjectStaleClaimDuration_DefaultDerivation validates the default
 // derivation: one route with default StepDownGrace (15s) produces
@@ -45,7 +42,8 @@ func TestInjectStaleClaimDuration_DefaultDerivation(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected time.Duration, got %T", sc.Options["stale_claim_duration"])
 	}
-	want := runtime.DefaultSessionConfig("", true).StepDownGrace + staleClaimBuffer
+	defaultGrace := runtime.DefaultSessionConfig("", true).StepDownGrace
+	want := defaultGrace + computeStaleClaimBuffer(defaultGrace)
 	if got != want {
 		t.Errorf("stale_claim_duration: got %v, want %v", got, want)
 	}
@@ -84,8 +82,9 @@ func TestInjectStaleClaimDuration_MaxAcrossRoutes(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected time.Duration, got %T", sc.Options["stale_claim_duration"])
 	}
-	if got != 45*time.Second+staleClaimBuffer {
-		t.Errorf("stale_claim_duration: got %v, want %v", got, 45*time.Second+staleClaimBuffer)
+	wantMax := 45*time.Second + computeStaleClaimBuffer(45*time.Second)
+	if got != wantMax {
+		t.Errorf("stale_claim_duration: got %v, want %v", got, wantMax)
 	}
 }
 
@@ -135,9 +134,10 @@ func TestInjectStaleClaimDuration_NoRouteSession(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected time.Duration, got %T", sc.Options["stale_claim_duration"])
 	}
-	want := runtime.DefaultSessionConfig("", true).StepDownGrace + staleClaimBuffer
-	if got != want {
-		t.Errorf("stale_claim_duration: got %v, want %v", got, want)
+	defaultGrace2 := runtime.DefaultSessionConfig("", true).StepDownGrace
+	want2 := defaultGrace2 + computeStaleClaimBuffer(defaultGrace2)
+	if got != want2 {
+		t.Errorf("stale_claim_duration: got %v, want %v", got, want2)
 	}
 }
 

@@ -10,20 +10,28 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 // SessionOptions configures the AMQP 1.0 session connection.
 type SessionOptions struct {
-	Address        string
-	ConnectTimeout time.Duration
-	ReconnectDelay time.Duration
-	IdleTimeout    time.Duration
-	MaxFrameSize   uint32
-	Username       string
-	Password       string
-	TLS            *TLSConfig
-	ContainerID    string
+	Address             string
+	ConnectTimeout      time.Duration
+	ReconnectDelay      time.Duration
+	ReconnectMaxDelay   time.Duration
+	ReconnectMultiplier float64
+	IdleTimeout         time.Duration
+	MaxFrameSize        uint32
+	Username            string
+	Password            string
+	TLS                 *TLSConfig
+	ContainerID         string
+
+	// Clock drives the reconnect backoff wait. When nil defaults to
+	// clock.System (wall clock). Tests may inject a clocktest.Fake to
+	// control the backoff sleep deterministically.
+	Clock clock.Clock
 }
 
 // TLSConfig holds TLS settings for the AMQP 1.0 connection.
@@ -82,10 +90,12 @@ type SenderConfig struct {
 // DefaultSessionOptions returns SessionOptions with sensible defaults.
 func DefaultSessionOptions() SessionOptions {
 	return SessionOptions{
-		ConnectTimeout: 30 * time.Second,
-		ReconnectDelay: 1 * time.Second,
-		IdleTimeout:    2 * time.Minute,
-		MaxFrameSize:   65536,
+		ConnectTimeout:      30 * time.Second,
+		ReconnectDelay:      1 * time.Second,
+		ReconnectMaxDelay:   30 * time.Second,
+		ReconnectMultiplier: 2.0,
+		IdleTimeout:         2 * time.Minute,
+		MaxFrameSize:        65536,
 	}
 }
 
@@ -149,11 +159,20 @@ func (o *SessionOptions) applyDefaults() {
 	if o.ReconnectDelay <= 0 {
 		o.ReconnectDelay = 1 * time.Second
 	}
+	if o.ReconnectMaxDelay <= 0 {
+		o.ReconnectMaxDelay = 30 * time.Second
+	}
+	if o.ReconnectMultiplier <= 0 {
+		o.ReconnectMultiplier = 2.0
+	}
 	if o.IdleTimeout <= 0 {
 		o.IdleTimeout = 2 * time.Minute
 	}
 	if o.MaxFrameSize == 0 {
 		o.MaxFrameSize = 65536
+	}
+	if o.Clock == nil {
+		o.Clock = clock.System
 	}
 }
 
@@ -204,6 +223,12 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	}
 	if v, ok := optDuration(m, "reconnect_delay"); ok {
 		opts.ReconnectDelay = v
+	}
+	if v, ok := optDuration(m, "reconnect_max_delay"); ok {
+		opts.ReconnectMaxDelay = v
+	}
+	if v, ok := optFloat64(m, "reconnect_multiplier"); ok {
+		opts.ReconnectMultiplier = v
 	}
 	if v, ok := optDuration(m, "idle_timeout"); ok {
 		opts.IdleTimeout = v
@@ -362,3 +387,22 @@ func optDuration(m map[string]any, key string) (time.Duration, bool) {
 	}
 }
 
+func optFloat64(m map[string]any, key string) (float64, bool) {
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case float64:
+		if math.IsNaN(n) || math.IsInf(n, 0) {
+			return 0, false
+		}
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	default:
+		return 0, false
+	}
+}

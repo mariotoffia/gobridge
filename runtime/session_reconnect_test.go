@@ -36,6 +36,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // TestSessionManager_ReconnectReconcileError_LogsAndPropagates validates
@@ -69,7 +70,8 @@ func TestSessionManager_ReconnectReconcileError_LogsAndPropagates(t *testing.T) 
 		errCh <- mgr.Run(context.Background())
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	wait.Until(t, 2*time.Second, "Run reaches event loop",
+		func() bool { return session.PlanCount() > 0 })
 
 	session.SetReconcileErr(errors.New("ACL denied topic"))
 
@@ -123,7 +125,8 @@ func TestSessionManager_ReconnectReconcileError_EmitsMetric(t *testing.T) {
 		errCh <- mgr.Run(context.Background())
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	wait.Until(t, 2*time.Second, "Run reaches event loop",
+		func() bool { return session.PlanCount() > 0 })
 
 	session.SetReconcileErr(errors.New("topic deleted"))
 
@@ -190,19 +193,22 @@ func TestSessionManager_ReconnectReconcileOK_NoError(t *testing.T) {
 		errCh <- mgr.Run(ctx)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	wait.Until(t, 2*time.Second, "initial Reconcile called",
+		func() bool { return session.PlanCount() >= 1 })
 
 	session.PushEvent(ports.SessionEvent{
 		Type:      ports.SessionConnected,
 		Timestamp: time.Now(),
 	})
-	time.Sleep(50 * time.Millisecond)
+	wait.Until(t, 2*time.Second, "first reconnect Reconcile called",
+		func() bool { return session.PlanCount() >= 2 })
 
 	session.PushEvent(ports.SessionEvent{
 		Type:      ports.SessionConnected,
 		Timestamp: time.Now(),
 	})
-	time.Sleep(50 * time.Millisecond)
+	wait.Until(t, 2*time.Second, "second reconnect Reconcile called",
+		func() bool { return session.PlanCount() >= 3 })
 
 	cancel()
 
@@ -263,7 +269,8 @@ func TestSessionManager_RenewLoop_ReconnectReconcileError_Exits(t *testing.T) {
 		errCh <- mgr.Run(context.Background())
 	}()
 
-	time.Sleep(150 * time.Millisecond)
+	wait.Until(t, 2*time.Second, "exclusive session acquired lease and reconciled",
+		func() bool { return session.PlanCount() > 0 })
 
 	session.SetReconcileErr(errors.New("subscription denied after reconnect"))
 

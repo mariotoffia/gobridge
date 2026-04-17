@@ -15,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -646,14 +647,23 @@ func (r *stubReceiver) Run(ctx context.Context, _ func(context.Context, ports.De
 }
 
 type stubSender struct {
-	mu   sync.Mutex
-	sent []*domain.Envelope
+	mu     sync.Mutex
+	sent   []*domain.Envelope
+	sentCh chan struct{}
+}
+
+func newStubSender() *stubSender {
+	return &stubSender{sentCh: make(chan struct{}, 256)}
 }
 
 func (s *stubSender) Send(_ context.Context, env *domain.Envelope) error {
 	s.mu.Lock()
 	s.sent = append(s.sent, env.Clone())
 	s.mu.Unlock()
+	select {
+	case s.sentCh <- struct{}{}:
+	default:
+	}
 	return nil
 }
 
@@ -663,9 +673,15 @@ func (s *stubSender) sentCount() int {
 	return len(s.sent)
 }
 
+// SentCh returns a buffered channel that receives a signal each time Send is
+// invoked. Use with wait.RequireReceive to wait for message delivery without
+// polling or sleeping.
+func (s *stubSender) SentCh() <-chan struct{} { return s.sentCh }
+
 func injectRuntime(t *testing.T) (*runtime.Runtime, *stubSender) {
 	t.Helper()
-	sender := &stubSender{}
+	sender := newStubSender()
+	recv := newStubReceiver()
 	rt := runtime.New(runtime.WithInstanceID("inject-http-test"))
 	cfg := runtime.RouteConfig{
 		ID: "test-route",
@@ -674,12 +690,12 @@ func injectRuntime(t *testing.T) (*runtime.Runtime, *stubSender) {
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
-	err := rt.AddRoute(cfg, newStubReceiver(), sender, nil, nil)
+	err := rt.AddRoute(cfg, recv, sender, nil, nil)
 	require.NoError(t, err)
 	err = rt.Start(context.Background())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
-	time.Sleep(50 * time.Millisecond)
+	wait.RequireClosed(t, recv.ready, 2*time.Second)
 	return rt, sender
 }
 
@@ -780,7 +796,7 @@ func TestInject_HappyPath(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Equal(t, "injected", resp["status"])
 
-	time.Sleep(50 * time.Millisecond)
+	wait.RequireReceive(t, sender.SentCh(), 1*time.Second)
 
 	assert.Equal(t, 1, sender.sentCount(), "message should have been sent through the route")
 

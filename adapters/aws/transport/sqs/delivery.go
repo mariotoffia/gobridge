@@ -10,8 +10,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -56,6 +57,7 @@ type sqsDelivery struct {
 	visibilityTimeout atomic.Int32
 	logger            *slog.Logger
 	metrics           ports.MetricsExporter
+	clk               clock.Clock
 
 	cancel           context.CancelFunc // cancels autoExtendCtx (stops the goroutine)
 	processingCancel context.CancelFunc // cancels deliveryCtx (frees the context node)
@@ -73,6 +75,10 @@ type sqsDelivery struct {
 //
 // processingCancel is the cancel func for deliveryCtx (see context
 // hierarchy on sqsDelivery). It may be nil in tests.
+//
+// clk is the clock used to drive the auto-extend ticker. When nil it
+// defaults to clock.System (wall clock). Tests pass a clocktest.Fake to
+// control tick firing deterministically.
 func newDelivery(
 	parentCtx context.Context,
 	env *domain.Envelope,
@@ -84,9 +90,13 @@ func newDelivery(
 	processingCancel context.CancelFunc,
 	logger *slog.Logger,
 	metrics ports.MetricsExporter,
+	clk clock.Clock,
 ) *sqsDelivery {
 	if metrics == nil {
 		metrics = &ports.NoopExporter{}
+	}
+	if clk == nil {
+		clk = clock.System
 	}
 
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -99,6 +109,7 @@ func newDelivery(
 		processingCancel: processingCancel,
 		logger:           logger,
 		metrics:          metrics,
+		clk:              clk,
 		cancel:           cancel,
 	}
 	d.visibilityTimeout.Store(visibilityTimeout)
@@ -288,7 +299,7 @@ const autoExtendMaxFailures = 3
 func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 	interval := time.Duration(d.visibilityTimeout.Load()) * time.Second / 2
 
-	ticker := time.NewTicker(interval)
+	ticker := d.clk.NewTicker(interval)
 	defer ticker.Stop()
 
 	consecutiveFailures := 0
@@ -297,7 +308,7 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticker.C():
 			vis := d.visibilityTimeout.Load()
 			_, err := d.client.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
 				QueueUrl:          aws.String(d.queueURL),

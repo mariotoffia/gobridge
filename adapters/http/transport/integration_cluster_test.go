@@ -72,7 +72,12 @@ func TestIntegration_Cluster_ForwardToBridge(t *testing.T) {
 		t.Fatalf("Start B: %v", err)
 	}
 	defer func() { _ = rtB.Stop(context.Background()) }()
-	time.Sleep(50 * time.Millisecond)
+
+	// Wait for the HTTP receiver's Run to land its emit callback before
+	// the server starts serving. ServeHTTP blocks on this readiness
+	// channel internally, so requests arriving before Run has started
+	// would observe "receiver not ready".
+	waitReceiverReady(t, recvB, 2*time.Second)
 
 	serverB := httptest.NewServer(factoryB.Handler())
 	defer serverB.Close()
@@ -102,7 +107,7 @@ func TestIntegration_Cluster_ForwardToBridge(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(50 * time.Millisecond)
+	waitReceiverReady(t, recvA, 2*time.Second)
 
 	serverA := httptest.NewServer(factoryA.Handler())
 	defer serverA.Close()
@@ -303,7 +308,7 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 			return d.Ack(context.Background())
 		})
 	}()
-	time.Sleep(50 * time.Millisecond)
+	waitReceiverReady(t, recvB, 2*time.Second)
 
 	serverB := httptest.NewServer(factoryB.Handler())
 	defer serverB.Close()
@@ -330,7 +335,7 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(50 * time.Millisecond)
+	waitReceiverReady(t, recvA, 2*time.Second)
 
 	serverA := httptest.NewServer(factoryA.Handler())
 	defer serverA.Close()
@@ -409,7 +414,7 @@ func TestIntegration_Cluster_ForwardToDeadPeer(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(50 * time.Millisecond)
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	server := httptest.NewServer(factory.Handler())
 	defer server.Close()
@@ -456,7 +461,7 @@ func TestIntegration_Cluster_ForwardPreservesEnvelope(t *testing.T) {
 		t.Fatalf("Start B: %v", err)
 	}
 	defer func() { _ = rtB.Stop(context.Background()) }()
-	time.Sleep(50 * time.Millisecond)
+	waitReceiverReady(t, recvB, 2*time.Second)
 
 	serverB := httptest.NewServer(factoryB.Handler())
 	defer serverB.Close()
@@ -486,7 +491,7 @@ func TestIntegration_Cluster_ForwardPreservesEnvelope(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(50 * time.Millisecond)
+	waitReceiverReady(t, recvA, 2*time.Second)
 
 	serverA := httptest.NewServer(factoryA.Handler())
 	defer serverA.Close()
@@ -573,7 +578,7 @@ func TestIntegration_Cluster_ForwardDivergentReceiverID(t *testing.T) {
 		t.Fatalf("Start B: %v", err)
 	}
 	defer func() { _ = rtB.Stop(context.Background()) }()
-	time.Sleep(50 * time.Millisecond)
+	waitReceiverReady(t, recvB, 2*time.Second)
 
 	serverB := httptest.NewServer(factoryB.Handler())
 	defer serverB.Close()
@@ -603,7 +608,7 @@ func TestIntegration_Cluster_ForwardDivergentReceiverID(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(50 * time.Millisecond)
+	waitReceiverReady(t, recvA, 2*time.Second)
 
 	serverA := httptest.NewServer(factoryA.Handler())
 	defer serverA.Close()
