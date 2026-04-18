@@ -130,7 +130,7 @@ func TestGAP_BrokerHardCrash_SharedOutbox(t *testing.T) {
 	// Hard kill: docker kill (no MQTT disconnect packet, total state loss).
 	broker.Stop()
 	t.Log("GAP-BC1: broker killed — waiting 5s")
-	time.Sleep(5 * time.Second)
+	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 
 	// Restart: docker run (fresh container, no session state).
 	broker.Restart()
@@ -236,7 +236,7 @@ func TestGAP_BrokerDisconnect_KeepAliveDetection(t *testing.T) {
 	killTime := time.Now()
 	broker.Stop()
 	t.Log("GAP-BC2: broker killed — waiting 3s")
-	time.Sleep(3 * time.Second)
+	time.Sleep(3 * time.Second) // OTHER: scenario timing — keep broker down before restart
 	broker.Restart()
 	t.Log("GAP-BC2: broker restarted")
 

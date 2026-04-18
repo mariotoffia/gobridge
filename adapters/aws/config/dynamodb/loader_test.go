@@ -220,8 +220,9 @@ func TestWatchNoDuplicates(t *testing.T) {
 		t.Fatalf("watch: %v", err)
 	}
 
+	// TODO(clock): replace with fake-clock advance once pollLoop uses clk ticker.
 	// Wait for a few poll cycles; no new version means no emission.
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond) //nolint:forbidigo // legacy sleep — needs fake clock
 
 	select {
 	case got := <-ch:

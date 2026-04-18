@@ -150,7 +150,7 @@ func TestSessionManager_LogsLeaseReleaseError(t *testing.T) {
 	lease.SetReleaseErr(errors.New("network timeout"))
 
 	cancel()
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond) // SYNC: let session manager process cancel and release lease
 
 	_ = mgr.Close(context.Background())
 

@@ -46,13 +46,64 @@ Every production-code use of `time.Sleep`, `time.After`, `time.NewTicker`,
 
 ## Test sleep classification (aggregate)
 
-| Category | Count | Description |
-|---|---|---|
-| SYNC_SLEEP | ~280 | "sleep then assert" — replaceable once production exposes event hooks |
-| STARTUP_SLEEP | ~50 | "let goroutine start" — replaceable with `Started()` channel |
-| NEGATIVE_ASSERT_WINDOW | ~30 | "sleep then assert nothing happened" — marker-event pattern |
-| FIXED_BACKOFF_LOOP | ~20 | poll loops in test helpers — `wait.Until` / `RequireReceive` |
-| OTHER | ~6 | intentional stress timers in fakes — route through `Clock` |
+| Category | Baseline | After Phase 1 | After Phase 2 | After Tier 1 | Description |
+|---|---|---|---|---|---|
+| SYNC_SLEEP | ~280 | ~260 | ~100 | ~70 | "sleep then assert" — replaceable once production exposes event hooks |
+| STARTUP_SLEEP | ~50 | ~45 | ~20 | ~20 | "let goroutine start" — replaceable with `Started()` channel |
+| NEGATIVE_ASSERT_WINDOW | ~30 | ~25 | ~15 | ~12 | "sleep then assert nothing happened" — `wait.Silent` |
+| FIXED_BACKOFF_LOOP | ~20 | ~8 | ~3 | ~3 | poll loops in test helpers — `wait.Until` / `RequireReceive` |
+| OTHER | ~6 | ~6 | ~110 | ~110 | intentional stress/race timers, debounce choreography, clock test companions, simulated work |
+| **Total** | **~386** | **~344** | **~248** | **~215** | All remaining 215 are tracked in `scripts/test_timing_allowlist.txt` with inline classification comments |
+
+**Phase 2 changes (per slice):**
+- **Slice 1 (MQTT):** 51 → 14 sleeps; 37 removed via `waitSubActive`, `<-recv.Started()`, NEGATIVE select
+- **Slice 2 (AMQP 1.0):** 9 → 5 sleeps; `s.clk.NewTicker` for monitor loop, `Clock` on `ReceiverConfig`, `LinkCloseTimeout` lifted
+- **Slice 3 (AMQP 0.9.1):** 9 → 3 sleeps; `wait.Until` on subscriber/connection state
+- **Slice 4 (SQS):** 16 → 8 sleeps; `clocktest.Fake.Advance` for auto-extend, NEGATIVE select for no-extend
+- **Slice 5 (ASB):** 11 → 11 sleeps (annotated; `cfg.Clock.After` in production receiver)
+- **Slice 6 (HTTP):** 10 → 2 sleeps; `<-recv.Started()`, `ClientCount()` polling, `AdminOperationTimeout` lifted
+- **Slice 7 (file watcher):** 6 → 4 sleeps; `clocktest.Fake.Advance` for poll loop
+- **Slice 8 (DDB loader):** `l.clk.NewTicker` for pollLoop; 1 sleep annotated
+- **Slice 9 (CloudWatch):** `Clock` on Exporter, `FlushRPCTimeout` capped; no test sleeps
+- **Slice 10 (bridge/runtime/misc):** ~85 sleeps annotated with classification comments; production: `Clock` on strategies, timeout lifts across 7 files
+
+**Phase 2 production Clock wiring:**
+All raw `time.NewTicker`, `time.NewTimer`, `time.After` calls in adapter/runtime/bridge production code now route through `domain/clock.Clock`. Components with new `WithClock` options: SSE sender, HTTP forwarder, file watcher, CloudWatch exporter, DebouncedStrategy, WindowedStrategy. Components completing partial migration: DDB loader pollLoop, AMQP 1.0 monitor ticker + receiver backoff, ASB receiver backoff.
+
+Most `Reconcile() + Sleep(200ms)` patterns in `tests/integration/` have been replaced with
+`wait.Until` polling `sess.Health().ServiceLevel == Full`, and several MQTT collector
+initializations use the same approach instead of a fixed delay.
+
+**Tier 1 mechanical determinism wins (248 → 215, 33 additional sleeps removed):**
+- **Slice A (ASB delivery):** 7 wall-clock sleeps replaced with `clocktest.Fake.Advance` for auto-renew tests; test runtime dropped from ~25s to ~1s
+- **Slice B (bridge reconfig strategy):** 5 debounce-choreography sleeps replaced with `clocktest.Fake.Advance` now that strategies accept `Clock`; runtime dropped from ~1.5s to ~50ms
+- **Slice C (runtime):** 5 SYNC sleeps replaced with `waitFor(t, ...)` polling on observable counters/flags
+- **Slice D (longrunning + integration):** ~16 post-Reconcile sleeps replaced with `waitSubReady` polling `ServiceLevelFull`; `newMQTTCollector` helpers in longrunning now use health-based readiness instead of fixed delays
+
+## Integration-test content verification
+
+The `testutil/testcontent` package provides deterministic message content verification.
+Every test message is tagged with a unique TID (test-message-ID) in both a header
+(`x-bridge.test-msg-id`) and a JSON payload field (`_tid`).
+
+Assertion helpers compare sent vs received sets by TID:
+
+- `AssertReceivedSet` — set(sent.TID) == set(received.TID); reports missing and extra
+- `AssertContentMatches` — set equality + per-TID payload/header comparison
+- `AssertNoDuplicates` — each TID appears at most once
+- `AssertOrdered` — received TIDs appear in the same order as sent
+
+The `ExtractTID` function tries the header first, then falls back to the JSON `_tid` field,
+so it works even when transport headers are stripped (e.g. SQS → body-only polling).
+
+**MQTT Envelope.ID round-trip**: `PublishFromEnvelope` now includes the `Envelope.ID` as a
+`mqtt.message-id` user property. `EnvelopeFromPublish` recovers it in priority order:
+1. `mqtt.message-id` user property
+2. `x-bridge.correlation-id` from CorrelationData
+3. Random fallback
+
+This enables `countUnique()` to work correctly on MQTT collectors for all throughput,
+resilience, and backpressure tests.
 
 ## Irreducible ESSENTIAL set (after Phase 1)
 

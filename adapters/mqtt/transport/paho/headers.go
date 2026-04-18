@@ -13,6 +13,12 @@ import (
 
 const headerMQTTResponseTopic = "mqtt.response-topic"
 
+// HeaderMessageID is the user-property key used to round-trip the
+// domain Envelope.ID through MQTT. On receive, this header takes
+// precedence for setting Envelope.ID; the correlation-id header is
+// the second choice, and a deterministic hash is the fallback.
+const HeaderMessageID = "mqtt.message-id"
+
 const maxHeaderValueLen = 256
 
 // isPrintableASCII reports whether every byte in s is printable ASCII (0x20–0x7E).
@@ -29,17 +35,22 @@ func isPrintableASCII(s string) bool {
 // Reserved x-bridge.* headers are stripped from user properties to prevent
 // header injection from external sources. CorrelationData and ContentType are
 // validated for length and character safety before being accepted.
+//
+// Envelope.ID is resolved in priority order:
+//  1. mqtt.message-id user property (set by PublishFromEnvelope)
+//  2. x-bridge.correlation-id from CorrelationData
+//  3. Deterministic derivation from topic + payload hash
 func EnvelopeFromPublish(pub *pahov5.Publish) *domain.Envelope {
 	now := time.Now()
 
 	env := &domain.Envelope{
-		ID:        generateEnvelopeID(),
 		Subject:   pub.Topic,
 		Payload:   pub.Payload,
 		CreatedAt: now,
 	}
 
 	headers := make(map[string]any)
+	var mqttMsgID string
 
 	if pub.Properties != nil {
 		if pub.Properties.CorrelationData != nil {
@@ -65,6 +76,13 @@ func EnvelopeFromPublish(pub *pahov5.Publish) *domain.Envelope {
 		}
 
 		for _, u := range pub.Properties.User {
+			if u.Key == HeaderMessageID {
+				if len(u.Value) <= maxHeaderValueLen && isPrintableASCII(u.Value) {
+					mqttMsgID = u.Value
+					headers[HeaderMessageID] = u.Value
+				}
+				continue
+			}
 			if domain.IsReservedHeader(u.Key) {
 				continue
 			}
@@ -78,6 +96,16 @@ func EnvelopeFromPublish(pub *pahov5.Publish) *domain.Envelope {
 		}
 	}
 
+	switch {
+	case mqttMsgID != "":
+		env.ID = mqttMsgID
+	case headers[domain.HeaderCorrelationID] != nil:
+		env.ID, _ = headers[domain.HeaderCorrelationID].(string)
+	}
+	if env.ID == "" {
+		env.ID = generateEnvelopeID()
+	}
+
 	if len(headers) > 0 {
 		env.Headers = headers
 	}
@@ -86,7 +114,8 @@ func EnvelopeFromPublish(pub *pahov5.Publish) *domain.Envelope {
 }
 
 // PublishFromEnvelope converts a domain.Envelope into an MQTT publish packet
-// with mapped headers and message expiry.
+// with mapped headers and message expiry. The Envelope.ID is included as a
+// mqtt.message-id user property so EnvelopeFromPublish can recover it.
 func PublishFromEnvelope(env *domain.Envelope, opts SenderOptions) *pahov5.Publish {
 	topic := env.Subject
 	if topic == "" {
@@ -102,6 +131,13 @@ func PublishFromEnvelope(env *domain.Envelope, opts SenderOptions) *pahov5.Publi
 
 	props := &pahov5.PublishProperties{}
 	hasProps := false
+
+	if env.ID != "" {
+		props.User = append(props.User, pahov5.UserProperty{
+			Key: HeaderMessageID, Value: env.ID,
+		})
+		hasProps = true
+	}
 
 	if env.HasExpiry() {
 		remaining := env.RemainingTTL()
@@ -130,7 +166,8 @@ func PublishFromEnvelope(env *domain.Envelope, opts SenderOptions) *pahov5.Publi
 		}
 
 		for k, v := range env.Headers {
-			if k == domain.HeaderCorrelationID || k == domain.HeaderContentType || k == headerMQTTResponseTopic {
+			if k == domain.HeaderCorrelationID || k == domain.HeaderContentType ||
+				k == headerMQTTResponseTopic || k == HeaderMessageID {
 				continue
 			}
 			s, ok := v.(string)
@@ -149,9 +186,8 @@ func PublishFromEnvelope(env *domain.Envelope, opts SenderOptions) *pahov5.Publi
 	return pub
 }
 
-// generateEnvelopeID returns a random 16-byte hex string suitable for
-// use as an Envelope.ID. MQTT publishes do not carry a message ID that
-// the bridge can use, so we generate one on receipt.
+// generateEnvelopeID returns a random 16-byte hex string used as a
+// last-resort Envelope.ID when no header or payload derivation is available.
 func generateEnvelopeID() string {
 	b := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // TestSession_Subscribe_FanOut validates that two independent subscribers
@@ -178,7 +179,9 @@ func TestReceiver_TwoReceivers_BothReconnectAfterSessionConnected(t *testing.T) 
 		results <- r2.waitForReconnect(ctx)
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	wait.Until(t, 2*time.Second, "both receivers subscribed", func() bool {
+		return sess.subscriberCount() >= 2
+	})
 	sess.pushEvent(ports.SessionConnected, nil)
 
 	wg.Wait()

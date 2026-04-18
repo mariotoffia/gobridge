@@ -156,7 +156,7 @@ func buildEgressBridge(
 			{Topic: mqttTopic, QoS: 1},
 		},
 	}), "Reconcile egress %s", label)
-	time.Sleep(300 * time.Millisecond)
+	waitSubReady(t, sess, 5*time.Second)
 
 	mqttRx := paho.NewReceiver(fmt.Sprintf("uc1-egress-%s-rx", label), sess)
 	sqsSnd := newSQSSender(t, sqsQueueURL)

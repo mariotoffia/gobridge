@@ -98,8 +98,7 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 	t.Logf("UC42: killing broker at collector=%d", beforeKill)
 	broker.StopGraceful()
 
-	// Broker is down for 5s.
-	time.Sleep(5 * time.Second)
+	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 
 	t.Log("UC42: restarting broker")
 	broker.RestartGraceful()
@@ -111,16 +110,19 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 	sendProbe(t, sqsInClient, sqsInURL, collector, 30*time.Second)
 
 	// Wait for all messages to arrive after recovery.
-	// NOTE: Use collector.count() not countUnique() because EnvelopeFromPublish
-	// does not set Envelope.ID, so countUnique always returns 1 for MQTT.
+	// EnvelopeFromPublish now sets Envelope.ID from mqtt.message-id,
+	// correlation-id, or a deterministic hash so countUnique works.
 	lrWaitFor(t, 180*time.Second,
 		fmt.Sprintf("collector >= %d after restart", msgCount),
 		func() bool { return collector.count() >= msgCount })
 
-	t.Logf("UC42: collector=%d, dlq=%d", collector.count(), dlq.count())
+	unique := countUnique(collector)
+	t.Logf("UC42: collector=%d, unique=%d, dlq=%d", collector.count(), unique, dlq.count())
 
 	require.GreaterOrEqual(t, collector.count(), msgCount,
 		"SharedOutbox must deliver all %d messages after broker restart", msgCount)
+	assert.GreaterOrEqual(t, unique, msgCount,
+		"All %d unique messages must be delivered", msgCount)
 	assert.Equal(t, 0, dlq.count(), "DLQ should be empty")
 }
 
@@ -202,7 +204,7 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 
 	t.Logf("UC43: killing broker at collector=%d", collector.count())
 	broker.StopGraceful()
-	time.Sleep(5 * time.Second)
+	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 
 	t.Log("UC43: restarting broker")
 	broker.RestartGraceful()
@@ -411,8 +413,7 @@ func TestUC45_BrokerQuota_SharedOutbox_vs_DirectHold(t *testing.T) {
 		fmt.Sprintf("SharedOutbox unique >= %d", msgCount),
 		func() bool { return countUnique(collectorA) >= msgCount })
 
-	// Give DirectHold some extra time, but do not require all messages.
-	time.Sleep(30 * time.Second)
+	time.Sleep(30 * time.Second) // SYNC: give DirectHold extra time to deliver under broker pressure
 
 	uniqueA := countUnique(collectorA)
 	uniqueB := countUnique(collectorB)

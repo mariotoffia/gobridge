@@ -127,7 +127,14 @@ func TestIntegration_Edge_MulticastRouting(t *testing.T) {
 	startRecv(recv1, "r1")
 	startRecv(recv2, "r2")
 
-	time.Sleep(500 * time.Millisecond)
+	// STARTUP: wait for receiver links to be live instead of blind sleep.
+	for _, r := range []*Receiver{recv1, recv2} {
+		select {
+		case <-r.Started():
+		case <-ctx.Done():
+			t.Fatal("receiver did not start in time")
+		}
+	}
 
 	if err := sender.Send(ctx, &domain.Envelope{
 		ID: "multicast-1", Subject: "test", Payload: []byte("fan-out"),

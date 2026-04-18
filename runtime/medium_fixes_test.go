@@ -151,7 +151,7 @@ func TestDepthCacheTTL_WiredFromPolicy(t *testing.T) {
 
 	countAfterFirst := countingOutbox.GetQueryCount()
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond) // FIXED: wait for DepthCacheTTL (50ms) to expire
 
 	env2 := &domain.Envelope{ID: "ttlwire-2", Payload: []byte("x")}
 	del2 := NewFakeDelivery(env2)

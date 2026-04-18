@@ -133,8 +133,10 @@ func TestBugA_StartCtx_AssignedBeforeAwaitConnection(t *testing.T) {
 		observedNonNil bool
 		obsMu          sync.Mutex
 		stop           = make(chan struct{})
+		obsDone        = make(chan struct{})
 	)
 	go func() {
+		defer close(obsDone)
 		ticker := time.NewTicker(100 * time.Microsecond)
 		defer ticker.Stop()
 		for {
@@ -160,8 +162,11 @@ func TestBugA_StartCtx_AssignedBeforeAwaitConnection(t *testing.T) {
 	_ = s.Start(ctx) // expected to error; we care about startCtx visibility
 	close(stop)
 
-	// Allow observer goroutine to flush.
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-obsDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("observer goroutine did not complete")
+	}
 	_ = s.Close(context.Background())
 
 	obsMu.Lock()

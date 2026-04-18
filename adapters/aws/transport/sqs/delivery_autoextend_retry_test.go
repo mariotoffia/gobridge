@@ -10,6 +10,8 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // TestAutoExtendRetriesTransientThenSucceedsS15 verifies the auto-extend loop
@@ -30,10 +32,25 @@ func TestAutoExtendRetriesTransientThenSucceedsS15(t *testing.T) {
 
 	ctx := context.Background()
 	env := &domain.Envelope{ID: "e1", Payload: []byte("x"), CreatedAt: time.Now()}
-	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-1", 2, true, nil, nil, nil, nil)
+	fake := clocktest.New()
+	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-1", 2, true, nil, nil, nil, fake)
 	defer func() { d.stopAutoExtend(); d.cleanupContext() }()
 
-	time.Sleep(3500 * time.Millisecond)
+	wait.Until(t, time.Second, "ticker registered", func() bool {
+		return fake.TickerCount() >= 1
+	})
+
+	// SYNC: advance to trigger first tick (will fail with "transient").
+	fake.Advance(1 * time.Second)
+	wait.Until(t, time.Second, "first tick", func() bool {
+		return callCount.Load() >= 1
+	})
+
+	// SYNC: advance to trigger second tick (will succeed).
+	fake.Advance(1 * time.Second)
+	wait.Until(t, time.Second, "second tick", func() bool {
+		return callCount.Load() >= 2
+	})
 
 	mock.mu.Lock()
 	n := len(mock.ChangeVisibilityCalls)
@@ -61,10 +78,21 @@ func TestAutoExtendInterleavedFailSuccessS15(t *testing.T) {
 
 	ctx := context.Background()
 	env := &domain.Envelope{ID: "e3", Payload: []byte("z"), CreatedAt: time.Now()}
-	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-3", 2, true, nil, nil, nil, nil)
+	fake := clocktest.New()
+	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-3", 2, true, nil, nil, nil, fake)
 	defer func() { d.stopAutoExtend(); d.cleanupContext() }()
 
-	time.Sleep(5 * time.Second)
+	wait.Until(t, time.Second, "ticker registered", func() bool {
+		return fake.TickerCount() >= 1
+	})
+
+	// SYNC: advance multiple ticks to get > autoExtendMaxFailures total calls.
+	for i := 1; i <= autoExtendMaxFailures+2; i++ {
+		fake.Advance(1 * time.Second)
+		wait.Until(t, time.Second, "tick fired", func() bool {
+			return callCount.Load() >= int32(i)
+		})
+	}
 
 	total := callCount.Load()
 	if total <= int32(autoExtendMaxFailures) {
@@ -84,10 +112,24 @@ func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
 
 	ctx := context.Background()
 	env := &domain.Envelope{ID: "e2", Payload: []byte("y"), CreatedAt: time.Now()}
-	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-2", 2, true, nil, nil, nil, nil)
+	fake := clocktest.New()
+	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-2", 2, true, nil, nil, nil, fake)
 	defer func() { d.stopAutoExtend(); d.cleanupContext() }()
 
-	time.Sleep(4 * time.Second)
+	wait.Until(t, time.Second, "ticker registered", func() bool {
+		return fake.TickerCount() >= 1
+	})
+
+	// SYNC: advance to trigger autoExtendMaxFailures failure cycles.
+	for i := 1; i <= autoExtendMaxFailures; i++ {
+		fake.Advance(1 * time.Second)
+		wait.Until(t, time.Second, "failure tick", func() bool {
+			mock.mu.Lock()
+			n := len(mock.ChangeVisibilityCalls)
+			mock.mu.Unlock()
+			return n >= i
+		})
+	}
 
 	mock.mu.Lock()
 	n := len(mock.ChangeVisibilityCalls)

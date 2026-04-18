@@ -135,8 +135,9 @@ func TestSessionManager_RenewInterval_FakeClock(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("session manager did not acquire lease")
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // OTHER: real-time sync for clocktest.Fake
 	}
+	// OTHER: real-time sync for clocktest.Fake
 	// Give the goroutine a moment to reach `<-timer.C()` after acquire.
 	time.Sleep(20 * time.Millisecond)
 
@@ -163,6 +164,7 @@ func TestSessionManager_RenewInterval_FakeClock(t *testing.T) {
 		t.Fatalf("after first advance: expected 1 renew, got %d", got)
 	}
 
+	// OTHER: real-time sync for clocktest.Fake
 	// Allow the renew goroutine to call timer.Reset before the next advance.
 	time.Sleep(20 * time.Millisecond)
 

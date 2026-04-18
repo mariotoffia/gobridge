@@ -190,7 +190,7 @@ func TestUC54_FIFODeduplication(t *testing.T) {
 	lrWaitFor(t, 4*time.Minute, fmt.Sprintf("uc54: collector >= %d", dedupCount), func() bool {
 		return collector.count() >= dedupCount
 	})
-	time.Sleep(10 * time.Second)
+	time.Sleep(10 * time.Second) // NEGATIVE: verify dedup discards most duplicates
 
 	total := collector.count()
 	t.Logf("uc54: total=%d (expected ~%d, tolerance 10%% for ElasticMQ dedup leaks)", total, dedupCount)

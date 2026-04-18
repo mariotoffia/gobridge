@@ -104,7 +104,7 @@ func TestUC63_MemoryStability(t *testing.T) {
 
 	// Phase 4: quiescence — wait briefly for outbox drainer to finish,
 	// buffers to be released, then force multiple GC cycles.
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // SYNC: let outbox drainer finish and buffers release
 	final := stableHeapAlloc()
 
 	t.Logf("UC63: heap — baseline=%dMB, final=%dMB, delta=%dMB",
@@ -299,7 +299,7 @@ func TestUC66_MultiTenantIsolation(t *testing.T) {
 		if allDone {
 			break
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond) // SYNC: poll for per-tenant completion
 	}
 
 	// Log and assert per-tenant timing.

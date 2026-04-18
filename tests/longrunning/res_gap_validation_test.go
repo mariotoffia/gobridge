@@ -74,7 +74,7 @@ func TestRES003_MQTTSourceDropWithoutDLQ(t *testing.T) {
 	if reconcileErr != nil {
 		t.Fatalf("RES-003: Reconcile failed: %v", reconcileErr)
 	}
-	time.Sleep(300 * time.Millisecond)
+	waitSubReady(t, rxSess, 5*time.Second)
 
 	mqttRx := paho.NewReceiver("res003-rx", rxSess)
 	failSnd := &alwaysFailSender{}
@@ -137,7 +137,7 @@ func TestRES003_MQTTSourceDropWithoutDLQ(t *testing.T) {
 	// Since alwaysFailSender fails immediately and there is no DLQ,
 	// messages should be processed quickly (and silently dropped).
 	t.Log("RES-003: waiting 30s for bridge processing")
-	time.Sleep(30 * time.Second)
+	time.Sleep(30 * time.Second) // NEGATIVE: verify no messages reach target after all sends fail
 
 	// --- Assertions ---
 	targetCount := collector.count()
@@ -258,8 +258,7 @@ func TestRES005_AutoExtendFailureDuplicates(t *testing.T) {
 		fmt.Sprintf("collector >= %d", msgCount),
 		func() bool { return collector.count() >= msgCount })
 
-	// Extra wait for any additional duplicates from redelivery.
-	time.Sleep(15 * time.Second)
+	time.Sleep(15 * time.Second) // NEGATIVE: verify no additional duplicates from SQS redelivery
 
 	total := collector.count()
 	unique := countUnique(collector)
@@ -346,7 +345,7 @@ func TestRES001_NoCircuitBreakerOnSender(t *testing.T) {
 
 	// With CB: fails fast after 5 consecutive failures, then probes every 5s.
 	// Without CB: each fail blocks for 5s on the degraded sender.
-	time.Sleep(30 * time.Second)
+	time.Sleep(30 * time.Second) // SYNC: let circuit breaker process all messages
 	elapsed := time.Since(start)
 
 	delivered := collector.count()
@@ -475,7 +474,7 @@ func TestRES011_RouterPanicSwallowsMessages(t *testing.T) {
 	gobridgesync(t, 10*time.Second, rt)
 
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
-	time.Sleep(30 * time.Second)
+	time.Sleep(30 * time.Second) // SYNC: let bridge process all messages including panic recovery
 
 	delivered := collector.count()
 	dlqCount := dlq.count()

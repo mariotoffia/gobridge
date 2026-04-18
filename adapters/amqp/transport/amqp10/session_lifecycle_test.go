@@ -46,6 +46,7 @@ func TestSession_Start_ConcurrentBlocksUntilReady(t *testing.T) {
 	}
 
 	<-dialStart
+	// OTHER: race window letting concurrent Start callers reach the blocking point.
 	time.Sleep(50 * time.Millisecond)
 
 	if r := returned.Load(); r != 0 {

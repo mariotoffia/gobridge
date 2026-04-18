@@ -243,7 +243,7 @@ func (s *Session) connect(ctx context.Context) error {
 	s.mu.Unlock()
 
 	if oldSess != nil {
-		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), s.opts.LinkCloseTimeout)
 		_ = oldSess.Close(cleanCtx)
 		cleanCancel()
 	}
@@ -481,7 +481,7 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 // immediate disconnect detection, falling back to a 30s ticker as a
 // sanity check.
 func (s *Session) monitorLoop(ctx context.Context) {
-	fallback := time.NewTicker(30 * time.Second)
+	fallback := s.clk.NewTicker(30 * time.Second)
 	defer fallback.Stop()
 
 	for {
@@ -504,7 +504,7 @@ func (s *Session) monitorLoop(ctx context.Context) {
 				s.tryReconnect(ctx)
 			case <-connDone:
 				s.tryReconnect(ctx)
-			case <-fallback.C:
+			case <-fallback.C():
 				s.tryReconnect(ctx)
 			}
 		} else {
@@ -513,7 +513,7 @@ func (s *Session) monitorLoop(ctx context.Context) {
 				return
 			case <-s.reconnectCh:
 				s.tryReconnect(ctx)
-			case <-fallback.C:
+			case <-fallback.C():
 				s.tryReconnect(ctx)
 			}
 		}

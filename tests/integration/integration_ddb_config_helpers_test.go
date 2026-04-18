@@ -430,7 +430,7 @@ func waitForSupervisorRuntime(t *testing.T, s *bridge.Supervisor, timeout time.D
 		if rt := s.Runtime(); rt != nil {
 			return rt
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // SYNC: poll for supervisor runtime readiness
 	}
 	t.Fatal("timed out waiting for supervisor runtime")
 	return nil
@@ -449,7 +449,7 @@ func waitForSupervisorRouteID(t *testing.T, s *bridge.Supervisor, routeID string
 				}
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // SYNC: poll for route availability
 	}
 	t.Fatalf("timed out waiting for route %q", routeID)
 }

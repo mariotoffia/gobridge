@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 )
 
 // Config holds the configuration for the CloudWatch metrics exporter.
@@ -16,6 +17,7 @@ type Config struct {
 	BufferSize     int           `json:"bufferSize,omitempty"`
 	MaxBatchSize   int           `json:"maxBatchSize,omitempty"`
 	Endpoint       string        `json:"endpoint,omitempty"`
+	Clock          clock.Clock   `json:"-"`
 }
 
 // Option is a functional option for configuring the exporter.
@@ -61,6 +63,17 @@ func WithFlushRPCTimeout(d time.Duration) Option {
 	return func(e *Exporter) { e.config.FlushRPCTimeout = d }
 }
 
+// WithClock overrides the clock used for flush tickers and timeouts.
+// Primarily intended for tests; production code should rely on the
+// default clock.System.
+func WithClock(c clock.Clock) Option {
+	return func(e *Exporter) {
+		if c != nil {
+			e.config.Clock = c
+		}
+	}
+}
+
 // WithEndpoint sets a custom endpoint URL (e.g. for LocalStack).
 func WithEndpoint(endpoint string) Option {
 	return func(e *Exporter) { e.config.Endpoint = endpoint }
@@ -71,12 +84,15 @@ func applyDefaults(cfg *Config) {
 		cfg.FlushInterval = 60 * time.Second
 	}
 	if cfg.FlushRPCTimeout <= 0 {
-		cfg.FlushRPCTimeout = cfg.FlushInterval / 2
+		cfg.FlushRPCTimeout = min(cfg.FlushInterval/2, 30*time.Second)
 	}
 	if cfg.BufferSize == 0 {
 		cfg.BufferSize = 1000
 	}
 	if cfg.MaxBatchSize == 0 {
 		cfg.MaxBatchSize = 20 // CloudWatch PutMetricData limit
+	}
+	if cfg.Clock == nil {
+		cfg.Clock = clock.System
 	}
 }

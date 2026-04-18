@@ -185,7 +185,7 @@ func TestUC23_SubjectPrefix_Routing(t *testing.T) {
 	require.NoError(t, rxSess.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: "uc23/#", QoS: 1}},
 	}))
-	time.Sleep(300 * time.Millisecond)
+	waitSubReady(t, rxSess, 5*time.Second)
 	mqttRx := paho.NewReceiver("uc23-rx", rxSess)
 
 	rt := goruntime.New(goruntime.WithInstanceID("uc23-bridge"), goruntime.WithDLQStore(dlq))
@@ -253,7 +253,6 @@ func TestUC24_DynamicAddress_Templates(t *testing.T) {
 		topic := fmt.Sprintf("uc24/%s/%s/data", c.tenant, c.region)
 		collectors[i] = newMQTTCollector(t, topic, fmt.Sprintf("uc24-col-%d", i))
 	}
-	time.Sleep(300 * time.Millisecond)
 
 	bindings := []domain.DestinationBinding{
 		{ID: "b-mqtt", Transport: "mqtt", Address: "uc24/{tenant}/{region}/data"},
@@ -409,7 +408,7 @@ func TestUC26_FiveStage_ProcessorChain(t *testing.T) {
 	require.NoError(t, sess2.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}))
-	time.Sleep(300 * time.Millisecond)
+	waitSubReady(t, sess2, 5*time.Second)
 	mqttRx := paho.NewReceiver("uc26-rx", sess2)
 	sqsSndOut := newSQSSender(t, outURL)
 	rt2 := goruntime.New(goruntime.WithInstanceID("uc26-b2"), goruntime.WithDLQStore(dlq))

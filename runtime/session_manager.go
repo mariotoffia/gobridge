@@ -378,6 +378,8 @@ func (m *SessionManager) stepDown(ctx context.Context) error {
 		releaseTimeout := m.stepDownGrace
 		if releaseTimeout <= 0 {
 			releaseTimeout = 5 * time.Second
+		} else if releaseTimeout > 5*time.Second {
+			releaseTimeout = 5 * time.Second
 		}
 		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), releaseTimeout)
 		defer releaseCancel()

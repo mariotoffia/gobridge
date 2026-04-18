@@ -37,8 +37,7 @@ func TestIntegration_ReceiverClose_GracefulShutdown(t *testing.T) {
 		})
 	}()
 
-	// Give the receiver time to connect and start polling.
-	time.Sleep(3 * time.Second)
+	time.Sleep(3 * time.Second) // STARTUP: wait for receiver to connect and start polling
 
 	// Cancel the context to trigger shutdown.
 	start := time.Now()

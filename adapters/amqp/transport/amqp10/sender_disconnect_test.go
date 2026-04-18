@@ -76,7 +76,7 @@ func TestSender_StaleLinkFailure_DoesNotKillReconnectedConn(t *testing.T) {
 		}
 	}
 
-	// Allow async closeLinkAsync goroutine + any session bookkeeping to settle.
+	// OTHER: settle delay for async closeLinkAsync goroutine + session bookkeeping.
 	time.Sleep(50 * time.Millisecond)
 
 	conn2.mu.Lock()

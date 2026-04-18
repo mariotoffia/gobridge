@@ -109,7 +109,7 @@ func (r *SlowExitReceiver) Run(ctx context.Context, emit func(context.Context, p
 	close(r.ready)
 	r.mu.Unlock()
 	<-ctx.Done()
-	time.Sleep(r.ExitDelay)
+	time.Sleep(r.ExitDelay) // OTHER: simulated processing duration
 	return ctx.Err()
 }
 

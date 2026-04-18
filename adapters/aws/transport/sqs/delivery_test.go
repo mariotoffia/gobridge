@@ -11,6 +11,8 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // Verifies Envelope returns the underlying domain envelope.
@@ -154,15 +156,22 @@ func TestDelivery_AutoExtend_CallsChangeVisibility(t *testing.T) {
 	}
 
 	env := &domain.Envelope{ID: "msg-1"}
+	fake := clocktest.New()
 	// Use a very short visibility timeout (2s) so auto-extend fires at 1s.
-	d := newDelivery(context.Background(), env, mock, "q", "rh", 2, true, nil, nil, nil, nil)
+	d := newDelivery(context.Background(), env, mock, "q", "rh", 2, true, nil, nil, nil, fake)
 
-	// Wait for at least one auto-extend to fire.
-	time.Sleep(1500 * time.Millisecond)
+	wait.Until(t, time.Second, "ticker registered", func() bool {
+		return fake.TickerCount() >= 1
+	})
+
+	// SYNC: advance fake clock to trigger auto-extend tick.
+	fake.Advance(1 * time.Second)
+	wait.Until(t, time.Second, "auto-extend fired", func() bool {
+		return extendCount.Load() >= 1
+	})
 
 	d.stopAutoExtend()
 	d.cleanupContext()
-	time.Sleep(100 * time.Millisecond)
 
 	count := extendCount.Load()
 	if count < 1 {
@@ -188,8 +197,8 @@ func TestDelivery_AutoExtend_StopsOnAck(t *testing.T) {
 		t.Fatalf("Ack failed: %v", err)
 	}
 
-	// Wait past the auto-extend interval.
-	time.Sleep(1500 * time.Millisecond)
+	// NEGATIVE: verify no further ChangeMessageVisibility after Ack
+	<-time.After(200 * time.Millisecond)
 
 	count := extendCount.Load()
 	if count > 0 {
@@ -217,7 +226,8 @@ func TestDelivery_AutoExtend_StopsOnRetry(t *testing.T) {
 	// The Retry call itself also calls ChangeMessageVisibility, so reset count.
 	beforeCount := extendCount.Load()
 
-	time.Sleep(1500 * time.Millisecond)
+	// NEGATIVE: verify no further ChangeMessageVisibility after Retry
+	<-time.After(200 * time.Millisecond)
 
 	afterCount := extendCount.Load()
 	if afterCount > beforeCount {
@@ -238,7 +248,8 @@ func TestDelivery_NoAutoExtend(t *testing.T) {
 	env := &domain.Envelope{ID: "msg-1"}
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 2, false, nil, nil, nil, nil)
 
-	time.Sleep(1500 * time.Millisecond)
+	// NEGATIVE: verify no ChangeMessageVisibility when auto-extend is disabled
+	<-time.After(200 * time.Millisecond)
 	d.stopAutoExtend()
 	d.cleanupContext()
 
@@ -264,9 +275,19 @@ func TestDelivery_AutoExtend_UsesCorrectTimeout(t *testing.T) {
 	}
 
 	env := &domain.Envelope{ID: "msg-1"}
-	d := newDelivery(context.Background(), env, mock, "q", "rh", 10, true, nil, nil, nil, nil)
+	fake := clocktest.New()
+	d := newDelivery(context.Background(), env, mock, "q", "rh", 10, true, nil, nil, nil, fake)
 
-	time.Sleep(5500 * time.Millisecond)
+	wait.Until(t, time.Second, "ticker registered", func() bool {
+		return fake.TickerCount() >= 1
+	})
+
+	// SYNC: advance fake clock past the 5s tick interval.
+	fake.Advance(5 * time.Second)
+	wait.Until(t, time.Second, "auto-extend fired", func() bool {
+		return callCount.Load() >= 1
+	})
+
 	d.stopAutoExtend()
 	d.cleanupContext()
 
@@ -344,7 +365,8 @@ func TestDelivery_Ack_StopsAutoExtendThenDeletes(t *testing.T) {
 		t.Fatalf("expected exactly 1 delete, got %d", deleteCount)
 	}
 
-	time.Sleep(1500 * time.Millisecond)
+	// NEGATIVE: verify no further ChangeMessageVisibility after Ack
+	<-time.After(200 * time.Millisecond)
 	if extendCount.Load() > 0 {
 		t.Fatal("auto-extend should not fire after Ack")
 	}

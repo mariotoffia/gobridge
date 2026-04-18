@@ -55,7 +55,7 @@ func main() {
 
 	sup := bridge.NewSupervisor(
 		bridge.WithSupervisorLogger(logger),
-		bridge.WithReconfigStrategy(bridge.NewWindowedStrategy(10*time.Second, 30*time.Second)),
+		bridge.WithReconfigStrategy(bridge.NewWindowedStrategy(10*time.Second, 30*time.Second, nil)),
 		bridge.WithOnSwap(func(ev bridge.SwapEvent) {
 			if ev.Error != nil {
 				logger.Error("reconfiguration failed",
@@ -171,14 +171,18 @@ func main() {
 }
 
 func waitForSupervisorRuntime(sup *bridge.Supervisor, timeout time.Duration) *goruntime.Runtime {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	// ESSENTIAL: runtime init poll
+	deadline := time.After(timeout)
+	for {
 		if rt := sup.Runtime(); rt != nil {
 			return rt
 		}
-		time.Sleep(20 * time.Millisecond)
+		select {
+		case <-deadline:
+			return nil
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
-	return nil
 }
 
 func newLogger(level string) *slog.Logger {

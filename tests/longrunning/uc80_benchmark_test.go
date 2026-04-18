@@ -87,7 +87,7 @@ func TestUC80_SmoothThroughputBaseline(t *testing.T) {
 		if int(time.Since(start).Seconds())%30 == 0 {
 			t.Logf("UC80: progress %d/%d (dlq=%d)", cur, msgCount, dlq.count())
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond) // SYNC: poll for message delivery progress
 	}
 	elapsed := time.Since(start)
 

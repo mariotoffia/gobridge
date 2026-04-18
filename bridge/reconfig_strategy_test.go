@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -103,7 +104,7 @@ func TestDebouncedStrategy_QuietWindow(t *testing.T) {
 	defer cancel()
 
 	in := make(chan *config.BridgeConfig, 1)
-	out := NewDebouncedStrategy(quiet).Filter(ctx, in)
+	out := NewDebouncedStrategy(quiet, nil).Filter(ctx, in)
 
 	in <- stratCfg("quiet-1")
 
@@ -121,7 +122,7 @@ func TestDebouncedStrategy_EmitsLatest(t *testing.T) {
 	defer cancel()
 
 	in := make(chan *config.BridgeConfig, 5)
-	out := NewDebouncedStrategy(quiet).Filter(ctx, in)
+	out := NewDebouncedStrategy(quiet, nil).Filter(ctx, in)
 
 	for i := 1; i <= 5; i++ {
 		in <- stratCfg("cfg-" + string(rune('0'+i)))
@@ -140,20 +141,24 @@ func TestDebouncedStrategy_ResetOnNewChange(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	fake := clocktest.New()
 	in := make(chan *config.BridgeConfig, 1)
-	out := NewDebouncedStrategy(quiet).Filter(ctx, in)
+	out := NewDebouncedStrategy(quiet, fake).Filter(ctx, in)
 
 	in <- stratCfg("first")
-	time.Sleep(quiet / 2)
+	time.Sleep(1 * time.Millisecond) // let goroutine reach select
+	fake.Advance(quiet / 2)
 
 	assertNoEmission(t, out, 0)
 
 	in <- stratCfg("second")
-	time.Sleep(quiet / 2)
+	time.Sleep(1 * time.Millisecond) // let goroutine reach select
+	fake.Advance(quiet / 2)
 
 	assertNoEmission(t, out, 0)
 
-	got := mustRecv(t, out, quiet+200*time.Millisecond)
+	fake.Advance(quiet)
+	got := mustRecv(t, out, time.Second)
 	assert.Equal(t, "second", got.Bridge.ID)
 }
 
@@ -165,7 +170,7 @@ func TestDebouncedStrategy_ExactlyOneEmitPerBurst(t *testing.T) {
 	defer cancel()
 
 	in := make(chan *config.BridgeConfig, 10)
-	out := NewDebouncedStrategy(quiet).Filter(ctx, in)
+	out := NewDebouncedStrategy(quiet, nil).Filter(ctx, in)
 
 	for i := 0; i < 10; i++ {
 		in <- stratCfg("burst")
@@ -182,12 +187,14 @@ func TestDebouncedStrategy_ContextCancel_PendingTimer(t *testing.T) {
 	const quiet = 200 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
+	fake := clocktest.New()
 	in := make(chan *config.BridgeConfig, 1)
-	out := NewDebouncedStrategy(quiet).Filter(ctx, in)
+	out := NewDebouncedStrategy(quiet, fake).Filter(ctx, in)
 
 	in <- stratCfg("pending")
 
-	time.Sleep(quiet / 4)
+	time.Sleep(1 * time.Millisecond) // let goroutine reach select
+	fake.Advance(quiet / 4)
 	cancel()
 
 	// Drain: channel should close without emitting the pending config.
@@ -203,11 +210,13 @@ func TestDebouncedStrategy_InputChannelClosed_PendingTimer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	fake := clocktest.New()
 	in := make(chan *config.BridgeConfig, 1)
-	out := NewDebouncedStrategy(quiet).Filter(ctx, in)
+	out := NewDebouncedStrategy(quiet, fake).Filter(ctx, in)
 
 	in <- stratCfg("last")
-	time.Sleep(quiet / 4)
+	time.Sleep(1 * time.Millisecond) // let goroutine reach select
+	fake.Advance(quiet / 4)
 	close(in)
 
 	got := mustRecv(t, out, time.Second)
@@ -222,7 +231,7 @@ func TestDebouncedStrategy_ZeroQuietPeriod(t *testing.T) {
 	defer cancel()
 
 	in := make(chan *config.BridgeConfig, 3)
-	out := NewDebouncedStrategy(0).Filter(ctx, in)
+	out := NewDebouncedStrategy(0, nil).Filter(ctx, in)
 
 	ids := []string{"x", "y", "z"}
 	for _, id := range ids {
@@ -248,7 +257,7 @@ func TestWindowedStrategy_QuietWindow(t *testing.T) {
 	defer cancel()
 
 	in := make(chan *config.BridgeConfig, 1)
-	out := NewWindowedStrategy(quiet, maxDelay).Filter(ctx, in)
+	out := NewWindowedStrategy(quiet, maxDelay, nil).Filter(ctx, in)
 
 	in <- stratCfg("sparse")
 
@@ -269,7 +278,7 @@ func TestWindowedStrategy_MaxDelay(t *testing.T) {
 	defer cancel()
 
 	in := make(chan *config.BridgeConfig)
-	out := NewWindowedStrategy(quiet, maxDelay).Filter(ctx, in)
+	out := NewWindowedStrategy(quiet, maxDelay, nil).Filter(ctx, in)
 
 	// Feed configs faster than the quiet period so the quiet timer never fires.
 	done := make(chan struct{})
@@ -315,7 +324,7 @@ func TestWindowedStrategy_MaxDelayResetAfterEmit(t *testing.T) {
 	defer cancel()
 
 	in := make(chan *config.BridgeConfig)
-	out := NewWindowedStrategy(quiet, maxDelay).Filter(ctx, in)
+	out := NewWindowedStrategy(quiet, maxDelay, nil).Filter(ctx, in)
 
 	// Continuously feed to force maxDelay emit.
 	stop := make(chan struct{})
@@ -359,7 +368,7 @@ func TestWindowedStrategy_QuietBeforeMaxDelay(t *testing.T) {
 	defer cancel()
 
 	in := make(chan *config.BridgeConfig, 1)
-	out := NewWindowedStrategy(quiet, maxDelay).Filter(ctx, in)
+	out := NewWindowedStrategy(quiet, maxDelay, nil).Filter(ctx, in)
 
 	start := time.Now()
 	in <- stratCfg("early")
@@ -379,11 +388,13 @@ func TestWindowedStrategy_ContextCancel(t *testing.T) {
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	fake := clocktest.New()
 	in := make(chan *config.BridgeConfig, 1)
-	out := NewWindowedStrategy(quiet, maxDelay).Filter(ctx, in)
+	out := NewWindowedStrategy(quiet, maxDelay, fake).Filter(ctx, in)
 
 	in <- stratCfg("pending")
-	time.Sleep(quiet / 4)
+	time.Sleep(1 * time.Millisecond) // let goroutine reach select
+	fake.Advance(quiet / 4)
 	cancel()
 
 	for cfg := range out {
@@ -402,7 +413,7 @@ func TestWindowedStrategy_MaxDelayLessThanQuiet(t *testing.T) {
 	defer cancel()
 
 	in := make(chan *config.BridgeConfig, 1)
-	out := NewWindowedStrategy(quiet, maxDelay).Filter(ctx, in)
+	out := NewWindowedStrategy(quiet, maxDelay, nil).Filter(ctx, in)
 
 	start := time.Now()
 	in <- stratCfg("max-wins")
@@ -423,7 +434,7 @@ func TestWindowedStrategy_EqualPeriods(t *testing.T) {
 	defer cancel()
 
 	in := make(chan *config.BridgeConfig, 1)
-	out := NewWindowedStrategy(period, period).Filter(ctx, in)
+	out := NewWindowedStrategy(period, period, nil).Filter(ctx, in)
 
 	in <- stratCfg("equal")
 

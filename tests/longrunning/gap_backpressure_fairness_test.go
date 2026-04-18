@@ -149,11 +149,18 @@ func TestGAP_BackpressureFairness_MixedFastSlow(t *testing.T) {
 		"fast route should finish before slow route (fast=%v, slow=%v)",
 		fastDuration, slowDuration)
 
-	// Both routes deliver all messages.
+	// Both routes deliver all messages with unique content.
+	uniqueA := countUnique(collectorA)
+	uniqueB := countUnique(collectorB)
+	t.Logf("GAP-BP: uniqueA=%d, uniqueB=%d", uniqueA, uniqueB)
 	assert.GreaterOrEqual(t, collectorA.count(), msgCount,
 		"slow route should deliver all %d messages", msgCount)
 	assert.GreaterOrEqual(t, collectorB.count(), msgCount,
 		"fast route should deliver all %d messages", msgCount)
+	assert.GreaterOrEqual(t, uniqueA, msgCount,
+		"slow route should deliver %d unique messages", msgCount)
+	assert.GreaterOrEqual(t, uniqueB, msgCount,
+		"fast route should deliver %d unique messages", msgCount)
 	assert.Equal(t, 0, dlq.count(), "DLQ should be empty")
 
 	// Verify global semaphore was the bottleneck by checking max concurrency.

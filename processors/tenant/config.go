@@ -1,12 +1,17 @@
 package tenant
 
-import "github.com/mariotoffia/gobridge/ports"
+import (
+	"time"
+
+	"github.com/mariotoffia/gobridge/ports"
+)
 
 // Config holds the tenant processor configuration.
 type Config struct {
-	Name          string
-	TenantHeader  string
-	RequireTenant bool
+	Name                    string
+	TenantHeader            string
+	RequireTenant           bool
+	InFlightDecrementTimeout time.Duration
 }
 
 // Option configures the tenant processor.

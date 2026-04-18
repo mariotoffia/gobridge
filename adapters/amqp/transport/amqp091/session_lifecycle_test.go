@@ -53,6 +53,9 @@ func TestSession_Start_ConcurrentBlocksUntilReady(t *testing.T) {
 	}
 
 	<-dialStart
+	// OTHER: negative assertion — gives concurrent Start callers time to
+	// (incorrectly) return before dial completes; no observable state to
+	// poll because we are verifying that nothing happens.
 	time.Sleep(50 * time.Millisecond)
 
 	if r := returned.Load(); r != 0 {

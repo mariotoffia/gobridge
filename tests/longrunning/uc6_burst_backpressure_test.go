@@ -57,7 +57,6 @@ func TestUC6_BurstBackpressure(t *testing.T) {
 	// -- Infrastructure ---------------------------------------------------
 	inQueueURL, inClient := setupSQSQueue(t, "uc6-in")
 	collector := newMQTTCollector(t, "uc6/output/data", "uc6-col")
-	time.Sleep(300 * time.Millisecond)
 
 	// -- DLQ store --------------------------------------------------------
 	dlqStore := &lrDLQStore{}
@@ -114,8 +113,7 @@ func TestUC6_BurstBackpressure(t *testing.T) {
 		},
 	)
 
-	// Allow a brief settling period for any in-flight deliveries.
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // SYNC: let in-flight deliveries settle
 
 	// -- Verification: exact counts ----------------------------------------
 	gotNormal := collector.count()

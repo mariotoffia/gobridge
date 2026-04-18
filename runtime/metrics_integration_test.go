@@ -235,19 +235,19 @@ func TestSessionManager_EmitsReconnectMetric(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
 		// First connect - should NOT count as reconnect.
 		session.PushEvent(ports.SessionEvent{
 			Type:      ports.SessionConnected,
 			Timestamp: time.Now(),
 		})
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
 		// Second connect - should count as reconnect.
 		session.PushEvent(ports.SessionEvent{
 			Type:      ports.SessionConnected,
 			Timestamp: time.Now(),
 		})
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
 		cancel()
 	}()
 

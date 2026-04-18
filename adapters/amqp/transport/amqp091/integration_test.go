@@ -204,9 +204,18 @@ func TestIntegration_SendBatch(t *testing.T) {
 	if len(deliveries) != 3 {
 		t.Fatalf("received %d messages, want 3", len(deliveries))
 	}
+
+	// Verify each sent payload was received.
+	rxBodies := make(map[string]bool, 3)
 	for _, d := range deliveries {
+		rxBodies[string(d.Envelope().Payload)] = true
 		if err := d.Ack(ctx); err != nil {
 			t.Errorf("ack: %v", err)
+		}
+	}
+	for _, want := range []string{"one", "two", "three"} {
+		if !rxBodies[want] {
+			t.Errorf("missing payload %q in received messages", want)
 		}
 	}
 }

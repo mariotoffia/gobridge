@@ -131,7 +131,7 @@ func TestUC92_RabbitMQ_BrokerKillRestart(t *testing.T) {
 	containerName := findContainerByPrefix(t, "gobridge-rabbitmq-")
 	dockerKill(t, containerName)
 
-	time.Sleep(5 * time.Second)
+	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 
 	// --- Restart the SAME container (preserves port mappings) ---
 	t.Log("UC92: restarting RabbitMQ container")

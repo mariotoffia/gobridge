@@ -45,7 +45,7 @@ func makePeakTracker() (sender *ConcurrentSender, peak *int64) {
 				break
 			}
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // OTHER: simulated processing duration
 		return nil
 	})
 	return s, &concurrentPeak
@@ -131,7 +131,7 @@ func TestRouteRunner_BackpressureOnSemFull(t *testing.T) {
 				break
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond) // OTHER: simulated processing duration
 		return nil
 	})
 
@@ -167,7 +167,7 @@ func TestRouteRunner_BackpressureOnSemFull(t *testing.T) {
 	}
 
 	emitWg.Wait()
-	time.Sleep(100 * time.Millisecond)
+	waitFor(t, 2*time.Second, "all 4 sends complete", func() bool { return sender.SentCount() >= 4 })
 
 	cancel()
 	runWg.Wait()
@@ -190,7 +190,7 @@ func TestRouteRunner_GracefulShutdownWaitsInFlight(t *testing.T) {
 	var sendCompleted int64
 
 	sender := NewConcurrentSender(func(_ *domain.Envelope) error {
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond) // OTHER: simulated processing duration
 		atomic.StoreInt64(&sendCompleted, 1)
 		return nil
 	})
@@ -220,7 +220,7 @@ func TestRouteRunner_GracefulShutdownWaitsInFlight(t *testing.T) {
 		_ = receiver.Emit(ctx, del)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // STARTUP: let emit reach receiver before cancel
 	cancel()
 
 	select {
@@ -259,7 +259,7 @@ func TestGlobalSemaphore_LimitsCrossRoute(t *testing.T) {
 					break
 				}
 			}
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond) // OTHER: simulated processing duration
 			return nil
 		})
 	}
@@ -311,7 +311,7 @@ func TestGlobalSemaphore_LimitsCrossRoute(t *testing.T) {
 	}
 
 	emitWg.Wait()
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond) // SYNC: let in-flight sends complete for peak measurement
 	cancel()
 	runWg.Wait()
 
@@ -354,7 +354,7 @@ func TestGlobalSemaphore_ZeroDisablesGlobal(t *testing.T) {
 	}
 
 	emitWg.Wait()
-	time.Sleep(200 * time.Millisecond)
+	waitFor(t, 2*time.Second, "all 8 sends complete", func() bool { return sender.SentCount() >= 8 })
 	cancel()
 	runWg.Wait()
 

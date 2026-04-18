@@ -458,6 +458,124 @@ func TestEnvelopeFromPublish_RejectsNonPrintableUserPropertyKey(t *testing.T) {
 	}
 }
 
+// verifies EnvelopeFromPublish recovers envelope ID from mqtt.message-id user property.
+func TestEnvelopeFromPublish_IDFromMessageIDHeader(t *testing.T) {
+	pub := &pahov5.Publish{
+		Topic:   "t",
+		Payload: []byte("p"),
+		Properties: &pahov5.PublishProperties{
+			User: []pahov5.UserProperty{
+				{Key: HeaderMessageID, Value: "my-envelope-id"},
+			},
+		},
+	}
+
+	env := EnvelopeFromPublish(pub)
+
+	if env.ID != "my-envelope-id" {
+		t.Errorf("ID = %q, want %q", env.ID, "my-envelope-id")
+	}
+	if v, _ := domain.GetHeaderString(env.Headers, HeaderMessageID); v != "my-envelope-id" {
+		t.Errorf("header %s = %q, want %q", HeaderMessageID, v, "my-envelope-id")
+	}
+}
+
+// verifies that mqtt.message-id takes precedence over correlation-id for Envelope.ID.
+func TestEnvelopeFromPublish_IDPrecedence_MsgIDOverCorrelation(t *testing.T) {
+	pub := &pahov5.Publish{
+		Topic: "t",
+		Properties: &pahov5.PublishProperties{
+			CorrelationData: []byte("corr-id"),
+			User: []pahov5.UserProperty{
+				{Key: HeaderMessageID, Value: "msg-id"},
+			},
+		},
+	}
+
+	env := EnvelopeFromPublish(pub)
+
+	if env.ID != "msg-id" {
+		t.Errorf("ID = %q, want %q (mqtt.message-id should take precedence)", env.ID, "msg-id")
+	}
+}
+
+// verifies that correlation-id is used as Envelope.ID when mqtt.message-id is absent.
+func TestEnvelopeFromPublish_IDFromCorrelation(t *testing.T) {
+	pub := &pahov5.Publish{
+		Topic: "t",
+		Properties: &pahov5.PublishProperties{
+			CorrelationData: []byte("corr-fallback"),
+		},
+	}
+
+	env := EnvelopeFromPublish(pub)
+
+	if env.ID != "corr-fallback" {
+		t.Errorf("ID = %q, want %q (should fall back to correlation-id)", env.ID, "corr-fallback")
+	}
+}
+
+// verifies that a random ID is generated when no headers provide an ID,
+// and that each call produces a unique ID.
+func TestEnvelopeFromPublish_IDFallbackRandom(t *testing.T) {
+	pub := &pahov5.Publish{
+		Topic:   "test/topic",
+		Payload: []byte("some-payload"),
+	}
+
+	env1 := EnvelopeFromPublish(pub)
+	env2 := EnvelopeFromPublish(pub)
+
+	if env1.ID == "" {
+		t.Fatal("fallback ID should not be empty")
+	}
+	if env2.ID == "" {
+		t.Fatal("fallback ID should not be empty")
+	}
+	if env1.ID == env2.ID {
+		t.Errorf("each call should produce a unique random ID, got same: %q", env1.ID)
+	}
+}
+
+// verifies PublishFromEnvelope includes Envelope.ID as mqtt.message-id user property.
+func TestPublishFromEnvelope_IncludesMessageID(t *testing.T) {
+	env := &domain.Envelope{
+		ID:      "my-id-123",
+		Subject: "t",
+		Payload: []byte("p"),
+	}
+	pub := PublishFromEnvelope(env, SenderOptions{QoS: 1})
+
+	if pub.Properties == nil {
+		t.Fatal("properties should be set")
+	}
+	found := false
+	for _, u := range pub.Properties.User {
+		if u.Key == HeaderMessageID && u.Value == "my-id-123" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("mqtt.message-id user property not found; user=%+v", pub.Properties.User)
+	}
+}
+
+// verifies full round-trip of Envelope.ID through Publish and back.
+func TestRoundTrip_EnvelopeID(t *testing.T) {
+	original := &domain.Envelope{
+		ID:      "round-trip-id-456",
+		Subject: "rt/topic",
+		Payload: []byte("data"),
+	}
+
+	pub := PublishFromEnvelope(original, SenderOptions{QoS: 1})
+	restored := EnvelopeFromPublish(pub)
+
+	if restored.ID != original.ID {
+		t.Errorf("Envelope.ID round-trip: got %q, want %q", restored.ID, original.ID)
+	}
+}
+
 // verifies PublishFromEnvelope followed by EnvelopeFromPublish preserves key fields and headers.
 func TestRoundTrip_EnvelopePublishEnvelope(t *testing.T) {
 	original := &domain.Envelope{

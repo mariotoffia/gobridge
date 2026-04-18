@@ -57,7 +57,7 @@ func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
 	if err := sess1.Reconcile(ctx, plan); err != nil {
 		t.Fatalf("Reconcile sess1: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubActive(t, sess1, 5*time.Second)
 
 	recv1 := paho.NewReceiver("rx-bug3-1", sess1)
 	sender1 := paho.NewSender(sess1, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
@@ -111,7 +111,7 @@ func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
 	if err := sess2.Reconcile(ctx, plan); err != nil {
 		t.Fatalf("Reconcile sess2: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubActive(t, sess2, 5*time.Second)
 
 	recv2 := paho.NewReceiver("rx-bug3-2", sess2)
 	sender2 := paho.NewSender(sess2, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
@@ -187,7 +187,7 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 	if err := sess.Reconcile(ctx, planA); err != nil {
 		t.Fatalf("Reconcile planA: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubActive(t, sess, 5*time.Second)
 
 	// Update plan: remove topicA, add topicB.
 	planB := domain.SessionPlan{
@@ -198,7 +198,7 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 	if err := sess.Reconcile(ctx, planB); err != nil {
 		t.Fatalf("Reconcile planB: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubActive(t, sess, 5*time.Second)
 
 	recv := paho.NewReceiver("rx-bug3-update", sess)
 	sender := paho.NewSender(sess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
@@ -231,8 +231,10 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 		return ok
 	})
 
-	// Give a brief window for topicA (should NOT arrive).
-	time.Sleep(500 * time.Millisecond)
+	// NEGATIVE: assert topicA does NOT arrive.
+	select {
+	case <-time.After(500 * time.Millisecond):
+	}
 
 	recvCancel()
 	wg.Wait()
@@ -401,7 +403,7 @@ func TestIntegration_ConcurrentReconcile_ActiveSubsIntegrity(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("final Reconcile: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubActive(t, sess, 5*time.Second)
 
 	recv := paho.NewReceiver("rx-race-verify", sess)
 	sender := paho.NewSender(sess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
@@ -444,6 +446,13 @@ func drainEvent(t *testing.T, sess *paho.Session) {
 	case <-sess.Events():
 	case <-time.After(3 * time.Second):
 	}
+}
+
+func waitSubActive(t *testing.T, sess *paho.Session, timeout time.Duration) {
+	t.Helper()
+	wait.Until(t, timeout, "subscription active", func() bool {
+		return sess.Health(context.Background()).ServiceLevel == ports.ServiceLevelFull
+	})
 }
 
 func waitForCondition(t *testing.T, timeout time.Duration, desc string, fn func() bool) {

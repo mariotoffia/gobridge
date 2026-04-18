@@ -56,7 +56,7 @@ func TestRouter_Wait_BlocksUntilHandlersComplete(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		id := string(rune('a' + i))
 		r.Register(id, func(_ *pahov5.Publish) {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond) // OTHER: simulated slow handler work
 			completed.Add(1)
 		})
 	}
@@ -127,6 +127,7 @@ func TestRouter_Close_WaitsForInflightHandlers(t *testing.T) {
 
 	var handlerDone atomic.Bool
 	s.router.Register("slow", func(_ *pahov5.Publish) {
+		// OTHER: simulated slow handler — tests that Close waits for in-flight work.
 		time.Sleep(200 * time.Millisecond)
 		handlerDone.Store(true)
 	})
@@ -177,7 +178,7 @@ func TestRouter_Close_RespectsCtxDeadline(t *testing.T) {
 	)
 
 	s.router.Register("blocker", func(_ *pahov5.Publish) {
-		time.Sleep(5 * time.Second)
+		time.Sleep(5 * time.Second) // OTHER: simulated blocking handler for Close deadline test
 	})
 
 	pb := newTestPacketPublish("test/topic", []byte("data"))
@@ -224,7 +225,7 @@ func TestRouter_HandlerPanic_DoesNotCrash(t *testing.T) {
 		panic("handler panic")
 	})
 	r.Register("normal", func(_ *pahov5.Publish) {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // OTHER: simulated slow handler work alongside panicking sibling
 		normalDone.Store(true)
 	})
 

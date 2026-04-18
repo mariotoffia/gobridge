@@ -13,6 +13,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -385,17 +386,14 @@ func TestConfigTxn_AutoTimeout(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&createBody))
 	txnID := createBody["txn_id"].(string)
 
-	// Wait for expiry (generous margin for CI).
-	time.Sleep(300 * time.Millisecond)
-
-	// Attempt patch — should fail with not found.
-	rec2 := httptest.NewRecorder()
-	req2 := adminRequest(http.MethodPatch, "/api/v1/admin/config/transactions/"+txnID)
-	req2.Body = bodyReader(`{"bridge": {"id": "test-bridge"}}`)
-	req2.SetPathValue("txnID", txnID)
-	s.handleConfigTxnPatch(rec2, req2)
-
-	assert.Equal(t, http.StatusNotFound, rec2.Code)
+	wait.Until(t, 2*time.Second, "transaction expired", func() bool {
+		r := httptest.NewRecorder()
+		rq := adminRequest(http.MethodPatch, "/api/v1/admin/config/transactions/"+txnID)
+		rq.Body = bodyReader(`{"bridge": {"id": "test-bridge"}}`)
+		rq.SetPathValue("txnID", txnID)
+		s.handleConfigTxnPatch(r, rq)
+		return r.Code == http.StatusNotFound
+	})
 }
 
 // --- sanitizeConfig ---

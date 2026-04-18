@@ -8,8 +8,10 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // verifies single-topic MQTT ingress delivers all published messages to one SQS queue using direct_hold.
@@ -23,7 +25,7 @@ func TestE2E_MQTTToSQS_SingleTopic(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubReady(t, bridgeSess)
 
 	mqttRx := paho.NewReceiver("m1-rx", bridgeSess)
 	sqsTx := newSQSSender(t, queueURL)
@@ -84,7 +86,7 @@ func TestE2E_MQTTToSQS_MultiTopicMerge(t *testing.T) {
 	if err := bridgeSess.Reconcile(context.Background(), domain.SessionPlan{Subscriptions: subs}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubReady(t, bridgeSess)
 
 	sqsTx := newSQSSender(t, queueURL)
 
@@ -150,7 +152,8 @@ func TestE2E_MQTTToSQS_HeaderBasedRouting(t *testing.T) {
 	}
 	ordersSess := reconcileTopic("m3-orders", ordersTopic)
 	alertsSess := reconcileTopic("m3-alerts", alertsTopic)
-	time.Sleep(200 * time.Millisecond)
+	waitSubReady(t, ordersSess)
+	waitSubReady(t, alertsSess)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("m3-bridge"),
@@ -240,7 +243,7 @@ func TestE2E_MQTTToSQS_RoundTripWithFailover(t *testing.T) {
 	}
 
 	sendToSQS(t, sqsClientA, queueA, `{"failover":"test"}`, nil)
-	time.Sleep(3 * time.Second)
+	time.Sleep(3 * time.Second) // SYNC: let message flow through pipeline before stopping Bridge A
 
 	cancelA()
 	_ = rtA.Stop(context.Background())
@@ -252,7 +255,7 @@ func TestE2E_MQTTToSQS_RoundTripWithFailover(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Reconcile B: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubReady(t, sessB)
 
 	mqttTxB := setupMQTTSender(t, sessB)
 	sessCfgB := e2eFastSessionConfig(sessionID)
@@ -302,7 +305,7 @@ func TestE2E_MQTTToSQS_BackpressureSQSSlow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubReady(t, bridgeSess)
 
 	mqttRx := paho.NewReceiver("m5-rx", bridgeSess)
 	sqsTx := newSQSSender(t, queueURL)
@@ -347,4 +350,11 @@ func TestE2E_MQTTToSQS_BackpressureSQSSlow(t *testing.T) {
 	if len(bodies) < msgCount {
 		t.Fatalf("expected %d SQS messages, got %d", msgCount, len(bodies))
 	}
+}
+
+func waitSubReady(t *testing.T, sess *paho.Session) {
+	t.Helper()
+	wait.Until(t, 5*time.Second, "subscription active", func() bool {
+		return sess.Health(context.Background()).ServiceLevel == ports.ServiceLevelFull
+	})
 }

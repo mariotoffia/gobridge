@@ -242,7 +242,7 @@ func pollSQSRaw(
 		})
 		if err != nil {
 			t.Logf("pollSQSRaw: %v", err)
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 			continue
 		}
 		for _, m := range out.Messages {

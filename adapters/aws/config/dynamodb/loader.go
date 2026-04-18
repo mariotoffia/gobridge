@@ -300,14 +300,14 @@ func (l *Loader) pollLoop(ctx context.Context, ch chan<- *config.BridgeConfig) {
 	lastSeen := l.lastVersion
 	l.mu.Unlock()
 
-	ticker := time.NewTicker(l.pollInterval)
+	ticker := l.clk.NewTicker(l.pollInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticker.C():
 			v, err := l.currentVersion(ctx)
 			if err != nil {
 				continue

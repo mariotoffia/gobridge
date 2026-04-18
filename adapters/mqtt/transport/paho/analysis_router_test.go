@@ -165,7 +165,7 @@ func TestAnaRouter_ConcurrentRegisterUnregister_NoRaceOrPanic(t *testing.T) {
 		}(p)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond) // OTHER: race window — let concurrent register/unregister/route goroutines exercise
 	close(stop)
 	wg.Wait()
 	r.Wait()

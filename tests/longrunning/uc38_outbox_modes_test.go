@@ -88,7 +88,7 @@ func TestUC38_OutboxDepthLimit(t *testing.T) {
 	t.Logf("UC38: pausing sender at collector=%d", collector.count())
 	paused.Pause()
 
-	time.Sleep(10 * time.Second)
+	time.Sleep(10 * time.Second) // OTHER: let outbox fill while sender is paused
 	t.Logf("UC38: after pause: collector=%d, dlq=%d", collector.count(), dlq.count())
 
 	t.Log("UC38: resuming sender")
@@ -97,7 +97,7 @@ func TestUC38_OutboxDepthLimit(t *testing.T) {
 	lrWaitFor(t, 90*time.Second, fmt.Sprintf("collector>=%d", msgCount), func() bool {
 		return collector.count() >= msgCount
 	})
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // SYNC: let remaining messages settle
 
 	gotMQTT := collector.count()
 	gotDLQ := dlq.count()
@@ -184,7 +184,7 @@ func TestUC39_AckAfterOutboxPersist(t *testing.T) {
 					},
 				})
 			if err != nil {
-				time.Sleep(500 * time.Millisecond)
+				time.Sleep(500 * time.Millisecond) // OTHER: backoff on SQS attribute query error
 				continue
 			}
 			if v := out.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessages)]; v == "0" {
@@ -192,7 +192,7 @@ func TestUC39_AckAfterOutboxPersist(t *testing.T) {
 					t.Logf("UC39: SQS-IN empty at collector=%d", collector.count())
 				}
 			}
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond) // SYNC: poll interval for SQS queue depth check
 		}
 	}()
 
@@ -282,7 +282,7 @@ func TestUC40_AdaptiveDrain_Backoff(t *testing.T) {
 
 	// Phase 2: idle -- count drain cycles via MetricOutboxDrainLatency.
 	rec.Reset()
-	time.Sleep(idleWait)
+	time.Sleep(idleWait) // SYNC: observe drain cycles during idle period
 	idleDrainCycles := len(rec.FindEntries(domain.MetricOutboxDrainLatency))
 	t.Logf("UC40: drain cycles during %v idle: %d", idleWait, idleDrainCycles)
 

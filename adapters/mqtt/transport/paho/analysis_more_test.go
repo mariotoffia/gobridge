@@ -297,7 +297,11 @@ func TestAnaMore_Receiver_BlockedEmit_BackpressureCancelOnRunCtxDone(t *testing.
 		})
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-r.Started():
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver did not start")
+	}
 	sess.Router().Route(newTestPacketPublish("t/x", []byte("p")))
 
 	select {
@@ -328,15 +332,24 @@ func TestAnaMore_Receiver_RunningGuard_DoesNotLeakAfterPanic(t *testing.T) {
 
 	// First Run: emit panics, but the router recovers it.
 	ctx1, cancel1 := context.WithCancel(context.Background())
+	res1 := make(chan error, 1)
 	go func() {
-		_ = r.Run(ctx1, func(_ context.Context, _ ports.Delivery) error { return nil })
+		res1 <- r.Run(ctx1, func(_ context.Context, _ ports.Delivery) error { return nil })
 	}()
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-r.Started():
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver did not start")
+	}
 
 	var panicked atomic.Bool
 	sess.router.Register("panicker", func(*pahov5.Publish) { panicked.Store(true); panic("emit boom") })
 	cancel1()
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-res1:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Run did not return after cancel")
+	}
 	_ = panicked.Load()
 
 	// Second Run on same Receiver must succeed (running flag cleared).
@@ -346,7 +359,14 @@ func TestAnaMore_Receiver_RunningGuard_DoesNotLeakAfterPanic(t *testing.T) {
 	go func() {
 		res <- r.Run(ctx2, func(_ context.Context, _ ports.Delivery) error { return nil })
 	}()
-	time.Sleep(50 * time.Millisecond)
+	pollDeadline := time.After(2 * time.Second)
+	for sess.Router().HandlerCount() == 0 {
+		select {
+		case <-pollDeadline:
+			t.Fatal("second Run did not register handler")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 	if sess.Router().HandlerCount() == 0 {
 		t.Fatal("second Run should have re-registered handler — running flag not cleared after first Run returned")
 	}

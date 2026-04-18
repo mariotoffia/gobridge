@@ -52,7 +52,9 @@ func TestMetrics_FullPipeline_DirectHold(t *testing.T) {
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, 2*time.Second, "delivery e2e metric recorded", func() bool {
+		return len(rec.FindEntries(domain.MetricDeliveryE2ELatency)) > 0
+	})
 	cancel()
 	_ = rt.Stop(context.Background())
 

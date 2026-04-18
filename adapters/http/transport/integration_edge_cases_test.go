@@ -16,6 +16,7 @@ import (
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ---------------------------------------------------------------------------
@@ -304,7 +305,9 @@ func TestEdge_SSEFieldSanitization(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("SSE connect: expected 200, got %d", resp.StatusCode)
 	}
-	time.Sleep(50 * time.Millisecond)
+	wait.Until(t, 2*time.Second, "SSE client registered", func() bool {
+		return sender.(*transport.SSESender).ClientCount() >= 1
+	})
 
 	env := &domain.Envelope{
 		ID:      "evil\ninjection",

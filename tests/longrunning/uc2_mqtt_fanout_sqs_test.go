@@ -60,7 +60,7 @@ func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {
 			{Topic: "uc2/devices/+/telemetry", QoS: 1},
 		},
 	}), "Reconcile rx session")
-	time.Sleep(300 * time.Millisecond)
+	waitSubReady(t, rxSess, 5*time.Second)
 
 	mqttRx := paho.NewReceiver("uc2-rx", rxSess)
 
@@ -181,19 +181,24 @@ func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {
 	require.Len(t, bodiesC, uc2MsgsPerFactory,
 		"factory-c queue should have %d messages", uc2MsgsPerFactory)
 
-	// --- Verify payload integrity: each body contains its factory ---
-	for _, b := range bodiesA {
-		assert.Contains(t, b, `"factory":"A"`,
-			"factory-a message should contain factory A")
+	// --- Verify payload integrity: each body matches its factory and carries the expected seq ---
+	verifyFactoryBodies := func(name, factory string, bodies []string) {
+		seqSeen := make(map[string]bool, len(bodies))
+		for _, b := range bodies {
+			assert.Contains(t, b, fmt.Sprintf(`"factory":"%s"`, factory),
+				"%s message should contain factory %s", name, factory)
+			seqSeen[b] = true
+		}
+		for i := 0; i < uc2MsgsPerFactory; i++ {
+			want := fmt.Sprintf(`{"factory":"%s","seq":%d}`, factory, i)
+			if !seqSeen[want] {
+				t.Errorf("%s: missing payload %s", name, want)
+			}
+		}
 	}
-	for _, b := range bodiesB {
-		assert.Contains(t, b, `"factory":"B"`,
-			"factory-b message should contain factory B")
-	}
-	for _, b := range bodiesC {
-		assert.Contains(t, b, `"factory":"C"`,
-			"factory-c message should contain factory C")
-	}
+	verifyFactoryBodies("factory-a", "A", bodiesA)
+	verifyFactoryBodies("factory-b", "B", bodiesB)
+	verifyFactoryBodies("factory-c", "C", bodiesC)
 
 	// --- DLQ should be empty ---
 	assert.Equal(t, 0, dlq.count(), "DLQ should be empty")

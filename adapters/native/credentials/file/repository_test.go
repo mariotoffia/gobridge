@@ -585,6 +585,7 @@ func TestCreatedAt_PreservedAcrossUpdates(t *testing.T) {
 
 	original := readStored()
 
+	// OTHER: ensure wall-clock advances so UpdatedAt > CreatedAt.
 	time.Sleep(10 * time.Millisecond)
 
 	require.NoError(t, repo.Update(ctx, uri, passwordCreds("u2", "p2"), 0))

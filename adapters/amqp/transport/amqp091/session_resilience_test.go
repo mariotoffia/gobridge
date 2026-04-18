@@ -18,6 +18,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 func newResilienceSession(dial dialFunc) *Session {
@@ -144,6 +145,7 @@ func TestSession_DialTimeout_LeakCleanup(t *testing.T) {
 	}
 
 	s := newResilienceSession(func(url string) (amqpConnection, error) {
+		// OTHER: simulates slow dial to test timeout + leaked connection cleanup
 		time.Sleep(200 * time.Millisecond)
 		return mc, nil
 	})
@@ -154,14 +156,11 @@ func TestSession_DialTimeout_LeakCleanup(t *testing.T) {
 		t.Fatal("expected timeout error")
 	}
 
-	time.Sleep(400 * time.Millisecond)
-
-	mu.Lock()
-	closed := mc.closed
-	mu.Unlock()
-	if !closed {
-		t.Fatal("leaked connection should have been closed")
-	}
+	wait.Until(t, 2*time.Second, "leaked connection closed", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return mc.closed
+	})
 }
 
 // TestSession_Health_Disconnected validates Health returns

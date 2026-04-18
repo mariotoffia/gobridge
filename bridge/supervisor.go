@@ -47,17 +47,18 @@ type SwapEvent struct {
 // supports pluggable ReconfigStrategy for debouncing and automatic
 // SwapMode detection based on transport capabilities.
 type Supervisor struct {
-	mu         sync.RWMutex
-	rt         *runtime.Runtime
-	cfg        *config.BridgeConfig
-	transports map[string]TransportFactory
-	stores     map[string]StoreFactory
-	processors map[string]ports.Processor
-	credStore  ports.CredentialStore
-	logger     *slog.Logger
-	swapMode   SwapMode
-	strategy   ReconfigStrategy
-	onSwap     func(SwapEvent)
+	mu                  sync.RWMutex
+	rt                  *runtime.Runtime
+	cfg                 *config.BridgeConfig
+	transports          map[string]TransportFactory
+	stores              map[string]StoreFactory
+	processors          map[string]ports.Processor
+	credStore           ports.CredentialStore
+	logger              *slog.Logger
+	swapMode            SwapMode
+	strategy            ReconfigStrategy
+	onSwap              func(SwapEvent)
+	defaultDrainTimeout time.Duration
 }
 
 // SupervisorOption configures a Supervisor.
@@ -89,6 +90,12 @@ func WithSupervisorCredentialStore(cs ports.CredentialStore) SupervisorOption {
 // WithOnSwap registers a callback invoked after each swap attempt.
 func WithOnSwap(fn func(SwapEvent)) SupervisorOption {
 	return func(s *Supervisor) { s.onSwap = fn }
+}
+
+// WithDefaultDrainTimeout sets the fallback drain timeout used when the
+// BridgeConfig does not specify one. Defaults to 30s.
+func WithDefaultDrainTimeout(d time.Duration) SupervisorOption {
+	return func(s *Supervisor) { s.defaultDrainTimeout = d }
 }
 
 // NewSupervisor creates a Supervisor with SwapAuto mode and
@@ -260,7 +267,7 @@ func (s *Supervisor) applyOverlap(
 	}
 
 	if oldRt != nil {
-		drainTimeout := drainTimeoutFrom(oldCfg)
+		drainTimeout := s.drainTimeoutFrom(oldCfg)
 		stopCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 		if stopErr := oldRt.Stop(stopCtx); stopErr != nil && s.logger != nil {
 			s.logger.Warn("supervisor: old runtime stop error", "error", stopErr)
@@ -307,7 +314,7 @@ func (s *Supervisor) applyPrepareCommit(
 	}
 
 	if oldRt != nil {
-		drainTimeout := drainTimeoutFrom(oldCfg)
+		drainTimeout := s.drainTimeoutFrom(oldCfg)
 		stopCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 		if stopErr := oldRt.Stop(stopCtx); stopErr != nil && s.logger != nil {
 			s.logger.Warn("supervisor: old runtime stop error", "error", stopErr)
@@ -439,15 +446,18 @@ func (s *Supervisor) stopCurrent(_ context.Context) error {
 		return nil
 	}
 
-	drainTimeout := drainTimeoutFrom(cfg)
+	drainTimeout := s.drainTimeoutFrom(cfg)
 	stopCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 	defer cancel()
 	return rt.Stop(stopCtx)
 }
 
-func drainTimeoutFrom(cfg *config.BridgeConfig) time.Duration {
-	if cfg == nil {
-		return 30 * time.Second
+func (s *Supervisor) drainTimeoutFrom(cfg *config.BridgeConfig) time.Duration {
+	if cfg != nil {
+		return cfg.Bridge.DrainTimeoutDuration()
 	}
-	return cfg.Bridge.DrainTimeoutDuration()
+	if s.defaultDrainTimeout > 0 {
+		return s.defaultDrainTimeout
+	}
+	return 30 * time.Second
 }

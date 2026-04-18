@@ -151,7 +151,11 @@ func (s *Sender) handleSendFailure(ctx context.Context, failed amqpSenderLink, f
 	s.mu.Unlock()
 
 	if weDetach {
-		closeLinkAsync(failed)
+		timeout := 5 * time.Second
+		if s.session != nil {
+			timeout = s.session.opts.LinkCloseTimeout
+		}
+		closeLinkAsync(failed, timeout)
 		s.notifySessionIfConnectionLost(failedConn, err)
 	}
 	if logging.DebugEnabled(s.logger) {
@@ -263,13 +267,12 @@ func (s *Sender) buildMessage(env *domain.Envelope) *amqp.Message {
 
 // closeLinkAsync closes a detached AMQP sender link off the hot path so
 // that a slow broker shutdown does not block other senders or callers.
-// The 5-second close timeout matches the previous synchronous behaviour.
-func closeLinkAsync(link amqpSenderLink) {
+func closeLinkAsync(link amqpSenderLink, timeout time.Duration) {
 	if link == nil {
 		return
 	}
 	go func() {
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), timeout)
 		defer closeCancel()
 		_ = link.Close(closeCtx)
 	}()

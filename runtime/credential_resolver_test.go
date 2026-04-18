@@ -170,7 +170,7 @@ func TestCredentialResolver_CacheExpiry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), repo.callCount.Load())
 
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond) // FIXED: wait for cache TTL (10ms) to expire
 
 	_, err = r.Resolve(context.Background(), "file://data")
 	require.NoError(t, err)
@@ -276,7 +276,7 @@ func TestCredentialResolver_CacheEvictsExpired(t *testing.T) {
 	}
 	assert.Equal(t, maxCredentialCacheEntries, r.CacheStats().Size)
 
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond) // FIXED: wait for cache TTL (1ms) to expire
 
 	_, err := r.Resolve(context.Background(), "file://fresh-after-expiry")
 	require.NoError(t, err)
@@ -426,7 +426,7 @@ func TestCredentialResolver_CacheStats_AccurateExpiredCount(t *testing.T) {
 	assert.Equal(t, 3, stats.Active)
 	assert.Equal(t, 0, stats.Expired)
 
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond) // FIXED: wait for cache TTL (10ms) to expire
 
 	stats = r.CacheStats()
 	assert.Equal(t, 3, stats.Size, "expired entries remain in cache until evicted")

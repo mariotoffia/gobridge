@@ -10,8 +10,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -26,6 +27,7 @@ type ForwarderConfig struct {
 	RetryMaxDelay       time.Duration
 	MaxIdleConnsPerHost int
 	MaxConnsPerHost     int
+	Clock               clock.Clock
 }
 
 // DefaultForwarderConfig returns production-safe defaults.
@@ -86,6 +88,9 @@ func NewHTTPForwarderWithConfig(pathPrefix string, cfg ForwarderConfig, clusterK
 	}
 	if cfg.MaxConnsPerHost <= 0 {
 		cfg.MaxConnsPerHost = defaults.MaxConnsPerHost
+	}
+	if cfg.Clock == nil {
+		cfg.Clock = clock.System
 	}
 	f := &HTTPForwarder{
 		cfg: cfg,
@@ -172,7 +177,7 @@ func (f *HTTPForwarder) Forward(
 			select {
 			case <-ctx.Done():
 				return domain.ErrForwardFailed.Wrap(ctx.Err())
-			case <-time.After(delay):
+			case <-f.cfg.Clock.After(delay):
 			}
 			req = req.Clone(ctx)
 			req.Body = io.NopCloser(bytes.NewReader(body))

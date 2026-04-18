@@ -18,6 +18,7 @@ import (
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ---------------------------------------------------------------------------
@@ -489,8 +490,9 @@ func TestSSESender_BroadcastToClients(t *testing.T) {
 		t.Fatalf("expected 200 from SSE endpoint, got %d", resp.StatusCode)
 	}
 
-	// Give the SSE handler time to register the client.
-	time.Sleep(50 * time.Millisecond)
+	wait.Until(t, 2*time.Second, "SSE client registered", func() bool {
+		return sender.(*transport.SSESender).ClientCount() >= 1
+	})
 
 	env := &domain.Envelope{
 		ID:      "evt-1",

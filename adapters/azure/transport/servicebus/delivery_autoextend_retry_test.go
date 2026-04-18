@@ -10,6 +10,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 )
 
 // TestAutoExtendRetriesTransientThenSucceeds verifies the auto-extend loop
@@ -30,10 +31,20 @@ func TestAutoExtendRetriesTransientThenSucceeds(t *testing.T) {
 
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil)
+	fake := clocktest.New()
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, fake)
 	defer d.stop()
 
-	time.Sleep(4500 * time.Millisecond)
+	// OTHER: real-time sync for clocktest.Fake goroutine startup
+	deadline := time.Now().Add(2 * time.Second)
+	for fake.TickerCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(1 * time.Millisecond)
+	}
+
+	fake.Advance(1100 * time.Millisecond)  // first tick fires (fails)
+	time.Sleep(20 * time.Millisecond)       // OTHER: let goroutine process tick
+	fake.Advance(1 * time.Second)           // second tick fires (succeeds)
+	time.Sleep(20 * time.Millisecond)       // OTHER: let goroutine process tick
 
 	if n := renews.Load(); n < 2 {
 		t.Fatalf("expected at least 2 renew attempts (fail then succeed), got %d", n)
@@ -53,10 +64,20 @@ func TestAutoExtendStopsAfterMaxConsecutiveFailures(t *testing.T) {
 
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil)
+	fake := clocktest.New()
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, fake)
 	defer d.stop()
 
-	time.Sleep(4 * time.Second)
+	// OTHER: real-time sync for clocktest.Fake goroutine startup
+	deadline := time.Now().Add(2 * time.Second)
+	for fake.TickerCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(1 * time.Millisecond)
+	}
+
+	for i := 0; i < autoExtendMaxFailures; i++ {
+		fake.Advance(1100 * time.Millisecond) // tick fires (always fails)
+		time.Sleep(20 * time.Millisecond)      // OTHER: let goroutine process tick
+	}
 
 	mock.mu.Lock()
 	n := len(mock.RenewCalls)
@@ -86,10 +107,23 @@ func TestAutoExtendInterleavedFailSuccessASB(t *testing.T) {
 
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil)
+	fake := clocktest.New()
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, fake)
 	defer d.stop()
 
-	time.Sleep(5 * time.Second)
+	// OTHER: real-time sync for clocktest.Fake goroutine startup
+	deadline := time.Now().Add(2 * time.Second)
+	for fake.TickerCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(1 * time.Millisecond)
+	}
+
+	// Advance through enough ticks to exceed autoExtendMaxFailures total calls.
+	// Pattern: odd=fail, even=succeed, so consecutive failures never reach the max.
+	ticks := autoExtendMaxFailures + 2
+	for i := 0; i < ticks; i++ {
+		fake.Advance(1100 * time.Millisecond) // tick fires
+		time.Sleep(20 * time.Millisecond)      // OTHER: let goroutine process tick
+	}
 
 	total := callCount.Load()
 	if total <= int32(autoExtendMaxFailures) {

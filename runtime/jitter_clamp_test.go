@@ -119,7 +119,7 @@ func TestGlobalMaxInFlight_LimitsAcrossRoutes(t *testing.T) {
 
 	sender := NewFakeSender()
 	sender.SendFn = func(_ *domain.Envelope) error {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond) // OTHER: simulated processing duration
 		return nil
 	}
 

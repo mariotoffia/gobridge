@@ -130,8 +130,7 @@ func TestCacheEviction_RemovesOldestEntries(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// Small delay to ensure the "old" entries have strictly earlier expiry.
-	time.Sleep(2 * time.Millisecond)
+	time.Sleep(2 * time.Millisecond) // FIXED: ensure deterministic ordering of expiry times
 
 	for i := tenPercent; i < maxCredentialCacheEntries; i++ {
 		uri := fmt.Sprintf("file://new-%d", i)
@@ -272,8 +271,7 @@ func TestCacheEviction_ExpiredEvictedBeforeBatch(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// Wait for those entries to expire.
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond) // FIXED: wait for cache TTL (5ms) to expire
 
 	// Now switch to a long TTL for remaining entries.
 	r.mu.Lock()
@@ -336,7 +334,7 @@ func TestCacheEviction_MixedExpiredAndOldest(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond) // FIXED: wait for cache TTL (5ms) to expire
 
 	// Switch to long TTL and fill the rest.
 	r.mu.Lock()

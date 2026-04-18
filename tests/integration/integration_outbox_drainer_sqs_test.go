@@ -110,6 +110,17 @@ func TestIntegration_OutboxDrainer_RealSQSSender_FullCycle(t *testing.T) {
 		t.Fatalf("expected %d messages in SQS, got %d", recordCount, len(bodies))
 	}
 
+	rxBodies := make(map[string]bool, len(bodies))
+	for _, b := range bodies {
+		rxBodies[b] = true
+	}
+	for i := 0; i < recordCount; i++ {
+		want := fmt.Sprintf(`{"index":%d}`, i)
+		if !rxBodies[want] {
+			t.Errorf("missing body %s in SQS messages", want)
+		}
+	}
+
 	pending, err := store.QueryPending(ctx, pk, 100)
 	if err != nil {
 		t.Fatalf("query pending: %v", err)

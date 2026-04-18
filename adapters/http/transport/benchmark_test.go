@@ -35,7 +35,7 @@ func BenchmarkReceiver_PostAck(b *testing.B) {
 			return d.Ack(context.Background())
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	<-recv.(ports.ReceiverStartedSignaler).Started()
 
 	handler := factory.Handler()
 	body, _ := json.Marshal(map[string]any{
@@ -97,7 +97,11 @@ func BenchmarkSSE_Broadcast(b *testing.B) {
 					_ = c.Body.Close()
 				}
 			}()
-			time.Sleep(50 * time.Millisecond)
+			sseSender := sender.(*transport.SSESender)
+			deadline := time.Now().Add(2 * time.Second)
+			for sseSender.ClientCount() < numClients && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond) // OTHER: polling for SSE client registration in benchmark
+			}
 
 			env := &domain.Envelope{
 				ID:      "bench-evt",
@@ -170,7 +174,7 @@ func BenchmarkReceiver_PostAck_Parallel(b *testing.B) {
 			return d.Ack(context.Background())
 		})
 	}()
-	time.Sleep(20 * time.Millisecond)
+	<-recv.(ports.ReceiverStartedSignaler).Started()
 
 	handler := factory.Handler()
 	body, _ := json.Marshal(map[string]any{

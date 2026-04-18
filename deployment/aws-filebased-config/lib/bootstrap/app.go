@@ -30,6 +30,11 @@ func WithCredentialStore(store ports.CredentialStore) Option {
 	return func(a *App) { a.credentialStore = store }
 }
 
+// WithShutdownTimeout sets the graceful shutdown deadline. Defaults to 30s.
+func WithShutdownTimeout(d time.Duration) Option {
+	return func(a *App) { a.shutdownTimeout = d }
+}
+
 type App struct {
 	cfg deployinfra.BootstrapConfig
 
@@ -50,6 +55,8 @@ type App struct {
 	watchCancel context.CancelFunc
 	watchWg     sync.WaitGroup
 
+	shutdownTimeout time.Duration
+
 	// mu protects started, watchCancel, and serializes config reloads.
 	mu      sync.Mutex
 	started bool
@@ -64,6 +71,9 @@ func NewApp(cfg deployinfra.BootstrapConfig, opts ...Option) *App {
 	}
 	for _, opt := range opts {
 		opt(app)
+	}
+	if app.shutdownTimeout <= 0 {
+		app.shutdownTimeout = 30 * time.Second
 	}
 	return app
 }
@@ -208,7 +218,7 @@ func (a *App) Run(ctx context.Context) error {
 		return err
 	}
 	<-ctx.Done()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), a.shutdownTimeout)
 	defer cancel()
 	return a.Stop(shutdownCtx)
 }

@@ -203,7 +203,7 @@ func TestOutboxDrainer_FinalDrainCompletesPendingRecords(t *testing.T) {
 		case <-deadline:
 			t.Fatal("timeout waiting for send")
 		default:
-			time.Sleep(20 * time.Millisecond)
+			time.Sleep(20 * time.Millisecond) // SYNC: poll interval in inline wait loop
 		}
 	}
 

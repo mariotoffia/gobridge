@@ -52,7 +52,7 @@ func TestStateTransitions_ClosedToOpenToHalfOpenToClosed(t *testing.T) {
 		t.Fatalf("circuit should be open: expected ErrUnavailable, got %v", err)
 	}
 
-	time.Sleep(60 * time.Millisecond)
+	time.Sleep(60 * time.Millisecond) // OTHER: circuit breaker reset timeout transition
 
 	if err := p.Process(ctx, env, nextOK); err != nil {
 		t.Fatalf("half-open should allow request, got %v", err)
@@ -84,7 +84,7 @@ func TestHalfOpen_FailureReopens(t *testing.T) {
 		t.Fatalf("expected open circuit, got %v", err)
 	}
 
-	time.Sleep(60 * time.Millisecond)
+	time.Sleep(60 * time.Millisecond) // OTHER: circuit breaker reset timeout transition
 
 	if err := p.Process(ctx, env, fail); err == nil {
 		t.Fatal("half-open failure: expected error from next, got nil")
@@ -336,7 +336,7 @@ func TestOnStateChangeCallback(t *testing.T) {
 	}
 	mu.Unlock()
 
-	time.Sleep(60 * time.Millisecond)
+	time.Sleep(60 * time.Millisecond) // OTHER: circuit breaker reset timeout transition
 
 	// Triggers half-open transition inside beforeRequest.
 	p.Process(ctx, env, nextOK)

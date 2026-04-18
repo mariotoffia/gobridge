@@ -146,6 +146,44 @@ func TestIntegration_SendBatch(t *testing.T) {
 	if sent != 3 {
 		t.Fatalf("sent = %d, want 3", sent)
 	}
+
+	recv, err := NewReceiver(ReceiverConfig{
+		Address:    addr,
+		LinkCredit: 10,
+		Session:    sess,
+	}, sess)
+	if err != nil {
+		t.Fatalf("NewReceiver() error = %v", err)
+	}
+
+	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer recvCancel()
+
+	var received []*domain.Envelope
+	_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
+		received = append(received, del.Envelope())
+		if err := del.Ack(recvCtx); err != nil {
+			t.Errorf("Ack: %v", err)
+		}
+		if len(received) >= 3 {
+			recvCancel()
+		}
+		return nil
+	})
+
+	if len(received) != 3 {
+		t.Fatalf("received %d messages, want 3", len(received))
+	}
+
+	rxBodies := make(map[string]bool, 3)
+	for _, env := range received {
+		rxBodies[string(env.Payload)] = true
+	}
+	for _, want := range []string{"one", "two", "three"} {
+		if !rxBodies[want] {
+			t.Errorf("missing payload %q in received messages", want)
+		}
+	}
 }
 
 func TestIntegration_SessionHealth(t *testing.T) {

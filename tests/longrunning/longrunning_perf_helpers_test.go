@@ -148,7 +148,7 @@ func (h *heapSampler) finalHeap() uint64 {
 func stableHeapAlloc() uint64 {
 	for range 3 {
 		runtime.GC()
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // OTHER: let finalizers run between GC cycles
 	}
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)

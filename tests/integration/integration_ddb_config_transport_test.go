@@ -157,7 +157,7 @@ func TestDDBTransport_SQS_ConfigChangeSwapsQueue(t *testing.T) {
 				t.Fatalf("supervisor failed early: %v", err)
 			default:
 			}
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond) // SYNC: poll for supervisor runtime readiness
 		}
 		if s.Runtime() == nil {
 			t.Fatal("timed out waiting for supervisor runtime")
@@ -325,7 +325,7 @@ func TestDDBTransport_SQS_NewRouteAdded(t *testing.T) {
 		t.Fatal("timed out waiting for swap")
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond) // STARTUP: let new routes initialize after config swap
 
 	// Both routes should work.
 	sendToSQS(t, sqsClient, queueA, `{"test":"r1"}`, nil)
@@ -481,7 +481,7 @@ func TestDDBTransport_ConfigRemovesRoute(t *testing.T) {
 		t.Fatal("timed out waiting for swap")
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond) // STARTUP: let routes settle after config swap
 
 	// r1 should still work.
 	sendToSQS(t, sqsClient, queueA, `{"test":"r1-after"}`, nil)

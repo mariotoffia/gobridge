@@ -289,11 +289,11 @@ func TestManager_Watch_SlowConsumer_GetsLatestConfig(t *testing.T) {
 	cfg3 := minimalValidConfig("v3")
 
 	watchCh <- cfg1
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // SYNC: let watcher goroutine process cfg1 before pushing cfg2
 	watchCh <- cfg2
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // SYNC: let watcher goroutine process cfg2 before pushing cfg3
 	watchCh <- cfg3
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // SYNC: let watcher goroutine process cfg3 before reading output
 
 	// Now read: should get the latest config (v3), not v1.
 	select {

@@ -18,6 +18,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ---------------------------------------------------------------------------
@@ -219,7 +220,9 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("expected 200 after redirect, got %d", resp.StatusCode)
 		}
-		time.Sleep(50 * time.Millisecond)
+		wait.Until(t, 2*time.Second, "SSE client registered on B", func() bool {
+			return senderB.(*transport.SSESender).ClientCount() >= 1
+		})
 
 		env := &domain.Envelope{
 			ID: "sse-evt-1", Subject: "user.created",

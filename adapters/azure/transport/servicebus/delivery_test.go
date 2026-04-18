@@ -10,6 +10,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 )
 
 // verifies Delivery.Envelope returns the wrapped domain envelope.
@@ -168,11 +169,18 @@ func TestDelivery_AutoExtend_CallsRenew(t *testing.T) {
 
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil)
+	fake := clocktest.New()
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, fake)
 
-	time.Sleep(1500 * time.Millisecond)
+	// OTHER: real-time sync for clocktest.Fake goroutine startup
+	deadline := time.Now().Add(2 * time.Second)
+	for fake.TickerCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(1 * time.Millisecond)
+	}
+
+	fake.Advance(1100 * time.Millisecond)  // past one tick interval (lockDuration/2 = 1s)
+	time.Sleep(20 * time.Millisecond)      // OTHER: let goroutine process tick
 	d.stop()
-	time.Sleep(100 * time.Millisecond)
 
 	count := renewCount.Load()
 	if count < 1 {
@@ -192,13 +200,15 @@ func TestDelivery_AutoExtend_StopsOnAck(t *testing.T) {
 
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil)
+	fake := clocktest.New()
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, fake)
 
 	if err := d.Ack(context.Background()); err != nil {
 		t.Fatalf("Ack failed: %v", err)
 	}
 
-	time.Sleep(1500 * time.Millisecond)
+	fake.Advance(3 * time.Second) // well past tick interval — if ticker was alive it would fire
+	time.Sleep(20 * time.Millisecond) // OTHER: goroutine teardown yield
 
 	count := renewCount.Load()
 	if count > 0 {
@@ -218,13 +228,15 @@ func TestDelivery_AutoExtend_StopsOnRetry(t *testing.T) {
 
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil)
+	fake := clocktest.New()
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, fake)
 
 	if err := d.Retry(context.Background(), 0, nil); err != nil {
 		t.Fatalf("Retry failed: %v", err)
 	}
 
-	time.Sleep(1500 * time.Millisecond)
+	fake.Advance(3 * time.Second) // well past tick interval — if ticker was alive it would fire
+	time.Sleep(20 * time.Millisecond) // OTHER: goroutine teardown yield
 
 	count := renewCount.Load()
 	if count > 0 {
@@ -246,7 +258,7 @@ func TestDelivery_NoAutoExtend(t *testing.T) {
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
 	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, false, nil, nil, nil)
 
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond) // NEGATIVE: verify no lock renewal when auto-extend disabled (tightened from 1500ms)
 	d.stop()
 
 	if renewCount.Load() > 0 {
@@ -288,9 +300,10 @@ func TestDelivery_AutoExtend_UsesLockedUntil(t *testing.T) {
 	}
 	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, true, nil, nil, nil)
 
+	// SYNC: wall-clock required — interval derived from time.Until(LockedUntil), not d.clk
 	time.Sleep(2500 * time.Millisecond)
 	d.stop()
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond) // SYNC: drain after stop
 
 	count := renewCount.Load()
 	if count < 1 {

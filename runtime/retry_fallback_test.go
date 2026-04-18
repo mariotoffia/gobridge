@@ -180,7 +180,7 @@ func TestDirectHold_RetryUnsupported_DLQAlsoFails_ReturnsError(t *testing.T) {
 	_ = receiver.Emit(ctx, del)
 
 	waitFor(t, 2*time.Second, "delivery retried", del.IsRetried)
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // NEGATIVE: verify delivery is not acked when both retry and DLQ fail
 
 	if del.IsAcked() {
 		t.Fatal("delivery should NOT be acked when both retry and DLQ fail")
@@ -405,7 +405,7 @@ func TestDirectHold_RetrySupported_NoFallback(t *testing.T) {
 	_ = receiver.Emit(ctx, del)
 
 	waitFor(t, 2*time.Second, "delivery retried", del.IsRetried)
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // NEGATIVE: verify delivery is not acked when retry succeeds (redelivery expected)
 
 	if del.IsAcked() {
 		t.Fatal("delivery should NOT be acked when retry succeeds (redelivery expected)")

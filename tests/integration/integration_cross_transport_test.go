@@ -44,7 +44,7 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("reconcile receiver subscription: %v", err)
 	}
-	time.Sleep(250 * time.Millisecond)
+	waitSubReady(t, recvSess)
 
 	mqttRecv := paho.NewReceiver("mqtt-recv-sse", recvSess)
 
@@ -83,7 +83,7 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 	if sseResp.StatusCode != http.StatusOK {
 		t.Fatalf("SSE status: got %d, want 200", sseResp.StatusCode)
 	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond) // STARTUP: let SSE client connection establish
 
 	// --- Publish an MQTT message ---
 	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("cross-sse-pub"), domain.SessionEphemeral)
@@ -186,7 +186,6 @@ func TestIntegration_HTTP_To_MQTT_CrossTransport(t *testing.T) {
 
 	// --- Subscribe a separate MQTT client to the output topic ---
 	collector := newMQTTCollector(t, mqttTopic, "cross-http-coll")
-	time.Sleep(250 * time.Millisecond)
 
 	// --- POST to HTTP receiver ---
 	body, _ := json.Marshal(map[string]any{
@@ -221,8 +220,8 @@ func TestIntegration_HTTP_To_MQTT_CrossTransport(t *testing.T) {
 	if env.Subject != mqttTopic {
 		t.Errorf("MQTT topic: got %q, want %q", env.Subject, mqttTopic)
 	}
-	if !strings.Contains(string(env.Payload), `"user":"bob"`) {
-		t.Errorf("payload mismatch: %s", env.Payload)
+	if string(env.Payload) != `{"user":"bob"}` {
+		t.Errorf("payload = %q, want exact %q", string(env.Payload), `{"user":"bob"}`)
 	}
 }
 

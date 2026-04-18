@@ -56,7 +56,7 @@ func TestUC4_Bidirectional_SQS_MQTT(t *testing.T) {
 		},
 	})
 	require.NoError(t, err, "Bridge-B Reconcile")
-	time.Sleep(300 * time.Millisecond)
+	waitSubReady(t, sessB, 5*time.Second)
 
 	mqttReceiverB := paho.NewReceiver("uc4-rx-b", sessB)
 	sqsSenderSouth := newSQSSender(t, southQueueURL)
@@ -64,7 +64,6 @@ func TestUC4_Bidirectional_SQS_MQTT(t *testing.T) {
 
 	// -- MQTT collector on uc4/south/data (direction A sink) ----------------
 	collectorSouth := newMQTTCollector(t, "uc4/south/data", "uc4-col-south")
-	time.Sleep(300 * time.Millisecond)
 
 	// -- DLQ stores --------------------------------------------------------
 	dlqA := &lrDLQStore{}

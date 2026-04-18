@@ -16,6 +16,7 @@ import (
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ---------------------------------------------------------------------------
@@ -143,7 +144,7 @@ func TestEdgeR2_SSEAuthRequired(t *testing.T) {
 
 func TestEdgeR2_SSEMaxClients(t *testing.T) {
 	factory := transport.NewBridgeFactory()
-	_, err := factory.NewSender(context.Background(), config.SenderDef{
+	sender, err := factory.NewSender(context.Background(), config.SenderDef{
 		ID:      "sse-maxcli-r2",
 		Options: map[string]any{"mode": "sse", "max_clients": 2},
 	}, nil)
@@ -174,7 +175,9 @@ func TestEdgeR2_SSEMaxClients(t *testing.T) {
 		t.Fatalf("client 2: expected 200, got %d", resp2.StatusCode)
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	wait.Until(t, 2*time.Second, "2 SSE clients registered", func() bool {
+		return sender.(*transport.SSESender).ClientCount() >= 2
+	})
 
 	resp3, err := http.Get(sseURL)
 	if err != nil {

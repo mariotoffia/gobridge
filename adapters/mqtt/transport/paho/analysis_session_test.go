@@ -89,7 +89,7 @@ func TestAnaSession_StartCtxCancelled_ReturnsClassifiedError(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // OTHER: race window — cancel during Start connect attempt
 		cancel()
 	}()
 
@@ -281,7 +281,7 @@ func TestAnaSession_PushEvent_ManyConcurrent_NoPanic(t *testing.T) {
 			}()
 		}
 		go func() {
-			time.Sleep(time.Duration(trial+1) * 100 * time.Microsecond)
+			time.Sleep(time.Duration(trial+1) * 100 * time.Microsecond) // OTHER: race window — Close during concurrent pushEvent
 			_ = s.Close(context.Background())
 		}()
 
@@ -330,7 +330,7 @@ func TestAnaSession_HealthDuringConcurrentPushEvent_NoRace(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(80 * time.Millisecond) // OTHER: race window — let concurrent goroutines exercise before stopping
 	close(stop)
 	wg.Wait()
 	_ = s.Close(context.Background())
@@ -377,7 +377,7 @@ func TestAnaSession_ConcurrentReconcileAndHealth_NoRace(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(80 * time.Millisecond) // OTHER: race window — let concurrent goroutines exercise before stopping
 	close(stop)
 	wg.Wait()
 	_ = s.Close(context.Background())
@@ -458,7 +458,7 @@ func TestAnaSession_ConnectionManagerAccessor_LockSafe(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond) // OTHER: race window — let ConnectionManager accessor goroutine exercise before Close
 	_ = s.Close(context.Background())
 	close(stop)
 	wg.Wait()

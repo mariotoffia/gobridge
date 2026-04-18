@@ -345,7 +345,8 @@ func TestIntegration_Edge_PrefetchHonored(t *testing.T) {
 			}
 			mu.Unlock()
 
-			// Small pause to allow any queued deliveries to arrive if prefetch is wrong
+			// OTHER: intentional delay — gives broker time to deliver additional
+			// messages so we can detect prefetch violations (max inflight > 1).
 			time.Sleep(100 * time.Millisecond)
 
 			mu.Lock()

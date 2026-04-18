@@ -116,8 +116,7 @@ func TestGAP_ShutdownWithOutboxInFlight(t *testing.T) {
 	err := rt.Stop(stopCtx)
 	assert.NoError(t, err, "Stop() should complete without error")
 
-	// Allow brief time for any final delivery to reach collector via MQTT.
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // SYNC: let final deliveries reach collector via MQTT
 
 	delivered := collector.count()
 	t.Logf("GAP-SD1: delivered=%d/%d (preStop=%d, delta=%d), dlq=%d",

@@ -271,8 +271,7 @@ func TestCrossInstance_ConnectAfterLease(t *testing.T) {
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	// Session should NOT be started yet because lease is held by another.
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond) // NEGATIVE: verify session not started before lease acquisition
 	if session.IsStarted() {
 		t.Fatal("session should not start before lease acquisition")
 	}

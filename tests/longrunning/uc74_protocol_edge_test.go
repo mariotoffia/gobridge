@@ -39,7 +39,7 @@ func TestUC74_MQTTRetainedMessages(t *testing.T) {
 		Payload: []byte(`{"retained":true}`),
 	}
 	require.NoError(t, retainedSnd.Send(ctx, env))
-	time.Sleep(1 * time.Second)
+	time.Sleep(1 * time.Second) // SYNC: let retained message propagate to broker
 
 	// Collector subscribes — should immediately receive the retained message.
 	collector := newMQTTCollector(t, "uc74/retained", "uc74-col")

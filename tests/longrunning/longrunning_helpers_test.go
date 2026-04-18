@@ -305,7 +305,7 @@ func dockerKill(t *testing.T, name string) {
 func dockerRestart(t *testing.T, name string) {
 	t.Helper()
 	dockerKill(t, name)
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond) // OTHER: let container fully stop before restarting
 	out, err := exec.Command("docker", "start", name).CombinedOutput()
 	if err != nil {
 		t.Fatalf("dockerRestart %q: start failed: %v\n%s", name, err, out)
@@ -425,7 +425,7 @@ func newMQTTCollectorWithBroker(
 	require.NoError(t, sess.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}), "collector Reconcile")
-	time.Sleep(300 * time.Millisecond)
+	waitSubReady(t, sess, 5*time.Second)
 
 	recv := paho.NewReceiver("collector-"+clientID, sess)
 	recvCtx, recvCancel := context.WithCancel(ctx)
@@ -600,7 +600,7 @@ func newPersistentCollectorWithBroker(
 	require.NoError(t, sess.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}), "persistent collector Reconcile")
-	time.Sleep(300 * time.Millisecond)
+	waitSubReady(t, sess, 5*time.Second)
 
 	recv := paho.NewReceiver("collector-"+clientID, sess)
 	recvCtx, recvCancel := context.WithCancel(ctx)
@@ -629,6 +629,15 @@ func newPersistentCollectorWithBroker(
 // gobridgesync — wait until all runtimes report ReadyForTraffic
 // ---------------------------------------------------------------------------
 
+// waitSubReady polls until the MQTT session reports ServiceLevelFull,
+// replacing the brittle time.Sleep(200ms) pattern after Reconcile.
+func waitSubReady(t *testing.T, sess *paho.Session, timeout time.Duration) {
+	t.Helper()
+	lrWaitFor(t, timeout, "MQTT subscription active", func() bool {
+		return sess.Health(context.Background()).ServiceLevel == ports.ServiceLevelFull
+	})
+}
+
 // gobridgesync waits until all runtimes report ReadyForTraffic and
 // ServiceLevel Full via DeepHealth. On timeout, logs detailed health
 // for each bridge and fails the test.
@@ -647,7 +656,7 @@ func gobridgesync(t *testing.T, timeout time.Duration, runtimes ...*goruntime.Ru
 		if allReady {
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // SYNC: poll for bridge readiness
 	}
 	// Dump health for debugging on failure
 	for _, rt := range runtimes {

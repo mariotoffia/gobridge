@@ -47,6 +47,10 @@ type Config struct {
 	// ConfigProvider returns the current effective BridgeConfig.
 	// Typically wired to bridge.Supervisor.Config().
 	ConfigProvider func() *config.BridgeConfig `json:"-"`
+
+	// AdminOperationTimeout is the context timeout applied to admin
+	// start/stop operations. Defaults to 30s when zero.
+	AdminOperationTimeout time.Duration `json:"admin_operation_timeout,omitempty"`
 }
 
 // DefaultConfig returns a Config with security-first defaults.
@@ -116,6 +120,9 @@ func New(rt *runtime.Runtime, cfg Config, opts ...Option) *Server {
 		s.monitorKeyProvider = cfg.MonitorAPIKeyProvider
 	} else {
 		s.monitorKeyProvider = func() string { return cfg.MonitorAPIKey }
+	}
+	if s.cfg.AdminOperationTimeout <= 0 {
+		s.cfg.AdminOperationTimeout = 30 * time.Second
 	}
 	if cfg.ConfigFilePath != "" && cfg.ConfigProvider != nil {
 		s.configTxn = newTxnManager(cfg.ConfigFilePath, cfg.ConfigProvider, s.logger)

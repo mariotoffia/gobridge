@@ -159,7 +159,7 @@ func TestDepthCache_ExpiresAfterTTL(t *testing.T) {
 
 	countAfterFirst := countingOutbox.GetQueryCount()
 
-	time.Sleep(1200 * time.Millisecond)
+	time.Sleep(1200 * time.Millisecond) // FIXED: wait for depth cache TTL (1s) to expire
 
 	env2 := &domain.Envelope{ID: "ttl-msg-2", Payload: []byte("x")}
 	del2 := NewFakeDelivery(env2)

@@ -28,6 +28,11 @@ type SessionOptions struct {
 	TLS                 *TLSConfig
 	ContainerID         string
 
+	// LinkCloseTimeout is the deadline for closing an AMQP link or
+	// session during cleanup (e.g. after a failure or reconnect).
+	// Defaults to 5s if zero.
+	LinkCloseTimeout time.Duration
+
 	// Clock drives the reconnect backoff wait. When nil defaults to
 	// clock.System (wall clock). Tests may inject a clocktest.Fake to
 	// control the backoff sleep deterministically.
@@ -74,6 +79,11 @@ type ReceiverConfig struct {
 	Session        *Session
 	Logger         *slog.Logger
 	Metrics        ports.MetricsExporter
+
+	// Clock drives retry backoff waits. When nil defaults to
+	// clock.System (wall clock). Tests may inject a clocktest.Fake to
+	// control retry delays deterministically.
+	Clock clock.Clock
 }
 
 // SenderConfig configures an AMQP 1.0 sender link.
@@ -171,6 +181,9 @@ func (o *SessionOptions) applyDefaults() {
 	if o.MaxFrameSize == 0 {
 		o.MaxFrameSize = 65536
 	}
+	if o.LinkCloseTimeout <= 0 {
+		o.LinkCloseTimeout = 5 * time.Second
+	}
 	if o.Clock == nil {
 		o.Clock = clock.System
 	}
@@ -192,6 +205,9 @@ func (c *ReceiverConfig) applyDefaults() {
 	}
 	if c.Metrics == nil {
 		c.Metrics = &ports.NoopExporter{}
+	}
+	if c.Clock == nil {
+		c.Clock = clock.System
 	}
 }
 

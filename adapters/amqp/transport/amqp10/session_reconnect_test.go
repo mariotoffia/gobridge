@@ -50,7 +50,7 @@ func TestSession_Start_ConcurrentRace(t *testing.T) {
 	var dialCount atomic.Int32
 	s.dial = func(_ context.Context, _ string, _ *amqp.ConnOptions) (amqpConn, error) {
 		dialCount.Add(1)
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // OTHER: simulates dial latency in mock.
 		return &mockConn{}, nil
 	}
 

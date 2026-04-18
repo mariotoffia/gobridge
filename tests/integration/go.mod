@@ -17,6 +17,7 @@ replace (
 	github.com/mariotoffia/gobridge/httpapi => ../../httpapi
 	github.com/mariotoffia/gobridge/testutil/ddblocal => ../../testutil/ddblocal
 	github.com/mariotoffia/gobridge/testutil/sqslocal => ../../testutil/sqslocal
+	github.com/mariotoffia/gobridge/testutil/testcontent => ../../testutil/testcontent
 	github.com/mariotoffia/gobridge/testutil/wait => ../../testutil/wait
 )
 
@@ -34,6 +35,7 @@ require (
 	github.com/mariotoffia/gobridge/httpapi v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/testutil/sqslocal v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge/testutil/testcontent v0.0.0
 	github.com/mariotoffia/gobridge/testutil/wait v0.0.0
 )
 

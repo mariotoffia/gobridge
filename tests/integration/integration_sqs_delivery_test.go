@@ -180,7 +180,7 @@ func TestIntegration_SQS_Delivery_ExtendPreventsRedelivery(t *testing.T) {
 			if err := del.Extend(ctx, time.Now().Add(30*time.Second)); err != nil {
 				t.Fatalf("Extend failed: %v", err)
 			}
-			time.Sleep(4 * time.Second)
+			time.Sleep(4 * time.Second) // ESSENTIAL: exceed original 3s visibility timeout to prove Extend worked
 			if err := del.Ack(ctx); err != nil {
 				t.Fatalf("Ack after Extend failed: %v", err)
 			}
@@ -314,7 +314,7 @@ func TestIntegration_SQS_AutoExtendKeepsMessageInvisible(t *testing.T) {
 		if deliveryCount > 1 {
 			t.Fatal("unexpected redelivery despite auto-extend")
 		}
-		time.Sleep(6 * time.Second)
+		time.Sleep(6 * time.Second) // ESSENTIAL: exceed 4s visibility timeout to prove auto-extend prevents redelivery
 		if err := del.Ack(ctx); err != nil {
 			t.Fatalf("Ack after auto-extend: %v", err)
 		}
@@ -342,7 +342,7 @@ func pollSQSNoDelete(t *testing.T, client *awssqs.Client, queueURL string, timeo
 			WaitTimeSeconds:     1,
 		})
 		if err != nil {
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 			continue
 		}
 		for _, msg := range out.Messages {
@@ -374,7 +374,7 @@ func pollSQSWithAttrs(
 			MessageAttributeNames: []string{"All"},
 		})
 		if err != nil {
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 			continue
 		}
 		for _, msg := range out.Messages {

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/domain/clock"
 )
 
 // ReconfigStrategy filters a raw config change channel, controlling
@@ -52,12 +53,18 @@ func (s *DirectStrategy) Filter(ctx context.Context, in <-chan *config.BridgeCon
 // the timer.
 type DebouncedStrategy struct {
 	quietPeriod time.Duration
+	clk         clock.Clock
 }
 
 // NewDebouncedStrategy creates a debounce strategy. If quietPeriod
 // is zero or negative it behaves like DirectStrategy.
-func NewDebouncedStrategy(quietPeriod time.Duration) *DebouncedStrategy {
-	return &DebouncedStrategy{quietPeriod: quietPeriod}
+// An optional Clock can be provided for testing; nil defaults to
+// clock.System.
+func NewDebouncedStrategy(quietPeriod time.Duration, clk clock.Clock) *DebouncedStrategy {
+	if clk == nil {
+		clk = clock.System
+	}
+	return &DebouncedStrategy{quietPeriod: quietPeriod, clk: clk}
 }
 
 // Filter debounces incoming configs, emitting only after quietPeriod
@@ -73,9 +80,9 @@ func (s *DebouncedStrategy) Filter(ctx context.Context, in <-chan *config.Bridge
 		defer close(out)
 
 		var pending *config.BridgeConfig
-		timer := time.NewTimer(0)
+		timer := s.clk.NewTimer(0)
 		if !timer.Stop() {
-			<-timer.C
+			<-timer.C()
 		}
 		timerActive := false
 
@@ -83,14 +90,14 @@ func (s *DebouncedStrategy) Filter(ctx context.Context, in <-chan *config.Bridge
 			select {
 			case <-ctx.Done():
 				if !timer.Stop() && timerActive {
-					<-timer.C
+					<-timer.C()
 				}
 				return
 			case cfg, ok := <-in:
 				if !ok {
 					if pending != nil && timerActive {
 						if !timer.Stop() {
-							<-timer.C
+							<-timer.C()
 						}
 						select {
 						case out <- pending:
@@ -101,11 +108,11 @@ func (s *DebouncedStrategy) Filter(ctx context.Context, in <-chan *config.Bridge
 				}
 				pending = cfg
 				if !timer.Stop() && timerActive {
-					<-timer.C
+					<-timer.C()
 				}
 				timer.Reset(s.quietPeriod)
 				timerActive = true
-			case <-timer.C:
+			case <-timer.C():
 				timerActive = false
 				if pending != nil {
 					select {
@@ -128,13 +135,19 @@ func (s *DebouncedStrategy) Filter(ctx context.Context, in <-chan *config.Bridge
 type WindowedStrategy struct {
 	quietPeriod time.Duration
 	maxDelay    time.Duration
+	clk         clock.Clock
 }
 
 // NewWindowedStrategy creates a windowed strategy. If quietPeriod is
 // zero it behaves like DirectStrategy. maxDelay must be positive;
 // if less than quietPeriod it takes precedence.
-func NewWindowedStrategy(quietPeriod, maxDelay time.Duration) *WindowedStrategy {
-	return &WindowedStrategy{quietPeriod: quietPeriod, maxDelay: maxDelay}
+// An optional Clock can be provided for testing; nil defaults to
+// clock.System.
+func NewWindowedStrategy(quietPeriod, maxDelay time.Duration, clk clock.Clock) *WindowedStrategy {
+	if clk == nil {
+		clk = clock.System
+	}
+	return &WindowedStrategy{quietPeriod: quietPeriod, maxDelay: maxDelay, clk: clk}
 }
 
 // Filter debounces incoming configs with a hard deadline. If the
@@ -150,15 +163,15 @@ func (s *WindowedStrategy) Filter(ctx context.Context, in <-chan *config.BridgeC
 		defer close(out)
 
 		var pending *config.BridgeConfig
-		quietTimer := time.NewTimer(0)
+		quietTimer := s.clk.NewTimer(0)
 		if !quietTimer.Stop() {
-			<-quietTimer.C
+			<-quietTimer.C()
 		}
 		quietActive := false
 
-		maxTimer := time.NewTimer(0)
+		maxTimer := s.clk.NewTimer(0)
 		if !maxTimer.Stop() {
-			<-maxTimer.C
+			<-maxTimer.C()
 		}
 		maxActive := false
 
@@ -172,11 +185,11 @@ func (s *WindowedStrategy) Filter(ctx context.Context, in <-chan *config.BridgeC
 			}
 			pending = nil
 			if !quietTimer.Stop() && quietActive {
-				<-quietTimer.C
+				<-quietTimer.C()
 			}
 			quietActive = false
 			if !maxTimer.Stop() && maxActive {
-				<-maxTimer.C
+				<-maxTimer.C()
 			}
 			maxActive = false
 		}
@@ -185,20 +198,20 @@ func (s *WindowedStrategy) Filter(ctx context.Context, in <-chan *config.BridgeC
 			select {
 			case <-ctx.Done():
 				if !quietTimer.Stop() && quietActive {
-					<-quietTimer.C
+					<-quietTimer.C()
 				}
 				if !maxTimer.Stop() && maxActive {
-					<-maxTimer.C
+					<-maxTimer.C()
 				}
 				return
 			case cfg, ok := <-in:
 				if !ok {
 					if pending != nil {
 						if !quietTimer.Stop() && quietActive {
-							<-quietTimer.C
+							<-quietTimer.C()
 						}
 						if !maxTimer.Stop() && maxActive {
-							<-maxTimer.C
+							<-maxTimer.C()
 						}
 						select {
 						case out <- pending:
@@ -210,7 +223,7 @@ func (s *WindowedStrategy) Filter(ctx context.Context, in <-chan *config.BridgeC
 				firstInBatch := pending == nil
 				pending = cfg
 				if !quietTimer.Stop() && quietActive {
-					<-quietTimer.C
+					<-quietTimer.C()
 				}
 				quietTimer.Reset(s.quietPeriod)
 				quietActive = true
@@ -219,10 +232,10 @@ func (s *WindowedStrategy) Filter(ctx context.Context, in <-chan *config.BridgeC
 					maxTimer.Reset(s.maxDelay)
 					maxActive = true
 				}
-			case <-quietTimer.C:
+			case <-quietTimer.C():
 				quietActive = false
 				emit()
-			case <-maxTimer.C:
+			case <-maxTimer.C():
 				maxActive = false
 				emit()
 			}

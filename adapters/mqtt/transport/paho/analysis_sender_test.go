@@ -229,7 +229,7 @@ func TestAnaCBSender_RecoversAfterResetTimeout(t *testing.T) {
 		t.Fatal("breaker must reject right after trip")
 	}
 
-	// Wait past the reset timeout, then probe → should be allowed.
+	// OTHER: wait past the reset timeout, then probe → should be allowed.
 	time.Sleep(80 * time.Millisecond)
 
 	if err := br.BeforeRequest(); err != nil {

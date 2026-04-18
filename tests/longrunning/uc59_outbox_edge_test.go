@@ -162,8 +162,7 @@ func TestUC60_OutboxPlusBrokerDown(t *testing.T) {
 	t.Log("UC60: killing broker after initial delivery")
 	broker.StopGraceful()
 
-	// Keep the broker down for 5 seconds.
-	time.Sleep(5 * time.Second)
+	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 
 	t.Log("UC60: restarting broker")
 	broker.RestartGraceful()

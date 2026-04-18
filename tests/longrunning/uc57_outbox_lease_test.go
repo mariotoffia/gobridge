@@ -104,8 +104,7 @@ func TestUC57_StaleClaimRecovery(t *testing.T) {
 	t.Logf("UC57: crashing Bridge-A at collector=%d (cancelling context)", beforeCrash)
 	cancelA() // Simulate crash — no graceful Stop.
 
-	// Wait for lease to expire. LeaseTTL=2s + some margin.
-	time.Sleep(5 * time.Second)
+	time.Sleep(5 * time.Second) // ESSENTIAL: wait for lease TTL (2s) to expire + margin
 
 	// --- Phase 2: Bridge-B takes over and recovers stale claims ---
 	ctxB, cancelB := context.WithTimeout(context.Background(), testTimeout)

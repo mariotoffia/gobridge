@@ -98,7 +98,7 @@ func TestUC48_BrokerDownMultiHop(t *testing.T) {
 	require.NoError(t, rxSessB.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: hopTopic, QoS: 1}},
 	}))
-	time.Sleep(300 * time.Millisecond)
+	waitSubReady(t, rxSessB, 5*time.Second)
 
 	mqttRxB := paho.NewReceiver("uc48-rxb", rxSessB)
 	sqsSndB := newSQSSender(t, sqsOutURL)
@@ -138,7 +138,7 @@ func TestUC48_BrokerDownMultiHop(t *testing.T) {
 
 	t.Logf("UC48: killing broker at hop-collector=%d", hopCollector.count())
 	broker.StopGraceful()
-	time.Sleep(5 * time.Second)
+	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 
 	t.Log("UC48: restarting broker")
 	broker.RestartGraceful()
@@ -275,7 +275,7 @@ func TestUC49_SharedOutboxVsDirectHold_BrokerFlapping(t *testing.T) {
 		t.Logf("UC49: flap %d/%d -- collectorA=%d, collectorB=%d",
 			i+1, flapCount, collectorA.count(), collectorB.count())
 		broker.StopGraceful()
-		time.Sleep(time.Duration(flapDownSec) * time.Second)
+		time.Sleep(time.Duration(flapDownSec) * time.Second) // OTHER: scenario timing — broker flap downtime
 		broker.RestartGraceful()
 		sendProbe(t, sqsClientA, sqsInA, collectorA, 30*time.Second)
 	}
@@ -285,8 +285,7 @@ func TestUC49_SharedOutboxVsDirectHold_BrokerFlapping(t *testing.T) {
 		fmt.Sprintf("SharedOutbox unique >= %d", msgCount),
 		func() bool { return countUnique(collectorA) >= msgCount })
 
-	// Give DirectHold extra time after flapping settles.
-	time.Sleep(30 * time.Second)
+	time.Sleep(30 * time.Second) // SYNC: give DirectHold extra time to deliver after broker flapping
 
 	uniqueA := countUnique(collectorA)
 	uniqueB := countUnique(collectorB)
@@ -438,7 +437,7 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 	require.NoError(t, colSess.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: outTopic, QoS: 1}},
 	}))
-	time.Sleep(300 * time.Millisecond)
+	waitSubReady(t, colSess, 5*time.Second)
 
 	colRecv := paho.NewReceiver("col-"+colID, colSess)
 	colCtx, colCancel := context.WithCancel(context.Background())
@@ -503,7 +502,7 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 	// Send second batch during downtime (queues in SQS/outbox).
 	t.Logf("UC51: sending %d msgs during downtime", duringDown)
 	sendBulkToSQS(t, sqsInClient, sqsInURL, duringDown, nil)
-	time.Sleep(5 * time.Second)
+	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down during message queuing
 
 	t.Log("UC51: restarting broker")
 	broker.RestartGraceful()

@@ -36,7 +36,6 @@ func TestUC27_Intermittent_SendFailures(t *testing.T) {
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc27-in")
 	collector := newMQTTCollector(t, "uc27/output/data", "uc27-col")
-	time.Sleep(300 * time.Millisecond)
 
 	dlqStore := &lrDLQStore{}
 
@@ -97,7 +96,7 @@ func TestUC27_Intermittent_SendFailures(t *testing.T) {
 		return len(seen) >= msgCount
 	})
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // SYNC: let in-flight retries settle
 
 	got := collector.count()
 	msgs := collector.getMessages()
@@ -167,7 +166,6 @@ func TestUC28_VisibilityTimeout_Race(t *testing.T) {
 	})
 
 	collector := newMQTTCollector(t, "uc28/output/data", "uc28-col")
-	time.Sleep(300 * time.Millisecond)
 
 	dlqStore := &lrDLQStore{}
 
@@ -224,7 +222,7 @@ func TestUC28_VisibilityTimeout_Race(t *testing.T) {
 		return len(unique) >= msgCount
 	})
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // SYNC: let in-flight deliveries settle
 
 	msgs := collector.getMessages()
 	unique := make(map[string]bool, len(msgs))
@@ -255,7 +253,6 @@ func TestUC29_MessageTTL_Expiry(t *testing.T) {
 	)
 
 	collector := newMQTTCollector(t, "uc29/output/data", "uc29-col")
-	time.Sleep(300 * time.Millisecond)
 
 	dlqStore := &lrDLQStore{}
 
@@ -304,7 +301,7 @@ func TestUC29_MessageTTL_Expiry(t *testing.T) {
 		return dlqStore.count() >= msgCount
 	})
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // NEGATIVE: verify expired messages did not reach MQTT
 
 	gotDLQ := dlqStore.count()
 	gotMQTT := collector.count()

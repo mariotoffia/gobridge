@@ -60,8 +60,11 @@ func TestBugRDR_ConcurrentRunOnSameReceiver_ReturnsError(t *testing.T) {
 	go func() {
 		res1 <- r.Run(ctx1, func(_ context.Context, _ ports.Delivery) error { return nil })
 	}()
-	// Give #1 a head start so its Register is visible.
-	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-r.Started():
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver did not start")
+	}
 	go func() {
 		res2 <- r.Run(ctx2, func(_ context.Context, _ ports.Delivery) error { return nil })
 	}()
@@ -124,8 +127,11 @@ func TestBugRDR_HandlerRemainsForFirstRun_DespiteSecondRunRejection(t *testing.T
 			return nil
 		})
 	}()
-	// Wait for #1 to register.
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-r.Started():
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver did not start")
+	}
 
 	// Second concurrent Run — must error promptly (not block until ctx
 	// fires). We guard with a short timeout so the test cannot hang
@@ -185,7 +191,11 @@ func TestBugRDR_SequentialRunOnSameReceiver_AllowedAfterFirstReturns(t *testing.
 	go func() {
 		res1 <- r.Run(ctx1, func(_ context.Context, _ ports.Delivery) error { return nil })
 	}()
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-r.Started():
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver did not start")
+	}
 	cancel1()
 	select {
 	case <-res1:
@@ -199,7 +209,14 @@ func TestBugRDR_SequentialRunOnSameReceiver_AllowedAfterFirstReturns(t *testing.
 	go func() {
 		res2 <- r.Run(ctx2, func(_ context.Context, _ ports.Delivery) error { return nil })
 	}()
-	time.Sleep(50 * time.Millisecond)
+	deadline := time.After(2 * time.Second)
+	for sess.Router().HandlerCount() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("second Run did not register handler")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 	if sess.Router().HandlerCount() != 1 {
 		t.Fatalf("BUG-RDR: HandlerCount = %d after sequential second Run, want 1", sess.Router().HandlerCount())
 	}

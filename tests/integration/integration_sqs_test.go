@@ -201,7 +201,7 @@ func TestIntegration_SQS_Receiver_ContextCancel(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond) // STARTUP: let receiver goroutine start polling before cancellation
 	cancel()
 
 	select {

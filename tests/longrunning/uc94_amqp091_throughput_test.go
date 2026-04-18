@@ -109,5 +109,7 @@ func TestUC94_AMQP091_HighThroughput(t *testing.T) {
 
 	assert.GreaterOrEqual(t, received, msgCount,
 		"All %d messages must be received", msgCount)
+	assert.GreaterOrEqual(t, unique, msgCount,
+		"All %d unique messages must be delivered (duplicates indicate lost originals)", msgCount)
 	assert.Equal(t, 0, dlq.count(), "DLQ should be empty")
 }

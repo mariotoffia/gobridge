@@ -24,6 +24,9 @@ func New(cfg Config, opts ...Option) *Processor {
 	if cfg.TenantHeader == "" {
 		cfg.TenantHeader = domain.HeaderTenantID
 	}
+	if cfg.InFlightDecrementTimeout <= 0 {
+		cfg.InFlightDecrementTimeout = 2 * time.Second
+	}
 
 	p := &Processor{config: cfg}
 	for _, opt := range opts {
@@ -77,7 +80,7 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 			decrementCtx := ctx
 			if ctx.Err() != nil {
 				var cancel context.CancelFunc
-				decrementCtx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+				decrementCtx, cancel = context.WithTimeout(context.Background(), p.config.InFlightDecrementTimeout)
 				defer cancel()
 			}
 			_ = p.tracker.IncrementInFlight(decrementCtx, tenantID, -1)

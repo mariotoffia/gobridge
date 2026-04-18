@@ -118,7 +118,6 @@ func TestUC8_MultiProtocol_FanOut(t *testing.T) {
 	// MQTT collectors for the two MQTT targets.
 	collAlpha := newMQTTCollector(t, "uc8/alpha", "uc8-col-alpha")
 	collBeta := newMQTTCollector(t, "uc8/beta", "uc8-col-beta")
-	time.Sleep(300 * time.Millisecond)
 
 	sqsRx := newSQSReceiver(t, sqsInURL)
 
@@ -220,7 +219,7 @@ func TestUC9_MQTT_QoS2_Stress(t *testing.T) {
 	require.NoError(t, rxSess.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: "uc9/input", QoS: 2}},
 	}))
-	time.Sleep(300 * time.Millisecond)
+	waitSubReady(t, rxSess, 5*time.Second)
 
 	mqttRx := paho.NewReceiver("uc9-rx", rxSess)
 
@@ -303,7 +302,6 @@ func TestUC10_HTTP_Inject_To_MQTT(t *testing.T) {
 	defer cancel()
 
 	collector := newMQTTCollector(t, "uc10/output", "uc10-col")
-	time.Sleep(300 * time.Millisecond)
 
 	txSess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc10-tx"), domain.SessionEphemeral)
 	mqttSnd := setupMQTTSender(t, txSess)

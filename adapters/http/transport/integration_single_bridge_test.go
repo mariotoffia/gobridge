@@ -16,6 +16,7 @@ import (
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -50,7 +51,7 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 		if fn() {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // OTHER: internal polling interval in test helper
 	}
 	t.Fatalf("timeout waiting for %s", desc)
 }
@@ -239,7 +240,9 @@ func TestIntegration_SSEClient_ReceivesMultipleEvents(t *testing.T) {
 		t.Fatalf("SSE connect: expected 200, got %d", resp.StatusCode)
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	wait.Until(t, 2*time.Second, "SSE client registered", func() bool {
+		return sender.(*transport.SSESender).ClientCount() >= 1
+	})
 
 	subjects := []string{"evt.one", "evt.two", "evt.three"}
 	for i, subj := range subjects {

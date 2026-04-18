@@ -56,6 +56,7 @@ func TestReceiver_StaleLinkError_DoesNotKillReconnectedConn(t *testing.T) {
 	// Trigger the failure path with an Unavailable-mapped error.
 	r.handleLinkError(errors.New("amqp:link:detach-forced"))
 
+	// OTHER: settle delay for notifyDisconnect async effects.
 	time.Sleep(50 * time.Millisecond)
 
 	conn2.mu.Lock()

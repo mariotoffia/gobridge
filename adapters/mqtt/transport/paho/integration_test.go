@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -185,7 +184,7 @@ func TestIntegration_PubSubRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubActive(t, sess, 5*time.Second)
 
 	recv := paho.NewReceiver("rx1", sess)
 	sender := paho.NewSender(sess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
@@ -292,13 +291,15 @@ func TestIntegration_BackpressureNoDrops(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubActive(t, sess, 5*time.Second)
 
 	recv := paho.NewReceiver("rx-bp", sess)
 	sender := paho.NewSender(sess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
 	const msgCount = 20
-	var receivedCount atomic.Int64
+
+	var mu sync.Mutex
+	var rxPayloads []string
 
 	recvCtx, recvCancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
@@ -306,8 +307,10 @@ func TestIntegration_BackpressureNoDrops(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
-			time.Sleep(10 * time.Millisecond)
-			receivedCount.Add(1)
+			time.Sleep(10 * time.Millisecond) // OTHER: slow consumer backpressure simulation
+			mu.Lock()
+			rxPayloads = append(rxPayloads, string(del.Envelope().Payload))
+			mu.Unlock()
 			return nil
 		})
 	}()
@@ -324,7 +327,9 @@ func TestIntegration_BackpressureNoDrops(t *testing.T) {
 
 	deadline := time.After(15 * time.Second)
 	for {
-		n := receivedCount.Load()
+		mu.Lock()
+		n := len(rxPayloads)
+		mu.Unlock()
 		if n >= msgCount {
 			break
 		}
@@ -338,9 +343,22 @@ func TestIntegration_BackpressureNoDrops(t *testing.T) {
 	recvCancel()
 	wg.Wait()
 
-	got := receivedCount.Load()
-	if got != msgCount {
-		t.Errorf("received %d messages, want %d (messages were dropped!)", got, msgCount)
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(rxPayloads) != msgCount {
+		t.Errorf("received %d messages, want %d (messages were dropped!)", len(rxPayloads), msgCount)
+	}
+
+	rxSet := make(map[string]bool, len(rxPayloads))
+	for _, p := range rxPayloads {
+		rxSet[p] = true
+	}
+	for i := 0; i < msgCount; i++ {
+		want := fmt.Sprintf("msg-%d", i)
+		if !rxSet[want] {
+			t.Errorf("missing payload %q in received messages", want)
+		}
 	}
 }
 

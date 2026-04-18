@@ -57,7 +57,7 @@ func TestHalfOpen_LimitsConcurrentProbes(t *testing.T) {
 		b.AfterRequest(errTest)
 	}
 
-	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond)
+	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
 
 	err1 := b.BeforeRequest()
 	if err1 != nil {
@@ -92,7 +92,7 @@ func TestHalfOpen_CustomMaxProbes(t *testing.T) {
 		b.AfterRequest(errTest)
 	}
 
-	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond)
+	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
 
 	for i := 0; i < 3; i++ {
 		if err := b.BeforeRequest(); err != nil {
@@ -247,7 +247,7 @@ func TestHalfOpen_ProbeReleasedAfterResponse(t *testing.T) {
 		b.AfterRequest(errTest)
 	}
 
-	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond)
+	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
 
 	for i := 0; i < 10; i++ {
 		err := b.BeforeRequest()
@@ -278,7 +278,7 @@ func TestHalfOpen_ConcurrentProbesLimited(t *testing.T) {
 		b.AfterRequest(errTest)
 	}
 
-	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond)
+	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
 
 	var wg sync.WaitGroup
 	var allowed, rejected atomic.Int32
@@ -294,7 +294,7 @@ func TestHalfOpen_ConcurrentProbesLimited(t *testing.T) {
 			err := b.BeforeRequest()
 			if err == nil {
 				allowed.Add(1)
-				time.Sleep(10 * time.Millisecond)
+				time.Sleep(10 * time.Millisecond) // OTHER: simulate probe latency for concurrent half-open test
 				b.AfterRequest(nil)
 			} else {
 				rejected.Add(1)

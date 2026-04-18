@@ -33,7 +33,6 @@ func TestUC33_MaxInFlight1_Serial(t *testing.T) {
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc33-in")
 	collector := newMQTTCollector(t, "uc33/output/data", "uc33-col")
-	time.Sleep(300 * time.Millisecond)
 
 	dlqStore := &lrDLQStore{}
 	tracker := &concurrencyTracker{}
@@ -79,8 +78,11 @@ func TestUC33_MaxInFlight1_Serial(t *testing.T) {
 
 	require.GreaterOrEqual(t, collector.count(), msgCount)
 
-	t.Logf("UC33: MaxInFlight=1, maxConcurrency=%d, collected=%d",
-		gotMax, collector.count())
+	unique := countUnique(collector)
+	t.Logf("UC33: MaxInFlight=1, maxConcurrency=%d, collected=%d, unique=%d",
+		gotMax, collector.count(), unique)
+	assert.GreaterOrEqual(t, unique, msgCount,
+		"All %d unique messages must be delivered", msgCount)
 }
 
 // =========================================================================
@@ -99,7 +101,6 @@ func TestUC34_MaxInFlight1000_HighConcurrency(t *testing.T) {
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc34-in")
 	collector := newMQTTCollector(t, "uc34/output/data", "uc34-col")
-	time.Sleep(300 * time.Millisecond)
 
 	dlqStore := &lrDLQStore{}
 	tracker := &concurrencyTracker{}
@@ -139,7 +140,7 @@ func TestUC34_MaxInFlight1000_HighConcurrency(t *testing.T) {
 		return collector.count() >= msgCount
 	})
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // SYNC: let in-flight deliveries settle
 
 	gotMax := tracker.maxConcurrency()
 	require.Greater(t, gotMax, int64(1),
@@ -212,7 +213,6 @@ func TestUC35_GlobalMaxInFlight_ThreeRoutes(t *testing.T) {
 
 	// One shared collector on a wildcard topic.
 	collector := newMQTTCollector(t, "uc35/output/+", "uc35-col")
-	time.Sleep(300 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -229,7 +229,7 @@ func TestUC35_GlobalMaxInFlight_ThreeRoutes(t *testing.T) {
 		return collector.count() >= totalExpected
 	})
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // SYNC: let in-flight deliveries settle
 
 	gotMax := tracker.maxConcurrency()
 	require.LessOrEqual(t, gotMax, int64(globalMF),
@@ -258,7 +258,6 @@ func TestUC36_SlowConsumer(t *testing.T) {
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc36-in")
 	collector := newMQTTCollector(t, "uc36/output/data", "uc36-col")
-	time.Sleep(300 * time.Millisecond)
 
 	dlqStore := &lrDLQStore{}
 
@@ -297,7 +296,7 @@ func TestUC36_SlowConsumer(t *testing.T) {
 		return collector.count() >= msgCount
 	})
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // SYNC: let in-flight deliveries settle
 
 	got := collector.count()
 	require.GreaterOrEqual(t, got, msgCount,
@@ -327,7 +326,6 @@ func TestUC37_BurstThenIdle(t *testing.T) {
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc37-in")
 	collector := newMQTTCollector(t, "uc37/output/data", "uc37-col")
-	time.Sleep(300 * time.Millisecond)
 
 	dlqStore := &lrDLQStore{}
 
@@ -382,11 +380,11 @@ func TestUC37_BurstThenIdle(t *testing.T) {
 
 		if burst < burstCount-1 {
 			t.Logf("UC37: idle gap %ds before next burst", gapSeconds)
-			time.Sleep(time.Duration(gapSeconds) * time.Second)
+			time.Sleep(time.Duration(gapSeconds) * time.Second) // OTHER: idle gap between bursts
 		}
 	}
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // SYNC: let final burst deliveries settle
 
 	got := collector.count()
 	total := burstSize * burstCount

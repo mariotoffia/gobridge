@@ -307,7 +307,7 @@ func waitForRuntime(s *Supervisor, timeout time.Duration) *goruntime.Runtime {
 		if rt := s.Runtime(); rt != nil {
 			return rt
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // STARTUP: supervisor runtime init poll
 	}
 	return nil
 }
@@ -324,7 +324,7 @@ func waitForRouteID(s *Supervisor, routeID string, timeout time.Duration) bool {
 				return true
 			}
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // STARTUP: supervisor route convergence poll
 	}
 	return false
 }

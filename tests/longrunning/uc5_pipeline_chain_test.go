@@ -47,7 +47,7 @@ func pollSQSWithAttrs(
 			})
 		if err != nil {
 			t.Logf("pollSQSWithAttrs: %v", err)
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 			continue
 		}
 		for _, msg := range out.Messages {
@@ -162,7 +162,7 @@ func TestUC5_PipelineChain(t *testing.T) {
 		},
 	})
 	require.NoError(t, err, "Bridge-2 Reconcile")
-	time.Sleep(300 * time.Millisecond)
+	waitSubReady(t, sess2, 5*time.Second)
 
 	mqttRx2 := paho.NewReceiver("uc5-rx-2", sess2)
 	sqsSender2 := newSQSSender(t, stage2URL)
@@ -218,7 +218,7 @@ func TestUC5_PipelineChain(t *testing.T) {
 		},
 	})
 	require.NoError(t, err, "Bridge-4 Reconcile")
-	time.Sleep(300 * time.Millisecond)
+	waitSubReady(t, sess4, 5*time.Second)
 
 	mqttRx4 := paho.NewReceiver("uc5-rx-4", sess4)
 	sqsSenderFinal := newSQSSender(t, finalURL)
@@ -287,11 +287,19 @@ func TestUC5_PipelineChain(t *testing.T) {
 	// -- Verify payload integrity on each message ----------------------------
 	// sendBulkToSQS generates body '{"seq":N}'. Verify the payload survived
 	// all 4 hops (SQS->MQTT->SQS->MQTT->SQS) without corruption.
+	rxBodies := make(map[string]bool, len(finalMsgs))
 	for idx, msg := range finalMsgs {
 		require.True(t, len(msg.Body) > 0,
 			"message %d has empty body", idx)
 		require.Contains(t, msg.Body, `"seq":`,
 			"message %d payload integrity check failed: %q", idx, msg.Body)
+		rxBodies[msg.Body] = true
+	}
+	for i := 0; i < msgCount; i++ {
+		want := fmt.Sprintf(`{"seq":%d}`, i)
+		if !rxBodies[want] {
+			t.Errorf("UC5: missing payload %s in final SQS output", want)
+		}
 	}
 
 	// -- Verify stage headers on each message --------------------------------

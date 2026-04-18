@@ -64,7 +64,7 @@ func TestBreaker_OnStateChangeCallbackSafeConcurrent(t *testing.T) {
 		b.AfterRequest(errors.New("fail"))
 	}
 
-	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond)
+	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
 
 	for i := 0; i < cfg.SuccessThreshold; i++ {
 		_ = b.BeforeRequest()

@@ -28,7 +28,7 @@ func TestSendBatch_PerBatchTimeout_FreshDeadline(t *testing.T) {
 				t.Fatal("expected deadline on batch context")
 			}
 			deadlines = append(deadlines, dl)
-			time.Sleep(10 * time.Millisecond) // shift wall clock
+			time.Sleep(10 * time.Millisecond) // OTHER: shift wall clock for distinguishable deadlines
 			result := make([]sqstypes.SendMessageBatchResultEntry, len(in.Entries))
 			for i := range in.Entries {
 				result[i] = sqstypes.SendMessageBatchResultEntry{Id: in.Entries[i].Id}
@@ -177,7 +177,7 @@ func TestSendBatch_LargeBatch_LastBatchFullTimeout(t *testing.T) {
 			}
 			callTimes = append(callTimes, time.Now())
 			deadlines = append(deadlines, dl)
-			time.Sleep(2 * time.Millisecond) // simulate work
+			time.Sleep(2 * time.Millisecond) // OTHER: simulate work for deadline verification
 			result := make([]sqstypes.SendMessageBatchResultEntry, len(in.Entries))
 			for i := range in.Entries {
 				result[i] = sqstypes.SendMessageBatchResultEntry{Id: in.Entries[i].Id}

@@ -137,9 +137,17 @@ func TestGap_AMQP091_To_SQS_CrossTransport(t *testing.T) {
 	require.Len(t, sqsMsgs, gapCrossMsgCount,
 		"SQS-OUT should have exactly %d messages", gapCrossMsgCount)
 
+	rxBodies := make(map[string]bool, len(sqsMsgs))
 	for i, m := range sqsMsgs {
 		assert.Contains(t, m.Body, `"origin":"amqp091"`,
 			"msg %d: body should contain origin marker", i)
+		rxBodies[m.Body] = true
+	}
+	for i := 0; i < gapCrossMsgCount; i++ {
+		want := fmt.Sprintf(`{"seq":%d,"origin":"amqp091"}`, i)
+		if !rxBodies[want] {
+			t.Errorf("missing payload %s in SQS messages", want)
+		}
 	}
 
 	assert.Equal(t, 0, dlq.count(), "DLQ should be empty")
@@ -258,11 +266,19 @@ func TestGap_AMQP091_To_MQTT_CrossTransport(t *testing.T) {
 	require.GreaterOrEqual(t, len(msgs), gapCrossMsgCount,
 		"MQTT collector should have at least %d messages", gapCrossMsgCount)
 
+	rxPayloads := make(map[string]bool, len(msgs))
 	for i, msg := range msgs {
 		assert.Equal(t, "cross-transport-test", msg.Subject,
 			"msg %d: Subject should be preserved across AMQP→MQTT", i)
 		assert.Contains(t, string(msg.Payload), `"origin":"amqp091"`,
 			"msg %d: payload should contain origin marker", i)
+		rxPayloads[string(msg.Payload)] = true
+	}
+	for i := 0; i < gapCrossMsgCount; i++ {
+		want := fmt.Sprintf(`{"seq":%d,"origin":"amqp091"}`, i)
+		if !rxPayloads[want] {
+			t.Errorf("missing payload %s in MQTT messages", want)
+		}
 	}
 
 	assert.Equal(t, 0, dlq.count(), "DLQ should be empty")

@@ -248,8 +248,7 @@ func TestOutboxDrainer_FinalDrain_CompletesAfterCancel(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("drainer did not enter poll loop")
 	}
-	// Allow enough time for the first drain cycle to fire and complete.
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, 2*time.Second, "drainer sent >= 1", func() bool { return sender.SentCount() >= 1 })
 	cancel()
 
 	select {

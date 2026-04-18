@@ -235,6 +235,7 @@ func TestRes_ConcurrentReconcileAndClose_NoHang(t *testing.T) {
 	}
 
 	go func() {
+		// OTHER: intentional race window — delay Close to overlap with concurrent Reconcile goroutines.
 		time.Sleep(40 * time.Millisecond)
 		closeCtx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer ccancel()
@@ -383,8 +384,7 @@ func TestRes_BrokerOutage_ReconnectResubscribesAndDelivers(t *testing.T) {
 	waitForEventType(t, sess, ports.SessionConnected, 30*time.Second)
 	waitForEventType(t, sess, ports.SessionReconciled, 15*time.Second)
 
-	// Allow paho a moment to settle the new subscription.
-	time.Sleep(300 * time.Millisecond)
+	waitSubActive(t, sess, 5*time.Second)
 
 	// Phase 4: subscription must have been restored — sending again
 	// should be received.

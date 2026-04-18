@@ -134,7 +134,7 @@ func TestBreaker_FullLifecycle(t *testing.T) {
 		t.Fatal("open breaker should reject")
 	}
 
-	time.Sleep(15 * time.Millisecond)
+	time.Sleep(15 * time.Millisecond) // OTHER: circuit breaker reset timeout transition
 
 	if err := b.BeforeRequest(); err != nil {
 		t.Fatalf("half-open breaker should allow probe: %v", err)

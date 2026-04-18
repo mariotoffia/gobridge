@@ -77,8 +77,7 @@ func TestDDBRollback_InvalidOverlay_ManagerDrops(t *testing.T) {
 		t.Fatalf("save invalid: %v", err)
 	}
 
-	// No swap event should arrive (Manager drops invalid config).
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond) // NEGATIVE: verify Manager drops invalid config (no swap event)
 
 	if count := swapCount.Load(); count != 0 {
 		t.Errorf("swap count: got %d, want 0 (Manager should drop)", count)
@@ -328,7 +327,7 @@ func TestDDBRollback_MultipleFailures_OldConfigSurvives(t *testing.T) {
 	if err := loader.Save(ctx, invalidOverlay); err != nil {
 		t.Fatalf("save invalid: %v", err)
 	}
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond) // SYNC: let config watcher detect invalid overlay
 
 	// Step 2: Broken overlay (build fails, rollback).
 	brokenOverlay := &config.BridgeConfig{
@@ -435,7 +434,7 @@ func TestDDBRollback_InvalidThenValid_RecoversFully(t *testing.T) {
 	if err := loader.Save(ctx, invalidOverlay); err != nil {
 		t.Fatalf("save invalid: %v", err)
 	}
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond) // SYNC: let config watcher detect invalid overlay before saving valid one
 
 	// Valid overlay adding r2.
 	validOverlay := overlayWithRoute("test-bridge", "r2")

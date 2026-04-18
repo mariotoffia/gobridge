@@ -148,7 +148,7 @@ func TestE2E_Routing_MatchByHeader_SelectsCorrectClient(t *testing.T) {
 		return colB.count() >= 1
 	})
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // NEGATIVE: verify unmatched clients received nothing
 	if colA.count() != 0 {
 		t.Errorf("client A received %d, want 0", colA.count())
 	}

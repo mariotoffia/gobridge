@@ -436,7 +436,7 @@ func TestSender_SendBatch_PerBatchTimeout(t *testing.T) {
 				t.Fatal("expected deadline on batch context")
 			}
 			deadlines = append(deadlines, dl)
-			time.Sleep(5 * time.Millisecond) // ensure distinguishable deadlines
+			time.Sleep(5 * time.Millisecond) // OTHER: ensure distinguishable deadlines
 			result := make([]sqstypes.SendMessageBatchResultEntry, len(in.Entries))
 			for i := range in.Entries {
 				result[i] = sqstypes.SendMessageBatchResultEntry{Id: in.Entries[i].Id}

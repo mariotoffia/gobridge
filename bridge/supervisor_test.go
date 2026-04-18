@@ -279,7 +279,7 @@ func TestSupervisor_RapidConfigChanges_WithDebouncedStrategy(t *testing.T) {
 	var applied []string
 	swapped := make(chan struct{}, 10)
 	s := newTestSupervisor(
-		WithReconfigStrategy(NewDebouncedStrategy(100*time.Millisecond)),
+		WithReconfigStrategy(NewDebouncedStrategy(100*time.Millisecond, nil)),
 		WithOnSwap(func(e SwapEvent) {
 			if e.Error == nil {
 				mu.Lock()

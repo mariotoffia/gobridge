@@ -14,6 +14,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // TestReceiver_IsEmitError_TransportBridgeError validates that a transport
@@ -103,7 +104,9 @@ func TestReceiver_WaitForReconnect_EventReceived(t *testing.T) {
 	}
 
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		wait.Until(t, 2*time.Second, "receiver subscribed", func() bool {
+			return sess.subscriberCount() >= 1
+		})
 		sess.pushEvent(ports.SessionConnected, nil)
 	}()
 
@@ -134,7 +137,9 @@ func TestReceiver_WaitForReconnect_ChannelClosed(t *testing.T) {
 	}
 
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		wait.Until(t, 2*time.Second, "receiver subscribed", func() bool {
+			return sess.subscriberCount() >= 1
+		})
 		sess.Close(context.Background())
 	}()
 

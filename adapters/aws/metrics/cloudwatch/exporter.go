@@ -148,14 +148,14 @@ func (e *Exporter) sendBatched(ctx context.Context, data []cwtypes.MetricDatum) 
 
 func (e *Exporter) flushLoop() {
 	defer e.wg.Done()
-	ticker := time.NewTicker(e.config.FlushInterval)
+	ticker := e.config.Clock.NewTicker(e.config.FlushInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-e.stopCh:
 			return
-		case <-ticker.C:
+		case <-ticker.C():
 			ctx, cancel := context.WithTimeout(context.Background(), e.config.FlushRPCTimeout)
 			_ = e.Flush(ctx)
 			cancel()

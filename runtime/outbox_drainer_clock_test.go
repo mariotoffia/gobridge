@@ -100,6 +100,7 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 		runWG.Wait()
 	}()
 
+	// OTHER: real-time sync for clocktest.Fake
 	// Give the drain loop time to reach its first <-timer.C() select.
 	time.Sleep(20 * time.Millisecond)
 
@@ -126,6 +127,7 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 		t.Fatalf("after first batch: expected 1 sent, got %d", got)
 	}
 
+	// OTHER: real-time sync for clocktest.Fake
 	// Give the drain loop time to call timer.Reset(interval) for the
 	// next cycle before we advance again.
 	time.Sleep(20 * time.Millisecond)

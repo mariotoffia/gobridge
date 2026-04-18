@@ -317,8 +317,7 @@ func TestEdge_ExpiredOutboxEntryDuringDrain(t *testing.T) {
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
 
-	// Wait for expiry.
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond) // FIXED: wait for message expiry (100ms TTL + margin)
 
 	// Unblock the sender.
 	sender.SetSendErr(nil)

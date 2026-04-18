@@ -125,27 +125,26 @@ func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 	// and queue exists (it does; we just need a fresh sender after drop).
 	sender2 := NewSender(SenderConfig{Exchange: exchange, Session: sess, Timeout: 5 * time.Second})
 
-	postDeadline := time.Now().Add(15 * time.Second)
 	startA := receivedA.Load()
 	startB := receivedB.Load()
-	for time.Now().Before(postDeadline) {
-		_ = sender2.Send(ctx, &domain.Envelope{ID: "post-A", Subject: queueA, Payload: []byte("a2")})
-		_ = sender2.Send(ctx, &domain.Envelope{ID: "post-B", Subject: queueB, Payload: []byte("b2")})
 
-		if receivedA.Load() > startA && receivedB.Load() > startB {
-			break
+	sendCtx, sendCancel := context.WithCancel(ctx)
+	defer sendCancel()
+	go func() {
+		for sendCtx.Err() == nil {
+			_ = sender2.Send(sendCtx, &domain.Envelope{ID: "post-A", Subject: queueA, Payload: []byte("a2")})
+			_ = sender2.Send(sendCtx, &domain.Envelope{ID: "post-B", Subject: queueB, Payload: []byte("b2")})
+			select {
+			case <-sendCtx.Done():
+			case <-time.After(100 * time.Millisecond):
+			}
 		}
-		time.Sleep(250 * time.Millisecond)
-	}
+	}()
 
-	if receivedA.Load() <= startA {
-		t.Errorf("receiver A did not resume after reconnect (received %d, was %d before drop)",
-			receivedA.Load(), startA)
-	}
-	if receivedB.Load() <= startB {
-		t.Errorf("receiver B did not resume after reconnect (received %d, was %d before drop)",
-			receivedB.Load(), startB)
-	}
+	wait.Until(t, 15*time.Second, "both receivers resumed after reconnect", func() bool {
+		return receivedA.Load() > startA && receivedB.Load() > startB
+	})
+	sendCancel()
 
 	runCancel()
 	wg.Wait()
@@ -318,19 +317,23 @@ func TestIntegration_ConsumerTag_ReuseAfterReconnect(t *testing.T) {
 
 	postSender := NewSender(SenderConfig{Exchange: exchange, RoutingKey: queue, Session: sess, Timeout: 5 * time.Second})
 	startCount := received.Load()
-	postDeadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(postDeadline) {
-		_ = postSender.Send(ctx, &domain.Envelope{ID: "tag-post", Payload: []byte("post")})
-		if received.Load() > startCount {
-			break
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
 
-	if received.Load() <= startCount {
-		t.Errorf("receiver did not resume after reconnect with reused consumer tag "+
-			"(received %d, was %d before drop)", received.Load(), startCount)
-	}
+	sendCtx, sendCancel := context.WithCancel(ctx)
+	defer sendCancel()
+	go func() {
+		for sendCtx.Err() == nil {
+			_ = postSender.Send(sendCtx, &domain.Envelope{ID: "tag-post", Payload: []byte("post")})
+			select {
+			case <-sendCtx.Done():
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}()
+
+	wait.Until(t, 15*time.Second, "receiver resumed after reconnect with reused consumer tag", func() bool {
+		return received.Load() > startCount
+	})
+	sendCancel()
 
 	runCancel()
 }

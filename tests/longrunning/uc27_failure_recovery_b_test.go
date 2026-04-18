@@ -34,7 +34,6 @@ func TestUC30_DLQ_AllPoison(t *testing.T) {
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc30-in")
 	collector := newMQTTCollector(t, "uc30/output/data", "uc30-col")
-	time.Sleep(300 * time.Millisecond)
 
 	dlqStore := &lrDLQStore{}
 
@@ -76,7 +75,7 @@ func TestUC30_DLQ_AllPoison(t *testing.T) {
 		return dlqStore.count() >= msgCount
 	})
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // NEGATIVE: verify no poison messages leaked to MQTT
 
 	gotDLQ := dlqStore.count()
 	gotMQTT := collector.count()
@@ -151,7 +150,7 @@ func TestUC31_OutboxReplay_Exhaustion(t *testing.T) {
 		return dlqStore.count() >= msgCount
 	})
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // SYNC: let outbox replay-exhaustion settle to DLQ
 
 	gotDLQ := dlqStore.count()
 	require.GreaterOrEqual(t, gotDLQ, msgCount,
@@ -178,7 +177,6 @@ func TestUC32_GracefulShutdown_UnderLoad(t *testing.T) {
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc32-in")
 	collector := newMQTTCollector(t, "uc32/output/data", "uc32-col")
-	time.Sleep(300 * time.Millisecond)
 
 	dlqStore := &lrDLQStore{}
 
@@ -233,8 +231,7 @@ func TestUC32_GracefulShutdown_UnderLoad(t *testing.T) {
 		"collector should have >= %d messages after stop, got %d",
 		minReceived, afterStop)
 
-	// Check for goroutine leak: allow a grace period for cleanup.
-	time.Sleep(1 * time.Second)
+	time.Sleep(1 * time.Second) // SYNC: let goroutines clean up after shutdown
 	goroutinesAfter := runtime.NumGoroutine()
 
 	// goroutinesBefore was taken while bridge was running, so after should

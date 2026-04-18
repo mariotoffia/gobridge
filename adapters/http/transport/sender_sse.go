@@ -9,8 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -27,6 +28,7 @@ type sseSenderConfig struct {
 	locator           ports.RouteLocator
 	metrics           ports.MetricsExporter
 	logger            *slog.Logger
+	clock             clock.Clock
 }
 
 type sseClient struct {
@@ -52,10 +54,21 @@ func newSSESender(cfg sseSenderConfig) *SSESender {
 	if cfg.metrics == nil {
 		cfg.metrics = &ports.NoopExporter{}
 	}
+	if cfg.clock == nil {
+		cfg.clock = clock.System
+	}
 	return &SSESender{
 		cfg:     cfg,
 		clients: make(map[string]*sseClient),
 	}
+}
+
+// ClientCount returns the number of currently connected SSE clients.
+func (s *SSESender) ClientCount() int {
+	s.mu.RLock()
+	n := len(s.clients)
+	s.mu.RUnlock()
+	return n
 }
 
 // SetRouteID associates this sender with a route for cross-cluster SSE redirect.
@@ -197,7 +210,7 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	ctx := r.Context()
-	heartbeat := time.NewTicker(s.cfg.heartbeatInterval)
+	heartbeat := s.cfg.clock.NewTicker(s.cfg.heartbeatInterval)
 	defer heartbeat.Stop()
 
 	for {
@@ -209,7 +222,7 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			flusher.Flush()
-		case <-heartbeat.C:
+		case <-heartbeat.C():
 			if _, err := fmt.Fprintf(w, ": heartbeat\n\n"); err != nil {
 				return
 			}

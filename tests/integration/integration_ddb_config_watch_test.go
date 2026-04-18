@@ -385,8 +385,7 @@ func TestDDBWatch_InvalidThenValid_OnlyValidEmits(t *testing.T) {
 		t.Fatalf("save invalid: %v", err)
 	}
 
-	// Brief pause to allow poll to pick up invalid version.
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond) // SYNC: let config watcher poll pick up invalid version
 
 	// Save valid overlay with log_level change.
 	validOverlay := minimalOverlay("test-bridge")

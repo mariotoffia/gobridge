@@ -118,6 +118,7 @@ func TestDLQRouter_RetryBackoff_FakeClock(t *testing.T) {
 	n := <-store.onWrite
 	assert.Equal(t, 1, n, "first write attempt")
 
+	// OTHER: real-time sync for clocktest.Fake
 	// The worker returns from Write, loops, and calls clk.After(100ms) to
 	// register the backoff timer. A brief wall-clock sleep lets the
 	// goroutine reach that point before we touch the fake clock.
@@ -136,7 +137,7 @@ func TestDLQRouter_RetryBackoff_FakeClock(t *testing.T) {
 	n = <-store.onWrite
 	assert.Equal(t, 2, n, "second write attempt after 100ms advance")
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) // OTHER: real-time sync for clocktest.Fake
 
 	select {
 	case <-store.onWrite:

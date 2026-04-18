@@ -293,7 +293,7 @@ func pollForCondition(t *testing.T, timeout, interval time.Duration, fn func() b
 		if fn() {
 			return
 		}
-		time.Sleep(interval)
+		time.Sleep(interval) // SYNC: poll for condition
 	}
 	t.Fatal("timed out waiting for condition")
 }

@@ -79,7 +79,7 @@ func sqsMQTTSQSBridge(
 	require.NoError(t, sess2.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}))
-	time.Sleep(300 * time.Millisecond)
+	waitSubReady(t, sess2, 5*time.Second)
 	mqttRx := paho.NewReceiver(prefix+"-rx", sess2)
 	sqsSndOut := newSQSSender(t, outURL)
 	rt2 := goruntime.New(goruntime.WithInstanceID(prefix+"-b2"), goruntime.WithDLQStore(dlq))

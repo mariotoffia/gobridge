@@ -33,7 +33,7 @@ func TestBreaker_PanicInNext_LeavesHalfOpenProbeStuck(t *testing.T) {
 		t.Fatalf("expected open after 1 failure (threshold=1), got %s", m.State)
 	}
 
-	time.Sleep(cfg.ResetTimeout + 5*time.Millisecond)
+	time.Sleep(cfg.ResetTimeout + 5*time.Millisecond) // OTHER: circuit breaker reset timeout transition
 
 	if err := b.BeforeRequest(); err != nil {
 		t.Fatalf("expected half-open probe to be admitted: %v", err)
@@ -74,7 +74,7 @@ func TestProcessor_PanicInNext_RecoversProperly(t *testing.T) {
 		t.Fatal("expected error from failing next")
 	}
 
-	time.Sleep(cfg.ResetTimeout + 5*time.Millisecond)
+	time.Sleep(cfg.ResetTimeout + 5*time.Millisecond) // OTHER: circuit breaker reset timeout transition
 
 	func() {
 		defer func() {

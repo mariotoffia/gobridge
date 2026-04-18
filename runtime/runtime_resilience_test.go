@@ -115,7 +115,7 @@ func TestF3_DrainOnShutdown(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- drainer.Run(drainCtx) }()
 
-	time.Sleep(100 * time.Millisecond)
+	waitFor(t, 2*time.Second, "drainer sent 1", func() bool { return sender.SentCount() >= 1 })
 	cancel()
 
 	select {
@@ -148,7 +148,7 @@ func TestF3_DrainOnShutdown_NoLease(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- drainer.Run(drainCtx) }()
 
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // SYNC: let drainer start and reach poll loop
 	cancel()
 
 	select {
@@ -319,7 +319,7 @@ func TestF6_StaleFencingTokenDoesNotKillRuntime(t *testing.T) {
 
 	outbox.SetClaimErr(domain.ErrStaleFencingToken)
 
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond) // NEGATIVE: verify stale fencing token does not kill runtime
 
 	if !rt.Healthy() {
 		t.Error("runtime should remain healthy after scoped stale fencing token error")
@@ -457,7 +457,7 @@ func TestF7_ReacquiredLeaseSkipsRestartIfHealthy(t *testing.T) {
 		return has
 	})
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond) // NEGATIVE: verify healthy session is not restarted on re-acquisition
 
 	if c := session.GetStartCount(); c != 1 {
 		t.Fatalf("expected 1 start call (healthy session), got %d", c)

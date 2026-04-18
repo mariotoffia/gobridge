@@ -12,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -44,7 +45,11 @@ func TestAnaRecv_RunReturnsCtxErrOnParentCancel(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-r.Started():
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver did not start")
+	}
 	cancel()
 
 	select {
@@ -80,8 +85,11 @@ func TestAnaRecv_EmitError_PropagatedAndCancelsRun(t *testing.T) {
 		})
 	}()
 
-	// Wait for the handler to register, then dispatch a message.
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-r.Started():
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver did not start")
+	}
 	sess.Router().Route(newTestPacketPublish("test/emit-err", []byte("p")))
 
 	select {
@@ -110,14 +118,18 @@ func TestAnaRecv_HandlerUnregisteredAfterRunReturns(t *testing.T) {
 	go func() {
 		_ = r.Run(ctx, func(_ context.Context, _ ports.Delivery) error { return nil })
 	}()
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-r.Started():
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver did not start")
+	}
 	if sess.Router().HandlerCount() != 1 {
 		t.Fatalf("HandlerCount = %d, want 1 while Run is alive", sess.Router().HandlerCount())
 	}
 
 	cancel()
-	// Allow goroutine to unwind.
-	time.Sleep(100 * time.Millisecond)
+	wait.Until(t, 5*time.Second, "handler deregistered after cancel",
+		func() bool { return sess.Router().HandlerCount() == 0 })
 
 	if sess.Router().HandlerCount() != 0 {
 		t.Fatalf("HandlerCount = %d, want 0 after Run returns", sess.Router().HandlerCount())
@@ -153,7 +165,11 @@ func TestAnaRecv_MessagesArriveAsDeliveries(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-r.Started():
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver did not start")
+	}
 	sess.Router().Route(newTestPacketPublish("test/happy", []byte("payload")))
 
 	deadline := time.After(2 * time.Second)
@@ -235,7 +251,11 @@ func TestAnaRecv_EmitErrorWithMultipleDeliveries_OnlyFirstErrorReturned(t *testi
 		})
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-r.Started():
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver did not start")
+	}
 	for i := 0; i < 5; i++ {
 		sess.Router().Route(newTestPacketPublish("test/multi-err", []byte("p")))
 	}
@@ -293,7 +313,11 @@ func TestAnaRecv_HandlerSeesIndependentEnvelope(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-r.Started():
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver did not start")
+	}
 
 	const n = 10
 	for i := 0; i < n; i++ {

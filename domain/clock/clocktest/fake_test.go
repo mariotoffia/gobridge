@@ -315,7 +315,7 @@ func TestRace_TickerResetVsAdvance(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond) // OTHER: real-time component of clocktest.Fake tests
 	close(stop)
 	wg.Wait()
 }
@@ -369,7 +369,7 @@ func TestRace_TimerResetVsAdvance(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond) // OTHER: real-time component of clocktest.Fake tests
 	close(stop)
 	wg.Wait()
 }
@@ -426,7 +426,7 @@ func TestRace_StopVsAdvance(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond) // OTHER: real-time component of clocktest.Fake tests
 	close(stop)
 	wg.Wait()
 }

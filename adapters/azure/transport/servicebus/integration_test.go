@@ -259,6 +259,17 @@ func TestIntegration_BatchSend(t *testing.T) {
 	if len(deliveries) < batchSize {
 		t.Fatalf("received %d messages, want %d", len(deliveries), batchSize)
 	}
+
+	rxBodies := make(map[string]bool, batchSize)
+	for _, d := range deliveries {
+		rxBodies[string(d.Envelope().Payload)] = true
+	}
+	for i := 0; i < batchSize; i++ {
+		want := fmt.Sprintf("batch-message-%d", i)
+		if !rxBodies[want] {
+			t.Errorf("missing payload %q in received messages", want)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -58,8 +58,7 @@ func TestTransportServer_HandlerHotSwap(t *testing.T) {
 		_, _ = w.Write([]byte("v2"))
 	}))
 
-	// Small delay to ensure the swap is visible
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) // SYNC: ensure atomic handler swap is visible to next request
 
 	// Second request: v2
 	resp, err = http.Get(srv.URL() + "/")

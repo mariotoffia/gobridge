@@ -102,7 +102,7 @@ func TestApp_ReloadsWhenConfigFileAppearsAndRejectsInvalidChanges(t *testing.T) 
 	}
 	require.NoError(t, config.WriteFile(cfgPath, invalid))
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // SYNC: wait for file watcher to detect and reject invalid config
 	applied := app.CurrentAppliedConfig()
 	require.NotNil(t, applied)
 	assert.Equal(t, "debug", applied.Bridge.LogLevel)

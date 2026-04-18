@@ -133,7 +133,7 @@ func TestCredentialResolver_CacheExpiry(t *testing.T) {
 		t.Fatal("second call should use cache")
 	}
 
-	time.Sleep(60 * time.Millisecond)
+	time.Sleep(60 * time.Millisecond) // FIXED: wait for cache TTL (50ms) to expire
 
 	_, err = resolver.Resolve(ctx, "test://creds/a")
 	if err != nil {

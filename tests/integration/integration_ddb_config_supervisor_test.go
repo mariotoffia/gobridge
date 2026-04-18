@@ -251,7 +251,7 @@ func TestDDBSupervisor_DebouncedStrategy_CoalescesChanges(t *testing.T) {
 	var swapCount atomic.Int32
 	s := newCfgTestSupervisor(
 		bridge.WithSupervisorLogger(slog.Default()),
-		bridge.WithReconfigStrategy(bridge.NewDebouncedStrategy(300*time.Millisecond)),
+		bridge.WithReconfigStrategy(bridge.NewDebouncedStrategy(300*time.Millisecond, nil)),
 		bridge.WithOnSwap(func(_ bridge.SwapEvent) { swapCount.Add(1) }),
 	)
 
@@ -269,8 +269,7 @@ func TestDDBSupervisor_DebouncedStrategy_CoalescesChanges(t *testing.T) {
 		}
 	}
 
-	// Wait for debounce quiet period + poll interval + build time.
-	time.Sleep(1 * time.Second)
+	time.Sleep(1 * time.Second) // SYNC: wait for debounce quiet period + poll interval + build time
 
 	count := swapCount.Load()
 	if count != 1 {

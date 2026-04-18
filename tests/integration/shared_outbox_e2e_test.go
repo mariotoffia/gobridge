@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -204,7 +205,7 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 		if fn() {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // SYNC: poll for condition
 	}
 	t.Fatalf("timed out waiting for: %s", desc)
 }
@@ -315,13 +316,13 @@ func TestE2E_DynamoDB_SharedOutboxFlow(t *testing.T) {
 		return sessionB.isStarted()
 	})
 
-	// Emit messages through A.
+	// Emit messages through A with distinct payloads.
 	const msgCount = 5
 	dels := make([]*fakeDelivery, msgCount)
 	for i := 0; i < msgCount; i++ {
 		env := &domain.Envelope{
 			ID:      t.Name() + "-msg-" + string(rune('A'+i)),
-			Payload: []byte("ddb-payload"),
+			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
 		}
 		del := newFakeDelivery(env)
 		dels[i] = del
@@ -340,7 +341,17 @@ func TestE2E_DynamoDB_SharedOutboxFlow(t *testing.T) {
 		return senderB.sentCount() >= msgCount
 	})
 
-	t.Logf("DynamoDB e2e: %d messages sent via outbox", senderB.sentCount())
+	sentMsgs := senderB.getSent()
+	rxPayloads := make(map[string]bool, len(sentMsgs))
+	for _, env := range sentMsgs {
+		rxPayloads[string(env.Payload)] = true
+	}
+	for i := 0; i < msgCount; i++ {
+		want := fmt.Sprintf(`{"seq":%d}`, i)
+		if !rxPayloads[want] {
+			t.Errorf("missing payload %s in sent messages", want)
+		}
+	}
 }
 
 // validates cross-instance lease transfer on DynamoDB: secondary drains the persisted message after primary stops.
@@ -709,8 +720,7 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 		t.Fatalf("expected 1 claimed, got %d", len(claimed))
 	}
 
-	// Let A's lease expire, then B acquires.
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond) // ESSENTIAL: wait for A's lease to expire so B can acquire
 	tokenB, err := leaseStore.Acquire(ctx, leaseID, "owner-B", 5*time.Second, nil)
 	if err != nil {
 		t.Fatalf("B acquire: %v", err)
@@ -720,7 +730,7 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 	}
 
 	// B reclaims the stale-claimed record (updating claim_version to B's).
-	time.Sleep(300 * time.Millisecond) // wait for stale claim threshold
+	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for stale claim threshold
 	reclaimedB, err := outboxStore.Claim(ctx, pk, "owner-B", tokenB, 10)
 	if err != nil {
 		t.Fatalf("reclaim with B: %v", err)

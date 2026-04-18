@@ -74,8 +74,6 @@ func TestIntegration_SharedSubscription_CompetingConsumers(t *testing.T) {
 	t.Cleanup(func() { publisher.Close(context.Background()) })
 	sender := paho.NewSender(publisher, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
-	time.Sleep(500 * time.Millisecond)
-
 	for i := 0; i < msgCount; i++ {
 		env := &domain.Envelope{
 			Subject: baseTopic,
@@ -140,8 +138,6 @@ func TestIntegration_PlainSubscription_FanOut(t *testing.T) {
 	t.Cleanup(func() { publisher.Close(context.Background()) })
 	sender := paho.NewSender(publisher, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
-	time.Sleep(500 * time.Millisecond)
-
 	for i := 0; i < msgCount; i++ {
 		env := &domain.Envelope{
 			Subject: topic,
@@ -190,7 +186,7 @@ func TestIntegration_SharedSubscription_PayloadIntegrity(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	time.Sleep(300 * time.Millisecond)
+	waitSubActive(t, sess, 5*time.Second)
 
 	recv := paho.NewReceiver("rx-payload", sess)
 	var received []*domain.Envelope
@@ -290,6 +286,7 @@ func startSubscriber(t *testing.T, ctx context.Context, brokerURL, prefix, topic
 		sess.Close(context.Background())
 		t.Fatalf("Reconcile (%s): %v", prefix, err)
 	}
+	waitSubActive(t, sess, 5*time.Second)
 
 	recv := paho.NewReceiver("rx-"+prefix, sess)
 	sub := &subscriber{}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/domain/clock"
 )
 
 const (
@@ -40,6 +41,7 @@ type Watcher struct {
 	debounce     time.Duration
 	pollInterval time.Duration
 	logger       *slog.Logger
+	clk          clock.Clock
 
 	mu      sync.Mutex
 	running bool
@@ -73,6 +75,12 @@ func WithFormat(f config.Format) WatcherOption {
 // WithLogger sets the logger for watcher diagnostics.
 func WithLogger(l *slog.Logger) WatcherOption {
 	return func(w *Watcher) { w.logger = l }
+}
+
+// WithClock overrides the clock used for timers and tickers.
+// Defaults to clock.System when nil or not set.
+func WithClock(c clock.Clock) WatcherOption {
+	return func(w *Watcher) { w.clk = c }
 }
 
 // WithWatchConfig applies settings from a ConfigWatchDef (typically read
@@ -112,6 +120,9 @@ func NewWatcher(path string, opts ...WatcherOption) *Watcher {
 	}
 	for _, o := range opts {
 		o(w)
+	}
+	if w.clk == nil {
+		w.clk = clock.System
 	}
 	return w
 }
@@ -168,7 +179,7 @@ func (w *Watcher) Stop() {
 
 // notifyLoop uses fsnotify for file change detection with debouncing.
 func (w *Watcher) notifyLoop(ctx context.Context, fsw *fsnotify.Watcher, ch chan<- *config.BridgeConfig) {
-	var debounceTimer *time.Timer
+	var debounceTimer clock.Timer
 	var debounceCh <-chan time.Time
 
 	defer func() {
@@ -202,8 +213,8 @@ func (w *Watcher) notifyLoop(ctx context.Context, fsw *fsnotify.Watcher, ch chan
 				continue
 			}
 			if debounceTimer == nil {
-				debounceTimer = time.NewTimer(w.debounce)
-				debounceCh = debounceTimer.C
+				debounceTimer = w.clk.NewTimer(w.debounce)
+				debounceCh = debounceTimer.C()
 			} else {
 				debounceTimer.Reset(w.debounce)
 			}
@@ -235,7 +246,7 @@ func (w *Watcher) pollLoop(ctx context.Context, ch chan<- *config.BridgeConfig) 
 
 	lastHash := fileHash(w.path)
 
-	ticker := time.NewTicker(w.pollInterval)
+	ticker := w.clk.NewTicker(w.pollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -244,7 +255,7 @@ func (w *Watcher) pollLoop(ctx context.Context, ch chan<- *config.BridgeConfig) 
 			return
 		case <-w.stopCh:
 			return
-		case <-ticker.C:
+		case <-ticker.C():
 			h := fileHash(w.path)
 			if h == lastHash {
 				continue

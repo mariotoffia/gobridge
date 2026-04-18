@@ -269,7 +269,7 @@ func newMQTTCollector(
 	require.NoError(t, sess.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}), "collector Reconcile")
-	time.Sleep(300 * time.Millisecond)
+	waitSubReady(t, sess, 5*time.Second)
 
 	t.Cleanup(func() {
 		recvCancel()
@@ -443,7 +443,7 @@ func pollAllSQS(
 			})
 		if err != nil {
 			t.Logf("pollAllSQS: %v", err)
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 			continue
 		}
 		for _, msg := range out.Messages {

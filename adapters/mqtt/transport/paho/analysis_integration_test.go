@@ -106,7 +106,7 @@ func TestAnaIntg_ReconcileEmptyPlan_DoesNotUnsubscribe(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("initial Reconcile: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubActive(t, sess, 5*time.Second)
 
 	// Empty plan must be a no-op.
 	if err := sess.Reconcile(ctx, domain.SessionPlan{}); err != nil {
@@ -162,7 +162,7 @@ func TestAnaIntg_LargePayload_RoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubActive(t, sess, 5*time.Second)
 
 	recv := paho.NewReceiver("rx-large", sess)
 	sender := paho.NewSender(sess, paho.SenderOptions{QoS: 1, Timeout: 10 * time.Second})
@@ -228,7 +228,7 @@ func TestAnaIntg_MultipleReceivers_SameTopic_AllReceive(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubActive(t, sess, 5*time.Second)
 
 	recv1 := paho.NewReceiver("rx-fan-1", sess)
 	recv2 := paho.NewReceiver("rx-fan-2", sess)
@@ -288,7 +288,7 @@ func TestAnaIntg_HighConcurrencyPublish_NoLoss(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubActive(t, sess, 5*time.Second)
 
 	recv := paho.NewReceiver("rx-conc", sess)
 	sender := paho.NewSender(sess, paho.SenderOptions{QoS: 1, Timeout: 10 * time.Second})
@@ -385,9 +385,10 @@ func TestAnaIntg_ReconcileSameTopicTwice_Idempotent(t *testing.T) {
 		}
 	}
 
-	// Allow a brief settle window then check we did NOT receive
-	// duplicates from a (hypothetical) double-subscribe.
-	time.Sleep(300 * time.Millisecond)
+	// NEGATIVE: assert no duplicate arrives from a (hypothetical) double-subscribe.
+	select {
+	case <-time.After(300 * time.Millisecond):
+	}
 	if n := got.Load(); n != 1 {
 		t.Fatalf("got %d messages, want exactly 1 (idempotent reconcile)", n)
 	}
@@ -410,7 +411,7 @@ func TestAnaIntg_HealthDuringTraffic_RemainsStable(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubActive(t, sess, 5*time.Second)
 
 	recv := paho.NewReceiver("rx-health", sess)
 	sender := paho.NewSender(sess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
@@ -427,13 +428,19 @@ func TestAnaIntg_HealthDuringTraffic_RemainsStable(t *testing.T) {
 	pollDone := make(chan struct{})
 	go func() {
 		defer close(pollDone)
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
 		for i := 0; i < 50; i++ {
 			h := sess.Health(ctx)
 			if !h.Connected {
 				t.Errorf("Health.Connected = false at iteration %d", i)
 				return
 			}
-			time.Sleep(20 * time.Millisecond)
+			select {
+			case <-ticker.C:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 

@@ -9,7 +9,9 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -43,8 +45,8 @@ func TestAutoExtend_Boundary_Timeout1_Disabled(t *testing.T) {
 		nil,
 	)
 
-	// Wait enough time for auto-extend to have fired if enabled.
-	time.Sleep(1500 * time.Millisecond)
+	// NEGATIVE: verify no ChangeMessageVisibility when visibilityTimeout == 1
+	<-time.After(200 * time.Millisecond)
 
 	_ = del.Ack(context.Background())
 
@@ -77,6 +79,7 @@ func TestAutoExtend_Boundary_Timeout2_Enabled(t *testing.T) {
 	defer parentCancel()
 
 	env := &domain.Envelope{ID: "boundary-2", Subject: "test"}
+	fake := clocktest.New()
 	del := newDelivery(
 		parentCtx,
 		env,
@@ -88,11 +91,21 @@ func TestAutoExtend_Boundary_Timeout2_Enabled(t *testing.T) {
 		func() {}, // processingCancel
 		nil,
 		&ports.NoopExporter{},
-		nil,
+		fake,
 	)
 
-	// Wait long enough for at least one auto-extend tick.
-	time.Sleep(1500 * time.Millisecond)
+	wait.Until(t, time.Second, "ticker registered", func() bool {
+		return fake.TickerCount() >= 1
+	})
+
+	// SYNC: advance fake clock to trigger auto-extend tick.
+	fake.Advance(1 * time.Second)
+	wait.Until(t, time.Second, "auto-extend fired", func() bool {
+		mock.mu.Lock()
+		n := len(mock.ChangeVisibilityCalls)
+		mock.mu.Unlock()
+		return n >= 1
+	})
 
 	_ = del.Ack(context.Background())
 

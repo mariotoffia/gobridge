@@ -164,7 +164,7 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 
 	// Phase 2: Wait for ResetTimeout, then inject success probes one at a time.
 	t.Log("GAP-CB: Phase 2 — waiting 4s for ResetTimeout expiry")
-	time.Sleep(4 * time.Second) // Intentional: simulates real timeout.
+	time.Sleep(4 * time.Second) // ESSENTIAL: wait for circuit breaker ResetTimeout expiry
 
 	t.Log("GAP-CB: Phase 2 — injecting success probes for tenant A")
 	for probe := 0; probe < 5; probe++ {
@@ -175,7 +175,7 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 			Headers: map[string]any{"tenant": "A"},
 		}
 		_ = rt.Inject(ctx, "gap-cb-route", env)
-		time.Sleep(1 * time.Second) // Allow probe to complete before next.
+		time.Sleep(1 * time.Second) // OTHER: pacing — allow probe to complete before next injection
 		m := cbProc.Metrics()
 		if tm, ok := m["A"]; ok {
 			t.Logf("GAP-CB: probe %d — state=%s successes=%d", probe, tm.State, tm.ConsecutiveSuccesses)

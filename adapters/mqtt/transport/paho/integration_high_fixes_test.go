@@ -107,7 +107,7 @@ func TestIntegration_ConcurrentReconcile_NoCorruption(t *testing.T) {
 	if err := sess.Reconcile(ctx, finalPlan); err != nil {
 		t.Fatalf("final Reconcile: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitSubActive(t, sess, 5*time.Second)
 
 	recv := paho.NewReceiver("verify-rx", sess)
 	sender := paho.NewSender(sess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
@@ -124,7 +124,11 @@ func TestIntegration_ConcurrentReconcile_NoCorruption(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-recv.Started():
+	case <-time.After(5 * time.Second):
+		t.Fatal("receiver did not start")
+	}
 	if err := sender.Send(ctx, &domain.Envelope{
 		Subject: verifyTopic,
 		Payload: []byte("verify-state"),

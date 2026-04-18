@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 )
 
 func writeYAML(t *testing.T, path string, bridgeID string) {
@@ -52,6 +53,7 @@ func TestWatcher_NotifyMode(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// STARTUP: let fsnotify goroutine register with the OS.
 	time.Sleep(100 * time.Millisecond)
 	writeYAML(t, path, "updated")
 
@@ -72,9 +74,11 @@ func TestWatcher_PollMode(t *testing.T) {
 	path := filepath.Join(dir, "bridge.yaml")
 	writeYAML(t, path, "initial")
 
+	fc := clocktest.New()
 	w := NewWatcher(path,
 		WithMode(ModePoll),
 		WithPollInterval(100*time.Millisecond),
+		WithClock(fc),
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -85,8 +89,9 @@ func TestWatcher_PollMode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	waitForTicker(t, fc)
 	writeYAML(t, path, "polled")
+	fc.Advance(100 * time.Millisecond)
 
 	select {
 	case cfg := <-ch:
@@ -181,10 +186,12 @@ func TestWatcher_DebounceCoalesces(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// STARTUP: let fsnotify goroutine register with the OS.
 	time.Sleep(100 * time.Millisecond)
 
 	for i := 0; i < 5; i++ {
 		writeYAML(t, path, "rapid-"+string(rune('0'+i)))
+		// SYNC: space writes so fsnotify delivers separate events.
 		time.Sleep(20 * time.Millisecond)
 	}
 
@@ -220,9 +227,11 @@ func TestWatcher_InvalidContent(t *testing.T) {
 	path := filepath.Join(dir, "bridge.yaml")
 	writeYAML(t, path, "valid")
 
+	fc := clocktest.New()
 	w := NewWatcher(path,
 		WithMode(ModePoll),
 		WithPollInterval(100*time.Millisecond),
+		WithClock(fc),
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -233,10 +242,11 @@ func TestWatcher_InvalidContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	waitForTicker(t, fc)
 	if err := os.WriteFile(path, []byte("{{broken yaml"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	fc.Advance(100 * time.Millisecond)
 
 	select {
 	case cfg := <-ch:
@@ -282,5 +292,18 @@ func TestWatcher_StopClosesChannel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("channel should be closed after Stop")
+	}
+}
+
+// waitForTicker spins until the fake clock has at least one active ticker,
+// meaning the poll goroutine has started and registered its ticker.
+func waitForTicker(t *testing.T, fc *clocktest.Fake) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for fc.TickerCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for poll ticker to register")
+		}
+		time.Sleep(1 * time.Millisecond)
 	}
 }

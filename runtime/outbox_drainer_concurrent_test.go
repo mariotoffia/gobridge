@@ -87,7 +87,7 @@ func TestDrainBatch_ParallelSends(t *testing.T) {
 				break
 			}
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // OTHER: simulated processing duration
 		return nil
 	})
 
@@ -151,7 +151,7 @@ func TestDrainBatch_ConcurrencyLimit(t *testing.T) {
 				break
 			}
 		}
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(30 * time.Millisecond) // OTHER: simulated processing duration
 		return nil
 	})
 
@@ -234,7 +234,7 @@ func TestDrainBatch_ConcurrencyDefault(t *testing.T) {
 				break
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond) // OTHER: simulated processing duration
 		return nil
 	})
 

@@ -65,8 +65,7 @@ func TestConfigAPI_TransactionIsolation_ExpiredTxn_Returns404(t *testing.T) {
 	}
 	txnID := body["txn_id"].(string)
 
-	// Wait for expiry (generous margin).
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for 100ms transaction TTL to expire
 
 	getURL := fmt.Sprintf("%s/api/v1/admin/config/transactions/%s", srv.URL, txnID)
 	resp2, _ := apiGet(t, getURL, testAdminAPIKey)
@@ -85,7 +84,7 @@ func TestConfigAPI_TransactionIsolation_AfterExpiry_NewTxnAllowed(t *testing.T) 
 	srv := newConfigAPITestServer(t, baseConfigForAPI())
 
 	apiPost(t, srv.URL+"/api/v1/admin/config/transactions", testAdminAPIKey, map[string]string{"ttl": "100ms"})
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for 100ms transaction TTL to expire
 
 	resp, _ := apiPost(t, srv.URL+"/api/v1/admin/config/transactions", testAdminAPIKey, nil)
 	if resp.StatusCode != http.StatusCreated {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // TestSession_Subscribe_FanOut validates that two independent subscribers
@@ -171,7 +172,10 @@ func TestSession_Subscribe_TwoReceivers_BothReconnectAfterSessionConnected(t *te
 		}()
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	// STARTUP: wait for both goroutines to have subscribed.
+	wait.Until(t, time.Second, "subscribers registered", func() bool {
+		return s.subscriberCount() >= 2
+	})
 	s.pushEvent(ports.SessionConnected, nil)
 
 	wg.Wait()

@@ -205,11 +205,11 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 					"retry_after", delay,
 				)
 			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(delay):
-			}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-r.cfg.Clock.After(delay):
+		}
 			continue
 		}
 

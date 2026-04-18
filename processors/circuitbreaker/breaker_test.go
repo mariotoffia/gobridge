@@ -68,7 +68,7 @@ func TestBreaker_TransitionsToHalfOpenAfterTimeout(t *testing.T) {
 		b.AfterRequest(errTest)
 	}
 
-	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond)
+	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
 
 	err := b.BeforeRequest()
 	if err != nil {
@@ -90,7 +90,7 @@ func TestBreaker_HalfOpenToClosedAfterSuccessThreshold(t *testing.T) {
 		b.AfterRequest(errTest)
 	}
 
-	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond)
+	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
 
 	for i := 0; i < cfg.SuccessThreshold; i++ {
 		if err := b.BeforeRequest(); err != nil {
@@ -114,7 +114,7 @@ func TestBreaker_HalfOpenToOpenOnFailure(t *testing.T) {
 		b.AfterRequest(errTest)
 	}
 
-	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond)
+	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
 
 	_ = b.BeforeRequest()
 	b.AfterRequest(errTest)

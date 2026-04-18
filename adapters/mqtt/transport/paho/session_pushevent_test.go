@@ -62,7 +62,7 @@ func TestPushEvent_ConcurrentClose_NoPanic(t *testing.T) {
 
 		go func() {
 			defer wg.Done()
-			time.Sleep(50 * time.Microsecond)
+			time.Sleep(50 * time.Microsecond) // OTHER: microsecond pacing — race window for concurrent Close during pushEvent
 			_ = s.Close(context.Background())
 		}()
 

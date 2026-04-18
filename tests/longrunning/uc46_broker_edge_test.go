@@ -94,8 +94,7 @@ func TestUC46_BrokerMessageSizeLimit(t *testing.T) {
 		fmt.Sprintf("collector >= %d", smallCount),
 		func() bool { return collector.count() >= smallCount })
 
-	// Extra time for oversized messages to be processed or DLQ'd.
-	time.Sleep(10 * time.Second)
+	time.Sleep(10 * time.Second) // SYNC: let oversized messages be processed or DLQ'd
 
 	delivered := collector.count()
 	dlqCount := dlq.count()
@@ -177,8 +176,7 @@ func TestUC47_BrokerMaxQueuedMessages(t *testing.T) {
 		fmt.Sprintf("sender success >= %d", msgCount),
 		func() bool { return snd.success.Load() >= int64(msgCount) })
 
-	// Give the collector time to drain whatever the broker still has queued.
-	time.Sleep(10 * time.Second)
+	time.Sleep(10 * time.Second) // SYNC: let collector drain messages from broker queue
 
 	bridgeSent := snd.success.Load()
 	received := collector.count()

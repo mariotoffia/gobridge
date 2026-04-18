@@ -12,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // TestReceiver_WaitAndReconnect_AlreadyConnected_ProceedsImmediately
@@ -106,7 +107,10 @@ func TestReceiver_WaitAndReconnect_WaitsForEvent(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- r.waitAndReconnect(ctx) }()
 
-	time.Sleep(100 * time.Millisecond)
+	// STARTUP: wait for waitAndReconnect to subscribe to session events.
+	wait.Until(t, time.Second, "receiver subscribed", func() bool {
+		return sess.subscriberCount() > 0
+	})
 
 	select {
 	case <-done:

@@ -98,7 +98,7 @@ func TestSessionManager_StepDown(t *testing.T) {
 		errCh <- mgr.Run(ctx)
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond) // STARTUP: let session manager acquire lease and enter renew loop
 
 	leaseStore.SetRenewErr(domain.ErrVersionMismatch)
 
@@ -113,7 +113,7 @@ func TestSessionManager_StepDown(t *testing.T) {
 		if !hasLease {
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // SYNC: poll interval in inline wait loop
 	}
 
 	cancel()
@@ -148,10 +148,10 @@ func TestSessionManager_Close(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() { _ = mgr.Run(ctx) }()
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond) // STARTUP: let session manager acquire lease and enter renew loop
 
 	cancel()
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // STARTUP: let Run exit after cancel
 
 	err := mgr.Close(context.Background())
 	if err != nil {

@@ -76,7 +76,7 @@ func TestE2E_F1_Failover_SingleInstance_CrashBeforeDrain(t *testing.T) {
 	ctxA, cancelA := context.WithCancel(context.Background())
 	_ = rtA.Start(ctxA)
 	sendToSQS(t, sqsClient, queueURL, `{"f1":"crash"}`, nil)
-	time.Sleep(3 * time.Second)
+	time.Sleep(3 * time.Second) // OTHER: simulated crash delay — let message enter pipeline before killing instance A
 	cancelA()
 	_ = rtA.Stop(context.Background())
 	sessB := setupMQTTSession(t, sessionID+"-b", domain.SessionEphemeral)
@@ -89,6 +89,14 @@ func TestE2E_F1_Failover_SingleInstance_CrashBeforeDrain(t *testing.T) {
 	_ = rtB.Start(ctxB)
 	defer func() { _ = rtB.Stop(context.Background()) }()
 	e2eWaitFor(t, 20*time.Second, "MQTT after restart drain", func() bool { return collector.count() >= 1 })
+
+	msgs := collector.getMessages()
+	if len(msgs) == 0 {
+		t.Fatal("F1: expected at least 1 message")
+	}
+	if string(msgs[0].Payload) != `{"f1":"crash"}` {
+		t.Errorf("F1: payload = %q, want %q", string(msgs[0].Payload), `{"f1":"crash"}`)
+	}
 }
 
 // verifies lease transfer: instance B drains the outbox after instance A persists and stops.
@@ -240,7 +248,7 @@ func TestE2E_F4_Failover_ThreeInstances_StaleFencingToken(t *testing.T) {
 	if len(claimed) != 1 {
 		t.Fatalf("claimed=%d, want 1", len(claimed))
 	}
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond) // ESSENTIAL: wait for A's lease to expire so B can acquire
 	tokenB, err := leaseStore.Acquire(ctx, leaseID, "owner-B", 5*time.Second, nil)
 	if err != nil {
 		t.Fatalf("B acquire: %v", err)
@@ -250,7 +258,7 @@ func TestE2E_F4_Failover_ThreeInstances_StaleFencingToken(t *testing.T) {
 	}
 	// B must reclaim first (updating claim_version to B's token), so that
 	// A's stale Complete is rejected by the claim_version mismatch.
-	time.Sleep(600 * time.Millisecond)
+	time.Sleep(600 * time.Millisecond) // ESSENTIAL: wait for stale claim threshold so B can reclaim
 	reclaimed, err := outboxStore.Claim(ctx, pk, "owner-B", tokenB, 10)
 	if err != nil {
 		t.Fatalf("B reclaim: %v", err)
@@ -293,7 +301,7 @@ func TestE2E_F5_Failover_ConnectAfterLease(t *testing.T) {
 	}
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond) // NEGATIVE: verify session does not start before lease is acquired
 	if sess.isStarted() {
 		t.Fatal("session started before lease acquired")
 	}
@@ -443,7 +451,7 @@ func TestE2E_F8_Failover_IngressCrashSQSRedelivery(t *testing.T) {
 	_ = rtA.AddRoute(cfg, newSQSReceiver(t, queueURL), &stallSender{}, nil, nil)
 	_ = rtA.Start(ctxA)
 	sendToSQS(t, sqsClient, queueURL, `{"f8":"redelivery"}`, nil)
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // OTHER: simulated crash delay — let stall sender hold message before killing A
 	cancelA()
 	_ = rtA.Stop(context.Background())
 

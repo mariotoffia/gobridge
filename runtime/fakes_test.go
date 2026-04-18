@@ -18,7 +18,7 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 		if fn() {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // SYNC: poll interval in waitFor helper
 	}
 	t.Fatalf("timeout waiting for %s", desc)
 }

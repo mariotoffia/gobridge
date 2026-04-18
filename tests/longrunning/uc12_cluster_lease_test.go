@@ -235,7 +235,7 @@ func TestUC14_LeaseContention_TenInstances(t *testing.T) {
 		}
 		t.Logf("UC14: sample %d -- %d active", s, active)
 		assert.Equal(t, 1, active, "sample %d: want 1 active, got %d", s, active)
-		time.Sleep(2 * time.Second)
+		time.Sleep(2 * time.Second) // SYNC: wait between role samples to verify lease stability
 	}
 
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
@@ -347,7 +347,6 @@ func TestUC16_MultiSession_Cluster(t *testing.T) {
 
 	collAlpha := newMQTTCollector(t, "uc16/alpha", "uc16-col-a")
 	collBeta := newMQTTCollector(t, "uc16/beta", "uc16-col-b")
-	time.Sleep(300 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

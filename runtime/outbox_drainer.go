@@ -36,8 +36,9 @@ type OutboxDrainer struct {
 	logger         *slog.Logger
 	clk            clock.Clock
 
-	drainTimeout     time.Duration
-	currentBatchSize int
+	drainTimeout      time.Duration
+	batchTimeoutFloor time.Duration
+	currentBatchSize  int
 	hasDrained       bool
 	// hadPending tracks whether the most recent Claim returned records.
 	// Used to ensure OnDrained fires only on the transition from
@@ -79,6 +80,7 @@ type OutboxDrainerConfig struct {
 	DrainMaxBatchSize   int
 	DrainMaxConcurrency int
 	DrainTimeout        time.Duration
+	BatchTimeoutFloor   time.Duration
 	Metrics        ports.MetricsExporter
 	Hook           ports.DeliveryHook
 	Logger         *slog.Logger
@@ -137,6 +139,9 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 	if cfg.DrainTimeout <= 0 {
 		cfg.DrainTimeout = 10 * time.Second
 	}
+	if cfg.BatchTimeoutFloor <= 0 {
+		cfg.BatchTimeoutFloor = 2 * time.Second
+	}
 	if cfg.TokenFn == nil {
 		cfg.TokenFn = func() (domain.LeaseToken, bool) { return domain.LeaseToken{}, false }
 	}
@@ -170,8 +175,9 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 		batchSize:        cfg.DrainBatchSize,
 		maxBatchSize:     cfg.DrainMaxBatchSize,
 		maxConcurrency:   cfg.DrainMaxConcurrency,
-		drainTimeout:     cfg.DrainTimeout,
-		currentBatchSize: cfg.DrainBatchSize,
+		drainTimeout:      cfg.DrainTimeout,
+		batchTimeoutFloor: cfg.BatchTimeoutFloor,
+		currentBatchSize:  cfg.DrainBatchSize,
 		metrics:          m,
 		hook:             hk,
 		logger:           cfg.Logger,
@@ -315,8 +321,8 @@ func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken)
 	// The timeout is derived from SendTimeout (plus a buffer for Complete)
 	// so that the configured SendTimeout is not silently capped.
 	batchTimeout := time.Duration(float64(d.policy.SendTimeout) * 1.5)
-	if batchTimeout < 2*time.Second {
-		batchTimeout = 2 * time.Second
+	if batchTimeout < d.batchTimeoutFloor {
+		batchTimeout = d.batchTimeoutFloor
 	}
 	if batchTimeout > d.drainTimeout {
 		batchTimeout = d.drainTimeout

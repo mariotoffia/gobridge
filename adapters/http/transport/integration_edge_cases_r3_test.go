@@ -354,7 +354,7 @@ func TestEdgeR3_CustomPathPrefix(t *testing.T) {
 func TestEdgeR3_ForwarderContextCancelled(t *testing.T) {
 	// Slow remote that takes longer than context allows.
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(2 * time.Second)
+		time.Sleep(2 * time.Second) // OTHER: simulates slow remote for context cancellation test
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer remote.Close()
