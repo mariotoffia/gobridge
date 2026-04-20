@@ -146,8 +146,9 @@ func TestE2E_S3_MQTTToSQS_DirectHold(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	wait.Until(t, 5*time.Second, "S3 subscription active", func() bool {
-		return sess.Health(context.Background()).ServiceLevel == ports.ServiceLevelFull
+	wait.Until(t, 5*time.Second, "S3 subscriptions active", func() bool {
+		h := sess.Health(context.Background())
+		return h.Connected && h.SubscriptionsActive == h.SubscriptionsWanted
 	})
 
 	mqttReceiver := paho.NewReceiver("s3-rx", sess)
@@ -406,8 +407,9 @@ func TestE2E_S6_SQSToMQTT_RoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	wait.Until(t, 5*time.Second, "S6 subscription active", func() bool {
-		return sess.Health(context.Background()).ServiceLevel == ports.ServiceLevelFull
+	wait.Until(t, 5*time.Second, "S6 subscriptions active", func() bool {
+		h := sess.Health(context.Background())
+		return h.Connected && h.SubscriptionsActive == h.SubscriptionsWanted
 	})
 
 	mqttSender := setupMQTTSender(t, sess)

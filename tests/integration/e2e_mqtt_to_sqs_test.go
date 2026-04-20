@@ -8,7 +8,6 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
-	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -356,9 +355,14 @@ func TestE2E_MQTTToSQS_BackpressureSQSSlow(t *testing.T) {
 	}
 }
 
+// waitSubReady waits for the broker to ACK all pending SUBSCRIBE frames.
+// It deliberately does NOT require ServiceLevelFull because tests
+// typically construct the receiver (handler) AFTER calling Reconcile;
+// Full would require HandlersRegistered > 0 which has not happened yet.
 func waitSubReady(t *testing.T, sess *paho.Session) {
 	t.Helper()
-	wait.Until(t, 5*time.Second, "subscription active", func() bool {
-		return sess.Health(context.Background()).ServiceLevel == ports.ServiceLevelFull
+	wait.Until(t, 5*time.Second, "subscriptions active", func() bool {
+		h := sess.Health(context.Background())
+		return h.Connected && h.SubscriptionsActive == h.SubscriptionsWanted
 	})
 }

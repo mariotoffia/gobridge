@@ -102,6 +102,10 @@ initializations use the same approach instead of a fixed delay.
 | `runtime.Runtime` | `DeepHealth(ctx) DeepHealth` | Struct poll | Anytime | `runtime/bridge.go` |
 | `runtime.Runtime` | `WaitRouteReady(ctx, routeID) error` | Blocking wait | Route runner + receiver started | `runtime/bridge.go` |
 | `runtime.Runtime` | `WaitQuiescent(ctx, opts) error` | Blocking wait | All routes at zero in-flight for `MinQuiet` | `runtime/bridge.go` |
+| `runtime.Runtime` | `ReadinessLevel(ctx) ReadinessLevel` | Snapshot enum | Down/Live/Running/Connected/Subscribed/Full | `runtime/bridge.go` |
+| `runtime.Runtime` | `AtLeast(ctx, want) bool` | Snapshot bool | Has reached requested level | `runtime/bridge.go` |
+| HTTP `/api/v1/monitor/ready?level=` | level= query param | HTTP 200/503 | live, running, connected, subscribed, full | `httpapi/monitor.go` |
+| HTTP `/api/v1/monitor/deephealth` | JSON body | Per-session `active_topics`, per-route `ready` + `in_flight`, current `level` | exposed in response | `httpapi/monitor.go` |
 | `runtime.RouteRunner` | `Started() <-chan struct{}` | Channel close | `Run()` entered | `runtime/route_runner.go` |
 | `runtime.RouteRunner` | `InFlight() int64` | Atomic counter | Per delivery enter/exit | `runtime/route_runner.go` |
 | `runtime.RouteHealth` | `Ready bool` / `InFlight int` | Struct fields | From `DeepHealth()` | `runtime/bridge.go` |

@@ -240,10 +240,14 @@ func newMQTTCollector(t *testing.T, topic string, clientIDPrefix string) *mqttCo
 		t.Fatalf("collector Reconcile: %v", err)
 	}
 
-	// Wait for subscription to be active by checking session health.
-	wait.Until(t, 5*time.Second, "collector subscription active", func() bool {
+	// Wait for the broker to acknowledge the SUBSCRIBE. We can't wait
+	// for ServiceLevelFull here because the receiver (and its handler)
+	// is constructed below — Full requires HandlersRegistered > 0.
+	// Subs-active is the right precondition for "safe to construct
+	// receiver and not miss messages from subsequent publishes".
+	wait.Until(t, 5*time.Second, "collector subscriptions active", func() bool {
 		h := sess.Health(ctx)
-		return h.ServiceLevel == ports.ServiceLevelFull
+		return h.Connected && h.SubscriptionsActive == h.SubscriptionsWanted
 	})
 
 	recv := paho.NewReceiver("collector-"+clientID, sess)

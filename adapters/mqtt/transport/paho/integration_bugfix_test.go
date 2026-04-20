@@ -448,10 +448,15 @@ func drainEvent(t *testing.T, sess *paho.Session) {
 	}
 }
 
+// waitSubActive waits for the broker to ACK all pending SUBSCRIBE frames.
+// It deliberately does NOT require ServiceLevelFull because tests
+// typically construct the receiver (handler) AFTER calling Reconcile;
+// Full would require HandlersRegistered > 0 which has not happened yet.
 func waitSubActive(t *testing.T, sess *paho.Session, timeout time.Duration) {
 	t.Helper()
-	wait.Until(t, timeout, "subscription active", func() bool {
-		return sess.Health(context.Background()).ServiceLevel == ports.ServiceLevelFull
+	wait.Until(t, timeout, "subscriptions active", func() bool {
+		h := sess.Health(context.Background())
+		return h.Connected && h.SubscriptionsActive == h.SubscriptionsWanted
 	})
 }
 

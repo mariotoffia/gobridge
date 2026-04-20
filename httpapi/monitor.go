@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"net/http"
+
+	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
 // MonitorMux returns a ServeMux wired with monitor routes. It is intended
@@ -70,6 +72,25 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
 }
 
+// handleReady reports whether the runtime has reached the requested
+// readiness level. The level is taken from the ?level= query parameter:
+//
+//	?level=running     — runtime started + healthy
+//	?level=connected   — all sessions connected to broker
+//	?level=subscribed  — all SUBSCRIBE frames acknowledged by broker
+//	?level=full        — all routes have handler registered (ServiceLevelFull)
+//
+// Operators map probes to levels:
+//   - K8s liveness:   /live (always 200)
+//   - K8s readiness:  /ready?level=connected (tolerates intermittent broker hiccups)
+//   - Pre-traffic:    /ready?level=full (strict, every route ready to dispatch)
+//
+// When ?level= is absent, the legacy contract applies: 200 with
+// {status, role} when running+healthy, 503 with {error: "not ready"}
+// otherwise. With ?level= the response is the structured form
+// {status, role, level, requested}, returning 503 when have<want.
+//
+// Unknown levels return 400 Bad Request.
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	rt := s.currentRuntime()
 	if rt == nil {
@@ -77,14 +98,39 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-cache, max-age=0")
-	if !rt.IsRunning() || !rt.Healthy() {
-		writeErr(w, http.StatusServiceUnavailable, "not ready")
+
+	rawLevel := r.URL.Query().Get("level")
+	if rawLevel == "" {
+		// Legacy path: preserve historical {status,role} / {error} shape.
+		if !rt.IsRunning() || !rt.Healthy() {
+			writeErr(w, http.StatusServiceUnavailable, "not ready")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "ready",
+			"role":   rt.Role(),
+		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status": "ready",
-		"role":   rt.Role(),
-	})
+
+	want, ok := goruntime.ParseReadinessLevel(rawLevel)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "invalid level (want one of: live, running, connected, subscribed, full)")
+		return
+	}
+	have := rt.ReadinessLevel(r.Context())
+	resp := map[string]any{
+		"status":    "ready",
+		"role":      rt.Role(),
+		"level":     have.String(),
+		"requested": want.String(),
+	}
+	if have < want {
+		resp["status"] = "not_ready"
+		writeJSON(w, http.StatusServiceUnavailable, resp)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // --- Authenticated sensitive endpoints ---
@@ -162,23 +208,27 @@ type deepHealthResponse struct {
 	Role            string                      `json:"role"`
 	ReadyForTraffic bool                        `json:"ready_for_traffic"`
 	ServiceLevel    string                      `json:"service_level"`
+	Level           string                      `json:"level"` // current ReadinessLevel
 	Sessions        []deepHealthSessionResponse `json:"sessions"`
 	Routes          []deepHealthRouteResponse   `json:"routes"`
 }
 
 type deepHealthSessionResponse struct {
-	SessionID           string `json:"session_id"`
-	Connected           bool   `json:"connected"`
-	HasLease            bool   `json:"has_lease"`
-	SubscriptionsWanted int    `json:"subscriptions_wanted"`
-	SubscriptionsActive int    `json:"subscriptions_active"`
-	Ready               bool   `json:"ready"`
-	ServiceLevel        string `json:"service_level"`
+	SessionID           string   `json:"session_id"`
+	Connected           bool     `json:"connected"`
+	HasLease            bool     `json:"has_lease"`
+	SubscriptionsWanted int      `json:"subscriptions_wanted"`
+	SubscriptionsActive int      `json:"subscriptions_active"`
+	ActiveTopics        []string `json:"active_topics,omitempty"`
+	Ready               bool     `json:"ready"`
+	ServiceLevel        string   `json:"service_level"`
 }
 
 type deepHealthRouteResponse struct {
 	ID           string `json:"id"`
 	DeliveryMode string `json:"delivery_mode"`
+	Ready        bool   `json:"ready"`     // route runner started + receiver started
+	InFlight     int    `json:"in_flight"` // currently-processing delivery count
 }
 
 func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
@@ -196,6 +246,7 @@ func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 		Role:            dh.Role,
 		ReadyForTraffic: dh.ReadyForTraffic,
 		ServiceLevel:    string(dh.ServiceLevel),
+		Level:           rt.ReadinessLevel(r.Context()).String(),
 	}
 
 	resp.Sessions = make([]deepHealthSessionResponse, len(dh.Sessions))
@@ -206,6 +257,7 @@ func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 			HasLease:            sh.HasLease,
 			SubscriptionsWanted: sh.SubscriptionsWanted,
 			SubscriptionsActive: sh.SubscriptionsActive,
+			ActiveTopics:        sh.ActiveTopics,
 			Ready:               sh.Ready,
 			ServiceLevel:        string(sh.ServiceLevel),
 		}
@@ -216,6 +268,8 @@ func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 		resp.Routes[i] = deepHealthRouteResponse{
 			ID:           rh.ID,
 			DeliveryMode: rh.DeliveryMode,
+			Ready:        rh.Ready,
+			InFlight:     rh.InFlight,
 		}
 	}
 

@@ -123,10 +123,10 @@
 ./tests/integration/e2e_failover_test.go:454:	time.Sleep(2 * time.Second) // OTHER: simulated crash delay — let stall sender hold message before killing A
 ./tests/integration/e2e_failover_test.go:79:	time.Sleep(3 * time.Second) // OTHER: simulated crash delay — let message enter pipeline before killing instance A
 ./tests/integration/e2e_helpers_test.go:111:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
-./tests/integration/e2e_helpers_test.go:354:		time.Sleep(50 * time.Millisecond) // SYNC: poll for bridge readiness
+./tests/integration/e2e_helpers_test.go:358:		time.Sleep(50 * time.Millisecond) // SYNC: poll for bridge readiness
 ./tests/integration/e2e_routing_test.go:151:	time.Sleep(2 * time.Second) // NEGATIVE: verify unmatched clients received nothing
-./tests/integration/e2e_sqs_mqtt_test.go:250:	time.Sleep(3 * time.Second) // OTHER: simulated crash delay — let message enter pipeline before killing instance A
-./tests/integration/e2e_sqs_mqtt_test.go:343:	time.Sleep(3 * time.Second) // OTHER: simulated crash delay — let message enter pipeline before killing instance A
+./tests/integration/e2e_sqs_mqtt_test.go:251:	time.Sleep(3 * time.Second) // OTHER: simulated crash delay — let message enter pipeline before killing instance A
+./tests/integration/e2e_sqs_mqtt_test.go:344:	time.Sleep(3 * time.Second) // OTHER: simulated crash delay — let message enter pipeline before killing instance A
 ./tests/integration/integration_config_api_edge_test.go:68:	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for 100ms transaction TTL to expire
 ./tests/integration/integration_config_api_edge_test.go:87:	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for 100ms transaction TTL to expire
 ./tests/integration/integration_config_api_helpers_test.go:296:		time.Sleep(interval) // SYNC: poll for condition
@@ -159,7 +159,7 @@
 ./tests/longrunning/gap_shutdown_edge_test.go:119:	time.Sleep(2 * time.Second) // SYNC: let final deliveries reach collector via MQTT
 ./tests/longrunning/longrunning_helpers_test.go:308:	time.Sleep(500 * time.Millisecond) // OTHER: let container fully stop before restarting
 ./tests/longrunning/longrunning_helpers_test.go:633:// replacing the brittle time.Sleep(200ms) pattern after Reconcile.
-./tests/longrunning/longrunning_helpers_test.go:659:		time.Sleep(50 * time.Millisecond) // SYNC: poll for bridge readiness
+./tests/longrunning/longrunning_helpers_test.go:664:		time.Sleep(50 * time.Millisecond) // SYNC: poll for bridge readiness
 ./tests/longrunning/longrunning_perf_helpers_test.go:151:		time.Sleep(50 * time.Millisecond) // OTHER: let finalizers run between GC cycles
 ./tests/longrunning/longrunning_test.go:446:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 ./tests/longrunning/res_gap_validation_test.go:140:	time.Sleep(30 * time.Second) // NEGATIVE: verify no messages reach target after all sends fail

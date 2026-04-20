@@ -631,10 +631,15 @@ func newPersistentCollectorWithBroker(
 
 // waitSubReady polls until the MQTT session reports ServiceLevelFull,
 // replacing the brittle time.Sleep(200ms) pattern after Reconcile.
+// waitSubReady waits for the broker to ACK all pending SUBSCRIBE frames.
+// It deliberately does NOT require ServiceLevelFull because tests
+// typically construct the receiver (handler) AFTER calling Reconcile;
+// Full would require HandlersRegistered > 0 which has not happened yet.
 func waitSubReady(t *testing.T, sess *paho.Session, timeout time.Duration) {
 	t.Helper()
-	lrWaitFor(t, timeout, "MQTT subscription active", func() bool {
-		return sess.Health(context.Background()).ServiceLevel == ports.ServiceLevelFull
+	lrWaitFor(t, timeout, "MQTT subscriptions active", func() bool {
+		h := sess.Health(context.Background())
+		return h.Connected && h.SubscriptionsActive == h.SubscriptionsWanted
 	})
 }
 
