@@ -104,7 +104,7 @@ func TestUC63_MemoryStability(t *testing.T) {
 
 	// Phase 4: quiescence — wait briefly for outbox drainer to finish,
 	// buffers to be released, then force multiple GC cycles.
-	time.Sleep(2 * time.Second) // SYNC: let outbox drainer finish and buffers release
+	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 500 * time.Millisecond, Timeout: 5 * time.Second}) //nolint:errcheck
 	final := stableHeapAlloc()
 
 	t.Logf("UC63: heap — baseline=%dMB, final=%dMB, delta=%dMB",

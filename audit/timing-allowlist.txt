@@ -1,0 +1,30 @@
+# Timing Allowlist (production code)
+#
+# Production-code call sites that are explicitly allowed to use
+#   time.Sleep, time.After, time.NewTicker, time.NewTimer, time.Tick
+# directly instead of the `domain/clock.Clock` abstraction.
+#
+# This file is the SINGLE SOURCE OF TRUTH for `make audit-timings`:
+#   - Lines starting with `#` are documentation / justification
+#   - Blank lines are ignored
+#   - All other lines are exact `file:line:` patterns that the audit
+#     will silently filter out (i.e. allowed). Format must match the
+#     `rg --no-heading -n` output exactly:
+#       <file>:<line>:<content>
+#     (the trailing colon after the line number is required if the
+#     filter is purely `file:line:`)
+#
+# To add an entry:
+#   1. Add a `# <CLASS>: <reason>` comment justifying why Clock cannot
+#      be used (CLASS is one of ESSENTIAL / DEADLINE / REPLACEABLE).
+#   2. Add the exact `file:line:` pattern below the comment.
+#   3. Open a PR; reviewers must approve the justification.
+#
+# Audit scope: adapters/, runtime/, bridge/, processors/, circuitbreaker/, httpapi/
+# (excludes test files and testutil/).
+#
+# As of Tier 2 completion: ALL production timing in scope routes through
+# `domain/clock.Clock`. This file currently contains NO active entries.
+# That is the goal state — every new entry is a regression to be justified.
+#
+# Reference: docs/timing-audit.md

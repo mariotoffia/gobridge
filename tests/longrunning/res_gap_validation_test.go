@@ -345,7 +345,7 @@ func TestRES001_NoCircuitBreakerOnSender(t *testing.T) {
 
 	// With CB: fails fast after 5 consecutive failures, then probes every 5s.
 	// Without CB: each fail blocks for 5s on the degraded sender.
-	time.Sleep(30 * time.Second) // SYNC: let circuit breaker process all messages
+	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 2 * time.Second, Timeout: 35 * time.Second}) //nolint:errcheck
 	elapsed := time.Since(start)
 
 	delivered := collector.count()
@@ -474,7 +474,7 @@ func TestRES011_RouterPanicSwallowsMessages(t *testing.T) {
 	gobridgesync(t, 10*time.Second, rt)
 
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
-	time.Sleep(30 * time.Second) // SYNC: let bridge process all messages including panic recovery
+	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 2 * time.Second, Timeout: 35 * time.Second}) //nolint:errcheck
 
 	delivered := collector.count()
 	dlqCount := dlq.count()

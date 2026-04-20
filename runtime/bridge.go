@@ -678,15 +678,118 @@ func (rt *Runtime) DeepHealth(ctx context.Context) DeepHealth {
 
 	// Routes.
 	for _, e := range rt.entries {
+		rr := e.runner
+		ready := false
+		if rr != nil {
+			select {
+			case <-rr.Started():
+				ready = true
+			default:
+			}
+			if rss, ok := rr.receiver.(ports.ReceiverStartedSignaler); ok {
+				select {
+				case <-rss.Started():
+				default:
+					ready = false
+				}
+			}
+		}
 		dh.Routes = append(dh.Routes, RouteHealth{
 			ID:           e.config.ID,
 			DeliveryMode: string(e.config.Policy.DeliveryMode),
+			Ready:        ready,
+			InFlight: func() int {
+				if rr != nil {
+					return int(rr.InFlight())
+				}
+				return 0
+			}(),
 		})
 	}
 
 	dh.ReadyForTraffic = allReady
 	dh.ServiceLevel = aggSL
 	return dh
+}
+
+// WaitRouteReady blocks until the named route reports Ready in DeepHealth,
+// or the context is cancelled.
+func (rt *Runtime) WaitRouteReady(ctx context.Context, routeID string) error {
+	for {
+		dh := rt.DeepHealth(ctx)
+		for _, rh := range dh.Routes {
+			if rh.ID == routeID && rh.Ready {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-rt.clk.After(50 * time.Millisecond):
+		}
+	}
+}
+
+// QuiescenceOptions controls WaitQuiescent behaviour.
+type QuiescenceOptions struct {
+	Routes   []string      // only watch these routes (empty = all)
+	MinQuiet time.Duration // how long all routes must stay at zero in-flight
+	Timeout  time.Duration // overall deadline (0 = rely on ctx)
+}
+
+// WaitQuiescent blocks until every watched route has zero InFlight
+// deliveries for at least MinQuiet, or the context / Timeout expires.
+func (rt *Runtime) WaitQuiescent(ctx context.Context, opts QuiescenceOptions) error {
+	if opts.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
+		defer cancel()
+	}
+	if opts.MinQuiet == 0 {
+		opts.MinQuiet = 50 * time.Millisecond
+	}
+
+	quietSince := time.Time{}
+	for {
+		dh := rt.DeepHealth(ctx)
+		allZero := true
+		for _, rh := range dh.Routes {
+			if len(opts.Routes) > 0 {
+				found := false
+				for _, id := range opts.Routes {
+					if rh.ID == id {
+						found = true
+						break
+					}
+				}
+				if !found {
+					continue
+				}
+			}
+			if rh.InFlight > 0 {
+				allZero = false
+				break
+			}
+		}
+
+		now := rt.clk.Now()
+		if allZero {
+			if quietSince.IsZero() {
+				quietSince = now
+			}
+			if rt.clk.Since(quietSince) >= opts.MinQuiet {
+				return nil
+			}
+		} else {
+			quietSince = time.Time{}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-rt.clk.After(10 * time.Millisecond):
+		}
+	}
 }
 
 // minServiceLevel returns the lower of two service levels.
@@ -737,6 +840,8 @@ type SessionHealthDetail struct {
 type RouteHealth struct {
 	ID           string
 	DeliveryMode string
+	Ready        bool // route runner started + receiver ready
+	InFlight     int  // currently-processing delivery count
 }
 
 // roleUnlocked returns the role without acquiring the mutex (caller must hold it).

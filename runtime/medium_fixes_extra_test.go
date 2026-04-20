@@ -138,19 +138,30 @@ func TestSessionManager_LogsLeaseReleaseError(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	runDone := make(chan struct{})
 	go func() {
 		_ = mgr.Run(ctx)
+		close(runDone)
 	}()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		_, hasLease := mgr.Token()
-		return hasLease
-	})
+	select {
+	case evt := <-mgr.LeaseStateChanged():
+		if evt.State != goruntime.LeaseStateAcquired {
+			t.Fatalf("expected LeaseStateAcquired, got %v", evt.State)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("lease not acquired in time")
+	}
 
 	lease.SetReleaseErr(errors.New("network timeout"))
 
 	cancel()
-	time.Sleep(200 * time.Millisecond) // SYNC: let session manager process cancel and release lease
+
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run should exit after cancel")
+	}
 
 	_ = mgr.Close(context.Background())
 

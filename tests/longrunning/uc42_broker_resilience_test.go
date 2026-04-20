@@ -413,7 +413,7 @@ func TestUC45_BrokerQuota_SharedOutbox_vs_DirectHold(t *testing.T) {
 		fmt.Sprintf("SharedOutbox unique >= %d", msgCount),
 		func() bool { return countUnique(collectorA) >= msgCount })
 
-	time.Sleep(30 * time.Second) // SYNC: give DirectHold extra time to deliver under broker pressure
+	rtB.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 2 * time.Second, Timeout: 35 * time.Second}) //nolint:errcheck
 
 	uniqueA := countUnique(collectorA)
 	uniqueB := countUnique(collectorB)

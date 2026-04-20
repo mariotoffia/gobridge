@@ -83,7 +83,11 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 	if sseResp.StatusCode != http.StatusOK {
 		t.Fatalf("SSE status: got %d, want 200", sseResp.StatusCode)
 	}
-	time.Sleep(100 * time.Millisecond) // STARTUP: let SSE client connection establish
+	sseWaitCtx, sseWaitCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer sseWaitCancel()
+	if err := sseSender.(*httptransport.SSESender).WaitClientConnected(sseWaitCtx, 1); err != nil {
+		t.Fatalf("WaitClientConnected: %v", err)
+	}
 
 	// --- Publish an MQTT message ---
 	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("cross-sse-pub"), domain.SessionEphemeral)

@@ -184,18 +184,19 @@ TIMING_DIRS := adapters runtime bridge processors circuitbreaker httpapi
 
 audit-timings: ## Check for unauthorized timing calls in production code
 	@echo "Checking for unauthorized timing calls..."
-	@VIOLATIONS=$$(rg --no-heading -n -g '!*_test.go' -g '!testutil/**' \
+	@PATTERNS=$$(grep -v '^#' audit/timing-allowlist.txt | grep -v '^$$' || true); \
+	VIOLATIONS=$$(rg --no-heading -n -g '!*_test.go' -g '!testutil/**' \
 		'time\.(Sleep|After|NewTicker|NewTimer|Tick)\(' \
 		$(TIMING_DIRS) 2>/dev/null \
-		| grep -v -F -f scripts/timing_allowlist_patterns.txt \
+		| { if [ -n "$$PATTERNS" ]; then grep -v -F "$$PATTERNS"; else cat; fi; } \
 		|| true); \
 	if [ -n "$$VIOLATIONS" ]; then \
 		echo "$$VIOLATIONS"; \
 		COUNT=$$(echo "$$VIOLATIONS" | wc -l | tr -d ' '); \
 		echo ""; \
 		echo "$$COUNT unauthorized timing call(s) found."; \
-		echo "Add to scripts/timing_allowlist.txt with justification"; \
-		echo "and to scripts/timing_allowlist_patterns.txt for the CI check."; \
+		echo "Add a justified entry (# CLASS: reason + file:line: pattern)"; \
+		echo "to audit/timing-allowlist.txt — see header for format."; \
 		exit 1; \
 	else \
 		echo "All timing calls are authorized."; \
@@ -206,12 +207,14 @@ audit-test-timings: ## Check for new time.Sleep calls in test code
 	@VIOLATIONS=$$(rg --no-heading -n -g '*_test.go' -g '!testutil/wait/*' \
 		'time\.Sleep\(' . \
 		| sort \
-		| grep -v -F -f scripts/test_timing_allowlist.txt); \
+		| grep -v -F -f audit/test-timing-allowlist.txt); \
 	if [ -n "$$VIOLATIONS" ]; then \
 		echo "$$VIOLATIONS"; \
 		COUNT=$$(echo "$$VIOLATIONS" | wc -l | tr -d ' '); \
 		echo ""; \
-		echo "$$COUNT new time.Sleep call(s) in tests. Remove or add to scripts/test_timing_allowlist.txt."; \
+		echo "$$COUNT new time.Sleep call(s) in tests."; \
+		echo "Remove the sleep, or (with justification) add the line to"; \
+		echo "audit/test-timing-allowlist.txt — annotate with // CLASS: reason."; \
 		exit 1; \
 	else \
 		echo "No new test timing violations."; \

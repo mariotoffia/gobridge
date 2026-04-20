@@ -37,7 +37,11 @@ func TestIntegration_ReceiverClose_GracefulShutdown(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(3 * time.Second) // STARTUP: wait for receiver to connect and start polling
+	select {
+	case <-recv.Started():
+	case <-time.After(10 * time.Second):
+		t.Fatal("receiver did not start")
+	}
 
 	// Cancel the context to trigger shutdown.
 	start := time.Now()

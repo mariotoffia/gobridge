@@ -96,7 +96,7 @@ func TestUC27_Intermittent_SendFailures(t *testing.T) {
 		return len(seen) >= msgCount
 	})
 
-	time.Sleep(2 * time.Second) // SYNC: let in-flight retries settle
+	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 500 * time.Millisecond, Timeout: 5 * time.Second}) //nolint:errcheck
 
 	got := collector.count()
 	msgs := collector.getMessages()
@@ -222,7 +222,7 @@ func TestUC28_VisibilityTimeout_Race(t *testing.T) {
 		return len(unique) >= msgCount
 	})
 
-	time.Sleep(2 * time.Second) // SYNC: let in-flight deliveries settle
+	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 500 * time.Millisecond, Timeout: 5 * time.Second}) //nolint:errcheck
 
 	msgs := collector.getMessages()
 	unique := make(map[string]bool, len(msgs))

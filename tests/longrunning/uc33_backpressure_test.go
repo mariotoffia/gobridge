@@ -140,7 +140,7 @@ func TestUC34_MaxInFlight1000_HighConcurrency(t *testing.T) {
 		return collector.count() >= msgCount
 	})
 
-	time.Sleep(2 * time.Second) // SYNC: let in-flight deliveries settle
+	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 500 * time.Millisecond, Timeout: 5 * time.Second}) //nolint:errcheck
 
 	gotMax := tracker.maxConcurrency()
 	require.Greater(t, gotMax, int64(1),
@@ -229,7 +229,7 @@ func TestUC35_GlobalMaxInFlight_ThreeRoutes(t *testing.T) {
 		return collector.count() >= totalExpected
 	})
 
-	time.Sleep(2 * time.Second) // SYNC: let in-flight deliveries settle
+	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 500 * time.Millisecond, Timeout: 5 * time.Second}) //nolint:errcheck
 
 	gotMax := tracker.maxConcurrency()
 	require.LessOrEqual(t, gotMax, int64(globalMF),
@@ -296,7 +296,7 @@ func TestUC36_SlowConsumer(t *testing.T) {
 		return collector.count() >= msgCount
 	})
 
-	time.Sleep(2 * time.Second) // SYNC: let in-flight deliveries settle
+	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 500 * time.Millisecond, Timeout: 5 * time.Second}) //nolint:errcheck
 
 	got := collector.count()
 	require.GreaterOrEqual(t, got, msgCount,
@@ -384,7 +384,7 @@ func TestUC37_BurstThenIdle(t *testing.T) {
 		}
 	}
 
-	time.Sleep(2 * time.Second) // SYNC: let final burst deliveries settle
+	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 500 * time.Millisecond, Timeout: 5 * time.Second}) //nolint:errcheck
 
 	got := collector.count()
 	total := burstSize * burstCount

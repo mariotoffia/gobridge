@@ -53,8 +53,11 @@ func TestWatcher_NotifyMode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// STARTUP: let fsnotify goroutine register with the OS.
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-w.Started():
+	case <-time.After(5 * time.Second):
+		t.Fatal("watcher did not start")
+	}
 	writeYAML(t, path, "updated")
 
 	select {
@@ -186,8 +189,11 @@ func TestWatcher_DebounceCoalesces(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// STARTUP: let fsnotify goroutine register with the OS.
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-w.Started():
+	case <-time.After(5 * time.Second):
+		t.Fatal("watcher did not start")
+	}
 
 	for i := 0; i < 5; i++ {
 		writeYAML(t, path, "rapid-"+string(rune('0'+i)))

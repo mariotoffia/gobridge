@@ -98,23 +98,29 @@ func TestSessionManager_StepDown(t *testing.T) {
 		errCh <- mgr.Run(ctx)
 	}()
 
-	time.Sleep(100 * time.Millisecond) // STARTUP: let session manager acquire lease and enter renew loop
+	select {
+	case evt := <-mgr.LeaseStateChanged():
+		if evt.State != goruntime.LeaseStateAcquired {
+			t.Fatalf("expected LeaseStateAcquired, got %v", evt.State)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("lease not acquired in time")
+	}
 
 	leaseStore.SetRenewErr(domain.ErrVersionMismatch)
 
-	deadline := time.After(2 * time.Second)
+	lossDeadline := time.After(5 * time.Second)
 	for {
 		select {
-		case <-deadline:
+		case evt := <-mgr.LeaseStateChanged():
+			if evt.State == goruntime.LeaseStateLost {
+				goto leaseLost
+			}
+		case <-lossDeadline:
 			t.Fatal("step-down should clear hasLease within timeout")
-		default:
 		}
-		_, hasLease := mgr.Token()
-		if !hasLease {
-			break
-		}
-		time.Sleep(10 * time.Millisecond) // SYNC: poll interval in inline wait loop
 	}
+leaseLost:
 
 	cancel()
 
@@ -147,11 +153,28 @@ func TestSessionManager_Close(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	go func() { _ = mgr.Run(ctx) }()
-	time.Sleep(150 * time.Millisecond) // STARTUP: let session manager acquire lease and enter renew loop
+	runDone := make(chan struct{})
+	go func() {
+		_ = mgr.Run(ctx)
+		close(runDone)
+	}()
+
+	select {
+	case evt := <-mgr.LeaseStateChanged():
+		if evt.State != goruntime.LeaseStateAcquired {
+			t.Fatalf("expected LeaseStateAcquired, got %v", evt.State)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("lease not acquired in time")
+	}
 
 	cancel()
-	time.Sleep(50 * time.Millisecond) // STARTUP: let Run exit after cancel
+
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run should exit after cancel")
+	}
 
 	err := mgr.Close(context.Background())
 	if err != nil {

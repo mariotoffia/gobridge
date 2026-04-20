@@ -92,6 +92,17 @@ type SessionHealth struct {
 	ReceiveMaximum      uint16       // MQTT v5 ReceiveMaximum (0 = unknown/not applicable)
 	Ready               bool         // Connected to the broker (connectivity only)
 	ServiceLevel        ServiceLevel // Operational completeness (none/degraded/full)
+	ActiveTopics        []string     // topics with active broker subscription
+}
+
+// HasTopic reports whether the given topic is among the active subscriptions.
+func (h SessionHealth) HasTopic(topic string) bool {
+	for _, t := range h.ActiveTopics {
+		if t == topic {
+			return true
+		}
+	}
+	return false
 }
 
 // Session owns network identity and remote state for stateful transports.

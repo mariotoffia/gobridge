@@ -150,7 +150,7 @@ func TestUC31_OutboxReplay_Exhaustion(t *testing.T) {
 		return dlqStore.count() >= msgCount
 	})
 
-	time.Sleep(2 * time.Second) // SYNC: let outbox replay-exhaustion settle to DLQ
+	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 500 * time.Millisecond, Timeout: 5 * time.Second}) //nolint:errcheck
 
 	gotDLQ := dlqStore.count()
 	require.GreaterOrEqual(t, gotDLQ, msgCount,

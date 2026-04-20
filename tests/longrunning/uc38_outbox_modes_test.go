@@ -97,7 +97,7 @@ func TestUC38_OutboxDepthLimit(t *testing.T) {
 	lrWaitFor(t, 90*time.Second, fmt.Sprintf("collector>=%d", msgCount), func() bool {
 		return collector.count() >= msgCount
 	})
-	time.Sleep(2 * time.Second) // SYNC: let remaining messages settle
+	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 500 * time.Millisecond, Timeout: 5 * time.Second}) //nolint:errcheck
 
 	gotMQTT := collector.count()
 	gotDLQ := dlq.count()

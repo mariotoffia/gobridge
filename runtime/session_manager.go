@@ -16,6 +16,26 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+// LeaseState describes the lifecycle state of a lease transition.
+type LeaseState int
+
+const (
+	LeaseStateNone       LeaseState = iota
+	LeaseStateAcquired
+	LeaseStateRenewed
+	LeaseStateLost
+	LeaseStateSteppedDown
+	LeaseStateReleased
+)
+
+// LeaseStateEvent is emitted whenever the lease state changes.
+type LeaseStateEvent struct {
+	State     LeaseState
+	Token     domain.LeaseToken
+	Timestamp time.Time
+	Err       error
+}
+
 // SessionManager manages the lifecycle of a single session, including
 // lease acquisition, renewal, three-phase step-down, and reconciliation.
 type SessionManager struct {
@@ -41,6 +61,8 @@ type SessionManager struct {
 	token         domain.LeaseToken
 	hasLease      bool
 	connectedOnce atomic.Bool
+
+	leaseEvents chan LeaseStateEvent
 }
 
 // NewSessionManagerFromConfig creates a SessionManager from a config struct.
@@ -98,6 +120,7 @@ func newSessionManager(cfg SessionConfig, session ports.Session, leaseStore port
 		audit:             ports.NoopAuditLogger{},
 		logger:            logger,
 		clk:               clock.System,
+		leaseEvents:       make(chan LeaseStateEvent, 16),
 	}
 }
 
@@ -138,6 +161,17 @@ func (m *SessionManager) SetMetrics(metrics ports.MetricsExporter) {
 // Must be called before Run; not safe for concurrent use with Run.
 func (m *SessionManager) SetAudit(audit ports.AuditLogger) {
 	m.audit = audit
+}
+
+// LeaseStateChanged returns a channel that receives lease state transitions.
+func (m *SessionManager) LeaseStateChanged() <-chan LeaseStateEvent { return m.leaseEvents }
+
+func (m *SessionManager) pushLeaseEvent(state LeaseState, token domain.LeaseToken, err error) {
+	evt := LeaseStateEvent{State: state, Token: token, Timestamp: m.clk.Now(), Err: err}
+	select {
+	case m.leaseEvents <- evt:
+	default:
+	}
 }
 
 // Token returns the current lease token and whether the manager holds the lease.
@@ -181,6 +215,7 @@ func (m *SessionManager) runExclusiveDeferred(ctx context.Context) error {
 		}
 		iteration++
 		m.emitLeaseAudit(ctx, action, "success", token, nil)
+		m.pushLeaseEvent(LeaseStateAcquired, token, nil)
 
 		m.log(ctx, slog.LevelInfo, "lease acquired (deferred connect)", "version", token.Version)
 
@@ -219,6 +254,7 @@ func (m *SessionManager) runExclusiveDeferred(ctx context.Context) error {
 			return ctx.Err()
 		}
 		m.emitLeaseAudit(ctx, "lease.lost", "failure", token, err)
+		m.pushLeaseEvent(LeaseStateLost, token, err)
 		m.log(ctx, slog.LevelWarn, "lease lost, will re-acquire", "error", err)
 		m.mu.Lock()
 		m.hasLease = false
@@ -243,6 +279,7 @@ func (m *SessionManager) runExclusive(ctx context.Context) error {
 		}
 		iteration++
 		m.emitLeaseAudit(ctx, action, "success", token, nil)
+		m.pushLeaseEvent(LeaseStateAcquired, token, nil)
 
 		m.log(ctx, slog.LevelInfo, "lease acquired", "version", token.Version)
 
@@ -263,6 +300,7 @@ func (m *SessionManager) runExclusive(ctx context.Context) error {
 			return ctx.Err()
 		}
 		m.emitLeaseAudit(ctx, "lease.lost", "failure", token, err)
+		m.pushLeaseEvent(LeaseStateLost, token, err)
 		m.log(ctx, slog.LevelWarn, "lease lost, will re-acquire", "error", err)
 		m.mu.Lock()
 		m.hasLease = false
@@ -332,6 +370,7 @@ func (m *SessionManager) renewLoop(ctx context.Context) error {
 			} else {
 				consecutiveFailures = 0
 				m.setToken(newToken)
+				m.pushLeaseEvent(LeaseStateRenewed, newToken, nil)
 				if logging.TraceEnabled(m.logger) {
 					m.logger.Log(ctx, logging.LevelTrace, "lease renewed",
 						"session_id", m.sessionID,
@@ -365,6 +404,7 @@ func (m *SessionManager) stepDown(ctx context.Context) error {
 	m.mu.Unlock()
 
 	m.emitLeaseAudit(ctx, "lease.stepdown", "success", token, nil)
+	m.pushLeaseEvent(LeaseStateSteppedDown, token, nil)
 
 	graceCtx, graceCancel := context.WithTimeout(context.Background(), m.stepDownGrace)
 	defer graceCancel()
@@ -385,9 +425,11 @@ func (m *SessionManager) stepDown(ctx context.Context) error {
 		defer releaseCancel()
 		if err := m.leaseStore.Release(releaseCtx, m.sessionID, token); err != nil {
 			m.emitLeaseAudit(ctx, "lease.release", "failure", token, err)
+			m.pushLeaseEvent(LeaseStateReleased, token, err)
 			m.log(ctx, slog.LevelWarn, "lease release failed during step-down", "error", err)
 		} else {
 			m.emitLeaseAudit(ctx, "lease.release", "success", token, nil)
+			m.pushLeaseEvent(LeaseStateReleased, token, nil)
 		}
 	}
 

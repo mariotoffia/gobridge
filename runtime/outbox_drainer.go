@@ -45,6 +45,10 @@ type OutboxDrainer struct {
 	// "pending records" to "caught up", not on every empty cycle.
 	hadPending bool
 
+	idleMu    sync.Mutex
+	idleCh    chan struct{}
+	idleSince time.Time
+
 	// onBatchComplete is invoked after each drain batch with the number
 	// of records successfully sent+completed. Optional.
 	onBatchComplete func(n int)
@@ -186,6 +190,7 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 		readyFn:          cfg.ReadyFn,
 		onBatchComplete:  cfg.OnBatchComplete,
 		onDrained:        cfg.OnDrained,
+		idleCh:           make(chan struct{}),
 	}
 }
 
@@ -206,6 +211,41 @@ func (d *OutboxDrainer) fireDrained() {
 	}
 	defer func() { _ = recover() }()
 	d.onDrained()
+}
+
+// IdleSince returns the time at which the drainer last transitioned to
+// idle (no pending outbox records) and true, or a zero time and false
+// if the drainer is not currently idle.
+func (d *OutboxDrainer) IdleSince() (time.Time, bool) {
+	d.idleMu.Lock()
+	defer d.idleMu.Unlock()
+	if d.idleSince.IsZero() {
+		return time.Time{}, false
+	}
+	return d.idleSince, true
+}
+
+// WaitIdle blocks until the drainer has been idle (no pending outbox
+// records) for at least minQuiet continuous time. It returns nil once
+// the condition is met, or ctx.Err() if the context is cancelled.
+func (d *OutboxDrainer) WaitIdle(ctx context.Context, minQuiet time.Duration) error {
+	for {
+		d.idleMu.Lock()
+		ch := d.idleCh
+		since := d.idleSince
+		d.idleMu.Unlock()
+
+		if !since.IsZero() && d.clk.Since(since) >= minQuiet {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ch:
+		case <-d.clk.After(minQuiet):
+		}
+	}
 }
 
 // Run polls the outbox for pending records and sends them. It blocks
@@ -299,9 +339,21 @@ func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken)
 		if d.hadPending {
 			d.hadPending = false
 			d.fireDrained()
+
+			d.idleMu.Lock()
+			d.idleSince = d.clk.Now()
+			old := d.idleCh
+			d.idleCh = make(chan struct{})
+			d.idleMu.Unlock()
+			close(old)
 		}
 		return 0, nil
 	}
+
+	d.idleMu.Lock()
+	d.idleSince = time.Time{}
+	d.idleMu.Unlock()
+
 	d.hadPending = true
 
 	if logging.DebugEnabled(d.logger) {

@@ -285,7 +285,7 @@ func TestUC49_SharedOutboxVsDirectHold_BrokerFlapping(t *testing.T) {
 		fmt.Sprintf("SharedOutbox unique >= %d", msgCount),
 		func() bool { return countUnique(collectorA) >= msgCount })
 
-	time.Sleep(30 * time.Second) // SYNC: give DirectHold extra time to deliver after broker flapping
+	rtB.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 2 * time.Second, Timeout: 35 * time.Second}) //nolint:errcheck
 
 	uniqueA := countUnique(collectorA)
 	uniqueB := countUnique(collectorB)

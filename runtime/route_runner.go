@@ -8,6 +8,7 @@ import (
 	goruntime "runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -45,6 +46,9 @@ type RouteRunner struct {
 	receiverCloseTimeout time.Duration
 	onDelivery           func(env *domain.Envelope, err error)
 	onAck                func(env *domain.Envelope, err error)
+	started              chan struct{}
+	startedOnce          sync.Once
+	inFlight             atomic.Int64
 }
 
 // RouteRunnerConfig holds the configuration for a RouteRunner.
@@ -149,6 +153,7 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 		receiverCloseTimeout: recvClose,
 		onDelivery:           cfg.OnDelivery,
 		onAck:                cfg.OnAck,
+		started:              make(chan struct{}),
 	}
 	if r.policy.MaxInFlight > 0 {
 		r.sem = make(chan struct{}, r.policy.MaxInFlight)
@@ -160,6 +165,8 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 // MaxInFlight. It blocks until the context is cancelled or the receiver
 // returns an unrecoverable error. In-flight goroutines are awaited on exit.
 func (r *RouteRunner) Run(ctx context.Context) error {
+	r.startedOnce.Do(func() { close(r.started) })
+
 	var (
 		wg     sync.WaitGroup
 		mu     sync.Mutex
@@ -184,6 +191,8 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 		r.metrics.Counter(domain.MetricMessagesReceived, 1,
 			domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID})
 		go func() {
+			r.inFlight.Add(1)
+			defer r.inFlight.Add(-1)
 			defer wg.Done()
 			defer r.releaseSlots()
 			defer func() {
@@ -234,6 +243,13 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 
 	return err
 }
+
+// Started returns a channel that is closed when the route runner's Run
+// method has been entered. Callers can select on this to detect readiness.
+func (r *RouteRunner) Started() <-chan struct{} { return r.started }
+
+// InFlight returns the number of delivery goroutines currently executing.
+func (r *RouteRunner) InFlight() int64 { return r.inFlight.Load() }
 
 // handleDelivery is the synchronous entry point used by Runtime.Inject.
 func (r *RouteRunner) handleDelivery(ctx context.Context, del ports.Delivery) error {

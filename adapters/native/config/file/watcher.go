@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -43,9 +44,12 @@ type Watcher struct {
 	logger       *slog.Logger
 	clk          clock.Clock
 
-	mu      sync.Mutex
-	running bool
-	stopCh  chan struct{}
+	mu          sync.Mutex
+	running     bool
+	stopCh      chan struct{}
+	started     chan struct{}
+	startedOnce sync.Once
+	lastApplied atomic.Pointer[time.Time]
 }
 
 // WatcherOption configures a Watcher.
@@ -117,6 +121,7 @@ func NewWatcher(path string, opts ...WatcherOption) *Watcher {
 		mode:         ModeNotify,
 		debounce:     defaultDebounce,
 		pollInterval: defaultPollInterval,
+		started:      make(chan struct{}),
 	}
 	for _, o := range opts {
 		o(w)
@@ -146,6 +151,7 @@ func (w *Watcher) Watch(ctx context.Context) (<-chan *config.BridgeConfig, error
 
 	switch w.mode {
 	case ModePoll:
+		w.startedOnce.Do(func() { close(w.started) })
 		go w.pollLoop(ctx, ch)
 	default:
 		fsw, err := fsnotify.NewWatcher()
@@ -159,6 +165,7 @@ func (w *Watcher) Watch(ctx context.Context) (<-chan *config.BridgeConfig, error
 			w.running = false
 			return nil, err
 		}
+		w.startedOnce.Do(func() { close(w.started) })
 		go w.notifyLoop(ctx, fsw, ch)
 	}
 
@@ -175,6 +182,19 @@ func (w *Watcher) Stop() {
 	}
 	close(w.stopCh)
 	w.running = false
+}
+
+// Started returns a channel that is closed once the watcher's file monitoring
+// is registered and ready to detect changes.
+func (w *Watcher) Started() <-chan struct{} { return w.started }
+
+// LastApplied returns the timestamp of the last successfully applied config
+// change, or the zero value if no change has been applied yet.
+func (w *Watcher) LastApplied() time.Time {
+	if p := w.lastApplied.Load(); p != nil {
+		return *p
+	}
+	return time.Time{}
 }
 
 // notifyLoop uses fsnotify for file change detection with debouncing.
@@ -276,6 +296,8 @@ func (w *Watcher) emitParsed(ch chan<- *config.BridgeConfig) {
 	}
 	select {
 	case ch <- cfg:
+		now := w.clk.Now()
+		w.lastApplied.Store(&now)
 	default:
 	}
 }

@@ -476,6 +476,10 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	plan := s.plan
 	activeCount := len(s.activeSubs)
 	connected := cm != nil && s.connected
+	topics := make([]string, 0, len(s.activeSubs))
+	for t := range s.activeSubs {
+		topics = append(topics, t)
+	}
 	s.mu.Unlock()
 	wantedCount := 0
 	if plan != nil {
@@ -511,6 +515,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		ReceiveMaximum:      rm,
 		Ready:               connected,
 		ServiceLevel:        sl,
+		ActiveTopics:        topics,
 	}
 }
 

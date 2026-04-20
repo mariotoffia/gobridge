@@ -46,14 +46,14 @@ Every production-code use of `time.Sleep`, `time.After`, `time.NewTicker`,
 
 ## Test sleep classification (aggregate)
 
-| Category | Baseline | After Phase 1 | After Phase 2 | After Tier 1 | Description |
-|---|---|---|---|---|---|
-| SYNC_SLEEP | ~280 | ~260 | ~100 | ~70 | "sleep then assert" — replaceable once production exposes event hooks |
-| STARTUP_SLEEP | ~50 | ~45 | ~20 | ~20 | "let goroutine start" — replaceable with `Started()` channel |
-| NEGATIVE_ASSERT_WINDOW | ~30 | ~25 | ~15 | ~12 | "sleep then assert nothing happened" — `wait.Silent` |
-| FIXED_BACKOFF_LOOP | ~20 | ~8 | ~3 | ~3 | poll loops in test helpers — `wait.Until` / `RequireReceive` |
-| OTHER | ~6 | ~6 | ~110 | ~110 | intentional stress/race timers, debounce choreography, clock test companions, simulated work |
-| **Total** | **~386** | **~344** | **~248** | **~215** | All remaining 215 are tracked in `scripts/test_timing_allowlist.txt` with inline classification comments |
+| Category | Baseline | After Phase 1 | After Phase 2 | After Tier 1 | After Tier 2 | Description |
+|---|---|---|---|---|---|---|
+| SYNC_SLEEP | ~280 | ~260 | ~100 | ~70 | ~48 | "sleep then assert" — most replaced by readiness APIs |
+| STARTUP_SLEEP | ~50 | ~45 | ~20 | ~20 | ~15 | "let goroutine start" — replaced by `Started()` / `LeaseStateChanged()` |
+| NEGATIVE_ASSERT_WINDOW | ~30 | ~25 | ~15 | ~12 | ~12 | "sleep then assert nothing happened" — `wait.Silent` |
+| FIXED_BACKOFF_LOOP | ~20 | ~8 | ~3 | ~3 | ~3 | poll loops in test helpers — `wait.Until` / `RequireReceive` |
+| OTHER | ~6 | ~6 | ~110 | ~110 | ~110 | intentional stress/race timers, debounce choreography, clock test companions, simulated work |
+| **Total** | **~386** | **~344** | **~248** | **~215** | **~188** | All remaining 188 tracked in `audit/test-timing-allowlist.txt` with classification comments |
 
 **Phase 2 changes (per slice):**
 - **Slice 1 (MQTT):** 51 → 14 sleeps; 37 removed via `waitSubActive`, `<-recv.Started()`, NEGATIVE select
@@ -79,6 +79,40 @@ initializations use the same approach instead of a fixed delay.
 - **Slice B (bridge reconfig strategy):** 5 debounce-choreography sleeps replaced with `clocktest.Fake.Advance` now that strategies accept `Clock`; runtime dropped from ~1.5s to ~50ms
 - **Slice C (runtime):** 5 SYNC sleeps replaced with `waitFor(t, ...)` polling on observable counters/flags
 - **Slice D (longrunning + integration):** ~16 post-Reconcile sleeps replaced with `waitSubReady` polling `ServiceLevelFull`; `newMQTTCollector` helpers in longrunning now use health-based readiness instead of fixed delays
+
+**Tier 2 changes (readiness APIs + sweep, 215 → 188, 27 additional sleeps removed):**
+- **Slice 1 (per-route readiness):** `RouteHealth.Ready` + `RouteHealth.InFlight` in `DeepHealth`; `RouteRunner.Started()` channel; `Runtime.WaitRouteReady(ctx, routeID)`
+- **Slice 2 (outbox idle):** `OutboxDrainer.IdleSince()` + `WaitIdle(ctx, minQuiet)` with channel-swap mechanism
+- **Slice 3 (quiescence):** `RouteRunner.InFlight()` atomic counter; `Runtime.WaitQuiescent(ctx, QuiescenceOptions)` for zero in-flight + stability window
+- **Slice 4 (lease events):** `SessionManager.LeaseStateChanged() <-chan LeaseStateEvent` with 6 states (Acquired/Renewed/Lost/SteppedDown/Released/None)
+- **Slice 5 (per-topic health):** `SessionHealth.ActiveTopics []string` + `HasTopic(topic)` helper
+- **Slice 6 (SSE client):** `SSESender.WaitClientConnected(ctx, n)` polling `ClientCount()`
+- **Slice 7 (SQS/ASB Started):** wired existing `<-recv.Started()` in 2 integration tests
+- **Slice 8 (file watcher):** `Watcher.Started()` channel + `LastApplied() time.Time` atomic timestamp
+- **Sweep:** 15 longrunning `WaitQuiescent` replacements, 5 session-manager `LeaseStateChanged` replacements, 2 watcher `Started()` replacements, 2 SSE `WaitClientConnected` replacements, 3 integration `WaitQuiescent/WaitRouteReady` replacements
+
+## Readiness API inventory
+
+| Component | API | Signal type | When signaled | File |
+|---|---|---|---|---|
+| `ports.Receiver` (optional) | `Started() <-chan struct{}` | Channel close | Receive loop live | `ports/transport.go` |
+| `ports.Session` | `Health(ctx) SessionHealth` | Struct poll | Anytime | `ports/transport.go` |
+| `ports.Session` | `Events() <-chan SessionEvent` | Event push | Connect/disconnect/reconcile | `ports/transport.go` |
+| `ports.SessionHealth` | `ActiveTopics []string` / `HasTopic()` | Struct field | From session `Health()` | `ports/transport.go` |
+| `runtime.Runtime` | `DeepHealth(ctx) DeepHealth` | Struct poll | Anytime | `runtime/bridge.go` |
+| `runtime.Runtime` | `WaitRouteReady(ctx, routeID) error` | Blocking wait | Route runner + receiver started | `runtime/bridge.go` |
+| `runtime.Runtime` | `WaitQuiescent(ctx, opts) error` | Blocking wait | All routes at zero in-flight for `MinQuiet` | `runtime/bridge.go` |
+| `runtime.RouteRunner` | `Started() <-chan struct{}` | Channel close | `Run()` entered | `runtime/route_runner.go` |
+| `runtime.RouteRunner` | `InFlight() int64` | Atomic counter | Per delivery enter/exit | `runtime/route_runner.go` |
+| `runtime.RouteHealth` | `Ready bool` / `InFlight int` | Struct fields | From `DeepHealth()` | `runtime/bridge.go` |
+| `runtime.OutboxDrainer` | `IdleSince() (time.Time, bool)` | Atomic timestamp | Pending → empty transition | `runtime/outbox_drainer.go` |
+| `runtime.OutboxDrainer` | `WaitIdle(ctx, minQuiet) error` | Blocking wait | Continuously idle for `minQuiet` | `runtime/outbox_drainer.go` |
+| `runtime.SessionManager` | `LeaseStateChanged() <-chan LeaseStateEvent` | Event push | Acquire/renew/release/stepdown/loss | `runtime/session_manager.go` |
+| `paho.Receiver` | `Started() <-chan struct{}` | Channel close | Handler registered on router | `adapters/mqtt/transport/paho/receiver.go` |
+| `paho.Session` | `Health()` / `Events()` | Poll + event | Connect/reconcile/disconnect | `adapters/mqtt/transport/paho/session.go` |
+| `http.SSESender` | `WaitClientConnected(ctx, n) error` | Blocking wait | N clients connected | `adapters/http/transport/sender_sse.go` |
+| `file.Watcher` | `Started() <-chan struct{}` | Channel close | fsnotify registered | `adapters/native/config/file/watcher.go` |
+| `file.Watcher` | `LastApplied() time.Time` | Atomic timestamp | Config successfully applied | `adapters/native/config/file/watcher.go` |
 
 ## Integration-test content verification
 

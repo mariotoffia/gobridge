@@ -243,7 +243,11 @@ func TestE2E_MQTTToSQS_RoundTripWithFailover(t *testing.T) {
 	}
 
 	sendToSQS(t, sqsClientA, queueA, `{"failover":"test"}`, nil)
-	time.Sleep(3 * time.Second) // SYNC: let message flow through pipeline before stopping Bridge A
+	if err := rtA.WaitQuiescent(ctxA, goruntime.QuiescenceOptions{
+		MinQuiet: 500 * time.Millisecond, Timeout: 5 * time.Second,
+	}); err != nil {
+		t.Fatalf("WaitQuiescent A: %v", err)
+	}
 
 	cancelA()
 	_ = rtA.Stop(context.Background())

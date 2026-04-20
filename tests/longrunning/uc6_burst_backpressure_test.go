@@ -113,7 +113,7 @@ func TestUC6_BurstBackpressure(t *testing.T) {
 		},
 	)
 
-	time.Sleep(2 * time.Second) // SYNC: let in-flight deliveries settle
+	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 500 * time.Millisecond, Timeout: 5 * time.Second}) //nolint:errcheck
 
 	// -- Verification: exact counts ----------------------------------------
 	gotNormal := collector.count()

@@ -94,7 +94,7 @@ func TestUC46_BrokerMessageSizeLimit(t *testing.T) {
 		fmt.Sprintf("collector >= %d", smallCount),
 		func() bool { return collector.count() >= smallCount })
 
-	time.Sleep(10 * time.Second) // SYNC: let oversized messages be processed or DLQ'd
+	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 1 * time.Second, Timeout: 15 * time.Second}) //nolint:errcheck
 
 	delivered := collector.count()
 	dlqCount := dlq.count()
@@ -176,7 +176,7 @@ func TestUC47_BrokerMaxQueuedMessages(t *testing.T) {
 		fmt.Sprintf("sender success >= %d", msgCount),
 		func() bool { return snd.success.Load() >= int64(msgCount) })
 
-	time.Sleep(10 * time.Second) // SYNC: let collector drain messages from broker queue
+	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 1 * time.Second, Timeout: 15 * time.Second}) //nolint:errcheck
 
 	bridgeSent := snd.success.Load()
 	received := collector.count()

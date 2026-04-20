@@ -71,6 +71,20 @@ func (s *SSESender) ClientCount() int {
 	return n
 }
 
+// WaitClientConnected blocks until at least n clients are connected or ctx expires.
+func (s *SSESender) WaitClientConnected(ctx context.Context, n int) error {
+	for {
+		if s.ClientCount() >= n {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-s.cfg.clock.After(10 * time.Millisecond):
+		}
+	}
+}
+
 // SetRouteID associates this sender with a route for cross-cluster SSE redirect.
 func (s *SSESender) SetRouteID(routeID string) {
 	s.mu.Lock()
