@@ -10,7 +10,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"sync"
 	"testing"
 	"time"
 
@@ -132,16 +131,9 @@ func TestSession_PushEvent_FullChannel(t *testing.T) {
 // TestSession_DialTimeout_LeakCleanup validates that a connection
 // obtained after dial timeout is properly closed.
 func TestSession_DialTimeout_LeakCleanup(t *testing.T) {
-	var mu sync.Mutex
 	mc := newMockConnection()
 	mc.NotifyCloseFn = func(ch chan *amqp.Error) chan *amqp.Error {
 		return ch
-	}
-	mc.CloseFn = func() error {
-		mu.Lock()
-		defer mu.Unlock()
-		mc.closed = true
-		return nil
 	}
 
 	s := newResilienceSession(func(url string) (amqpConnection, error) {
@@ -156,11 +148,7 @@ func TestSession_DialTimeout_LeakCleanup(t *testing.T) {
 		t.Fatal("expected timeout error")
 	}
 
-	wait.Until(t, 2*time.Second, "leaked connection closed", func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return mc.closed
-	})
+	wait.Until(t, 2*time.Second, "leaked connection closed", mc.IsClosed)
 }
 
 // TestSession_Health_Disconnected validates Health returns

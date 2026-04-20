@@ -1,6 +1,6 @@
 ./adapters/amqp/transport/amqp091/integration_edge_advanced_test.go:350:			time.Sleep(100 * time.Millisecond)
 ./adapters/amqp/transport/amqp091/session_lifecycle_test.go:59:	time.Sleep(50 * time.Millisecond)
-./adapters/amqp/transport/amqp091/session_resilience_test.go:149:		time.Sleep(200 * time.Millisecond)
+./adapters/amqp/transport/amqp091/session_resilience_test.go:141:		time.Sleep(200 * time.Millisecond)
 ./adapters/amqp/transport/amqp10/receiver_disconnect_test.go:60:	time.Sleep(50 * time.Millisecond)
 ./adapters/amqp/transport/amqp10/sender_concurrency_test.go:170:	time.Sleep(50 * time.Millisecond)
 ./adapters/amqp/transport/amqp10/sender_disconnect_test.go:80:	time.Sleep(50 * time.Millisecond)
