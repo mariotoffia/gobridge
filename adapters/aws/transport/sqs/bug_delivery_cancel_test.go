@@ -3,6 +3,7 @@ package sqs
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,10 +64,12 @@ func TestBug3_Delivery_AutoExtendExhaustsCancelsProcessing(t *testing.T) {
 		t.Skip("skipping: auto-extend test needs ~4s for 3 failure cycles")
 	}
 
-	extendCalls := 0
+	// Atomic because the mock callback is invoked from the auto-extend
+	// goroutine while wait.Until predicates read it from the test goroutine.
+	var extendCalls atomic.Int32
 	mock := &mockSQSClient{
 		ChangeMessageVisibilityFn: func(_ context.Context, _ *awssqs.ChangeMessageVisibilityInput, _ ...func(*awssqs.Options)) (*awssqs.ChangeMessageVisibilityOutput, error) {
-			extendCalls++
+			extendCalls.Add(1)
 			return nil, fmt.Errorf("simulated extend failure")
 		},
 	}
@@ -108,8 +111,9 @@ func TestBug3_Delivery_AutoExtendExhaustsCancelsProcessing(t *testing.T) {
 	// SYNC: advance to trigger autoExtendMaxFailures (3) failure cycles.
 	for i := 0; i < autoExtendMaxFailures; i++ {
 		fake.Advance(1 * time.Second)
+		want := int32(i + 1)
 		wait.Until(t, time.Second, "failure tick", func() bool {
-			return extendCalls >= i+1
+			return extendCalls.Load() >= want
 		})
 	}
 
@@ -120,10 +124,11 @@ func TestBug3_Delivery_AutoExtendExhaustsCancelsProcessing(t *testing.T) {
 	})
 	t.Log("BUG-3 FIX VERIFIED: processingCancel was called on extend exhaustion")
 
-	t.Logf("BUG-3 FIX: auto-extend called ChangeMessageVisibility %d times", extendCalls)
+	final := extendCalls.Load()
+	t.Logf("BUG-3 FIX: auto-extend called ChangeMessageVisibility %d times", final)
 
-	if extendCalls < 3 {
-		t.Errorf("expected at least 3 extend calls, got %d", extendCalls)
+	if final < 3 {
+		t.Errorf("expected at least 3 extend calls, got %d", final)
 	}
 
 	// Clean up: stop auto-extend and release the delivery context.
