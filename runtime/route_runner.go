@@ -49,6 +49,8 @@ type RouteRunner struct {
 	started              chan struct{}
 	startedOnce          sync.Once
 	inFlight             atomic.Int64
+	idleMu               sync.Mutex
+	idleCh               chan struct{}
 }
 
 // RouteRunnerConfig holds the configuration for a RouteRunner.
@@ -154,6 +156,7 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 		onDelivery:           cfg.OnDelivery,
 		onAck:                cfg.OnAck,
 		started:              make(chan struct{}),
+		idleCh:               make(chan struct{}),
 	}
 	if r.policy.MaxInFlight > 0 {
 		r.sem = make(chan struct{}, r.policy.MaxInFlight)
@@ -192,7 +195,11 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 			domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID})
 		go func() {
 			r.inFlight.Add(1)
-			defer r.inFlight.Add(-1)
+			defer func() {
+				if r.inFlight.Add(-1) == 0 {
+					r.fireIdle()
+				}
+			}()
 			defer wg.Done()
 			defer r.releaseSlots()
 			defer func() {
@@ -250,6 +257,27 @@ func (r *RouteRunner) Started() <-chan struct{} { return r.started }
 
 // InFlight returns the number of delivery goroutines currently executing.
 func (r *RouteRunner) InFlight() int64 { return r.inFlight.Load() }
+
+// IdleChanged returns a channel that closes on the next transition of
+// InFlight to zero. A fresh channel is allocated on every transition,
+// so callers must re-read it each iteration. Capture the channel
+// before checking InFlight to avoid lost-wakeup races — see
+// OutboxDrainer.WaitIdle for the template pattern.
+func (r *RouteRunner) IdleChanged() <-chan struct{} {
+	r.idleMu.Lock()
+	defer r.idleMu.Unlock()
+	return r.idleCh
+}
+
+// fireIdle closes the current idleCh and swaps in a fresh one. Called
+// when inFlight transitions to zero (see the Add(-1)==0 site in Run).
+func (r *RouteRunner) fireIdle() {
+	r.idleMu.Lock()
+	old := r.idleCh
+	r.idleCh = make(chan struct{})
+	r.idleMu.Unlock()
+	close(old)
+}
 
 // handleDelivery is the synchronous entry point used by Runtime.Inject.
 func (r *RouteRunner) handleDelivery(ctx context.Context, del ports.Delivery) error {

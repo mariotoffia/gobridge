@@ -478,10 +478,10 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 
 // monitorLoop watches for connection loss and attempts automatic
 // reconnection. It selects on the connection's Done() channel for
-// immediate disconnect detection, falling back to a 30s ticker as a
-// sanity check.
+// immediate disconnect detection, falling back to a configurable
+// ticker (SessionOptions.ConnectionMonitorFallback) as a sanity check.
 func (s *Session) monitorLoop(ctx context.Context) {
-	fallback := s.clk.NewTicker(30 * time.Second)
+	fallback := s.clk.NewTicker(s.opts.ConnectionMonitorFallback)
 	defer fallback.Stop()
 
 	for {

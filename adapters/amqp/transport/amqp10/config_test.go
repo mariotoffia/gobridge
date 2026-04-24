@@ -275,6 +275,45 @@ func TestSessionOptionsFromMap(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "parses link_close_timeout from duration string",
+			m: map[string]any{
+				"address":            "amqp://localhost:5672",
+				"link_close_timeout": "7s",
+			},
+			check: func(t *testing.T, opts SessionOptions) {
+				t.Helper()
+				if opts.LinkCloseTimeout != 7*time.Second {
+					t.Fatalf("LinkCloseTimeout = %v, want 7s", opts.LinkCloseTimeout)
+				}
+			},
+		},
+		{
+			name: "parses connection_monitor_fallback from duration string",
+			m: map[string]any{
+				"address":                     "amqp://localhost:5672",
+				"connection_monitor_fallback": "15s",
+			},
+			check: func(t *testing.T, opts SessionOptions) {
+				t.Helper()
+				if opts.ConnectionMonitorFallback != 15*time.Second {
+					t.Fatalf("ConnectionMonitorFallback = %v, want 15s", opts.ConnectionMonitorFallback)
+				}
+			},
+		},
+		{
+			name: "applies default ConnectionMonitorFallback when omitted",
+			m: map[string]any{
+				"address": "amqp://localhost:5672",
+			},
+			check: func(t *testing.T, opts SessionOptions) {
+				t.Helper()
+				if opts.ConnectionMonitorFallback != 30*time.Second {
+					t.Fatalf("ConnectionMonitorFallback = %v, want default 30s",
+						opts.ConnectionMonitorFallback)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -304,6 +343,9 @@ func TestDefaultSessionOptions(t *testing.T) {
 	}
 	if opts.MaxFrameSize != 65536 {
 		t.Fatalf("MaxFrameSize = %d, want 65536", opts.MaxFrameSize)
+	}
+	if opts.ConnectionMonitorFallback != 30*time.Second {
+		t.Fatalf("ConnectionMonitorFallback = %v, want 30s", opts.ConnectionMonitorFallback)
 	}
 }
 
@@ -357,5 +399,11 @@ func TestSessionOptions_ApplyDefaults(t *testing.T) {
 	}
 	if opts.MaxFrameSize != 65536 {
 		t.Fatalf("MaxFrameSize = %d, want 65536", opts.MaxFrameSize)
+	}
+	if opts.LinkCloseTimeout != 5*time.Second {
+		t.Fatalf("LinkCloseTimeout = %v, want 5s", opts.LinkCloseTimeout)
+	}
+	if opts.ConnectionMonitorFallback != 30*time.Second {
+		t.Fatalf("ConnectionMonitorFallback = %v, want 30s", opts.ConnectionMonitorFallback)
 	}
 }

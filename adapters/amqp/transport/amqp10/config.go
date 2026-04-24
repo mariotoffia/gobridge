@@ -33,6 +33,14 @@ type SessionOptions struct {
 	// Defaults to 5s if zero.
 	LinkCloseTimeout time.Duration
 
+	// ConnectionMonitorFallback is the cadence at which the session
+	// monitor loop re-checks connection liveness as a sanity fallback
+	// when the underlying Conn.Done() signal is missed. Real disconnects
+	// are detected immediately via Conn.Done(); this ticker only guards
+	// against a broker that silently drops without closing. Defaults to
+	// 30s if zero.
+	ConnectionMonitorFallback time.Duration
+
 	// Clock drives the reconnect backoff wait. When nil defaults to
 	// clock.System (wall clock). Tests may inject a clocktest.Fake to
 	// control the backoff sleep deterministically.
@@ -100,12 +108,13 @@ type SenderConfig struct {
 // DefaultSessionOptions returns SessionOptions with sensible defaults.
 func DefaultSessionOptions() SessionOptions {
 	return SessionOptions{
-		ConnectTimeout:      30 * time.Second,
-		ReconnectDelay:      1 * time.Second,
-		ReconnectMaxDelay:   30 * time.Second,
-		ReconnectMultiplier: 2.0,
-		IdleTimeout:         2 * time.Minute,
-		MaxFrameSize:        65536,
+		ConnectTimeout:            30 * time.Second,
+		ReconnectDelay:            1 * time.Second,
+		ReconnectMaxDelay:         30 * time.Second,
+		ReconnectMultiplier:       2.0,
+		IdleTimeout:               2 * time.Minute,
+		MaxFrameSize:              65536,
+		ConnectionMonitorFallback: 30 * time.Second,
 	}
 }
 
@@ -184,6 +193,9 @@ func (o *SessionOptions) applyDefaults() {
 	if o.LinkCloseTimeout <= 0 {
 		o.LinkCloseTimeout = 5 * time.Second
 	}
+	if o.ConnectionMonitorFallback <= 0 {
+		o.ConnectionMonitorFallback = 30 * time.Second
+	}
 	if o.Clock == nil {
 		o.Clock = clock.System
 	}
@@ -248,6 +260,12 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	}
 	if v, ok := optDuration(m, "idle_timeout"); ok {
 		opts.IdleTimeout = v
+	}
+	if v, ok := optDuration(m, "link_close_timeout"); ok {
+		opts.LinkCloseTimeout = v
+	}
+	if v, ok := optDuration(m, "connection_monitor_fallback"); ok {
+		opts.ConnectionMonitorFallback = v
 	}
 	if v, ok := optUint32(m, "max_frame_size"); ok {
 		opts.MaxFrameSize = v
