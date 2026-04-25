@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 )
 
@@ -61,8 +62,10 @@ const (
 
 // Runtime error codes for pipeline classification.
 const (
-	ErrCodeNoBindingMatch ErrorCode = "NO_BINDING_MATCH"
-	ErrCodePoisonMessage  ErrorCode = "POISON_MESSAGE"
+	ErrCodeNoBindingMatch   ErrorCode = "NO_BINDING_MATCH"
+	ErrCodePoisonMessage    ErrorCode = "POISON_MESSAGE"
+	ErrCodeProcessorPanic   ErrorCode = "PROCESSOR_PANIC"
+	ErrCodeProcessorTimeout ErrorCode = "PROCESSOR_TIMEOUT"
 )
 
 // BridgeError is the structured error type for the bridge.
@@ -131,10 +134,7 @@ func (e *BridgeError) WithRetryAfter(d time.Duration) *BridgeError {
 func (e *BridgeError) clone() *BridgeError {
 	c := *e
 	if e.Context != nil {
-		c.Context = make(map[string]any, len(e.Context))
-		for k, v := range e.Context {
-			c.Context[k] = v
-		}
+		c.Context = maps.Clone(e.Context)
 	}
 	return &c
 }
@@ -248,6 +248,22 @@ var (
 	ErrForwardFailed = &BridgeError{
 		Code: ErrCodeForwardFailed, Class: ErrorTransient,
 		Message: "cluster forward failed",
+	}
+)
+
+// Sentinel errors -- processor chain.
+var (
+	// ErrProcessorPanic indicates a processor panicked during execution.
+	// Panics are treated as bugs (Permanent) and route to DLQ rather than retry.
+	ErrProcessorPanic = &BridgeError{
+		Code: ErrCodeProcessorPanic, Class: ErrorPermanent,
+		Message: "processor panicked",
+	}
+	// ErrProcessorTimeout indicates a processor exceeded its configured timeout.
+	// Treated as Transient -- may succeed on retry.
+	ErrProcessorTimeout = &BridgeError{
+		Code: ErrCodeProcessorTimeout, Class: ErrorTransient,
+		Message: "processor timed out",
 	}
 )
 

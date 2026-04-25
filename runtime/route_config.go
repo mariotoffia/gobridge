@@ -67,6 +67,18 @@ type SessionConfig struct {
 	DrainMaxBatchSize   int
 	DrainMaxConcurrency int
 
+	// DrainTimeout is the legacy fixed ceiling applied to a single
+	// drain batch when both PerRecordDrainTimeout and MaxDrainTimeout
+	// are zero. Retained for backward compatibility.
+	DrainTimeout time.Duration
+	// PerRecordDrainTimeout feeds the scaled formula for the batch
+	// ceiling: ceiling = min(batchCount * PerRecordDrainTimeout,
+	// MaxDrainTimeout). Setting either this or MaxDrainTimeout
+	// activates the scaled formula and supersedes DrainTimeout.
+	PerRecordDrainTimeout time.Duration
+	// MaxDrainTimeout is the upper bound of the scaled drain formula.
+	MaxDrainTimeout time.Duration
+
 	// ConnectAfterLease defers session.Start until the lease is acquired.
 	// This avoids connecting to a broker (e.g. MQTT with an exclusive
 	// ClientID) before ownership is confirmed, which would disconnect

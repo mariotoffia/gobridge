@@ -60,6 +60,23 @@ type Session struct {
 	// needs reconnect notifications must Subscribe to receive its own
 	// independent stream.
 	eventSubs []chan ports.SessionEvent
+
+	// liveCreds captures the latest applied credentials, consulted on
+	// every (re)connect via brokerURL(). The reconnect goroutine reads
+	// it while the mutex is not held for the dial, so it races with
+	// ApplyCredentials by design: the next dial attempt picks up the
+	// new values, and in-flight dials with stale credentials are fine
+	// (they just fail auth and retry).
+	liveCreds amqpCredentials
+}
+
+// amqpCredentials is the mutable subset of SessionOptions that can be
+// rotated at runtime. TLS material requires a full reconnect with a
+// new dialer and is out of scope here; see TLSMaterial on
+// domain.CredentialSet for the future extension point.
+type amqpCredentials struct {
+	Username string
+	Password string
 }
 
 var _ ports.Session = (*Session)(nil)
@@ -82,12 +99,20 @@ func NewSession(opts SessionOptions, mode domain.SessionMode, logger *slog.Logge
 		events:      make(chan ports.SessionEvent, 16),
 		activeSubs:  make(map[string]bool),
 		reconnected: make(chan struct{}, 1),
+		liveCreds: amqpCredentials{
+			Username: opts.Username,
+			Password: opts.Password,
+		},
 	}
 }
 
-// brokerURL returns the broker URL with credentials injected from opts.
+// brokerURL returns the broker URL with credentials injected from the
+// most recently applied credential material (see ApplyCredentials).
 func (s *Session) brokerURL() string {
-	return injectCredentials(s.opts.BrokerURL, s.opts.Username, s.opts.Password)
+	s.mu.Lock()
+	u, p := s.liveCreds.Username, s.liveCreds.Password
+	s.mu.Unlock()
+	return injectCredentials(s.opts.BrokerURL, u, p)
 }
 
 // safeBrokerURL returns the broker URL with credentials redacted for logging.

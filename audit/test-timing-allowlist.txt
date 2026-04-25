@@ -114,6 +114,7 @@
 ./runtime/runtime_resilience_test.go:322:	time.Sleep(200 * time.Millisecond) // NEGATIVE: verify stale fencing token does not kill runtime
 ./runtime/runtime_resilience_test.go:460:	time.Sleep(100 * time.Millisecond) // NEGATIVE: verify healthy session is not restarted on re-acquisition
 ./runtime/s12_timeout_alignment_test.go:206:			time.Sleep(20 * time.Millisecond) // SYNC: poll interval in inline wait loop
+./runtime/shared_outbox_transient_recovery_test.go:175:		time.Sleep(25 * time.Millisecond) // NEGATIVE: verify no records complete during transient-failure window
 ./runtime/session_manager_clock_test.go:138:		time.Sleep(5 * time.Millisecond) // OTHER: real-time sync for clocktest.Fake
 ./runtime/session_manager_clock_test.go:142:	time.Sleep(20 * time.Millisecond)
 ./runtime/session_manager_clock_test.go:169:	time.Sleep(20 * time.Millisecond)

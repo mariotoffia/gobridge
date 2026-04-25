@@ -24,6 +24,8 @@ classDiagram
         deployment_mode: string
         shutdown_timeout: string
         drain_timeout: string
+        per_record_drain_timeout: string
+        max_drain_timeout: string
         log_level: string
         cluster: ClusterConfig
     }
@@ -87,7 +89,9 @@ classDiagram
 | `instance_id` | string | no | auto-generated | Instance identifier (useful in clustered mode) |
 | `deployment_mode` | string | no | `standalone` | `standalone` or `clustered` |
 | `shutdown_timeout` | duration | no | `30s` | Grace period for clean shutdown |
-| `drain_timeout` | duration | no | `30s` | Max time to drain in-flight messages |
+| `drain_timeout` | duration | no | `30s` | Legacy fixed ceiling for a drain batch. Retained for backward compatibility; prefer `per_record_drain_timeout` + `max_drain_timeout` for production workloads. |
+| `per_record_drain_timeout` | duration | no | `3s` (when paired) | Per-record budget in the scaled formula `ceiling = min(batchCount * per_record_drain_timeout, max_drain_timeout)`. Setting this or `max_drain_timeout` activates the scaled formula and supersedes `drain_timeout`. |
+| `max_drain_timeout` | duration | no | `10s` (when paired) | Upper bound for the scaled drain formula. Must be >= `per_record_drain_timeout`. |
 | `log_level` | string | no | `info` | Log level: `debug`, `info`, `warn`, `error` |
 
 ### `bridge.cluster` -- Cluster Config
@@ -102,7 +106,12 @@ bridge:
   instance_id: instance-01
   deployment_mode: clustered
   shutdown_timeout: 45s
-  drain_timeout: 30s
+  # Prefer the scaled drain formula for production workloads. The batch
+  # deadline is computed as min(batchCount * per_record_drain_timeout,
+  # max_drain_timeout); drain_timeout is ignored when either new field
+  # is set and is retained only for backward compatibility.
+  per_record_drain_timeout: 3s
+  max_drain_timeout: 30s
   log_level: info
   cluster:
     endpoints:

@@ -6,14 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	goruntime "runtime/debug"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/observability"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -23,21 +22,21 @@ import (
 // Messages are processed concurrently up to MaxInFlight, and an
 // optional global semaphore provides host-level throttling across routes.
 type RouteRunner struct {
-	routeID     string
-	policy      domain.RoutePolicy
-	receiver    ports.Receiver
-	sender      ports.Sender
-	senders     map[string]ports.Sender // binding ID -> sender (optional)
-	outboxStore ports.OutboxStore
-	dlq         *DLQRouter
-	resolver    ports.DestinationResolver
-	processors  []ports.Processor
-	bindings    []domain.DestinationBinding
-	instanceID  string
-	metrics     ports.MetricsExporter
-	tracer      ports.Tracer
-	hook        ports.DeliveryHook
-	logger      *slog.Logger
+	routeID              string
+	policy               domain.RoutePolicy
+	receiver             ports.Receiver
+	sender               ports.Sender
+	senders              map[string]ports.Sender // binding ID -> sender (optional)
+	outboxStore          ports.OutboxStore
+	dlq                  *DLQRouter
+	resolver             ports.DestinationResolver
+	processors           []ports.Processor
+	bindings             []domain.DestinationBinding
+	instanceID           string
+	metrics              ports.MetricsExporter
+	tracer               ports.Tracer
+	hook                 ports.DeliveryHook
+	logger               *slog.Logger
 	clk                  clock.Clock
 	sem                  chan struct{}
 	globalSem            chan struct{}
@@ -55,20 +54,20 @@ type RouteRunner struct {
 
 // RouteRunnerConfig holds the configuration for a RouteRunner.
 type RouteRunnerConfig struct {
-	RouteID       string
-	Policy        domain.RoutePolicy
-	Receiver      ports.Receiver
-	Sender        ports.Sender
-	Senders       map[string]ports.Sender // binding ID -> sender (optional)
-	OutboxStore   ports.OutboxStore
-	DLQ           *DLQRouter
-	Resolver      ports.DestinationResolver
-	Processors    []ports.Processor
-	Bindings      []domain.DestinationBinding
-	InstanceID    string
-	Metrics       ports.MetricsExporter
-	Tracer        ports.Tracer
-	Hook          ports.DeliveryHook
+	RouteID              string
+	Policy               domain.RoutePolicy
+	Receiver             ports.Receiver
+	Sender               ports.Sender
+	Senders              map[string]ports.Sender // binding ID -> sender (optional)
+	OutboxStore          ports.OutboxStore
+	DLQ                  *DLQRouter
+	Resolver             ports.DestinationResolver
+	Processors           []ports.Processor
+	Bindings             []domain.DestinationBinding
+	InstanceID           string
+	Metrics              ports.MetricsExporter
+	Tracer               ports.Tracer
+	Hook                 ports.DeliveryHook
 	Logger               *slog.Logger
 	GlobalSem            chan struct{}
 	DepthCacheTTL        time.Duration
@@ -196,6 +195,10 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 		go func() {
 			r.inFlight.Add(1)
 			defer func() {
+				// Why: fire IdleChanged on every InFlight → 0 transition
+				// so Runtime.WaitQuiescent (runtime/bridge_health.go) can
+				// wake event-driven instead of polling. The signal is also
+				// covered by route_runner_idle_test.go.
 				if r.inFlight.Add(-1) == 0 {
 					r.fireIdle()
 				}
@@ -222,7 +225,17 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 						r.metrics.Counter(domain.MetricDeliveryPanics, 1,
 							domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID},
 						)
-						retryCtx, retryCancel := context.WithTimeout(context.Background(), r.panicRetryTimeout)
+						// Propagate caller ctx for trace/correlation values and to
+						// honour any deadline the caller already set. If the caller
+						// ctx is cancelled, strip cancellation but keep values so
+						// the retry (ack/nack to the source) can still complete.
+						var retryParent context.Context
+						if ctx.Err() != nil {
+							retryParent = context.WithoutCancel(ctx)
+						} else {
+							retryParent = ctx
+						}
+						retryCtx, retryCancel := context.WithTimeout(retryParent, r.panicRetryTimeout)
 						retryErr := r.retryDelivery(retryCtx, del, 0, fmt.Errorf("panic recovered in route %s: %v", r.routeID, rec))
 						retryCancel()
 						if retryErr != nil && r.logger != nil {
@@ -242,7 +255,10 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 	mu.Unlock()
 	wg.Wait()
 
-	closeCtx, closeCancel := context.WithTimeout(context.Background(), r.receiverCloseTimeout)
+	// Close the receiver even when the caller ctx is already cancelled
+	// (which is the common shutdown case). Preserve values for log/trace
+	// correlation via WithoutCancel.
+	closeCtx, closeCancel := context.WithTimeout(context.WithoutCancel(ctx), r.receiverCloseTimeout)
 	defer closeCancel()
 	if closer, ok := r.receiver.(interface{ Close(context.Context) error }); ok {
 		_ = closer.Close(closeCtx)
@@ -360,7 +376,12 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		return err
 	}
 
-	if err := RunChain(ctx, r.processors, env); err != nil {
+	if err := RunChain(ctx, r.processors, env,
+		WithChainLogger(r.logger),
+		WithChainMetrics(r.metrics),
+		WithChainTimeout(r.policy.ProcessorTimeout),
+		WithChainRouteID(r.routeID),
+	); err != nil {
 		pErr := r.handleProcessorError(ctx, del, env, err)
 		if !errors.Is(err, domain.ErrMessageFiltered) {
 			span.SetError(err)
@@ -376,7 +397,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 	}
 
 	if logging.DebugEnabled(r.logger) {
-		r.logger.Log(context.Background(), logging.LevelDebug, "dispatching",
+		r.logger.Log(ctx, logging.LevelDebug, "dispatching",
 			"route", r.routeID,
 			"mode", string(r.policy.DeliveryMode),
 		)
@@ -426,86 +447,3 @@ func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *d
 
 	return r.sendDirectHold(ctx, del, env, plans[0])
 }
-
-func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env *domain.Envelope) error {
-	var plans []domain.DispatchPlan
-
-	// Consume HeaderRouteOverride set by processor chain.
-	if override, ok := domain.GetHeaderString(env.Headers, domain.HeaderRouteOverride); ok {
-		delete(env.Headers, domain.HeaderRouteOverride)
-		if r.hasBinding(override) {
-			for _, b := range r.bindings {
-				if b.ID == override {
-					addr := b.Address
-					if addr != "" {
-						rendered, err := RenderAddress(addr, env.Headers)
-						if err != nil {
-							addrErr := domain.ErrInvalidTopic.
-								WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
-							return r.handleResolveError(ctx, del, env, addrErr)
-						}
-						addr = rendered
-					}
-					if strings.EqualFold(b.Transport, "mqtt") && addr != "" {
-						if err := ValidateMQTTTopic(addr); err != nil {
-							topicErr := domain.ErrInvalidTopic.
-								WithMessage(fmt.Sprintf("binding %q: %v", b.ID, err))
-							return r.handleResolveError(ctx, del, env, topicErr)
-						}
-					}
-					plans = []domain.DispatchPlan{{
-						BindingID: b.ID, Address: addr, Headers: copyHeaders(b.Options),
-					}}
-					break
-				}
-			}
-		} else if r.logger != nil {
-			r.logger.Warn("route override references unknown binding",
-				"route", r.routeID, "override", override)
-		}
-	}
-
-	if plans == nil {
-		var err error
-		plans, err = r.resolvePlans(ctx, env)
-		if err != nil {
-			return r.handleResolveError(ctx, del, env, err)
-		}
-	}
-
-	if r.outboxStore == nil {
-		return r.retryOrFallback(ctx, del, env, time.Second, fmt.Errorf("shared_outbox route %q: no OutboxStore configured", r.routeID))
-	}
-
-	// Depth check is advisory: concurrent goroutines may each see under-capacity
-	// and collectively exceed MaxOutboxDepth. This is acceptable because the
-	// outbox drainer will eventually process excess entries, and QueryPending
-	// errors now fail the delivery (fail-closed) rather than silently bypassing.
-	if r.policy.MaxOutboxDepth > 0 && r.depthCache != nil {
-		partitionKey := r.outboxPartitionKey(plans)
-		if partitionKey != "" && !r.depthCache.isUnderCapacity(partitionKey) {
-			pending, qErr := r.outboxStore.QueryPending(ctx, partitionKey, r.policy.MaxOutboxDepth+1)
-			if qErr != nil {
-				return r.retryOrFallback(ctx, del, env, time.Second, fmt.Errorf("outbox depth query failed: %w", qErr))
-			}
-			atCapacity := len(pending) >= r.policy.MaxOutboxDepth
-			r.depthCache.update(partitionKey, atCapacity)
-			if atCapacity {
-				return r.retryOrFallback(ctx, del, env, 5*time.Second, fmt.Errorf("outbox at capacity (%d pending)", len(pending)))
-			}
-		}
-	}
-
-	records := r.buildOutboxRecords(env, plans)
-
-	persistErr := r.outboxStore.Persist(ctx, records)
-	if persistErr != nil {
-		if errors.Is(persistErr, domain.ErrDuplicateRecord) {
-			return r.ackDelivery(ctx, del)
-		}
-		return r.retryOrFallback(ctx, del, env, 0, persistErr)
-	}
-
-	return r.ackDelivery(ctx, del)
-}
-

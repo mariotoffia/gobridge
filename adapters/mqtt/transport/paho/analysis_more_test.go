@@ -90,12 +90,13 @@ func TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization(t *test
 	}
 }
 
-// TestAnaMore_Sender_NilEnvelope_PanicsAsCallerBug pins the
-// expectation that Send(ctx, nil) is undefined behaviour (caller bug).
-// The current implementation panics; this test confirms that the
-// panic is contained to the calling goroutine and does not leave
-// session state corrupted.
-func TestAnaMore_Sender_NilEnvelope_PanicsAsCallerBug(t *testing.T) {
+// TestAnaMore_Sender_NilEnvelope_ReturnsInvalidPayload pins the
+// Sender.Send contract for a nil envelope: the adapter rejects the
+// call with a classified domain.ErrInvalidPayload rather than
+// panicking. Validating at the transport boundary keeps session
+// state intact and gives callers a recoverable error instead of
+// undefined behaviour.
+func TestAnaMore_Sender_NilEnvelope_ReturnsInvalidPayload(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-nil-env",
@@ -106,11 +107,17 @@ func TestAnaMore_Sender_NilEnvelope_PanicsAsCallerBug(t *testing.T) {
 
 	s := NewSender(sess, SenderOptions{Timeout: time.Second, DefaultTopic: "t"})
 
-	defer func() {
-		_ = recover() // expected — caller-side bug
-	}()
-
-	_ = s.Send(context.Background(), nil)
+	err := s.Send(context.Background(), nil)
+	if err == nil {
+		t.Fatalf("expected error for nil envelope, got nil")
+	}
+	be, ok := domain.AsBridgeError(err)
+	if !ok {
+		t.Fatalf("expected *domain.BridgeError, got %T: %v", err, err)
+	}
+	if be.Code != domain.ErrInvalidPayload.Code {
+		t.Fatalf("expected code %q, got %q", domain.ErrInvalidPayload.Code, be.Code)
+	}
 }
 
 // TestAnaMore_ReconcileMetric_EmittedPerCall verifies that a successful

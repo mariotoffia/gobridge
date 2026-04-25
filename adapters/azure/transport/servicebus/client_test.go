@@ -36,7 +36,7 @@ func generateSelfSignedCAPEM(t *testing.T) string {
 // TestBuildTLSConfig_Nil validates that buildTLSConfig returns nil when
 // neither CA PEM nor InsecureSkipVerify is set.
 func TestBuildTLSConfig_Nil(t *testing.T) {
-	tc, err := buildTLSConfig("", false)
+	tc, err := buildTLSConfig("", "", "", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestBuildTLSConfig_Nil(t *testing.T) {
 // TestBuildTLSConfig_InsecureSkipVerify validates that the InsecureSkipVerify
 // flag is propagated to the resulting tls.Config.
 func TestBuildTLSConfig_InsecureSkipVerify(t *testing.T) {
-	tc, err := buildTLSConfig("", true)
+	tc, err := buildTLSConfig("", "", "", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestBuildTLSConfig_InsecureSkipVerify(t *testing.T) {
 func TestBuildTLSConfig_WithCACert(t *testing.T) {
 	caPEM := generateSelfSignedCAPEM(t)
 
-	tc, err := buildTLSConfig(caPEM, false)
+	tc, err := buildTLSConfig(caPEM, "", "", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestBuildTLSConfig_WithCACert(t *testing.T) {
 
 // TestBuildTLSConfig_InvalidPEM validates that invalid CA PEM returns an error.
 func TestBuildTLSConfig_InvalidPEM(t *testing.T) {
-	_, err := buildTLSConfig("not-valid-pem", false)
+	_, err := buildTLSConfig("not-valid-pem", "", "", false)
 	if err == nil {
 		t.Fatal("expected error for invalid PEM")
 	}
@@ -104,7 +104,7 @@ func TestBuildClientOptions_NoTLS(t *testing.T) {
 // TestBuildClientOptions_WithTLSConfig validates that an explicit TLSConfig
 // on ConnectionConfig is used in the returned client options.
 func TestBuildClientOptions_WithTLSConfig(t *testing.T) {
-	tc, _ := buildTLSConfig("", true)
+	tc, _ := buildTLSConfig("", "", "", true)
 	cfg := ConnectionConfig{TLSConfig: tc}
 	opts, err := buildClientOptions(cfg)
 	if err != nil {

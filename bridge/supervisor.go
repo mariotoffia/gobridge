@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -47,18 +49,23 @@ type SwapEvent struct {
 // supports pluggable ReconfigStrategy for debouncing and automatic
 // SwapMode detection based on transport capabilities.
 type Supervisor struct {
-	mu                  sync.RWMutex
-	rt                  *runtime.Runtime
-	cfg                 *config.BridgeConfig
-	transports          map[string]TransportFactory
-	stores              map[string]StoreFactory
-	processors          map[string]ports.Processor
-	credStore           ports.CredentialStore
-	logger              *slog.Logger
-	swapMode            SwapMode
-	strategy            ReconfigStrategy
-	onSwap              func(SwapEvent)
-	defaultDrainTimeout time.Duration
+	mu                           sync.RWMutex
+	rt                           *runtime.Runtime
+	cfg                          *config.BridgeConfig
+	transports                   map[string]TransportFactory
+	stores                       map[string]StoreFactory
+	processors                   map[string]ports.Processor
+	credStore                    ports.CredentialStore
+	pushCredStore                ports.PushCredentialStore
+	pollCredStore                ports.PullCredentialStore
+	pollCredConfig               ports.PollBasedWrapperConfig
+	logger                       *slog.Logger
+	swapMode                     SwapMode
+	strategy                     ReconfigStrategy
+	onSwap                       func(SwapEvent)
+	defaultDrainTimeout          time.Duration
+	defaultPerRecordDrainTimeout time.Duration
+	defaultMaxDrainTimeout       time.Duration
 }
 
 // SupervisorOption configures a Supervisor.
@@ -81,10 +88,27 @@ func WithReconfigStrategy(rs ReconfigStrategy) SupervisorOption {
 	return func(s *Supervisor) { s.strategy = rs }
 }
 
-// WithSupervisorCredentialStore sets the credential store passed to
-// builders created by the supervisor.
+// WithSupervisorCredentialStore sets the pull-style credential store
+// passed to builders created by the supervisor.
 func WithSupervisorCredentialStore(cs ports.CredentialStore) SupervisorOption {
 	return func(s *Supervisor) { s.credStore = cs }
+}
+
+// WithSupervisorPushCredentialStore registers a push-style credential
+// store that emits rotation events. The supervisor propagates it to
+// the builders so CredentialRefresher can bind watchers.
+func WithSupervisorPushCredentialStore(cs ports.PushCredentialStore) SupervisorOption {
+	return func(s *Supervisor) { s.pushCredStore = cs }
+}
+
+// WithSupervisorPolledCredentialStore wires a pull store and adaption
+// config together so the builder can lift a pull store into a push
+// store via runtime.NewPollBasedWrapper.
+func WithSupervisorPolledCredentialStore(cs ports.PullCredentialStore, cfg ports.PollBasedWrapperConfig) SupervisorOption {
+	return func(s *Supervisor) {
+		s.pollCredStore = cs
+		s.pollCredConfig = cfg
+	}
 }
 
 // WithOnSwap registers a callback invoked after each swap attempt.
@@ -96,6 +120,20 @@ func WithOnSwap(fn func(SwapEvent)) SupervisorOption {
 // BridgeConfig does not specify one. Defaults to 30s.
 func WithDefaultDrainTimeout(d time.Duration) SupervisorOption {
 	return func(s *Supervisor) { s.defaultDrainTimeout = d }
+}
+
+// WithDefaultPerRecordDrainTimeout sets the fallback per-record drain
+// timeout used by the scaled drain formula when the BridgeConfig does
+// not specify one. Zero means use the legacy fixed DrainTimeout.
+func WithDefaultPerRecordDrainTimeout(d time.Duration) SupervisorOption {
+	return func(s *Supervisor) { s.defaultPerRecordDrainTimeout = d }
+}
+
+// WithDefaultMaxDrainTimeout sets the fallback max drain timeout used
+// by the scaled drain formula when the BridgeConfig does not specify
+// one. Zero means use the legacy fixed DrainTimeout.
+func WithDefaultMaxDrainTimeout(d time.Duration) SupervisorOption {
+	return func(s *Supervisor) { s.defaultMaxDrainTimeout = d }
 }
 
 // NewSupervisor creates a Supervisor with SwapAuto mode and
@@ -268,7 +306,8 @@ func (s *Supervisor) applyOverlap(
 
 	if oldRt != nil {
 		drainTimeout := s.drainTimeoutFrom(oldCfg)
-		stopCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+		// Detach caller cancellation so drain completes, preserving values.
+		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainTimeout)
 		if stopErr := oldRt.Stop(stopCtx); stopErr != nil && s.logger != nil {
 			s.logger.Warn("supervisor: old runtime stop error", "error", stopErr)
 		}
@@ -315,7 +354,8 @@ func (s *Supervisor) applyPrepareCommit(
 
 	if oldRt != nil {
 		drainTimeout := s.drainTimeoutFrom(oldCfg)
-		stopCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+		// Detach caller cancellation so drain completes, preserving values.
+		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainTimeout)
 		if stopErr := oldRt.Stop(stopCtx); stopErr != nil && s.logger != nil {
 			s.logger.Warn("supervisor: old runtime stop error", "error", stopErr)
 		}
@@ -377,18 +417,9 @@ func (s *Supervisor) buildRuntime(ctx context.Context, cfg *config.BridgeConfig)
 
 func (s *Supervisor) newBuilder(cfg *config.BridgeConfig) *Builder {
 	s.mu.RLock()
-	transports := make(map[string]TransportFactory, len(s.transports))
-	for k, v := range s.transports {
-		transports[k] = v
-	}
-	stores := make(map[string]StoreFactory, len(s.stores))
-	for k, v := range s.stores {
-		stores[k] = v
-	}
-	procs := make(map[string]ports.Processor, len(s.processors))
-	for k, v := range s.processors {
-		procs[k] = v
-	}
+	transports := maps.Clone(s.transports)
+	stores := maps.Clone(s.stores)
+	procs := maps.Clone(s.processors)
 	s.mu.RUnlock()
 
 	var opts []BuilderOption
@@ -416,10 +447,7 @@ func (s *Supervisor) detectSwapMode(cfg *config.BridgeConfig) SwapMode {
 		return s.swapMode
 	}
 	s.mu.RLock()
-	transports := make(map[string]TransportFactory, len(s.transports))
-	for k, v := range s.transports {
-		transports[k] = v
-	}
+	transports := maps.Clone(s.transports)
 	s.mu.RUnlock()
 
 	for _, sess := range cfg.Sessions {
@@ -427,16 +455,14 @@ func (s *Supervisor) detectSwapMode(cfg *config.BridgeConfig) SwapMode {
 		if !ok {
 			continue
 		}
-		for _, cap := range tf.Capabilities() {
-			if cap == ports.CapExclusiveIdentity {
-				return SwapPrepareCommit
-			}
+		if slices.Contains(tf.Capabilities(), ports.CapExclusiveIdentity) {
+			return SwapPrepareCommit
 		}
 	}
 	return SwapOverlap
 }
 
-func (s *Supervisor) stopCurrent(_ context.Context) error {
+func (s *Supervisor) stopCurrent(ctx context.Context) error {
 	s.mu.RLock()
 	rt := s.rt
 	cfg := s.cfg
@@ -447,7 +473,10 @@ func (s *Supervisor) stopCurrent(_ context.Context) error {
 	}
 
 	drainTimeout := s.drainTimeoutFrom(cfg)
-	stopCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+	// Caller ctx is typically already cancelled when we reach here (final
+	// shutdown path); detach cancellation but preserve values so the drain
+	// can complete within drainTimeout.
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainTimeout)
 	defer cancel()
 	return rt.Stop(stopCtx)
 }
@@ -460,4 +489,29 @@ func (s *Supervisor) drainTimeoutFrom(cfg *config.BridgeConfig) time.Duration {
 		return s.defaultDrainTimeout
 	}
 	return 30 * time.Second
+}
+
+// PerRecordDrainTimeout returns the configured per-record drain
+// timeout from the supplied config, falling back to the supervisor
+// default when unset. Zero means the caller should use the legacy
+// fixed DrainTimeout instead of the scaled formula.
+func (s *Supervisor) PerRecordDrainTimeout(cfg *config.BridgeConfig) time.Duration {
+	if cfg != nil {
+		if d := cfg.Bridge.PerRecordDrainTimeoutDuration(); d > 0 {
+			return d
+		}
+	}
+	return s.defaultPerRecordDrainTimeout
+}
+
+// MaxDrainTimeout returns the configured max drain timeout from the
+// supplied config, falling back to the supervisor default when unset.
+// Zero means the caller should use the legacy fixed DrainTimeout.
+func (s *Supervisor) MaxDrainTimeout(cfg *config.BridgeConfig) time.Duration {
+	if cfg != nil {
+		if d := cfg.Bridge.MaxDrainTimeoutDuration(); d > 0 {
+			return d
+		}
+	}
+	return s.defaultMaxDrainTimeout
 }

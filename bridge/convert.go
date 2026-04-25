@@ -118,6 +118,27 @@ func toSessionConfigE(rs *config.RouteSessionDef) (*runtime.SessionConfig, error
 	return &sc, nil
 }
 
+// applyBridgeDrainDefaults copies bridge-level drain timeout settings
+// into a session config when the session does not already set them.
+// This keeps the drain ceiling configurable from a single
+// YAML location while preserving per-session overrides.
+func applyBridgeDrainDefaults(sc *runtime.SessionConfig, bs config.BridgeSettings) {
+	if sc == nil {
+		return
+	}
+	if sc.DrainTimeout == 0 {
+		if d := bs.DrainTimeoutDuration(); d > 0 && bs.DrainTimeout != "" {
+			sc.DrainTimeout = d
+		}
+	}
+	if sc.PerRecordDrainTimeout == 0 {
+		sc.PerRecordDrainTimeout = bs.PerRecordDrainTimeoutDuration()
+	}
+	if sc.MaxDrainTimeout == 0 {
+		sc.MaxDrainTimeout = bs.MaxDrainTimeoutDuration()
+	}
+}
+
 func toDrainStrategy(rs *config.RouteSessionDef) domain.DrainStrategy {
 	ds, _ := toDrainStrategyE(rs)
 	return ds
@@ -188,42 +209,6 @@ func toBindings(cfg *config.BridgeConfig, bindingIDs []string) []domain.Destinat
 	return out
 }
 
-//nolint:unused // scaffolded for T13 config-driven construction
-func toSessionSpec(s config.SessionDef) ports.SessionSpec {
-	return ports.SessionSpec{
-		ID:          s.ID,
-		Transport:   s.Transport,
-		SessionMode: domain.SessionMode(s.SessionMode),
-		Options:     s.Options,
-	}
-}
-
-//nolint:unused // scaffolded for T13 config-driven construction
-func toReceiverSpec(r config.ReceiverDef) ports.ReceiverSpec {
-	spec := ports.ReceiverSpec{
-		ID:        r.ID,
-		SessionID: r.SessionID,
-		Options:   r.Options,
-	}
-	for _, t := range r.Topics {
-		spec.Subscriptions = append(spec.Subscriptions, domain.SubscriptionPlan{
-			Topic:   t.Topic,
-			QoS:     t.QoS,
-			Options: t.Options,
-		})
-	}
-	return spec
-}
-
-//nolint:unused // scaffolded for T13 config-driven construction
-func toSenderSpec(s config.SenderDef) ports.SenderSpec {
-	return ports.SenderSpec{
-		ID:        s.ID,
-		SessionID: s.SessionID,
-		Options:   s.Options,
-	}
-}
-
 func findBinding(cfg *config.BridgeConfig, id string) *config.BindingDef {
 	for i := range cfg.Bindings {
 		if cfg.Bindings[i].ID == id {
@@ -246,16 +231,6 @@ func findReceiver(cfg *config.BridgeConfig, id string) *config.ReceiverDef {
 	for i := range cfg.Receivers {
 		if cfg.Receivers[i].ID == id {
 			return &cfg.Receivers[i]
-		}
-	}
-	return nil
-}
-
-//nolint:unused // scaffolded for T13 config-driven construction
-func findSender(cfg *config.BridgeConfig, id string) *config.SenderDef {
-	for i := range cfg.Senders {
-		if cfg.Senders[i].ID == id {
-			return &cfg.Senders[i]
 		}
 	}
 	return nil

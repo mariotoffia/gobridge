@@ -252,6 +252,31 @@ The resolver dispatches by URI scheme (`file://`, `pms://`, `vault://`) with lon
 - **File**: `adapters/native/credentials/file/` -- scheme `"file"`, filesystem-based, supports CredentialAdmin
 - **SSM**: `adapters/aws/credentials/ssm/` -- scheme `"pms"`, AWS Parameter Store
 
+### Runtime Rotation
+
+Transport sessions (or receivers/senders) that want to accept rotated
+credentials on a live connection implement the
+`bridge.CredentialAware` capability interface:
+
+```go
+type CredentialAware interface {
+    ApplyCredentials(ctx context.Context, creds *domain.CredentialSet) error
+}
+```
+
+The `bridge.CredentialRefresher` discovers participating transports
+via a silent type assertion -- non-aware transports (HTTP, stateless
+adapters) coexist cleanly in the same bridge.
+
+`ApplyCredentials` receives the full `*CredentialSet` (password and
+TLS material together); the implementation dispatches on what
+changed and triggers the appropriate rebuild (reconnect for
+stateful transports, client swap for stateless ones). See
+[`docs/credentials-rotation.md`](docs/credentials-rotation.md) for
+the full contract, per-transport behaviour matrix, and worked
+examples of adding a new rotatable capability or writing a new
+transport that participates in rotation.
+
 ## Observability Adapters
 
 ### Metrics

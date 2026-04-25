@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
@@ -10,9 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -20,7 +19,7 @@ import (
 type LeaseState int
 
 const (
-	LeaseStateNone       LeaseState = iota
+	LeaseStateNone LeaseState = iota
 	LeaseStateAcquired
 	LeaseStateRenewed
 	LeaseStateLost
@@ -88,15 +87,9 @@ func newSessionManager(cfg SessionConfig, session ports.Session, leaseStore port
 		cfg.MaxRenewFails = defaults.MaxRenewFails
 	}
 	if cfg.RenewInterval == 0 {
-		cfg.RenewInterval = cfg.LeaseTTL / time.Duration(cfg.MaxRenewFails)
-		if cfg.RenewInterval < time.Millisecond {
-			cfg.RenewInterval = time.Millisecond
-		}
+		cfg.RenewInterval = max(cfg.LeaseTTL/time.Duration(cfg.MaxRenewFails), time.Millisecond)
 		if cfg.RenewInterval >= cfg.LeaseTTL {
-			cfg.RenewInterval = cfg.LeaseTTL / 2
-			if cfg.RenewInterval < time.Millisecond {
-				cfg.RenewInterval = time.Millisecond
-			}
+			cfg.RenewInterval = max(cfg.LeaseTTL/2, time.Millisecond)
 		}
 	}
 	if cfg.StepDownGrace == 0 {
@@ -197,245 +190,6 @@ func (m *SessionManager) Close(ctx context.Context) error {
 	return m.session.Close(ctx)
 }
 
-func (m *SessionManager) runExclusiveDeferred(ctx context.Context) error {
-	sessionStarted := false
-	iteration := 0
-	for {
-		token, err := m.acquireLeaseWithRetry(ctx)
-		if err != nil {
-			return err
-		}
-		m.setToken(token)
-
-		action := "lease.acquired"
-		if iteration > 0 {
-			action = "lease.reacquired"
-			m.metrics.Counter(domain.MetricLeaseTransfers, 1,
-				domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID})
-		}
-		iteration++
-		m.emitLeaseAudit(ctx, action, "success", token, nil)
-		m.pushLeaseEvent(LeaseStateAcquired, token, nil)
-
-		m.log(ctx, slog.LevelInfo, "lease acquired (deferred connect)", "version", token.Version)
-
-		if logging.DebugEnabled(m.logger) {
-			m.logger.Log(context.Background(), logging.LevelDebug, "lease acquired",
-				"session_id", m.sessionID,
-				"owner_id", m.ownerID,
-				"lease_version", token.Version,
-			)
-		}
-
-		if !sessionStarted {
-			if err := m.session.Start(ctx); err != nil {
-				return err
-			}
-			sessionStarted = true
-		} else {
-			health := m.session.Health(ctx)
-			if !health.Connected {
-				m.log(ctx, slog.LevelWarn, "session disconnected during lease gap, reconnecting")
-				if closeErr := m.session.Close(ctx); closeErr != nil {
-					m.log(ctx, slog.LevelWarn, "session close failed before restart", "error", closeErr)
-				}
-				if err := m.session.Start(ctx); err != nil {
-					return err
-				}
-			}
-		}
-
-		if err := m.session.Reconcile(ctx, m.plan); err != nil {
-			return err
-		}
-
-		err = m.renewLoop(ctx)
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		m.emitLeaseAudit(ctx, "lease.lost", "failure", token, err)
-		m.pushLeaseEvent(LeaseStateLost, token, err)
-		m.log(ctx, slog.LevelWarn, "lease lost, will re-acquire", "error", err)
-		m.mu.Lock()
-		m.hasLease = false
-		m.mu.Unlock()
-	}
-}
-
-func (m *SessionManager) runExclusive(ctx context.Context) error {
-	iteration := 0
-	for {
-		token, err := m.acquireLeaseWithRetry(ctx)
-		if err != nil {
-			return err
-		}
-		m.setToken(token)
-
-		action := "lease.acquired"
-		if iteration > 0 {
-			action = "lease.reacquired"
-			m.metrics.Counter(domain.MetricLeaseTransfers, 1,
-				domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID})
-		}
-		iteration++
-		m.emitLeaseAudit(ctx, action, "success", token, nil)
-		m.pushLeaseEvent(LeaseStateAcquired, token, nil)
-
-		m.log(ctx, slog.LevelInfo, "lease acquired", "version", token.Version)
-
-		if logging.DebugEnabled(m.logger) {
-			m.logger.Log(context.Background(), logging.LevelDebug, "lease acquired",
-				"session_id", m.sessionID,
-				"owner_id", m.ownerID,
-				"lease_version", token.Version,
-			)
-		}
-
-		if err := m.session.Reconcile(ctx, m.plan); err != nil {
-			return err
-		}
-
-		err = m.renewLoop(ctx)
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		m.emitLeaseAudit(ctx, "lease.lost", "failure", token, err)
-		m.pushLeaseEvent(LeaseStateLost, token, err)
-		m.log(ctx, slog.LevelWarn, "lease lost, will re-acquire", "error", err)
-		m.mu.Lock()
-		m.hasLease = false
-		m.mu.Unlock()
-	}
-}
-
-func (m *SessionManager) acquireLeaseWithRetry(ctx context.Context) (domain.LeaseToken, error) {
-	leaseTag := domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID}
-	for {
-		start := time.Now()
-		token, err := m.leaseStore.Acquire(ctx, m.sessionID, m.ownerID, m.leaseTTL, m.endpoints)
-		m.metrics.Timer(domain.MetricLeaseAcquireLatency, time.Since(start), leaseTag)
-		if err == nil {
-			return token, nil
-		}
-		m.metrics.Counter(domain.MetricLeaseAcquireFailures, 1, leaseTag)
-		m.log(ctx, slog.LevelDebug, "lease acquisition failed, retrying", "error", err)
-
-		select {
-		case <-ctx.Done():
-			return domain.LeaseToken{}, ctx.Err()
-		case <-m.clk.After(m.clampedInterval()):
-		}
-	}
-}
-
-func (m *SessionManager) renewLoop(ctx context.Context) error {
-	consecutiveFailures := 0
-	events := m.session.Events()
-
-	timer := m.clk.NewTimer(m.clampedInterval())
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-
-		case ev, ok := <-events:
-			if !ok {
-				return nil
-			}
-			if err := m.handleSessionEvent(ctx, ev); err != nil {
-				return err
-			}
-
-		case <-timer.C():
-			m.mu.Lock()
-			token := m.token
-			m.mu.Unlock()
-
-			leaseTag := domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID}
-			start := time.Now()
-			newToken, err := m.leaseStore.Renew(ctx, m.sessionID, token, m.leaseTTL, m.endpoints)
-			m.metrics.Timer(domain.MetricLeaseRenewLatency, time.Since(start), leaseTag)
-
-			if err != nil {
-				consecutiveFailures++
-				m.log(ctx, slog.LevelWarn, "lease renewal failed",
-					"failures", consecutiveFailures, "error", err)
-
-				if consecutiveFailures >= m.maxRenewFails {
-					m.metrics.Counter(domain.MetricLeaseExpiries, 1, leaseTag)
-					return m.stepDown(ctx)
-				}
-			} else {
-				consecutiveFailures = 0
-				m.setToken(newToken)
-				m.pushLeaseEvent(LeaseStateRenewed, newToken, nil)
-				if logging.TraceEnabled(m.logger) {
-					m.logger.Log(ctx, logging.LevelTrace, "lease renewed",
-						"session_id", m.sessionID,
-						"version", newToken.Version,
-					)
-				}
-			}
-
-			timer.Reset(m.clampedInterval())
-		}
-	}
-}
-
-// stepDown implements the three-phase step-down protocol:
-// 1. Stop claiming new outbox entries (clear hasLease)
-// 2. Wait grace period for in-flight completions
-// 3. Release the lease
-func (m *SessionManager) stepDown(ctx context.Context) error {
-	m.log(ctx, slog.LevelWarn, "stepping down from lease")
-
-	if logging.DebugEnabled(m.logger) {
-		m.logger.Log(context.Background(), logging.LevelDebug, "step-down initiated",
-			"session_id", m.sessionID,
-			"reason", "renewal failures exceeded max",
-		)
-	}
-
-	m.mu.Lock()
-	token := m.token
-	m.hasLease = false
-	m.mu.Unlock()
-
-	m.emitLeaseAudit(ctx, "lease.stepdown", "success", token, nil)
-	m.pushLeaseEvent(LeaseStateSteppedDown, token, nil)
-
-	graceCtx, graceCancel := context.WithTimeout(context.Background(), m.stepDownGrace)
-	defer graceCancel()
-
-	select {
-	case <-graceCtx.Done():
-	case <-ctx.Done():
-	}
-
-	if m.leaseStore != nil {
-		releaseTimeout := m.stepDownGrace
-		if releaseTimeout <= 0 {
-			releaseTimeout = 5 * time.Second
-		} else if releaseTimeout > 5*time.Second {
-			releaseTimeout = 5 * time.Second
-		}
-		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), releaseTimeout)
-		defer releaseCancel()
-		if err := m.leaseStore.Release(releaseCtx, m.sessionID, token); err != nil {
-			m.emitLeaseAudit(ctx, "lease.release", "failure", token, err)
-			m.pushLeaseEvent(LeaseStateReleased, token, err)
-			m.log(ctx, slog.LevelWarn, "lease release failed during step-down", "error", err)
-		} else {
-			m.emitLeaseAudit(ctx, "lease.release", "success", token, nil)
-			m.pushLeaseEvent(LeaseStateReleased, token, nil)
-		}
-	}
-
-	return errors.New("lease lost after renewal failures")
-}
-
 func (m *SessionManager) handleEvents(ctx context.Context) error {
 	events := m.session.Events()
 	for {
@@ -462,7 +216,7 @@ func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.Sessio
 			m.metrics.Counter(domain.MetricMQTTReconnects, 1, sessionTag)
 		}
 		if logging.DebugEnabled(m.logger) {
-			m.logger.Log(context.Background(), logging.LevelDebug, "session reconcile",
+			m.logger.Log(ctx, logging.LevelDebug, "session reconcile",
 				"session_id", m.sessionID,
 				"subscription_count", len(m.plan.Subscriptions),
 			)
@@ -504,11 +258,7 @@ func (m *SessionManager) jitter() time.Duration {
 // prevent near-zero or negative timer durations when jitter exceeds
 // the renewal interval.
 func (m *SessionManager) clampedInterval() time.Duration {
-	d := m.renewInterval + m.jitter()
-	if d < time.Millisecond {
-		d = time.Millisecond
-	}
-	return d
+	return max(m.renewInterval+m.jitter(), time.Millisecond)
 }
 
 func (m *SessionManager) log(ctx context.Context, level slog.Level, msg string, args ...any) {

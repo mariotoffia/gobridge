@@ -420,7 +420,10 @@ bridge:
   id: orders-bridge-prod
   deployment_mode: standalone
   shutdown_timeout: "30s"
-  drain_timeout: "30s"
+  # Prefer the scaled drain formula over drain_timeout in production:
+  # ceiling = min(batchCount * per_record_drain_timeout, max_drain_timeout).
+  per_record_drain_timeout: "3s"
+  max_drain_timeout: "30s"
   log_level: info
 
 sessions:

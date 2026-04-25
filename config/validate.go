@@ -82,6 +82,29 @@ func validate(cfg *BridgeConfig) *ValidationError {
 			ve.addf("bridge.drain_timeout: must be positive, got %s", cfg.Bridge.DrainTimeout)
 		}
 	}
+	var perRecordDrain, maxDrain time.Duration
+	if cfg.Bridge.PerRecordDrainTimeout != "" {
+		if d, err := time.ParseDuration(cfg.Bridge.PerRecordDrainTimeout); err != nil {
+			ve.addf("bridge.per_record_drain_timeout: invalid duration %q: %v", cfg.Bridge.PerRecordDrainTimeout, err)
+		} else if d <= 0 {
+			ve.addf("bridge.per_record_drain_timeout: must be positive, got %s", cfg.Bridge.PerRecordDrainTimeout)
+		} else {
+			perRecordDrain = d
+		}
+	}
+	if cfg.Bridge.MaxDrainTimeout != "" {
+		if d, err := time.ParseDuration(cfg.Bridge.MaxDrainTimeout); err != nil {
+			ve.addf("bridge.max_drain_timeout: invalid duration %q: %v", cfg.Bridge.MaxDrainTimeout, err)
+		} else if d <= 0 {
+			ve.addf("bridge.max_drain_timeout: must be positive, got %s", cfg.Bridge.MaxDrainTimeout)
+		} else {
+			maxDrain = d
+		}
+	}
+	if perRecordDrain > 0 && maxDrain > 0 && maxDrain < perRecordDrain {
+		ve.addf("bridge.max_drain_timeout (%s) must be >= per_record_drain_timeout (%s)",
+			cfg.Bridge.MaxDrainTimeout, cfg.Bridge.PerRecordDrainTimeout)
+	}
 
 	if cw := cfg.ConfigWatch; cw != nil {
 		if cw.Mode != "" {

@@ -8,6 +8,13 @@ developers integrating with its management endpoints.
 > monitor) and `spec/http-adapter/` (HTTP transport). See those files for
 > machine-readable endpoint definitions.
 
+> **Runtime rotation** -- this document describes how credentials are
+> resolved when the bridge builds its transports. See
+> [credentials-rotation.md](credentials-rotation.md) for the
+> complementary story of how GoBridge rotates credentials on a
+> *running* bridge (Pull vs Push stores, the `CredentialRefresher`,
+> the `CredentialAware` capability, and per-transport behaviour).
+
 ## Credential URI System Overview
 
 Sessions, receivers, senders, and bindings accept a `credentials_uri` key in

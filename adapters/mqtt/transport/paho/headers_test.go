@@ -358,7 +358,7 @@ func TestEnvelopeFromPublish_NilProperties(t *testing.T) {
 
 	env := EnvelopeFromPublish(pub)
 
-	if env.Headers != nil && len(env.Headers) > 0 {
+	if len(env.Headers) > 0 {
 		t.Errorf("expected no headers for nil properties, got %v", env.Headers)
 	}
 }

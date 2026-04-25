@@ -35,11 +35,21 @@ type ConfigWatchDef struct {
 
 // BridgeSettings holds bridge-level operational settings.
 type BridgeSettings struct {
-	ID              string         `yaml:"id" json:"id"`
-	InstanceID      string         `yaml:"instance_id,omitempty" json:"instance_id,omitempty"`
-	DeploymentMode  string         `yaml:"deployment_mode,omitempty" json:"deployment_mode,omitempty"`
-	ShutdownTimeout string         `yaml:"shutdown_timeout,omitempty" json:"shutdown_timeout,omitempty"`
-	DrainTimeout    string         `yaml:"drain_timeout,omitempty" json:"drain_timeout,omitempty"`
+	ID              string `yaml:"id" json:"id"`
+	InstanceID      string `yaml:"instance_id,omitempty" json:"instance_id,omitempty"`
+	DeploymentMode  string `yaml:"deployment_mode,omitempty" json:"deployment_mode,omitempty"`
+	ShutdownTimeout string `yaml:"shutdown_timeout,omitempty" json:"shutdown_timeout,omitempty"`
+	// DrainTimeout is the legacy fixed ceiling applied to a whole drain
+	// batch. Retained for backward compatibility; prefer
+	// PerRecordDrainTimeout + MaxDrainTimeout for production workloads.
+	DrainTimeout string `yaml:"drain_timeout,omitempty" json:"drain_timeout,omitempty"`
+	// PerRecordDrainTimeout is the per-record allowance used by the
+	// scaled formula: ceiling = min(batchCount * PerRecordDrainTimeout,
+	// MaxDrainTimeout). When non-zero together with MaxDrainTimeout this
+	// supersedes DrainTimeout.
+	PerRecordDrainTimeout string `yaml:"per_record_drain_timeout,omitempty" json:"per_record_drain_timeout,omitempty"`
+	// MaxDrainTimeout is the upper bound for the scaled drain formula.
+	MaxDrainTimeout string         `yaml:"max_drain_timeout,omitempty" json:"max_drain_timeout,omitempty"`
 	LogLevel        string         `yaml:"log_level,omitempty" json:"log_level,omitempty"`
 	Cluster         *ClusterConfig `yaml:"cluster,omitempty" json:"cluster,omitempty"`
 }
@@ -66,6 +76,20 @@ func (b BridgeSettings) DrainTimeoutDuration() time.Duration {
 	if d == 0 {
 		return 30 * time.Second
 	}
+	return d
+}
+
+// PerRecordDrainTimeoutDuration parses the per-record drain timeout.
+// Returns 0 when unset so the caller can fall back to DrainTimeout.
+func (b BridgeSettings) PerRecordDrainTimeoutDuration() time.Duration {
+	d, _ := time.ParseDuration(b.PerRecordDrainTimeout)
+	return d
+}
+
+// MaxDrainTimeoutDuration parses the max drain timeout.
+// Returns 0 when unset so the caller can fall back to DrainTimeout.
+func (b BridgeSettings) MaxDrainTimeoutDuration() time.Duration {
+	d, _ := time.ParseDuration(b.MaxDrainTimeout)
 	return d
 }
 

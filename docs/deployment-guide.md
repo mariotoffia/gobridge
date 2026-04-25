@@ -43,7 +43,10 @@ bridge:
   id: my-bridge
   deployment_mode: standalone   # or "clustered"
   shutdown_timeout: 30s
-  drain_timeout: 30s
+  # Scaled drain formula (preferred). Legacy drain_timeout is retained
+  # for backward compatibility.
+  per_record_drain_timeout: 3s
+  max_drain_timeout: 30s
 ```
 
 ## Configuration Delivery
@@ -238,13 +241,20 @@ initialized and accepting traffic.
 ```yaml
 bridge:
   shutdown_timeout: 30s
-  drain_timeout: 30s
+  # Scaled drain formula (preferred in production). The per-batch
+  # ceiling is min(batchCount * per_record_drain_timeout,
+  # max_drain_timeout). Legacy drain_timeout remains for backward
+  # compatibility; set either the new fields OR drain_timeout.
+  per_record_drain_timeout: 3s
+  max_drain_timeout: 30s
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `shutdown_timeout` | `30s` | Total grace period for clean shutdown |
-| `drain_timeout` | `30s` | Maximum time to drain in-flight messages before force-closing |
+| `drain_timeout` | `30s` | Legacy fixed drain ceiling. Retained for backward compatibility; prefer the scaled fields. |
+| `per_record_drain_timeout` | `3s` | Per-record budget in the scaled formula. |
+| `max_drain_timeout` | `10s` | Absolute ceiling for the scaled formula. |
 
 The shutdown sequence proceeds as follows:
 

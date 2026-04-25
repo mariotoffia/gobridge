@@ -17,11 +17,11 @@ import (
 
 type fakeSession struct{}
 
-func (f *fakeSession) Start(ctx context.Context) error                           { return nil }
+func (f *fakeSession) Start(ctx context.Context) error                              { return nil }
 func (f *fakeSession) Reconcile(ctx context.Context, plan domain.SessionPlan) error { return nil }
-func (f *fakeSession) Health(ctx context.Context) ports.SessionHealth             { return ports.SessionHealth{} }
-func (f *fakeSession) Events() <-chan ports.SessionEvent                          { return nil }
-func (f *fakeSession) Close(ctx context.Context) error                           { return nil }
+func (f *fakeSession) Health(ctx context.Context) ports.SessionHealth               { return ports.SessionHealth{} }
+func (f *fakeSession) Events() <-chan ports.SessionEvent                            { return nil }
+func (f *fakeSession) Close(ctx context.Context) error                              { return nil }
 
 type fakeReceiver struct{}
 

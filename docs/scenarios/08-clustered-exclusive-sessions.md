@@ -78,7 +78,11 @@ bridge:
   instance_id: bridge-01          # bridge-02 on the other instance
   deployment_mode: clustered
   shutdown_timeout: 45s
-  drain_timeout: 30s
+  # Scaled drain formula: ceiling = min(batchCount * per_record_drain_timeout,
+  # max_drain_timeout). Legacy drain_timeout is retained for backward
+  # compatibility but the scaled fields are preferred for production.
+  per_record_drain_timeout: 3s
+  max_drain_timeout: 30s
   log_level: info
 
 sessions:

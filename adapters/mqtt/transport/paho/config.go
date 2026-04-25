@@ -50,11 +50,26 @@ type SenderOptions struct {
 }
 
 // TLSConfig holds TLS settings for the MQTT connection.
+//
+// Two parallel sources of material are supported: file paths (loaded
+// from disk at connect time) and PEM byte strings (used in-memory).
+// PEM strings take precedence when both are set on the same field,
+// because the push-credentials path delivers PEM material and a
+// non-empty PEM should never be silently ignored in favour of a
+// stale file on disk.
 type TLSConfig struct {
-	Enable             bool
-	CACertFile         string
-	CertFile           string
-	KeyFile            string
+	Enable     bool
+	CACertFile string
+	CertFile   string
+	KeyFile    string
+
+	// CACertPEM, CertPEM, KeyPEM carry in-memory PEM material, typically
+	// populated by credential rotation. When any of these is non-empty
+	// it takes precedence over the corresponding *File field.
+	CACertPEM string
+	CertPEM   string
+	KeyPEM   string
+
 	InsecureSkipVerify bool
 }
 
@@ -246,16 +261,29 @@ func tlsConfigFromMap(m map[string]any) *TLSConfig {
 }
 
 // BuildTLSConfig creates a *tls.Config from TLSConfig.
+//
+// Material source dispatch:
+//   - CA: CACertPEM wins over CACertFile when non-empty.
+//   - Client cert/key: both CertPEM+KeyPEM present win over CertFile+KeyFile.
+//     Partial PEM pairs (only one of CertPEM/KeyPEM) are rejected to avoid
+//     a silent "loaded the file pair" fallback that hides a rotation bug.
 func BuildTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 	if cfg == nil {
 		return nil, nil
 	}
 
 	tlsCfg := &tls.Config{
-		InsecureSkipVerify: cfg.InsecureSkipVerify,
+		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // caller-controlled
 	}
 
-	if cfg.CACertFile != "" {
+	switch {
+	case cfg.CACertPEM != "":
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM([]byte(cfg.CACertPEM)) {
+			return nil, fmt.Errorf("failed to parse CA cert PEM material")
+		}
+		tlsCfg.RootCAs = pool
+	case cfg.CACertFile != "":
 		caCert, err := os.ReadFile(cfg.CACertFile)
 		if err != nil {
 			return nil, fmt.Errorf("read CA cert: %w", err)
@@ -267,7 +295,16 @@ func BuildTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 		tlsCfg.RootCAs = pool
 	}
 
-	if cfg.CertFile != "" && cfg.KeyFile != "" {
+	switch {
+	case cfg.CertPEM != "" && cfg.KeyPEM != "":
+		cert, err := tls.X509KeyPair([]byte(cfg.CertPEM), []byte(cfg.KeyPEM))
+		if err != nil {
+			return nil, fmt.Errorf("parse client certificate PEM: %w", err)
+		}
+		tlsCfg.Certificates = []tls.Certificate{cert}
+	case cfg.CertPEM != "" || cfg.KeyPEM != "":
+		return nil, fmt.Errorf("client certificate PEM requires both CertPEM and KeyPEM")
+	case cfg.CertFile != "" && cfg.KeyFile != "":
 		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
 		if err != nil {
 			return nil, fmt.Errorf("load client certificate: %w", err)

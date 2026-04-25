@@ -106,15 +106,22 @@ func TestRouteRunner_IdleChanged_SwapsOnFire(t *testing.T) {
 // TestRouteRunner_IdleChanged_NoFireWhenNotAtZero asserts that the idle
 // channel does NOT close when an active delivery completes but another
 // is still in flight (InFlight drops from 2 → 1, not to 0).
+//
+// Why ConcurrentSender and not FakeSender: FakeSender.Send serialises
+// through its own mutex held for the duration of SendFn. With two
+// concurrent deliveries, the Go scheduler picks one of them arbitrarily
+// to hold the mutex, parking the other one inside mu.Lock (not on its
+// release channel). close(r1) would then have no effect on the loser
+// and the test would hang at count>1. ConcurrentSender has no such
+// mutex, so each delivery blocks on its own release channel and close
+// signals arrive where the test expects them.
 func TestRouteRunner_IdleChanged_NoFireWhenNotAtZero(t *testing.T) {
 	receiver := NewFakeReceiver()
-	sender := NewFakeSender()
 
 	// Per-delivery release gates.
 	r1 := make(chan struct{})
 	r2 := make(chan struct{})
-	// Map envelope ID → release channel.
-	sender.SendFn = func(env *domain.Envelope) error {
+	sender := NewConcurrentSender(func(env *domain.Envelope) error {
 		switch env.ID {
 		case "m1":
 			<-r1
@@ -122,7 +129,7 @@ func TestRouteRunner_IdleChanged_NoFireWhenNotAtZero(t *testing.T) {
 			<-r2
 		}
 		return nil
-	}
+	})
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "idle-test-multi",
 		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold, MaxInFlight: 4}.WithDefaults(),

@@ -49,6 +49,8 @@ import (
 
 // TestRouteRunner_ProcessorPanic_DoesNotCrash validates that a panicking
 // processor does not crash the process and Run completes gracefully.
+// Processor panics are classified Permanent (ErrProcessorPanic) and
+// routed to DLQ, then the source delivery is acked.
 func TestRouteRunner_ProcessorPanic_DoesNotCrash(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
@@ -77,7 +79,11 @@ func TestRouteRunner_ProcessorPanic_DoesNotCrash(t *testing.T) {
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-proc-panic"})
 	_ = receiver.Emit(ctx, del)
 
-	waitFor(t, 2*time.Second, "delivery retried after processor panic", del.IsRetried)
+	// With no DLQ store, Permanent errors fall through to ack (drop).
+	waitFor(t, 2*time.Second, "delivery acked after processor panic", del.IsAcked)
+	if del.IsRetried() {
+		t.Fatal("processor panic must not trigger retry (it is Permanent)")
+	}
 
 	cancel()
 	select {
@@ -87,18 +93,21 @@ func TestRouteRunner_ProcessorPanic_DoesNotCrash(t *testing.T) {
 	}
 }
 
-// TestRouteRunner_ProcessorPanic_RetriesDelivery validates that after
-// recovering from a processor panic, the delivery is retried with a
-// reason containing "panic recovered".
-func TestRouteRunner_ProcessorPanic_RetriesDelivery(t *testing.T) {
+// TestRouteRunner_ProcessorPanic_RoutesToDLQ validates that after a
+// processor panic, the envelope is written to the DLQ with an error
+// chain satisfying errors.Is(..., ErrProcessorPanic) and the source
+// delivery is acked.
+func TestRouteRunner_ProcessorPanic_RoutesToDLQ(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
+	dlqStore := NewFakeDLQStore()
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "panic-proc-retry",
 		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
+		DLQ:      runtime.NewDLQRouter(dlqStore),
 		Processors: []ports.Processor{
 			&FakeProcessor{
 				NameVal: "panicker",
@@ -109,30 +118,27 @@ func TestRouteRunner_ProcessorPanic_RetriesDelivery(t *testing.T) {
 		},
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	go func() { _ = runner.Run(ctx) }()
 
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-proc-retry"})
 	_ = receiver.Emit(ctx, del)
 
-	waitFor(t, 2*time.Second, "delivery retried after processor panic", del.IsRetried)
+	waitFor(t, 2*time.Second, "delivery acked after processor panic", del.IsAcked)
 
-	if del.IsAcked() {
-		t.Fatal("delivery should not be acked after panic")
+	if del.IsRetried() {
+		t.Fatal("processor panic must not retry -- Permanent goes to DLQ")
 	}
-	if !del.IsRetried() {
-		t.Fatal("delivery should be retried after panic recovery")
+
+	dlqStore.mu.Lock()
+	entries := append([]domain.DLQEntry(nil), dlqStore.Entries...)
+	dlqStore.mu.Unlock()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 DLQ entry, got %d", len(entries))
 	}
-	del.mu.Lock()
-	reason := del.RetryErr
-	del.mu.Unlock()
-	if reason == nil {
-		t.Fatal("retry reason must not be nil")
-	}
-	if !strings.Contains(reason.Error(), "panic recovered") {
-		t.Fatalf("retry reason should contain 'panic recovered', got: %s", reason)
+	if !strings.Contains(entries[0].LastError, "processor panicked") {
+		t.Fatalf("DLQ LastError should mention processor panic, got %q", entries[0].LastError)
 	}
 }
 
@@ -187,8 +193,7 @@ func TestRouteRunner_SenderPanic_RetriesDelivery(t *testing.T) {
 		Sender:   sender,
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	go func() { _ = runner.Run(ctx) }()
 
@@ -205,9 +210,9 @@ func TestRouteRunner_SenderPanic_RetriesDelivery(t *testing.T) {
 	}
 }
 
-// TestRouteRunner_DeliveryPanic_EmitsMetric validates that panic recovery
-// emits a MetricDeliveryPanics counter with a route_id tag.
-func TestRouteRunner_DeliveryPanic_EmitsMetric(t *testing.T) {
+// TestRouteRunner_ProcessorPanic_EmitsMetric validates that a processor
+// panic emits a MetricProcessorPanics counter with a route_id tag.
+func TestRouteRunner_ProcessorPanic_EmitsMetric(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
@@ -228,19 +233,18 @@ func TestRouteRunner_DeliveryPanic_EmitsMetric(t *testing.T) {
 		},
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	go func() { _ = runner.Run(ctx) }()
 
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-metric-panic"})
 	_ = receiver.Emit(ctx, del)
 
-	waitFor(t, 2*time.Second, "delivery retried after panic", del.IsRetried)
+	waitFor(t, 2*time.Second, "delivery acked after panic", del.IsAcked)
 
-	counters := rec.FindEntries(domain.MetricDeliveryPanics)
-	if len(counters) != 1 {
-		t.Fatalf("expected 1 DeliveryPanics counter, got %d", len(counters))
+	counters := rec.FindEntries(domain.MetricProcessorPanics)
+	if len(counters) < 1 {
+		t.Fatalf("expected at least 1 ProcessorPanics counter, got %d", len(counters))
 	}
 	if counters[0].IValue != 1 {
 		t.Fatalf("expected counter value 1, got %d", counters[0].IValue)
@@ -253,7 +257,7 @@ func TestRouteRunner_DeliveryPanic_EmitsMetric(t *testing.T) {
 		}
 	}
 	if !foundRouteTag {
-		t.Fatal("DeliveryPanics counter should have route_id tag")
+		t.Fatal("ProcessorPanics counter should have route_id tag")
 	}
 }
 
@@ -284,21 +288,20 @@ func TestRouteRunner_DeliveryPanic_SlotsReleased(t *testing.T) {
 		},
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	go func() { _ = runner.Run(ctx) }()
 
 	del1 := NewFakeDelivery(&domain.Envelope{ID: "msg-panic-slot"})
 	_ = receiver.Emit(ctx, del1)
-	waitFor(t, 2*time.Second, "first delivery retried (panic)", del1.IsRetried)
+	waitFor(t, 2*time.Second, "first delivery acked (panic routed to DLQ/drop)", del1.IsAcked)
 
 	del2 := NewFakeDelivery(&domain.Envelope{ID: "msg-ok-slot"})
 	_ = receiver.Emit(ctx, del2)
 	waitFor(t, 2*time.Second, "second delivery acked (slot released)", del2.IsAcked)
 
-	if !del1.IsRetried() {
-		t.Fatal("first delivery should be retried after panic")
+	if !del1.IsAcked() {
+		t.Fatal("first delivery should be acked after panic (Permanent → DLQ/drop)")
 	}
 	if !del2.IsAcked() {
 		t.Fatal("second delivery should be acked — slot must have been released")
@@ -325,8 +328,7 @@ func TestRouteRunner_DeliveryPanic_OtherMessagesUnaffected(t *testing.T) {
 		Sender:   sender,
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	go func() { _ = runner.Run(ctx) }()
 
@@ -357,17 +359,21 @@ func TestRouteRunner_DeliveryPanic_OtherMessagesUnaffected(t *testing.T) {
 	}
 }
 
-// TestRouteRunner_DeliveryPanic_RetryFails_NoSecondPanic validates that
-// if del.Retry() returns an error after panic recovery, no crash occurs.
-func TestRouteRunner_DeliveryPanic_RetryFails_NoSecondPanic(t *testing.T) {
+// TestRouteRunner_ProcessorPanic_DLQWriteFails_NoCrash validates that
+// if the DLQ store write fails for a panic-induced entry, the runtime
+// falls back to retry and the process does not crash.
+func TestRouteRunner_ProcessorPanic_DLQWriteFails_NoCrash(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
+	dlqStore := NewFakeDLQStore()
+	dlqStore.WriteErr = fmt.Errorf("simulated DLQ write failure")
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "panic-retry-fail",
 		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
+		DLQ:      runtime.NewDLQRouter(dlqStore),
 		Processors: []ports.Processor{
 			&FakeProcessor{
 				NameVal: "panicker",
@@ -388,32 +394,33 @@ func TestRouteRunner_DeliveryPanic_RetryFails_NoSecondPanic(t *testing.T) {
 	del.RetryFnErr = fmt.Errorf("simulated retry transport failure")
 	_ = receiver.Emit(ctx, del)
 
-	waitFor(t, 2*time.Second, "delivery retry attempted despite failure", del.IsRetried)
-
-	if !del.IsRetried() {
-		t.Fatal("del.Retry() should have been called even though it returns error")
-	}
+	// When DLQ write fails, handleProcessorError falls back to retry.
+	waitFor(t, 2*time.Second, "delivery retry attempted after DLQ write failure", del.IsRetried)
 
 	cancel()
 	select {
 	case <-runDone:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return after cancel — possible goroutine leak")
+		t.Fatal("Run did not return after cancel -- possible goroutine leak")
 	}
 }
 
-// TestRouteRunner_DeliveryPanic_RetryPanics_NoProcessCrash validates
-// that if del.Retry() itself panics inside the recovery handler, the
-// nested recover catches it and the process does not crash.
-func TestRouteRunner_DeliveryPanic_RetryPanics_NoProcessCrash(t *testing.T) {
+// TestRouteRunner_ProcessorPanic_RetryPanics_NoProcessCrash validates
+// that a panicking retry path (triggered by a DLQ write failure on a
+// panic-induced entry) does not crash the process: the outer delivery
+// goroutine recover catches the nested panic.
+func TestRouteRunner_ProcessorPanic_RetryPanics_NoProcessCrash(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
+	dlqStore := NewFakeDLQStore()
+	dlqStore.WriteErr = fmt.Errorf("forced DLQ failure")
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "panic-retry-panic",
 		Policy:   domain.RoutePolicy{MaxInFlight: 1, DeliveryMode: domain.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
+		DLQ:      runtime.NewDLQRouter(dlqStore),
 		Processors: []ports.Processor{
 			&FakeProcessor{
 				NameVal: "panicker",
@@ -443,7 +450,7 @@ func TestRouteRunner_DeliveryPanic_RetryPanics_NoProcessCrash(t *testing.T) {
 	select {
 	case <-runDone:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return after cancel — nested panic leaked")
+		t.Fatal("Run did not return after cancel -- nested panic leaked")
 	}
 }
 
@@ -454,7 +461,7 @@ type panickingRetryDelivery struct {
 	retryAttempted atomic.Bool
 }
 
-func (d *panickingRetryDelivery) Envelope() *domain.Envelope { return d.env }
+func (d *panickingRetryDelivery) Envelope() *domain.Envelope  { return d.env }
 func (d *panickingRetryDelivery) Ack(_ context.Context) error { return nil }
 func (d *panickingRetryDelivery) Retry(_ context.Context, _ time.Duration, _ error) error {
 	d.retryAttempted.Store(true)

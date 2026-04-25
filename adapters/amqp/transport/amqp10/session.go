@@ -61,6 +61,20 @@ type Session struct {
 	// needs reconnect notifications must Subscribe to receive its own
 	// independent stream.
 	eventSubs []chan ports.SessionEvent
+
+	// liveCreds captures the latest applied credentials, consulted on
+	// every (re)connect via connect(). ApplyCredentials writes here
+	// and drops the current connection so the next dial picks up the
+	// rotated material.
+	liveCreds amqp10Credentials
+}
+
+// amqp10Credentials is the mutable subset of SessionOptions that can
+// be rotated at runtime. TLS material requires a new tls.Config and
+// is handled via Session.Reload (see FIX_PLAN Item 7).
+type amqp10Credentials struct {
+	Username string
+	Password string
 }
 
 var _ ports.Session = (*Session)(nil)
@@ -81,6 +95,10 @@ func NewSession(opts SessionOptions, mode domain.SessionMode, logger *slog.Logge
 		clk:         opts.Clock,
 		events:      make(chan ports.SessionEvent, eventChannelSize),
 		reconnectCh: make(chan struct{}, 1),
+		liveCreds: amqp10Credentials{
+			Username: opts.Username,
+			Password: opts.Password,
+		},
 	}
 }
 
@@ -199,8 +217,11 @@ func (s *Session) connect(ctx context.Context) error {
 	if s.opts.ContainerID != "" {
 		connOpts.ContainerID = s.opts.ContainerID
 	}
-	if s.opts.Username != "" {
-		connOpts.SASLType = amqp.SASLTypePlain(s.opts.Username, s.opts.Password)
+	s.mu.Lock()
+	user, pass := s.liveCreds.Username, s.liveCreds.Password
+	s.mu.Unlock()
+	if user != "" {
+		connOpts.SASLType = amqp.SASLTypePlain(user, pass)
 	}
 
 	if s.opts.TLS != nil && s.opts.TLS.Enable {

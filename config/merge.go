@@ -52,6 +52,12 @@ func mergeBridgeSettings(base, overlay *BridgeSettings) {
 	if overlay.DrainTimeout != "" {
 		base.DrainTimeout = overlay.DrainTimeout
 	}
+	if overlay.PerRecordDrainTimeout != "" {
+		base.PerRecordDrainTimeout = overlay.PerRecordDrainTimeout
+	}
+	if overlay.MaxDrainTimeout != "" {
+		base.MaxDrainTimeout = overlay.MaxDrainTimeout
+	}
 	if overlay.LogLevel != "" {
 		base.LogLevel = overlay.LogLevel
 	}

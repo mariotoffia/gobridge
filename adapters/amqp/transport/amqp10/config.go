@@ -48,11 +48,23 @@ type SessionOptions struct {
 }
 
 // TLSConfig holds TLS settings for the AMQP 1.0 connection.
+//
+// PEM bytes (CACertPEM, CertPEM, KeyPEM) take precedence over file
+// paths on the same field. This lets ApplyCredentials supply rotated
+// material in-memory without writing to disk.
 type TLSConfig struct {
-	Enable            bool
-	CACertFile        string
-	CertFile          string
-	KeyFile           string
+	Enable     bool
+	CACertFile string
+	CertFile   string
+	KeyFile    string
+
+	// CACertPEM, CertPEM, KeyPEM carry in-memory PEM material used
+	// when credentials are rotated via ApplyCredentials. Non-empty
+	// fields override the corresponding *File fields.
+	CACertPEM string
+	CertPEM   string
+	KeyPEM   string
+
 	InsecureSkipVerify bool
 }
 
@@ -148,7 +160,14 @@ func BuildTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // caller-controlled
 	}
 
-	if cfg.CACertFile != "" {
+	switch {
+	case cfg.CACertPEM != "":
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM([]byte(cfg.CACertPEM)) {
+			return nil, fmt.Errorf("failed to parse CA cert PEM material")
+		}
+		tlsCfg.RootCAs = pool
+	case cfg.CACertFile != "":
 		caCert, err := os.ReadFile(cfg.CACertFile)
 		if err != nil {
 			return nil, fmt.Errorf("read CA cert: %w", err)
@@ -160,7 +179,16 @@ func BuildTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 		tlsCfg.RootCAs = pool
 	}
 
-	if cfg.CertFile != "" && cfg.KeyFile != "" {
+	switch {
+	case cfg.CertPEM != "" && cfg.KeyPEM != "":
+		cert, err := tls.X509KeyPair([]byte(cfg.CertPEM), []byte(cfg.KeyPEM))
+		if err != nil {
+			return nil, fmt.Errorf("parse client certificate PEM: %w", err)
+		}
+		tlsCfg.Certificates = []tls.Certificate{cert}
+	case cfg.CertPEM != "" || cfg.KeyPEM != "":
+		return nil, fmt.Errorf("client certificate PEM requires both CertPEM and KeyPEM")
+	case cfg.CertFile != "" && cfg.KeyFile != "":
 		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
 		if err != nil {
 			return nil, fmt.Errorf("load client certificate: %w", err)

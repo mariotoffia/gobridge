@@ -2,8 +2,11 @@ package runtime_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -108,5 +111,120 @@ func TestRunChain_ShortCircuit(t *testing.T) {
 	}
 	if p2.CalledCount() != 0 {
 		t.Fatal("second processor should not have been called")
+	}
+}
+
+// Verifies a panicking processor is recovered, returns ErrProcessorPanic
+// (Permanent), and subsequent processors are not invoked.
+func TestRunChain_PanicRecovered(t *testing.T) {
+	panicker := &FakeProcessor{
+		NameVal: "panicker",
+		ProcessFn: func(_ context.Context, _ *domain.Envelope, _ ports.ProcessorFunc) error {
+			panic("boom")
+		},
+	}
+	follower := &FakeProcessor{NameVal: "follower"}
+	terminalCalled := int32(0)
+	terminal := &FakeProcessor{
+		NameVal: "terminal",
+		ProcessFn: func(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+			atomic.AddInt32(&terminalCalled, 1)
+			return next(ctx, env)
+		},
+	}
+
+	env := &domain.Envelope{ID: "msg-panic"}
+	err := runtime.RunChain(context.Background(),
+		[]ports.Processor{panicker, follower, terminal}, env,
+		runtime.WithChainTimeout(time.Second),
+	)
+	if err == nil {
+		t.Fatal("expected ErrProcessorPanic, got nil")
+	}
+	if !errors.Is(err, domain.ErrProcessorPanic) {
+		t.Fatalf("expected ErrProcessorPanic, got %v", err)
+	}
+	be, ok := domain.AsBridgeError(err)
+	if !ok {
+		t.Fatalf("expected BridgeError, got %T", err)
+	}
+	if be.Class != domain.ErrorPermanent {
+		t.Fatalf("expected Permanent class, got %q", be.Class)
+	}
+	if follower.CalledCount() != 0 {
+		t.Fatalf("follower must not run after panic, got %d calls", follower.CalledCount())
+	}
+	if atomic.LoadInt32(&terminalCalled) != 0 {
+		t.Fatal("terminal must not run after panic")
+	}
+}
+
+// Verifies a hanging processor is bounded by the per-processor timeout
+// and returns ErrProcessorTimeout (Transient).
+func TestRunChain_HangingProcessorTimesOut(t *testing.T) {
+	hang := &FakeProcessor{
+		NameVal: "hang",
+		ProcessFn: func(ctx context.Context, _ *domain.Envelope, _ ports.ProcessorFunc) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	env := &domain.Envelope{ID: "msg-hang"}
+
+	start := time.Now()
+	err := runtime.RunChain(context.Background(), []ports.Processor{hang}, env,
+		runtime.WithChainTimeout(50*time.Millisecond),
+	)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected ErrProcessorTimeout, got nil")
+	}
+	if !errors.Is(err, domain.ErrProcessorTimeout) {
+		t.Fatalf("expected ErrProcessorTimeout, got %v", err)
+	}
+	be, ok := domain.AsBridgeError(err)
+	if !ok {
+		t.Fatalf("expected BridgeError, got %T", err)
+	}
+	if be.Class != domain.ErrorTransient {
+		t.Fatalf("expected Transient class, got %q", be.Class)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("timeout should fire promptly, took %s", elapsed)
+	}
+}
+
+// Verifies normal processor errors are returned verbatim and not
+// misclassified as panic or timeout.
+func TestRunChain_NormalErrorNotMisclassified(t *testing.T) {
+	sentinel := errors.New("normal failure")
+	p := &FakeProcessor{NameVal: "fail", ProcessErr: sentinel}
+
+	env := &domain.Envelope{ID: "msg-1"}
+	err := runtime.RunChain(context.Background(), []ports.Processor{p}, env)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected sentinel error, got %v", err)
+	}
+	if errors.Is(err, domain.ErrProcessorPanic) {
+		t.Fatal("normal error must not be classified as panic")
+	}
+	if errors.Is(err, domain.ErrProcessorTimeout) {
+		t.Fatal("normal error must not be classified as timeout")
+	}
+}
+
+// Verifies the default timeout (30s) does not fire for fast processors.
+func TestRunChain_HappyPathUnderDefaultTimeout(t *testing.T) {
+	p := &FakeProcessor{
+		NameVal: "fast",
+		ProcessFn: func(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+			return next(ctx, env)
+		},
+	}
+	env := &domain.Envelope{ID: "msg-1"}
+	// No options: defaults should apply (30s timeout, no logger).
+	if err := runtime.RunChain(context.Background(), []ports.Processor{p}, env); err != nil {
+		t.Fatalf("expected success, got %v", err)
 	}
 }

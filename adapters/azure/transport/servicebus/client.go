@@ -74,6 +74,13 @@ func (a *sessionReceiverAdapter) Close(ctx context.Context) error {
 
 // ConnectionConfig holds the credentials and TLS settings shared by
 // both Receiver and Sender.
+//
+// TLS material precedence:
+//   - TLSConfig (pre-built *tls.Config) wins when non-nil.
+//   - CaPEM / ClientCertPEM / ClientKeyPEM are the PEM-driven source
+//     used by ApplyCredentials rotation. When TLSConfig is nil and
+//     any PEM field is set, buildClientOptions constructs a fresh
+//     *tls.Config from them.
 type ConnectionConfig struct {
 	ConnectionString   string
 	Namespace          string
@@ -83,6 +90,11 @@ type ConnectionConfig struct {
 	ClientSecret       string
 	TLSConfig          *tls.Config
 	CaPEM              string
+	// ClientCertPEM and ClientKeyPEM carry an in-memory client
+	// certificate/key pair for mutual TLS. Both must be set; one
+	// without the other is a configuration error.
+	ClientCertPEM      string
+	ClientKeyPEM       string
 	InsecureSkipVerify bool
 }
 
@@ -126,7 +138,7 @@ func buildClientOptions(cfg ConnectionConfig) (*azservicebus.ClientOptions, erro
 	tc := cfg.TLSConfig
 	if tc == nil {
 		var err error
-		tc, err = buildTLSConfig(cfg.CaPEM, cfg.InsecureSkipVerify)
+		tc, err = buildTLSConfig(cfg.CaPEM, cfg.ClientCertPEM, cfg.ClientKeyPEM, cfg.InsecureSkipVerify)
 		if err != nil {
 			return nil, err
 		}
@@ -140,11 +152,16 @@ func buildClientOptions(cfg ConnectionConfig) (*azservicebus.ClientOptions, erro
 	}, nil
 }
 
-// buildTLSConfig constructs a *tls.Config from optional CA PEM data
-// and the InsecureSkipVerify flag. Returns (nil, nil) when neither is set.
-// Returns an error if CaPEM is provided but contains no valid certificates.
-func buildTLSConfig(caPEM string, insecureSkipVerify bool) (*tls.Config, error) {
-	if caPEM == "" && !insecureSkipVerify {
+// buildTLSConfig constructs a *tls.Config from optional PEM material
+// and the InsecureSkipVerify flag. Returns (nil, nil) when nothing is
+// set and the SDK default trust store should be used unchanged.
+//
+// Rules:
+//   - CaPEM, when set, replaces the system root pool with a private one.
+//   - ClientCertPEM + ClientKeyPEM must be set together or not at all;
+//     an imbalanced pair is a config error.
+func buildTLSConfig(caPEM, clientCertPEM, clientKeyPEM string, insecureSkipVerify bool) (*tls.Config, error) {
+	if caPEM == "" && clientCertPEM == "" && clientKeyPEM == "" && !insecureSkipVerify {
 		return nil, nil
 	}
 
@@ -158,6 +175,17 @@ func buildTLSConfig(caPEM string, insecureSkipVerify bool) (*tls.Config, error) 
 			return nil, fmt.Errorf("servicebus: CaPEM contains no valid certificates")
 		}
 		tc.RootCAs = pool
+	}
+
+	switch {
+	case clientCertPEM != "" && clientKeyPEM != "":
+		cert, err := tls.X509KeyPair([]byte(clientCertPEM), []byte(clientKeyPEM))
+		if err != nil {
+			return nil, fmt.Errorf("servicebus: parse client certificate PEM: %w", err)
+		}
+		tc.Certificates = []tls.Certificate{cert}
+	case clientCertPEM != "" || clientKeyPEM != "":
+		return nil, fmt.Errorf("servicebus: client certificate PEM requires both ClientCertPEM and ClientKeyPEM")
 	}
 
 	return tc, nil

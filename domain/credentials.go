@@ -35,3 +35,49 @@ type CredentialSet struct {
 	Password *PasswordCredential
 	TLS      *TLSMaterial
 }
+
+// Equal returns true when two credential sets hold identical material.
+// It performs a deep, value-based comparison (not pointer equality) so
+// that callers can safely use it to dedup rotation events where each
+// resolve() produces a freshly-allocated *CredentialSet.
+//
+// Why: the PushCredentialStore contract requires implementations to
+// emit only on actual changes; this is the canonical equality check
+// used by runtime.PollBasedWrapper and any future push store.
+func (c *CredentialSet) Equal(other *CredentialSet) bool {
+	if c == nil || other == nil {
+		return c == nil && other == nil
+	}
+	if !passwordEqual(c.Password, other.Password) {
+		return false
+	}
+	return tlsEqual(c.TLS, other.TLS)
+}
+
+func passwordEqual(a, b *PasswordCredential) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Username == b.Username && a.Password == b.Password
+}
+
+func tlsEqual(a, b *TLSMaterial) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if a.CertPEM != b.CertPEM || a.KeyPEM != b.KeyPEM {
+		return false
+	}
+	if a.InsecureSkipVerify != b.InsecureSkipVerify {
+		return false
+	}
+	if len(a.CAPEMs) != len(b.CAPEMs) {
+		return false
+	}
+	for i := range a.CAPEMs {
+		if a.CAPEMs[i] != b.CAPEMs[i] {
+			return false
+		}
+	}
+	return true
+}

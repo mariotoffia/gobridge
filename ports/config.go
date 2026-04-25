@@ -3,6 +3,10 @@ package ports
 import (
 	"context"
 
+	// Why: ConfigLoader/ConfigWatcher are application-layer ports whose
+	// contract returns the canonical *config.BridgeConfig model. The
+	// config package is an application-layer input (not an infrastructure
+	// adapter), so this upward reference is intentional and bounded.
 	"github.com/mariotoffia/gobridge/config"
 )
 

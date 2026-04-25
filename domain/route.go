@@ -66,6 +66,7 @@ const (
 	DefaultSendTimeout       = 30 * time.Second
 	DefaultDepthCacheTTL     = 1 * time.Second
 	DefaultStepDownGrace     = 15 * time.Second
+	DefaultProcessorTimeout  = 30 * time.Second
 )
 
 // DefaultBackoffPolicy holds the default backoff configuration.
@@ -105,6 +106,11 @@ type RoutePolicy struct {
 	AllowRetryDrop       bool `json:"allow_retry_drop,omitempty" yaml:"allow_retry_drop,omitempty"`
 	SendTimeout          time.Duration
 	DepthCacheTTL        time.Duration
+	// ProcessorTimeout bounds the execution time of a single processor in the
+	// chain. Zero means use DefaultProcessorTimeout (30s). A panicking processor
+	// returns domain.ErrProcessorPanic (Permanent). A processor that exceeds
+	// this deadline returns domain.ErrProcessorTimeout (Transient).
+	ProcessorTimeout time.Duration
 }
 
 // WithDefaults returns a copy with zero-valued or invalid fields set to defaults.
@@ -148,6 +154,9 @@ func (p RoutePolicy) WithDefaults() RoutePolicy {
 	}
 	if p.DepthCacheTTL <= 0 {
 		p.DepthCacheTTL = DefaultDepthCacheTTL
+	}
+	if p.ProcessorTimeout <= 0 {
+		p.ProcessorTimeout = DefaultProcessorTimeout
 	}
 	return p
 }

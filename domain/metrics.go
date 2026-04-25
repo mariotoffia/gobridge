@@ -65,16 +65,22 @@ const (
 	MetricRouteErrors      = "RouteErrors"
 )
 
+// Processor chain metric names.
+const (
+	MetricProcessorPanics   = "ProcessorPanics"
+	MetricProcessorTimeouts = "ProcessorTimeouts"
+)
+
 // MQTT metric names.
 const (
-	MetricMQTTPublishLatency  = "MQTTPublishLatency"
-	MetricMQTTPublishFailures = "MQTTPublishFailures"
-	MetricMQTTHandlerPanics   = "MQTTHandlerPanics"
-	MetricMQTTReconnects      = "MQTTReconnects"
-	MetricMQTTConnectLatency  = "MQTTConnectLatency"
+	MetricMQTTPublishLatency   = "MQTTPublishLatency"
+	MetricMQTTPublishFailures  = "MQTTPublishFailures"
+	MetricMQTTHandlerPanics    = "MQTTHandlerPanics"
+	MetricMQTTReconnects       = "MQTTReconnects"
+	MetricMQTTConnectLatency   = "MQTTConnectLatency"
 	MetricMQTTReconcileLatency = "MQTTReconcileLatency"
-	MetricMQTTRouterDropped   = "MQTTRouterDropped"
-	MetricMQTTEventDropped    = "MQTTEventDropped"
+	MetricMQTTRouterDropped    = "MQTTRouterDropped"
+	MetricMQTTEventDropped     = "MQTTEventDropped"
 )
 
 // Session metric names.

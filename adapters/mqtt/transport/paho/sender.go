@@ -41,6 +41,10 @@ func NewSender(session *Session, opts SenderOptions) *Sender {
 // Returns nil when the broker has accepted the message (PUBACK / PUBCOMP).
 // Returns a classified domain.BridgeError on failure.
 func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
+	if env == nil {
+		return domain.ErrInvalidPayload.WithMessage("nil envelope")
+	}
+
 	cm := s.session.ConnectionManager()
 	if cm == nil {
 		return domain.ErrUnavailable.WithMessage("MQTT session not connected")
