@@ -3,7 +3,7 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test test-integration test-long-running lint lint-fix lint-gofmt lint-go-vet lint-arch lint-arch-report lint-arch-mapping lint-arch-mapping-test lint-arch-check clean tidy sync help
+.PHONY: all build test test-integration test-long-running lint lint-fix lint-gofmt lint-go-vet lint-go lint-arch lint-arch-report lint-arch-mapping lint-arch-mapping-test lint-arch-check clean tidy sync help
 .PHONY: build-core build-mqtt build-aws build-azure
 .PHONY: install vulncheck update update-major outdated
 .PHONY: docker-up docker-down docker-clean
@@ -121,7 +121,20 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 # Lint targets
 # ============================================================================
 
-lint: lint-arch-check lint-gofmt lint-go-vet ## Run all static checks across the workspace
+lint: lint-arch-check lint-gofmt lint-go-vet lint-go ## Run all static checks across the workspace
+
+lint-go: ## Run golangci-lint across all workspace modules (uses .golangci.yml at the repo root)
+	@echo "Running golangci-lint across all modules..."
+	@bash -c 'set -e; mkdir -p "$(GOBRIDGE_GO_CACHE)"; export GOCACHE="$(GOBRIDGE_GO_CACHE)"; \
+	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" | sort); do \
+		dir=$$(dirname "$$modfile"); \
+		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then \
+			echo "--- Skipping $$dir (no default-tag packages) ---"; \
+			continue; \
+		fi; \
+		echo "--- golangci-lint $$dir ---"; \
+		(cd "$$dir" && golangci-lint run --timeout=5m ./...); \
+	done'
 
 lint-fix: ## Lint and auto-fix all workspace modules
 	@echo "Linting with auto-fix..."
@@ -221,6 +234,11 @@ install: ## Install all development and CI tools
 	go install github.com/psampaz/go-mod-outdated@latest
 	go install github.com/loov/goda@latest
 	go install github.com/fe3dback/go-arch-lint@latest
+	go install golang.org/x/exp/cmd/modgraphviz@latest
+	go install github.com/mibk/dupl@latest
+	go install github.com/jgautheron/goconst/cmd/goconst@latest
+	@echo "Note: 'graphviz' (the dot binary) is required for arch-graph."
+	@echo "      macOS: brew install graphviz; Linux: apt install graphviz."
 
 check: build lint lint-arch-check test audit-timings audit-test-timings ## Run full CI check (no Docker, integration skipped)
 

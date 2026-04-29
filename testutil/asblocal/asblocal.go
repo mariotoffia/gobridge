@@ -65,9 +65,7 @@ var (
 	resolved     bool
 	fromEnv      bool
 	connStr      string
-	sqlContainer string
 	emuContainer string
-	networkName  string
 	configPath   string
 	cleanupFn    func()
 	initErr      error
@@ -280,9 +278,7 @@ func startContainers() (string, func(), error) {
 		return "", nil, fmt.Errorf("docker run emulator: %w\n%s", err, out)
 	}
 
-	sqlContainer = sqlName
 	emuContainer = emuName
-	networkName = netName
 
 	if err := waitForContainerHealthy(emuName, 30*time.Second); err != nil {
 		logContainerFailure(emuName)

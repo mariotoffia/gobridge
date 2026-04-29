@@ -214,7 +214,7 @@ func CreateQueue(t testing.TB, name string) {
 	if err != nil {
 		t.Fatalf("rabbitmqlocal: create queue: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("rabbitmqlocal: create queue %s: %d %s", name, resp.StatusCode, b)
@@ -239,7 +239,7 @@ func CreateExchange(t testing.TB, name, kind string) {
 	if err != nil {
 		t.Fatalf("rabbitmqlocal: create exchange: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("rabbitmqlocal: create exchange %s: %d %s", name, resp.StatusCode, b)
@@ -264,7 +264,7 @@ func BindQueue(t testing.TB, queue, exchange, routingKey string) {
 	if err != nil {
 		t.Fatalf("rabbitmqlocal: bind queue: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("rabbitmqlocal: bind %s->%s: %d %s", queue, exchange, resp.StatusCode, b)
@@ -374,7 +374,7 @@ func waitForManagement(baseURL string, timeout time.Duration) error {
 				Status string `json:"status"`
 			}
 			_ = json.NewDecoder(resp.Body).Decode(&result)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == 200 && result.Status == "ok" {
 				return nil
 			}

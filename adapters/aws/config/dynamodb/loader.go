@@ -243,19 +243,16 @@ func (l *Loader) Load(ctx context.Context) (*config.BridgeConfig, error) {
 func (l *Loader) Watch(ctx context.Context) (<-chan *config.BridgeConfig, error) {
 	ch := make(chan *config.BridgeConfig, 1)
 
-	effective := l.mode
-	if effective == ModeStreams {
+	if l.mode == ModeStreams {
 		arn, reason := l.resolveStreamArn(ctx)
-		switch {
-		case reason != "":
+		if reason != "" {
 			if l.logger != nil {
 				l.logger.Warn("dynamodb config loader: falling back to poll mode",
 					"reason", reason,
 					"table", l.tableName,
 				)
 			}
-			effective = ModePoll
-		default:
+		} else {
 			go l.streamLoop(ctx, ch, arn)
 			return ch, nil
 		}

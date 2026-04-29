@@ -56,12 +56,12 @@ func NewStore(dbPath string) (*Store, error) {
 	}
 
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("sqlitedlq: pragma: %w", err)
 	}
 
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("sqlitedlq: migrate: %w", err)
 	}
 
@@ -142,7 +142,7 @@ func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQ
 	if err != nil {
 		return nil, fmt.Errorf("sqlitedlq: list: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return scanEntries(rows)
 }
@@ -159,7 +159,7 @@ func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
 	if err != nil {
 		return domain.DLQEntry{}, fmt.Errorf("sqlitedlq: get: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	entries, err := scanEntries(rows)
 	if err != nil {

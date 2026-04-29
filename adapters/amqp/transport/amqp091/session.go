@@ -333,7 +333,7 @@ func (s *Session) declareSubscription(conn amqpConnection, sub domain.Subscripti
 	if err != nil {
 		return MapError(err)
 	}
-	defer ch.Close()
+	defer func() { _ = ch.Close() }()
 
 	if exchangeName != "" {
 		if err := ch.ExchangeDeclare(exchangeName, exchangeType, durable, autoDelete, false, false, nil); err != nil {
@@ -378,7 +378,7 @@ func (s *Session) declarePublisher(conn amqpConnection, pub domain.PublisherPlan
 	if err != nil {
 		return MapError(err)
 	}
-	defer ch.Close()
+	defer func() { _ = ch.Close() }()
 
 	if err := ch.ExchangeDeclare(exchangeName, exchangeType, durable, autoDelete, false, false, nil); err != nil {
 		return MapError(err)
@@ -744,7 +744,7 @@ func (s *Session) dialWithTimeout(ctx context.Context) (amqpConnection, error) {
 		// Drain the channel in the background and close any leaked connection.
 		go func() {
 			if r := <-ch; r.conn != nil {
-				r.conn.Close()
+				_ = r.conn.Close()
 			}
 		}()
 		return nil, fmt.Errorf("amqp091: dial timeout: %w", ctx.Err())

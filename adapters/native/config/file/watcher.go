@@ -307,7 +307,7 @@ func fileHash(path string) [sha256.Size]byte {
 	if err != nil {
 		return [sha256.Size]byte{}
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {

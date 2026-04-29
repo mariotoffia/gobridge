@@ -54,12 +54,12 @@ func NewStore(dbPath string) (*Store, error) {
 	}
 
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("sqliteoutbox: pragma: %w", err)
 	}
 
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("sqliteoutbox: migrate: %w", err)
 	}
 
@@ -90,7 +90,7 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 	if err != nil {
 		return fmt.Errorf("sqliteoutbox: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO outbox (id, partition_key, route_id, envelope_id, binding_id,
@@ -99,7 +99,7 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 	if err != nil {
 		return fmt.Errorf("sqliteoutbox: prepare: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for i := range records {
 		r := &records[i]
@@ -162,7 +162,7 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 	if err != nil {
 		return nil, fmt.Errorf("sqliteoutbox: begin tx: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck
 
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id FROM outbox
@@ -179,12 +179,12 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, fmt.Errorf("sqliteoutbox: scan id: %w", err)
 		}
 		ids = append(ids, id)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqliteoutbox: rows err: %w", err)
 	}
@@ -291,7 +291,7 @@ func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]domai
 	if err != nil {
 		return nil, fmt.Errorf("sqliteoutbox: query pending: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return scanRecords(rows)
 }
@@ -318,7 +318,7 @@ func (s *Store) fetchByIDs(ctx context.Context, ids []string) ([]domain.OutboxRe
 	if err != nil {
 		return nil, fmt.Errorf("sqliteoutbox: fetch by ids: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return scanRecords(rows)
 }

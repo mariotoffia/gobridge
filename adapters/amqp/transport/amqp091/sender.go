@@ -173,7 +173,7 @@ func (s *Sender) ensureChannelLocked() (*amqp.Channel, error) {
 	}
 
 	if err := ch.Confirm(false); err != nil {
-		ch.Close()
+		_ = ch.Close()
 		return nil, MapError(err)
 	}
 
@@ -283,7 +283,7 @@ func (s *Sender) waitConfirmLocked(ctx context.Context, confCh chan amqp.Confirm
 // resetChannelLocked closes and clears the cached channel. Caller must hold s.mu.
 func (s *Sender) resetChannelLocked() {
 	if s.ch != nil {
-		s.ch.Close()
+		_ = s.ch.Close()
 		s.ch = nil
 		s.conf = nil
 		s.returns = nil

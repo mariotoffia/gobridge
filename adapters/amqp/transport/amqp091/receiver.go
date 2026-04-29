@@ -111,7 +111,7 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 	if err != nil {
 		return MapError(err)
 	}
-	defer ch.Close()
+	defer func() { _ = ch.Close() }()
 
 	if r.cfg.PrefetchCount > 0 || r.cfg.PrefetchSize > 0 {
 		if err := ch.Qos(r.cfg.PrefetchCount, r.cfg.PrefetchSize, false); err != nil {
