@@ -30,7 +30,7 @@
 ./adapters/http/transport/integration_edge_cases_r3_test.go:357:		time.Sleep(2 * time.Second) // OTHER: simulates slow remote for context cancellation test
 ./adapters/http/transport/integration_single_bridge_test.go:54:		time.Sleep(10 * time.Millisecond) // OTHER: internal polling interval in test helper
 ./adapters/mqtt/transport/paho/analysis_router_test.go:168:	time.Sleep(100 * time.Millisecond) // OTHER: race window — let concurrent register/unregister/route goroutines exercise
-./adapters/mqtt/transport/paho/analysis_sender_test.go:233:	time.Sleep(80 * time.Millisecond)
+./adapters/mqtt/transport/paho/analysis_sender_test.go:241:	time.Sleep(80 * time.Millisecond)
 ./adapters/mqtt/transport/paho/analysis_session_test.go:284:			time.Sleep(time.Duration(trial+1) * 100 * time.Microsecond) // OTHER: race window — Close during concurrent pushEvent
 ./adapters/mqtt/transport/paho/analysis_session_test.go:333:	time.Sleep(80 * time.Millisecond) // OTHER: race window — let concurrent goroutines exercise before stopping
 ./adapters/mqtt/transport/paho/analysis_session_test.go:380:	time.Sleep(80 * time.Millisecond) // OTHER: race window — let concurrent goroutines exercise before stopping
@@ -163,8 +163,8 @@
 ./tests/longrunning/longrunning_helpers_test.go:664:		time.Sleep(50 * time.Millisecond) // SYNC: poll for bridge readiness
 ./tests/longrunning/longrunning_perf_helpers_test.go:151:		time.Sleep(50 * time.Millisecond) // OTHER: let finalizers run between GC cycles
 ./tests/longrunning/longrunning_test.go:446:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
-./tests/longrunning/res_gap_validation_test.go:140:	time.Sleep(30 * time.Second) // NEGATIVE: verify no messages reach target after all sends fail
-./tests/longrunning/res_gap_validation_test.go:261:	time.Sleep(15 * time.Second) // NEGATIVE: verify no additional duplicates from SQS redelivery
+./tests/longrunning/res_gap_validation_test.go:141:	time.Sleep(30 * time.Second) // NEGATIVE: verify no messages reach target after all sends fail
+./tests/longrunning/res_gap_validation_test.go:262:	time.Sleep(15 * time.Second) // NEGATIVE: verify no additional duplicates from SQS redelivery
 ./tests/longrunning/uc12_cluster_lease_test.go:241:		time.Sleep(2 * time.Second) // SYNC: wait between role samples to verify lease stability
 ./tests/longrunning/uc27_failure_recovery_b_test.go:234:	time.Sleep(1 * time.Second) // SYNC: let goroutines clean up after shutdown
 ./tests/longrunning/uc27_failure_recovery_b_test.go:78:	time.Sleep(2 * time.Second) // NEGATIVE: verify no poison messages leaked to MQTT

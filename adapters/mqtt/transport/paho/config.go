@@ -46,7 +46,6 @@ type SenderOptions struct {
 	Retain             bool
 	Timeout            time.Duration
 	ThrottleRetryAfter time.Duration
-	CircuitBreaker     *CBConfig // nil = disabled (opt-in)
 }
 
 // TLSConfig holds TLS settings for the MQTT connection.

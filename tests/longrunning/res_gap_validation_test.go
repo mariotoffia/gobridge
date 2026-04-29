@@ -13,6 +13,7 @@ import (
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
+	"github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -313,11 +314,13 @@ func TestRES001_NoCircuitBreakerOnSender(t *testing.T) {
 	baseSnd := setupMQTTSender(t, sess)
 	// Wrap in CB sender + degradedSender: 80% fail, 5s latency per send.
 	// CB opens after 5 consecutive failures and fails-fast with ErrUnavailable.
-	cbSnd := paho.NewCircuitBreakerSender(baseSnd, paho.CBConfig{
+	br := circuitbreaker.NewBreaker("res001-cb", circuitbreaker.Config{
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
 		ResetTimeout:     5 * time.Second,
-	})
+		CountError:       domain.IsRecoverableError,
+	}, nil)
+	cbSnd := paho.NewCircuitBreakerSender(baseSnd, br)
 	snd := newDegradedSender(cbSnd, 80, 5*time.Second)
 
 	rt := goruntime.New(

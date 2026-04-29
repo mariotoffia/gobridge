@@ -271,9 +271,13 @@ deps:
     canUse: [_no_external_deps_]
   observability:
     canUse: [_no_external_deps_]
+  # circuitbreaker may depend on ports because *Breaker satisfies the
+  # ports.CircuitBreaker contract — adapters depend on the port only,
+  # never on this package directly.
   circuitbreaker:
     mayDependOn:
       - domain
+      - ports
 
   # validate hosts invariants over ports + domain. It MUST NOT depend on
   # config (validators receive ports.*Spec values, not config.*Def),
@@ -344,9 +348,11 @@ deps:
   # only when its implementation actually uses it; absent that, the
   # rule is removed to prevent accidental coupling.
 
-  # MQTT Paho wraps its sender in a circuit breaker (cb_sender.go).
+  # MQTT Paho wraps its sender in a circuit breaker (cb_sender.go) but
+  # consumes the ports.CircuitBreaker contract only — the implementation
+  # is supplied by the composition root.
   adapter_transport_mqtt_paho:
-    mayDependOn: [domain, logging, ports, circuitbreaker]
+    mayDependOn: [domain, logging, ports]
     canUse: [paho]
 
   adapter_transport_sqs:
