@@ -177,6 +177,7 @@ make arch-quality      # Run all advisory reports (writes to reports/)
 make arch-graph        # Module dep graph as SVG (requires graphviz dot)
 make dupl-report       # Find duplicate code blocks (advisory)
 make goconst-report    # Find repeated literals (advisory)
+make lint-acl          # ACL boundary check on adapters (advisory)
 ```
 
 These are **review aids, not gates** — false positives are common
@@ -192,6 +193,11 @@ Treat them as prompts for human review:
 - `arch-graph.svg` — visual aid for spotting unintended new module
   edges in PR review (e.g., a transport adapter starting to depend on
   a store implementation).
+- `aclcheck.log` — flags adapter files that import a vendor SDK but
+  are not named `acl_*.go` (or under `acl/`). The DDD intent is to
+  concentrate the SDK boundary in named files. Existing adapters are
+  not refactored to satisfy it; treat the report as a prompt for new
+  adapters and gradual cleanup.
 
 Run them at release cuts, before adding a new transport/store
 adapter, or when investigating a smell that lint cannot pinpoint.

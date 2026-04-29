@@ -10,6 +10,7 @@
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
 .PHONY: arch-graph dupl-report goconst-report arch-quality
+.PHONY: build-aclcheck lint-acl
 
 GOBRIDGE_GO_CACHE ?= /tmp/gobridge-go-build-cache
 export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
@@ -189,6 +190,28 @@ lint-arch-mapping-test: ## Verify key packages map to their expected lint compon
 	@echo "Verifying architecture component mapping..."
 	@bash scripts/lint-arch-mapping-test.sh
 
+build-aclcheck: ## Build the aclcheck custom analyzer
+	@mkdir -p bin
+	@cd scripts/aclcheck && go build -o $(PWD)/bin/aclcheck ./...
+
+# lint-acl is currently advisory (writes a report) rather than blocking
+# because the existing adapters were not built with the acl_*.go naming
+# convention. Promoting it to part of `make lint` requires first
+# refactoring each adapter so its SDK boundary lives in acl_*.go files
+# (a separate, large task). The analyzer is in place so any NEW
+# adapter can adopt the convention from day one.
+lint-acl: build-aclcheck ## Run aclcheck (advisory) — writes reports/aclcheck.log
+	@mkdir -p reports
+	@echo "Running aclcheck (advisory)..."
+	@bash -c ': > reports/aclcheck.log; for modfile in $$(find ./adapters -name go.mod -not -path "*/vendor/*" | sort); do \
+		dir=$$(dirname "$$modfile"); \
+		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then continue; fi; \
+		echo "--- aclcheck $$dir ---" >> reports/aclcheck.log; \
+		(cd "$$dir" && go vet -vettool=$(PWD)/bin/aclcheck ./... 2>>$(PWD)/reports/aclcheck.log) || true; \
+	done; true'
+	@violations=$$(grep -cE 'vendor SDK import' reports/aclcheck.log || echo 0); \
+		echo "ACL boundary report at reports/aclcheck.log ($$violations file-level violations across adapters)"
+
 # ============================================================================
 # Maintenance targets
 # ============================================================================
@@ -276,7 +299,7 @@ goconst-report: ## Find repeated string/numeric literals (advisory)
 	@goconst -min-occurrences 4 -min-length 5 ./... > reports/goconst.log || true
 	@echo "Repeated-literals report at reports/goconst.log"
 
-arch-quality: arch-graph dupl-report goconst-report ## Run all advisory architecture-quality reports
+arch-quality: arch-graph dupl-report goconst-report lint-acl ## Run all advisory architecture-quality reports
 	@echo "Architecture-quality reports written under reports/"
 
 # ============================================================================

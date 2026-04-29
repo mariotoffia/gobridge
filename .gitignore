@@ -12,6 +12,11 @@
 /gobridge
 /cmd/gobridge/gobridge
 
+# Local build outputs
+/bin/
+/scripts/aclcheck/aclcheck
+/scripts/aggcheck/aggcheck
+
 # Test binary, built with `go test -c`
 *.test
 
