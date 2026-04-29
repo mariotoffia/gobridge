@@ -6,7 +6,7 @@
 ./adapters/amqp/transport/amqp10/sender_disconnect_test.go:80:	time.Sleep(50 * time.Millisecond)
 ./adapters/amqp/transport/amqp10/session_lifecycle_test.go:50:	time.Sleep(50 * time.Millisecond)
 ./adapters/amqp/transport/amqp10/session_reconnect_test.go:55:		time.Sleep(50 * time.Millisecond) // OTHER: simulates dial latency in mock.
-./adapters/aws/config/dynamodb/loader_test.go:225:	time.Sleep(500 * time.Millisecond) //nolint:forbidigo // legacy sleep — needs fake clock
+./adapters/aws/config/dynamodb/loader_test.go:229:	time.Sleep(500 * time.Millisecond) //nolint:forbidigo // legacy sleep — needs fake clock
 ./adapters/aws/store/dynamodblease/store_test.go:90:		time.Sleep(2 * time.Second)
 ./adapters/aws/store/dynamodboutbox/store_test.go:247:	time.Sleep(10 * time.Millisecond)
 ./adapters/aws/transport/sqs/sender_test.go:439:			time.Sleep(5 * time.Millisecond) // OTHER: ensure distinguishable deadlines

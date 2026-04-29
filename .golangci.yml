@@ -31,35 +31,34 @@ linters:
   default: standard
   enable:
     - depguard
+    - gochecknoglobals
+    - gochecknoinits
     - interfacebloat
     - revive
-    # TODO(FIX-005-final): enable forbidigo after a clock-injection
-    # sweep across runtime/, bridge/, httpapi/ and the timestamping
-    # adapters (~40 production callers of time.Now today). Enabling
-    # now would force ~40 file-level exemptions and the rule would
-    # have no teeth on new violations either.
+    # TODO(FIX-TODO-clock-injection.md): enable forbidigo after a
+    # clock-injection sweep across runtime/, bridge/, httpapi/ and
+    # the timestamping adapters (~40 production callers of time.Now
+    # today). Enabling now would force ~40 file-level exemptions and
+    # the rule would have no teeth on new violations either.
     # - forbidigo
-    # TODO(FIX-005-final): enable once defaults are extracted to const
-    # where possible and the System clock is documented as exempt.
-    # - gochecknoglobals
-    # - gochecknoinits
-    # TODO(FIX-005-final): enable once boundary-error wrapping is
-    # swept across all adapters.
+    # TODO(FIX-TODO-error-wrapping.md): enable once boundary-error
+    # wrapping is swept across all adapters.
     # - wrapcheck
-    # TODO(FIX-005-final): enable once exported functions stop
-    # returning unnamed interfaces in adapter code.
+    # TODO(FIX-TODO-return-types.md): enable once exported functions
+    # stop returning unnamed interfaces in adapter code.
     # - ireturn
 
   settings:
     interfacebloat:
       # Working ISP threshold for ports. The plan target is 5; the
       # current codebase has two ports at 6 (MetricsExporter,
-      # DLQStore). Set to 6 for the initial pass — tighten in
-      # FIX-005-final once those ports are split.
+      # DLQStore). Set to 6 for now — tighten to 5 once those ports
+      # are split.
       max: 6
 
-    # forbidigo settings retained so re-enabling in FIX-005-final is
-    # a one-line change in the `linters.enable:` block above.
+    # forbidigo settings retained so re-enabling (per
+    # FIX-TODO-clock-injection.md) is a one-line change in the
+    # `linters.enable:` block above.
     forbidigo:
       forbid:
         - pattern: '^time\.Now$'
@@ -162,21 +161,62 @@ linters:
       # The default linter set (errcheck, staticcheck, ineffassign,
       # unused, govet) finds pre-existing issues across test code
       # (uncaught Close errors, single-case selects, empty branches).
-      # Sweeping those is out of FIX-005 scope; defer to a separate
-      # test-quality pass and keep the pipeline green for production
-      # code in the meantime.
-      # TODO(FIX-005-final): drop this exclusion after the
-      # test-quality sweep.
+      # TODO(FIX-TODO-test-quality.md): drop this exclusion after
+      # the test-quality sweep.
       - linters: [errcheck, staticcheck, ineffassign, unused]
         path: "_test\\.go$"
-      # forbidigo exclusions retained for the eventual FIX-005-final
-      # re-enablement. Today the linter is disabled in `enable:`
-      # above; these blocks document the legitimate exemptions.
+      # forbidigo exclusions retained for the eventual
+      # FIX-TODO-clock-injection.md re-enablement. Today the linter
+      # is disabled in `enable:` above; these blocks document the
+      # legitimate exemptions.
       - linters: [forbidigo]
         path: "domain/clock/real\\.go$"
       - linters: [forbidigo]
         path: "domain/clock/clocktest/"
       - linters: [forbidigo]
+        path: "_test\\.go$"
+
+      # gochecknoglobals / gochecknoinits exemptions:
+      #
+      # - domain/clock/clock.go declares the `var System Clock` service
+      #   locator — the canonical entry point for production code that
+      #   does NOT yet use injected clocks. Documented architectural
+      #   exemption.
+      # - domain/route.go declares the legacy `var DefaultBackoffPolicy`
+      #   (struct value, cannot be const). Already marked Deprecated in
+      #   the source; new code uses NewDefaultBackoffPolicy().
+      # - config/validate_resolver.go declares two lookup maps used by
+      #   the validator. Go has no const map literal; the maps are
+      #   functionally immutable.
+      # - adapters/http/transport/receiver.go declares an atomic.Uint64
+      #   counter for HTTP-side monotonic envelope IDs. Package-shared
+      #   counter (not per-receiver), legitimate atomic usage.
+      # - testutil/* packages share docker-container lifecycle state
+      #   (broker URL, cleanup callback, container name) across the
+      #   tests that import them. The state IS a singleton by design.
+      # - test files routinely declare package-level fixtures and
+      #   helper init() blocks — outside the rule's scope.
+      - linters: [gochecknoglobals]
+        path: "^domain/clock/clock\\.go$"
+      - linters: [gochecknoglobals]
+        path: "^domain/route\\.go$"
+      - linters: [gochecknoglobals]
+        path: "^config/validate_resolver\\.go$"
+      # Adapter `headers.go` files declare well-known-header lookup
+      # maps (Go has no const map literal). The pattern covers any
+      # adapter package's headers.go.
+      - linters: [gochecknoglobals]
+        path: "adapters/.*headers\\.go$"
+      - linters: [gochecknoglobals]
+        path: "^adapters/http/transport/receiver\\.go$"
+      - linters: [gochecknoglobals, gochecknoinits]
+        path: "^testutil/"
+      # The custom analyzers under scripts/ follow the go/analysis
+      # framework's required pattern: a package-level Analyzer var
+      # plus its config (vendor patterns, etc.).
+      - linters: [gochecknoglobals]
+        path: "^scripts/"
+      - linters: [gochecknoglobals, gochecknoinits]
         path: "_test\\.go$"
 
       # CredentialAdmin is a coordination interface that legitimately

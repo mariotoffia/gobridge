@@ -220,7 +220,11 @@ func TestWatchNoDuplicates(t *testing.T) {
 		t.Fatalf("watch: %v", err)
 	}
 
-	// TODO(clock): replace with fake-clock advance once pollLoop uses clk ticker.
+	// TODO(FIX-TODO-clock-injection.md): pollLoop already uses
+	// l.clk.NewTicker, so a clocktest.Fake injection via WithClock
+	// would replace this real-time wait. Holding off until the full
+	// clock-injection sweep — addressing one isolated test does not
+	// reduce the prerequisite scope for enabling forbidigo project-wide.
 	// Wait for a few poll cycles; no new version means no emission.
 	time.Sleep(500 * time.Millisecond) //nolint:forbidigo // legacy sleep — needs fake clock
 
