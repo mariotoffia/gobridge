@@ -8,14 +8,16 @@
 # Companion: see .go-arch-lint.yml for component-level dependency
 # direction; see .claude/CLAUDE.md for the maintenance contract.
 #
-# This is the FIRST PASS of the .golangci.yml introduction (FIX-005).
-# It enables depguard fully, plus a small set of "ratcheted" linters
-# (interfacebloat, forbidigo, revive complexity) at threshold values
-# tuned to current code so the pipeline stays green. Tighter checks
-# (gochecknoglobals, gochecknoinits, wrapcheck, ireturn, lower revive
-# complexity) are deferred to FIX-005-final (after FIX-002/003/004
-# have landed and the inner ring is refactored). Each deferred linter
-# carries a TODO comment naming the FIX task that must precede it.
+# Status (post-FIX-003): depguard is fully enforcing the inward-only
+# Dependency Rule across domain, ports, adapters, and runtime — every
+# deny entry that was deferred for FIX-002/003 is now active.
+# interfacebloat and revive complexity are enabled at thresholds
+# tuned to the current state; tightening them requires splitting
+# bridge.Builder.wireRoutes (~80 cog. complexity) and config.validate
+# (~144) into per-step helpers, which is its own refactor. The
+# remaining deferred linters (forbidigo, gochecknoglobals,
+# gochecknoinits, wrapcheck, ireturn) each describe their own
+# prerequisite sweep in the TODOs below.
 
 version: "2"
 
@@ -122,17 +124,17 @@ linters:
               desc: "only adapters/*/config/* may depend on config; other adapters consume ports specs"
 
         # Runtime is application orchestration; no composition root
-        # types and (post-FIX-003) no config DTOs.
+        # types and no config parser dependency. Post-FIX-003 the
+        # bridge hands runtime *ports.BridgeConfig values, so the
+        # config deny is enforceable from the file level too.
         runtime-no-bridge:
           list-mode: lax
           files:
             - "**/runtime/**/*.go"
             - "!$test"
           deny:
-            # TODO(FIX-003): re-enable once bridge stops handing
-            #                runtime config-shaped values transitively.
-            # - pkg: "github.com/mariotoffia/gobridge/config"
-            #   desc: "runtime must not depend on config DTOs"
+            - pkg: "github.com/mariotoffia/gobridge/config"
+              desc: "runtime must not depend on the config parser; consume *ports.BridgeConfig instead"
             - pkg: "github.com/mariotoffia/gobridge/bridge"
               desc: "runtime must not depend on bridge (composition root)"
 
