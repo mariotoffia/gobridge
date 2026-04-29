@@ -8,7 +8,7 @@
 # Companion: see .go-arch-lint.yml for component-level dependency
 # direction; see .claude/CLAUDE.md for the maintenance contract.
 #
-# Status (post-FIX-003): depguard is fully enforcing the inward-only
+# Depguard is fully enforcing the inward-only
 # Dependency Rule across domain, ports, adapters, and runtime — every
 # deny entry that was deferred for FIX-002/003 is now active.
 # interfacebloat and revive complexity are enabled at thresholds
