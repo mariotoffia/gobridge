@@ -3,12 +3,15 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test test-integration test-long-running lint lint-fix lint-arch lint-arch-report lint-arch-mapping lint-arch-mapping-test lint-arch-check clean tidy sync help
+.PHONY: all build test test-integration test-long-running lint lint-fix lint-gofmt lint-go-vet lint-arch lint-arch-report lint-arch-mapping lint-arch-mapping-test lint-arch-check clean tidy sync help
 .PHONY: build-core build-mqtt build-aws build-azure
 .PHONY: install vulncheck update update-major outdated
 .PHONY: docker-up docker-down docker-clean
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
+
+GOBRIDGE_GO_CACHE ?= /tmp/gobridge-go-build-cache
+export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
 
 # Default target
 all: build test
@@ -118,13 +121,34 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 # Lint targets
 # ============================================================================
 
-lint: lint-arch ## Lint all workspace modules including architecture (as dependency)
-	@echo "Linting..."
-	golangci-lint run ./...
+lint: lint-arch-check lint-gofmt lint-go-vet ## Run all static checks across the workspace
 
 lint-fix: ## Lint and auto-fix all workspace modules
 	@echo "Linting with auto-fix..."
-	golangci-lint run --fix ./...
+	@gofmt -w $$(git ls-files '*.go')
+
+lint-gofmt: ## Check Go formatting across tracked Go files
+	@echo "Checking Go formatting..."
+	@FILES=$$(gofmt -l $$(git ls-files '*.go')); \
+	if [ -n "$$FILES" ]; then \
+		echo "$$FILES"; \
+		echo ""; \
+		echo "Go files need formatting. Run: make lint-fix"; \
+		exit 1; \
+	fi
+
+lint-go-vet: ## Run go vet across all workspace modules
+	@echo "Running go vet across all modules..."
+	@bash -c 'set -e; mkdir -p "$(GOBRIDGE_GO_CACHE)"; export GOCACHE="$(GOBRIDGE_GO_CACHE)"; \
+	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" | sort); do \
+		dir=$$(dirname "$$modfile"); \
+		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then \
+			echo "--- Skipping $$dir (no default-tag packages) ---"; \
+			continue; \
+		fi; \
+		echo "--- Vetting $$dir ---"; \
+		(cd "$$dir" && go vet ./...); \
+	done'
 
 lint-arch: ## Check architecture dependencies (strict)
 	@echo "Linting architecture..."

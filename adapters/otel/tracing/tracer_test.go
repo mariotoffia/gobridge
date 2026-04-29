@@ -188,4 +188,3 @@ func TestSpan_SetAttributes(t *testing.T) {
 	}
 	assert.True(t, found, "expected attribute 'added'='later' on span")
 }
-

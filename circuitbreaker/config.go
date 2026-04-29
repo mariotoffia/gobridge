@@ -66,7 +66,7 @@ func (c Config) WithDefaults() Config {
 type State int
 
 const (
-	StateClosed  State = iota
+	StateClosed State = iota
 	StateOpen
 	StateHalfOpen
 )

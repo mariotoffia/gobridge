@@ -174,9 +174,9 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			httpEndpoint, ok := node.Endpoints["http"]
 			if ok {
 				if logging.DebugEnabled(s.cfg.logger) {
-				s.cfg.logger.Log(context.Background(), logging.LevelDebug, "sse: redirecting to peer",
-					"route_id", rid, "peer", node.InstanceID)
-			}
+					s.cfg.logger.Log(context.Background(), logging.LevelDebug, "sse: redirecting to peer",
+						"route_id", rid, "peer", node.InstanceID)
+				}
 				http.Redirect(w, r, httpEndpoint+s.cfg.path, http.StatusTemporaryRedirect)
 				return
 			}
@@ -246,10 +246,10 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type sseEvent struct {
-	ID      string         `json:"id"`
-	Subject string         `json:"subject"`
+	ID      string          `json:"id"`
+	Subject string          `json:"subject"`
 	Payload json.RawMessage `json:"payload"`
-	Headers map[string]any `json:"headers,omitempty"`
+	Headers map[string]any  `json:"headers,omitempty"`
 }
 
 func formatSSE(event, id string, data []byte) []byte {

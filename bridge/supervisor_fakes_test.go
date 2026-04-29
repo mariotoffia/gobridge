@@ -371,11 +371,11 @@ var (
 	_ ports.TransportFactory = (*countingTransportFactory)(nil)
 	_ ports.TransportFactory = (*exclusiveTransportFactory)(nil)
 	_ ports.TransportFactory = (*failingTransportFactory)(nil)
-	_ ports.StoreFactory = (*failingStoreFactory)(nil)
-	_ ports.Session    = (*hangingSession)(nil)
-	_ ports.Session    = (*slowSession)(nil)
-	_ ports.Session    = (*failingSession)(nil)
-	_ ports.Session    = (*trackingSession)(nil)
+	_ ports.StoreFactory     = (*failingStoreFactory)(nil)
+	_ ports.Session          = (*hangingSession)(nil)
+	_ ports.Session          = (*slowSession)(nil)
+	_ ports.Session          = (*failingSession)(nil)
+	_ ports.Session          = (*trackingSession)(nil)
 )
 
 // quickSupervisorRun is a helper that starts a supervisor, waits for the

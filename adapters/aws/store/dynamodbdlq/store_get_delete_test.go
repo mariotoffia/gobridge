@@ -190,9 +190,11 @@ func TestDeleteByFilter_EmptyFilter(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   4 entries for same route at T1, T2, T3, T4
-//   List with RouteID + Since=T2 + Before=T4
-//   Expected: entries at T2 and T3 (half-open range)
+//
+//	4 entries for same route at T1, T2, T3, T4
+//	List with RouteID + Since=T2 + Before=T4
+//	Expected: entries at T2 and T3 (half-open range)
+//
 // ───────────────────────────────────────────────
 func TestListByRouteIndex_SinceAndBefore(t *testing.T) {
 	if testing.Short() {

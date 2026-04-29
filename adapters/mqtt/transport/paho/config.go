@@ -41,12 +41,12 @@ type ReceiverOptions struct {
 
 // SenderOptions holds MQTT sender-specific configuration.
 type SenderOptions struct {
-	DefaultTopic     string
-	QoS              byte
-	Retain           bool
-	Timeout          time.Duration
+	DefaultTopic       string
+	QoS                byte
+	Retain             bool
+	Timeout            time.Duration
 	ThrottleRetryAfter time.Duration
-	CircuitBreaker   *CBConfig // nil = disabled (opt-in)
+	CircuitBreaker     *CBConfig // nil = disabled (opt-in)
 }
 
 // TLSConfig holds TLS settings for the MQTT connection.
@@ -68,7 +68,7 @@ type TLSConfig struct {
 	// it takes precedence over the corresponding *File field.
 	CACertPEM string
 	CertPEM   string
-	KeyPEM   string
+	KeyPEM    string
 
 	InsecureSkipVerify bool
 }

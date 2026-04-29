@@ -27,9 +27,9 @@ const (
 
 type storedCredentials struct {
 	Credentials *domain.CredentialSet `json:"credentials"`
-	Version     int64                `json:"version"`
-	CreatedAt   time.Time            `json:"createdAt"`
-	UpdatedAt   time.Time            `json:"updatedAt"`
+	Version     int64                 `json:"version"`
+	CreatedAt   time.Time             `json:"createdAt"`
+	UpdatedAt   time.Time             `json:"updatedAt"`
 }
 
 type Repository struct {

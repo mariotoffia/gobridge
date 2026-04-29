@@ -41,10 +41,10 @@ func TestAutoExtendRetriesTransientThenSucceeds(t *testing.T) {
 		time.Sleep(1 * time.Millisecond)
 	}
 
-	fake.Advance(1100 * time.Millisecond)  // first tick fires (fails)
-	time.Sleep(20 * time.Millisecond)       // OTHER: let goroutine process tick
-	fake.Advance(1 * time.Second)           // second tick fires (succeeds)
-	time.Sleep(20 * time.Millisecond)       // OTHER: let goroutine process tick
+	fake.Advance(1100 * time.Millisecond) // first tick fires (fails)
+	time.Sleep(20 * time.Millisecond)     // OTHER: let goroutine process tick
+	fake.Advance(1 * time.Second)         // second tick fires (succeeds)
+	time.Sleep(20 * time.Millisecond)     // OTHER: let goroutine process tick
 
 	if n := renews.Load(); n < 2 {
 		t.Fatalf("expected at least 2 renew attempts (fail then succeed), got %d", n)
@@ -76,7 +76,7 @@ func TestAutoExtendStopsAfterMaxConsecutiveFailures(t *testing.T) {
 
 	for i := 0; i < autoExtendMaxFailures; i++ {
 		fake.Advance(1100 * time.Millisecond) // tick fires (always fails)
-		time.Sleep(20 * time.Millisecond)      // OTHER: let goroutine process tick
+		time.Sleep(20 * time.Millisecond)     // OTHER: let goroutine process tick
 	}
 
 	mock.mu.Lock()
@@ -122,7 +122,7 @@ func TestAutoExtendInterleavedFailSuccessASB(t *testing.T) {
 	ticks := autoExtendMaxFailures + 2
 	for i := 0; i < ticks; i++ {
 		fake.Advance(1100 * time.Millisecond) // tick fires
-		time.Sleep(20 * time.Millisecond)      // OTHER: let goroutine process tick
+		time.Sleep(20 * time.Millisecond)     // OTHER: let goroutine process tick
 	}
 
 	total := callCount.Load()

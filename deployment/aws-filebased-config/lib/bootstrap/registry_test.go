@@ -101,6 +101,9 @@ type fakeResponseWriter struct {
 	body    []byte
 }
 
-func (w *fakeResponseWriter) Header() http.Header         { return w.headers }
-func (w *fakeResponseWriter) Write(b []byte) (int, error) { w.body = append(w.body, b...); return len(b), nil }
-func (w *fakeResponseWriter) WriteHeader(code int)        { w.code = code }
+func (w *fakeResponseWriter) Header() http.Header { return w.headers }
+func (w *fakeResponseWriter) Write(b []byte) (int, error) {
+	w.body = append(w.body, b...)
+	return len(b), nil
+}
+func (w *fakeResponseWriter) WriteHeader(code int) { w.code = code }

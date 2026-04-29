@@ -39,7 +39,7 @@ type Runtime struct {
 
 	credRefresherClose func()
 
-	mu sync.Mutex
+	mu              sync.Mutex
 	entries         []*routeEntry
 	sessionSenders  map[string]*sessionSenderEntry
 	sessionMgrs     map[string]*SessionManager

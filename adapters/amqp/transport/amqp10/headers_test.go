@@ -22,17 +22,17 @@ func TestMessageToHeaders(t *testing.T) {
 
 	msg := &amqp.Message{
 		Properties: &amqp.MessageProperties{
-			MessageID:         "msg-123",
-			CorrelationID:     "corr-456",
-			ContentType:       &ct,
-			ContentEncoding:   &ce,
-			Subject:           &subj,
-			To:                &to,
-			ReplyTo:           &replyTo,
-			GroupID:           &groupID,
-			GroupSequence:     &groupSeq,
-			ReplyToGroupID:    &replyGroup,
-			CreationTime:      &created,
+			MessageID:          "msg-123",
+			CorrelationID:      "corr-456",
+			ContentType:        &ct,
+			ContentEncoding:    &ce,
+			Subject:            &subj,
+			To:                 &to,
+			ReplyTo:            &replyTo,
+			GroupID:            &groupID,
+			GroupSequence:      &groupSeq,
+			ReplyToGroupID:     &replyGroup,
+			CreationTime:       &created,
 			AbsoluteExpiryTime: &expiry,
 		},
 		Header: &amqp.MessageHeader{

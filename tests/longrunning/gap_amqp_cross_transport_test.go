@@ -124,8 +124,8 @@ func TestGap_AMQP091_To_SQS_CrossTransport(t *testing.T) {
 			Subject: "cross-transport-test",
 			Payload: []byte(fmt.Sprintf(`{"seq":%d,"origin":"amqp091"}`, i)),
 			Headers: map[string]any{
-				"x-origin":    "rabbitmq",
-				"x-test-seq":  fmt.Sprintf("%d", i),
+				"x-origin":   "rabbitmq",
+				"x-test-seq": fmt.Sprintf("%d", i),
 			},
 			CreatedAt: time.Now().UTC(),
 		}
@@ -285,4 +285,3 @@ func TestGap_AMQP091_To_MQTT_CrossTransport(t *testing.T) {
 	t.Logf("GAP-CROSS-MQTT: verified %d messages on MQTT, dlq=%d",
 		len(msgs), dlq.count())
 }
-

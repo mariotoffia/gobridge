@@ -20,15 +20,15 @@ const (
 
 // AlarmDefinition describes a CloudWatch alarm that EnsureAlarms will create.
 type AlarmDefinition struct {
-	Name       string
-	MetricName string
-	Namespace  string
-	Threshold  float64
-	Period     int32
+	Name        string
+	MetricName  string
+	Namespace   string
+	Threshold   float64
+	Period      int32
 	EvalPeriods int32
-	Statistic  cwtypes.Statistic
-	Comparison cwtypes.ComparisonOperator
-	Severity   AlarmSeverity
+	Statistic   cwtypes.Statistic
+	Comparison  cwtypes.ComparisonOperator
+	Severity    AlarmSeverity
 	SNSTopicARN string
 }
 

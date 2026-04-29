@@ -29,16 +29,18 @@ import (
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   GlobalMaxInFlight = 50
 //
-//   Route A (slow):
-//     SQS-A ──▶ [slowSender 200ms] ──▶ MQTT-A
+//	GlobalMaxInFlight = 50
 //
-//   Route B (fast):
-//     SQS-B ──▶ [normalSender]     ──▶ MQTT-B
+//	Route A (slow):
+//	  SQS-A ──▶ [slowSender 200ms] ──▶ MQTT-A
 //
-//   Both receive 1000 messages simultaneously.
-//   Fast route should finish significantly before slow route.
+//	Route B (fast):
+//	  SQS-B ──▶ [normalSender]     ──▶ MQTT-B
+//
+//	Both receive 1000 messages simultaneously.
+//	Fast route should finish significantly before slow route.
+//
 // ───────────────────────────────────────────────
 //
 // Test Parameters:

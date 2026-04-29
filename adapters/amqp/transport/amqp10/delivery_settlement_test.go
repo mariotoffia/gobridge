@@ -7,8 +7,10 @@
 //
 // Scenario (BUG-2):
 // ───────────────────────────────────────────────
-//   Ack() → AcceptMessage fails → returns error ✓
-//   Retry() → once.Do is no-op → returns nil ✗ (should return error)
+//
+//	Ack() → AcceptMessage fails → returns error ✓
+//	Retry() → once.Do is no-op → returns nil ✗ (should return error)
+//
 // ───────────────────────────────────────────────
 // ═══════════════════════════════════════════════
 package amqp10

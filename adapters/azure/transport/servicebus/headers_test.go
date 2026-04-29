@@ -9,10 +9,10 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
-func strPtr(s string) *string         { return &s }
+func strPtr(s string) *string               { return &s }
 func durPtr(d time.Duration) *time.Duration { return &d }
-func timePtr(t time.Time) *time.Time  { return &t }
-func int64Ptr(n int64) *int64         { return &n }
+func timePtr(t time.Time) *time.Time        { return &t }
+func int64Ptr(n int64) *int64               { return &n }
 
 func requireEqual(t *testing.T, key string, got, want any) {
 	t.Helper()
@@ -133,7 +133,7 @@ func TestMessageToHeaders_MixedProperties(t *testing.T) {
 		Subject:       strPtr("evt.shipped"),
 		DeliveryCount: 1,
 		ApplicationProperties: map[string]any{
-			"region": "eu-west-1",
+			"region":   "eu-west-1",
 			"priority": "high",
 		},
 	}

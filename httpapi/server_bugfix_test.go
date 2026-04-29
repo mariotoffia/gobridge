@@ -275,11 +275,11 @@ func TestBug7_WriteJSON_ContentTypeSetBeforeEncode(t *testing.T) {
 // captureDLQStore is a mock DLQ store that captures the time argument from
 // Purge() so tests can verify it is UTC.
 type captureDLQStore struct {
-	mu        sync.Mutex
+	mu          sync.Mutex
 	purgeCalled bool
-	purgeTime time.Time
-	purgeN    int
-	purgeErr  error
+	purgeTime   time.Time
+	purgeN      int
+	purgeErr    error
 
 	listEntries []domain.DLQEntry
 }

@@ -15,13 +15,13 @@ import (
 
 func TestHealth_ServiceLevel(t *testing.T) {
 	tests := []struct {
-		name         string
-		connected    bool   // cm != nil
-		wantedSubs   int    // len(plan.Subscriptions)
-		activeSubs   int    // len(activeSubs)
-		handlers     int    // registered handler count
-		wantReady    bool
-		wantSL       ports.ServiceLevel
+		name       string
+		connected  bool // cm != nil
+		wantedSubs int  // len(plan.Subscriptions)
+		activeSubs int  // len(activeSubs)
+		handlers   int  // registered handler count
+		wantReady  bool
+		wantSL     ports.ServiceLevel
 	}{
 		{
 			name:      "disconnected",

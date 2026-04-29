@@ -37,11 +37,11 @@ func TestSessionManager_LargeJitter_NoHotLoop(t *testing.T) {
 	session := NewFakeSession()
 
 	cfg := runtime.SessionConfig{
-		SessionID:    "jitter-test",
-		Exclusive:    true,
-		LeaseTTL:     500 * time.Millisecond,
+		SessionID:     "jitter-test",
+		Exclusive:     true,
+		LeaseTTL:      500 * time.Millisecond,
 		RenewInterval: 100 * time.Millisecond,
-		RenewJitter:  400 * time.Millisecond,
+		RenewJitter:   400 * time.Millisecond,
 		MaxRenewFails: 3,
 		StepDownGrace: 50 * time.Millisecond,
 	}

@@ -37,18 +37,20 @@ import (
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   SQS ──▶ [Bridge] ──▶ [Outbox] ──▶ [MQTT Broker]
-//                                          │
-//                                    docker kill
-//                                    (total state loss)
-//                                          │
-//                                    docker run
-//                                    (fresh broker)
-//                                          │
-//                              outbox replay fills gap
-//                                          │
-//                                          ▼
-//                                   collector >= 2000
+//
+//	SQS ──▶ [Bridge] ──▶ [Outbox] ──▶ [MQTT Broker]
+//	                                       │
+//	                                 docker kill
+//	                                 (total state loss)
+//	                                       │
+//	                                 docker run
+//	                                 (fresh broker)
+//	                                       │
+//	                           outbox replay fills gap
+//	                                       │
+//	                                       ▼
+//	                                collector >= 2000
+//
 // ───────────────────────────────────────────────
 //
 // Key difference from UC42: UC42 uses StopGraceful/RestartGraceful which
@@ -161,14 +163,16 @@ func TestGAP_BrokerHardCrash_SharedOutbox(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   SQS ──▶ [Bridge] ──▶ [Outbox] ──▶ [MQTT]
-//                                        │
-//                                   docker kill
-//                                   docker run
-//                                        │
-//                                  outbox replay
-//                                        ▼
-//                                 collector >= 1000
+//
+//	SQS ──▶ [Bridge] ──▶ [Outbox] ──▶ [MQTT]
+//	                                     │
+//	                                docker kill
+//	                                docker run
+//	                                     │
+//	                               outbox replay
+//	                                     ▼
+//	                              collector >= 1000
+//
 // ───────────────────────────────────────────────
 //
 // Assertions:

@@ -72,9 +72,9 @@ func NewGoBridgeEfsConfig(scope constructs.Construct, id *string, props *GoBridg
 		fs = props.FileSystem
 	} else {
 		fs = awsefs.NewFileSystem(c, jsii.String("Fs"), &awsefs.FileSystemProps{
-			Vpc:            props.Vpc,
-			Encrypted:      jsii.Bool(true),
-			SecurityGroup:  sg,
+			Vpc:             props.Vpc,
+			Encrypted:       jsii.Bool(true),
+			SecurityGroup:   sg,
 			PerformanceMode: awsefs.PerformanceMode_GENERAL_PURPOSE,
 		})
 	}

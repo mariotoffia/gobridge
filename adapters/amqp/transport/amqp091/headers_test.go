@@ -222,7 +222,7 @@ func TestHeadersToPublishing(t *testing.T) {
 func TestHeadersToPublishing_ExcludesReserved(t *testing.T) {
 	headers := map[string]any{
 		HeaderDeliveryTag:          uint64(1),
-		HeaderRedelivered:         true,
+		HeaderRedelivered:          true,
 		domain.HeaderCorrelationID: "injected",
 		"custom":                   "keep",
 	}
@@ -264,9 +264,9 @@ func TestEnvelopeToPublishing(t *testing.T) {
 		Subject: "order.created",
 		Payload: []byte(`{"order":1}`),
 		Headers: map[string]any{
-			HeaderContentType:     "application/json",
+			HeaderContentType:        "application/json",
 			domain.HeaderContentType: "application/json",
-			"tenant":              "acme",
+			"tenant":                 "acme",
 		},
 	}
 

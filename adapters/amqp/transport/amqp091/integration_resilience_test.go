@@ -28,9 +28,11 @@ import (
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   r1 ──┐                          ┌──▶ resumes
-//        ├──[shared session]──drop──┤
-//   r2 ──┘                          └──▶ resumes (regression: hung)
+//
+//	r1 ──┐                          ┌──▶ resumes
+//	     ├──[shared session]──drop──┤
+//	r2 ──┘                          └──▶ resumes (regression: hung)
+//
 // ───────────────────────────────────────────────
 func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 	ep := rabbitmqlocal.Endpoint(t)

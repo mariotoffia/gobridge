@@ -177,8 +177,8 @@ func TestSenderFactory_NewSender_Valid(t *testing.T) {
 // fakeSession implements ports.Session for type-mismatch tests.
 type fakeSession struct{}
 
-func (f *fakeSession) Start(context.Context) error                          { return nil }
-func (f *fakeSession) Reconcile(context.Context, domain.SessionPlan) error  { return nil }
-func (f *fakeSession) Health(context.Context) ports.SessionHealth            { return ports.SessionHealth{} }
-func (f *fakeSession) Events() <-chan ports.SessionEvent                     { return nil }
-func (f *fakeSession) Close(context.Context) error                          { return nil }
+func (f *fakeSession) Start(context.Context) error                         { return nil }
+func (f *fakeSession) Reconcile(context.Context, domain.SessionPlan) error { return nil }
+func (f *fakeSession) Health(context.Context) ports.SessionHealth          { return ports.SessionHealth{} }
+func (f *fakeSession) Events() <-chan ports.SessionEvent                   { return nil }
+func (f *fakeSession) Close(context.Context) error                         { return nil }

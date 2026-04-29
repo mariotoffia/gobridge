@@ -44,8 +44,8 @@ import (
 func TestRES003_MQTTSourceDropWithoutDLQ(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount   = 100
-		srcTopic   = "res003/source"
+		msgCount    = 100
+		srcTopic    = "res003/source"
 		testTimeout = 60 * time.Second
 	)
 

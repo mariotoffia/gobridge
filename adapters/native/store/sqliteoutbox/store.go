@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/logging"
 
 	_ "modernc.org/sqlite"
 )
@@ -327,14 +327,14 @@ func scanRecords(rows *sql.Rows) ([]domain.OutboxRecord, error) {
 	var result []domain.OutboxRecord
 	for rows.Next() {
 		var (
-			r            domain.OutboxRecord
-			pk           string
-			envJSON      string
-			headersJSON  sql.NullString
-			status       string
-			createdAtMs  int64
-			expiresAtMs  int64
-			completedMs  int64
+			r           domain.OutboxRecord
+			pk          string
+			envJSON     string
+			headersJSON sql.NullString
+			status      string
+			createdAtMs int64
+			expiresAtMs int64
+			completedMs int64
 		)
 		err := rows.Scan(
 			&r.ID, &pk, &r.RouteID, &r.EnvelopeID, &r.BindingID, &r.SessionID,

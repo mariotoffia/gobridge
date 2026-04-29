@@ -92,7 +92,7 @@ func TestGAP_GoroutineLeak_StartStopCycle(t *testing.T) {
 	// 2 warmup cycles to stabilize Go runtime and async cleanup.
 	runCycle("warmup-1")
 	runCycle("warmup-2")
-	time.Sleep(3 * time.Second)       // SYNC: let goroutines from warmup cycles clean up
+	time.Sleep(3 * time.Second) // SYNC: let goroutines from warmup cycles clean up
 	goruntime_std.GC()
 	time.Sleep(500 * time.Millisecond) // OTHER: let finalizers run after GC
 
@@ -101,7 +101,7 @@ func TestGAP_GoroutineLeak_StartStopCycle(t *testing.T) {
 	for i := 0; i < cycles; i++ {
 		label := fmt.Sprintf("cycle-%d", i+1)
 		runCycle(label)
-		time.Sleep(3 * time.Second)       // SYNC: let goroutines from cycle clean up
+		time.Sleep(3 * time.Second) // SYNC: let goroutines from cycle clean up
 		goruntime_std.GC()
 		time.Sleep(500 * time.Millisecond) // OTHER: let finalizers run after GC
 		counts[i] = goruntime_std.NumGoroutine()

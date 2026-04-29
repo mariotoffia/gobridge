@@ -851,7 +851,7 @@ func TestServer_DoubleStart_ReturnsError(t *testing.T) {
 // truncates strings longer than 256 bytes.
 func TestSanitizePropagatedID_Truncation(t *testing.T) {
 	tests := []struct {
-		name    string
+		name     string
 		inputLen int
 		wantLen  int
 	}{

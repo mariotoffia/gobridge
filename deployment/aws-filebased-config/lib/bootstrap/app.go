@@ -452,4 +452,3 @@ func (a *App) installPlan(plan *runtimePlan) {
 	a.apiKeysRef.Set(plan.inputs.AdminAPIKey, plan.inputs.MonitorAPIKey)
 	a.handlerRef.Set(plan.registry.transportHandler())
 }
-

@@ -50,7 +50,7 @@ type BatchSender interface {
 type SessionEventType int
 
 const (
-	SessionConnected    SessionEventType = iota
+	SessionConnected SessionEventType = iota
 	SessionDisconnected
 	SessionReconnecting
 	SessionError

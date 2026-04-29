@@ -133,11 +133,13 @@ func TestDDBWatch_ManagerRebuildsMergedConfig(t *testing.T) {
 //
 // Scenario:
 // -----------------------------------------------
-//   Base: route r1 with receiver rx-base
-//   DDB v1: minimal (valid)
-//   DDB v2: route r-bad references rx-missing
-//   Merged: validation fails (rx-missing not found)
-//   Result: no emission on watch channel
+//
+//	Base: route r1 with receiver rx-base
+//	DDB v1: minimal (valid)
+//	DDB v2: route r-bad references rx-missing
+//	Merged: validation fails (rx-missing not found)
+//	Result: no emission on watch channel
+//
 // -----------------------------------------------
 func TestDDBWatch_InvalidMergedConfig_DroppedByManager(t *testing.T) {
 	basePath := writeBaseYAML(t, "test-bridge")

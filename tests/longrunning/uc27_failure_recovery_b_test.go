@@ -28,8 +28,8 @@ import (
 func TestUC30_DLQ_AllPoison(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 5000
-		pollTimeout  = 120 * time.Second
+		msgCount    = 5000
+		pollTimeout = 120 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc30-in")
@@ -102,8 +102,8 @@ func TestUC30_DLQ_AllPoison(t *testing.T) {
 func TestUC31_OutboxReplay_Exhaustion(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 100
-		pollTimeout  = 120 * time.Second
+		msgCount    = 100
+		pollTimeout = 120 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc31-in")
@@ -172,7 +172,7 @@ func TestUC32_GracefulShutdown_UnderLoad(t *testing.T) {
 	const (
 		msgCount    = 3000
 		minReceived = 500
-		pollTimeout     = 60 * time.Second
+		pollTimeout = 60 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc32-in")

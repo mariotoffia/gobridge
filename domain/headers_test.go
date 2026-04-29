@@ -199,7 +199,7 @@ func TestIsReservedHeader_CaseInsensitive(t *testing.T) {
 // removes mixed-case reserved headers.
 func TestStripReservedHeaders_CaseInsensitive(t *testing.T) {
 	headers := map[string]any{
-		"X-Bridge.route-id": "injected",
+		"X-Bridge.route-id":  "injected",
 		"X-BRIDGE.SOURCE-ID": "injected",
 		"safe-header":        "keep",
 	}

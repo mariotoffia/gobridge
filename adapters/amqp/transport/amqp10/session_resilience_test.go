@@ -22,9 +22,11 @@ import (
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   oldConn ──error──▶ notifyDisconnect(oldConn)
-//           ↓ (meanwhile session reconnected to newConn)
-//           → stale notification ignored
+//
+//	oldConn ──error──▶ notifyDisconnect(oldConn)
+//	        ↓ (meanwhile session reconnected to newConn)
+//	        → stale notification ignored
+//
 // ───────────────────────────────────────────────
 func TestSession_NotifyDisconnect_StaleConnection(t *testing.T) {
 	s := newTestSession()

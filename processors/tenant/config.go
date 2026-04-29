@@ -8,9 +8,9 @@ import (
 
 // Config holds the tenant processor configuration.
 type Config struct {
-	Name                    string
-	TenantHeader            string
-	RequireTenant           bool
+	Name                     string
+	TenantHeader             string
+	RequireTenant            bool
 	InFlightDecrementTimeout time.Duration
 }
 

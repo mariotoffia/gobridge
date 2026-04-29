@@ -32,9 +32,11 @@ import (
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Drainer claims records → ErrStaleFencingToken
-//   Next poll interval ≥ 5s (not the strategy's
-//   short interval, preventing hot-loop)
+//
+//	Drainer claims records → ErrStaleFencingToken
+//	Next poll interval ≥ 5s (not the strategy's
+//	short interval, preventing hot-loop)
+//
 // ───────────────────────────────────────────────
 func TestDrainer_StaleFencingToken_UsesMinBackoff(t *testing.T) {
 	outbox := NewFakeOutboxStore()
@@ -76,9 +78,11 @@ func TestDrainer_StaleFencingToken_UsesMinBackoff(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Sender fails → del.Retry returns ErrNotSupported
-//   DLQ store is nil → DLQ.Route returns nil (no-op)
-//   Delivery should be acked to prevent message loss loop
+//
+//	Sender fails → del.Retry returns ErrNotSupported
+//	DLQ store is nil → DLQ.Route returns nil (no-op)
+//	Delivery should be acked to prevent message loss loop
+//
 // ───────────────────────────────────────────────
 func TestRetryUnsupported_NilDLQ_AcksDelivery(t *testing.T) {
 	receiver := NewFakeReceiver()

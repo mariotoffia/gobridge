@@ -140,10 +140,10 @@ func TestRuntime_StartAfterFailedStart_SameRuntime(t *testing.T) {
 // the normal happy path.
 //
 // Scenario:
-// 1. Start runtime with a valid route
-// 2. Stop runtime gracefully
-// 3. Start a new runtime (runtime state is not designed for restart,
-//    so we test with a fresh instance to prove Stop released everything)
+//  1. Start runtime with a valid route
+//  2. Stop runtime gracefully
+//  3. Start a new runtime (runtime state is not designed for restart,
+//     so we test with a fresh instance to prove Stop released everything)
 func TestRuntime_StartAfterStop(t *testing.T) {
 	// First lifecycle
 	rt := goruntime.New(goruntime.WithInstanceID("bug1-t2"))
@@ -182,7 +182,7 @@ func TestRuntime_ConcurrentStart(t *testing.T) {
 
 	const goroutines = 20
 	var (
-		wg       sync.WaitGroup
+		wg        sync.WaitGroup
 		successes int32
 		failures  int32
 	)

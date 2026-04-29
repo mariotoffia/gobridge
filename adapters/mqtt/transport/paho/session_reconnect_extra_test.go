@@ -21,9 +21,10 @@ import (
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   1. Set activeSubs = {"a": 1, "b": 0}
-//   2. First reconnect: fails -> restores {"a": 1, "b": 0}
-//   3. Second reconnect: reads activeSubs for delta -> should see {"a": 1, "b": 0}
+//  1. Set activeSubs = {"a": 1, "b": 0}
+//  2. First reconnect: fails -> restores {"a": 1, "b": 0}
+//  3. Second reconnect: reads activeSubs for delta -> should see {"a": 1, "b": 0}
+//
 // ───────────────────────────────────────────────
 //
 // Assertions:
@@ -275,9 +276,9 @@ func TestActiveSubsRestore_ExactTopicQoSPairs(t *testing.T) {
 	)
 
 	original := map[string]byte{
-		"sensors/+/temperature": 0,
-		"devices/#":             1,
-		"$SYS/broker/uptime":   2,
+		"sensors/+/temperature":       0,
+		"devices/#":                   1,
+		"$SYS/broker/uptime":          2,
 		"test/topic/with/many/levels": 1,
 	}
 

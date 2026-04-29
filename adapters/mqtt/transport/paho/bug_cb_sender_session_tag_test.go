@@ -80,9 +80,9 @@ func TestRes_CBSender_CircuitOpen_TagsSessionID(t *testing.T) {
 	}
 
 	var (
-		reasonOK    bool
-		sessionOK   bool
-		sessionVal  string
+		reasonOK   bool
+		sessionOK  bool
+		sessionVal string
 	)
 	for _, e := range entries {
 		var seenReason, seenSession bool

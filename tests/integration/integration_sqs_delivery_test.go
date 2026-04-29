@@ -218,8 +218,8 @@ func TestIntegration_SQS_HeaderRoundTrip(t *testing.T) {
 		Payload: []byte(`{"header":"roundtrip"}`),
 		Headers: map[string]any{
 			"X-Custom-String": "hello",
-			"X-Trace-ID":     "trace-12345",
-			"X-Numeric":      "42",
+			"X-Trace-ID":      "trace-12345",
+			"X-Numeric":       "42",
 		},
 	}
 

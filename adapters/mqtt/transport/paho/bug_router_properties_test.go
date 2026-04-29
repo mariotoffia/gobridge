@@ -41,7 +41,7 @@ func TestBug1_Route_PropertiesPointerIdentity(t *testing.T) {
 				Topic:   "test/bug1",
 				Payload: []byte("hello"),
 				Properties: &packets.Properties{
-					User: []packets.User{{Key: "k", Value: "v"}},
+					User:        []packets.User{{Key: "k", Value: "v"}},
 					ContentType: "application/json",
 				},
 			}

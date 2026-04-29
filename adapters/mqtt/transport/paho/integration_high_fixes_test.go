@@ -31,9 +31,11 @@ import (
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   5 goroutines each call Reconcile with different topic sets
-//   All must succeed without errors
-//   Final Reconcile with known plan must succeed
+//
+//	5 goroutines each call Reconcile with different topic sets
+//	All must succeed without errors
+//	Final Reconcile with known plan must succeed
+//
 // ───────────────────────────────────────────────
 //
 // Test Parameters:
@@ -168,9 +170,11 @@ func topicForGoroutine(goroutine, iter int) string {
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Start session with ReconnectTimeout = 5s and a plan
-//   Verify session connects and events flow
-//   Verify Health reports connected
+//
+//	Start session with ReconnectTimeout = 5s and a plan
+//	Verify session connects and events flow
+//	Verify Health reports connected
+//
 // ───────────────────────────────────────────────
 //
 // Assertions:

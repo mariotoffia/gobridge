@@ -36,8 +36,10 @@ import (
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Goroutine A ──Start()──▶ dial ──▶ connect ──▶ store conn
-//   Goroutine B ──Start()──▶ should be no-op or blocked
+//
+//	Goroutine A ──Start()──▶ dial ──▶ connect ──▶ store conn
+//	Goroutine B ──Start()──▶ should be no-op or blocked
+//
 // ───────────────────────────────────────────────
 //
 // Assertions:

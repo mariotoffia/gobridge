@@ -10,8 +10,8 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -205,11 +205,11 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 					"retry_after", delay,
 				)
 			}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-r.cfg.Clock.After(delay):
-		}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-r.cfg.Clock.After(delay):
+			}
 			continue
 		}
 

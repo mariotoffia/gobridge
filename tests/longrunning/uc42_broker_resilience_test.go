@@ -30,9 +30,9 @@ import (
 func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount   = 3000
-		killAt     = 1000
-		outTopic   = "uc42/output"
+		msgCount    = 3000
+		killAt      = 1000
+		outTopic    = "uc42/output"
 		testTimeout = 240 * time.Second
 	)
 
@@ -137,9 +137,9 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount   = 2000
-		killAt     = 500
-		outTopic   = "uc43/output"
+		msgCount    = 2000
+		killAt      = 500
+		outTopic    = "uc43/output"
 		testTimeout = 240 * time.Second
 	)
 
@@ -235,8 +235,8 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 func TestUC44_BrokerLowInflightQuota(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount   = 2000
-		outTopic   = "uc44/output"
+		msgCount    = 2000
+		outTopic    = "uc44/output"
 		testTimeout = 300 * time.Second
 	)
 
@@ -318,9 +318,9 @@ func TestUC44_BrokerLowInflightQuota(t *testing.T) {
 func TestUC45_BrokerQuota_SharedOutbox_vs_DirectHold(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount   = 1000
-		topicA     = "uc45/outbox/output"
-		topicB     = "uc45/direct/output"
+		msgCount    = 1000
+		topicA      = "uc45/outbox/output"
+		topicB      = "uc45/direct/output"
 		testTimeout = 300 * time.Second
 	)
 

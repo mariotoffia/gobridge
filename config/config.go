@@ -116,11 +116,11 @@ type SessionDef struct {
 
 // ReceiverDef describes a message ingress endpoint.
 type ReceiverDef struct {
-	ID        string             `yaml:"id" json:"id"`
-	Transport string             `yaml:"transport" json:"transport"`
-	SessionID string             `yaml:"session_id,omitempty" json:"session_id,omitempty"`
-	Topics    []SubscriptionDef  `yaml:"topics,omitempty" json:"topics,omitempty"`
-	Options   map[string]any     `yaml:"options,omitempty" json:"options,omitempty"`
+	ID        string            `yaml:"id" json:"id"`
+	Transport string            `yaml:"transport" json:"transport"`
+	SessionID string            `yaml:"session_id,omitempty" json:"session_id,omitempty"`
+	Topics    []SubscriptionDef `yaml:"topics,omitempty" json:"topics,omitempty"`
+	Options   map[string]any    `yaml:"options,omitempty" json:"options,omitempty"`
 }
 
 // SubscriptionDef describes a topic subscription for a receiver.

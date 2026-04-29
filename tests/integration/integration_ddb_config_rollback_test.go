@@ -27,7 +27,9 @@ import (
 //
 // Scenario:
 // -----------------------------------------------
-//   r1 (running) → invalid overlay (dropped) → r1 still runs
+//
+//	r1 (running) → invalid overlay (dropped) → r1 still runs
+//
 // -----------------------------------------------
 func TestDDBRollback_InvalidOverlay_ManagerDrops(t *testing.T) {
 	basePath := writeBaseYAML(t, "test-bridge")
@@ -100,7 +102,9 @@ func TestDDBRollback_InvalidOverlay_ManagerDrops(t *testing.T) {
 //
 // Scenario:
 // -----------------------------------------------
-//   r1 (running) → r-broken (build fails) → r1 restored
+//
+//	r1 (running) → r-broken (build fails) → r1 restored
+//
 // -----------------------------------------------
 func TestDDBRollback_ValidOverlayButBuildFails_KeepsOldConfig(t *testing.T) {
 	basePath := writeBaseYAML(t, "test-bridge")
@@ -274,8 +278,10 @@ func TestDDBRollback_ValidOverlayButStartFails_RecoversOldConfig(t *testing.T) {
 //
 // Scenario:
 // -----------------------------------------------
-//   r1 → invalid (dropped) → broken (build fail, rollback)
-//      → valid r3 (success)
+//
+//	r1 → invalid (dropped) → broken (build fail, rollback)
+//	   → valid r3 (success)
+//
 // -----------------------------------------------
 func TestDDBRollback_MultipleFailures_OldConfigSurvives(t *testing.T) {
 	basePath := writeBaseYAML(t, "test-bridge")

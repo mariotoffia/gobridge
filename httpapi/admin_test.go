@@ -26,12 +26,14 @@ func adminRequest(method, path string) *http.Request {
 // without relying on request context cancellation races.
 type adminStopLeakMetrics struct{}
 
-func (adminStopLeakMetrics) Counter(string, int64, ...domain.Tag)              {}
-func (adminStopLeakMetrics) Gauge(string, float64, ...domain.Tag)              {}
-func (adminStopLeakMetrics) Histogram(string, float64, ...domain.Tag)          {}
-func (adminStopLeakMetrics) Timer(string, time.Duration, ...domain.Tag)        {}
-func (adminStopLeakMetrics) Close(context.Context) error                       { return nil }
-func (adminStopLeakMetrics) Flush(context.Context) error                       { return fmt.Errorf("INTERNAL_STOP_SECRET_do_not_expose") }
+func (adminStopLeakMetrics) Counter(string, int64, ...domain.Tag)       {}
+func (adminStopLeakMetrics) Gauge(string, float64, ...domain.Tag)       {}
+func (adminStopLeakMetrics) Histogram(string, float64, ...domain.Tag)   {}
+func (adminStopLeakMetrics) Timer(string, time.Duration, ...domain.Tag) {}
+func (adminStopLeakMetrics) Close(context.Context) error                { return nil }
+func (adminStopLeakMetrics) Flush(context.Context) error {
+	return fmt.Errorf("INTERNAL_STOP_SECRET_do_not_expose")
+}
 
 // TestHandleStart_StartsRuntime validates that POST /admin/bridge/start starts the bridge.
 func TestHandleStart_StartsRuntime(t *testing.T) {

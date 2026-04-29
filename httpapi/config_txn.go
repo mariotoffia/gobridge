@@ -21,10 +21,10 @@ const maxTxnTTL = 30 * time.Minute
 
 // Sentinel errors returned by configTxnManager methods.
 var (
-	errTxnActive          = errors.New("another transaction is already active")
-	errTxnNotFound        = errors.New("transaction not found")
-	errTxnExpired         = errors.New("transaction has expired")
-	errVersionConflict    = errors.New("config version conflict")
+	errTxnActive       = errors.New("another transaction is already active")
+	errTxnNotFound     = errors.New("transaction not found")
+	errTxnExpired      = errors.New("transaction has expired")
+	errVersionConflict = errors.New("config version conflict")
 )
 
 // ConfigTransaction represents an in-progress configuration change.

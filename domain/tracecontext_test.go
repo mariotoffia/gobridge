@@ -11,10 +11,10 @@ import (
 // TestParseTraceparent validates ParseTraceparent for valid W3C traceparent values and common invalid inputs.
 func TestParseTraceparent(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		wantOK  bool
-		wantTC  domain.TraceContext
+		name   string
+		input  string
+		wantOK bool
+		wantTC domain.TraceContext
 	}{
 		{
 			name:   "valid sampled",

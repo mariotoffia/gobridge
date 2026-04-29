@@ -71,4 +71,3 @@ func redactURL(raw string) string {
 	}
 	return u.String()
 }
-

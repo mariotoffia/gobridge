@@ -191,8 +191,8 @@ func TestConfigAPI_SecurityHeaders_Present(t *testing.T) {
 
 	checks := map[string]string{
 		"X-Content-Type-Options": "nosniff",
-		"X-Frame-Options":       "DENY",
-		"Referrer-Policy":       "no-referrer",
+		"X-Frame-Options":        "DENY",
+		"Referrer-Policy":        "no-referrer",
 	}
 	for header, want := range checks {
 		got := resp.Header.Get(header)

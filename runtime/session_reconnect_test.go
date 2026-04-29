@@ -45,10 +45,12 @@ import (
 //
 // Timeline:
 // ───────────────────────────────────────────────────────────────
-//   T0: Start session (non-exclusive), initial Reconcile OK
-//   T1: Push SessionConnected (reconnect), ReconcileErr set
-//   T2: handleSessionEvent returns error → handleEvents exits
-//   T3: Run returns the reconcile error
+//
+//	T0: Start session (non-exclusive), initial Reconcile OK
+//	T1: Push SessionConnected (reconnect), ReconcileErr set
+//	T2: handleSessionEvent returns error → handleEvents exits
+//	T3: Run returns the reconcile error
+//
 // ───────────────────────────────────────────────────────────────
 //
 // Assertions:
@@ -98,10 +100,12 @@ func TestSessionManager_ReconnectReconcileError_LogsAndPropagates(t *testing.T) 
 //
 // Timeline:
 // ───────────────────────────────────────────────────────────────
-//   T0: Start session, initial Reconcile OK
-//   T1: Push SessionConnected, ReconcileErr set
-//   T2: MetricReconcileFailures counter incremented
-//   T3: Run exits with error
+//
+//	T0: Start session, initial Reconcile OK
+//	T1: Push SessionConnected, ReconcileErr set
+//	T2: MetricReconcileFailures counter incremented
+//	T3: Run exits with error
+//
 // ───────────────────────────────────────────────────────────────
 //
 // Assertions:
@@ -163,10 +167,12 @@ func TestSessionManager_ReconnectReconcileError_EmitsMetric(t *testing.T) {
 //
 // Timeline:
 // ───────────────────────────────────────────────────────────────
-//   T0: Start session, initial Reconcile OK
-//   T1: Push SessionConnected (reconnect), Reconcile OK
-//   T2: Manager continues running
-//   T3: Context cancelled → Run returns ctx.Err
+//
+//	T0: Start session, initial Reconcile OK
+//	T1: Push SessionConnected (reconnect), Reconcile OK
+//	T2: Manager continues running
+//	T3: Context cancelled → Run returns ctx.Err
+//
 // ───────────────────────────────────────────────────────────────
 //
 // Assertions:
@@ -238,11 +244,13 @@ func TestSessionManager_ReconnectReconcileOK_NoError(t *testing.T) {
 //
 // Timeline:
 // ───────────────────────────────────────────────────────────────
-//   T0: Start exclusive session, lease acquired, Reconcile OK
-//   T1: Enter renewLoop
-//   T2: Push SessionConnected, ReconcileErr set
-//   T3: renewLoop receives error from handleSessionEvent
-//   T4: Run re-acquires lease and hits Reconcile error again → exits
+//
+//	T0: Start exclusive session, lease acquired, Reconcile OK
+//	T1: Enter renewLoop
+//	T2: Push SessionConnected, ReconcileErr set
+//	T3: renewLoop receives error from handleSessionEvent
+//	T4: Run re-acquires lease and hits Reconcile error again → exits
+//
 // ───────────────────────────────────────────────────────────────
 //
 // Assertions:

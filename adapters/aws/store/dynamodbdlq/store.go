@@ -14,8 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/logging"
 )
 
 const (
@@ -35,7 +35,7 @@ const (
 	attrEnvelopeJSON  = "envelope_json"
 	attrFailedAt      = "failed_at"
 	attrAttempts      = "attempts"
-	attrTTL = "ttl"
+	attrTTL           = "ttl"
 )
 
 // Store implements ports.DLQStore using DynamoDB with conditional writes

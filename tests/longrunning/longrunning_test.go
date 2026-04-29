@@ -512,9 +512,11 @@ func (s *lrDLQStore) Get(_ context.Context, id string) (domain.DLQEntry, error) 
 	return domain.DLQEntry{}, domain.ErrNotFound
 }
 
-func (s *lrDLQStore) Delete(_ context.Context, _ []string) (int, error)                 { return 0, nil }
-func (s *lrDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error) { return 0, nil }
-func (s *lrDLQStore) Purge(_ context.Context, _ time.Time) (int, error)                 { return 0, nil }
+func (s *lrDLQStore) Delete(_ context.Context, _ []string) (int, error) { return 0, nil }
+func (s *lrDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error) {
+	return 0, nil
+}
+func (s *lrDLQStore) Purge(_ context.Context, _ time.Time) (int, error) { return 0, nil }
 
 func (s *lrDLQStore) count() int {
 	s.mu.Lock()

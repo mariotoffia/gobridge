@@ -22,9 +22,11 @@ import (
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   pushEvent(SessionConnected)
-//        ├──▶ subscriber A  (must receive)
-//        └──▶ subscriber B  (must receive)
+//
+//	pushEvent(SessionConnected)
+//	     ├──▶ subscriber A  (must receive)
+//	     └──▶ subscriber B  (must receive)
+//
 // ───────────────────────────────────────────────
 func TestSession_Subscribe_FanOut(t *testing.T) {
 	s := newResilienceSession(nil)

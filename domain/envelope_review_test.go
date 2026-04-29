@@ -18,15 +18,19 @@ import (
 //
 // ═══════════════════════════════════════════════════════════════════
 // Before fix: []byte header values share backing array between
-//   original and clone, allowing cross-mutation.
+//
+//	original and clone, allowing cross-mutation.
 //
 // original.Headers["bin"] = []byte{0x01, 0x02}
 // clone := original.Clone()
 // clone.Headers["bin"].([]byte)[0] = 0xFF
-//   → original.Headers["bin"][0] == 0xFF  (WRONG - shared array)
+//
+//	→ original.Headers["bin"][0] == 0xFF  (WRONG - shared array)
 //
 // After fix: []byte values are copied to independent slices.
-//   → original.Headers["bin"][0] == 0x01  (CORRECT - isolated)
+//
+//	→ original.Headers["bin"][0] == 0x01  (CORRECT - isolated)
+//
 // ═══════════════════════════════════════════════════════════════════
 func TestEnvelope_Clone_DeepCopiesByteSliceHeaders(t *testing.T) {
 	original := &domain.Envelope{

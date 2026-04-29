@@ -134,9 +134,11 @@ func TestValidate_ClusteredNonMQTT_NoCheck(t *testing.T) {
 //
 // ═══════════════════════════════════════════════════════════════════
 // Cases:
-//   "$share//devices/temp"  → empty group  → ERROR
-//   "$share/mygroup"        → no topic     → ERROR
-//   "$share/mygroup/"       → empty topic  → ERROR
+//
+//	"$share//devices/temp"  → empty group  → ERROR
+//	"$share/mygroup"        → no topic     → ERROR
+//	"$share/mygroup/"       → empty topic  → ERROR
+//
 // ═══════════════════════════════════════════════════════════════════
 func TestValidate_SharedTopicMalformed_Error(t *testing.T) {
 	cases := []struct {

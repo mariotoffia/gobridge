@@ -51,7 +51,7 @@ func TestUC6_BurstBackpressure(t *testing.T) {
 		totalCount  = 3000
 		normalCount = 2500
 		poisonCount = 500
-		pollTimeout     = 120 * time.Second
+		pollTimeout = 120 * time.Second
 	)
 
 	// -- Infrastructure ---------------------------------------------------

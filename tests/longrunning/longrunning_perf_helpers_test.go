@@ -232,9 +232,9 @@ func (r *benchmarkReport) logReport(t *testing.T, exporter *ports.RecordingExpor
 	}
 
 	type latRow struct {
-		name       string
+		name          string
 		p50, p95, p99 time.Duration
-		count      int
+		count         int
 	}
 	var rows []latRow
 	for _, stage := range stages {

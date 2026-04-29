@@ -78,7 +78,7 @@ var (
 	containerName string
 	cleanupFn     func()
 	initErr       error
-	cfg = config{
+	cfg           = config{
 		image:            "eclipse-mosquitto:latest",
 		maxInflightMsgs:  -1,
 		maxQueuedMsgs:    -1,

@@ -112,7 +112,7 @@ func TestCredentialRefresher_NoopWithoutPush(t *testing.T) {
 
 	r := NewCredentialRefresher(nil, nil)
 	r.Watch(t.Context(), "file://x", nil) // must not panic
-	r.Close()                              // must not panic
+	r.Close()                             // must not panic
 }
 
 // credAwareFakeSession implements ports.Session + CredentialAware to

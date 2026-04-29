@@ -348,7 +348,7 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 	cfg := goruntime.RouteConfig{
 		ID: "poison-route",
 		Policy: domain.RoutePolicy{
-			DeliveryMode:     domain.DeliverySharedOutbox,
+			DeliveryMode:      domain.DeliverySharedOutbox,
 			MaxReplayAttempts: 3,
 		},
 		Bindings: []domain.DestinationBinding{

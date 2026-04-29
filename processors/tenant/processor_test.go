@@ -68,9 +68,9 @@ type mockTracker struct {
 		tenantID string
 		count    int64
 	}
-	incrementInFlightErr   error
-	incrementMessagesErr   error
-	mu                     sync.Mutex
+	incrementInFlightErr error
+	incrementMessagesErr error
+	mu                   sync.Mutex
 }
 
 func (m *mockTracker) IncrementMessages(_ context.Context, tenantID string, count int64) error {

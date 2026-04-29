@@ -32,7 +32,8 @@ import (
 // message sent via the raw client is emitted as a delivery by the Receiver.
 //
 // Scenario:
-//   Client ──send──▶ [SQS Queue] ──receive──▶ Receiver ──emit──▶ callback
+//
+//	Client ──send──▶ [SQS Queue] ──receive──▶ Receiver ──emit──▶ callback
 func TestIntegration_SQS_Receiver_ReceivesMessages(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -72,7 +73,8 @@ func TestIntegration_SQS_Receiver_ReceivesMessages(t *testing.T) {
 // via the Sender appears in the SQS queue when polled with the raw client.
 //
 // Scenario:
-//   Sender ──send──▶ [SQS Queue] ◀──poll── Client
+//
+//	Sender ──send──▶ [SQS Queue] ◀──poll── Client
 func TestIntegration_SQS_Sender_SendsMessage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -104,7 +106,8 @@ func TestIntegration_SQS_Sender_SendsMessage(t *testing.T) {
 // messages with a group ID and verifying they maintain order.
 //
 // Scenario:
-//   Sender ──send(group)──▶ [SQS FIFO Queue] ◀──poll── Client
+//
+//	Sender ──send(group)──▶ [SQS FIFO Queue] ◀──poll── Client
 func TestIntegration_SQS_Sender_FIFO(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -146,9 +149,10 @@ func TestIntegration_SQS_Sender_FIFO(t *testing.T) {
 // becomes visible again after the visibility timeout expires without an Ack.
 //
 // Scenario:
-//   Client ──send──▶ [Queue vt=2s] ──recv──▶ Receiver (no Ack)
-//   ... 2s ...
-//   [Queue] ──redeliver──▶ Receiver
+//
+//	Client ──send──▶ [Queue vt=2s] ──recv──▶ Receiver (no Ack)
+//	... 2s ...
+//	[Queue] ──redeliver──▶ Receiver
 func TestIntegration_SQS_Receiver_VisibilityTimeout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

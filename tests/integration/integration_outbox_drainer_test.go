@@ -490,4 +490,3 @@ func (s *collectingSender) count() int {
 	defer s.mu.Unlock()
 	return len(s.envs)
 }
-

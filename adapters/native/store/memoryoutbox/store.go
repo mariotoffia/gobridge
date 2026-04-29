@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/logging"
 )
 
 // Store implements ports.OutboxStore in memory for unit tests.

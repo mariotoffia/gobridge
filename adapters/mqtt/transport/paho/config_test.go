@@ -107,7 +107,7 @@ func TestSessionOptionsFromMap_TLSFromMap(t *testing.T) {
 func TestSessionOptionsFromMap_SessionExpiry(t *testing.T) {
 	m := map[string]any{
 		"session_expiry_interval": 3600,
-		"clean_start":            false,
+		"clean_start":             false,
 	}
 	opts, err := SessionOptionsFromMap(m)
 	if err != nil {

@@ -39,7 +39,7 @@ type OutboxDrainer struct {
 	useScaledTimeout      bool
 	batchTimeoutFloor     time.Duration
 	currentBatchSize      int
-	hasDrained        bool
+	hasDrained            bool
 	// hadPending tracks whether the most recent Claim returned records.
 	// Used to ensure OnDrained fires only on the transition from
 	// "pending records" to "caught up", not on every empty cycle.
@@ -102,11 +102,11 @@ type OutboxDrainerConfig struct {
 	// previous DrainTimeout default so the worst-case is unchanged).
 	MaxDrainTimeout   time.Duration
 	BatchTimeoutFloor time.Duration
-	Metrics             ports.MetricsExporter
-	Hook                ports.DeliveryHook
-	Logger              *slog.Logger
-	Clock               clock.Clock
-	TokenFn             func() (domain.LeaseToken, bool)
+	Metrics           ports.MetricsExporter
+	Hook              ports.DeliveryHook
+	Logger            *slog.Logger
+	Clock             clock.Clock
+	TokenFn           func() (domain.LeaseToken, bool)
 
 	// ReadyFn optionally gates drain cycles on egress transport
 	// readiness. When the MQTT session is disconnected, skipping
@@ -195,34 +195,34 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 		clk = clock.System
 	}
 	return &OutboxDrainer{
-		outboxStore:       cfg.OutboxStore,
-		leaseStore:        cfg.LeaseStore,
-		sender:            cfg.Sender,
-		dlq:               cfg.DLQ,
-		routeID:           cfg.RouteID,
-		partitionKey:      cfg.PartitionKey,
-		leaseID:           leaseID,
-		ownerID:           cfg.OwnerID,
-		policy:            cfg.Policy,
-		strategy:          cfg.Strategy,
-		batchSize:         cfg.DrainBatchSize,
-		maxBatchSize:      cfg.DrainMaxBatchSize,
-		maxConcurrency:    cfg.DrainMaxConcurrency,
+		outboxStore:           cfg.OutboxStore,
+		leaseStore:            cfg.LeaseStore,
+		sender:                cfg.Sender,
+		dlq:                   cfg.DLQ,
+		routeID:               cfg.RouteID,
+		partitionKey:          cfg.PartitionKey,
+		leaseID:               leaseID,
+		ownerID:               cfg.OwnerID,
+		policy:                cfg.Policy,
+		strategy:              cfg.Strategy,
+		batchSize:             cfg.DrainBatchSize,
+		maxBatchSize:          cfg.DrainMaxBatchSize,
+		maxConcurrency:        cfg.DrainMaxConcurrency,
 		drainTimeout:          cfg.DrainTimeout,
 		perRecordDrainTimeout: cfg.PerRecordDrainTimeout,
 		maxDrainTimeout:       cfg.MaxDrainTimeout,
 		useScaledTimeout:      useScaledTimeout,
 		batchTimeoutFloor:     cfg.BatchTimeoutFloor,
 		currentBatchSize:      cfg.DrainBatchSize,
-		metrics:           m,
-		hook:              hk,
-		logger:            cfg.Logger,
-		clk:               clk,
-		tokenFn:           cfg.TokenFn,
-		readyFn:           cfg.ReadyFn,
-		onBatchComplete:   cfg.OnBatchComplete,
-		onDrained:         cfg.OnDrained,
-		idleCh:            make(chan struct{}),
+		metrics:               m,
+		hook:                  hk,
+		logger:                cfg.Logger,
+		clk:                   clk,
+		tokenFn:               cfg.TokenFn,
+		readyFn:               cfg.ReadyFn,
+		onBatchComplete:       cfg.OnBatchComplete,
+		onDrained:             cfg.OnDrained,
+		idleCh:                make(chan struct{}),
 	}
 }
 

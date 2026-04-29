@@ -30,8 +30,8 @@ type clusterInst struct {
 func TestUC12_RollingRestart_NoMessageLoss(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 3000
-		pollTimeout  = 180 * time.Second
+		msgCount    = 3000
+		pollTimeout = 180 * time.Second
 	)
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc12-in")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -43,7 +43,7 @@ func TestUC12_RollingRestart_NoMessageLoss(t *testing.T) {
 	defer cancel()
 
 	routeCfg := goruntime.RouteConfig{
-		ID: "uc12-route",
+		ID:     "uc12-route",
 		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
 		Resolver: goruntime.NewStaticResolver(
 			domain.DispatchPlan{BindingID: "uc12-bind", Address: "uc12/output"}),
@@ -106,8 +106,8 @@ func TestUC12_RollingRestart_NoMessageLoss(t *testing.T) {
 func TestUC13_SplitBrain_Recovery(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 2000
-		pollTimeout  = 180 * time.Second
+		msgCount    = 2000
+		pollTimeout = 180 * time.Second
 	)
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc13-in")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -119,7 +119,7 @@ func TestUC13_SplitBrain_Recovery(t *testing.T) {
 	defer cancel()
 
 	routeCfg := goruntime.RouteConfig{
-		ID: "uc13-route",
+		ID:     "uc13-route",
 		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
 		Resolver: goruntime.NewStaticResolver(
 			domain.DispatchPlan{BindingID: "uc13-bind", Address: "uc13/output"}),
@@ -148,8 +148,10 @@ func TestUC13_SplitBrain_Recovery(t *testing.T) {
 	rtA, cancelA := mkInst("A")
 	rtB, cancelB := mkInst("B")
 	t.Cleanup(func() {
-		cancelA(); _ = rtA.Stop(context.Background())
-		cancelB(); _ = rtB.Stop(context.Background())
+		cancelA()
+		_ = rtA.Stop(context.Background())
+		cancelB()
+		_ = rtB.Stop(context.Background())
 	})
 	gobridgesync(t, 10*time.Second, rtA, rtB)
 
@@ -176,9 +178,9 @@ func TestUC13_SplitBrain_Recovery(t *testing.T) {
 func TestUC14_LeaseContention_TenInstances(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		instCount = 10
-		msgCount  = 1000
-		pollTimeout   = 180 * time.Second
+		instCount   = 10
+		msgCount    = 1000
+		pollTimeout = 180 * time.Second
 	)
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc14-in")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -190,7 +192,7 @@ func TestUC14_LeaseContention_TenInstances(t *testing.T) {
 	defer cancel()
 
 	routeCfg := goruntime.RouteConfig{
-		ID: "uc14-route",
+		ID:     "uc14-route",
 		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
 		Resolver: goruntime.NewStaticResolver(
 			domain.DispatchPlan{BindingID: "uc14-bind", Address: "uc14/output"}),
@@ -220,7 +222,8 @@ func TestUC14_LeaseContention_TenInstances(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for i := range instCount {
-			cans[i](); _ = rts[i].Stop(context.Background())
+			cans[i]()
+			_ = rts[i].Stop(context.Background())
 		}
 	})
 	gobridgesync(t, 10*time.Second, rts...)
@@ -251,8 +254,8 @@ func TestUC14_LeaseContention_TenInstances(t *testing.T) {
 func TestUC15_ConnectAfterLease(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 2000
-		pollTimeout  = 180 * time.Second
+		msgCount    = 2000
+		pollTimeout = 180 * time.Second
 	)
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc15-in")
 	leaseStore, outboxStore := setupDynamoStores(t)
@@ -264,7 +267,7 @@ func TestUC15_ConnectAfterLease(t *testing.T) {
 	defer cancel()
 
 	routeCfg := goruntime.RouteConfig{
-		ID: "uc15-route",
+		ID:     "uc15-route",
 		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
 		Resolver: goruntime.NewStaticResolver(
 			domain.DispatchPlan{BindingID: "uc15-bind", Address: "uc15/output"}),
@@ -294,8 +297,10 @@ func TestUC15_ConnectAfterLease(t *testing.T) {
 	rtA, cancelA := mkInst("A")
 	rtB, cancelB := mkInst("B")
 	t.Cleanup(func() {
-		cancelA(); _ = rtA.Stop(context.Background())
-		cancelB(); _ = rtB.Stop(context.Background())
+		cancelA()
+		_ = rtA.Stop(context.Background())
+		cancelB()
+		_ = rtB.Stop(context.Background())
 	})
 	// With ConnectAfterLease=true, only the active instance connects.
 	// Wait for one runtime to become active instead of requiring both ready.
@@ -337,8 +342,8 @@ func TestUC15_ConnectAfterLease(t *testing.T) {
 func TestUC16_MultiSession_Cluster(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 1000
-		pollTimeout  = 120 * time.Second
+		msgCount    = 1000
+		pollTimeout = 120 * time.Second
 	)
 	sqsIn1URL, sqsIn1Client := setupSQSQueue(t, "uc16-in1")
 	sqsIn2URL, sqsIn2Client := setupSQSQueue(t, "uc16-in2")

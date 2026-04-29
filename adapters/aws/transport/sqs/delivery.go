@@ -26,16 +26,16 @@ var _ ports.Delivery = (*sqsDelivery)(nil)
 //
 // The receiver's poll loop creates a three-level context tree per message:
 //
-//	pollLoop ctx (caller-owned, e.g. test WithTimeout)
-//	  └─ deliveryCtx (WithCancel) — passed to emit() and to newDelivery
-//	       └─ autoExtendCtx (WithCancel) — scoped to the auto-extend goroutine
+//		pollLoop ctx (caller-owned, e.g. test WithTimeout)
+//		  └─ deliveryCtx (WithCancel) — passed to emit() and to newDelivery
+//		       └─ autoExtendCtx (WithCancel) — scoped to the auto-extend goroutine
 //
-//   - deliveryCtx is canceled by cleanupContext() after the Ack/Retry SQS
-//     call completes, to reclaim the context node.
-//   - autoExtendCtx is canceled by stopAutoExtend() before the SQS call,
-//     so the goroutine stops before we delete/re-queue the message.
-//   - If auto-extend fails 3 consecutive times, it calls processingCancel
-//     (= deliveryCtx cancel) so the emit callback receives a canceled ctx.
+//	  - deliveryCtx is canceled by cleanupContext() after the Ack/Retry SQS
+//	    call completes, to reclaim the context node.
+//	  - autoExtendCtx is canceled by stopAutoExtend() before the SQS call,
+//	    so the goroutine stops before we delete/re-queue the message.
+//	  - If auto-extend fails 3 consecutive times, it calls processingCancel
+//	    (= deliveryCtx cancel) so the emit callback receives a canceled ctx.
 //
 // # Why separate stopAutoExtend and cleanupContext
 //

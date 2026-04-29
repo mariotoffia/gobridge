@@ -202,4 +202,3 @@ func assertTag(t *testing.T, tags []domain.Tag, key, wantValue string) {
 	}
 	t.Errorf("tag %s not found", key)
 }
-

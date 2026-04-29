@@ -104,7 +104,7 @@ func TestIntegration_SendReceive(t *testing.T) {
 		Subject: "test-subject",
 		Payload: payload,
 		Headers: map[string]any{
-			"custom-key":     "custom-value",
+			"custom-key":       "custom-value",
 			"asb.content-type": "application/json",
 		},
 		CreatedAt: time.Now(),

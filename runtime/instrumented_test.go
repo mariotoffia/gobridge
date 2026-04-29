@@ -261,4 +261,3 @@ func TestInstrumentedDelivery_ExtendCountsVisibilityExtension(t *testing.T) {
 		t.Fatalf("expected 1 visibility extension counter, got %d", len(extensions))
 	}
 }
-

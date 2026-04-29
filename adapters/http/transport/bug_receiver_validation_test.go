@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
-	
+
 	"github.com/mariotoffia/gobridge/ports"
 )
 

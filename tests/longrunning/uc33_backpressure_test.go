@@ -27,8 +27,8 @@ import (
 func TestUC33_MaxInFlight1_Serial(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 500
-		pollTimeout  = 120 * time.Second
+		msgCount    = 500
+		pollTimeout = 120 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc33-in")
@@ -95,8 +95,8 @@ func TestUC33_MaxInFlight1_Serial(t *testing.T) {
 func TestUC34_MaxInFlight1000_HighConcurrency(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 10000
-		pollTimeout  = 180 * time.Second
+		msgCount    = 10000
+		pollTimeout = 180 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc34-in")
@@ -163,9 +163,9 @@ func TestUC34_MaxInFlight1000_HighConcurrency(t *testing.T) {
 func TestUC35_GlobalMaxInFlight_ThreeRoutes(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		perRoute = 1000
-		pollTimeout  = 120 * time.Second
-		globalMF = 50
+		perRoute    = 1000
+		pollTimeout = 120 * time.Second
+		globalMF    = 50
 	)
 
 	dlqStore := &lrDLQStore{}
@@ -252,8 +252,8 @@ func TestUC35_GlobalMaxInFlight_ThreeRoutes(t *testing.T) {
 func TestUC36_SlowConsumer(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 1000
-		pollTimeout  = 180 * time.Second
+		msgCount    = 1000
+		pollTimeout = 180 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc36-in")
@@ -318,10 +318,10 @@ func TestUC36_SlowConsumer(t *testing.T) {
 func TestUC37_BurstThenIdle(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		burstSize  = 1000
-		burstCount = 3
-		gapSeconds = 5
-		pollTimeout    = 180 * time.Second
+		burstSize   = 1000
+		burstCount  = 3
+		gapSeconds  = 5
+		pollTimeout = 180 * time.Second
 	)
 
 	inQueueURL, inClient := setupSQSQueue(t, "uc37-in")

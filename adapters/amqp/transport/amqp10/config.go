@@ -63,7 +63,7 @@ type TLSConfig struct {
 	// fields override the corresponding *File fields.
 	CACertPEM string
 	CertPEM   string
-	KeyPEM   string
+	KeyPEM    string
 
 	InsecureSkipVerify bool
 }

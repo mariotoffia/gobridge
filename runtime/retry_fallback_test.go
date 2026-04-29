@@ -93,9 +93,11 @@ func (s *FailOnceDLQStore) Count() int { return s.inner.Count() }
 //
 // Data flow:
 // ───────────────────────────────────────────────────────────────
-//   Sender → ErrUnavailable → del.Retry → ErrNotSupported
-//         → DLQ.Route(reason=ErrUnavailable) → ✓
-//         → del.Ack → ✓
+//
+//	Sender → ErrUnavailable → del.Retry → ErrNotSupported
+//	      → DLQ.Route(reason=ErrUnavailable) → ✓
+//	      → del.Ack → ✓
+//
 // ───────────────────────────────────────────────────────────────
 //
 // Assertions:
@@ -150,9 +152,11 @@ func TestDirectHold_RetryUnsupported_FallsToDLQ(t *testing.T) {
 //
 // Data flow:
 // ───────────────────────────────────────────────────────────────
-//   Sender → ErrUnavailable → del.Retry → ErrNotSupported
-//         → DLQ.Route → ✗ (WriteErr)
-//         → error returned
+//
+//	Sender → ErrUnavailable → del.Retry → ErrNotSupported
+//	      → DLQ.Route → ✗ (WriteErr)
+//	      → error returned
+//
 // ───────────────────────────────────────────────────────────────
 //
 // Assertions:
@@ -196,9 +200,11 @@ func TestDirectHold_RetryUnsupported_DLQAlsoFails_ReturnsError(t *testing.T) {
 //
 // Data flow:
 // ───────────────────────────────────────────────────────────────
-//   Processor → ErrThrottled → del.Retry → ErrNotSupported
-//            → DLQ.Route(reason=ErrThrottled) → ✓
-//            → del.Ack → ✓
+//
+//	Processor → ErrThrottled → del.Retry → ErrNotSupported
+//	         → DLQ.Route(reason=ErrThrottled) → ✓
+//	         → del.Ack → ✓
+//
 // ───────────────────────────────────────────────────────────────
 //
 // Assertions:
@@ -242,9 +248,11 @@ func TestHandleProcessorError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 //
 // Data flow:
 // ───────────────────────────────────────────────────────────────
-//   Outbox.Persist → error → del.Retry → ErrNotSupported
-//                  → DLQ.Route(reason=persistErr) → ✓
-//                  → del.Ack → ✓
+//
+//	Outbox.Persist → error → del.Retry → ErrNotSupported
+//	               → DLQ.Route(reason=persistErr) → ✓
+//	               → del.Ack → ✓
+//
 // ───────────────────────────────────────────────────────────────
 //
 // Assertions:
@@ -284,10 +292,12 @@ func TestSharedOutbox_RetryUnsupported_FallsToDLQ(t *testing.T) {
 //
 // Data flow:
 // ───────────────────────────────────────────────────────────────
-//   IsExpired → DLQ.Route → ✗ (first write fails)
-//            → del.Retry → ErrNotSupported
-//            → DLQ.Route → ✓ (second write succeeds)
-//            → del.Ack → ✓
+//
+//	IsExpired → DLQ.Route → ✗ (first write fails)
+//	         → del.Retry → ErrNotSupported
+//	         → DLQ.Route → ✓ (second write succeeds)
+//	         → del.Ack → ✓
+//
 // ───────────────────────────────────────────────────────────────
 //
 // Assertions:
@@ -334,10 +344,12 @@ func TestHandleExpired_RetryUnsupported_FallsToDLQ(t *testing.T) {
 //
 // Data flow:
 // ───────────────────────────────────────────────────────────────
-//   Resolver → ErrUnavailable (transient)
-//           → del.Retry → ErrNotSupported
-//           → DLQ.Route(reason=ErrUnavailable) → ✓
-//           → del.Ack → ✓
+//
+//	Resolver → ErrUnavailable (transient)
+//	        → del.Retry → ErrNotSupported
+//	        → DLQ.Route(reason=ErrUnavailable) → ✓
+//	        → del.Ack → ✓
+//
 // ───────────────────────────────────────────────────────────────
 //
 // Assertions:
@@ -376,8 +388,10 @@ func TestHandleResolveError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 //
 // Data flow:
 // ───────────────────────────────────────────────────────────────
-//   Sender → ErrUnavailable → del.Retry → nil (supported)
-//         → delivery retried, NOT acked
+//
+//	Sender → ErrUnavailable → del.Retry → nil (supported)
+//	      → delivery retried, NOT acked
+//
 // ───────────────────────────────────────────────────────────────
 //
 // Assertions:

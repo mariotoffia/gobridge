@@ -72,7 +72,7 @@ func newStubSessionForClockTest() *stubSessionForClockTest {
 	return &stubSessionForClockTest{events: make(chan ports.SessionEvent)}
 }
 
-func (s *stubSessionForClockTest) Start(context.Context) error                       { return nil }
+func (s *stubSessionForClockTest) Start(context.Context) error                         { return nil }
 func (s *stubSessionForClockTest) Reconcile(context.Context, domain.SessionPlan) error { return nil }
 func (s *stubSessionForClockTest) Health(context.Context) ports.SessionHealth {
 	return ports.SessionHealth{Connected: true, Ready: true, ServiceLevel: ports.ServiceLevelFull}

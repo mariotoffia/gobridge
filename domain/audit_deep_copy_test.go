@@ -28,7 +28,9 @@ import (
 // original.Headers["tags"] = map[string]string{"env": "prod"}
 // clone := original.Clone()
 // clone.Headers["tags"].(map[string]string)["env"] = "staging"
-//   → original.Headers["tags"]["env"] == "staging"  (WRONG)
+//
+//	→ original.Headers["tags"]["env"] == "staging"  (WRONG)
+//
 // ═══════════════════════════════════════════════════════════════════
 func TestEnvelope_Clone_MapStringString(t *testing.T) {
 	original := &domain.Envelope{

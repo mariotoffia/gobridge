@@ -66,12 +66,12 @@ func (f *fakeDDB) DescribeTable(ctx context.Context, params *awsddb.DescribeTabl
 // batches supplied by the test. Once the queue is drained, subsequent
 // calls return empty batches so the consumer idles.
 type fakeStreams struct {
-	mu               sync.Mutex
-	describeCalls    atomic.Int32
-	shardIterCalls   atomic.Int32
-	getRecordsCalls  atomic.Int32
-	batches          [][]dstreamtypes.Record
-	closeAfterDrain  bool
+	mu              sync.Mutex
+	describeCalls   atomic.Int32
+	shardIterCalls  atomic.Int32
+	getRecordsCalls atomic.Int32
+	batches         [][]dstreamtypes.Record
+	closeAfterDrain bool
 }
 
 func (f *fakeStreams) enqueue(batch []dstreamtypes.Record) {

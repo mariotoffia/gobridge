@@ -50,9 +50,11 @@ func (s *QueryCountingOutboxStore) GetQueryCount() int64 {
 //
 // Scenario:
 // ───────────────────────────────────────────────────────────────────
-//   Route with MaxOutboxDepth=1000, DepthCacheTTL=500ms.
-//   Send 10 messages rapidly → QueryPending called only once
-//   (first message triggers query, rest use cache).
+//
+//	Route with MaxOutboxDepth=1000, DepthCacheTTL=500ms.
+//	Send 10 messages rapidly → QueryPending called only once
+//	(first message triggers query, rest use cache).
+//
 // ───────────────────────────────────────────────────────────────────
 func TestDepthCache_PreventsRepeatedQueries(t *testing.T) {
 	countingOutbox := NewQueryCountingOutboxStore()
@@ -73,7 +75,7 @@ func TestDepthCache_PreventsRepeatedQueries(t *testing.T) {
 	cfg := goruntime.RouteConfig{
 		ID: "cache-route",
 		Policy: domain.RoutePolicy{
-			DeliveryMode:  domain.DeliverySharedOutbox,
+			DeliveryMode:   domain.DeliverySharedOutbox,
 			MaxOutboxDepth: 1000,
 		},
 		Bindings: []domain.DestinationBinding{
@@ -110,9 +112,11 @@ func TestDepthCache_PreventsRepeatedQueries(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────────────────────────
-//   Send 1 message → cache populated.
-//   Wait > TTL.
-//   Send another message → new QueryPending call.
+//
+//	Send 1 message → cache populated.
+//	Wait > TTL.
+//	Send another message → new QueryPending call.
+//
 // ───────────────────────────────────────────────────────────────────
 func TestDepthCache_ExpiresAfterTTL(t *testing.T) {
 	countingOutbox := NewQueryCountingOutboxStore()
@@ -133,7 +137,7 @@ func TestDepthCache_ExpiresAfterTTL(t *testing.T) {
 	cfg := goruntime.RouteConfig{
 		ID: "ttl-route",
 		Policy: domain.RoutePolicy{
-			DeliveryMode:  domain.DeliverySharedOutbox,
+			DeliveryMode:   domain.DeliverySharedOutbox,
 			MaxOutboxDepth: 1000,
 		},
 		Bindings: []domain.DestinationBinding{
@@ -178,10 +182,12 @@ func TestDepthCache_ExpiresAfterTTL(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────────────────────────
-//   Pre-populate outbox with MaxOutboxDepth records directly,
-//   then send overflow messages through a RouteRunner (no drainer).
-//   First overflow triggers QueryPending and caches at-capacity.
-//   Second overflow uses cached result → no additional query.
+//
+//	Pre-populate outbox with MaxOutboxDepth records directly,
+//	then send overflow messages through a RouteRunner (no drainer).
+//	First overflow triggers QueryPending and caches at-capacity.
+//	Second overflow uses cached result → no additional query.
+//
 // ───────────────────────────────────────────────────────────────────
 func TestDepthCache_AtCapacityCachedImmediately(t *testing.T) {
 	countingOutbox := NewQueryCountingOutboxStore()

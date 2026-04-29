@@ -41,9 +41,11 @@ func newTestPacketPublish(topic string, payload []byte) *packets.Publish {
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Register 3 slow handlers (sleep 100ms each)
-//   Call Route() → spawns 3 goroutines
-//   Call Wait() → must block until all 3 complete
+//
+//	Register 3 slow handlers (sleep 100ms each)
+//	Call Route() → spawns 3 goroutines
+//	Call Wait() → must block until all 3 complete
+//
 // ───────────────────────────────────────────────
 //
 // Assertions:
@@ -108,10 +110,12 @@ func TestRouter_ShallowCopy_DistinctPointers(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Register a slow handler that takes 200ms
-//   Dispatch a message via Route()
-//   Immediately call Close()
-//   Close must not return until the handler finishes
+//
+//	Register a slow handler that takes 200ms
+//	Dispatch a message via Route()
+//	Immediately call Close()
+//	Close must not return until the handler finishes
+//
 // ───────────────────────────────────────────────
 //
 // Assertions:
@@ -162,9 +166,11 @@ func TestRouter_Close_WaitsForInflightHandlers(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Register a handler that blocks for 5s
-//   Call Close with 100ms context deadline
-//   Close must return within ~200ms (ctx expired)
+//
+//	Register a handler that blocks for 5s
+//	Call Close with 100ms context deadline
+//	Close must return within ~200ms (ctx expired)
+//
 // ───────────────────────────────────────────────
 //
 // Assertions:
@@ -253,9 +259,11 @@ func TestRouter_HandlerPanic_DoesNotCrash(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Handler A: sets Payload[0] = 'X'
-//   Handler B: reads Payload[0]
-//   Expected: Handler B sees original byte, not 'X'
+//
+//	Handler A: sets Payload[0] = 'X'
+//	Handler B: reads Payload[0]
+//	Expected: Handler B sees original byte, not 'X'
+//
 // ───────────────────────────────────────────────
 func TestRouter_Route_PayloadDeepCopy(t *testing.T) {
 	r := newRouter(nil, nil)

@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/circuitbreaker"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
