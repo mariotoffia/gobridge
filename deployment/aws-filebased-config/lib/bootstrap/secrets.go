@@ -12,8 +12,8 @@ import (
 	awsssm "github.com/aws/aws-sdk-go-v2/service/ssm"
 
 	ssmrepo "github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm"
-	"github.com/mariotoffia/gobridge/config"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -120,14 +120,14 @@ func buildDevModeSSMClient(ctx context.Context, region, endpoint string) (*awsss
 type resolvedInputs struct {
 	AdminAPIKey   string
 	MonitorAPIKey string
-	RuntimeConfig *config.BridgeConfig
+	RuntimeConfig *ports.BridgeConfig
 }
 
 func resolveInputs(
 	ctx context.Context,
 	resolver parameterResolver,
 	bootstrapCfg deployinfra.BootstrapConfig,
-	logical *config.BridgeConfig,
+	logical *ports.BridgeConfig,
 ) (*resolvedInputs, error) {
 	adminKey, err := resolver.ResolveString(ctx, bootstrapCfg.AdminAPIKeyParam)
 	if err != nil {

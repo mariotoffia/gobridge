@@ -111,7 +111,7 @@ func main() {
 			MonitorAPIKey:   cfg.HTTP.MonitorAPIKey,
 			CORSOrigins:     cfg.HTTP.CORSOrigins,
 			RuntimeProvider: sup.Runtime,
-			ConfigFilePath:  *configPath,
+			ConfigStore:     &config.FileStore{Path: *configPath},
 			ConfigProvider:  sup.Config,
 		}
 		if apiCfg.AdminAddr == "" {

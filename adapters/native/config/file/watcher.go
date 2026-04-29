@@ -15,6 +15,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 const (
@@ -89,7 +90,7 @@ func WithClock(c clock.Clock) WatcherOption {
 
 // WithWatchConfig applies settings from a ConfigWatchDef (typically read
 // from the YAML config itself). Nil is safe; the call is a no-op.
-func WithWatchConfig(def *config.ConfigWatchDef) WatcherOption {
+func WithWatchConfig(def *ports.ConfigWatchDef) WatcherOption {
 	return func(w *Watcher) {
 		if def == nil {
 			return
@@ -136,7 +137,7 @@ func NewWatcher(path string, opts ...WatcherOption) *Watcher {
 // returned channel whenever the file changes. The channel is closed
 // when ctx is cancelled or Stop is called. The initial config is NOT
 // emitted; use Source.Load for the first load.
-func (w *Watcher) Watch(ctx context.Context) (<-chan *config.BridgeConfig, error) {
+func (w *Watcher) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -147,7 +148,7 @@ func (w *Watcher) Watch(ctx context.Context) (<-chan *config.BridgeConfig, error
 	w.stopCh = make(chan struct{})
 	w.running = true
 
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 
 	switch w.mode {
 	case ModePoll:
@@ -198,7 +199,7 @@ func (w *Watcher) LastApplied() time.Time {
 }
 
 // notifyLoop uses fsnotify for file change detection with debouncing.
-func (w *Watcher) notifyLoop(ctx context.Context, fsw *fsnotify.Watcher, ch chan<- *config.BridgeConfig) {
+func (w *Watcher) notifyLoop(ctx context.Context, fsw *fsnotify.Watcher, ch chan<- *ports.BridgeConfig) {
 	var debounceTimer clock.Timer
 	var debounceCh <-chan time.Time
 
@@ -256,7 +257,7 @@ func (w *Watcher) notifyLoop(ctx context.Context, fsw *fsnotify.Watcher, ch chan
 }
 
 // pollLoop periodically reads the file and emits on content change.
-func (w *Watcher) pollLoop(ctx context.Context, ch chan<- *config.BridgeConfig) {
+func (w *Watcher) pollLoop(ctx context.Context, ch chan<- *ports.BridgeConfig) {
 	defer func() {
 		close(ch)
 		w.mu.Lock()
@@ -286,7 +287,7 @@ func (w *Watcher) pollLoop(ctx context.Context, ch chan<- *config.BridgeConfig) 
 	}
 }
 
-func (w *Watcher) emitParsed(ch chan<- *config.BridgeConfig) {
+func (w *Watcher) emitParsed(ch chan<- *ports.BridgeConfig) {
 	cfg, err := config.ParseFile(w.path, w.format)
 	if err != nil {
 		if w.logger != nil {

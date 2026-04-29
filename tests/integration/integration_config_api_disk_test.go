@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // ===============================================================
@@ -180,8 +180,8 @@ func TestConfigAPI_Commit_ConfigRoundTrip(t *testing.T) {
 	}
 
 	cfg := baseConfigForAPI()
-	cfg.Stores = config.StoresConfig{
-		DLQ: &config.StoreConfig{Type: "memory"},
+	cfg.Stores = ports.StoresConfig{
+		DLQ: &ports.StoreConfig{Type: "memory"},
 	}
 	srv := newConfigAPITestServer(t, cfg)
 	txnID := createTransaction(t, srv.URL, testAdminAPIKey)

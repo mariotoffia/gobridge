@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/bridge"
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // ===============================================================
@@ -68,9 +68,9 @@ func TestDDBRollback_InvalidOverlay_ManagerDrops(t *testing.T) {
 	waitForSupervisorRuntime(t, s, 5*time.Second)
 
 	// Save invalid overlay: route references nonexistent receiver.
-	invalidOverlay := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Routes: []config.RouteDef{
+	invalidOverlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Routes: []ports.RouteDef{
 			{ID: "r-bad", ReceiverID: "rx-missing", DeliveryMode: "direct_hold",
 				Bindings: []string{"bind-base"}},
 		},
@@ -148,18 +148,18 @@ func TestDDBRollback_ValidOverlayButBuildFails_KeepsOldConfig(t *testing.T) {
 
 	// Save overlay that adds a route using "broken" transport.
 	// This is structurally valid (passes config.Validate) but builder fails.
-	brokenOverlay := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Receivers: []config.ReceiverDef{
+	brokenOverlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx-broken", Transport: "broken"},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx-broken", Transport: "broken"},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "bind-broken", SenderID: "tx-broken", Address: "addr/broken"},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{ID: "r-broken", ReceiverID: "rx-broken", DeliveryMode: "direct_hold",
 				Bindings: []string{"bind-broken"}},
 		},
@@ -237,18 +237,18 @@ func TestDDBRollback_ValidOverlayButStartFails_RecoversOldConfig(t *testing.T) {
 	waitForSupervisorRuntime(t, s, 5*time.Second)
 
 	// Overlay adds route with broken transport (receiver fails on NewReceiver).
-	brokenOverlay := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Receivers: []config.ReceiverDef{
+	brokenOverlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx-broken", Transport: "broken"},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx-broken", Transport: "broken"},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "bind-broken", SenderID: "tx-broken", Address: "addr/broken"},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{ID: "r-broken", ReceiverID: "rx-broken", DeliveryMode: "direct_hold",
 				Bindings: []string{"bind-broken"}},
 		},
@@ -323,9 +323,9 @@ func TestDDBRollback_MultipleFailures_OldConfigSurvives(t *testing.T) {
 	waitForSupervisorRuntime(t, s, 5*time.Second)
 
 	// Step 1: Invalid overlay (dropped by Manager).
-	invalidOverlay := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Routes: []config.RouteDef{
+	invalidOverlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Routes: []ports.RouteDef{
 			{ID: "r-bad", ReceiverID: "rx-missing", DeliveryMode: "direct_hold",
 				Bindings: []string{"bind-base"}},
 		},
@@ -336,18 +336,18 @@ func TestDDBRollback_MultipleFailures_OldConfigSurvives(t *testing.T) {
 	time.Sleep(300 * time.Millisecond) // SYNC: let config watcher detect invalid overlay
 
 	// Step 2: Broken overlay (build fails, rollback).
-	brokenOverlay := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Receivers: []config.ReceiverDef{
+	brokenOverlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx-broken", Transport: "broken"},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx-broken", Transport: "broken"},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "bind-broken", SenderID: "tx-broken", Address: "addr/broken"},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{ID: "r-broken", ReceiverID: "rx-broken", DeliveryMode: "direct_hold",
 				Bindings: []string{"bind-broken"}},
 		},
@@ -430,9 +430,9 @@ func TestDDBRollback_InvalidThenValid_RecoversFully(t *testing.T) {
 	waitForSupervisorRuntime(t, s, 5*time.Second)
 
 	// Invalid overlay (dropped by Manager).
-	invalidOverlay := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Routes: []config.RouteDef{
+	invalidOverlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Routes: []ports.RouteDef{
 			{ID: "r-bad", ReceiverID: "rx-missing", DeliveryMode: "direct_hold",
 				Bindings: []string{"bind-base"}},
 		},

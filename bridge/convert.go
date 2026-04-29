@@ -4,18 +4,17 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
-func toRoutePolicy(r config.RouteDef) domain.RoutePolicy {
+func toRoutePolicy(r ports.RouteDef) domain.RoutePolicy {
 	p, _ := toRoutePolicyE(r)
 	return p
 }
 
-func toRoutePolicyE(r config.RouteDef) (domain.RoutePolicy, error) {
+func toRoutePolicyE(r ports.RouteDef) (domain.RoutePolicy, error) {
 	p := domain.RoutePolicy{
 		DeliveryMode:       domain.DeliveryMode(r.DeliveryMode),
 		DispatchMode:       domain.DispatchMode(r.DispatchMode),
@@ -62,12 +61,12 @@ func toRoutePolicyE(r config.RouteDef) (domain.RoutePolicy, error) {
 	return p, nil
 }
 
-func toSessionConfig(rs *config.RouteSessionDef) *runtime.SessionConfig {
+func toSessionConfig(rs *ports.RouteSessionDef) *runtime.SessionConfig {
 	sc, _ := toSessionConfigE(rs)
 	return sc
 }
 
-func toSessionConfigE(rs *config.RouteSessionDef) (*runtime.SessionConfig, error) {
+func toSessionConfigE(rs *ports.RouteSessionDef) (*runtime.SessionConfig, error) {
 	if rs == nil {
 		return nil, nil
 	}
@@ -122,7 +121,7 @@ func toSessionConfigE(rs *config.RouteSessionDef) (*runtime.SessionConfig, error
 // into a session config when the session does not already set them.
 // This keeps the drain ceiling configurable from a single
 // YAML location while preserving per-session overrides.
-func applyBridgeDrainDefaults(sc *runtime.SessionConfig, bs config.BridgeSettings) {
+func applyBridgeDrainDefaults(sc *runtime.SessionConfig, bs ports.BridgeSettings) {
 	if sc == nil {
 		return
 	}
@@ -139,12 +138,12 @@ func applyBridgeDrainDefaults(sc *runtime.SessionConfig, bs config.BridgeSetting
 	}
 }
 
-func toDrainStrategy(rs *config.RouteSessionDef) domain.DrainStrategy {
+func toDrainStrategy(rs *ports.RouteSessionDef) domain.DrainStrategy {
 	ds, _ := toDrainStrategyE(rs)
 	return ds
 }
 
-func toDrainStrategyE(rs *config.RouteSessionDef) (domain.DrainStrategy, error) {
+func toDrainStrategyE(rs *ports.RouteSessionDef) (domain.DrainStrategy, error) {
 	if rs.DrainStrategy != nil {
 		return buildDrainStrategyE(rs.DrainStrategy)
 	}
@@ -158,7 +157,7 @@ func toDrainStrategyE(rs *config.RouteSessionDef) (domain.DrainStrategy, error) 
 	return domain.NewFixedPoll(domain.DefaultFixedPollInterval), nil
 }
 
-func buildDrainStrategyE(ds *config.DrainStrategyDef) (domain.DrainStrategy, error) {
+func buildDrainStrategyE(ds *ports.DrainStrategyDef) (domain.DrainStrategy, error) {
 	switch ds.Type {
 	case "adaptive_backoff":
 		var minD, maxD time.Duration
@@ -191,7 +190,7 @@ func buildDrainStrategyE(ds *config.DrainStrategyDef) (domain.DrainStrategy, err
 	}
 }
 
-func toBindings(cfg *config.BridgeConfig, bindingIDs []string) []domain.DestinationBinding {
+func toBindings(cfg *ports.BridgeConfig, bindingIDs []string) []domain.DestinationBinding {
 	out := make([]domain.DestinationBinding, 0, len(bindingIDs))
 	for _, id := range bindingIDs {
 		bd := findBinding(cfg, id)
@@ -209,7 +208,7 @@ func toBindings(cfg *config.BridgeConfig, bindingIDs []string) []domain.Destinat
 	return out
 }
 
-func findBinding(cfg *config.BridgeConfig, id string) *config.BindingDef {
+func findBinding(cfg *ports.BridgeConfig, id string) *ports.BindingDef {
 	for i := range cfg.Bindings {
 		if cfg.Bindings[i].ID == id {
 			return &cfg.Bindings[i]
@@ -218,7 +217,7 @@ func findBinding(cfg *config.BridgeConfig, id string) *config.BindingDef {
 	return nil
 }
 
-func findSession(cfg *config.BridgeConfig, id string) *config.SessionDef {
+func findSession(cfg *ports.BridgeConfig, id string) *ports.SessionDef {
 	for i := range cfg.Sessions {
 		if cfg.Sessions[i].ID == id {
 			return &cfg.Sessions[i]
@@ -227,7 +226,7 @@ func findSession(cfg *config.BridgeConfig, id string) *config.SessionDef {
 	return nil
 }
 
-func findReceiver(cfg *config.BridgeConfig, id string) *config.ReceiverDef {
+func findReceiver(cfg *ports.BridgeConfig, id string) *ports.ReceiverDef {
 	for i := range cfg.Receivers {
 		if cfg.Receivers[i].ID == id {
 			return &cfg.Receivers[i]
@@ -237,7 +236,7 @@ func findReceiver(cfg *config.BridgeConfig, id string) *config.ReceiverDef {
 }
 
 // buildResolver constructs a DestinationResolver from a config ResolverDef.
-func buildResolver(def *config.ResolverDef, bindings []domain.DestinationBinding) (ports.DestinationResolver, error) {
+func buildResolver(def *ports.ResolverDef, bindings []domain.DestinationBinding) (ports.DestinationResolver, error) {
 	switch def.Type {
 	case "header_map":
 		return runtime.NewBindingResolver(bindings,

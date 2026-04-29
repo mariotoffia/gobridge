@@ -111,32 +111,32 @@ func (c *capturingTransportFactory) NewSession(_ context.Context, spec ports.Ses
 
 // --- tests ---
 
-func testConfig() *config.BridgeConfig {
-	return &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Stores: config.StoresConfig{
-			Lease:  &config.StoreConfig{Type: "memory"},
-			Outbox: &config.StoreConfig{Type: "memory"},
+func testConfig() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Stores: ports.StoresConfig{
+			Lease:  &ports.StoreConfig{Type: "memory"},
+			Outbox: &ports.StoreConfig{Type: "memory"},
 		},
-		Sessions: []config.SessionDef{
+		Sessions: []ports.SessionDef{
 			{ID: "mqtt-s1", Transport: "mqtt", SessionMode: "exclusive"},
 		},
-		Receivers: []config.ReceiverDef{
+		Receivers: []ports.ReceiverDef{
 			{ID: "sqs-rx", Transport: "sqs"},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "mqtt-tx", Transport: "mqtt", SessionID: "mqtt-s1"},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "b1", SenderID: "mqtt-tx", SessionID: "mqtt-s1", Address: "topic/test"},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:           "r1",
 				ReceiverID:   "sqs-rx",
 				DeliveryMode: "shared_outbox",
 				Bindings:     []string{"b1"},
-				Session: &config.RouteSessionDef{
+				Session: &ports.RouteSessionDef{
 					SessionID: "mqtt-s1",
 					SenderID:  "mqtt-tx",
 				},
@@ -190,29 +190,32 @@ func TestBuilder_MissingStoreFactory(t *testing.T) {
 	assert.Contains(t, err.Error(), "no store factory")
 }
 
-// Verifies Build surfaces config validation errors for an empty bridge configuration.
+// Verifies Build surfaces config validation errors for an empty bridge
+// configuration when the composition root has supplied a validator
+// (config.Validate via WithBlueprintValidator).
 func TestBuilder_InvalidConfig(t *testing.T) {
-	cfg := &config.BridgeConfig{}
+	cfg := &ports.BridgeConfig{}
 
-	_, err := NewBuilder(cfg).Build(context.Background())
+	_, err := NewBuilder(cfg, WithBlueprintValidator(config.Validate)).
+		Build(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "config validation")
 }
 
 // Verifies Build constructs a direct_hold route without session-scoped stores when the config is valid.
 func TestBuilder_DirectHoldRoute(t *testing.T) {
-	cfg := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "b1"},
-		Receivers: []config.ReceiverDef{
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1"},
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx1", Transport: "sqs"},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx1", Transport: "sqs"},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "b1", SenderID: "tx1", Address: "queue://out"},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:           "r1",
 				ReceiverID:   "rx1",
@@ -377,7 +380,7 @@ func (f *nilLeaseStoreFactory) IsDistributed() bool { return true }
 func TestBuilder_ClusteredMode_NilLeaseStore_RejectsStartup(t *testing.T) {
 	cfg := testConfig()
 	cfg.Bridge.DeploymentMode = "clustered"
-	cfg.Stores.Lease = &config.StoreConfig{Type: "sqlite"}
+	cfg.Stores.Lease = &ports.StoreConfig{Type: "sqlite"}
 
 	_, err := NewBuilder(cfg).
 		RegisterTransport("mqtt", &fakeTransportFactory{}).
@@ -426,7 +429,7 @@ func TestBuilder_PolicyFieldsReachRuntime(t *testing.T) {
 	cfg := testConfig()
 	cfg.Routes[0].DeliveryMode = "direct_hold"
 	cfg.Routes[0].Session = nil
-	cfg.Routes[0].Policy = config.PolicyDef{
+	cfg.Routes[0].Policy = ports.PolicyDef{
 		SendTimeout:    "5s",
 		DepthCacheTTL:  "100ms",
 		AllowUnfenced:  true,

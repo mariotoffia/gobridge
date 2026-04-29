@@ -6,22 +6,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func startFailCfg() *config.BridgeConfig {
-	return &config.BridgeConfig{
-		Bridge:    config.BridgeSettings{ID: "b", DrainTimeout: "1s"},
-		Receivers: []config.ReceiverDef{{ID: "rx", Transport: "fake"}},
-		Senders:   []config.SenderDef{{ID: "tx1", Transport: "fake"}, {ID: "tx2", Transport: "fake"}},
-		Bindings: []config.BindingDef{
+func startFailCfg() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge:    ports.BridgeSettings{ID: "b", DrainTimeout: "1s"},
+		Receivers: []ports.ReceiverDef{{ID: "rx", Transport: "fake"}},
+		Senders:   []ports.SenderDef{{ID: "tx1", Transport: "fake"}, {ID: "tx2", Transport: "fake"}},
+		Bindings: []ports.BindingDef{
 			{ID: "b1", SenderID: "tx1", Address: "a/1"},
 			{ID: "b2", SenderID: "tx2", Address: "a/2"},
 		},
-		Routes: []config.RouteDef{{
+		Routes: []ports.RouteDef{{
 			ID: "r1", ReceiverID: "rx", DeliveryMode: "direct_hold",
 			Bindings: []string{"b1", "b2"},
 		}},
@@ -77,7 +76,7 @@ func TestSupervisor_RuntimeAccessorBeforeRun(t *testing.T) {
 // TestSupervisor_OverlapSwap validates that a config change swaps runtimes via overlap.
 func TestSupervisor_OverlapSwap(t *testing.T) {
 	s := newTestSupervisor()
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
 	require.True(t, sendConfig(ch, quickCfg("r2"), time.Second))
@@ -88,7 +87,7 @@ func TestSupervisor_OverlapSwap(t *testing.T) {
 // TestSupervisor_OverlapSwap_OldRuntimeStopsCleanly validates the old runtime stops after swap.
 func TestSupervisor_OverlapSwap_OldRuntimeStopsCleanly(t *testing.T) {
 	s := newTestSupervisor()
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
 	oldRt := s.Runtime()
@@ -101,7 +100,7 @@ func TestSupervisor_OverlapSwap_OldRuntimeStopsCleanly(t *testing.T) {
 // TestSupervisor_OverlapSwap_NewRuntimeGetsNewRoutes validates new routes after swap.
 func TestSupervisor_OverlapSwap_NewRuntimeGetsNewRoutes(t *testing.T) {
 	s := newTestSupervisor()
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
 	require.True(t, sendConfig(ch, quickCfg("r-new"), time.Second))
@@ -114,7 +113,7 @@ func TestSupervisor_OverlapSwap_NewRuntimeGetsNewRoutes(t *testing.T) {
 // TestSupervisor_PrepareCommitSwap validates the two-phase commit build via session counts.
 func TestSupervisor_PrepareCommitSwap(t *testing.T) {
 	s, ef := newTestSupervisorWithExclusive()
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
 	require.True(t, sendConfig(ch, supervisorTestConfigWithSession("r2", "s1"), time.Second))
@@ -126,7 +125,7 @@ func TestSupervisor_PrepareCommitSwap(t *testing.T) {
 // TestSupervisor_PrepareCommitSwap_SessionsNotCreatedDuringPrepare validates sessions are deferred.
 func TestSupervisor_PrepareCommitSwap_SessionsNotCreatedDuringPrepare(t *testing.T) {
 	s, ef := newTestSupervisorWithExclusive()
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
 	sessions, _, _ := ef.Counts()
@@ -140,7 +139,7 @@ func TestSupervisor_PrepareCommitSwap_SessionsNotCreatedDuringPrepare(t *testing
 // TestSupervisor_PrepareCommitSwap_SessionsCreatedAfterOldStops validates ordering via IsRunning.
 func TestSupervisor_PrepareCommitSwap_SessionsCreatedAfterOldStops(t *testing.T) {
 	s, ef := newTestSupervisorWithExclusive()
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
 	oldRt := s.Runtime()
@@ -159,31 +158,31 @@ func TestSupervisor_AutoDetect(t *testing.T) {
 		name      string
 		exclusive bool
 		opts      []SupervisorOption
-		cfgFn     func() *config.BridgeConfig
+		cfgFn     func() *ports.BridgeConfig
 		wantMode  SwapMode
 	}{
 		{"ExclusiveUsePrepareCommit", true, nil,
-			func() *config.BridgeConfig { return supervisorTestConfigWithSession("r2", "s1") },
+			func() *ports.BridgeConfig { return supervisorTestConfigWithSession("r2", "s1") },
 			SwapPrepareCommit},
 		{"NonExclusiveUseOverlap", false, nil,
-			func() *config.BridgeConfig { return quickCfg("r2") },
+			func() *ports.BridgeConfig { return quickCfg("r2") },
 			SwapOverlap},
 		{"MixedTransports", true, nil,
-			func() *config.BridgeConfig {
+			func() *ports.BridgeConfig {
 				c := supervisorTestConfigWithSession("r2", "s1")
-				c.Sessions = append(c.Sessions, config.SessionDef{ID: "s-plain", Transport: "fake", SessionMode: "ephemeral"})
+				c.Sessions = append(c.Sessions, ports.SessionDef{ID: "s-plain", Transport: "fake", SessionMode: "ephemeral"})
 				return c
 			}, SwapPrepareCommit},
 		{"ForcePrepareCommit_NoExclusive", false,
 			[]SupervisorOption{WithSwapMode(SwapPrepareCommit)},
-			func() *config.BridgeConfig { return quickCfg("r2") },
+			func() *ports.BridgeConfig { return quickCfg("r2") },
 			SwapPrepareCommit},
 		{"ForceOverlap_WithExclusive", true,
 			[]SupervisorOption{WithSwapMode(SwapOverlap)},
-			func() *config.BridgeConfig { return supervisorTestConfigWithSession("r2", "s1") },
+			func() *ports.BridgeConfig { return supervisorTestConfigWithSession("r2", "s1") },
 			SwapOverlap},
 		{"ReportsResolvedMode_NotAuto", true, nil,
-			func() *config.BridgeConfig { return supervisorTestConfigWithSession("r2", "s1") },
+			func() *ports.BridgeConfig { return supervisorTestConfigWithSession("r2", "s1") },
 			SwapPrepareCommit},
 	}
 	for _, tt := range tests {
@@ -197,7 +196,7 @@ func TestSupervisor_AutoDetect(t *testing.T) {
 			} else {
 				s = newTestSupervisor(opts...)
 			}
-			ch := make(chan *config.BridgeConfig, 1)
+			ch := make(chan *ports.BridgeConfig, 1)
 			cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
 			defer func() { cancel(); <-errCh }()
 			require.True(t, sendConfig(ch, tt.cfgFn(), time.Second))
@@ -219,7 +218,7 @@ func TestSupervisor_AutoDetect_ConfigChangeRemovesExclusive(t *testing.T) {
 		mu.Unlock()
 		swapped <- struct{}{}
 	}))
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
 	require.True(t, sendConfig(ch, supervisorTestConfigWithSession("r2", "s1"), time.Second))
@@ -236,7 +235,7 @@ func TestSupervisor_AutoDetect_ConfigChangeRemovesExclusive(t *testing.T) {
 // TestSupervisor_MultipleConfigChanges validates 3 sequential configs each produce correct routes.
 func TestSupervisor_MultipleConfigChanges(t *testing.T) {
 	s := newTestSupervisor()
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
 	for _, id := range []string{"r2", "r3", "r4"} {
@@ -258,7 +257,7 @@ func TestSupervisor_RapidConfigChanges_WithDirectStrategy(t *testing.T) {
 		}
 		swapped <- struct{}{}
 	}))
-	ch := make(chan *config.BridgeConfig, 5)
+	ch := make(chan *ports.BridgeConfig, 5)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r0"), ch)
 	defer func() { cancel(); <-errCh }()
 	ids := []string{"r1", "r2", "r3", "r4", "r5"}
@@ -289,7 +288,7 @@ func TestSupervisor_RapidConfigChanges_WithDebouncedStrategy(t *testing.T) {
 			swapped <- struct{}{}
 		}),
 	)
-	ch := make(chan *config.BridgeConfig, 5)
+	ch := make(chan *ports.BridgeConfig, 5)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r0"), ch)
 	defer func() { cancel(); <-errCh }()
 	for _, id := range []string{"r1", "r2", "r3", "r4", "r5"} {
@@ -313,7 +312,7 @@ func TestSupervisor_AlternatingValidInvalid(t *testing.T) {
 		mu.Unlock()
 		swapped <- struct{}{}
 	}))
-	ch := make(chan *config.BridgeConfig, 3)
+	ch := make(chan *ports.BridgeConfig, 3)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
 	ch <- quickCfg("r2")
@@ -333,7 +332,7 @@ func TestSupervisor_AlternatingValidInvalid(t *testing.T) {
 // TestSupervisor_ConfigRollback_AfterFailure validates A→C transition when B fails.
 func TestSupervisor_ConfigRollback_AfterFailure(t *testing.T) {
 	s := newTestSupervisor()
-	ch := make(chan *config.BridgeConfig, 2)
+	ch := make(chan *ports.BridgeConfig, 2)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("rA"), ch)
 	defer func() { cancel(); <-errCh }()
 	ch <- invalidCfg()
@@ -347,7 +346,7 @@ func TestSupervisor_SwapCallback_Success(t *testing.T) {
 	var ev SwapEvent
 	done := make(chan struct{}, 1)
 	s := newTestSupervisor(WithOnSwap(func(e SwapEvent) { ev = e; done <- struct{}{} }))
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
 	require.True(t, sendConfig(ch, quickCfg("r2"), time.Second))
@@ -364,7 +363,7 @@ func TestSupervisor_SwapCallback_BuildFailure(t *testing.T) {
 	var ev SwapEvent
 	done := make(chan struct{}, 1)
 	s := newTestSupervisor(WithOnSwap(func(e SwapEvent) { ev = e; done <- struct{}{} }))
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
 	bad := invalidCfg()
@@ -378,7 +377,7 @@ func TestSupervisor_SwapCallback_BuildFailure(t *testing.T) {
 // TestSupervisor_NoSwapCallback_WhenNoneSet validates no panic with nil onSwap.
 func TestSupervisor_NoSwapCallback_WhenNoneSet(t *testing.T) {
 	s := newTestSupervisor()
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
 	require.True(t, sendConfig(ch, quickCfg("r2"), time.Second))
@@ -406,7 +405,7 @@ func TestSupervisor_ContextCancellation(t *testing.T) {
 // TestSupervisor_ChannelClosed_GracefulShutdown validates Run returns nil on channel close.
 func TestSupervisor_ChannelClosed_GracefulShutdown(t *testing.T) {
 	s := newTestSupervisor()
-	ch := make(chan *config.BridgeConfig)
+	ch := make(chan *ports.BridgeConfig)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errCh := runSupervisorAsync(ctx, s, quickCfg("r1"), ch)
@@ -445,7 +444,7 @@ func TestSupervisor_EmptyConfig_Rejected(t *testing.T) {
 	s := newTestSupervisor()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	err := s.Run(ctx, &config.BridgeConfig{}, nil)
+	err := s.Run(ctx, &ports.BridgeConfig{}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bridge.id is required")
 }

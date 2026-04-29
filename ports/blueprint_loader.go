@@ -1,4 +1,11 @@
-package config
+// Package ports — bridge blueprint loader contracts.
+//
+// Loader, Watcher, and Reloader are the driving-side ports that
+// configuration-source adapters implement. Adapters live under
+// `adapters/*/config/*` and produce *ports.BridgeConfig values from
+// files, DynamoDB streams, etc. The bridge composition root accepts
+// these ports without knowing how the underlying source is read.
+package ports
 
 import "context"
 

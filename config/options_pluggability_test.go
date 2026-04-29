@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // TestPluggableOptions_GenericMap locks in the architectural constraint
@@ -22,11 +22,11 @@ func TestPluggableOptions_GenericMap(t *testing.T) {
 		container any
 		field     string
 	}{
-		{"SessionDef.Options", config.SessionDef{}, "Options"},
-		{"ReceiverDef.Options", config.ReceiverDef{}, "Options"},
-		{"SubscriptionDef.Options", config.SubscriptionDef{}, "Options"},
-		{"SenderDef.Options", config.SenderDef{}, "Options"},
-		{"StoreConfig.Options", config.StoreConfig{}, "Options"},
+		{"ports.SessionDef.Options", ports.SessionDef{}, "Options"},
+		{"ports.ReceiverDef.Options", ports.ReceiverDef{}, "Options"},
+		{"ports.SubscriptionDef.Options", ports.SubscriptionDef{}, "Options"},
+		{"ports.SenderDef.Options", ports.SenderDef{}, "Options"},
+		{"ports.StoreConfig.Options", ports.StoreConfig{}, "Options"},
 	}
 
 	for _, tc := range cases {

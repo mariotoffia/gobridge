@@ -4,9 +4,10 @@ import (
 	"context"
 
 	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
-// Source implements config.Loader by reading a configuration file from disk.
+// Source implements ports.Loader by reading a configuration file from disk.
 type Source struct {
 	path   string
 	format config.Format
@@ -33,6 +34,6 @@ func NewSource(path string, opts ...SourceOption) *Source {
 }
 
 // Load reads and parses the configuration file.
-func (s *Source) Load(_ context.Context) (*config.BridgeConfig, error) {
+func (s *Source) Load(_ context.Context) (*ports.BridgeConfig, error) {
 	return config.ParseFile(s.path, s.format)
 }

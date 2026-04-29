@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -37,8 +36,8 @@ const (
 // SwapEvent is emitted on each reconfiguration attempt via the
 // OnSwap callback.
 type SwapEvent struct {
-	OldConfig *config.BridgeConfig
-	NewConfig *config.BridgeConfig
+	OldConfig *ports.BridgeConfig
+	NewConfig *ports.BridgeConfig
 	SwapMode  SwapMode
 	Error     error
 	Duration  time.Duration
@@ -51,7 +50,7 @@ type SwapEvent struct {
 type Supervisor struct {
 	mu                           sync.RWMutex
 	rt                           *runtime.Runtime
-	cfg                          *config.BridgeConfig
+	cfg                          *ports.BridgeConfig
 	transports                   map[string]ports.TransportFactory
 	stores                       map[string]ports.StoreFactory
 	processors                   map[string]ports.Processor
@@ -66,6 +65,7 @@ type Supervisor struct {
 	defaultDrainTimeout          time.Duration
 	defaultPerRecordDrainTimeout time.Duration
 	defaultMaxDrainTimeout       time.Duration
+	validator                    ports.BlueprintValidator
 }
 
 // SupervisorOption configures a Supervisor.
@@ -136,6 +136,15 @@ func WithDefaultMaxDrainTimeout(d time.Duration) SupervisorOption {
 	return func(s *Supervisor) { s.defaultMaxDrainTimeout = d }
 }
 
+// WithSupervisorBlueprintValidator injects a config validator that
+// the supervisor passes to every Builder it creates. Composition
+// roots that load config from a YAML/JSON file should supply
+// config.Validate so invalid configs are rejected before any
+// transports are constructed.
+func WithSupervisorBlueprintValidator(v ports.BlueprintValidator) SupervisorOption {
+	return func(s *Supervisor) { s.validator = v }
+}
+
 // NewSupervisor creates a Supervisor with SwapAuto mode and
 // DirectStrategy by default.
 func NewSupervisor(opts ...SupervisorOption) *Supervisor {
@@ -189,7 +198,7 @@ func (s *Supervisor) Runtime() *runtime.Runtime {
 
 // Config returns the currently active config, or nil if none has
 // been applied. Safe for concurrent use.
-func (s *Supervisor) Config() *config.BridgeConfig {
+func (s *Supervisor) Config() *ports.BridgeConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.cfg
@@ -200,7 +209,7 @@ func (s *Supervisor) Config() *config.BridgeConfig {
 // cancelled, the changes channel is closed, or an unrecoverable
 // error occurs during initial startup. Config change failures are
 // logged but do not stop Run.
-func (s *Supervisor) Run(ctx context.Context, initial *config.BridgeConfig, changes <-chan *config.BridgeConfig) error {
+func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, changes <-chan *ports.BridgeConfig) error {
 	rt, err := s.buildRuntime(ctx, initial)
 	if err != nil {
 		return fmt.Errorf("supervisor: initial build: %w", err)
@@ -235,7 +244,7 @@ func (s *Supervisor) Run(ctx context.Context, initial *config.BridgeConfig, chan
 	}
 }
 
-func (s *Supervisor) apply(ctx context.Context, newCfg *config.BridgeConfig) {
+func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	start := time.Now()
 	mode := s.detectSwapMode(newCfg)
 
@@ -296,8 +305,8 @@ func (s *Supervisor) safeOnSwap(ev SwapEvent) {
 func (s *Supervisor) applyOverlap(
 	ctx context.Context,
 	oldRt *runtime.Runtime,
-	oldCfg *config.BridgeConfig,
-	newCfg *config.BridgeConfig,
+	oldCfg *ports.BridgeConfig,
+	newCfg *ports.BridgeConfig,
 ) (*runtime.Runtime, error) {
 	newRt, err := s.buildRuntime(ctx, newCfg)
 	if err != nil {
@@ -342,8 +351,8 @@ func (s *Supervisor) applyOverlap(
 func (s *Supervisor) applyPrepareCommit(
 	ctx context.Context,
 	oldRt *runtime.Runtime,
-	oldCfg *config.BridgeConfig,
-	newCfg *config.BridgeConfig,
+	oldCfg *ports.BridgeConfig,
+	newCfg *ports.BridgeConfig,
 ) (*runtime.Runtime, error) {
 	builder := s.newBuilder(newCfg)
 
@@ -410,12 +419,12 @@ func (s *Supervisor) applyPrepareCommit(
 	return newRt, nil
 }
 
-func (s *Supervisor) buildRuntime(ctx context.Context, cfg *config.BridgeConfig) (*runtime.Runtime, error) {
+func (s *Supervisor) buildRuntime(ctx context.Context, cfg *ports.BridgeConfig) (*runtime.Runtime, error) {
 	builder := s.newBuilder(cfg)
 	return builder.Build(ctx)
 }
 
-func (s *Supervisor) newBuilder(cfg *config.BridgeConfig) *Builder {
+func (s *Supervisor) newBuilder(cfg *ports.BridgeConfig) *Builder {
 	s.mu.RLock()
 	transports := maps.Clone(s.transports)
 	stores := maps.Clone(s.stores)
@@ -428,6 +437,9 @@ func (s *Supervisor) newBuilder(cfg *config.BridgeConfig) *Builder {
 	}
 	if s.credStore != nil {
 		opts = append(opts, WithCredentialStore(s.credStore))
+	}
+	if s.validator != nil {
+		opts = append(opts, WithBlueprintValidator(s.validator))
 	}
 	b := NewBuilder(cfg, opts...)
 	for name, tf := range transports {
@@ -442,7 +454,7 @@ func (s *Supervisor) newBuilder(cfg *config.BridgeConfig) *Builder {
 	return b
 }
 
-func (s *Supervisor) detectSwapMode(cfg *config.BridgeConfig) SwapMode {
+func (s *Supervisor) detectSwapMode(cfg *ports.BridgeConfig) SwapMode {
 	if s.swapMode != SwapAuto {
 		return s.swapMode
 	}
@@ -481,7 +493,7 @@ func (s *Supervisor) stopCurrent(ctx context.Context) error {
 	return rt.Stop(stopCtx)
 }
 
-func (s *Supervisor) drainTimeoutFrom(cfg *config.BridgeConfig) time.Duration {
+func (s *Supervisor) drainTimeoutFrom(cfg *ports.BridgeConfig) time.Duration {
 	if cfg != nil {
 		return cfg.Bridge.DrainTimeoutDuration()
 	}
@@ -495,7 +507,7 @@ func (s *Supervisor) drainTimeoutFrom(cfg *config.BridgeConfig) time.Duration {
 // timeout from the supplied config, falling back to the supervisor
 // default when unset. Zero means the caller should use the legacy
 // fixed DrainTimeout instead of the scaled formula.
-func (s *Supervisor) PerRecordDrainTimeout(cfg *config.BridgeConfig) time.Duration {
+func (s *Supervisor) PerRecordDrainTimeout(cfg *ports.BridgeConfig) time.Duration {
 	if cfg != nil {
 		if d := cfg.Bridge.PerRecordDrainTimeoutDuration(); d > 0 {
 			return d
@@ -507,7 +519,7 @@ func (s *Supervisor) PerRecordDrainTimeout(cfg *config.BridgeConfig) time.Durati
 // MaxDrainTimeout returns the configured max drain timeout from the
 // supplied config, falling back to the supervisor default when unset.
 // Zero means the caller should use the legacy fixed DrainTimeout.
-func (s *Supervisor) MaxDrainTimeout(cfg *config.BridgeConfig) time.Duration {
+func (s *Supervisor) MaxDrainTimeout(cfg *ports.BridgeConfig) time.Duration {
 	if cfg != nil {
 		if d := cfg.Bridge.MaxDrainTimeoutDuration(); d > 0 {
 			return d

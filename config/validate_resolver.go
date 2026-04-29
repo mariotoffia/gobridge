@@ -1,6 +1,10 @@
 package config
 
-import "regexp"
+import (
+	"regexp"
+
+	"github.com/mariotoffia/gobridge/ports"
+)
 
 var validResolverTypes = map[string]bool{
 	"rules":      true,
@@ -17,10 +21,10 @@ var validConditionOperators = map[string]bool{
 
 const maxRegexPatternLen = 4096
 
-func validateResolver(ve *ValidationError, prefix string, r RouteDef) {
+func validateResolver(ve *ValidationError, prefix string, r ports.RouteDef) {
 	res := r.Resolver
 	if !validResolverTypes[res.Type] {
-		ve.addf("%s: resolver.type %q is invalid; must be one of: rules, header_map, all, static", prefix, res.Type)
+		ve.Addf("%s: resolver.type %q is invalid; must be one of: rules, header_map, all, static", prefix, res.Type)
 		return
 	}
 
@@ -30,7 +34,7 @@ func validateResolver(ve *ValidationError, prefix string, r RouteDef) {
 	}
 
 	if res.DefaultBinding != "" && !bindingSet[res.DefaultBinding] {
-		ve.addf("%s: resolver.default_binding %q not found in route bindings", prefix, res.DefaultBinding)
+		ve.Addf("%s: resolver.default_binding %q not found in route bindings", prefix, res.DefaultBinding)
 	}
 
 	switch res.Type {
@@ -41,50 +45,50 @@ func validateResolver(ve *ValidationError, prefix string, r RouteDef) {
 	}
 }
 
-func validateHeaderMapResolver(ve *ValidationError, prefix string, res *ResolverDef, bindingSet map[string]bool) {
+func validateHeaderMapResolver(ve *ValidationError, prefix string, res *ports.ResolverDef, bindingSet map[string]bool) {
 	if res.HeaderKey == "" {
-		ve.addf("%s: resolver.header_key is required for header_map type", prefix)
+		ve.Addf("%s: resolver.header_key is required for header_map type", prefix)
 	}
 	if len(res.HeaderMap) == 0 {
-		ve.addf("%s: resolver.header_map must have at least one entry", prefix)
+		ve.Addf("%s: resolver.header_map must have at least one entry", prefix)
 	}
 	for val, bid := range res.HeaderMap {
 		if !bindingSet[bid] {
-			ve.addf("%s: resolver.header_map[%q] references unknown binding %q", prefix, val, bid)
+			ve.Addf("%s: resolver.header_map[%q] references unknown binding %q", prefix, val, bid)
 		}
 	}
 }
 
-func validateRulesResolver(ve *ValidationError, prefix string, res *ResolverDef, bindingSet map[string]bool) {
+func validateRulesResolver(ve *ValidationError, prefix string, res *ports.ResolverDef, bindingSet map[string]bool) {
 	if len(res.Rules) == 0 && res.DefaultBinding == "" {
-		ve.addf("%s: resolver type \"rules\" requires at least one rule or a default_binding", prefix)
+		ve.Addf("%s: resolver type \"rules\" requires at least one rule or a default_binding", prefix)
 	}
 	for i, rule := range res.Rules {
 		rp := prefix + ".resolver.rules[" + itoa(i) + "]"
 		if rule.BindingID == "" {
-			ve.addf("%s: binding_id is required", rp)
+			ve.Addf("%s: binding_id is required", rp)
 		} else if !bindingSet[rule.BindingID] {
-			ve.addf("%s: binding_id %q not found in route bindings", rp, rule.BindingID)
+			ve.Addf("%s: binding_id %q not found in route bindings", rp, rule.BindingID)
 		}
 		for j, cond := range rule.Match {
 			cp := rp + ".match[" + itoa(j) + "]"
 			if cond.Field == "" {
-				ve.addf("%s: field is required", cp)
+				ve.Addf("%s: field is required", cp)
 			}
 			if cond.Operator == "" {
-				ve.addf("%s: operator is required", cp)
+				ve.Addf("%s: operator is required", cp)
 			} else if !validConditionOperators[cond.Operator] {
-				ve.addf("%s: operator %q is invalid", cp, cond.Operator)
+				ve.Addf("%s: operator %q is invalid", cp, cond.Operator)
 			}
 			if cond.Operator == "regex" {
 				if pattern, ok := cond.Value.(string); ok {
 					if len(pattern) > maxRegexPatternLen {
-						ve.addf("%s: regex pattern exceeds maximum length of %d characters", cp, maxRegexPatternLen)
+						ve.Addf("%s: regex pattern exceeds maximum length of %d characters", cp, maxRegexPatternLen)
 					} else if _, err := regexp.Compile(pattern); err != nil {
-						ve.addf("%s: invalid regex pattern: %v", cp, err)
+						ve.Addf("%s: invalid regex pattern: %v", cp, err)
 					}
 				} else {
-					ve.addf("%s: regex operator requires a string value", cp)
+					ve.Addf("%s: regex operator requires a string value", cp)
 				}
 			}
 		}

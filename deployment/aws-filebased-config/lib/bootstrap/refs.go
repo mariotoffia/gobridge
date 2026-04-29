@@ -5,22 +5,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
 type bridgeConfigRef struct {
 	mu  sync.RWMutex
-	cfg *config.BridgeConfig
+	cfg *ports.BridgeConfig
 }
 
-func (r *bridgeConfigRef) Get() *config.BridgeConfig {
+func (r *bridgeConfigRef) Get() *ports.BridgeConfig {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.cfg
 }
 
-func (r *bridgeConfigRef) Set(cfg *config.BridgeConfig) {
+func (r *bridgeConfigRef) Set(cfg *ports.BridgeConfig) {
 	r.mu.Lock()
 	r.cfg = cfg
 	r.mu.Unlock()
@@ -68,7 +68,7 @@ func (r *apiKeysRef) MonitorKey() string {
 	return r.monitorKey
 }
 
-func stopRuntime(rt *goruntime.Runtime, cfg *config.BridgeConfig) error {
+func stopRuntime(rt *goruntime.Runtime, cfg *ports.BridgeConfig) error {
 	if rt == nil {
 		return nil
 	}

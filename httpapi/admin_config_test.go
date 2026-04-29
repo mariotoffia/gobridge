@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 	"github.com/stretchr/testify/assert"
@@ -19,26 +20,26 @@ import (
 )
 
 // sampleBridgeConfig returns a minimal valid BridgeConfig for testing.
-func sampleBridgeConfig() *config.BridgeConfig {
-	return &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+func sampleBridgeConfig() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:              "test-bridge",
 			DeploymentMode:  "standalone",
 			ShutdownTimeout: "30s",
 		},
-		Sessions: []config.SessionDef{
+		Sessions: []ports.SessionDef{
 			{ID: "sess-1", Transport: "mqtt"},
 		},
-		Receivers: []config.ReceiverDef{
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx-1", Transport: "sqs"},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx-1", Transport: "mqtt", SessionID: "sess-1"},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "bind-1", SenderID: "tx-1", SessionID: "sess-1", Address: "topic/a"},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:           "route-1",
 				ReceiverID:   "rx-1",
@@ -46,7 +47,7 @@ func sampleBridgeConfig() *config.BridgeConfig {
 				Bindings:     []string{"bind-1"},
 			},
 		},
-		HTTP: &config.HTTPConfig{
+		HTTP: &ports.HTTPConfig{
 			AdminAPIKey:   "super-secret-admin-key-1234",
 			MonitorAPIKey: "super-secret-monitor-key-5678",
 		},
@@ -54,7 +55,7 @@ func sampleBridgeConfig() *config.BridgeConfig {
 }
 
 // newConfigTestServer creates a Server wired for config API testing.
-func newConfigTestServer(t *testing.T, cfg *config.BridgeConfig) (*Server, string) {
+func newConfigTestServer(t *testing.T, cfg *ports.BridgeConfig) (*Server, string) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -65,8 +66,8 @@ func newConfigTestServer(t *testing.T, cfg *config.BridgeConfig) (*Server, strin
 
 	rt := runtime.New(runtime.WithInstanceID("config-test"))
 	apiCfg := testConfig()
-	apiCfg.ConfigFilePath = path
-	apiCfg.ConfigProvider = func() *config.BridgeConfig { return cfg }
+	apiCfg.ConfigStore = &config.FileStore{Path: path}
+	apiCfg.ConfigProvider = func() *ports.BridgeConfig { return cfg }
 
 	s := New(rt, apiCfg)
 	return s, path

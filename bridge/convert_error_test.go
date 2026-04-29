@@ -3,35 +3,35 @@ package bridge
 import (
 	"testing"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 func TestToRoutePolicy_InvalidBackoffDuration_ReturnsError(t *testing.T) {
 	tests := []struct {
 		name string
-		def  config.RouteDef
+		def  ports.RouteDef
 	}{
 		{
 			name: "invalid initial interval",
-			def: config.RouteDef{
-				Policy: config.PolicyDef{
-					Backoff: config.BackoffDef{InitialInterval: "5x"},
+			def: ports.RouteDef{
+				Policy: ports.PolicyDef{
+					Backoff: ports.BackoffDef{InitialInterval: "5x"},
 				},
 			},
 		},
 		{
 			name: "invalid max interval",
-			def: config.RouteDef{
-				Policy: config.PolicyDef{
-					Backoff: config.BackoffDef{MaxInterval: "abc"},
+			def: ports.RouteDef{
+				Policy: ports.PolicyDef{
+					Backoff: ports.BackoffDef{MaxInterval: "abc"},
 				},
 			},
 		},
 		{
 			name: "both invalid",
-			def: config.RouteDef{
-				Policy: config.PolicyDef{
-					Backoff: config.BackoffDef{
+			def: ports.RouteDef{
+				Policy: ports.PolicyDef{
+					Backoff: ports.BackoffDef{
 						InitialInterval: "nope",
 						MaxInterval:     "bad",
 					},
@@ -53,19 +53,19 @@ func TestToRoutePolicy_InvalidBackoffDuration_ReturnsError(t *testing.T) {
 func TestToSessionConfig_InvalidDuration_ReturnsError(t *testing.T) {
 	tests := []struct {
 		name string
-		def  *config.RouteSessionDef
+		def  *ports.RouteSessionDef
 	}{
 		{
 			name: "invalid lease TTL",
-			def:  &config.RouteSessionDef{SessionID: "s1", LeaseTTL: "bad"},
+			def:  &ports.RouteSessionDef{SessionID: "s1", LeaseTTL: "bad"},
 		},
 		{
 			name: "invalid renew interval",
-			def:  &config.RouteSessionDef{SessionID: "s1", RenewInterval: "xyz"},
+			def:  &ports.RouteSessionDef{SessionID: "s1", RenewInterval: "xyz"},
 		},
 		{
 			name: "invalid step-down grace",
-			def:  &config.RouteSessionDef{SessionID: "s1", StepDownGrace: "nope"},
+			def:  &ports.RouteSessionDef{SessionID: "s1", StepDownGrace: "nope"},
 		},
 	}
 
@@ -82,15 +82,15 @@ func TestToSessionConfig_InvalidDuration_ReturnsError(t *testing.T) {
 func TestBuildDrainStrategy_InvalidDuration_ReturnsError(t *testing.T) {
 	tests := []struct {
 		name string
-		def  *config.DrainStrategyDef
+		def  *ports.DrainStrategyDef
 	}{
 		{
 			name: "invalid fixed poll interval",
-			def:  &config.DrainStrategyDef{Type: "fixed_poll", Interval: "bad"},
+			def:  &ports.DrainStrategyDef{Type: "fixed_poll", Interval: "bad"},
 		},
 		{
 			name: "invalid adaptive min interval",
-			def: &config.DrainStrategyDef{
+			def: &ports.DrainStrategyDef{
 				Type:        "adaptive_backoff",
 				MinInterval: "nope",
 				MaxInterval: "10s",
@@ -98,7 +98,7 @@ func TestBuildDrainStrategy_InvalidDuration_ReturnsError(t *testing.T) {
 		},
 		{
 			name: "invalid adaptive max interval",
-			def: &config.DrainStrategyDef{
+			def: &ports.DrainStrategyDef{
 				Type:        "adaptive_backoff",
 				MinInterval: "1s",
 				MaxInterval: "bad",

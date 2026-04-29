@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // Format specifies the configuration file format.
@@ -23,7 +25,7 @@ const (
 // ParseFile loads and parses a configuration file. The format is detected
 // from the file extension unless overridden by format. Supported extensions:
 // .yaml, .yml (YAML), .json (JSON).
-func ParseFile(path string, format Format) (*BridgeConfig, error) {
+func ParseFile(path string, format Format) (*ports.BridgeConfig, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("config: open %s: %w", path, err)
@@ -43,7 +45,7 @@ const MaxConfigBytes = 4 << 20
 
 // Parse reads configuration from r using the specified format.
 // Inputs larger than MaxConfigBytes are rejected.
-func Parse(r io.Reader, format Format) (*BridgeConfig, error) {
+func Parse(r io.Reader, format Format) (*ports.BridgeConfig, error) {
 	lr := io.LimitReader(r, MaxConfigBytes+1)
 	data, err := io.ReadAll(lr)
 	if err != nil {
@@ -53,7 +55,7 @@ func Parse(r io.Reader, format Format) (*BridgeConfig, error) {
 		return nil, fmt.Errorf("config: input exceeds maximum size of %d bytes", MaxConfigBytes)
 	}
 
-	var cfg BridgeConfig
+	var cfg ports.BridgeConfig
 	switch format {
 	case FormatJSON:
 		if err := json.Unmarshal(data, &cfg); err != nil {

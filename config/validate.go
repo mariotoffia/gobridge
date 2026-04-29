@@ -6,40 +6,22 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
-// ValidationError collects multiple validation problems.
-type ValidationError struct {
-	Errors   []string
-	Warnings []string
-}
+// ValidationError is the shape the config package returns from
+// Validate / ValidateWithWarnings. It is an alias for the
+// transport-neutral ports.BlueprintValidationError so admin layers
+// (httpapi) can inspect Warnings/Errors without importing the config
+// parser package.
+type ValidationError = ports.BlueprintValidationError
 
-func (e *ValidationError) Error() string {
-	return "config validation failed:\n  " + strings.Join(e.Errors, "\n  ")
-}
-
-func (e *ValidationError) add(msg string) {
-	e.Errors = append(e.Errors, msg)
-}
-
-func (e *ValidationError) addf(format string, args ...any) {
-	e.Errors = append(e.Errors, fmt.Sprintf(format, args...))
-}
-
-func (e *ValidationError) hasErrors() bool {
-	return len(e.Errors) > 0
-}
-
-func (e *ValidationError) warnf(format string, args ...any) {
-	e.Warnings = append(e.Warnings, fmt.Sprintf(format, args...))
-}
-
-// Validate performs structural validation on a BridgeConfig. It checks
+// Validate performs structural validation on a ports.BridgeConfig. It checks
 // required fields, referential integrity between IDs, and valid enum
 // values. It does not check transport-specific options.
-func Validate(cfg *BridgeConfig) error {
+func Validate(cfg *ports.BridgeConfig) error {
 	ve := validate(cfg)
-	if ve.hasErrors() {
+	if ve.HasErrors() {
 		return ve
 	}
 	return nil
@@ -48,19 +30,19 @@ func Validate(cfg *BridgeConfig) error {
 // ValidateWithWarnings performs Validate and returns any non-fatal
 // warnings (e.g. direct_hold fencing advisory) even when validation
 // passes. The caller should log warnings but not treat them as errors.
-func ValidateWithWarnings(cfg *BridgeConfig) (warnings []string, err error) {
+func ValidateWithWarnings(cfg *ports.BridgeConfig) (warnings []string, err error) {
 	ve := validate(cfg)
-	if ve.hasErrors() {
+	if ve.HasErrors() {
 		return ve.Warnings, ve
 	}
 	return ve.Warnings, nil
 }
 
-func validate(cfg *BridgeConfig) *ValidationError {
+func validate(cfg *ports.BridgeConfig) *ValidationError {
 	ve := &ValidationError{}
 
 	if cfg.Bridge.ID == "" {
-		ve.add("bridge.id is required")
+		ve.Add("bridge.id is required")
 	}
 
 	if cfg.Bridge.DeploymentMode != "" {
@@ -70,39 +52,39 @@ func validate(cfg *BridgeConfig) *ValidationError {
 
 	if cfg.Bridge.ShutdownTimeout != "" {
 		if d, err := time.ParseDuration(cfg.Bridge.ShutdownTimeout); err != nil {
-			ve.addf("bridge.shutdown_timeout: invalid duration %q: %v", cfg.Bridge.ShutdownTimeout, err)
+			ve.Addf("bridge.shutdown_timeout: invalid duration %q: %v", cfg.Bridge.ShutdownTimeout, err)
 		} else if d <= 0 {
-			ve.addf("bridge.shutdown_timeout: must be positive, got %s", cfg.Bridge.ShutdownTimeout)
+			ve.Addf("bridge.shutdown_timeout: must be positive, got %s", cfg.Bridge.ShutdownTimeout)
 		}
 	}
 	if cfg.Bridge.DrainTimeout != "" {
 		if d, err := time.ParseDuration(cfg.Bridge.DrainTimeout); err != nil {
-			ve.addf("bridge.drain_timeout: invalid duration %q: %v", cfg.Bridge.DrainTimeout, err)
+			ve.Addf("bridge.drain_timeout: invalid duration %q: %v", cfg.Bridge.DrainTimeout, err)
 		} else if d <= 0 {
-			ve.addf("bridge.drain_timeout: must be positive, got %s", cfg.Bridge.DrainTimeout)
+			ve.Addf("bridge.drain_timeout: must be positive, got %s", cfg.Bridge.DrainTimeout)
 		}
 	}
 	var perRecordDrain, maxDrain time.Duration
 	if cfg.Bridge.PerRecordDrainTimeout != "" {
 		if d, err := time.ParseDuration(cfg.Bridge.PerRecordDrainTimeout); err != nil {
-			ve.addf("bridge.per_record_drain_timeout: invalid duration %q: %v", cfg.Bridge.PerRecordDrainTimeout, err)
+			ve.Addf("bridge.per_record_drain_timeout: invalid duration %q: %v", cfg.Bridge.PerRecordDrainTimeout, err)
 		} else if d <= 0 {
-			ve.addf("bridge.per_record_drain_timeout: must be positive, got %s", cfg.Bridge.PerRecordDrainTimeout)
+			ve.Addf("bridge.per_record_drain_timeout: must be positive, got %s", cfg.Bridge.PerRecordDrainTimeout)
 		} else {
 			perRecordDrain = d
 		}
 	}
 	if cfg.Bridge.MaxDrainTimeout != "" {
 		if d, err := time.ParseDuration(cfg.Bridge.MaxDrainTimeout); err != nil {
-			ve.addf("bridge.max_drain_timeout: invalid duration %q: %v", cfg.Bridge.MaxDrainTimeout, err)
+			ve.Addf("bridge.max_drain_timeout: invalid duration %q: %v", cfg.Bridge.MaxDrainTimeout, err)
 		} else if d <= 0 {
-			ve.addf("bridge.max_drain_timeout: must be positive, got %s", cfg.Bridge.MaxDrainTimeout)
+			ve.Addf("bridge.max_drain_timeout: must be positive, got %s", cfg.Bridge.MaxDrainTimeout)
 		} else {
 			maxDrain = d
 		}
 	}
 	if perRecordDrain > 0 && maxDrain > 0 && maxDrain < perRecordDrain {
-		ve.addf("bridge.max_drain_timeout (%s) must be >= per_record_drain_timeout (%s)",
+		ve.Addf("bridge.max_drain_timeout (%s) must be >= per_record_drain_timeout (%s)",
 			cfg.Bridge.MaxDrainTimeout, cfg.Bridge.PerRecordDrainTimeout)
 	}
 
@@ -112,16 +94,16 @@ func validate(cfg *BridgeConfig) *ValidationError {
 		}
 		if cw.PollInterval != "" {
 			if d, err := time.ParseDuration(cw.PollInterval); err != nil {
-				ve.addf("config_watch.poll_interval: invalid duration %q: %v", cw.PollInterval, err)
+				ve.Addf("config_watch.poll_interval: invalid duration %q: %v", cw.PollInterval, err)
 			} else if d <= 0 {
-				ve.addf("config_watch.poll_interval: must be positive, got %s", cw.PollInterval)
+				ve.Addf("config_watch.poll_interval: must be positive, got %s", cw.PollInterval)
 			}
 		}
 		if cw.Debounce != "" {
 			if d, err := time.ParseDuration(cw.Debounce); err != nil {
-				ve.addf("config_watch.debounce: invalid duration %q: %v", cw.Debounce, err)
+				ve.Addf("config_watch.debounce: invalid duration %q: %v", cw.Debounce, err)
 			} else if d <= 0 {
-				ve.addf("config_watch.debounce: must be positive, got %s", cw.Debounce)
+				ve.Addf("config_watch.debounce: must be positive, got %s", cw.Debounce)
 			}
 		}
 	}
@@ -129,7 +111,7 @@ func validate(cfg *BridgeConfig) *ValidationError {
 	sessionIDs := collectIDs(ve, "sessions", len(cfg.Sessions), func(i int) (string, string) {
 		s := cfg.Sessions[i]
 		if s.Transport == "" {
-			ve.addf("sessions[%d] (%s): transport is required", i, s.ID)
+			ve.Addf("sessions[%d] (%s): transport is required", i, s.ID)
 		}
 		if s.SessionMode != "" {
 			validateEnum(ve, fmt.Sprintf("sessions[%d].session_mode", i), s.SessionMode,
@@ -141,11 +123,11 @@ func validate(cfg *BridgeConfig) *ValidationError {
 	receiverIDs := collectIDs(ve, "receivers", len(cfg.Receivers), func(i int) (string, string) {
 		r := cfg.Receivers[i]
 		if r.Transport == "" && r.SessionID == "" {
-			ve.addf("receivers[%d] (%s): transport or session_id is required", i, r.ID)
+			ve.Addf("receivers[%d] (%s): transport or session_id is required", i, r.ID)
 		}
 		if r.SessionID != "" {
 			if _, ok := sessionIDs[r.SessionID]; !ok {
-				ve.addf("receivers[%d] (%s): session_id %q not found in sessions", i, r.ID, r.SessionID)
+				ve.Addf("receivers[%d] (%s): session_id %q not found in sessions", i, r.ID, r.SessionID)
 			}
 		}
 		return r.ID, fmt.Sprintf("receivers[%d]", i)
@@ -154,11 +136,11 @@ func validate(cfg *BridgeConfig) *ValidationError {
 	senderIDs := collectIDs(ve, "senders", len(cfg.Senders), func(i int) (string, string) {
 		s := cfg.Senders[i]
 		if s.Transport == "" && s.SessionID == "" {
-			ve.addf("senders[%d] (%s): transport or session_id is required", i, s.ID)
+			ve.Addf("senders[%d] (%s): transport or session_id is required", i, s.ID)
 		}
 		if s.SessionID != "" {
 			if _, ok := sessionIDs[s.SessionID]; !ok {
-				ve.addf("senders[%d] (%s): session_id %q not found in sessions", i, s.ID, s.SessionID)
+				ve.Addf("senders[%d] (%s): session_id %q not found in sessions", i, s.ID, s.SessionID)
 			}
 		}
 		return s.ID, fmt.Sprintf("senders[%d]", i)
@@ -167,17 +149,17 @@ func validate(cfg *BridgeConfig) *ValidationError {
 	bindingIDs := collectIDs(ve, "bindings", len(cfg.Bindings), func(i int) (string, string) {
 		b := cfg.Bindings[i]
 		if b.SenderID == "" {
-			ve.addf("bindings[%d] (%s): sender_id is required", i, b.ID)
+			ve.Addf("bindings[%d] (%s): sender_id is required", i, b.ID)
 		} else if _, ok := senderIDs[b.SenderID]; !ok {
-			ve.addf("bindings[%d] (%s): sender_id %q not found in senders", i, b.ID, b.SenderID)
+			ve.Addf("bindings[%d] (%s): sender_id %q not found in senders", i, b.ID, b.SenderID)
 		}
 		if b.SessionID != "" {
 			if _, ok := sessionIDs[b.SessionID]; !ok {
-				ve.addf("bindings[%d] (%s): session_id %q not found in sessions", i, b.ID, b.SessionID)
+				ve.Addf("bindings[%d] (%s): session_id %q not found in sessions", i, b.ID, b.SessionID)
 			}
 		}
 		if b.Address == "" {
-			ve.addf("bindings[%d] (%s): address is required", i, b.ID)
+			ve.Addf("bindings[%d] (%s): address is required", i, b.ID)
 		}
 		return b.ID, fmt.Sprintf("bindings[%d]", i)
 	})
@@ -185,9 +167,9 @@ func validate(cfg *BridgeConfig) *ValidationError {
 	_ = collectIDs(ve, "routes", len(cfg.Routes), func(i int) (string, string) {
 		r := cfg.Routes[i]
 		if r.ReceiverID == "" {
-			ve.addf("routes[%d] (%s): receiver_id is required", i, r.ID)
+			ve.Addf("routes[%d] (%s): receiver_id is required", i, r.ID)
 		} else if _, ok := receiverIDs[r.ReceiverID]; !ok {
-			ve.addf("routes[%d] (%s): receiver_id %q not found in receivers", i, r.ID, r.ReceiverID)
+			ve.Addf("routes[%d] (%s): receiver_id %q not found in receivers", i, r.ID, r.ReceiverID)
 		}
 
 		if r.DeliveryMode != "" {
@@ -195,7 +177,7 @@ func validate(cfg *BridgeConfig) *ValidationError {
 				"direct_hold", "shared_outbox")
 		}
 		if r.DeliveryMode == "direct_hold" || r.DeliveryMode == "" {
-			ve.warnf("routes[%d] (%s): direct_hold mode provides no inter-instance fencing; "+
+			ve.Warnf("routes[%d] (%s): direct_hold mode provides no inter-instance fencing; "+
 				"multiple instances will send independently — destination must handle duplicates idempotently",
 				i, r.ID)
 		}
@@ -218,39 +200,39 @@ func validate(cfg *BridgeConfig) *ValidationError {
 		}
 		if r.Policy.SendTimeout != "" {
 			if d, err := time.ParseDuration(r.Policy.SendTimeout); err != nil {
-				ve.addf("routes[%d].policy.send_timeout: invalid duration %q: %v", i, r.Policy.SendTimeout, err)
+				ve.Addf("routes[%d].policy.send_timeout: invalid duration %q: %v", i, r.Policy.SendTimeout, err)
 			} else if d <= 0 {
-				ve.addf("routes[%d].policy.send_timeout: must be positive, got %s", i, r.Policy.SendTimeout)
+				ve.Addf("routes[%d].policy.send_timeout: must be positive, got %s", i, r.Policy.SendTimeout)
 			}
 		}
 		if r.Policy.DepthCacheTTL != "" {
 			if d, err := time.ParseDuration(r.Policy.DepthCacheTTL); err != nil {
-				ve.addf("routes[%d].policy.depth_cache_ttl: invalid duration %q: %v", i, r.Policy.DepthCacheTTL, err)
+				ve.Addf("routes[%d].policy.depth_cache_ttl: invalid duration %q: %v", i, r.Policy.DepthCacheTTL, err)
 			} else if d <= 0 {
-				ve.addf("routes[%d].policy.depth_cache_ttl: must be positive, got %s", i, r.Policy.DepthCacheTTL)
+				ve.Addf("routes[%d].policy.depth_cache_ttl: must be positive, got %s", i, r.Policy.DepthCacheTTL)
 			}
 		}
 
 		if len(r.Bindings) == 0 {
-			ve.addf("routes[%d] (%s): at least one binding is required", i, r.ID)
+			ve.Addf("routes[%d] (%s): at least one binding is required", i, r.ID)
 		}
 		for j, bid := range r.Bindings {
 			if _, ok := bindingIDs[bid]; !ok {
-				ve.addf("routes[%d] (%s): bindings[%d] %q not found in bindings", i, r.ID, j, bid)
+				ve.Addf("routes[%d] (%s): bindings[%d] %q not found in bindings", i, r.ID, j, bid)
 			}
 		}
 
 		if r.Session != nil {
 			prefix := fmt.Sprintf("routes[%d] (%s)", i, r.ID)
 			if r.Session.SessionID == "" {
-				ve.addf("%s: session.session_id is required", prefix)
+				ve.Addf("%s: session.session_id is required", prefix)
 			} else if _, ok := sessionIDs[r.Session.SessionID]; !ok {
-				ve.addf("%s: session.session_id %q not found in sessions", prefix, r.Session.SessionID)
+				ve.Addf("%s: session.session_id %q not found in sessions", prefix, r.Session.SessionID)
 			}
 			if r.Session.SenderID == "" {
-				ve.addf("%s: session.sender_id is required", prefix)
+				ve.Addf("%s: session.sender_id is required", prefix)
 			} else if _, ok := senderIDs[r.Session.SenderID]; !ok {
-				ve.addf("%s: session.sender_id %q not found in senders", prefix, r.Session.SenderID)
+				ve.Addf("%s: session.sender_id %q not found in senders", prefix, r.Session.SenderID)
 			}
 			validateSessionDurations(ve, prefix, r.Session)
 			validateDrainStrategy(ve, prefix, r.Session)
@@ -258,7 +240,7 @@ func validate(cfg *BridgeConfig) *ValidationError {
 
 		if r.DeliveryMode == "shared_outbox" {
 			if cfg.Stores.Outbox == nil {
-				ve.addf("routes[%d] (%s): shared_outbox requires stores.outbox to be configured", i, r.ID)
+				ve.Addf("routes[%d] (%s): shared_outbox requires stores.outbox to be configured", i, r.ID)
 			}
 			if r.Session != nil {
 				_, hasSess := sessionIDs[r.Session.SessionID]
@@ -266,7 +248,7 @@ func validate(cfg *BridgeConfig) *ValidationError {
 					for si, s := range cfg.Sessions {
 						if s.ID == r.Session.SessionID && s.SessionMode == "exclusive" {
 							if cfg.Stores.Lease == nil {
-								ve.addf("routes[%d] (%s): exclusive session %q requires stores.lease to be configured",
+								ve.Addf("routes[%d] (%s): exclusive session %q requires stores.lease to be configured",
 									i, r.ID, cfg.Sessions[si].ID)
 							}
 							break
@@ -296,8 +278,8 @@ func validate(cfg *BridgeConfig) *ValidationError {
 // mode use either an exclusive session (lease-based single subscriber) or
 // $share/ topic prefixes (MQTT v5 shared subscriptions) to prevent N-fold
 // message duplication across instances.
-func validateClusteredMQTTSubscriptions(ve *ValidationError, cfg *BridgeConfig) {
-	sessionsByID := make(map[string]SessionDef, len(cfg.Sessions))
+func validateClusteredMQTTSubscriptions(ve *ValidationError, cfg *ports.BridgeConfig) {
+	sessionsByID := make(map[string]ports.SessionDef, len(cfg.Sessions))
 	for _, s := range cfg.Sessions {
 		sessionsByID[s.ID] = s
 	}
@@ -326,11 +308,11 @@ func validateClusteredMQTTSubscriptions(ve *ValidationError, cfg *BridgeConfig) 
 		prefix := fmt.Sprintf("receivers[%d] (%s)", i, r.ID)
 		for j, topic := range r.Topics {
 			if !isSharedTopic(topic.Topic) {
-				ve.addf("%s: topics[%d]: clustered MQTT receiver requires $share/ topic prefix "+
+				ve.Addf("%s: topics[%d]: clustered MQTT receiver requires $share/ topic prefix "+
 					"or exclusive session to prevent N-fold message duplication; got %q",
 					prefix, j, topic.Topic)
 			} else if !isValidSharedTopic(topic.Topic) {
-				ve.addf("%s: topics[%d]: malformed $share/ topic %q: "+
+				ve.Addf("%s: topics[%d]: malformed $share/ topic %q: "+
 					"must be $share/<group>/<topic> with non-empty group and topic",
 					prefix, j, topic.Topic)
 			}
@@ -353,11 +335,11 @@ func collectIDs(ve *ValidationError, section string, n int, fn func(i int) (id, 
 	for i := 0; i < n; i++ {
 		id, label := fn(i)
 		if id == "" {
-			ve.addf("%s: %s: id is required", section, label)
+			ve.Addf("%s: %s: id is required", section, label)
 			continue
 		}
 		if _, dup := ids[id]; dup {
-			ve.addf("%s: duplicate id %q", section, id)
+			ve.Addf("%s: duplicate id %q", section, id)
 		}
 		ids[id] = struct{}{}
 	}
@@ -370,7 +352,7 @@ func validateEnum(ve *ValidationError, field, value string, allowed ...string) {
 			return
 		}
 	}
-	ve.addf("%s: invalid value %q, must be one of: %s", field, value, strings.Join(allowed, ", "))
+	ve.Addf("%s: invalid value %q, must be one of: %s", field, value, strings.Join(allowed, ", "))
 }
 
 // validateStaleClaimDuration warns when the outbox store's
@@ -378,7 +360,7 @@ func validateEnum(ve *ValidationError, field, value string, allowed ...string) {
 // session step-down grace periods. A staleClaimAge that exceeds 2x the
 // maximum StepDownGrace delays failover recovery without preventing
 // duplicate sends.
-func validateStaleClaimDuration(ve *ValidationError, cfg *BridgeConfig) {
+func validateStaleClaimDuration(ve *ValidationError, cfg *ports.BridgeConfig) {
 	if cfg.Stores.Outbox == nil || cfg.Stores.Outbox.Options == nil {
 		return
 	}
@@ -392,19 +374,19 @@ func validateStaleClaimDuration(ve *ValidationError, cfg *BridgeConfig) {
 	case string:
 		d, err := time.ParseDuration(v)
 		if err != nil {
-			ve.addf("stores.outbox.options.stale_claim_duration: invalid duration %q: %v", v, err)
+			ve.Addf("stores.outbox.options.stale_claim_duration: invalid duration %q: %v", v, err)
 			return
 		}
 		stale = d
 	case time.Duration:
 		stale = v
 	default:
-		ve.addf("stores.outbox.options.stale_claim_duration: must be a duration string (e.g. \"30s\"), got %T", raw)
+		ve.Addf("stores.outbox.options.stale_claim_duration: must be a duration string (e.g. \"30s\"), got %T", raw)
 		return
 	}
 
 	if stale <= 0 {
-		ve.addf("stores.outbox.options.stale_claim_duration: must be positive, got %v", stale)
+		ve.Addf("stores.outbox.options.stale_claim_duration: must be positive, got %v", stale)
 		return
 	}
 
@@ -425,7 +407,7 @@ func validateStaleClaimDuration(ve *ValidationError, cfg *BridgeConfig) {
 	}
 
 	if stale > 2*maxGrace {
-		ve.warnf("stores.outbox.options.stale_claim_duration (%s) is more than 2x "+
+		ve.Warnf("stores.outbox.options.stale_claim_duration (%s) is more than 2x "+
 			"the maximum step_down_grace (%s); this delays failover recovery "+
 			"without reducing duplicate sends — consider a value closer to "+
 			"step_down_grace + 15s (%s)",
@@ -433,7 +415,7 @@ func validateStaleClaimDuration(ve *ValidationError, cfg *BridgeConfig) {
 	}
 }
 
-func validateSessionDurations(ve *ValidationError, prefix string, sess *RouteSessionDef) {
+func validateSessionDurations(ve *ValidationError, prefix string, sess *ports.RouteSessionDef) {
 	for _, f := range []struct{ name, val string }{
 		{"lease_ttl", sess.LeaseTTL},
 		{"renew_interval", sess.RenewInterval},
@@ -444,24 +426,24 @@ func validateSessionDurations(ve *ValidationError, prefix string, sess *RouteSes
 		}
 		d, err := time.ParseDuration(f.val)
 		if err != nil {
-			ve.addf("%s: session.%s: invalid duration %q: %v", prefix, f.name, f.val, err)
+			ve.Addf("%s: session.%s: invalid duration %q: %v", prefix, f.name, f.val, err)
 		} else if d <= 0 {
-			ve.addf("%s: session.%s: must be positive, got %s", prefix, f.name, f.val)
+			ve.Addf("%s: session.%s: must be positive, got %s", prefix, f.name, f.val)
 		}
 	}
 	if sess.MaxRenewFails < 0 {
-		ve.addf("%s: session.max_renew_fails: must be non-negative, got %d", prefix, sess.MaxRenewFails)
+		ve.Addf("%s: session.max_renew_fails: must be non-negative, got %d", prefix, sess.MaxRenewFails)
 	}
 }
 
-func validateDrainStrategy(ve *ValidationError, prefix string, sess *RouteSessionDef) {
+func validateDrainStrategy(ve *ValidationError, prefix string, sess *ports.RouteSessionDef) {
 	ds := sess.DrainStrategy
 	if ds == nil {
 		return
 	}
 
 	if sess.DrainInterval != "" {
-		ve.addf("%s: session.drain_strategy and session.drain_interval are mutually exclusive", prefix)
+		ve.Addf("%s: session.drain_strategy and session.drain_interval are mutually exclusive", prefix)
 	}
 
 	field := prefix + ": session.drain_strategy"
@@ -470,9 +452,9 @@ func validateDrainStrategy(ve *ValidationError, prefix string, sess *RouteSessio
 	case "fixed_poll":
 		if ds.Interval != "" {
 			if d, err := time.ParseDuration(ds.Interval); err != nil {
-				ve.addf("%s: invalid interval %q: %v", field, ds.Interval, err)
+				ve.Addf("%s: invalid interval %q: %v", field, ds.Interval, err)
 			} else if d <= 0 {
-				ve.addf("%s: interval must be positive, got %s", field, ds.Interval)
+				ve.Addf("%s: interval must be positive, got %s", field, ds.Interval)
 			}
 		}
 
@@ -481,25 +463,25 @@ func validateDrainStrategy(ve *ValidationError, prefix string, sess *RouteSessio
 		if ds.MinInterval != "" {
 			d, err := time.ParseDuration(ds.MinInterval)
 			if err != nil {
-				ve.addf("%s: invalid min_interval %q: %v", field, ds.MinInterval, err)
+				ve.Addf("%s: invalid min_interval %q: %v", field, ds.MinInterval, err)
 			}
 			minD = d
 		}
 		if ds.MaxInterval != "" {
 			d, err := time.ParseDuration(ds.MaxInterval)
 			if err != nil {
-				ve.addf("%s: invalid max_interval %q: %v", field, ds.MaxInterval, err)
+				ve.Addf("%s: invalid max_interval %q: %v", field, ds.MaxInterval, err)
 			}
 			maxD = d
 		}
 		if minD > 0 && maxD > 0 && maxD < minD {
-			ve.addf("%s: max_interval (%s) must be >= min_interval (%s)", field, ds.MaxInterval, ds.MinInterval)
+			ve.Addf("%s: max_interval (%s) must be >= min_interval (%s)", field, ds.MaxInterval, ds.MinInterval)
 		}
 		if ds.Multiplier != 0 && ds.Multiplier <= 1.0 {
-			ve.addf("%s: multiplier must be > 1.0, got %v", field, ds.Multiplier)
+			ve.Addf("%s: multiplier must be > 1.0, got %v", field, ds.Multiplier)
 		}
 
 	default:
-		ve.addf("%s: invalid type %q, must be one of: fixed_poll, adaptive_backoff", field, ds.Type)
+		ve.Addf("%s: invalid type %q, must be one of: fixed_poll, adaptive_backoff", field, ds.Type)
 	}
 }

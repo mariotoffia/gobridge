@@ -8,18 +8,17 @@ import (
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
 	"github.com/mariotoffia/gobridge/bridge"
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 type factoryRegistry struct {
-	cfg        *config.BridgeConfig
+	cfg        *ports.BridgeConfig
 	builder    *bridge.Builder
 	transports map[string]ports.TransportFactory
 	http       *httptransport.Factory
 }
 
-func (a *App) newFactoryRegistry(runtimeCfg *config.BridgeConfig) *factoryRegistry {
+func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistry {
 	var opts []bridge.BuilderOption
 	if a.logger != nil {
 		opts = append(opts, bridge.WithLogger(a.logger))
@@ -51,7 +50,7 @@ func (a *App) newFactoryRegistry(runtimeCfg *config.BridgeConfig) *factoryRegist
 	}
 }
 
-func (r *factoryRegistry) detectSwapMode(cfg *config.BridgeConfig) swapMode {
+func (r *factoryRegistry) detectSwapMode(cfg *ports.BridgeConfig) swapMode {
 	for _, session := range cfg.Sessions {
 		factory, ok := r.transports[session.Transport]
 		if !ok {

@@ -255,14 +255,17 @@ deps:
     mayDependOn:
       - domain
 
-  # Config is a shared kernel between application services and config-
-  # source adapters. It carries parsed configuration DTOs and may use
-  # yaml.v3 to parse YAML input. It MUST NOT depend on ports, runtime,
-  # or bridge -- doing so would couple the data shape to the use cases
-  # that consume it.
+  # The config package is the YAML/JSON parser, validator, merger,
+  # and on-disk manager that produces *ports.BridgeConfig values.
+  # The blueprint TYPE definitions live in ports/; this package
+  # contributes only behavior (parse, validate, merge, write, watch).
+  # It depends on ports for the data shape and on yaml.v3 for the
+  # serialization format. It MUST NOT depend on runtime or bridge
+  # (the consumers).
   config:
     mayDependOn:
       - domain
+      - ports
     canUse:
       - yaml
 
@@ -297,13 +300,12 @@ deps:
       - logging
       - observability
 
-  # bridge is the composition factory: it reads config, builds runtime.
-  # It is the inward-most layer that may depend on the config shared
-  # kernel because that is its job. It MUST NOT depend on any adapter
-  # (cmd is the composition root that wires concrete adapters).
+  # bridge is the composition factory: it reads ports.BridgeConfig and
+  # builds a runtime.Runtime. It MUST NOT depend on the config parser
+  # package (the composition root injects a ports.BlueprintValidator
+  # via WithBlueprintValidator) and MUST NOT depend on any adapter.
   bridge:
     mayDependOn:
-      - config
       - domain
       - logging
       - ports
@@ -312,12 +314,14 @@ deps:
   # ---- Layer 3: Interface Adapters ----
 
   # httpapi is a driving adapter (HTTP delivery mechanism). It exposes
-  # admin/monitor over the runtime use cases and may also expose the
-  # config shared kernel for read/write. It MUST NOT depend on any
-  # other adapter.
+  # admin/monitor over the runtime use cases and consumes the
+  # ports.ConfigStore boundary for the config admin transactions API.
+  # It MUST NOT depend on the config parser package directly (the
+  # composition root injects a ports.ConfigStore implementation via
+  # httpapi.Config.ConfigStore). It MUST NOT depend on any other
+  # adapter.
   httpapi:
     mayDependOn:
-      - config
       - domain
       - logging
       - observability
@@ -433,13 +437,14 @@ deps:
 
   # ---- Layer 3: Config-source adapters ----
   #
-  # The single adapter category permitted to import the `config` shared
-  # kernel. Their job is to load *config.BridgeConfig from an external
-  # source. ports is allowed only when the adapter genuinely depends on
-  # a port type (e.g., the DynamoDB loader uses ports types in its
-  # streaming API for testability).
+  # The single adapter category permitted to import the `config` parser
+  # package. Their job is to produce *ports.BridgeConfig from an
+  # external source (file, DynamoDB, …) using the parser/validator/
+  # merger functions in `config`. They depend on ports for the data
+  # shape (BridgeConfig + Loader/Watcher/Reloader contracts) and on
+  # config for the parsing/serialization behavior.
   adapter_config_native_file:
-    mayDependOn: [config, domain, logging]
+    mayDependOn: [config, domain, logging, ports]
     canUse: [fsnotify]
   adapter_config_aws_dynamodb:
     mayDependOn: [config, domain, logging, ports]

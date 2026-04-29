@@ -8,8 +8,8 @@ import (
 	"time"
 
 	ddbconfig "github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb"
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
 
@@ -34,14 +34,14 @@ func newLoader(t *testing.T, prefix string) *ddbconfig.Loader {
 	return loader
 }
 
-func sampleConfig() *config.BridgeConfig {
-	return &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+func sampleConfig() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:              "test-bridge",
 			ShutdownTimeout: "10s",
 			LogLevel:        "info",
 		},
-		Sessions: []config.SessionDef{
+		Sessions: []ports.SessionDef{
 			{
 				ID:        "mqtt-1",
 				Transport: "mqtt",
@@ -50,24 +50,24 @@ func sampleConfig() *config.BridgeConfig {
 				},
 			},
 		},
-		Receivers: []config.ReceiverDef{
+		Receivers: []ports.ReceiverDef{
 			{
 				ID:        "rx-1",
 				Transport: "mqtt",
 				SessionID: "mqtt-1",
-				Topics: []config.SubscriptionDef{
+				Topics: []ports.SubscriptionDef{
 					{Topic: "sensors/#", QoS: 1},
 				},
 			},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{
 				ID:        "tx-1",
 				Transport: "mqtt",
 				SessionID: "mqtt-1",
 			},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:         "route-1",
 				ReceiverID: "rx-1",

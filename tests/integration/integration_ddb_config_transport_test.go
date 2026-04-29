@@ -8,7 +8,7 @@ import (
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/bridge"
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
@@ -81,24 +81,24 @@ func TestDDBTransport_SQS_ConfigChangeSwapsQueue(t *testing.T) {
 	ctx := context.Background()
 
 	// Base config: route from queue-A to queue-B.
-	baseCfg := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+	baseCfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:           "test-bridge",
 			DrainTimeout: "1s",
 		},
-		Receivers: []config.ReceiverDef{
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx-in", Transport: "sqs", Options: sqsReceiverOpts(queueA, sqsEP)},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx-out", Transport: "sqs", Options: sqsSenderOpts(queueB, sqsEP)},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "bind-1", SenderID: "tx-out", Address: queueB},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{ID: "r1", ReceiverID: "rx-in", DeliveryMode: "direct_hold",
 				Bindings: []string{"bind-1"},
-				Policy:   config.PolicyDef{SendTimeout: "10s"}},
+				Policy:   ports.PolicyDef{SendTimeout: "10s"}},
 		},
 	}
 
@@ -172,9 +172,9 @@ func TestDDBTransport_SQS_ConfigChangeSwapsQueue(t *testing.T) {
 	}
 
 	// DDB overlay v2: switch rx-in to queue-C.
-	overlay2 := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Receivers: []config.ReceiverDef{
+	overlay2 := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx-in", Transport: "sqs", Options: sqsReceiverOpts(queueC, sqsEP)},
 		},
 	}
@@ -232,24 +232,24 @@ func TestDDBTransport_SQS_NewRouteAdded(t *testing.T) {
 	loader := ddbConfigLoader(t, "tsqs-add")
 	ctx := context.Background()
 
-	baseCfg := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+	baseCfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:           "test-bridge",
 			DrainTimeout: "1s",
 		},
-		Receivers: []config.ReceiverDef{
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx-1", Transport: "sqs", Options: sqsReceiverOpts(queueA, sqsEP)},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx-1", Transport: "sqs", Options: sqsSenderOpts(queueB, sqsEP)},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "bind-1", SenderID: "tx-1", Address: queueB},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{ID: "r1", ReceiverID: "rx-1", DeliveryMode: "direct_hold",
 				Bindings: []string{"bind-1"},
-				Policy:   config.PolicyDef{SendTimeout: "10s"}},
+				Policy:   ports.PolicyDef{SendTimeout: "10s"}},
 		},
 	}
 
@@ -295,21 +295,21 @@ func TestDDBTransport_SQS_NewRouteAdded(t *testing.T) {
 	waitForSupervisorRuntime(t, s, 10*time.Second)
 
 	// DDB overlay v2: add route r2 (queue-C → queue-D).
-	overlay2 := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Receivers: []config.ReceiverDef{
+	overlay2 := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx-2", Transport: "sqs", Options: sqsReceiverOpts(queueC, sqsEP)},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx-2", Transport: "sqs", Options: sqsSenderOpts(queueD, sqsEP)},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "bind-2", SenderID: "tx-2", Address: queueD},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{ID: "r2", ReceiverID: "rx-2", DeliveryMode: "direct_hold",
 				Bindings: []string{"bind-2"},
-				Policy:   config.PolicyDef{SendTimeout: "10s"}},
+				Policy:   ports.PolicyDef{SendTimeout: "10s"}},
 		},
 	}
 	if err := loader.Save(ctx, overlay2); err != nil {
@@ -372,35 +372,35 @@ func TestDDBTransport_ConfigRemovesRoute(t *testing.T) {
 	ctx := context.Background()
 
 	// Base config has only bridge settings — no routes.
-	baseCfg := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+	baseCfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:           "test-bridge",
 			DrainTimeout: "1s",
 		},
 	}
 
 	// DDB overlay v1: both routes r1 and r2.
-	overlayV1 := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Receivers: []config.ReceiverDef{
+	overlayV1 := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx-1", Transport: "sqs", Options: sqsReceiverOpts(queueA, sqsEP)},
 			{ID: "rx-2", Transport: "sqs", Options: sqsReceiverOpts(queueC, sqsEP)},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx-1", Transport: "sqs", Options: sqsSenderOpts(queueB, sqsEP)},
 			{ID: "tx-2", Transport: "sqs", Options: sqsSenderOpts(queueD, sqsEP)},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "bind-1", SenderID: "tx-1", Address: queueB},
 			{ID: "bind-2", SenderID: "tx-2", Address: queueD},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{ID: "r1", ReceiverID: "rx-1", DeliveryMode: "direct_hold",
 				Bindings: []string{"bind-1"},
-				Policy:   config.PolicyDef{SendTimeout: "10s"}},
+				Policy:   ports.PolicyDef{SendTimeout: "10s"}},
 			{ID: "r2", ReceiverID: "rx-2", DeliveryMode: "direct_hold",
 				Bindings: []string{"bind-2"},
-				Policy:   config.PolicyDef{SendTimeout: "10s"}},
+				Policy:   ports.PolicyDef{SendTimeout: "10s"}},
 		},
 	}
 	if err := loader.Save(ctx, overlayV1); err != nil {
@@ -451,21 +451,21 @@ func TestDDBTransport_ConfigRemovesRoute(t *testing.T) {
 	}
 
 	// DDB overlay v2: only r1 (r2 removed from overlay entirely).
-	overlayV2 := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Receivers: []config.ReceiverDef{
+	overlayV2 := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx-1", Transport: "sqs", Options: sqsReceiverOpts(queueA, sqsEP)},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx-1", Transport: "sqs", Options: sqsSenderOpts(queueB, sqsEP)},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "bind-1", SenderID: "tx-1", Address: queueB},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{ID: "r1", ReceiverID: "rx-1", DeliveryMode: "direct_hold",
 				Bindings: []string{"bind-1"},
-				Policy:   config.PolicyDef{SendTimeout: "10s"}},
+				Policy:   ports.PolicyDef{SendTimeout: "10s"}},
 		},
 	}
 	if err := loader.Save(ctx, overlayV2); err != nil {

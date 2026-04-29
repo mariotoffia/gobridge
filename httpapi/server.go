@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -39,14 +38,16 @@ type Config struct {
 	// APIs. When nil, the Server uses the runtime passed to New().
 	RuntimeProvider func() *runtime.Runtime `json:"-"`
 
-	// ConfigFilePath is the path to the config file for write-back.
-	// When set together with ConfigProvider, the config management
-	// endpoints are enabled on the admin server.
-	ConfigFilePath string `json:"-"`
+	// ConfigStore is the persistence boundary used by the admin
+	// transactions API: validate / merge / save / load. The
+	// composition root supplies an implementation (typically backed
+	// by config.Manager). When set together with ConfigProvider,
+	// the config management endpoints are enabled on the admin server.
+	ConfigStore ports.ConfigStore `json:"-"`
 
 	// ConfigProvider returns the current effective BridgeConfig.
 	// Typically wired to bridge.Supervisor.Config().
-	ConfigProvider func() *config.BridgeConfig `json:"-"`
+	ConfigProvider func() *ports.BridgeConfig `json:"-"`
 
 	// AdminOperationTimeout is the context timeout applied to admin
 	// start/stop operations. Defaults to 30s when zero.
@@ -124,8 +125,8 @@ func New(rt *runtime.Runtime, cfg Config, opts ...Option) *Server {
 	if s.cfg.AdminOperationTimeout <= 0 {
 		s.cfg.AdminOperationTimeout = 30 * time.Second
 	}
-	if cfg.ConfigFilePath != "" && cfg.ConfigProvider != nil {
-		s.configTxn = newTxnManager(cfg.ConfigFilePath, cfg.ConfigProvider, s.logger)
+	if cfg.ConfigStore != nil && cfg.ConfigProvider != nil {
+		s.configTxn = newTxnManager(cfg.ConfigStore, cfg.ConfigProvider, s.logger)
 	}
 	return s
 }

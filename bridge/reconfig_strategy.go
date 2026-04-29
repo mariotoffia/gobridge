@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // ReconfigStrategy filters a raw config change channel, controlling
@@ -14,7 +14,7 @@ import (
 // desired cadence. The returned channel must close when ctx is
 // cancelled or the input channel closes.
 type ReconfigStrategy interface {
-	Filter(ctx context.Context, in <-chan *config.BridgeConfig) <-chan *config.BridgeConfig
+	Filter(ctx context.Context, in <-chan *ports.BridgeConfig) <-chan *ports.BridgeConfig
 }
 
 // DirectStrategy passes every config change through immediately.
@@ -25,8 +25,8 @@ type DirectStrategy struct{}
 func NewDirectStrategy() *DirectStrategy { return &DirectStrategy{} }
 
 // Filter forwards each incoming config without delay.
-func (s *DirectStrategy) Filter(ctx context.Context, in <-chan *config.BridgeConfig) <-chan *config.BridgeConfig {
-	out := make(chan *config.BridgeConfig, 1)
+func (s *DirectStrategy) Filter(ctx context.Context, in <-chan *ports.BridgeConfig) <-chan *ports.BridgeConfig {
+	out := make(chan *ports.BridgeConfig, 1)
 	go func() {
 		defer close(out)
 		for {
@@ -70,16 +70,16 @@ func NewDebouncedStrategy(quietPeriod time.Duration, clk clock.Clock) *Debounced
 // Filter debounces incoming configs, emitting only after quietPeriod
 // of silence. Only the latest config is kept; intermediate values
 // are discarded.
-func (s *DebouncedStrategy) Filter(ctx context.Context, in <-chan *config.BridgeConfig) <-chan *config.BridgeConfig {
+func (s *DebouncedStrategy) Filter(ctx context.Context, in <-chan *ports.BridgeConfig) <-chan *ports.BridgeConfig {
 	if s.quietPeriod <= 0 {
 		return NewDirectStrategy().Filter(ctx, in)
 	}
 
-	out := make(chan *config.BridgeConfig, 1)
+	out := make(chan *ports.BridgeConfig, 1)
 	go func() {
 		defer close(out)
 
-		var pending *config.BridgeConfig
+		var pending *ports.BridgeConfig
 		timer := s.clk.NewTimer(0)
 		if !timer.Stop() {
 			<-timer.C()
@@ -153,16 +153,16 @@ func NewWindowedStrategy(quietPeriod, maxDelay time.Duration, clk clock.Clock) *
 // Filter debounces incoming configs with a hard deadline. If the
 // quiet window never opens, the latest config is emitted after
 // maxDelay from the first change in the current batch.
-func (s *WindowedStrategy) Filter(ctx context.Context, in <-chan *config.BridgeConfig) <-chan *config.BridgeConfig {
+func (s *WindowedStrategy) Filter(ctx context.Context, in <-chan *ports.BridgeConfig) <-chan *ports.BridgeConfig {
 	if s.quietPeriod <= 0 {
 		return NewDirectStrategy().Filter(ctx, in)
 	}
 
-	out := make(chan *config.BridgeConfig, 1)
+	out := make(chan *ports.BridgeConfig, 1)
 	go func() {
 		defer close(out)
 
-		var pending *config.BridgeConfig
+		var pending *ports.BridgeConfig
 		quietTimer := s.clk.NewTimer(0)
 		if !quietTimer.Stop() {
 			<-quietTimer.C()

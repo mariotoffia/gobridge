@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // ===============================================================
@@ -165,9 +165,9 @@ func TestDDBWatch_InvalidMergedConfig_DroppedByManager(t *testing.T) {
 	}
 
 	// Overlay that causes validation failure: route references missing receiver.
-	invalidOverlay := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Routes: []config.RouteDef{
+	invalidOverlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Routes: []ports.RouteDef{
 			{
 				ID:           "r-bad",
 				ReceiverID:   "rx-missing",
@@ -376,9 +376,9 @@ func TestDDBWatch_InvalidThenValid_OnlyValidEmits(t *testing.T) {
 	}
 
 	// Save invalid overlay (route references missing receiver).
-	invalidOverlay := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Routes: []config.RouteDef{
+	invalidOverlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Routes: []ports.RouteDef{
 			{ID: "r-bad", ReceiverID: "rx-missing", DeliveryMode: "direct_hold",
 				Bindings: []string{"bind-base"}},
 		},

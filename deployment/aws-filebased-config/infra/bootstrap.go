@@ -33,7 +33,7 @@ const (
 )
 
 // BootstrapConfig is deployment-owned runtime configuration for the
-// file-based AWS deployment profile. It is separate from config.BridgeConfig
+// file-based AWS deployment profile. It is separate from ports.BridgeConfig
 // and is typically supplied via environment or a small bootstrap JSON file.
 type BootstrapConfig struct {
 	BridgeID string `json:"bridge_id"`

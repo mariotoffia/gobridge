@@ -1,4 +1,4 @@
-// Package dynamodb implements config.Loader and config.Reloader using a
+// Package dynamodb implements ports.Loader and ports.Reloader using a
 // DynamoDB table as the configuration store.
 //
 // The full BridgeConfig document is stored as a single DynamoDB item with

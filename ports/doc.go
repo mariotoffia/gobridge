@@ -20,8 +20,8 @@
 //   - CredentialAdmin: credential lifecycle management (CRUD)
 //
 // Configuration loader/watcher contracts live in the config package
-// (config.Loader, config.Watcher, config.Reloader) because their
-// signatures intrinsically depend on *config.BridgeConfig. Keeping
+// (ports.Loader, ports.Watcher, ports.Reloader) because their
+// signatures intrinsically depend on *ports.BridgeConfig. Keeping
 // them in config preserves the rule that ports imports only domain.
 //
 // Adapter modules under adapters/ implement these interfaces.

@@ -5,23 +5,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func stratCfg(id string) *config.BridgeConfig {
-	return &config.BridgeConfig{Bridge: config.BridgeSettings{ID: id}}
+func stratCfg(id string) *ports.BridgeConfig {
+	return &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: id}}
 }
 
-func mustRecv(t *testing.T, ch <-chan *config.BridgeConfig, timeout time.Duration) *config.BridgeConfig {
+func mustRecv(t *testing.T, ch <-chan *ports.BridgeConfig, timeout time.Duration) *ports.BridgeConfig {
 	t.Helper()
 	return wait.RequireReceive(t, ch, timeout)
 }
 
-func mustClose(t *testing.T, ch <-chan *config.BridgeConfig, timeout time.Duration) {
+func mustClose(t *testing.T, ch <-chan *ports.BridgeConfig, timeout time.Duration) {
 	t.Helper()
 	select {
 	case _, ok := <-ch:
@@ -31,7 +31,7 @@ func mustClose(t *testing.T, ch <-chan *config.BridgeConfig, timeout time.Durati
 	}
 }
 
-func assertNoEmission(t *testing.T, ch <-chan *config.BridgeConfig, window time.Duration) {
+func assertNoEmission(t *testing.T, ch <-chan *ports.BridgeConfig, window time.Duration) {
 	t.Helper()
 	wait.Silent(t, ch, window)
 }
@@ -43,7 +43,7 @@ func TestDirectStrategy_PassThrough(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	in := make(chan *config.BridgeConfig, 1)
+	in := make(chan *ports.BridgeConfig, 1)
 	out := NewDirectStrategy().Filter(ctx, in)
 
 	cfg := stratCfg("pass-through")
@@ -58,7 +58,7 @@ func TestDirectStrategy_MultipleChanges(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	in := make(chan *config.BridgeConfig, 10)
+	in := make(chan *ports.BridgeConfig, 10)
 	out := NewDirectStrategy().Filter(ctx, in)
 
 	ids := []string{"a", "b", "c", "d", "e"}
@@ -75,7 +75,7 @@ func TestDirectStrategy_MultipleChanges(t *testing.T) {
 // TestDirectStrategy_ContextCancel validates that the output channel closes cleanly on context cancellation.
 func TestDirectStrategy_ContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	in := make(chan *config.BridgeConfig)
+	in := make(chan *ports.BridgeConfig)
 	out := NewDirectStrategy().Filter(ctx, in)
 
 	cancel()
@@ -87,7 +87,7 @@ func TestDirectStrategy_InputChannelClosed(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	in := make(chan *config.BridgeConfig)
+	in := make(chan *ports.BridgeConfig)
 	out := NewDirectStrategy().Filter(ctx, in)
 
 	close(in)
@@ -103,7 +103,7 @@ func TestDebouncedStrategy_QuietWindow(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	in := make(chan *config.BridgeConfig, 1)
+	in := make(chan *ports.BridgeConfig, 1)
 	out := NewDebouncedStrategy(quiet, nil).Filter(ctx, in)
 
 	in <- stratCfg("quiet-1")
@@ -121,7 +121,7 @@ func TestDebouncedStrategy_EmitsLatest(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	in := make(chan *config.BridgeConfig, 5)
+	in := make(chan *ports.BridgeConfig, 5)
 	out := NewDebouncedStrategy(quiet, nil).Filter(ctx, in)
 
 	for i := 1; i <= 5; i++ {
@@ -142,7 +142,7 @@ func TestDebouncedStrategy_ResetOnNewChange(t *testing.T) {
 	defer cancel()
 
 	fake := clocktest.New()
-	in := make(chan *config.BridgeConfig, 1)
+	in := make(chan *ports.BridgeConfig, 1)
 	out := NewDebouncedStrategy(quiet, fake).Filter(ctx, in)
 
 	in <- stratCfg("first")
@@ -169,7 +169,7 @@ func TestDebouncedStrategy_ExactlyOneEmitPerBurst(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	in := make(chan *config.BridgeConfig, 10)
+	in := make(chan *ports.BridgeConfig, 10)
 	out := NewDebouncedStrategy(quiet, nil).Filter(ctx, in)
 
 	for i := 0; i < 10; i++ {
@@ -188,7 +188,7 @@ func TestDebouncedStrategy_ContextCancel_PendingTimer(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	fake := clocktest.New()
-	in := make(chan *config.BridgeConfig, 1)
+	in := make(chan *ports.BridgeConfig, 1)
 	out := NewDebouncedStrategy(quiet, fake).Filter(ctx, in)
 
 	in <- stratCfg("pending")
@@ -211,7 +211,7 @@ func TestDebouncedStrategy_InputChannelClosed_PendingTimer(t *testing.T) {
 	defer cancel()
 
 	fake := clocktest.New()
-	in := make(chan *config.BridgeConfig, 1)
+	in := make(chan *ports.BridgeConfig, 1)
 	out := NewDebouncedStrategy(quiet, fake).Filter(ctx, in)
 
 	in <- stratCfg("last")
@@ -230,7 +230,7 @@ func TestDebouncedStrategy_ZeroQuietPeriod(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	in := make(chan *config.BridgeConfig, 3)
+	in := make(chan *ports.BridgeConfig, 3)
 	out := NewDebouncedStrategy(0, nil).Filter(ctx, in)
 
 	ids := []string{"x", "y", "z"}
@@ -256,7 +256,7 @@ func TestWindowedStrategy_QuietWindow(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	in := make(chan *config.BridgeConfig, 1)
+	in := make(chan *ports.BridgeConfig, 1)
 	out := NewWindowedStrategy(quiet, maxDelay, nil).Filter(ctx, in)
 
 	in <- stratCfg("sparse")
@@ -277,7 +277,7 @@ func TestWindowedStrategy_MaxDelay(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	in := make(chan *config.BridgeConfig)
+	in := make(chan *ports.BridgeConfig)
 	out := NewWindowedStrategy(quiet, maxDelay, nil).Filter(ctx, in)
 
 	// Feed configs faster than the quiet period so the quiet timer never fires.
@@ -323,7 +323,7 @@ func TestWindowedStrategy_MaxDelayResetAfterEmit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	in := make(chan *config.BridgeConfig)
+	in := make(chan *ports.BridgeConfig)
 	out := NewWindowedStrategy(quiet, maxDelay, nil).Filter(ctx, in)
 
 	// Continuously feed to force maxDelay emit.
@@ -367,7 +367,7 @@ func TestWindowedStrategy_QuietBeforeMaxDelay(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	in := make(chan *config.BridgeConfig, 1)
+	in := make(chan *ports.BridgeConfig, 1)
 	out := NewWindowedStrategy(quiet, maxDelay, nil).Filter(ctx, in)
 
 	start := time.Now()
@@ -389,7 +389,7 @@ func TestWindowedStrategy_ContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	fake := clocktest.New()
-	in := make(chan *config.BridgeConfig, 1)
+	in := make(chan *ports.BridgeConfig, 1)
 	out := NewWindowedStrategy(quiet, maxDelay, fake).Filter(ctx, in)
 
 	in <- stratCfg("pending")
@@ -412,7 +412,7 @@ func TestWindowedStrategy_MaxDelayLessThanQuiet(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	in := make(chan *config.BridgeConfig, 1)
+	in := make(chan *ports.BridgeConfig, 1)
 	out := NewWindowedStrategy(quiet, maxDelay, nil).Filter(ctx, in)
 
 	start := time.Now()
@@ -433,7 +433,7 @@ func TestWindowedStrategy_EqualPeriods(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	in := make(chan *config.BridgeConfig, 1)
+	in := make(chan *ports.BridgeConfig, 1)
 	out := NewWindowedStrategy(period, period, nil).Filter(ctx, in)
 
 	in <- stratCfg("equal")

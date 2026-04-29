@@ -14,6 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/httpapi"
+	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -42,7 +43,7 @@ type configAPIServer struct {
 // newConfigAPITestServer starts a real httpapi.Server on a random port
 // with config management enabled. It does NOT start a supervisor or
 // file watcher — use newConfigAPITestServerWithPipeline for that.
-func newConfigAPITestServer(t *testing.T, baseCfg *config.BridgeConfig) configAPIServer {
+func newConfigAPITestServer(t *testing.T, baseCfg *ports.BridgeConfig) configAPIServer {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -59,8 +60,8 @@ func newConfigAPITestServer(t *testing.T, baseCfg *config.BridgeConfig) configAP
 		AdminAPIKey:     testAdminAPIKey,
 		MonitorAPIKey:   testMonitorAPIKey,
 		RuntimeProvider: func() *goruntime.Runtime { return rt },
-		ConfigFilePath:  cfgPath,
-		ConfigProvider:  func() *config.BridgeConfig { return currentCfg },
+		ConfigStore:     &config.FileStore{Path: cfgPath},
+		ConfigProvider:  func() *ports.BridgeConfig { return currentCfg },
 	}
 
 	srv := httpapi.New(rt, apiCfg, httpapi.WithServerLogger(nil))
@@ -88,7 +89,7 @@ type configAPIPipelineServer struct {
 // newConfigAPITestServerWithPipeline starts the full pipeline: file
 // watcher → config manager → supervisor → runtime, plus the HTTP
 // server. Uses poll-mode watcher (100ms) for deterministic testing.
-func newConfigAPITestServerWithPipeline(t *testing.T, baseCfg *config.BridgeConfig) configAPIPipelineServer {
+func newConfigAPITestServerWithPipeline(t *testing.T, baseCfg *ports.BridgeConfig) configAPIPipelineServer {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -144,7 +145,7 @@ func newConfigAPITestServerWithPipeline(t *testing.T, baseCfg *config.BridgeConf
 		AdminAPIKey:     testAdminAPIKey,
 		MonitorAPIKey:   testMonitorAPIKey,
 		RuntimeProvider: sup.Runtime,
-		ConfigFilePath:  cfgPath,
+		ConfigStore:     &config.FileStore{Path: cfgPath},
 		ConfigProvider:  sup.Config,
 	}
 
@@ -318,7 +319,7 @@ func pollForSupervisorRoute(t *testing.T, sup *bridge.Supervisor, routeID string
 // Config helpers
 // ---------------------------------------------------------------------------
 
-func readConfigFromDisk(t *testing.T, path string) *config.BridgeConfig {
+func readConfigFromDisk(t *testing.T, path string) *ports.BridgeConfig {
 	t.Helper()
 	cfg, err := config.ParseFile(path, config.FormatYAML)
 	if err != nil {
@@ -338,25 +339,25 @@ func readRawFile(t *testing.T, path string) []byte {
 
 // baseConfigForAPI returns a minimal valid BridgeConfig suitable for
 // config API integration tests.
-func baseConfigForAPI() *config.BridgeConfig {
-	return &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+func baseConfigForAPI() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:              "api-test-bridge",
 			DeploymentMode:  "standalone",
 			ShutdownTimeout: "5s",
 			DrainTimeout:    "1s",
 			LogLevel:        "info",
 		},
-		Receivers: []config.ReceiverDef{
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx-1", Transport: "fake"},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx-1", Transport: "fake"},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "bind-1", SenderID: "tx-1", Address: "addr/1"},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:           "r1",
 				ReceiverID:   "rx-1",
@@ -369,9 +370,9 @@ func baseConfigForAPI() *config.BridgeConfig {
 
 // baseConfigForAPIWithHTTP returns a config with HTTP block (for
 // redaction tests).
-func baseConfigForAPIWithHTTP() *config.BridgeConfig {
+func baseConfigForAPIWithHTTP() *ports.BridgeConfig {
 	cfg := baseConfigForAPI()
-	cfg.HTTP = &config.HTTPConfig{
+	cfg.HTTP = &ports.HTTPConfig{
 		AdminAddr:     ":8080",
 		MonitorAddr:   ":8081",
 		AdminAPIKey:   "real-secret-admin-key-1234",

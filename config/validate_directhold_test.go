@@ -3,21 +3,23 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/mariotoffia/gobridge/ports"
 )
 
-func minimalValidBridgeConfig() *BridgeConfig {
-	return &BridgeConfig{
-		Bridge: BridgeSettings{ID: "test"},
-		Receivers: []ReceiverDef{
+func minimalValidBridgeConfig() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test"},
+		Receivers: []ports.ReceiverDef{
 			{ID: "r1", Transport: "sqs"},
 		},
-		Senders: []SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "s1", Transport: "sqs"},
 		},
-		Bindings: []BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "b1", SenderID: "s1", Address: "q1"},
 		},
-		Routes: []RouteDef{
+		Routes: []ports.RouteDef{
 			{ID: "route1", ReceiverID: "r1", Bindings: []string{"b1"}},
 		},
 	}
@@ -67,9 +69,9 @@ func TestValidateWithWarnings_DefaultModeEmitsWarning(t *testing.T) {
 // an invalid config with direct_hold returns both validation errors and the
 // fencing warning.
 func TestValidateWithWarnings_InvalidConfigReturnsWarningsAndError(t *testing.T) {
-	cfg := &BridgeConfig{
-		Bridge: BridgeSettings{ID: "test"},
-		Routes: []RouteDef{
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test"},
+		Routes: []ports.RouteDef{
 			{ID: "route1", DeliveryMode: "direct_hold", Bindings: []string{"b1"}},
 		},
 	}
@@ -96,7 +98,7 @@ func TestValidateWithWarnings_InvalidConfigReturnsWarningsAndError(t *testing.T)
 func TestValidateWithWarnings_SharedOutboxNoWarning(t *testing.T) {
 	cfg := minimalValidBridgeConfig()
 	cfg.Routes[0].DeliveryMode = "shared_outbox"
-	cfg.Stores.Outbox = &StoreConfig{Type: "memory"}
+	cfg.Stores.Outbox = &ports.StoreConfig{Type: "memory"}
 
 	warnings, err := ValidateWithWarnings(cfg)
 	if err != nil {

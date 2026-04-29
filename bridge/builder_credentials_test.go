@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -39,7 +38,7 @@ func TestWithCredentialStore_BackwardCompat(t *testing.T) {
 		"file://creds/a": {Password: &domain.PasswordCredential{Username: "u", Password: "p"}},
 	}}
 
-	cfg := &config.BridgeConfig{}
+	cfg := &ports.BridgeConfig{}
 	b := NewBuilder(cfg, WithCredentialStore(cs))
 
 	require.Same(t, cs, b.credStore, "WithCredentialStore must populate b.credStore")
@@ -53,7 +52,7 @@ func TestWithPullCredentialStore_Alias(t *testing.T) {
 
 	cs := &fakeCredentialStore{}
 
-	cfg := &config.BridgeConfig{}
+	cfg := &ports.BridgeConfig{}
 	b := NewBuilder(cfg, WithPullCredentialStore(cs))
 
 	require.Same(t, cs, b.credStore)
@@ -67,7 +66,7 @@ func TestWithPushCredentialStore(t *testing.T) {
 	push := &fakePushStore{}
 	pull := &fakeCredentialStore{}
 
-	cfg := &config.BridgeConfig{}
+	cfg := &ports.BridgeConfig{}
 	b := NewBuilder(cfg,
 		WithCredentialStore(pull),
 		WithPushCredentialStore(push),
@@ -88,7 +87,7 @@ func TestWithPolledCredentialStore_WrapsPullStore(t *testing.T) {
 		},
 	}
 
-	cfg := &config.BridgeConfig{}
+	cfg := &ports.BridgeConfig{}
 	b := NewBuilder(cfg, WithPolledCredentialStore(pull, ports.PollBasedWrapperConfig{
 		PollInterval: time.Second,
 	}))

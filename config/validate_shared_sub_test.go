@@ -3,6 +3,7 @@ package config
 import (
 	"testing"
 
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -29,28 +30,28 @@ import (
 //                           └── no  → ERROR
 // ═══════════════════════════════════════════════════════════════════
 
-func clusteredMQTTConfig() *BridgeConfig {
-	return &BridgeConfig{
-		Bridge: BridgeSettings{ID: "b1", DeploymentMode: "clustered"},
-		Sessions: []SessionDef{
+func clusteredMQTTConfig() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1", DeploymentMode: "clustered"},
+		Sessions: []ports.SessionDef{
 			{ID: "mqtt-sess", Transport: "mqtt", SessionMode: "persistent"},
 		},
-		Receivers: []ReceiverDef{
+		Receivers: []ports.ReceiverDef{
 			{
 				ID:        "rx-mqtt",
 				SessionID: "mqtt-sess",
-				Topics: []SubscriptionDef{
+				Topics: []ports.SubscriptionDef{
 					{Topic: "devices/temperature", QoS: 1},
 				},
 			},
 		},
-		Senders: []SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx1", Transport: "sqs"},
 		},
-		Bindings: []BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "b1", SenderID: "tx1", Address: "queue-url"},
 		},
-		Routes: []RouteDef{
+		Routes: []ports.RouteDef{
 			{ID: "r1", ReceiverID: "rx-mqtt", Bindings: []string{"b1"}},
 		},
 	}
@@ -106,20 +107,20 @@ func TestValidate_StandaloneMode_NoCheck(t *testing.T) {
 // TestValidate_ClusteredNonMQTT_NoCheck validates that non-MQTT receivers
 // (e.g. SQS) skip the check because they have native competing consumers.
 func TestValidate_ClusteredNonMQTT_NoCheck(t *testing.T) {
-	cfg := &BridgeConfig{
-		Bridge: BridgeSettings{ID: "b1", DeploymentMode: "clustered"},
-		Receivers: []ReceiverDef{
-			{ID: "rx-sqs", Transport: "sqs", Topics: []SubscriptionDef{
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1", DeploymentMode: "clustered"},
+		Receivers: []ports.ReceiverDef{
+			{ID: "rx-sqs", Transport: "sqs", Topics: []ports.SubscriptionDef{
 				{Topic: "my-queue"},
 			}},
 		},
-		Senders: []SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx1", Transport: "mqtt"},
 		},
-		Bindings: []BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "b1", SenderID: "tx1", Address: "topic/a"},
 		},
-		Routes: []RouteDef{
+		Routes: []ports.RouteDef{
 			{ID: "r1", ReceiverID: "rx-sqs", Bindings: []string{"b1"}},
 		},
 	}
@@ -168,7 +169,7 @@ func TestValidate_SharedTopicMalformed_Error(t *testing.T) {
 // while the valid $share/ topic does not.
 func TestValidate_MixedTopics_OneBareTopic_Error(t *testing.T) {
 	cfg := clusteredMQTTConfig()
-	cfg.Receivers[0].Topics = []SubscriptionDef{
+	cfg.Receivers[0].Topics = []ports.SubscriptionDef{
 		{Topic: "$share/mygroup/devices/temperature", QoS: 1},
 		{Topic: "devices/humidity", QoS: 1},
 	}
@@ -221,22 +222,22 @@ func TestValidate_ClusteredMQTTMultiLevelSharedTopic_OK(t *testing.T) {
 // a receiver with explicit transport "mqtt" and no session_id still has
 // its topics checked (sessionMode is empty, not exclusive).
 func TestValidate_ClusteredMQTTExplicitTransportNoSession_Error(t *testing.T) {
-	cfg := &BridgeConfig{
-		Bridge: BridgeSettings{ID: "b1", DeploymentMode: "clustered"},
-		Receivers: []ReceiverDef{
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1", DeploymentMode: "clustered"},
+		Receivers: []ports.ReceiverDef{
 			{
 				ID:        "rx-mqtt-nosess",
 				Transport: "mqtt",
-				Topics:    []SubscriptionDef{{Topic: "devices/temp", QoS: 1}},
+				Topics:    []ports.SubscriptionDef{{Topic: "devices/temp", QoS: 1}},
 			},
 		},
-		Senders: []SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx1", Transport: "sqs"},
 		},
-		Bindings: []BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "b1", SenderID: "tx1", Address: "queue-url"},
 		},
-		Routes: []RouteDef{
+		Routes: []ports.RouteDef{
 			{ID: "r1", ReceiverID: "rx-mqtt-nosess", Bindings: []string{"b1"}},
 		},
 	}
@@ -263,12 +264,12 @@ func TestValidate_ClusteredMQTTEmptyTopics_OK(t *testing.T) {
 // receiver with bare topics must not trigger the shared subscription rule.
 func TestValidate_ClusteredMultiReceiver_OnlyMQTTChecked(t *testing.T) {
 	cfg := clusteredMQTTConfig()
-	cfg.Receivers = append(cfg.Receivers, ReceiverDef{
+	cfg.Receivers = append(cfg.Receivers, ports.ReceiverDef{
 		ID:        "rx-sqs",
 		Transport: "sqs",
-		Topics:    []SubscriptionDef{{Topic: "my-queue"}},
+		Topics:    []ports.SubscriptionDef{{Topic: "my-queue"}},
 	})
-	cfg.Routes = append(cfg.Routes, RouteDef{
+	cfg.Routes = append(cfg.Routes, ports.RouteDef{
 		ID: "r2", ReceiverID: "rx-sqs", Bindings: []string{"b1"},
 	})
 

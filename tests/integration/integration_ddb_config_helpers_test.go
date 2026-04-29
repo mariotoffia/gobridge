@@ -125,7 +125,7 @@ routes:
 
 // writeBridgeConfigYAML marshals a BridgeConfig to JSON (which is valid
 // YAML) and writes it to a temp file. Returns the file path.
-func writeBridgeConfigYAML(t *testing.T, cfg *config.BridgeConfig) string {
+func writeBridgeConfigYAML(t *testing.T, cfg *ports.BridgeConfig) string {
 	t.Helper()
 	data, err := json.Marshal(cfg)
 	if err != nil {
@@ -175,7 +175,7 @@ func newTestConfigManager(t *testing.T, basePath string, loader *ddbconfig.Loade
 }
 
 // waitForConfig reads a config from the channel with a timeout.
-func waitForConfig(t *testing.T, ch <-chan *config.BridgeConfig, timeout time.Duration) *config.BridgeConfig {
+func waitForConfig(t *testing.T, ch <-chan *ports.BridgeConfig, timeout time.Duration) *ports.BridgeConfig {
 	t.Helper()
 	select {
 	case cfg, ok := <-ch:
@@ -193,7 +193,7 @@ func waitForConfig(t *testing.T, ch <-chan *config.BridgeConfig, timeout time.Du
 }
 
 // waitForNoConfig asserts that no config arrives within the given duration.
-func waitForNoConfig(t *testing.T, ch <-chan *config.BridgeConfig, duration time.Duration) {
+func waitForNoConfig(t *testing.T, ch <-chan *ports.BridgeConfig, duration time.Duration) {
 	t.Helper()
 	select {
 	case cfg := <-ch:
@@ -209,27 +209,27 @@ func waitForNoConfig(t *testing.T, ch <-chan *config.BridgeConfig, duration time
 
 // minimalOverlay returns a BridgeConfig with only the bridge ID set.
 // This is the smallest valid overlay (all merges are non-destructive).
-func minimalOverlay(bridgeID string) *config.BridgeConfig {
-	return &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: bridgeID},
+func minimalOverlay(bridgeID string) *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: bridgeID},
 	}
 }
 
 // overlayWithRoute creates a config overlay that adds a complete route
 // (receiver, sender, binding, route) using the fake transport.
-func overlayWithRoute(bridgeID, routeID string) *config.BridgeConfig {
-	return &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: bridgeID},
-		Receivers: []config.ReceiverDef{
+func overlayWithRoute(bridgeID, routeID string) *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: bridgeID},
+		Receivers: []ports.ReceiverDef{
 			{ID: routeID + "-rx", Transport: "fake"},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: routeID + "-tx", Transport: "fake"},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: routeID + "-b", SenderID: routeID + "-tx", Address: "addr/" + routeID},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:           routeID,
 				ReceiverID:   routeID + "-rx",
@@ -410,8 +410,8 @@ func newCfgTestSupervisor(opts ...bridge.SupervisorOption) *bridge.Supervisor {
 func runSupervisorInBackground(
 	ctx context.Context,
 	s *bridge.Supervisor,
-	cfg *config.BridgeConfig,
-	changes <-chan *config.BridgeConfig,
+	cfg *ports.BridgeConfig,
+	changes <-chan *ports.BridgeConfig,
 ) (context.CancelFunc, <-chan error) {
 	ctx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)

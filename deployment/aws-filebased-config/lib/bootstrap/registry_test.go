@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 )
@@ -32,8 +31,8 @@ func (f *stubFactory) Capabilities() []ports.Capability {
 
 func TestDetectSwapMode_OverlapWhenNoExclusiveIdentity(t *testing.T) {
 	reg := &factoryRegistry{
-		cfg: &config.BridgeConfig{
-			Sessions: []config.SessionDef{
+		cfg: &ports.BridgeConfig{
+			Sessions: []ports.SessionDef{
 				{ID: "http-sess", Transport: "http"},
 			},
 		},
@@ -48,8 +47,8 @@ func TestDetectSwapMode_OverlapWhenNoExclusiveIdentity(t *testing.T) {
 
 func TestDetectSwapMode_PrepareCommitWhenExclusiveIdentity(t *testing.T) {
 	reg := &factoryRegistry{
-		cfg: &config.BridgeConfig{
-			Sessions: []config.SessionDef{
+		cfg: &ports.BridgeConfig{
+			Sessions: []ports.SessionDef{
 				{ID: "mqtt-sess", Transport: "mqtt"},
 			},
 		},
@@ -64,8 +63,8 @@ func TestDetectSwapMode_PrepareCommitWhenExclusiveIdentity(t *testing.T) {
 
 func TestDetectSwapMode_UnknownTransportSkipped(t *testing.T) {
 	reg := &factoryRegistry{
-		cfg: &config.BridgeConfig{
-			Sessions: []config.SessionDef{
+		cfg: &ports.BridgeConfig{
+			Sessions: []ports.SessionDef{
 				{ID: "unknown-sess", Transport: "unknown"},
 			},
 		},
@@ -78,8 +77,8 @@ func TestDetectSwapMode_UnknownTransportSkipped(t *testing.T) {
 
 func TestTransportHandler_ReturnsNotFoundWhenNoHTTPEndpoints(t *testing.T) {
 	reg := &factoryRegistry{
-		cfg: &config.BridgeConfig{
-			Receivers: []config.ReceiverDef{
+		cfg: &ports.BridgeConfig{
+			Receivers: []ports.ReceiverDef{
 				{ID: "rx", Transport: "mqtt"},
 			},
 		},

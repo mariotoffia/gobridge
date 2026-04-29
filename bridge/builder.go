@@ -3,14 +3,13 @@ package bridge
 import (
 	"log/slog"
 
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
 // Builder constructs a runtime.Runtime from a declarative BridgeConfig.
 type Builder struct {
-	cfg              *config.BridgeConfig
+	cfg              *ports.BridgeConfig
 	transports       map[string]ports.TransportFactory
 	storeFactories   map[string]ports.StoreFactory
 	processors       map[string]ports.Processor
@@ -19,6 +18,7 @@ type Builder struct {
 	pushCredStore    ports.PushCredentialStore
 	endpointResolver ports.EndpointResolver
 	hook             ports.DeliveryHook
+	validator        ports.BlueprintValidator
 }
 
 // BuilderOption configures a Builder.
@@ -76,7 +76,7 @@ func WithPolledCredentialStore(cs ports.PullCredentialStore, cfg ports.PollBased
 }
 
 // NewBuilder creates a builder from the given configuration.
-func NewBuilder(cfg *config.BridgeConfig, opts ...BuilderOption) *Builder {
+func NewBuilder(cfg *ports.BridgeConfig, opts ...BuilderOption) *Builder {
 	b := &Builder{
 		cfg:            cfg,
 		transports:     make(map[string]ports.TransportFactory),
@@ -124,4 +124,14 @@ func (b *Builder) RegisterEndpointResolver(r ports.EndpointResolver) *Builder {
 func (b *Builder) RegisterDeliveryHook(h ports.DeliveryHook) *Builder {
 	b.hook = h
 	return b
+}
+
+// WithBlueprintValidator injects the validator the bridge calls in
+// Prepare to verify the *ports.BridgeConfig before any stores or
+// transports are constructed. The composition root supplies it
+// (typically config.Validate); when no validator is set the bridge
+// trusts the input — this is the contract that lets the bridge
+// package avoid depending on the config parser.
+func WithBlueprintValidator(v ports.BlueprintValidator) BuilderOption {
+	return func(b *Builder) { b.validator = v }
 }

@@ -46,7 +46,7 @@ type DLQStore interface {
 }
 
 // StoreSpec carries the generic shape of a store configuration as
-// produced by the bridge from config.StoreConfig. Plugin-specific
+// produced by the bridge from ports.StoreConfig. Plugin-specific
 // option shapes are kept opaque inside Options and parsed by the
 // store-factory plugin at the boundary.
 type StoreSpec struct {

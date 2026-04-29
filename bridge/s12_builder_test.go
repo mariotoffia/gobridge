@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -20,20 +20,20 @@ func computeStaleClaimBuffer(maxStepDownGrace time.Duration) time.Duration {
 // derivation: one route with default StepDownGrace (15s) produces
 // stale_claim_duration = 30s.
 func TestInjectStaleClaimDuration_DefaultDerivation(t *testing.T) {
-	b := newTestBuilder(&config.BridgeConfig{
-		Stores: config.StoresConfig{
-			Outbox: &config.StoreConfig{Type: "memory"},
+	b := newTestBuilder(&ports.BridgeConfig{
+		Stores: ports.StoresConfig{
+			Outbox: &ports.StoreConfig{Type: "memory"},
 		},
-		Routes: []config.RouteDef{{
+		Routes: []ports.RouteDef{{
 			ID: "r1",
-			Session: &config.RouteSessionDef{
+			Session: &ports.RouteSessionDef{
 				SessionID: "s1",
 				SenderID:  "tx1",
 			},
 		}},
 	})
 
-	sc := &config.StoreConfig{Type: "memory"}
+	sc := &ports.StoreConfig{Type: "memory"}
 	if err := b.injectStaleClaimDuration(sc); err != nil {
 		t.Fatalf("injectStaleClaimDuration: %v", err)
 	}
@@ -52,11 +52,11 @@ func TestInjectStaleClaimDuration_DefaultDerivation(t *testing.T) {
 // TestInjectStaleClaimDuration_MaxAcrossRoutes validates that the
 // derivation takes the maximum StepDownGrace across all routes.
 func TestInjectStaleClaimDuration_MaxAcrossRoutes(t *testing.T) {
-	b := newTestBuilder(&config.BridgeConfig{
-		Routes: []config.RouteDef{
+	b := newTestBuilder(&ports.BridgeConfig{
+		Routes: []ports.RouteDef{
 			{
 				ID: "r1",
-				Session: &config.RouteSessionDef{
+				Session: &ports.RouteSessionDef{
 					SessionID:     "s1",
 					SenderID:      "tx1",
 					StepDownGrace: "20s",
@@ -64,7 +64,7 @@ func TestInjectStaleClaimDuration_MaxAcrossRoutes(t *testing.T) {
 			},
 			{
 				ID: "r2",
-				Session: &config.RouteSessionDef{
+				Session: &ports.RouteSessionDef{
 					SessionID:     "s2",
 					SenderID:      "tx2",
 					StepDownGrace: "45s",
@@ -73,7 +73,7 @@ func TestInjectStaleClaimDuration_MaxAcrossRoutes(t *testing.T) {
 		},
 	})
 
-	sc := &config.StoreConfig{Type: "memory"}
+	sc := &ports.StoreConfig{Type: "memory"}
 	if err := b.injectStaleClaimDuration(sc); err != nil {
 		t.Fatalf("injectStaleClaimDuration: %v", err)
 	}
@@ -91,17 +91,17 @@ func TestInjectStaleClaimDuration_MaxAcrossRoutes(t *testing.T) {
 // TestInjectStaleClaimDuration_ExplicitSkipped validates that an
 // explicitly set stale_claim_duration is not overwritten.
 func TestInjectStaleClaimDuration_ExplicitSkipped(t *testing.T) {
-	b := newTestBuilder(&config.BridgeConfig{
-		Routes: []config.RouteDef{{
+	b := newTestBuilder(&ports.BridgeConfig{
+		Routes: []ports.RouteDef{{
 			ID: "r1",
-			Session: &config.RouteSessionDef{
+			Session: &ports.RouteSessionDef{
 				SessionID: "s1",
 				SenderID:  "tx1",
 			},
 		}},
 	})
 
-	sc := &config.StoreConfig{
+	sc := &ports.StoreConfig{
 		Type:    "memory",
 		Options: map[string]any{"stale_claim_duration": "2m"},
 	}
@@ -118,14 +118,14 @@ func TestInjectStaleClaimDuration_ExplicitSkipped(t *testing.T) {
 // TestInjectStaleClaimDuration_NoRouteSession validates derivation
 // when all routes have nil Session blocks.
 func TestInjectStaleClaimDuration_NoRouteSession(t *testing.T) {
-	b := newTestBuilder(&config.BridgeConfig{
-		Routes: []config.RouteDef{
+	b := newTestBuilder(&ports.BridgeConfig{
+		Routes: []ports.RouteDef{
 			{ID: "r1"},
 			{ID: "r2"},
 		},
 	})
 
-	sc := &config.StoreConfig{Type: "memory"}
+	sc := &ports.StoreConfig{Type: "memory"}
 	if err := b.injectStaleClaimDuration(sc); err != nil {
 		t.Fatalf("injectStaleClaimDuration: %v", err)
 	}
@@ -146,15 +146,15 @@ func TestInjectStaleClaimDuration_NoRouteSession(t *testing.T) {
 // safe re-derivation on subsequent Build() calls.
 func TestInjectStaleClaimDuration_DoesNotMutateOriginalOptions(t *testing.T) {
 	original := map[string]any{"table_name": "my-outbox"}
-	sc := &config.StoreConfig{
+	sc := &ports.StoreConfig{
 		Type:    "memory",
 		Options: original,
 	}
 
-	b := newTestBuilder(&config.BridgeConfig{
-		Routes: []config.RouteDef{{
+	b := newTestBuilder(&ports.BridgeConfig{
+		Routes: []ports.RouteDef{{
 			ID:      "r1",
-			Session: &config.RouteSessionDef{SessionID: "s1", SenderID: "tx1"},
+			Session: &ports.RouteSessionDef{SessionID: "s1", SenderID: "tx1"},
 		}},
 	})
 
@@ -174,7 +174,7 @@ func TestInjectStaleClaimDuration_DoesNotMutateOriginalOptions(t *testing.T) {
 // TestToSessionConfig_MaxRenewFails_And_StepDownGrace validates that
 // toSessionConfig wires MaxRenewFails and StepDownGrace from YAML.
 func TestToSessionConfig_MaxRenewFails_And_StepDownGrace(t *testing.T) {
-	rs := &config.RouteSessionDef{
+	rs := &ports.RouteSessionDef{
 		SessionID:     "s1",
 		SenderID:      "tx1",
 		MaxRenewFails: 5,
@@ -195,7 +195,7 @@ func TestToSessionConfig_MaxRenewFails_And_StepDownGrace(t *testing.T) {
 // TestToSessionConfig_DefaultsWhenOmitted validates that omitting
 // MaxRenewFails and StepDownGrace uses DefaultSessionConfig values.
 func TestToSessionConfig_DefaultsWhenOmitted(t *testing.T) {
-	rs := &config.RouteSessionDef{
+	rs := &ports.RouteSessionDef{
 		SessionID: "s1",
 		SenderID:  "tx1",
 	}
@@ -213,6 +213,6 @@ func TestToSessionConfig_DefaultsWhenOmitted(t *testing.T) {
 	}
 }
 
-func newTestBuilder(cfg *config.BridgeConfig) *Builder {
+func newTestBuilder(cfg *ports.BridgeConfig) *Builder {
 	return NewBuilder(cfg)
 }

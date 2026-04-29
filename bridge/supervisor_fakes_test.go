@@ -207,22 +207,22 @@ func (f *trackingTransportFactory) Sessions() []*trackingSession {
 // Config helpers
 // ---------------------------------------------------------------------------
 
-func supervisorTestConfig(routeID string) *config.BridgeConfig {
-	return &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+func supervisorTestConfig(routeID string) *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:           "test-bridge",
 			DrainTimeout: "1s",
 		},
-		Receivers: []config.ReceiverDef{
+		Receivers: []ports.ReceiverDef{
 			{ID: routeID + "-rx", Transport: "fake"},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: routeID + "-tx", Transport: "fake"},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: routeID + "-b1", SenderID: routeID + "-tx", Address: "addr/" + routeID},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:           routeID,
 				ReceiverID:   routeID + "-rx",
@@ -233,35 +233,35 @@ func supervisorTestConfig(routeID string) *config.BridgeConfig {
 	}
 }
 
-func supervisorTestConfigWithSession(routeID, sessionID string) *config.BridgeConfig {
-	return &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+func supervisorTestConfigWithSession(routeID, sessionID string) *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:           "test-bridge",
 			DrainTimeout: "1s",
 		},
-		Stores: config.StoresConfig{
-			Lease:  &config.StoreConfig{Type: "memory"},
-			Outbox: &config.StoreConfig{Type: "memory"},
+		Stores: ports.StoresConfig{
+			Lease:  &ports.StoreConfig{Type: "memory"},
+			Outbox: &ports.StoreConfig{Type: "memory"},
 		},
-		Sessions: []config.SessionDef{
+		Sessions: []ports.SessionDef{
 			{ID: sessionID, Transport: "exclusive", SessionMode: "exclusive"},
 		},
-		Receivers: []config.ReceiverDef{
+		Receivers: []ports.ReceiverDef{
 			{ID: routeID + "-rx", Transport: "fake"},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: routeID + "-tx", Transport: "exclusive", SessionID: sessionID},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: routeID + "-b1", SenderID: routeID + "-tx", SessionID: sessionID, Address: "topic/" + routeID},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:           routeID,
 				ReceiverID:   routeID + "-rx",
 				DeliveryMode: "shared_outbox",
 				Bindings:     []string{routeID + "-b1"},
-				Session: &config.RouteSessionDef{
+				Session: &ports.RouteSessionDef{
 					SessionID: sessionID,
 					SenderID:  routeID + "-tx",
 				},
@@ -270,8 +270,12 @@ func supervisorTestConfigWithSession(routeID, sessionID string) *config.BridgeCo
 	}
 }
 
-// newTestSupervisor creates a Supervisor with fake transports and stores.
+// newTestSupervisor creates a Supervisor with fake transports and
+// stores. config.Validate is injected as the blueprint validator so
+// invalid-config tests behave the same as the production composition
+// root would.
 func newTestSupervisor(opts ...SupervisorOption) *Supervisor {
+	opts = append([]SupervisorOption{WithSupervisorBlueprintValidator(config.Validate)}, opts...)
 	s := NewSupervisor(opts...)
 	s.RegisterTransport("fake", &fakeTransportFactory{})
 	s.RegisterStoreFactory("memory", &fakeStoreFactory{})
@@ -281,6 +285,7 @@ func newTestSupervisor(opts ...SupervisorOption) *Supervisor {
 // newTestSupervisorWithExclusive creates a Supervisor with both a
 // fake transport and an exclusive transport.
 func newTestSupervisorWithExclusive(opts ...SupervisorOption) (*Supervisor, *exclusiveTransportFactory) {
+	opts = append([]SupervisorOption{WithSupervisorBlueprintValidator(config.Validate)}, opts...)
 	s := NewSupervisor(opts...)
 	s.RegisterTransport("fake", &fakeTransportFactory{})
 	ef := &exclusiveTransportFactory{}
@@ -291,7 +296,7 @@ func newTestSupervisorWithExclusive(opts ...SupervisorOption) (*Supervisor, *exc
 
 // runSupervisorAsync starts the supervisor in a goroutine and returns
 // a channel that receives the Run result.
-func runSupervisorAsync(ctx context.Context, s *Supervisor, cfg *config.BridgeConfig, ch <-chan *config.BridgeConfig) <-chan error {
+func runSupervisorAsync(ctx context.Context, s *Supervisor, cfg *ports.BridgeConfig, ch <-chan *ports.BridgeConfig) <-chan error {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- s.Run(ctx, cfg, ch)
@@ -330,17 +335,17 @@ func waitForRouteID(s *Supervisor, routeID string, timeout time.Duration) bool {
 }
 
 // quickCfg returns a minimal valid BridgeConfig with a unique route ID.
-func quickCfg(id string) *config.BridgeConfig {
+func quickCfg(id string) *ports.BridgeConfig {
 	return supervisorTestConfig(id)
 }
 
 // invalidCfg returns a BridgeConfig that fails validation.
-func invalidCfg() *config.BridgeConfig {
-	return &config.BridgeConfig{}
+func invalidCfg() *ports.BridgeConfig {
+	return &ports.BridgeConfig{}
 }
 
 // sendConfig sends a config on the channel without blocking indefinitely.
-func sendConfig(ch chan<- *config.BridgeConfig, cfg *config.BridgeConfig, timeout time.Duration) bool {
+func sendConfig(ch chan<- *ports.BridgeConfig, cfg *ports.BridgeConfig, timeout time.Duration) bool {
 	select {
 	case ch <- cfg:
 		return true
@@ -380,7 +385,7 @@ var (
 
 // quickSupervisorRun is a helper that starts a supervisor, waits for the
 // runtime to appear, then returns the cancel function and error channel.
-func quickSupervisorRun(s *Supervisor, cfg *config.BridgeConfig, changes chan *config.BridgeConfig) (context.CancelFunc, <-chan error) {
+func quickSupervisorRun(s *Supervisor, cfg *ports.BridgeConfig, changes chan *ports.BridgeConfig) (context.CancelFunc, <-chan error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := runSupervisorAsync(ctx, s, cfg, changes)
 	waitForRuntime(s, 2*time.Second)

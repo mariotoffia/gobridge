@@ -5,44 +5,45 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 type stubLoader struct {
-	cfg *BridgeConfig
+	cfg *ports.BridgeConfig
 	err error
 }
 
-func (s *stubLoader) Load(_ context.Context) (*BridgeConfig, error) {
+func (s *stubLoader) Load(_ context.Context) (*ports.BridgeConfig, error) {
 	return s.cfg, s.err
 }
 
 type stubWatcher struct {
-	ch  chan *BridgeConfig
+	ch  chan *ports.BridgeConfig
 	err error
 }
 
-func (s *stubWatcher) Watch(_ context.Context) (<-chan *BridgeConfig, error) {
+func (s *stubWatcher) Watch(_ context.Context) (<-chan *ports.BridgeConfig, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
 	return s.ch, nil
 }
 
-func minimalValidConfig(id string) *BridgeConfig {
-	return &BridgeConfig{
-		Bridge: BridgeSettings{ID: id},
-		Receivers: []ReceiverDef{
+func minimalValidConfig(id string) *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: id},
+		Receivers: []ports.ReceiverDef{
 			{ID: "recv1", Transport: "mqtt"},
 		},
-		Senders: []SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "snd1", Transport: "mqtt"},
 		},
-		Bindings: []BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "bind1", SenderID: "snd1", Address: "topic/out"},
 		},
-		Routes: []RouteDef{
+		Routes: []ports.RouteDef{
 			{ID: "route1", ReceiverID: "recv1", Bindings: []string{"bind1"}},
 		},
 	}
@@ -65,8 +66,8 @@ func TestManager_Load_WithOverlay(t *testing.T) {
 	base := minimalValidConfig("base-bridge")
 	base.Bridge.LogLevel = "info"
 
-	overlay := &BridgeConfig{
-		Bridge: BridgeSettings{LogLevel: "debug"},
+	overlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{LogLevel: "debug"},
 	}
 
 	mgr := NewManager(
@@ -83,15 +84,15 @@ func TestManager_Load_WithOverlay(t *testing.T) {
 func TestManager_Load_OverlayReplacesStores(t *testing.T) {
 	base := minimalValidConfig("bridge1")
 	base.Bridge.DeploymentMode = "clustered"
-	base.Stores = StoresConfig{
-		Lease:  &StoreConfig{Type: "memory"},
-		Outbox: &StoreConfig{Type: "memory"},
+	base.Stores = ports.StoresConfig{
+		Lease:  &ports.StoreConfig{Type: "memory"},
+		Outbox: &ports.StoreConfig{Type: "memory"},
 	}
 
-	overlay := &BridgeConfig{
-		Stores: StoresConfig{
-			Lease:  &StoreConfig{Type: "dynamodb"},
-			Outbox: &StoreConfig{Type: "dynamodb"},
+	overlay := &ports.BridgeConfig{
+		Stores: ports.StoresConfig{
+			Lease:  &ports.StoreConfig{Type: "dynamodb"},
+			Outbox: &ports.StoreConfig{Type: "dynamodb"},
 		},
 	}
 
@@ -107,7 +108,7 @@ func TestManager_Load_OverlayReplacesStores(t *testing.T) {
 }
 
 func TestManager_Load_ValidationFailure(t *testing.T) {
-	base := &BridgeConfig{}
+	base := &ports.BridgeConfig{}
 
 	mgr := NewManager(Layer{
 		Name:   "file",
@@ -120,7 +121,7 @@ func TestManager_Load_ValidationFailure(t *testing.T) {
 
 func TestManager_Watch_EmitsOnChange(t *testing.T) {
 	base := minimalValidConfig("bridge1")
-	watchCh := make(chan *BridgeConfig, 1)
+	watchCh := make(chan *ports.BridgeConfig, 1)
 
 	mgr := NewManager(Layer{
 		Name:    "file",
@@ -153,7 +154,7 @@ func TestManager_Watch_EmitsOnChange(t *testing.T) {
 
 func TestManager_Watch_InvalidMergedConfigDropped(t *testing.T) {
 	base := minimalValidConfig("bridge1")
-	watchCh := make(chan *BridgeConfig, 1)
+	watchCh := make(chan *ports.BridgeConfig, 1)
 
 	mgr := NewManager(Layer{
 		Name:    "file",
@@ -171,7 +172,7 @@ func TestManager_Watch_InvalidMergedConfigDropped(t *testing.T) {
 	require.NoError(t, err)
 
 	// Push an invalid config (missing bridge.id)
-	watchCh <- &BridgeConfig{}
+	watchCh <- &ports.BridgeConfig{}
 
 	select {
 	case <-out:
@@ -185,7 +186,7 @@ func TestManager_Watch_InvalidMergedConfigDropped(t *testing.T) {
 
 func TestManager_Watch_AlreadyRunning(t *testing.T) {
 	base := minimalValidConfig("bridge1")
-	watchCh := make(chan *BridgeConfig, 1)
+	watchCh := make(chan *ports.BridgeConfig, 1)
 
 	mgr := NewManager(Layer{
 		Name:    "file",
@@ -210,7 +211,7 @@ func TestManager_Watch_AlreadyRunning(t *testing.T) {
 
 func TestManager_StopWaitsForLoopExit(t *testing.T) {
 	base := minimalValidConfig("bridge1")
-	watchCh := make(chan *BridgeConfig, 1)
+	watchCh := make(chan *ports.BridgeConfig, 1)
 
 	mgr := NewManager(Layer{
 		Name:    "file",
@@ -239,7 +240,7 @@ func TestManager_StopWaitsForLoopExit(t *testing.T) {
 
 func TestManager_StopThenWatch_NoRace(t *testing.T) {
 	base := minimalValidConfig("bridge1")
-	watchCh := make(chan *BridgeConfig, 1)
+	watchCh := make(chan *ports.BridgeConfig, 1)
 
 	mgr := NewManager(Layer{
 		Name:    "file",
@@ -266,7 +267,7 @@ func TestManager_StopThenWatch_NoRace(t *testing.T) {
 
 func TestManager_Watch_SlowConsumer_GetsLatestConfig(t *testing.T) {
 	base := minimalValidConfig("bridge1")
-	watchCh := make(chan *BridgeConfig, 4)
+	watchCh := make(chan *ports.BridgeConfig, 4)
 
 	mgr := NewManager(Layer{
 		Name:    "file",
@@ -310,12 +311,12 @@ func TestManager_Watch_SlowConsumer_GetsLatestConfig(t *testing.T) {
 
 func TestManager_CustomMergeFunc(t *testing.T) {
 	base := minimalValidConfig("bridge1")
-	overlay := &BridgeConfig{
-		Bridge: BridgeSettings{LogLevel: "custom"},
+	overlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{LogLevel: "custom"},
 	}
 
 	called := false
-	customMerge := func(b, o *BridgeConfig) (*BridgeConfig, error) {
+	customMerge := func(b, o *ports.BridgeConfig) (*ports.BridgeConfig, error) {
 		called = true
 		return DefaultMerge(b, o)
 	}

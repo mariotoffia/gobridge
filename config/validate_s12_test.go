@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -17,23 +19,23 @@ import (
 //   - Error on negative or zero session durations
 // ═══════════════════════════════════════════════════════════════════════
 
-func s12ValidConfig() *BridgeConfig {
-	return &BridgeConfig{
-		Bridge:    BridgeSettings{ID: "test-bridge"},
-		Receivers: []ReceiverDef{{ID: "rx1", Transport: "sqs"}},
-		Senders:   []SenderDef{{ID: "tx1", Transport: "mqtt", SessionID: "s1"}},
-		Sessions:  []SessionDef{{ID: "s1", Transport: "mqtt", SessionMode: "exclusive"}},
-		Bindings:  []BindingDef{{ID: "b1", SenderID: "tx1", Address: "topic/a"}},
-		Routes: []RouteDef{{
+func s12ValidConfig() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge:    ports.BridgeSettings{ID: "test-bridge"},
+		Receivers: []ports.ReceiverDef{{ID: "rx1", Transport: "sqs"}},
+		Senders:   []ports.SenderDef{{ID: "tx1", Transport: "mqtt", SessionID: "s1"}},
+		Sessions:  []ports.SessionDef{{ID: "s1", Transport: "mqtt", SessionMode: "exclusive"}},
+		Bindings:  []ports.BindingDef{{ID: "b1", SenderID: "tx1", Address: "topic/a"}},
+		Routes: []ports.RouteDef{{
 			ID:           "r1",
 			ReceiverID:   "rx1",
 			DeliveryMode: "shared_outbox",
 			Bindings:     []string{"b1"},
-			Session:      &RouteSessionDef{SessionID: "s1", SenderID: "tx1"},
+			Session:      &ports.RouteSessionDef{SessionID: "s1", SenderID: "tx1"},
 		}},
-		Stores: StoresConfig{
-			Outbox: &StoreConfig{Type: "dynamodb"},
-			Lease:  &StoreConfig{Type: "dynamodb"},
+		Stores: ports.StoresConfig{
+			Outbox: &ports.StoreConfig{Type: "dynamodb"},
+			Lease:  &ports.StoreConfig{Type: "dynamodb"},
 		},
 	}
 }

@@ -6,10 +6,12 @@ import (
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/mariotoffia/gobridge/ports"
 )
 
-// MarshalYAML serialises a BridgeConfig to YAML bytes.
-func MarshalYAML(cfg *BridgeConfig) ([]byte, error) {
+// MarshalYAML serialises a ports.BridgeConfig to YAML bytes.
+func MarshalYAML(cfg *ports.BridgeConfig) ([]byte, error) {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("config: marshal yaml: %w", err)
@@ -17,11 +19,11 @@ func MarshalYAML(cfg *BridgeConfig) ([]byte, error) {
 	return data, nil
 }
 
-// WriteFile atomically writes a BridgeConfig to the given path as YAML.
+// WriteFile atomically writes a ports.BridgeConfig to the given path as YAML.
 // It preserves the original file's permissions when the file already exists.
 // The write uses a temporary file in the same directory followed by an
 // atomic rename, so readers never see a partially written file.
-func WriteFile(path string, cfg *BridgeConfig) error {
+func WriteFile(path string, cfg *ports.BridgeConfig) error {
 	data, err := MarshalYAML(cfg)
 	if err != nil {
 		return err

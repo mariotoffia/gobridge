@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // registerConfigRoutes adds config management endpoints to the admin mux.
@@ -114,7 +114,7 @@ func (s *Server) handleConfigTxnPatch(w http.ResponseWriter, r *http.Request) {
 	txnID := r.PathValue("txnID")
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
-	var overlay config.BridgeConfig
+	var overlay ports.BridgeConfig
 	if err := json.NewDecoder(r.Body).Decode(&overlay); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -204,7 +204,7 @@ func (s *Server) writeConfigTxnError(w http.ResponseWriter, r *http.Request, act
 // sanitizeConfig returns a shallow copy of the config with sensitive fields
 // redacted. The returned value must NOT be mutated — other nested fields
 // (Sessions, Routes, Stores, etc.) still share references with the original.
-func sanitizeConfig(cfg *config.BridgeConfig) *config.BridgeConfig {
+func sanitizeConfig(cfg *ports.BridgeConfig) *ports.BridgeConfig {
 	if cfg == nil {
 		return nil
 	}
@@ -224,11 +224,11 @@ func sanitizeConfig(cfg *config.BridgeConfig) *config.BridgeConfig {
 	return &out
 }
 
-func cloneReceiversWithRedactedAPIKeys(in []config.ReceiverDef) []config.ReceiverDef {
+func cloneReceiversWithRedactedAPIKeys(in []ports.ReceiverDef) []ports.ReceiverDef {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]config.ReceiverDef, len(in))
+	out := make([]ports.ReceiverDef, len(in))
 	for i, recv := range in {
 		out[i] = recv
 		if redacted, changed := redactAPIKeyOption(recv.Options); changed {
@@ -238,11 +238,11 @@ func cloneReceiversWithRedactedAPIKeys(in []config.ReceiverDef) []config.Receive
 	return out
 }
 
-func cloneSendersWithRedactedAPIKeys(in []config.SenderDef) []config.SenderDef {
+func cloneSendersWithRedactedAPIKeys(in []ports.SenderDef) []ports.SenderDef {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]config.SenderDef, len(in))
+	out := make([]ports.SenderDef, len(in))
 	for i, sender := range in {
 		out[i] = sender
 		if redacted, changed := redactAPIKeyOption(sender.Options); changed {
@@ -269,17 +269,20 @@ func redactAPIKeyOption(options map[string]any) (map[string]any, bool) {
 	return out, true
 }
 
-// isValidationError checks whether the error is a config.ValidationError.
+// isValidationError checks whether the error is a blueprint
+// validation error reported by the configured ports.ConfigStore.
 func isValidationError(err error) bool {
-	var ve *config.ValidationError
+	var ve *ports.BlueprintValidationError
 	return errors.As(err, &ve)
 }
 
-// extractValidationError unwraps a config.ValidationError from err.
-func extractValidationError(err error) *config.ValidationError {
-	var ve *config.ValidationError
+// extractValidationError unwraps a *ports.BlueprintValidationError
+// from err. Returns a synthetic value carrying err.Error() when err
+// is not a validation error.
+func extractValidationError(err error) *ports.BlueprintValidationError {
+	var ve *ports.BlueprintValidationError
 	if errors.As(err, &ve) {
 		return ve
 	}
-	return &config.ValidationError{Errors: []string{err.Error()}}
+	return &ports.BlueprintValidationError{Errors: []string{err.Error()}}
 }
