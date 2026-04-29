@@ -10,7 +10,7 @@
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
 .PHONY: arch-graph dupl-report goconst-report arch-quality
-.PHONY: build-aclcheck lint-acl
+.PHONY: build-aclcheck lint-acl build-aggcheck lint-aggregate
 
 GOBRIDGE_GO_CACHE ?= /tmp/gobridge-go-build-cache
 export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
@@ -123,7 +123,7 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 # Lint targets
 # ============================================================================
 
-lint: lint-arch-check lint-gofmt lint-go-vet lint-go ## Run all static checks across the workspace
+lint: lint-arch-check lint-gofmt lint-go-vet lint-go lint-aggregate ## Run all static checks across the workspace
 
 lint-go: ## Run golangci-lint across all workspace modules (uses .golangci.yml at the repo root)
 	@echo "Running golangci-lint across all modules..."
@@ -211,6 +211,18 @@ lint-acl: build-aclcheck ## Run aclcheck (advisory) — writes reports/aclcheck.
 	done; true'
 	@violations=$$(grep -cE 'vendor SDK import' reports/aclcheck.log || echo 0); \
 		echo "ACL boundary report at reports/aclcheck.log ($$violations file-level violations across adapters)"
+
+build-aggcheck: ## Build the aggcheck custom analyzer
+	@mkdir -p bin
+	@cd scripts/aggcheck && go build -o $(PWD)/bin/aggcheck ./...
+
+# lint-aggregate is enforcing: aggregate-like types in domain/ must
+# live in *_aggregate.go files and declare a Validate() method. The
+# convention is opt-in — pure value objects and types whose mutation
+# is via pointer receiver are NOT aggregates and are exempt.
+lint-aggregate: build-aggcheck ## Enforce aggregate-root naming convention in domain/
+	@echo "Checking domain aggregate conventions..."
+	@go vet -vettool=$(PWD)/bin/aggcheck ./domain/...
 
 # ============================================================================
 # Maintenance targets
