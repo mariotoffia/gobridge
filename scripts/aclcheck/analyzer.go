@@ -100,4 +100,3 @@ func isVendorSDK(path string) bool {
 	}
 	return false
 }
-

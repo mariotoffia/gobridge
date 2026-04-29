@@ -174,7 +174,7 @@ so cross-adapter coupling fails lint as soon as it is introduced.
 
 ```bash
 make arch-quality      # Run all advisory reports (writes to reports/)
-make arch-graph        # Module dep graph as SVG (requires graphviz dot)
+make arch-graph        # Module dep graph as text (`go mod graph` output)
 make dupl-report       # Find duplicate code blocks (advisory)
 make goconst-report    # Find repeated literals (advisory)
 make lint-acl          # ACL boundary check on adapters (advisory)
@@ -190,9 +190,11 @@ Treat them as prompts for human review:
 - `goconst.log` — when the same literal appears 4+ times, ask whether
   it deserves a domain-meaningful constant (named from the ubiquitous
   language, not just a generic helper).
-- `arch-graph.svg` — visual aid for spotting unintended new module
-  edges in PR review (e.g., a transport adapter starting to depend on
-  a store implementation).
+- `arch-graph.txt` — raw `go mod graph` edges, one per line. Grep
+  for `^github.com/mariotoffia/gobridge ` to see direct deps; diff
+  the file across PRs to spot unintended new module edges (e.g., a
+  transport adapter starting to depend on a store implementation).
+  Plain text so any tool, including LLM agents, can inspect it.
 - `aclcheck.log` — flags adapter files that import a vendor SDK but
   are not named `acl_*.go` (or under `acl/`). The DDD intent is to
   concentrate the SDK boundary in named files. Existing adapters are

@@ -258,11 +258,8 @@ install: ## Install all development and CI tools
 	go install github.com/psampaz/go-mod-outdated@latest
 	go install github.com/loov/goda@latest
 	go install github.com/fe3dback/go-arch-lint@latest
-	go install golang.org/x/exp/cmd/modgraphviz@latest
 	go install github.com/mibk/dupl@latest
 	go install github.com/jgautheron/goconst/cmd/goconst@latest
-	@echo "Note: 'graphviz' (the dot binary) is required for arch-graph."
-	@echo "      macOS: brew install graphviz; Linux: apt install graphviz."
 
 check: build lint lint-arch-check test audit-timings audit-test-timings ## Run full CI check (no Docker, integration skipped)
 
@@ -277,15 +274,12 @@ check-all: build lint lint-arch-check test-integration audit-timings audit-test-
 # investigating a smell that lint cannot pinpoint.
 # ============================================================================
 
-arch-graph: ## Render the workspace module dep graph as SVG (requires graphviz dot)
+arch-graph: ## Dump the workspace module dep graph as text (LLM/grep-friendly)
 	@mkdir -p reports
-	@echo "Rendering module dep graph..."
-	@if ! command -v dot >/dev/null 2>&1; then \
-		echo "warning: 'dot' not found. Install graphviz (macOS: brew install graphviz; Linux: apt install graphviz)."; \
-		exit 0; \
-	fi
-	@go mod graph | modgraphviz | dot -Tsvg -o reports/arch-graph.svg
-	@echo "Wrote reports/arch-graph.svg"
+	@echo "Dumping module dep graph..."
+	@go mod graph > reports/arch-graph.txt
+	@echo "Wrote reports/arch-graph.txt ($$(wc -l < reports/arch-graph.txt | tr -d ' ') edges)"
+	@echo "Inspect with: grep '^github.com/mariotoffia/gobridge ' reports/arch-graph.txt"
 
 dupl-report: ## Find duplicate code blocks across the workspace (advisory)
 	@mkdir -p reports
