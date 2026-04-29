@@ -129,7 +129,7 @@ func TestSupervisor_CompleteFailure_AfterStop(t *testing.T) {
 	ch := make(chan *config.BridgeConfig, 1)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
-	ef.SessionFn = func(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+	ef.SessionFn = func(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 		return nil, fmt.Errorf("connection refused")
 	}
 	require.True(t, sendConfig(ch, supervisorTestConfigWithSession("r2", "s1"), time.Second))
@@ -144,7 +144,7 @@ func TestSupervisor_CompleteFailure_SwapEventReportsDegraded(t *testing.T) {
 	ch := make(chan *config.BridgeConfig, 1)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
-	ef.SessionFn = func(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+	ef.SessionFn = func(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 		return nil, fmt.Errorf("connection refused")
 	}
 	require.True(t, sendConfig(ch, supervisorTestConfigWithSession("r2", "s1"), time.Second))
@@ -160,7 +160,7 @@ func TestSupervisor_CompleteFailure_NextConfigRecovers(t *testing.T) {
 	ch := make(chan *config.BridgeConfig, 2)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
-	ef.SessionFn = func(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+	ef.SessionFn = func(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 		return nil, fmt.Errorf("connection refused")
 	}
 	require.True(t, sendConfig(ch, supervisorTestConfigWithSession("r2", "s1"), time.Second))
@@ -330,7 +330,7 @@ func TestSupervisor_BrokerUnreachable_PrepareCommit(t *testing.T) {
 	ch := make(chan *config.BridgeConfig, 1)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
-	ef.SessionFn = func(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+	ef.SessionFn = func(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 		return nil, fmt.Errorf("broker unreachable")
 	}
 	require.True(t, sendConfig(ch, supervisorTestConfigWithSession("r2", "s1"), time.Second))

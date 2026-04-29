@@ -82,8 +82,8 @@ type storeResult struct {
 	dlqDist    bool
 }
 
-func isDistributedFactory(sf StoreFactory) bool {
-	if df, ok := sf.(DistributedStoreFactory); ok {
+func isDistributedFactory(sf ports.StoreFactory) bool {
+	if df, ok := sf.(ports.DistributedStoreFactory); ok {
 		return df.IsDistributed()
 	}
 	return false
@@ -97,7 +97,7 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		if !ok {
 			return nil, fmt.Errorf("bridge: no store factory registered for lease type %q", sc.Type)
 		}
-		s, err := sf.NewLeaseStore(ctx, *sc)
+		s, err := sf.NewLeaseStore(ctx, storeSpecFrom(*sc))
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create lease store: %w", err)
 		}
@@ -115,7 +115,7 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		if err := b.injectStaleClaimDuration(sc); err != nil {
 			return nil, err
 		}
-		s, err := sf.NewOutboxStore(ctx, *sc)
+		s, err := sf.NewOutboxStore(ctx, storeSpecFrom(*sc))
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create outbox store: %w", err)
 		}
@@ -130,7 +130,7 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		if !ok {
 			return nil, fmt.Errorf("bridge: no store factory registered for dlq type %q", sc.Type)
 		}
-		s, err := sf.NewDLQStore(ctx, *sc)
+		s, err := sf.NewDLQStore(ctx, storeSpecFrom(*sc))
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create dlq store: %w", err)
 		}

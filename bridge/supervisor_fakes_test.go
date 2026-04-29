@@ -64,28 +64,28 @@ type countingTransportFactory struct {
 	SessionCalls  int
 	ReceiverCalls int
 	SenderCalls   int
-	SessionFn     func(context.Context, config.SessionDef) (ports.Session, error)
+	SessionFn     func(context.Context, ports.SessionSpec) (ports.Session, error)
 }
 
-func (f *countingTransportFactory) NewSession(ctx context.Context, sd config.SessionDef) (ports.Session, error) {
+func (f *countingTransportFactory) NewSession(ctx context.Context, spec ports.SessionSpec) (ports.Session, error) {
 	f.mu.Lock()
 	f.SessionCalls++
 	fn := f.SessionFn
 	f.mu.Unlock()
 	if fn != nil {
-		return fn(ctx, sd)
+		return fn(ctx, spec)
 	}
 	return &fakeSession{}, nil
 }
 
-func (f *countingTransportFactory) NewReceiver(ctx context.Context, rd config.ReceiverDef, sess ports.Session) (ports.Receiver, error) {
+func (f *countingTransportFactory) NewReceiver(ctx context.Context, _ ports.ReceiverSpec, sess ports.Session) (ports.Receiver, error) {
 	f.mu.Lock()
 	f.ReceiverCalls++
 	f.mu.Unlock()
 	return &fakeReceiver{}, nil
 }
 
-func (f *countingTransportFactory) NewSender(ctx context.Context, sd config.SenderDef, sess ports.Session) (ports.Sender, error) {
+func (f *countingTransportFactory) NewSender(ctx context.Context, _ ports.SenderSpec, sess ports.Session) (ports.Sender, error) {
 	f.mu.Lock()
 	f.SenderCalls++
 	f.mu.Unlock()
@@ -119,7 +119,7 @@ type failingTransportFactory struct {
 	sessionErr error
 }
 
-func (f *failingTransportFactory) NewSession(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+func (f *failingTransportFactory) NewSession(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 	return nil, f.sessionErr
 }
 
@@ -133,21 +133,21 @@ type failingStoreFactory struct {
 	dlqErr    error
 }
 
-func (f *failingStoreFactory) NewLeaseStore(_ context.Context, _ config.StoreConfig) (ports.LeaseStore, error) {
+func (f *failingStoreFactory) NewLeaseStore(_ context.Context, _ ports.StoreSpec) (ports.LeaseStore, error) {
 	if f.leaseErr != nil {
 		return nil, f.leaseErr
 	}
 	return &fakeLeaseStore{}, nil
 }
 
-func (f *failingStoreFactory) NewOutboxStore(_ context.Context, _ config.StoreConfig) (ports.OutboxStore, error) {
+func (f *failingStoreFactory) NewOutboxStore(_ context.Context, _ ports.StoreSpec) (ports.OutboxStore, error) {
 	if f.outboxErr != nil {
 		return nil, f.outboxErr
 	}
 	return &fakeOutboxStore{}, nil
 }
 
-func (f *failingStoreFactory) NewDLQStore(_ context.Context, _ config.StoreConfig) (ports.DLQStore, error) {
+func (f *failingStoreFactory) NewDLQStore(_ context.Context, _ ports.StoreSpec) (ports.DLQStore, error) {
 	if f.dlqErr != nil {
 		return nil, f.dlqErr
 	}
@@ -183,7 +183,7 @@ type trackingTransportFactory struct {
 	failAt   int // -1 = never fail; 0-based index of session that fails
 }
 
-func (f *trackingTransportFactory) NewSession(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+func (f *trackingTransportFactory) NewSession(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	idx := len(f.sessions)
@@ -368,10 +368,10 @@ var _ = []any{
 
 // ensure interface compliance for custom fakes
 var (
-	_ TransportFactory = (*countingTransportFactory)(nil)
-	_ TransportFactory = (*exclusiveTransportFactory)(nil)
-	_ TransportFactory = (*failingTransportFactory)(nil)
-	_ StoreFactory     = (*failingStoreFactory)(nil)
+	_ ports.TransportFactory = (*countingTransportFactory)(nil)
+	_ ports.TransportFactory = (*exclusiveTransportFactory)(nil)
+	_ ports.TransportFactory = (*failingTransportFactory)(nil)
+	_ ports.StoreFactory = (*failingStoreFactory)(nil)
 	_ ports.Session    = (*hangingSession)(nil)
 	_ ports.Session    = (*slowSession)(nil)
 	_ ports.Session    = (*failingSession)(nil)

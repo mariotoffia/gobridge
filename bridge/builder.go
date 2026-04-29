@@ -11,8 +11,8 @@ import (
 // Builder constructs a runtime.Runtime from a declarative BridgeConfig.
 type Builder struct {
 	cfg              *config.BridgeConfig
-	transports       map[string]TransportFactory
-	storeFactories   map[string]StoreFactory
+	transports       map[string]ports.TransportFactory
+	storeFactories   map[string]ports.StoreFactory
 	processors       map[string]ports.Processor
 	logger           *slog.Logger
 	credStore        ports.CredentialStore
@@ -79,8 +79,8 @@ func WithPolledCredentialStore(cs ports.PullCredentialStore, cfg ports.PollBased
 func NewBuilder(cfg *config.BridgeConfig, opts ...BuilderOption) *Builder {
 	b := &Builder{
 		cfg:            cfg,
-		transports:     make(map[string]TransportFactory),
-		storeFactories: make(map[string]StoreFactory),
+		transports:     make(map[string]ports.TransportFactory),
+		storeFactories: make(map[string]ports.StoreFactory),
 		processors:     make(map[string]ports.Processor),
 	}
 	for _, o := range opts {
@@ -91,14 +91,14 @@ func NewBuilder(cfg *config.BridgeConfig, opts ...BuilderOption) *Builder {
 
 // RegisterTransport registers a transport factory under the given name
 // (e.g. "mqtt", "sqs"). Returns the builder for chaining.
-func (b *Builder) RegisterTransport(name string, factory TransportFactory) *Builder {
+func (b *Builder) RegisterTransport(name string, factory ports.TransportFactory) *Builder {
 	b.transports[name] = factory
 	return b
 }
 
 // RegisterStoreFactory registers a store factory under the given name
 // (e.g. "dynamodb", "memory", "sqlite"). Returns the builder for chaining.
-func (b *Builder) RegisterStoreFactory(name string, factory StoreFactory) *Builder {
+func (b *Builder) RegisterStoreFactory(name string, factory ports.StoreFactory) *Builder {
 	b.storeFactories[name] = factory
 	return b
 }
@@ -127,11 +127,11 @@ func (b *Builder) RegisterDeliveryHook(h ports.DeliveryHook) *Builder {
 }
 
 // TransportHandlers returns HTTP handlers from transport factories that
-// implement HTTPMountable. The map keys are transport names.
-func (b *Builder) TransportHandlers() map[string]HTTPMountable {
-	handlers := make(map[string]HTTPMountable)
+// implement ports.HTTPMountable. The map keys are transport names.
+func (b *Builder) TransportHandlers() map[string]ports.HTTPMountable {
+	handlers := make(map[string]ports.HTTPMountable)
 	for name, tf := range b.transports {
-		if m, ok := tf.(HTTPMountable); ok {
+		if m, ok := tf.(ports.HTTPMountable); ok {
 			handlers[name] = m
 		}
 	}

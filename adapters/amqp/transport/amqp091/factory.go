@@ -10,15 +10,58 @@ import (
 )
 
 var (
-	_ ports.SessionFactory  = (*Factory)(nil)
-	_ ports.ReceiverFactory = (*ReceiverFactory)(nil)
-	_ ports.SenderFactory   = (*SenderFactory)(nil)
+	_ ports.TransportFactory = (*Factory)(nil)
+	_ ports.ReceiverFactory  = (*ReceiverFactory)(nil)
+	_ ports.SenderFactory    = (*SenderFactory)(nil)
 )
 
-// Factory implements ports.SessionFactory for AMQP 0-9-1.
+// Factory implements ports.TransportFactory for AMQP 0-9-1 (RabbitMQ).
+// RabbitMQ supports stateful sessions and source-level redelivery via
+// nack+requeue.
 type Factory struct {
 	Logger  *slog.Logger
 	Metrics ports.MetricsExporter
+
+	receivers *ReceiverFactory
+	senders   *SenderFactory
+}
+
+// NewFactory creates an AMQP 0-9-1 transport factory.
+func NewFactory(logger *slog.Logger, metrics ...ports.MetricsExporter) *Factory {
+	var m ports.MetricsExporter
+	if len(metrics) > 0 {
+		m = metrics[0]
+	}
+	return &Factory{
+		Logger:    logger,
+		Metrics:   m,
+		receivers: NewReceiverFactory(logger),
+		senders:   NewSenderFactory(logger),
+	}
+}
+
+// NewReceiver delegates to the inner ReceiverFactory.
+func (f *Factory) NewReceiver(ctx context.Context, spec ports.ReceiverSpec, session ports.Session) (ports.Receiver, error) {
+	if f.receivers == nil {
+		f.receivers = NewReceiverFactory(f.Logger)
+	}
+	return f.receivers.NewReceiver(ctx, spec, session)
+}
+
+// NewSender delegates to the inner SenderFactory.
+func (f *Factory) NewSender(ctx context.Context, spec ports.SenderSpec, session ports.Session) (ports.Sender, error) {
+	if f.senders == nil {
+		f.senders = NewSenderFactory(f.Logger)
+	}
+	return f.senders.NewSender(ctx, spec, session)
+}
+
+// Capabilities returns the transport capabilities for AMQP 0-9-1.
+func (f *Factory) Capabilities() []ports.Capability {
+	return []ports.Capability{
+		ports.CapStatefulSession,
+		ports.CapSourceRedelivery,
+	}
 }
 
 // NewSession creates an AMQP 0-9-1 Session from the given spec.

@@ -40,7 +40,7 @@ func main() {
     logger := slog.Default()
 
     rt, err := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-        RegisterTransport("mqtt", paho.NewBridgeFactory(logger)).
+        RegisterTransport("mqtt", paho.NewFactory(logger)).
         RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).
         Build(ctx)
     if err != nil {

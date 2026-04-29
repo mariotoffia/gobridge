@@ -36,13 +36,13 @@ func (f *fakeSender) Send(ctx context.Context, env *domain.Envelope) error { ret
 
 type fakeTransportFactory struct{}
 
-func (f *fakeTransportFactory) NewSession(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+func (f *fakeTransportFactory) NewSession(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 	return &fakeSession{}, nil
 }
-func (f *fakeTransportFactory) NewReceiver(_ context.Context, _ config.ReceiverDef, _ ports.Session) (ports.Receiver, error) {
+func (f *fakeTransportFactory) NewReceiver(_ context.Context, _ ports.ReceiverSpec, _ ports.Session) (ports.Receiver, error) {
 	return &fakeReceiver{}, nil
 }
-func (f *fakeTransportFactory) NewSender(_ context.Context, _ config.SenderDef, _ ports.Session) (ports.Sender, error) {
+func (f *fakeTransportFactory) NewSender(_ context.Context, _ ports.SenderSpec, _ ports.Session) (ports.Sender, error) {
 	return &fakeSender{}, nil
 }
 func (f *fakeTransportFactory) Capabilities() []ports.Capability {
@@ -78,13 +78,13 @@ func (f *fakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]do
 
 type fakeStoreFactory struct{}
 
-func (f *fakeStoreFactory) NewLeaseStore(_ context.Context, _ config.StoreConfig) (ports.LeaseStore, error) {
+func (f *fakeStoreFactory) NewLeaseStore(_ context.Context, _ ports.StoreSpec) (ports.LeaseStore, error) {
 	return &fakeLeaseStore{}, nil
 }
-func (f *fakeStoreFactory) NewOutboxStore(_ context.Context, _ config.StoreConfig) (ports.OutboxStore, error) {
+func (f *fakeStoreFactory) NewOutboxStore(_ context.Context, _ ports.StoreSpec) (ports.OutboxStore, error) {
 	return &fakeOutboxStore{}, nil
 }
-func (f *fakeStoreFactory) NewDLQStore(_ context.Context, _ config.StoreConfig) (ports.DLQStore, error) {
+func (f *fakeStoreFactory) NewDLQStore(_ context.Context, _ ports.StoreSpec) (ports.DLQStore, error) {
 	return nil, nil
 }
 
@@ -101,11 +101,11 @@ func (f *fakeCredentialStore) Resolve(_ context.Context, uri string) (*domain.Cr
 
 type capturingTransportFactory struct {
 	fakeTransportFactory
-	capturedSessionDef config.SessionDef
+	capturedSessionSpec ports.SessionSpec
 }
 
-func (c *capturingTransportFactory) NewSession(_ context.Context, def config.SessionDef) (ports.Session, error) {
-	c.capturedSessionDef = def
+func (c *capturingTransportFactory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.Session, error) {
+	c.capturedSessionSpec = spec
 	return &fakeSession{}, nil
 }
 
@@ -263,9 +263,9 @@ func TestBuilder_WithCredentialStore(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, rt)
 
-	assert.Equal(t, "resolved-user", mqttFactory.capturedSessionDef.Options["username"])
-	assert.Equal(t, "resolved-pass", mqttFactory.capturedSessionDef.Options["password"])
-	_, hasURI := mqttFactory.capturedSessionDef.Options["credentials_uri"]
+	assert.Equal(t, "resolved-user", mqttFactory.capturedSessionSpec.Options["username"])
+	assert.Equal(t, "resolved-pass", mqttFactory.capturedSessionSpec.Options["password"])
+	_, hasURI := mqttFactory.capturedSessionSpec.Options["credentials_uri"]
 	assert.False(t, hasURI, "credentials_uri should be removed after resolution")
 }
 
@@ -299,9 +299,9 @@ func TestBuilder_CredentialInlineOverride(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, rt)
 
-	assert.Equal(t, "inline-user", mqttFactory.capturedSessionDef.Options["username"],
+	assert.Equal(t, "inline-user", mqttFactory.capturedSessionSpec.Options["username"],
 		"inline value should take precedence over resolved credential")
-	assert.Equal(t, "resolved-pass", mqttFactory.capturedSessionDef.Options["password"],
+	assert.Equal(t, "resolved-pass", mqttFactory.capturedSessionSpec.Options["password"],
 		"password should be resolved from credential store")
 }
 
@@ -360,13 +360,13 @@ func TestBuilder_Standalone_NonDistributedStore_OK(t *testing.T) {
 // (nil, nil) instead of a valid store or an error.
 type nilLeaseStoreFactory struct{}
 
-func (f *nilLeaseStoreFactory) NewLeaseStore(_ context.Context, _ config.StoreConfig) (ports.LeaseStore, error) {
+func (f *nilLeaseStoreFactory) NewLeaseStore(_ context.Context, _ ports.StoreSpec) (ports.LeaseStore, error) {
 	return nil, nil
 }
-func (f *nilLeaseStoreFactory) NewOutboxStore(_ context.Context, _ config.StoreConfig) (ports.OutboxStore, error) {
+func (f *nilLeaseStoreFactory) NewOutboxStore(_ context.Context, _ ports.StoreSpec) (ports.OutboxStore, error) {
 	return &fakeOutboxStore{}, nil
 }
-func (f *nilLeaseStoreFactory) NewDLQStore(_ context.Context, _ config.StoreConfig) (ports.DLQStore, error) {
+func (f *nilLeaseStoreFactory) NewDLQStore(_ context.Context, _ ports.StoreSpec) (ports.DLQStore, error) {
 	return nil, nil
 }
 func (f *nilLeaseStoreFactory) IsDistributed() bool { return true }

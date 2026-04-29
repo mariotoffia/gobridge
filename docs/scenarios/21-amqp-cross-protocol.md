@@ -199,8 +199,8 @@ RabbitMQ requeues immediately on retry regardless of the `after` parameter. Arte
 cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
 
 rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("amqp091", amqp091.NewBridgeFactory(logger)).
-    RegisterTransport("amqp10", amqp10.NewBridgeFactory(logger)).
+    RegisterTransport("amqp091", amqp091.NewFactory(logger)).
+    RegisterTransport("amqp10", amqp10.NewFactory(logger)).
     Build(ctx)
 
 rt.Start(ctx)

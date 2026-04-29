@@ -147,7 +147,7 @@ graph TD
 cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
 
 rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("amqp091", amqp091.NewBridgeFactory(logger)).
+    RegisterTransport("amqp091", amqp091.NewFactory(logger)).
     Build(ctx)
 
 rt.Start(ctx)

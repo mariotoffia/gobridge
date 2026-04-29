@@ -276,7 +276,7 @@ type cfgFakeSender struct{}
 
 func (s *cfgFakeSender) Send(_ context.Context, _ *domain.Envelope) error { return nil }
 
-// cfgFakeTransportFactory implements bridge.TransportFactory for test configs
+// cfgFakeTransportFactory implements ports.TransportFactory for test configs
 // that use transport="fake".
 type cfgFakeTransportFactory struct {
 	mu            sync.Mutex
@@ -285,21 +285,21 @@ type cfgFakeTransportFactory struct {
 	senderCalls   int
 }
 
-func (f *cfgFakeTransportFactory) NewSession(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+func (f *cfgFakeTransportFactory) NewSession(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 	f.mu.Lock()
 	f.sessionCalls++
 	f.mu.Unlock()
 	return newCfgFakeSession(), nil
 }
 
-func (f *cfgFakeTransportFactory) NewReceiver(_ context.Context, _ config.ReceiverDef, _ ports.Session) (ports.Receiver, error) {
+func (f *cfgFakeTransportFactory) NewReceiver(_ context.Context, _ ports.ReceiverSpec, _ ports.Session) (ports.Receiver, error) {
 	f.mu.Lock()
 	f.receiverCalls++
 	f.mu.Unlock()
 	return &cfgFakeReceiver{}, nil
 }
 
-func (f *cfgFakeTransportFactory) NewSender(_ context.Context, _ config.SenderDef, _ ports.Session) (ports.Sender, error) {
+func (f *cfgFakeTransportFactory) NewSender(_ context.Context, _ ports.SenderSpec, _ ports.Session) (ports.Sender, error) {
 	f.mu.Lock()
 	f.senderCalls++
 	f.mu.Unlock()
@@ -322,15 +322,15 @@ type cfgBrokenTransportFactory struct {
 	err error
 }
 
-func (f *cfgBrokenTransportFactory) NewSession(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+func (f *cfgBrokenTransportFactory) NewSession(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 	return nil, f.err
 }
 
-func (f *cfgBrokenTransportFactory) NewReceiver(_ context.Context, _ config.ReceiverDef, _ ports.Session) (ports.Receiver, error) {
+func (f *cfgBrokenTransportFactory) NewReceiver(_ context.Context, _ ports.ReceiverSpec, _ ports.Session) (ports.Receiver, error) {
 	return nil, f.err
 }
 
-func (f *cfgBrokenTransportFactory) NewSender(_ context.Context, _ config.SenderDef, _ ports.Session) (ports.Sender, error) {
+func (f *cfgBrokenTransportFactory) NewSender(_ context.Context, _ ports.SenderSpec, _ ports.Session) (ports.Sender, error) {
 	return nil, f.err
 }
 
@@ -382,13 +382,13 @@ func (s *cfgFakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([
 
 type cfgFakeStoreFactory struct{}
 
-func (f *cfgFakeStoreFactory) NewLeaseStore(_ context.Context, _ config.StoreConfig) (ports.LeaseStore, error) {
+func (f *cfgFakeStoreFactory) NewLeaseStore(_ context.Context, _ ports.StoreSpec) (ports.LeaseStore, error) {
 	return &cfgFakeLeaseStore{}, nil
 }
-func (f *cfgFakeStoreFactory) NewOutboxStore(_ context.Context, _ config.StoreConfig) (ports.OutboxStore, error) {
+func (f *cfgFakeStoreFactory) NewOutboxStore(_ context.Context, _ ports.StoreSpec) (ports.OutboxStore, error) {
 	return &cfgFakeOutboxStore{}, nil
 }
-func (f *cfgFakeStoreFactory) NewDLQStore(_ context.Context, _ config.StoreConfig) (ports.DLQStore, error) {
+func (f *cfgFakeStoreFactory) NewDLQStore(_ context.Context, _ ports.StoreSpec) (ports.DLQStore, error) {
 	return nil, nil
 }
 
@@ -456,10 +456,10 @@ func waitForSupervisorRouteID(t *testing.T, s *bridge.Supervisor, routeID string
 
 // Interface compliance checks.
 var (
-	_ bridge.TransportFactory = (*cfgFakeTransportFactory)(nil)
-	_ bridge.TransportFactory = (*cfgBrokenTransportFactory)(nil)
-	_ bridge.TransportFactory = (*cfgExclusiveTransportFactory)(nil)
-	_ bridge.StoreFactory     = (*cfgFakeStoreFactory)(nil)
+	_ ports.TransportFactory = (*cfgFakeTransportFactory)(nil)
+	_ ports.TransportFactory = (*cfgBrokenTransportFactory)(nil)
+	_ ports.TransportFactory = (*cfgExclusiveTransportFactory)(nil)
+	_ ports.StoreFactory     = (*cfgFakeStoreFactory)(nil)
 	_ ports.Session           = (*cfgFakeSession)(nil)
 	_ ports.Receiver          = (*cfgFakeReceiver)(nil)
 	_ ports.Sender            = (*cfgFakeSender)(nil)

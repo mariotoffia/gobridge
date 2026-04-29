@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
-	"github.com/mariotoffia/gobridge/config"
+	
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -21,8 +21,8 @@ import (
 // ---------------------------------------------------------------------------
 
 func BenchmarkReceiver_PostAck(b *testing.B) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "bench-ack"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "bench-ack"}, nil)
 	if err != nil {
 		b.Fatalf("NewReceiver: %v", err)
 	}
@@ -66,8 +66,8 @@ func BenchmarkReceiver_PostAck(b *testing.B) {
 func BenchmarkSSE_Broadcast(b *testing.B) {
 	for _, numClients := range []int{1, 10, 100, 1000} {
 		b.Run(fmt.Sprintf("clients_%d", numClients), func(b *testing.B) {
-			factory := transport.NewBridgeFactory()
-			sender, err := factory.NewSender(context.Background(), config.SenderDef{
+			factory := transport.NewFactory()
+			sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
 				ID:      fmt.Sprintf("bench-sse-%d", numClients),
 				Options: map[string]any{"mode": "sse"},
 			}, nil)
@@ -160,8 +160,8 @@ func BenchmarkForwarder_Forward(b *testing.B) {
 // ---------------------------------------------------------------------------
 
 func BenchmarkReceiver_PostAck_Parallel(b *testing.B) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "bench-par"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "bench-par"}, nil)
 	if err != nil {
 		b.Fatalf("NewReceiver: %v", err)
 	}

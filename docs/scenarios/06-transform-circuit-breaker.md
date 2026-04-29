@@ -125,7 +125,7 @@ cbProc := circuitbreaker.New("cb-protect", circuitbreaker.Config{
 cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
 
 rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("sqs", sqs.NewBridgeFactory(logger)).
+    RegisterTransport("sqs", sqs.NewFactory(logger)).
     RegisterProcessor("reshape", transformProc).
     RegisterProcessor("cb-protect", cbProc).
     RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).

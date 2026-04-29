@@ -131,7 +131,7 @@ func TestDDBTransport_SQS_ConfigChangeSwapsQueue(t *testing.T) {
 		bridge.WithReconfigStrategy(bridge.NewDirectStrategy()),
 		bridge.WithOnSwap(func(ev bridge.SwapEvent) { eventCh <- ev }),
 	)
-	s.RegisterTransport("sqs", sqsadapter.NewBridgeFactory(slog.Default()))
+	s.RegisterTransport("sqs", sqsadapter.NewFactory(slog.Default()))
 	s.RegisterTransport("fake", &cfgFakeTransportFactory{})
 	s.RegisterStoreFactory("memory", &cfgFakeStoreFactory{})
 
@@ -279,7 +279,7 @@ func TestDDBTransport_SQS_NewRouteAdded(t *testing.T) {
 		bridge.WithReconfigStrategy(bridge.NewDirectStrategy()),
 		bridge.WithOnSwap(func(ev bridge.SwapEvent) { eventCh <- ev }),
 	)
-	s.RegisterTransport("sqs", sqsadapter.NewBridgeFactory(slog.Default()))
+	s.RegisterTransport("sqs", sqsadapter.NewFactory(slog.Default()))
 	s.RegisterStoreFactory("memory", &cfgFakeStoreFactory{})
 
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)
@@ -428,7 +428,7 @@ func TestDDBTransport_ConfigRemovesRoute(t *testing.T) {
 		bridge.WithReconfigStrategy(bridge.NewDirectStrategy()),
 		bridge.WithOnSwap(func(ev bridge.SwapEvent) { eventCh <- ev }),
 	)
-	s.RegisterTransport("sqs", sqsadapter.NewBridgeFactory(slog.Default()))
+	s.RegisterTransport("sqs", sqsadapter.NewFactory(slog.Default()))
 	s.RegisterStoreFactory("memory", &cfgFakeStoreFactory{})
 
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)

@@ -4,80 +4,82 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/mariotoffia/gobridge/bridge"
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 var (
-	_ ports.ReceiverFactory   = (*ReceiverFactory)(nil)
-	_ ports.SenderFactory     = (*SenderFactory)(nil)
-	_ bridge.TransportFactory = (*BridgeFactory)(nil)
+	_ ports.ReceiverFactory  = (*ReceiverFactory)(nil)
+	_ ports.SenderFactory    = (*SenderFactory)(nil)
+	_ ports.TransportFactory = (*Factory)(nil)
 )
 
+// ReceiverFactory creates Service Bus receivers from ports.ReceiverSpec.
 type ReceiverFactory struct {
 	logger *slog.Logger
 }
 
+// NewReceiverFactory returns a Service Bus ReceiverFactory.
 func NewReceiverFactory(logger *slog.Logger) *ReceiverFactory {
 	return &ReceiverFactory{logger: logger}
 }
 
+// NewReceiver creates a Service Bus Receiver from a ReceiverSpec.
 func (f *ReceiverFactory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, _ ports.Session) (ports.Receiver, error) {
 	cfg := ReceiverConfigFromOptions(spec.Options)
 	return NewReceiver(cfg, f.logger)
 }
 
+// SenderFactory creates Service Bus senders from ports.SenderSpec.
 type SenderFactory struct {
 	logger *slog.Logger
 }
 
+// NewSenderFactory returns a Service Bus SenderFactory.
 func NewSenderFactory(logger *slog.Logger) *SenderFactory {
 	return &SenderFactory{logger: logger}
 }
 
+// NewSender creates a Service Bus Sender from a SenderSpec.
 func (f *SenderFactory) NewSender(_ context.Context, spec ports.SenderSpec, _ ports.Session) (ports.Sender, error) {
 	cfg := SenderConfigFromOptions(spec.Options)
 	cfg.Logger = f.logger
 	return NewSender(cfg)
 }
 
-type BridgeFactory struct {
-	recvFactory *ReceiverFactory
-	sendFactory *SenderFactory
+// Factory is the Azure Service Bus transport factory. Service Bus is
+// stateless from the bridge's perspective: NewSession returns
+// (nil, nil) and the session parameter passed to NewReceiver/NewSender
+// is ignored.
+type Factory struct {
+	recv *ReceiverFactory
+	send *SenderFactory
 }
 
-func NewBridgeFactory(logger *slog.Logger) *BridgeFactory {
-	return &BridgeFactory{
-		recvFactory: NewReceiverFactory(logger),
-		sendFactory: NewSenderFactory(logger),
+// NewFactory creates a stateless Service Bus TransportFactory.
+func NewFactory(logger *slog.Logger) *Factory {
+	return &Factory{
+		recv: NewReceiverFactory(logger),
+		send: NewSenderFactory(logger),
 	}
 }
 
-func (f *BridgeFactory) NewSession(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+// NewSession returns (nil, nil) — Service Bus does not use sessions
+// at the bridge layer.
+func (f *Factory) NewSession(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 	return nil, nil
 }
 
-func (f *BridgeFactory) NewReceiver(ctx context.Context, def config.ReceiverDef, session ports.Session) (ports.Receiver, error) {
-	spec := ports.ReceiverSpec{
-		ID:        def.ID,
-		SessionID: def.SessionID,
-		Options:   def.Options,
-	}
-	return f.recvFactory.NewReceiver(ctx, spec, session)
+// NewReceiver delegates to the inner ReceiverFactory.
+func (f *Factory) NewReceiver(ctx context.Context, spec ports.ReceiverSpec, session ports.Session) (ports.Receiver, error) {
+	return f.recv.NewReceiver(ctx, spec, session)
 }
 
-func (f *BridgeFactory) NewSender(ctx context.Context, def config.SenderDef, session ports.Session) (ports.Sender, error) {
-	spec := ports.SenderSpec{
-		ID:        def.ID,
-		SessionID: def.SessionID,
-		Options:   def.Options,
-	}
-	return f.sendFactory.NewSender(ctx, spec, session)
+// NewSender delegates to the inner SenderFactory.
+func (f *Factory) NewSender(ctx context.Context, spec ports.SenderSpec, session ports.Session) (ports.Sender, error) {
+	return f.send.NewSender(ctx, spec, session)
 }
 
-func (f *BridgeFactory) Capabilities() []ports.Capability {
-	return []ports.Capability{
-		ports.CapVisibilityExtension,
-	}
+// Capabilities returns the transport capabilities for Azure Service Bus.
+func (f *Factory) Capabilities() []ports.Capability {
+	return []ports.Capability{ports.CapVisibilityExtension}
 }

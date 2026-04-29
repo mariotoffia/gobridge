@@ -557,7 +557,7 @@ Delivery hooks are registered programmatically via the builder or runtime option
 hook := &myAuditHook{}
 
 rt, err := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("mqtt", paho.NewBridgeFactory(logger)).
+    RegisterTransport("mqtt", paho.NewFactory(logger)).
     RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).
     RegisterDeliveryHook(hook).
     Build(ctx)

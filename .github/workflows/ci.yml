@@ -15,7 +15,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
 
       - run: make test
 
@@ -27,9 +27,29 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
 
       - uses: golangci/golangci-lint-action@v7
         with:
           version: latest
           args: --timeout=5m
+
+  lint-arch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install go-arch-lint
+        run: go install github.com/fe3dback/go-arch-lint@latest
+
+      - name: Run architecture lint
+        run: make lint-arch-check
+
+      - name: Upload non-blocking architecture report on failure
+        if: failure()
+        run: make lint-arch-report || true

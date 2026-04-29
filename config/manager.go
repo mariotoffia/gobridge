@@ -21,8 +21,7 @@ type Layer struct {
 // A base layer is loaded first, then overlays are merged on top in order.
 // The merged result is validated before being returned.
 //
-// Manager satisfies config.Loader and config.Watcher, and by structural
-// typing also satisfies ports.ConfigReloader.
+// Manager satisfies config.Loader, config.Watcher, and config.Reloader.
 type Manager struct {
 	base     Layer
 	overlays []Layer

@@ -236,7 +236,7 @@ func main() {
         bridge.WithCredentialStore(resolver),
         bridge.WithLogger(logger),
     ).
-        RegisterTransport("mqtt", paho.NewBridgeFactory(logger)).
+        RegisterTransport("mqtt", paho.NewFactory(logger)).
         RegisterTransport("http", httpFactory).
         RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).
         Build(context.Background())

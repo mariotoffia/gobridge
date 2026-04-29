@@ -9,18 +9,30 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// Factory implements ports.SessionFactory, ports.ReceiverFactory, and
-// ports.SenderFactory for MQTT via Eclipse Paho.
+// Factory implements ports.TransportFactory for MQTT via Eclipse Paho.
 type Factory struct {
 	Logger  *slog.Logger
 	Metrics ports.MetricsExporter
 }
 
-var (
-	_ ports.SessionFactory  = (*Factory)(nil)
-	_ ports.ReceiverFactory = (*Factory)(nil)
-	_ ports.SenderFactory   = (*Factory)(nil)
-)
+var _ ports.TransportFactory = (*Factory)(nil)
+
+// NewFactory creates an MQTT Paho transport factory.
+func NewFactory(logger *slog.Logger, metrics ...ports.MetricsExporter) *Factory {
+	var m ports.MetricsExporter
+	if len(metrics) > 0 {
+		m = metrics[0]
+	}
+	return &Factory{Logger: logger, Metrics: m}
+}
+
+// Capabilities returns the transport capabilities for MQTT.
+func (f *Factory) Capabilities() []ports.Capability {
+	return []ports.Capability{
+		ports.CapStatefulSession,
+		ports.CapExclusiveIdentity,
+	}
+}
 
 // NewSession creates an MQTT Session from the given spec.
 func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.Session, error) {

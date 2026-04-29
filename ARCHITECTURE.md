@@ -76,22 +76,36 @@ graph TB
 
 ### Dependency Rule
 
-Dependencies point inward. Each layer may only import from layers closer to the center:
+Dependencies point inward. Each layer may only import from layers
+closer to the center. The rules below are enforced by `make lint-arch`
+(see `.go-arch-lint.yml`):
 
 | Layer | May Import |
 |---|---|
-| `domain/` | Nothing from gobridge (pure value types) |
+| `domain/` | Standard library only (no gobridge, no vendor) |
 | `ports/` | `domain` |
-| `config/` | Nothing from gobridge (stdlib only) |
-| `observability/` | Nothing from gobridge (stdlib only) |
-| `logging/` | Nothing from gobridge (stdlib only) |
+| `config/` | `domain` and `gopkg.in/yaml.v3` (the only allowed external dep on the inner ring) |
+| `observability/` | Standard library only |
+| `logging/` | Standard library only |
 | `circuitbreaker/` | `domain` |
 | `runtime/` | `domain`, `ports`, `observability`, `logging` |
 | `validate/` | `domain`, `ports` |
-| `bridge/` | `config`, `ports`, `runtime` |
-| `adapters/` | `ports`, `domain`, `circuitbreaker` |
-| `processors/` | `ports`, `domain`, `circuitbreaker` |
+| `bridge/` | `config`, `ports`, `runtime`, `domain`, `logging` |
+| transport adapters | `ports`, `domain`, `logging`, `circuitbreaker`, vendor SDK only (no `bridge`, no `config`, no other adapters) |
+| store impl adapters | `ports`, `domain`, `logging`, vendor SDK only (no aggregators) |
+| store factory aggregators | `ports`, `domain`, `logging`, only their own store impl packages |
+| config source adapters | `config`, `domain`, `logging`, vendor SDK only (the only adapter category allowed to import `config`) |
+| credential adapters | `ports`, `domain`, `logging`, vendor SDK only |
+| observability adapters | `ports`, `domain`, `logging`, vendor SDK only |
+| cluster resolver adapters | `ports`, `domain`, `logging`, vendor SDK only |
+| `processors/` | `ports`, `domain`, `circuitbreaker`, processor-specific vendor (e.g. `ohler55/ojg` for transform) |
 | `httpapi/` | `runtime`, `config`, `ports`, `domain`, `observability` |
+| `cmd/`, `deployment/` | Composition roots — any project package, any vendor |
+
+The architecture lint splits the umbrella `adapters/` into role-specific
+components (one per transport technology, one per store backend, etc.)
+so cross-adapter coupling — for example MQTT importing AWS SDK — fails
+lint immediately. There is no blanket `adapters → adapters` rule.
 
 ---
 

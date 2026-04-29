@@ -6,15 +6,14 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// verifies BridgeFactory.Capabilities returns the expected transport capabilities.
-func TestBridgeFactory_Capabilities(t *testing.T) {
-	bf := NewBridgeFactory(slog.Default())
-	caps := bf.Capabilities()
+// verifies Factory.Capabilities returns the expected transport capabilities.
+func TestFactory_Capabilities(t *testing.T) {
+	f := NewFactory(slog.Default())
+	caps := f.Capabilities()
 
 	want := map[ports.Capability]bool{
 		ports.CapStatefulSession:  false,
@@ -56,11 +55,11 @@ func TestFactory_NewSession_MissingBrokerURL(t *testing.T) {
 	}
 }
 
-// verifies BridgeFactory.NewSession delegates to Factory and rejects invalid config.
-func TestBridgeFactory_NewSession_Invalid(t *testing.T) {
-	bf := NewBridgeFactory(slog.Default())
+// verifies Factory.NewSession via the unified ports.TransportFactory rejects invalid options.
+func TestFactory_NewSession_Invalid(t *testing.T) {
+	f := NewFactory(slog.Default())
 
-	_, err := bf.NewSession(context.Background(), config.SessionDef{
+	_, err := f.NewSession(context.Background(), ports.SessionSpec{
 		ID:      "s1",
 		Options: map[string]any{},
 	})

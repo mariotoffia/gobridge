@@ -141,8 +141,8 @@ graph TD
 cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
 
 rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("mqtt", paho.NewBridgeFactory(logger)).
-    RegisterTransport("sqs", sqs.NewBridgeFactory(logger)).
+    RegisterTransport("mqtt", paho.NewFactory(logger)).
+    RegisterTransport("sqs", sqs.NewFactory(logger)).
     Build(ctx)
 
 rt.Start(ctx)

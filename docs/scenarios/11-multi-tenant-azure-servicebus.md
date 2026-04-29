@@ -297,8 +297,8 @@ tenantProc := tenant.New(tenant.Config{
 }, tenant.WithValidator(myTenantValidator))
 
 rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("servicebus", servicebus.NewBridgeFactory(logger)).
-    RegisterTransport("sqs", sqs.NewBridgeFactory(logger)).
+    RegisterTransport("servicebus", servicebus.NewFactory(logger)).
+    RegisterTransport("sqs", sqs.NewFactory(logger)).
     RegisterProcessor("tenant-check", tenantProc).
     Build(ctx)
 

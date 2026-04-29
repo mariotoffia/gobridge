@@ -16,12 +16,12 @@ classDiagram
         <<interface>>
         +Watch(ctx) chan BridgeConfig, error
     }
-    class ConfigReloader {
+    class Reloader {
         <<interface>>
     }
 
-    ConfigReloader --|> Loader
-    ConfigReloader --|> Watcher
+    Reloader --|> Loader
+    Reloader --|> Watcher
 
     class FileSource {
         +Load(ctx) BridgeConfig, error
@@ -44,20 +44,21 @@ classDiagram
 
     FileSource ..|> Loader
     FileWatcher ..|> Watcher
-    DynamoDBLoader ..|> ConfigReloader
-    Manager ..|> ConfigReloader
+    DynamoDBLoader ..|> Reloader
+    Manager ..|> Reloader
     Manager o-- Loader : base + overlays
     Manager o-- Watcher : watches all layers
 ```
 
-The same contracts are defined in two places to avoid circular imports:
+Configuration loader/watcher contracts are owned by the `config` package
+because their signatures intrinsically depend on `*config.BridgeConfig`.
+Adapters and external consumers implement these directly:
 
 | Package | Types | Used by |
 |---------|-------|---------|
-| `config` | `Loader`, `Watcher` | Config package internals, `Manager` |
-| `ports` | `ConfigLoader`, `ConfigWatcher`, `ConfigReloader` | Adapters, external consumers |
+| `config` | `Loader`, `Watcher`, `Reloader` | Adapters, `Manager`, external consumers |
 
-Both sets are structurally identical.
+This keeps `ports` free of any `config` dependency.
 
 ---
 
@@ -200,7 +201,7 @@ The table uses **pay-per-request** billing. `EnsureTable` creates the table idem
 
 ### Behaviour
 
-- Implements `ports.ConfigLoader` and `ports.ConfigReloader`.
+- Implements `config.Loader` and `config.Reloader`.
 - **Load**: `GetItem` by PK/SK, parse JSON from `data` attribute, track `version`.
 - **Watch**: Polls `version` attribute only (projected read, minimal RCU). Full item is loaded only when the version changes. Channel is closed on context cancellation.
 - **Save**: Marshals `BridgeConfig` to JSON, `PutItem` with incremented `version`.

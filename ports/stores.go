@@ -44,3 +44,29 @@ type DLQStore interface {
 	DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error)
 	Purge(ctx context.Context, before time.Time) (int, error)
 }
+
+// StoreSpec carries the generic shape of a store configuration as
+// produced by the bridge from config.StoreConfig. Plugin-specific
+// option shapes are kept opaque inside Options and parsed by the
+// store-factory plugin at the boundary.
+type StoreSpec struct {
+	Type    string
+	Options map[string]any
+}
+
+// StoreFactory creates backing store instances (lease, outbox, DLQ)
+// from a generic StoreSpec. A factory should return (nil, nil) for a
+// store role it does not handle.
+type StoreFactory interface {
+	NewLeaseStore(ctx context.Context, spec StoreSpec) (LeaseStore, error)
+	NewOutboxStore(ctx context.Context, spec StoreSpec) (OutboxStore, error)
+	NewDLQStore(ctx context.Context, spec StoreSpec) (DLQStore, error)
+}
+
+// DistributedStoreFactory is an optional interface that StoreFactory
+// implementations may satisfy to declare whether the underlying store
+// provides cross-process coordination. Factories that do not implement
+// this interface are assumed to be process-local (not distributed).
+type DistributedStoreFactory interface {
+	IsDistributed() bool
+}

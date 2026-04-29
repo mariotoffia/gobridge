@@ -4,15 +4,14 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 // verifies NewSession returns a nil session with no error for stateless Service Bus transport.
-func TestBridgeFactory_NewSession_ReturnsNilNil(t *testing.T) {
-	bf := NewBridgeFactory(nil)
+func TestFactory_NewSession_ReturnsNilNil(t *testing.T) {
+	f := NewFactory(nil)
 
-	sess, err := bf.NewSession(context.Background(), config.SessionDef{
+	sess, err := f.NewSession(context.Background(), ports.SessionSpec{
 		ID:        "asb-session",
 		Transport: "servicebus",
 	})
@@ -25,10 +24,10 @@ func TestBridgeFactory_NewSession_ReturnsNilNil(t *testing.T) {
 	}
 }
 
-// verifies BridgeFactory reports visibility extension capability.
-func TestBridgeFactory_Capabilities(t *testing.T) {
-	bf := NewBridgeFactory(nil)
-	caps := bf.Capabilities()
+// verifies Factory reports visibility extension capability.
+func TestFactory_Capabilities(t *testing.T) {
+	f := NewFactory(nil)
+	caps := f.Capabilities()
 
 	if len(caps) != 1 {
 		t.Fatalf("expected 1 capability, got %d", len(caps))
@@ -38,20 +37,19 @@ func TestBridgeFactory_Capabilities(t *testing.T) {
 	}
 }
 
-// verifies NewReceiver builds a queue receiver from ReceiverDef options.
-func TestBridgeFactory_NewReceiver(t *testing.T) {
-	bf := NewBridgeFactory(nil)
+// verifies Factory.NewReceiver builds a queue receiver from spec options.
+func TestFactory_NewReceiver(t *testing.T) {
+	f := NewFactory(nil)
 
-	def := config.ReceiverDef{
-		ID:        "recv-1",
-		Transport: "servicebus",
+	spec := ports.ReceiverSpec{
+		ID: "recv-1",
 		Options: map[string]any{
 			"queue_name":        "test-queue",
 			"connection_string": "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=fake",
 		},
 	}
 
-	recv, err := bf.NewReceiver(context.Background(), def, nil)
+	recv, err := f.NewReceiver(context.Background(), spec, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver returned error: %v", err)
 	}
@@ -60,20 +58,19 @@ func TestBridgeFactory_NewReceiver(t *testing.T) {
 	}
 }
 
-// verifies NewSender builds a queue sender from SenderDef options.
-func TestBridgeFactory_NewSender(t *testing.T) {
-	bf := NewBridgeFactory(nil)
+// verifies Factory.NewSender builds a queue sender from spec options.
+func TestFactory_NewSender(t *testing.T) {
+	f := NewFactory(nil)
 
-	def := config.SenderDef{
-		ID:        "send-1",
-		Transport: "servicebus",
+	spec := ports.SenderSpec{
+		ID: "send-1",
 		Options: map[string]any{
 			"queue_name":        "test-queue",
 			"connection_string": "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=fake",
 		},
 	}
 
-	snd, err := bf.NewSender(context.Background(), def, nil)
+	snd, err := f.NewSender(context.Background(), spec, nil)
 	if err != nil {
 		t.Fatalf("NewSender returned error: %v", err)
 	}
@@ -82,13 +79,12 @@ func TestBridgeFactory_NewSender(t *testing.T) {
 	}
 }
 
-// verifies NewReceiver builds a topic subscription receiver from options.
-func TestBridgeFactory_NewReceiver_TopicSubscription(t *testing.T) {
-	bf := NewBridgeFactory(nil)
+// verifies Factory.NewReceiver builds a topic subscription receiver from options.
+func TestFactory_NewReceiver_TopicSubscription(t *testing.T) {
+	f := NewFactory(nil)
 
-	def := config.ReceiverDef{
-		ID:        "recv-topic",
-		Transport: "servicebus",
+	spec := ports.ReceiverSpec{
+		ID: "recv-topic",
 		Options: map[string]any{
 			"topic_name":        "test-topic",
 			"subscription_name": "test-sub",
@@ -96,7 +92,7 @@ func TestBridgeFactory_NewReceiver_TopicSubscription(t *testing.T) {
 		},
 	}
 
-	recv, err := bf.NewReceiver(context.Background(), def, nil)
+	recv, err := f.NewReceiver(context.Background(), spec, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver returned error: %v", err)
 	}
@@ -105,20 +101,19 @@ func TestBridgeFactory_NewReceiver_TopicSubscription(t *testing.T) {
 	}
 }
 
-// verifies NewSender builds a topic sender from options.
-func TestBridgeFactory_NewSender_Topic(t *testing.T) {
-	bf := NewBridgeFactory(nil)
+// verifies Factory.NewSender builds a topic sender from options.
+func TestFactory_NewSender_Topic(t *testing.T) {
+	f := NewFactory(nil)
 
-	def := config.SenderDef{
-		ID:        "send-topic",
-		Transport: "servicebus",
+	spec := ports.SenderSpec{
+		ID: "send-topic",
 		Options: map[string]any{
 			"topic_name":        "test-topic",
 			"connection_string": "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=fake",
 		},
 	}
 
-	snd, err := bf.NewSender(context.Background(), def, nil)
+	snd, err := f.NewSender(context.Background(), spec, nil)
 	if err != nil {
 		t.Fatalf("NewSender returned error: %v", err)
 	}

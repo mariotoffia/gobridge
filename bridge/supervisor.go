@@ -52,8 +52,8 @@ type Supervisor struct {
 	mu                           sync.RWMutex
 	rt                           *runtime.Runtime
 	cfg                          *config.BridgeConfig
-	transports                   map[string]TransportFactory
-	stores                       map[string]StoreFactory
+	transports                   map[string]ports.TransportFactory
+	stores                       map[string]ports.StoreFactory
 	processors                   map[string]ports.Processor
 	credStore                    ports.CredentialStore
 	pushCredStore                ports.PushCredentialStore
@@ -140,8 +140,8 @@ func WithDefaultMaxDrainTimeout(d time.Duration) SupervisorOption {
 // DirectStrategy by default.
 func NewSupervisor(opts ...SupervisorOption) *Supervisor {
 	s := &Supervisor{
-		transports: make(map[string]TransportFactory),
-		stores:     make(map[string]StoreFactory),
+		transports: make(map[string]ports.TransportFactory),
+		stores:     make(map[string]ports.StoreFactory),
 		processors: make(map[string]ports.Processor),
 		swapMode:   SwapAuto,
 		strategy:   NewDirectStrategy(),
@@ -154,7 +154,7 @@ func NewSupervisor(opts ...SupervisorOption) *Supervisor {
 
 // RegisterTransport registers a transport factory for reuse across
 // rebuilds. Returns the supervisor for chaining. Safe for concurrent use.
-func (s *Supervisor) RegisterTransport(name string, factory TransportFactory) *Supervisor {
+func (s *Supervisor) RegisterTransport(name string, factory ports.TransportFactory) *Supervisor {
 	s.mu.Lock()
 	s.transports[name] = factory
 	s.mu.Unlock()
@@ -163,7 +163,7 @@ func (s *Supervisor) RegisterTransport(name string, factory TransportFactory) *S
 
 // RegisterStoreFactory registers a store factory for reuse across
 // rebuilds. Returns the supervisor for chaining. Safe for concurrent use.
-func (s *Supervisor) RegisterStoreFactory(name string, factory StoreFactory) *Supervisor {
+func (s *Supervisor) RegisterStoreFactory(name string, factory ports.StoreFactory) *Supervisor {
 	s.mu.Lock()
 	s.stores[name] = factory
 	s.mu.Unlock()

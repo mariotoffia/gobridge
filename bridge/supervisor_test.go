@@ -145,7 +145,7 @@ func TestSupervisor_PrepareCommitSwap_SessionsCreatedAfterOldStops(t *testing.T)
 	defer func() { cancel(); <-errCh }()
 	oldRt := s.Runtime()
 	require.NotNil(t, oldRt)
-	ef.SessionFn = func(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+	ef.SessionFn = func(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 		assert.False(t, oldRt.IsRunning(), "old runtime must be stopped before new session")
 		return &fakeSession{}, nil
 	}

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
-	"github.com/mariotoffia/gobridge/config"
+	
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -106,8 +106,8 @@ func directHoldRouteConfig(id string, procs []ports.Processor) runtime.RouteConf
 // Validates that an HTTP POST flows through the full runtime pipeline and
 // arrives at the configured sender with correct subject, payload, and headers.
 func TestIntegration_HTTPPost_RuntimePipeline_FakeSender(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "pipe"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "pipe"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -163,8 +163,8 @@ func TestIntegration_HTTPPost_RuntimePipeline_FakeSender(t *testing.T) {
 // Validates that a processor can filter messages and that filtered messages
 // are acked without forwarding to the sender.
 func TestIntegration_HTTPPost_FilterDrop_NoSend(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "filter"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "filter"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -220,8 +220,8 @@ func TestIntegration_HTTPPost_FilterDrop_NoSend(t *testing.T) {
 // Validates that an SSE sender broadcasts multiple envelopes to a connected
 // HTTP client and that disconnection does not cause sender errors.
 func TestIntegration_SSEClient_ReceivesMultipleEvents(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	sender, err := factory.NewSender(context.Background(), config.SenderDef{
+	factory := transport.NewFactory()
+	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID: "sse-multi", Options: map[string]any{"mode": "sse"},
 	}, nil)
 	if err != nil {
@@ -317,8 +317,8 @@ func TestIntegration_HTTPPost_APIKeyAuth(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			factory := transport.NewBridgeFactory()
-			recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{
+			factory := transport.NewFactory()
+			recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{
 				ID: "auth-" + tc.name, Options: map[string]any{"api_key": "secret-123"},
 			}, nil)
 			if err != nil {
@@ -350,8 +350,8 @@ func TestIntegration_HTTPPost_APIKeyAuth(t *testing.T) {
 
 // Validates that requests exceeding max_body_size are rejected with 400.
 func TestIntegration_HTTPPost_BodyTooLarge(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{
 		ID: "big", Options: map[string]any{"max_body_size": 256},
 	}, nil)
 	if err != nil {
@@ -395,8 +395,8 @@ func TestIntegration_HTTPPost_InvalidJSON(t *testing.T) {
 		{"empty_body", ``},
 	}
 
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "badjson"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "badjson"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -432,8 +432,8 @@ func TestIntegration_HTTPPost_InvalidJSON(t *testing.T) {
 // Verifies that the runtime overwrites injected x-bridge.route-id, preserves
 // custom headers, and auto-injects correlation-id.
 func TestIntegration_HTTPPost_HeaderProcessing(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "hdrs"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "hdrs"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -495,8 +495,8 @@ func TestIntegration_HTTPPost_HeaderProcessing(t *testing.T) {
 
 // Verifies that posting to a receiver before Run is called returns 503.
 func TestIntegration_HTTPPost_ReceiverNotReady(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	_, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "notready"}, nil)
+	factory := transport.NewFactory()
+	_, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "notready"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}

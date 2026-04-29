@@ -10,8 +10,8 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-func TestBridgeFactory_Capabilities(t *testing.T) {
-	bf := NewBridgeFactory(slog.Default())
+func TestFactory_Capabilities(t *testing.T) {
+	bf := NewFactory(slog.Default())
 	caps := bf.Capabilities()
 
 	if len(caps) != 1 {
@@ -23,7 +23,7 @@ func TestBridgeFactory_Capabilities(t *testing.T) {
 }
 
 func TestBridgeFactory_Capabilities_Contains_StatefulSession(t *testing.T) {
-	bf := NewBridgeFactory(slog.Default())
+	bf := NewFactory(slog.Default())
 	caps := bf.Capabilities()
 
 	found := false

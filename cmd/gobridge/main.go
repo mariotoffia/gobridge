@@ -67,7 +67,7 @@ func main() {
 		}),
 	)
 
-	sup.RegisterTransport("mqtt", paho.NewBridgeFactory(logger))
+	sup.RegisterTransport("mqtt", paho.NewFactory(logger))
 	sup.RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory())
 
 	// AWS adapters require an AWS SDK client. Uncomment and configure

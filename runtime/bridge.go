@@ -37,7 +37,7 @@ type Runtime struct {
 
 	shutdownTimeout time.Duration
 
-	credRefresher credentialRefresher
+	credRefresherClose func()
 
 	mu sync.Mutex
 	entries         []*routeEntry
@@ -214,13 +214,13 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 
 	// Close credential refresher BEFORE session teardown so that a
 	// rotation in flight cannot race ApplyCredentials against session
-	// Close (see AttachCredentialRefresher rationale).
+	// Close (see AttachCredentialCloser rationale).
 	rt.mu.Lock()
-	cr := rt.credRefresher
-	rt.credRefresher = nil
+	closeRefresher := rt.credRefresherClose
+	rt.credRefresherClose = nil
 	rt.mu.Unlock()
-	if cr != nil {
-		cr.Close()
+	if closeRefresher != nil {
+		closeRefresher()
 	}
 
 	var errs []error

@@ -3,7 +3,7 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test test-integration test-long-running lint lint-fix clean tidy sync help
+.PHONY: all build test test-integration test-long-running lint lint-fix lint-arch lint-arch-report lint-arch-mapping lint-arch-mapping-test lint-arch-check clean tidy sync help
 .PHONY: build-core build-mqtt build-aws build-azure
 .PHONY: install vulncheck update update-major outdated
 .PHONY: docker-up docker-down docker-clean
@@ -118,13 +118,38 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 # Lint targets
 # ============================================================================
 
-lint: ## Lint all workspace modules
+lint: lint-arch ## Lint all workspace modules including architecture (as dependency)
 	@echo "Linting..."
 	golangci-lint run ./...
 
 lint-fix: ## Lint and auto-fix all workspace modules
 	@echo "Linting with auto-fix..."
 	golangci-lint run --fix ./...
+
+lint-arch: ## Check architecture dependencies (strict)
+	@echo "Linting architecture..."
+	go-arch-lint check --project-path . --max-warnings 1024 --output-color=false
+
+lint-arch-report: ## Write a non-blocking architecture lint report
+	@mkdir -p reports
+	@echo "Linting architecture..."
+	@bash -c 'set -o pipefail; go-arch-lint check --project-path . --max-warnings 1024 --output-color=false 2>&1 | tee reports/go-arch-lint.log; rc=$$?; \
+		if [ $$rc -ne 0 ]; then \
+			echo ""; \
+			echo "Architecture warnings captured in reports/go-arch-lint.log"; \
+			exit 0; \
+		fi'
+
+lint-arch-mapping: ## Show package-to-component mapping (debug aid)
+	@echo "Resolving architecture component mapping..."
+	@go-arch-lint mapping --project-path . --scheme grouped --output-color=false
+
+lint-arch-check: lint-arch lint-arch-mapping-test ## Run strict lint and the regression mapping test
+	@echo "Architecture lint and mapping test passed."
+
+lint-arch-mapping-test: ## Verify key packages map to their expected lint components
+	@echo "Verifying architecture component mapping..."
+	@bash scripts/lint-arch-mapping-test.sh
 
 # ============================================================================
 # Maintenance targets
@@ -171,10 +196,11 @@ install: ## Install all development and CI tools
 	go install github.com/icholy/gomajor@latest
 	go install github.com/psampaz/go-mod-outdated@latest
 	go install github.com/loov/goda@latest
+	go install github.com/fe3dback/go-arch-lint@latest
 
-check: build lint test audit-timings audit-test-timings ## Run full CI check (no Docker, integration skipped)
+check: build lint lint-arch-check test audit-timings audit-test-timings ## Run full CI check (no Docker, integration skipped)
 
-check-all: build lint test-integration audit-timings audit-test-timings ## Run full CI check including integration (Docker required)
+check-all: build lint lint-arch-check test-integration audit-timings audit-test-timings ## Run full CI check including integration (Docker required)
 
 # ============================================================================
 # Audit targets

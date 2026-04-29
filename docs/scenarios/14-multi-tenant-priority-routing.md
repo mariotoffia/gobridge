@@ -309,8 +309,8 @@ func main() {
     }, tenant.WithValidator(myTenantValidator))
 
     sup, _ := bridge.NewBuilder(cfg).
-        RegisterTransport("mqtt", paho.NewBridgeFactory(nil)).
-        RegisterTransport("sqs", sqs.NewBridgeFactory(nil)).
+        RegisterTransport("mqtt", paho.NewFactory(nil)).
+        RegisterTransport("sqs", sqs.NewFactory(nil)).
         RegisterProcessor("tenant-validator", tenantProc).
         Build(context.Background())
 

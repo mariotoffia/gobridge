@@ -13,7 +13,6 @@ import (
 
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -49,8 +48,8 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 	mqttRecv := paho.NewReceiver("mqtt-recv-sse", recvSess)
 
 	// --- HTTP/SSE sender ---
-	factory := httptransport.NewBridgeFactory()
-	sseSender, err := factory.NewSender(ctx, config.SenderDef{
+	factory := httptransport.NewFactory()
+	sseSender, err := factory.NewSender(ctx, ports.SenderSpec{
 		ID:      "sse-cross",
 		Options: map[string]any{"mode": "sse", "heartbeat_interval": "60s"},
 	}, nil)
@@ -165,8 +164,8 @@ func TestIntegration_HTTP_To_MQTT_CrossTransport(t *testing.T) {
 	mqttSend := setupMQTTSender(t, senderSess)
 
 	// --- HTTP receiver ---
-	factory := httptransport.NewBridgeFactory()
-	httpRecv, err := factory.NewReceiver(ctx, config.ReceiverDef{ID: "http-cross"}, nil)
+	factory := httptransport.NewFactory()
+	httpRecv, err := factory.NewReceiver(ctx, ports.ReceiverSpec{ID: "http-cross"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver (HTTP): %v", err)
 	}

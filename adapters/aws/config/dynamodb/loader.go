@@ -19,7 +19,6 @@ import (
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
-	"github.com/mariotoffia/gobridge/ports"
 )
 
 const (
@@ -76,13 +75,13 @@ type ddbAPI interface {
 }
 
 var (
-	_ ports.ConfigLoader   = (*Loader)(nil)
-	_ ports.ConfigReloader = (*Loader)(nil)
+	_ config.Loader   = (*Loader)(nil)
+	_ config.Reloader = (*Loader)(nil)
 )
 
-// Loader implements ports.ConfigLoader and ports.ConfigReloader using a
-// DynamoDB table. The full BridgeConfig is stored as a single JSON item
-// with an accompanying numeric version attribute.
+// Loader implements config.Loader and config.Reloader using a DynamoDB
+// table. The full BridgeConfig is stored as a single JSON item with an
+// accompanying numeric version attribute.
 //
 // Two change-detection modes are supported, selectable via WithWatchMode:
 //
@@ -173,7 +172,7 @@ func WithClock(c clock.Clock) Option {
 	}
 }
 
-// NewLoader creates a DynamoDB-backed ConfigLoader.
+// NewLoader creates a DynamoDB-backed config.Reloader.
 func NewLoader(client *dynamodb.Client, opts ...Option) *Loader {
 	l := &Loader{
 		client:             client,
