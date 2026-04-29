@@ -146,8 +146,9 @@ When an environment variable is set, the test utility uses the existing service 
 ## Linting
 
 ```bash
-make lint              # Lint all workspace modules (golangci-lint)
+make lint              # Lint all workspace modules (gofmt + go vet + golangci-lint + go-arch-lint)
 make lint-fix          # Lint with auto-fix
+make lint-go           # golangci-lint pass only (uses .golangci.yml at the repo root)
 make lint-arch         # Strict architecture dependency lint (blocking)
 make lint-arch-report  # Same checks, non-blocking; writes reports/go-arch-lint.log
 ```
@@ -168,6 +169,32 @@ Architecture lint enforces three layers of rules from `.go-arch-lint.yml`:
 Adapters are split into role-specific components (one per transport
 technology, one per store backend, one per config-source backend, etc.)
 so cross-adapter coupling fails lint as soon as it is introduced.
+
+### Architecture-quality reports (advisory)
+
+```bash
+make arch-quality      # Run all advisory reports (writes to reports/)
+make arch-graph        # Module dep graph as SVG (requires graphviz dot)
+make dupl-report       # Find duplicate code blocks (advisory)
+make goconst-report    # Find repeated literals (advisory)
+```
+
+These are **review aids, not gates** — false positives are common
+(test fixtures, repeated HTTP method strings, similar boilerplate).
+Forcing them to pass would push contributors toward over-abstraction.
+Treat them as prompts for human review:
+
+- `dupl.log` — when the same logic appears in two packages, ask
+  whether a missing aggregate root or domain service is hiding.
+- `goconst.log` — when the same literal appears 4+ times, ask whether
+  it deserves a domain-meaningful constant (named from the ubiquitous
+  language, not just a generic helper).
+- `arch-graph.svg` — visual aid for spotting unintended new module
+  edges in PR review (e.g., a transport adapter starting to depend on
+  a store implementation).
+
+Run them at release cuts, before adding a new transport/store
+adapter, or when investigating a smell that lint cannot pinpoint.
 
 ## Dependency Management
 

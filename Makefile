@@ -9,6 +9,7 @@
 .PHONY: docker-up docker-down docker-clean
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
+.PHONY: arch-graph dupl-report goconst-report arch-quality
 
 GOBRIDGE_GO_CACHE ?= /tmp/gobridge-go-build-cache
 export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
@@ -243,6 +244,40 @@ install: ## Install all development and CI tools
 check: build lint lint-arch-check test audit-timings audit-test-timings ## Run full CI check (no Docker, integration skipped)
 
 check-all: build lint lint-arch-check test-integration audit-timings audit-test-timings ## Run full CI check including integration (Docker required)
+
+# ============================================================================
+# Architecture-quality reports (advisory, non-blocking)
+#
+# These targets produce review aids — they are not gates. Forcing them
+# to pass would push contributors toward over-abstraction (the opposite
+# of what good DDD wants). Run them at release time or when
+# investigating a smell that lint cannot pinpoint.
+# ============================================================================
+
+arch-graph: ## Render the workspace module dep graph as SVG (requires graphviz dot)
+	@mkdir -p reports
+	@echo "Rendering module dep graph..."
+	@if ! command -v dot >/dev/null 2>&1; then \
+		echo "warning: 'dot' not found. Install graphviz (macOS: brew install graphviz; Linux: apt install graphviz)."; \
+		exit 0; \
+	fi
+	@go mod graph | modgraphviz | dot -Tsvg -o reports/arch-graph.svg
+	@echo "Wrote reports/arch-graph.svg"
+
+dupl-report: ## Find duplicate code blocks across the workspace (advisory)
+	@mkdir -p reports
+	@echo "Scanning for duplicate code (threshold 75 tokens)..."
+	@dupl -threshold 75 ./... > reports/dupl.log || true
+	@echo "Duplicate-code report at reports/dupl.log"
+
+goconst-report: ## Find repeated string/numeric literals (advisory)
+	@mkdir -p reports
+	@echo "Scanning for repeated literals (>=4 occurrences, >=5 chars)..."
+	@goconst -min-occurrences 4 -min-length 5 ./... > reports/goconst.log || true
+	@echo "Repeated-literals report at reports/goconst.log"
+
+arch-quality: arch-graph dupl-report goconst-report ## Run all advisory architecture-quality reports
+	@echo "Architecture-quality reports written under reports/"
 
 # ============================================================================
 # Audit targets
