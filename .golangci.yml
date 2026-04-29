@@ -83,10 +83,9 @@ linters:
             - pkg: "github.com/mariotoffia/gobridge/bridge"
               desc: "domain must not depend on bridge"
 
-        # Ports must not leak technology types. Several deny entries
-        # are gated on FIX-002/003 (ports.HTTPMountable currently
-        # leaks net/http into the port layer; ports must not see
-        # config until FIX-003 inverts the dependency).
+        # Ports must not leak technology types. config is gated on
+        # FIX-003 (the bridge handover currently keeps config DTOs in
+        # the inner ring transitively).
         ports:
           list-mode: lax
           files:
@@ -94,10 +93,8 @@ linters:
             - "!**/ports/storetest/**"
             - "!$test"
           deny:
-            # TODO(FIX-002): re-enable once ports.HTTPMountable is
-            #                replaced by transport-neutral ports.Endpoint.
-            # - pkg: "net/http"
-            #   desc: "ports must not return stdlib HTTP types; use ports.Endpoint instead"
+            - pkg: "net/http"
+              desc: "ports must not depend on stdlib HTTP types — wire HTTP-specific concerns at the composition root"
             - pkg: "database/sql"
               desc: "ports must not expose stdlib SQL types"
             - pkg: "github.com/mariotoffia/gobridge/config"

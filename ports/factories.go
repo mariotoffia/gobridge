@@ -2,7 +2,6 @@ package ports
 
 import (
 	"context"
-	"net/http"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
@@ -76,12 +75,4 @@ type TransportFactory interface {
 // would cause duplicate processing.
 type VisibilityTimeoutProvider interface {
 	VisibilityTimeout() time.Duration
-}
-
-// HTTPMountable is implemented by transport factories that expose HTTP
-// handlers. The composition root extracts the handler and mounts it on
-// an HTTP server alongside the admin/monitor APIs.
-type HTTPMountable interface {
-	Handler() http.Handler
-	PathPrefix() string
 }

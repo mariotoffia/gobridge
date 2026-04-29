@@ -125,15 +125,3 @@ func (b *Builder) RegisterDeliveryHook(h ports.DeliveryHook) *Builder {
 	b.hook = h
 	return b
 }
-
-// TransportHandlers returns HTTP handlers from transport factories that
-// implement ports.HTTPMountable. The map keys are transport names.
-func (b *Builder) TransportHandlers() map[string]ports.HTTPMountable {
-	handlers := make(map[string]ports.HTTPMountable)
-	for name, tf := range b.transports {
-		if m, ok := tf.(ports.HTTPMountable); ok {
-			handlers[name] = m
-		}
-	}
-	return handlers
-}

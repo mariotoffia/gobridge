@@ -12,10 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-var (
-	_ ports.TransportFactory = (*Factory)(nil)
-	_ ports.HTTPMountable    = (*Factory)(nil)
-)
+var _ ports.TransportFactory = (*Factory)(nil)
 
 // Factory implements ports.TransportFactory for the HTTP transport. It
 // creates HTTP source receivers and SSE target senders, exposing them

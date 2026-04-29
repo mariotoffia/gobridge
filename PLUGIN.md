@@ -67,8 +67,12 @@ Optional companion interfaces (also in `ports`):
 
 - `ports.VisibilityTimeoutProvider` — declares the source visibility
   timeout used by the runtime validator (e.g. SQS).
-- `ports.HTTPMountable` — declares an `http.Handler` for transports
-  that expose HTTP endpoints (e.g. the HTTP source/SSE sink).
+
+Transports that expose HTTP endpoints (e.g. the HTTP source / SSE
+sink) deliberately do not have a port-level abstraction: HTTP handlers
+are inherently HTTP, so the composition root wires them via the
+adapter's concrete type rather than through `ports/` (keeping
+`net/http` out of the inner ring).
 
 ### Registration
 
