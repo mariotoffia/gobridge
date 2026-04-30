@@ -178,6 +178,7 @@ lint-arch-report: ## Write a non-blocking architecture lint report
 			echo "Architecture warnings captured in reports/go-arch-lint.log"; \
 			exit 0; \
 		fi'
+	@go-arch-lint graph --out reports/go-arch-lint-graph.svg
 
 lint-arch-mapping: ## Show package-to-component mapping (debug aid)
 	@echo "Resolving architecture component mapping..."
