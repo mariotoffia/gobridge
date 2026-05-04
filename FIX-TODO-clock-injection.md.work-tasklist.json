@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "FIX-TODO-clock-injection.md",
-  "source_sha": "fe0014d1950ce12f66033ffbe5cbf61d28d5e0024f65ad6485d046289bf8e499",
+  "source_sha": "3e8c0ee696c438a87997c2aa301eae521a37d209a5f8554eecf176fa6953930f",
   "indexed_at": "2026-05-04T07:51:57Z",
   "status_convention": "No explicit status markers; numbered list entries, phase headings, and acceptance bullets without markers default to pending",
   "tasks": [
@@ -118,7 +118,7 @@
     {
       "id": "T011",
       "title": "runtime/outbox_drainer_loop.go \u2014 inject clock for drain cycle timestamps",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This is Go runtime refactoring to make outbox drain timestamps deterministic via clock injection.",

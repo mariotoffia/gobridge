@@ -333,6 +333,28 @@ Recommended order (smallest to largest, leaf to root):
 
    **Agents/Skills used:** general-purpose, code-reviewer.
 9. `runtime/outbox_drainer_loop.go` — drain cycle timestamps.
+
+   **Status:** Resolved 2026-05-04. Outbox drain-batch latency measurement and debug duration logging now use the drainer's injected `clock.Clock`, removing direct wall-clock reads from the drain-cycle timing path.
+
+   **What landed:**
+
+   - Replaced drain-batch start and elapsed-time calculations in [runtime/outbox_drainer_loop.go](runtime/outbox_drainer_loop.go) with `d.clk.Now()` / `d.clk.Since()`.
+   - Added deterministic fake-clock metric coverage in [runtime/outbox_drainer_clock_test.go](runtime/outbox_drainer_clock_test.go) for `MetricOutboxDrainLatency`.
+   - Replaced sleep-based synchronization in [runtime/outbox_drainer_clock_test.go](runtime/outbox_drainer_clock_test.go) with fake-timer registration polling that yields via `runtime.Gosched`.
+
+   **Tests added:**
+
+   - Added `TestOutboxDrainer_DrainLatencyUsesInjectedClock`.
+
+   **Pre-existing issues fixed in touched files (per audit instruction):**
+
+   - Removed real `time.Sleep` synchronization from existing outbox drainer fake-clock tests so the timing audit remains clean when the file changes.
+
+   **Follow-ups (not blockers; logged for future passes):**
+
+   - none.
+
+   **Agents/Skills used:** general-purpose, code-reviewer.
 10. `runtime/instrumented*.go` — metric timestamps.
 11. `httpapi/{admin,admin_dlq,config_txn,server}.go` — request-time
     audit log timestamps. May not need full clock injection if
