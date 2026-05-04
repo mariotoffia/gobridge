@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -35,6 +36,7 @@ type storedCredentials struct {
 type Repository struct {
 	basePath  string
 	namespace string
+	clk       clock.Clock
 	mu        sync.RWMutex
 }
 
@@ -42,6 +44,15 @@ type Option func(*Repository)
 
 func WithNamespace(namespace string) Option {
 	return func(r *Repository) { r.namespace = namespace }
+}
+
+// WithClock sets the clock used for persisted credential timestamps.
+func WithClock(c clock.Clock) Option {
+	return func(r *Repository) {
+		if c != nil {
+			r.clk = c
+		}
+	}
 }
 
 func New(basePath string, opts ...Option) (*Repository, error) {
@@ -53,7 +64,7 @@ func New(basePath string, opts ...Option) (*Repository, error) {
 		return nil, fmt.Errorf("failed to create base path: %w", err)
 	}
 
-	r := &Repository{basePath: basePath}
+	r := &Repository{basePath: basePath, clk: clock.System}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -107,7 +118,7 @@ func (r *Repository) Create(ctx context.Context, uri string, creds *domain.Crede
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	now := time.Now()
+	now := r.clk.Now()
 	stored := storedCredentials{
 		Credentials: creds,
 		Version:     1,
@@ -146,7 +157,7 @@ func (r *Repository) Update(ctx context.Context, uri string, creds *domain.Crede
 
 	stored.Credentials = creds
 	stored.Version++
-	stored.UpdatedAt = time.Now()
+	stored.UpdatedAt = r.clk.Now()
 
 	return r.writeCredentials(filePath, &stored)
 }

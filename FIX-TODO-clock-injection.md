@@ -432,6 +432,27 @@ Recommended order (smallest to largest, leaf to root):
     **Agents/Skills used:** golang-pro, code-reviewer.
 13. `adapters/native/credentials/file/repository.go` — file mtime
     polling.
+
+    **Status:** Resolved 2026-05-04. File credential create/update timestamps now use an injected `clock.Clock`, with deterministic fake-clock test coverage and no production `time.Now()` call remaining in the file repository.
+
+    **What landed:**
+
+    - Added `clock.Clock` injection to [adapters/native/credentials/file/repository.go](adapters/native/credentials/file/repository.go) and replaced create/update timestamp reads with `r.clk.Now()`.
+    - Updated [adapters/native/credentials/file/repository_test.go](adapters/native/credentials/file/repository_test.go) to assert create/update timestamps with `clocktest.Fake`.
+
+    **Tests added:**
+
+    - Updated existing file repository timestamp tests to use deterministic fake-clock assertions.
+
+    **Pre-existing issues fixed in touched files (per audit instruction):**
+
+    - Removed wall-clock sleep from the update timestamp preservation test.
+
+    **Follow-ups (not blockers; logged for future passes):**
+
+    - none.
+
+    **Agents/Skills used:** golang-pro, code-reviewer.
 14. `adapters/native/store/sqliteoutbox/store.go` — record
     timestamps.
 

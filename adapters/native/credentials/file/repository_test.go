@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -221,20 +222,19 @@ func TestURIToPath_RoundTrip(t *testing.T) {
 
 // --- Create ---
 
-// Verifies Create writes versioned credentials with expected timestamps and password fields.
+// Verifies Create writes versioned credentials with injected-clock timestamps and password fields.
 func TestCreate_Success(t *testing.T) {
 	dir := t.TempDir()
-	repo, err := New(dir)
+	fixed := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	repo, err := New(dir, WithClock(clocktest.NewAt(fixed)))
 	require.NoError(t, err)
 	ctx := context.Background()
 
 	uri := "file://mybroker"
 	creds := passwordCreds("user1", "pass1")
 
-	before := time.Now()
 	err = repo.Create(ctx, uri, creds)
 	require.NoError(t, err)
-	after := time.Now()
 
 	p, err := repo.uriToPath(uri)
 	require.NoError(t, err)
@@ -247,10 +247,8 @@ func TestCreate_Success(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &stored))
 
 	assert.Equal(t, int64(1), stored.Version)
-	assert.False(t, stored.CreatedAt.Before(before))
-	assert.False(t, stored.CreatedAt.After(after))
-	assert.False(t, stored.UpdatedAt.Before(before))
-	assert.False(t, stored.UpdatedAt.After(after))
+	assert.Equal(t, fixed, stored.CreatedAt)
+	assert.Equal(t, fixed, stored.UpdatedAt)
 	assert.Equal(t, "user1", stored.Credentials.Password.Username)
 	assert.Equal(t, "pass1", stored.Credentials.Password.Password)
 }
@@ -565,7 +563,9 @@ func TestVersion_IncrementsOnUpdate(t *testing.T) {
 // Verifies CreatedAt is preserved while UpdatedAt advances across updates.
 func TestCreatedAt_PreservedAcrossUpdates(t *testing.T) {
 	dir := t.TempDir()
-	repo, err := New(dir)
+	fixed := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	clk := clocktest.NewAt(fixed)
+	repo, err := New(dir, WithClock(clk))
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -584,18 +584,16 @@ func TestCreatedAt_PreservedAcrossUpdates(t *testing.T) {
 	}
 
 	original := readStored()
-
-	// OTHER: ensure wall-clock advances so UpdatedAt > CreatedAt.
-	time.Sleep(10 * time.Millisecond)
+	clk.Advance(10 * time.Millisecond)
 
 	require.NoError(t, repo.Update(ctx, uri, passwordCreds("u2", "p2"), 0))
 
 	updated := readStored()
 
-	assert.True(t, original.CreatedAt.Equal(updated.CreatedAt),
-		"CreatedAt must not change: original=%v, updated=%v", original.CreatedAt, updated.CreatedAt)
-	assert.True(t, updated.UpdatedAt.After(original.UpdatedAt) || updated.UpdatedAt.Equal(original.UpdatedAt),
-		"UpdatedAt should be >= original: original=%v, updated=%v", original.UpdatedAt, updated.UpdatedAt)
+	assert.Equal(t, fixed, original.CreatedAt)
+	assert.Equal(t, fixed, original.UpdatedAt)
+	assert.Equal(t, original.CreatedAt, updated.CreatedAt)
+	assert.Equal(t, fixed.Add(10*time.Millisecond), updated.UpdatedAt)
 }
 
 // --- Concurrency ---
