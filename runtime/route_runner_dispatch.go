@@ -131,7 +131,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 				fmt.Sprintf("direct_hold: receive count %d >= max replay attempts %d", rc, r.policy.MaxReplayAttempts))
 			if dlqErr := r.dlq.Route(ctx, env, r.routeID, plan.BindingID,
 				r.sessionIDForBinding(plan.BindingID), "", poisonErr, rc); dlqErr != nil {
-				return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
+				return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 			}
 			r.emitDLQ("max_retries")
 			r.hook.OnSettled(ctx, ports.DeliveryOutcome{
@@ -151,7 +151,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	}
 
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, plan.BindingID, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
-		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
+		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 	}
 	if logging.DebugEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelDebug, "routed to DLQ",
@@ -240,7 +240,7 @@ func (r *RouteRunner) sessionIDForBinding(bindingID string) string {
 func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env *domain.Envelope) error {
 	if r.policy.OnExpired == domain.ExpiredDLQ {
 		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", domain.ErrMessageExpired, 0); dlqErr != nil {
-			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
+			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 		}
 		r.emitDLQ("expired")
 	}
@@ -251,7 +251,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 	if errors.Is(err, domain.ErrMessageFiltered) {
 		if r.policy.OnPermanentFailure == domain.FailureDLQ {
 			if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", err, 0); dlqErr != nil {
-				return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
+				return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 			}
 			r.emitDLQ("filtered")
 		}
@@ -263,7 +263,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 		return r.retryOrFallback(ctx, del, env, retryDelay(r.policy, receiveCount(env)+1, err), err)
 	}
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", err, 0); dlqErr != nil {
-		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
+		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 	}
 	r.emitDLQ("permanent")
 	return r.ackDelivery(ctx, del)
@@ -273,7 +273,7 @@ func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery
 	be, ok := domain.AsBridgeError(err)
 	if ok && be.Class != domain.ErrorTransient {
 		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", err, 0); dlqErr != nil {
-			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
+			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 		}
 		r.emitDLQ("rejected")
 		return r.ackDelivery(ctx, del)
@@ -291,7 +291,7 @@ func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, e
 	}
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", reason, 0); dlqErr != nil {
 		r.emitDLQ("retry_unsupported_dlq_failed")
-		return fmt.Errorf("retry unsupported and DLQ write failed: %w", dlqErr)
+		return fmt.Errorf("runtime: route-runner: retry unsupported and write dlq: %w", dlqErr)
 	}
 	if !r.dlq.HasStore() {
 		r.metrics.Counter(domain.MetricMessagesDropped, 1,
@@ -407,7 +407,7 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 		if partitionKey != "" && !r.depthCache.isUnderCapacity(partitionKey) {
 			pending, qErr := r.outboxStore.QueryPending(ctx, partitionKey, r.policy.MaxOutboxDepth+1)
 			if qErr != nil {
-				return r.retryOrFallback(ctx, del, env, time.Second, fmt.Errorf("outbox depth query failed: %w", qErr))
+				return r.retryOrFallback(ctx, del, env, time.Second, fmt.Errorf("runtime: route-runner: query outbox depth: %w", qErr))
 			}
 			atCapacity := len(pending) >= r.policy.MaxOutboxDepth
 			r.depthCache.update(partitionKey, atCapacity)

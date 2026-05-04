@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -90,8 +91,10 @@ func (d *OutboxDrainer) finalDrain(parent context.Context) error {
 	}
 	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), finalCeiling)
 	defer cancel()
-	_, err := d.drainBatch(drainCtx, token)
-	return err
+	if _, err := d.drainBatch(drainCtx, token); err != nil {
+		return fmt.Errorf("runtime: outbox-drainer: final drain: %w", err)
+	}
+	return nil
 }
 
 func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken) (int, error) {

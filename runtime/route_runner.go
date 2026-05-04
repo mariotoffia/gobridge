@@ -372,8 +372,9 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		err := r.handleExpired(ctx, del, env)
 		if err != nil {
 			span.SetError(err)
+			return fmt.Errorf("runtime: route-runner: handle expired: %w", err)
 		}
-		return err
+		return nil
 	}
 
 	if err := RunChain(ctx, r.processors, env,
