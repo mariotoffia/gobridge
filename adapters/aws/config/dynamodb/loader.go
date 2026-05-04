@@ -259,7 +259,8 @@ func (l *Loader) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error) 
 		}
 	}
 
-	go l.pollLoop(ctx, ch)
+	ticker := l.clk.NewTicker(l.pollInterval)
+	go l.pollLoop(ctx, ch, ticker)
 	return ch, nil
 }
 
@@ -290,15 +291,13 @@ func (l *Loader) resolveStreamArn(ctx context.Context) (string, string) {
 	return *out.Table.LatestStreamArn, ""
 }
 
-func (l *Loader) pollLoop(ctx context.Context, ch chan<- *ports.BridgeConfig) {
+func (l *Loader) pollLoop(ctx context.Context, ch chan<- *ports.BridgeConfig, ticker clock.Ticker) {
 	defer close(ch)
+	defer ticker.Stop()
 
 	l.mu.Lock()
 	lastSeen := l.lastVersion
 	l.mu.Unlock()
-
-	ticker := l.clk.NewTicker(l.pollInterval)
-	defer ticker.Stop()
 
 	for {
 		select {

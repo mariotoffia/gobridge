@@ -500,45 +500,12 @@ Per package: build + test green at each step. - DONE
 
 ### Phase 4 — Address the `loader_test.go` TODO - DONE
 
-**Status:** Resolved 2026-05-04. `TestWatchNoDuplicates` in `adapters/aws/config/dynamodb/loader_test.go` rewired to inject `clocktest.Fake` via `ddbconfig.WithClock`; the 500ms `time.Sleep` and its `//nolint:forbidigo` annotation are removed. The goroutine registration is confirmed via a `fc.TickerCount()` spin-wait, then `fc.Advance(500ms)` fires five poll cycles deterministically.
-
-Now that the underlying production code uses `l.clk.NewTicker`,
-rewrite the test to:
-
-```go
-fc := clocktest.New()
-loader := ddbconfig.NewLoader(client,
-    ddbconfig.WithTableName(tableName),
-    ddbconfig.WithBridgeID("test-bridge"),
-    ddbconfig.WithPollInterval(100*time.Millisecond),
-    ddbconfig.WithClock(fc),
-)
-// ...
-ch, err := loader.Watch(ctx)
-// Wait for the goroutine to register its ticker before advancing.
-require.Eventually(t, func() bool { return fc.TickerCount() == 1 },
-    time.Second, 5*time.Millisecond)
-// Fire 5 poll cycles.
-fc.Advance(500 * time.Millisecond)
-// Brief real-time yield so the goroutine can drain its tick queue
-// before we inspect the channel — this is shorter than 500ms because
-// the work between ticks is just a DDB call, not real waiting.
-require.Eventually(t, func() bool { return /* some side-effect counter */ },
-    time.Second, 5*time.Millisecond)
-// Now safely assert no emission.
-select {
-case got := <-ch:
-    require.Nil(t, got)
-default:
-}
-```
-
-Drop the `//nolint:forbidigo` and the `time.Sleep(500ms)` once the
-fake-clock variant works.
+**Status:** Resolved 2026-05-04. `TestWatchNoDuplicates` in `adapters/aws/config/dynamodb/loader_test.go` rewired to inject `clocktest.Fake` via `ddbconfig.WithClock`; the 500ms `time.Sleep` and its `//nolint:forbidigo` annotation are removed. The poll ticker is now registered synchronously by `Watch` before the poll goroutine starts, so the test can assert `fc.TickerCount() == 1` and then `fc.Advance(500ms)` to fire five poll cycles deterministically.
 
 **What landed:**
 
-- Rewrote `TestWatchNoDuplicates` in [adapters/aws/config/dynamodb/loader_test.go](adapters/aws/config/dynamodb/loader_test.go) to inject `clocktest.Fake` via `ddbconfig.WithClock`; replaced `time.Sleep(500ms)` with `fc.Advance(500ms)` and a `fc.TickerCount()` spin-wait for goroutine registration; dropped `//nolint:forbidigo` annotation.
+- Rewrote `TestWatchNoDuplicates` in [adapters/aws/config/dynamodb/loader_test.go](adapters/aws/config/dynamodb/loader_test.go) to inject `clocktest.Fake` via `ddbconfig.WithClock`; replaced `time.Sleep(500ms)` with `fc.Advance(500ms)` after synchronous ticker registration; dropped `//nolint:forbidigo` annotation.
+- Updated [adapters/aws/config/dynamodb/loader.go](adapters/aws/config/dynamodb/loader.go) so `Watch` creates the poll ticker before starting `pollLoop`, eliminating the test-only ticker-registration spin wait.
 
 **Tests added:**
 

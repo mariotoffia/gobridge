@@ -224,14 +224,8 @@ func TestWatchNoDuplicates(t *testing.T) {
 		t.Fatalf("watch: %v", err)
 	}
 
-	// Wait for the pollLoop goroutine to register its ticker before advancing.
-	// _test.go files are exempt from the forbidigo time.Sleep ban.
-	deadline := time.Now().Add(time.Second)
-	for fc.TickerCount() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for poll ticker to register")
-		}
-		time.Sleep(5 * time.Millisecond)
+	if got := fc.TickerCount(); got != 1 {
+		t.Fatalf("expected poll ticker to be registered synchronously, got %d", got)
 	}
 
 	// Fire 5 poll cycles; no new version means no emission.
