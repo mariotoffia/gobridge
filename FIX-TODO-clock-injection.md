@@ -67,7 +67,9 @@ extension), some are scheduler internal state.
 
 ## Approach
 
-### Phase 1 — Harvest the callers
+### Phase 1 — Harvest the callers - DONE
+
+**Status:** Resolved 2026-05-04. Re-ran the caller harvest and classified the remaining direct `time.Now()` production uses so the package-by-package injection tasks can proceed without re-discovery.
 
 For each file in the list above, classify the `time.Now()` call:
 
@@ -79,6 +81,31 @@ For each file in the list above, classify the `time.Now()` call:
 - **Scheduler / timer internal** (e.g. last-tick comparison).
   → Already drivable by `clk.NewTicker` / `clk.NewTimer`; rewrite to
     use `clk.Now()` instead of `time.Now()`.
+
+Harvest result (production paths, excluding `_test.go`, `domain/clock/real.go`, and `domain/clock/clocktest/`):
+
+- **Timestamp / domain value creation:** `*/receiver.go` and `adapters/mqtt/transport/paho/headers.go` `CreatedAt` assignments, `runtime/dlq_router.go` `FailedAt`, `runtime/session_manager.go` and transport session `ports.SessionEvent.Timestamp`, `httpapi/admin.go`, `httpapi/config_txn.go` transaction timestamps/IDs, `adapters/native/credentials/file/repository.go` `UpdatedAt`, and `adapters/native/store/sqliteoutbox/store.go` record timestamps.
+- **Deadline / expiry math:** `domain/envelope.go` expiry checks, `adapters/azure/transport/servicebus/delivery.go` lock/schedule checks, `httpapi/admin_dlq.go` purge cutoff, `httpapi/config_txn.go` active transaction expiry, `runtime/credential_resolver.go` cache TTLs, `runtime/route_runner_helpers.go` retry/backoff timing, `ports/storetest/outbox.go` conformance expiry fixtures, and SQLite outbox expiry update time.
+- **Scheduler / internal timing and metrics:** transport send/receive/ack/connect/reconcile duration measurements across AMQP 0.9.1, AMQP 1.0, SQS, Azure Service Bus, HTTP, MQTT; `adapters/aws/metrics/cloudwatch/batcher.go`; `bridge/supervisor.go`; `circuitbreaker/breaker.go`; `httpapi/server.go`; `runtime/credentials_poll.go`; `runtime/instrumented*.go`; `runtime/outbox_drainer_loop.go`; `runtime/route_runner.go`; and `runtime/session_manager_lease.go`.
+- **Out of production-gate scope but still present:** `testutil/**` local-service helpers use real time for unique names and polling deadlines; keep them out of the production `forbidigo` gate unless the lint scope is later expanded.
+
+**What landed:**
+
+- [FIX-TODO-clock-injection.md](FIX-TODO-clock-injection.md) records the completed caller harvest and classification groups.
+
+**Tests added:**
+
+- none — documentation/indexing-only task.
+
+**Pre-existing issues fixed in touched files (per audit instruction):**
+
+- none.
+
+**Follow-ups (not blockers; logged for future passes):**
+
+- none.
+
+**Agents/Skills used:** golang-pro, code-reviewer.
 
 ### Phase 2 — Inject clocks per package
 
