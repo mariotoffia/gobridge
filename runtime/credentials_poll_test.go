@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -201,4 +202,19 @@ func TestPollBasedWrapper_DefaultsApplied(t *testing.T) {
 	w := NewPollBasedWrapper(&fakePullStore{}, ports.PollBasedWrapperConfig{})
 	require.Equal(t, DefaultCredentialPollInterval, w.cfg.PollInterval)
 	require.Equal(t, time.Duration(0), w.cfg.Jitter)
+}
+
+func TestPollBasedWrapper_JitterSeedUsesInjectedClock(t *testing.T) {
+	t.Parallel()
+
+	seedTime := time.Unix(123, 456)
+	fake := clocktest.NewAt(seedTime)
+	w := NewPollBasedWrapper(&fakePullStore{}, ports.PollBasedWrapperConfig{
+		PollInterval: time.Second,
+		Jitter:       100 * time.Millisecond,
+	}, WithPollClock(fake))
+
+	wantRNG := rand.New(rand.NewSource(seedTime.UnixNano()))
+	want := time.Second + time.Duration(wantRNG.Int63n(int64(200*time.Millisecond))) - 100*time.Millisecond
+	require.Equal(t, want, w.nextDelay())
 }

@@ -62,11 +62,11 @@ func NewPollBasedWrapper(pull ports.PullCredentialStore, cfg ports.PollBasedWrap
 		pull: pull,
 		cfg:  cfg,
 		clk:  clock.System,
-		rng:  rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 	for _, o := range opts {
 		o(w)
 	}
+	w.rng = rand.New(rand.NewSource(w.clk.Now().UnixNano()))
 	if w.cfg.PollInterval <= 0 {
 		w.cfg.PollInterval = DefaultCredentialPollInterval
 	}

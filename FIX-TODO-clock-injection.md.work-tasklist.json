@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "FIX-TODO-clock-injection.md",
-  "source_sha": "dd89ccee928f33bc5d336fa7dc8c5d9403ec42fb565fb55a6730e6a643d86eff",
+  "source_sha": "b21a791cc4717c5bea85dba3127b8816f5748e2f095cd46d9b515e21bd69d093",
   "indexed_at": "2026-05-04T07:18:22Z",
   "status_convention": "No explicit status markers; numbered list entries, phase headings, and acceptance bullets without markers default to pending",
   "tasks": [
@@ -74,7 +74,7 @@
     {
       "id": "T007",
       "title": "runtime/credentials_poll.go \u2014 replace RNG seed time.Now with injected clock",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This is a Go runtime change to source UnixNano from clock injection instead of time.Now.",

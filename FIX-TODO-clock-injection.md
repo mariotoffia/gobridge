@@ -243,6 +243,27 @@ Recommended order (smallest to largest, leaf to root):
    **Agents/Skills used:** general-purpose, code-reviewer.
 5. `runtime/credentials_poll.go` — RNG seed; replace
    `time.Now().UnixNano()` with `clk.Now().UnixNano()`.
+
+   **Status:** Resolved 2026-05-04. Poll-based credential jitter seeding now uses the configured clock after options are applied, so fake clocks determine the RNG seed without direct wall-clock reads.
+
+   **What landed:**
+
+   - Updated [runtime/credentials_poll.go](runtime/credentials_poll.go) to seed jitter RNG from `w.clk.Now().UnixNano()` after `WithPollClock` options are applied.
+   - Added deterministic injected-clock seed coverage in [runtime/credentials_poll_test.go](runtime/credentials_poll_test.go).
+
+   **Tests added:**
+
+   - Added `TestPollBasedWrapper_JitterSeedUsesInjectedClock`.
+
+   **Pre-existing issues fixed in touched files (per audit instruction):**
+
+   - none.
+
+   **Follow-ups (not blockers; logged for future passes):**
+
+   - none.
+
+   **Agents/Skills used:** general-purpose, code-reviewer.
 6. `runtime/dlq_router.go` — `FailedAt` field on DLQ entries.
 7. `runtime/route_runner.go` + helpers — backoff math.
 8. `runtime/session_manager*.go` — lease renewal scheduling.
