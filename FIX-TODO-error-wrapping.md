@@ -314,7 +314,41 @@ settings:
 The exact allow list emerges as you sweep — start permissive,
 tighten as patterns settle.
 
-### Phase 5 — Enable `wrapcheck`
+### Phase 5 — Enable `wrapcheck` - DONE
+
+**Status:** APPROVED 2026-05-04. Uncommented `- wrapcheck` under
+`linters.enable` in `.golangci.yml` and removed the obsolete T014
+TODO block; the file-level header now lists only `ireturn` as
+deferred. Enabling the linter exposed three structural defects in
+the T013 allow-list seed (none of which had been observed because
+wrapcheck was off): (a) `ignore-sigs: [.Err()]` silently overrode
+wrapcheck's built-in defaults, so the standard wrapping primitives
+(`fmt.Errorf`, `errors.New/Unwrap/Join`, `pkg/errors` helpers) are
+now listed explicitly; (b) `ignore-package-globs` used Go-style
+`github.com/mariotoffia/gobridge/...` triple-dot which gobwas/glob
+treats as three literal dots (matched zero packages), replaced with
+`github.com/mariotoffia/gobridge/**`; (c) `ignore-interface-regexps`
+used `^github\.com/mariotoffia/gobridge/ports\.` but wrapcheck
+builds the interface name with `types.TypeString(..., p.Name())`
+producing `ports.CircuitBreaker`, so the regex is now `^ports\.`.
+
+The corrected allow-list surfaced eight Phase 3 sweep gaps that
+were also wrapped in this commit:
+`adapters/amqp/transport/amqp10/client.go` (Phase 3.4 missed
+`amqp.Dial`), `adapters/aws/config/dynamodb/{loader,streams}.go`
+(out-of-scope for Phase 3.6 which only covered store packages),
+`adapters/native/cluster/resolver.go` (`net.InterfaceAddrs`),
+`adapters/native/config/file/watcher.go` (`fsnotify.NewWatcher`,
+`fsw.Add`), `deployment/aws-filebased-config/lib/bootstrap/`
+(unswept deployment example — `os.Stat`/`os.ReadFile`,
+`awsconfig.LoadDefaultConfig`, `net.Listen`, `http.Server.Shutdown`),
+`observability/sloghandler.go` (`slog.Handler.Handle` decorator),
+and `processors/{filter/condition,transform/mapping}.go`
+(`strconv.Parse{Int,Float,Bool}`, `json.Number.Float64`).
+
+`make lint` is clean across every module and `make test` passes.
+A trial unwrapped error at any adapter boundary now fails the
+gate. Diff: 12 files, 99 ins / 40 del.
 
 ```yaml
 linters:

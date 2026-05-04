@@ -49,12 +49,16 @@ func LoadBootstrapConfigFile(path string) (deployinfra.BootstrapConfig, error) {
 func readBoundedFile(path string, maxSize int64) ([]byte, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("stat %s: %w", path, err)
 	}
 	if info.Size() > maxSize {
 		return nil, fmt.Errorf("file %s exceeds maximum size (%d > %d bytes)", path, info.Size(), maxSize)
 	}
-	return os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return data, nil
 }
 
 func LoadBootstrapConfigJSON(data []byte) (deployinfra.BootstrapConfig, error) {

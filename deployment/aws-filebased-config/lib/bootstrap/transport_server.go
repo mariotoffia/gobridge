@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -51,7 +52,7 @@ func newTransportServer(handlerRef *transportHandlerRef, logger *slog.Logger) *t
 func (s *transportServer) Start(addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return err
+		return fmt.Errorf("transport server: listen %q: %w", addr, err)
 	}
 
 	s.server = &http.Server{
@@ -78,7 +79,10 @@ func (s *transportServer) Stop(ctx context.Context) error {
 	if s.server == nil {
 		return nil
 	}
-	return s.server.Shutdown(ctx)
+	if err := s.server.Shutdown(ctx); err != nil {
+		return fmt.Errorf("transport server: shutdown: %w", err)
+	}
+	return nil
 }
 
 func (s *transportServer) URL() string {

@@ -199,9 +199,17 @@ func toFloat64(v any) (float64, error) {
 	case int32:
 		return float64(val), nil
 	case string:
-		return strconv.ParseFloat(val, 64)
+		f, err := strconv.ParseFloat(val, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse float %q: %w", val, err)
+		}
+		return f, nil
 	case json.Number:
-		return val.Float64()
+		f, err := val.Float64()
+		if err != nil {
+			return 0, fmt.Errorf("json.Number to float: %w", err)
+		}
+		return f, nil
 	default:
 		return 0, fmt.Errorf("cannot convert %T to float64", v)
 	}

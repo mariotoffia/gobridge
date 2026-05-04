@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -158,13 +159,13 @@ func (w *Watcher) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error)
 		fsw, err := fsnotify.NewWatcher()
 		if err != nil {
 			w.running = false
-			return nil, err
+			return nil, fmt.Errorf("file watcher: new fsnotify watcher: %w", err)
 		}
 		dir := filepath.Dir(w.path)
 		if err := fsw.Add(dir); err != nil {
 			_ = fsw.Close()
 			w.running = false
-			return nil, err
+			return nil, fmt.Errorf("file watcher: add %q: %w", dir, err)
 		}
 		w.startedOnce.Do(func() { close(w.started) })
 		go w.notifyLoop(ctx, fsw, ch)

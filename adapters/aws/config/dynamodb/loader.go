@@ -340,7 +340,7 @@ func (l *Loader) currentVersion(ctx context.Context) (int64, error) {
 		},
 	})
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("dynamodb config current version: %w", err)
 	}
 	if out.Item == nil {
 		return 0, nil
@@ -350,7 +350,11 @@ func (l *Loader) currentVersion(ctx context.Context) (int64, error) {
 	if !ok {
 		return 0, nil
 	}
-	return strconv.ParseInt(vAttr.Value, 10, 64)
+	v, err := strconv.ParseInt(vAttr.Value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("dynamodb config current version: parse %q: %w", vAttr.Value, err)
+	}
+	return v, nil
 }
 
 // Save writes a BridgeConfig to DynamoDB, auto-incrementing the version.
@@ -413,7 +417,10 @@ func (l *Loader) EnsureTable(ctx context.Context) error {
 		waiterClient = l.clientConcrete
 	}
 	waiter := dynamodb.NewTableExistsWaiter(waiterClient)
-	return waiter.Wait(ctx, &dynamodb.DescribeTableInput{
+	if err := waiter.Wait(ctx, &dynamodb.DescribeTableInput{
 		TableName: &l.tableName,
-	}, 30*time.Second)
+	}, 30*time.Second); err != nil {
+		return fmt.Errorf("dynamodb config ensure table: wait: %w", err)
+	}
+	return nil
 }

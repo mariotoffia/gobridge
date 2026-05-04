@@ -2,6 +2,7 @@ package amqp10
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/Azure/go-amqp"
 )
@@ -35,7 +36,14 @@ var _ amqpSenderLink = (*amqp.Sender)(nil)
 // dialFunc abstracts the AMQP 1.0 dial operation for test-double injection.
 type dialFunc func(ctx context.Context, addr string, opts *amqp.ConnOptions) (amqpConn, error)
 
-// defaultDial wraps amqp.Dial to satisfy dialFunc.
+// defaultDial wraps amqp.Dial to satisfy dialFunc. The dial error is
+// wrapped with package context so wrapcheck is satisfied at this
+// adapter boundary; MapError at the call site uses errors.Is/As, which
+// traverse the %w chain unchanged.
 func defaultDial(ctx context.Context, addr string, opts *amqp.ConnOptions) (amqpConn, error) {
-	return amqp.Dial(ctx, addr, opts)
+	conn, err := amqp.Dial(ctx, addr, opts)
+	if err != nil {
+		return nil, fmt.Errorf("amqp10: dial: %w", err)
+	}
+	return conn, nil
 }

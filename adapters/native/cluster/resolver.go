@@ -54,7 +54,7 @@ func (r *NativeEndpointResolver) Resolve(_ context.Context, listenAddr string) (
 func discoverHost() (string, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("native: list interface addrs: %w", err)
 	}
 	for _, addr := range addrs {
 		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {

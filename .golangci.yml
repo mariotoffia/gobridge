@@ -16,8 +16,8 @@
 # tuned to the current state; tightening them requires splitting
 # bridge.Builder.wireRoutes (~80 cog. complexity) and config.validate
 # (~144) into per-step helpers, which is its own refactor. The
-# remaining deferred linters (wrapcheck, ireturn) each describe their own
-# prerequisite sweep in the TODOs below.
+# remaining deferred linter (ireturn) describes its own prerequisite
+# sweep in the TODO below.
 
 version: "2"
 
@@ -36,11 +36,7 @@ linters:
     - gochecknoinits
     - interfacebloat
     - revive
-    # TODO(FIX-TODO-error-wrapping.md): the wrapcheck allow-list under
-    # linters.settings.wrapcheck below is in place (T013). The only
-    # remaining step is the Phase 5 sweep + flipping this enable on
-    # (T014). Until then, wrapcheck stays disabled.
-    # - wrapcheck
+    - wrapcheck
     # TODO(FIX-TODO-return-types.md): enable once exported functions
     # stop returning unnamed interfaces in adapter code.
     # - ireturn
@@ -135,15 +131,26 @@ linters:
 
     # wrapcheck allow-list (binding seed from
     # _design/error-wrapping-policy.adoc §"Confirmed wrapcheck
-    # allow-list seed (binding for T013)"). The linter itself is not
-    # yet enabled in linters.enable above — T014 flips it on after the
-    # Phase 5 sweep. Configuring the allow-list now means the enable
-    # flip is a one-line change.
+    # allow-list seed"). Future tuning is additive: extend the lists
+    # below rather than rewrite them.
     wrapcheck:
-      # Allow-listed function signatures (Q2): context.Context.Err()
-      # and any *.Err() method returning a single error are idiomatic
-      # propagation points; wrapping adds no info.
+      # Allow-listed function signatures. Setting ignore-sigs replaces
+      # wrapcheck's built-in defaults, so the standard wrapping
+      # primitives (.Errorf, errors.New/Unwrap/Join, pkg/errors
+      # helpers) are repeated here explicitly. The project-specific
+      # entry is .Err() (Q2): context.Context.Err() and any *.Err()
+      # method returning a single error are idiomatic propagation
+      # points; wrapping adds no info.
       ignore-sigs:
+        - .Errorf(
+        - errors.New(
+        - errors.Unwrap(
+        - errors.Join(
+        - .Wrap(
+        - .Wrapf(
+        - .WithMessage(
+        - .WithMessagef(
+        - .WithStack(
         - .Err()
       ignore-sig-regexps:
         - \.Err\(\) error$
@@ -151,16 +158,19 @@ linters:
       # Allow-listed packages (Q1, Q3): the entire gobridge module
       # graph is one logical project. Decorator forwarding of
       # ports.* errors must remain transparent so domain sentinels
-      # survive errors.Is/errors.As checks downstream.
+      # survive errors.Is/errors.As checks downstream. Pattern uses
+      # gobwas/glob double-star to match every sub-package.
       ignore-package-globs:
-        - github.com/mariotoffia/gobridge/...
+        - github.com/mariotoffia/gobridge/**
 
       # Allow-listed interfaces (Q1): any method whose receiver
       # implements a ports.* interface is treated as decorator
       # forwarding by default. Real classification happens in the
-      # leaf adapter that calls the SDK.
+      # leaf adapter that calls the SDK. wrapcheck matches against
+      # `<short-pkg>.<TypeName>` (types.TypeString with p.Name()),
+      # so anchor on the short package name.
       ignore-interface-regexps:
-        - ^github\.com/mariotoffia/gobridge/ports\.
+        - ^ports\.
 
     revive:
       rules:

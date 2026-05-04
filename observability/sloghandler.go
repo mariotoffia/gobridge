@@ -2,6 +2,7 @@ package observability
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 )
 
@@ -36,7 +37,10 @@ func (h *CorrelationHandler) Handle(ctx context.Context, record slog.Record) err
 	if id := SpanIDFromContext(ctx); id != "" {
 		record.AddAttrs(slog.String("span_id", id))
 	}
-	return h.inner.Handle(ctx, record)
+	if err := h.inner.Handle(ctx, record); err != nil {
+		return fmt.Errorf("correlation handler: %w", err)
+	}
+	return nil
 }
 
 func (h *CorrelationHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
