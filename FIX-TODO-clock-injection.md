@@ -356,6 +356,28 @@ Recommended order (smallest to largest, leaf to root):
 
    **Agents/Skills used:** general-purpose, code-reviewer.
 10. `runtime/instrumented*.go` — metric timestamps.
+
+    **Status:** Resolved 2026-05-04. Instrumented runtime store and transport latency metrics now use injected `clock.Clock` instances, with constructor signatures requiring a clock so no legacy no-clock API remains.
+
+    **What landed:**
+
+    - Added injected clock fields to [runtime/instrumented.go](runtime/instrumented.go) for lease and outbox latency timers.
+    - Added injected clock fields to [runtime/instrumented_transport.go](runtime/instrumented_transport.go) for sender, receiver, and delivery ack latency timers.
+    - Updated instrumentation constructor call sites in [runtime/instrumented_test.go](runtime/instrumented_test.go) and [runtime/instrumented_transport_test.go](runtime/instrumented_transport_test.go) to pass clocks explicitly.
+
+    **Tests added:**
+
+    - Added deterministic fake-clock coverage for lease acquire/renew, outbox persist, sender send, receiver run, and delivery ack latency metrics in [runtime/instrumented_test.go](runtime/instrumented_test.go) and [runtime/instrumented_transport_test.go](runtime/instrumented_transport_test.go).
+
+    **Pre-existing issues fixed in touched files (per audit instruction):**
+
+    - none.
+
+    **Follow-ups (not blockers; logged for future passes):**
+
+    - none.
+
+    **Agents/Skills used:** general-purpose, code-reviewer.
 11. `httpapi/{admin,admin_dlq,config_txn,server}.go` — request-time
     audit log timestamps. May not need full clock injection if
     they only stamp wall-clock for human-readable output.

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -17,6 +18,7 @@ type InstrumentedSender struct {
 	metricName string
 	tagKey     string
 	tagValue   string
+	clk        clock.Clock
 }
 
 var _ ports.Sender = (*InstrumentedSender)(nil)
@@ -30,6 +32,7 @@ func NewInstrumentedSender(
 	inner ports.Sender,
 	metrics ports.MetricsExporter,
 	metricName, tagKey, tagValue string,
+	clk clock.Clock,
 ) *InstrumentedSender {
 	return &InstrumentedSender{
 		inner:      inner,
@@ -37,13 +40,14 @@ func NewInstrumentedSender(
 		metricName: metricName,
 		tagKey:     tagKey,
 		tagValue:   tagValue,
+		clk:        instrumentedClock(clk),
 	}
 }
 
 func (s *InstrumentedSender) Send(ctx context.Context, env *domain.Envelope) error {
-	start := time.Now()
+	start := s.clk.Now()
 	err := s.inner.Send(ctx, env)
-	s.metrics.Timer(s.metricName, time.Since(start),
+	s.metrics.Timer(s.metricName, s.clk.Since(start),
 		domain.Tag{Key: s.tagKey, Value: s.tagValue})
 	return err
 }
@@ -57,6 +61,7 @@ type InstrumentedReceiver struct {
 	metricName string
 	tagKey     string
 	tagValue   string
+	clk        clock.Clock
 }
 
 var _ ports.Receiver = (*InstrumentedReceiver)(nil)
@@ -66,6 +71,7 @@ func NewInstrumentedReceiver(
 	inner ports.Receiver,
 	metrics ports.MetricsExporter,
 	metricName, tagKey, tagValue string,
+	clk clock.Clock,
 ) *InstrumentedReceiver {
 	return &InstrumentedReceiver{
 		inner:      inner,
@@ -73,19 +79,21 @@ func NewInstrumentedReceiver(
 		metricName: metricName,
 		tagKey:     tagKey,
 		tagValue:   tagValue,
+		clk:        instrumentedClock(clk),
 	}
 }
 
 func (r *InstrumentedReceiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
 	return r.inner.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
-		start := time.Now()
+		start := r.clk.Now()
 		err := emit(ctx, &instrumentedDelivery{
 			Delivery: del,
 			metrics:  r.metrics,
 			tagKey:   r.tagKey,
 			tagValue: r.tagValue,
+			clk:      r.clk,
 		})
-		r.metrics.Timer(r.metricName, time.Since(start),
+		r.metrics.Timer(r.metricName, r.clk.Since(start),
 			domain.Tag{Key: r.tagKey, Value: r.tagValue})
 		return err
 	})
@@ -98,12 +106,13 @@ type instrumentedDelivery struct {
 	metrics  ports.MetricsExporter
 	tagKey   string
 	tagValue string
+	clk      clock.Clock
 }
 
 func (d *instrumentedDelivery) Ack(ctx context.Context) error {
-	start := time.Now()
+	start := d.clk.Now()
 	err := d.Delivery.Ack(ctx)
-	d.metrics.Timer(domain.MetricAckLatency, time.Since(start),
+	d.metrics.Timer(domain.MetricAckLatency, d.clk.Since(start),
 		domain.Tag{Key: d.tagKey, Value: d.tagValue})
 	return err
 }

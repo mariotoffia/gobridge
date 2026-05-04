@@ -1,8 +1,8 @@
 {
   "$schema": "v2",
   "source": "FIX-TODO-clock-injection.md",
-  "source_sha": "3e8c0ee696c438a87997c2aa301eae521a37d209a5f8554eecf176fa6953930f",
-  "indexed_at": "2026-05-04T07:51:57Z",
+  "source_sha": "ddb4cf4f6107d1ed0e024813efffbfd3c324ec817e15f55598b12d646389cdab",
+  "indexed_at": "2026-05-04T00:00:00Z",
   "status_convention": "No explicit status markers; numbered list entries, phase headings, and acceptance bullets without markers default to pending",
   "tasks": [
     {
@@ -129,7 +129,7 @@
     {
       "id": "T012",
       "title": "runtime/instrumented*.go \u2014 inject clock for metric timestamps",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This requires Go instrumentation code changes to source metrics timestamps from an injected clock.",
