@@ -72,7 +72,10 @@ func (s *Session) ApplyCredentials(ctx context.Context, set *domain.CredentialSe
 	}
 	// Closing the connection triggers the monitor loop to reconnect
 	// with the updated credentials/TLS.
-	return conn.Close()
+	if err := conn.Close(); err != nil {
+		return MapError(err)
+	}
+	return nil
 }
 
 // applyAMQP10TLSMaterial mirrors the paho/amqp091 helpers. See the
