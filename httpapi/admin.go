@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -167,7 +166,7 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) emitAudit(r *http.Request, action, resource, resourceID, outcome string, detail map[string]any) {
 	s.audit.Log(r.Context(), ports.AuditEvent{
-		Timestamp:  time.Now().UTC(),
+		Timestamp:  s.clk.Now().UTC(),
 		Action:     action,
 		Actor:      actorFromRequest(r),
 		Resource:   resource,

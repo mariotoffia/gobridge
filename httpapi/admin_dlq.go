@@ -445,7 +445,7 @@ func (s *Server) handleDLQPurge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	count, err := store.Purge(r.Context(), time.Now().UTC())
+	count, err := store.Purge(r.Context(), s.clk.Now().UTC())
 	if err != nil {
 		s.emitAudit(r, "dlq.purge", "dlq", "", "failure", map[string]any{"error": err.Error()})
 		writeErr(w, http.StatusInternalServerError, "DLQ purge failed")

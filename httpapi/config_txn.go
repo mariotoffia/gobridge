@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -47,17 +48,23 @@ type configTxnManager struct {
 	store          ports.ConfigStore
 	configProvider func() *ports.BridgeConfig
 	logger         *slog.Logger
-	timeoutTimer   *time.Timer
+	clk            clock.Clock
+	timeoutTimer   clock.Timer
+	timeoutCancel  chan struct{}
 }
 
 // newTxnManager creates a new transaction manager.
 // store is the persistence boundary used for validate/merge/save/load.
 // provider returns the current effective config (e.g. Supervisor.Config).
-func newTxnManager(store ports.ConfigStore, provider func() *ports.BridgeConfig, logger *slog.Logger) *configTxnManager {
+func newTxnManager(store ports.ConfigStore, provider func() *ports.BridgeConfig, logger *slog.Logger, clk clock.Clock) *configTxnManager {
+	if clk == nil {
+		clk = clock.System
+	}
 	return &configTxnManager{
 		store:          store,
 		configProvider: provider,
 		logger:         logger,
+		clk:            clk,
 	}
 }
 
@@ -79,7 +86,7 @@ func (m *configTxnManager) Begin(ttl time.Duration) (*ConfigTransaction, error) 
 		ttl = maxTxnTTL
 	}
 
-	now := time.Now().UTC()
+	now := m.clk.Now().UTC()
 
 	baseVersion := 0
 	if current := m.configProvider(); current != nil {
@@ -87,14 +94,25 @@ func (m *configTxnManager) Begin(ttl time.Duration) (*ConfigTransaction, error) 
 	}
 
 	txn := &ConfigTransaction{
-		ID:          generateTxnID(),
+		ID:          generateTxnID(m.clk),
 		CreatedAt:   now,
 		ExpiresAt:   now.Add(ttl),
 		baseVersion: baseVersion,
 	}
 	m.active = txn
 
-	m.timeoutTimer = time.AfterFunc(ttl, m.expire)
+	m.timeoutTimer = m.clk.NewTimer(ttl)
+	m.timeoutCancel = make(chan struct{})
+	timer := m.timeoutTimer
+	cancel := m.timeoutCancel
+	txnID := txn.ID
+	go func() {
+		select {
+		case <-timer.C():
+			m.expire(txnID)
+		case <-cancel:
+		}
+	}()
 
 	return txn, nil
 }
@@ -243,11 +261,11 @@ func (m *configTxnManager) Active() *ConfigTransaction {
 }
 
 // expire is called by the timeout timer to auto-rollback a stale transaction.
-func (m *configTxnManager) expire() {
+func (m *configTxnManager) expire(txnID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.active == nil {
+	if m.active == nil || m.active.ID != txnID {
 		return
 	}
 
@@ -269,7 +287,7 @@ func (m *configTxnManager) checkTxn(txnID string) error {
 	if m.active.ID != txnID {
 		return errTxnNotFound
 	}
-	if time.Now().UTC().After(m.active.ExpiresAt) {
+	if m.clk.Now().UTC().After(m.active.ExpiresAt) {
 		m.cleanupLocked()
 		return errTxnExpired
 	}
@@ -307,15 +325,19 @@ func (m *configTxnManager) cleanupLocked() {
 		m.timeoutTimer.Stop()
 		m.timeoutTimer = nil
 	}
+	if m.timeoutCancel != nil {
+		close(m.timeoutCancel)
+		m.timeoutCancel = nil
+	}
 	m.active = nil
 }
 
 // generateTxnID returns a random 16-character hex string.
-func generateTxnID() string {
+func generateTxnID(clk clock.Clock) string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
 		// Fallback to timestamp-based ID on rand failure.
-		return fmt.Sprintf("txn-%d", time.Now().UnixNano())
+		return fmt.Sprintf("txn-%d", clk.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
 }

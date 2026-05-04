@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "FIX-TODO-clock-injection.md",
-  "source_sha": "ddb4cf4f6107d1ed0e024813efffbfd3c324ec817e15f55598b12d646389cdab",
+  "source_sha": "94e28ff302f4cd67ae57e5f0f86964f51192d0f2dcfa72e086eaf9aa2a183e80",
   "indexed_at": "2026-05-04T00:00:00Z",
   "status_convention": "No explicit status markers; numbered list entries, phase headings, and acceptance bullets without markers default to pending",
   "tasks": [
@@ -140,7 +140,7 @@
     {
       "id": "T013",
       "title": "httpapi/{admin,admin_dlq,config_txn,server}.go \u2014 address request-time audit timestamps",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This requires judging and implementing clock usage in Go HTTP API audit timestamp code.",

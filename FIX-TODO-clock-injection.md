@@ -381,6 +381,28 @@ Recommended order (smallest to largest, leaf to root):
 11. `httpapi/{admin,admin_dlq,config_txn,server}.go` — request-time
     audit log timestamps. May not need full clock injection if
     they only stamp wall-clock for human-readable output.
+
+    **Status:** Resolved 2026-05-04. HTTP API audit timestamps, DLQ purge cutoffs, request-duration logging, and config transaction timing now use the server's injected `clock.Clock`, removing direct wall-clock reads from the target production files without retaining legacy compatibility shims.
+
+    **What landed:**
+
+    - Added server-level `clock.Clock` injection and `WithClock` in [httpapi/server.go](httpapi/server.go), defaulting to `clock.System`.
+    - Routed audit, DLQ purge, request logging, and config transaction timestamps/timers through the injected clock in [httpapi/admin.go](httpapi/admin.go), [httpapi/admin_dlq.go](httpapi/admin_dlq.go), [httpapi/config_txn.go](httpapi/config_txn.go), and [httpapi/server.go](httpapi/server.go).
+    - Updated deterministic fake-clock coverage in [httpapi/admin_config_test.go](httpapi/admin_config_test.go), [httpapi/admin_config_version_test.go](httpapi/admin_config_version_test.go), and [httpapi/server_bugfix_test.go](httpapi/server_bugfix_test.go).
+
+    **Tests added:**
+
+    - Updated existing HTTP API config and server tests to assert injected-clock behavior for audit timestamps, purge cutoffs, transaction creation, and auto-timeout.
+
+    **Pre-existing issues fixed in touched files (per audit instruction):**
+
+    - Guarded config transaction timeout cleanup by transaction ID so a stale timer goroutine cannot roll back a newer transaction.
+
+    **Follow-ups (not blockers; logged for future passes):**
+
+    - none.
+
+    **Agents/Skills used:** general-purpose, code-reviewer.
 12. `adapters/*/transport/*` — message timestamps, deadlines. Each
     transport adapter is one PR of work.
 13. `adapters/native/credentials/file/repository.go` — file mtime

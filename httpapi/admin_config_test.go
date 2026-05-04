@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -55,7 +56,7 @@ func sampleBridgeConfig() *ports.BridgeConfig {
 }
 
 // newConfigTestServer creates a Server wired for config API testing.
-func newConfigTestServer(t *testing.T, cfg *ports.BridgeConfig) (*Server, string) {
+func newConfigTestServer(t *testing.T, cfg *ports.BridgeConfig, opts ...Option) (*Server, string) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -69,7 +70,7 @@ func newConfigTestServer(t *testing.T, cfg *ports.BridgeConfig) (*Server, string
 	apiCfg.ConfigStore = &config.FileStore{Path: path}
 	apiCfg.ConfigProvider = func() *ports.BridgeConfig { return cfg }
 
-	s := New(rt, apiCfg)
+	s := New(rt, apiCfg, opts...)
 	return s, path
 }
 
@@ -126,7 +127,8 @@ func TestHandleConfigTxnCreate_Returns201(t *testing.T) {
 
 func TestHandleConfigTxnCreate_WithTTL(t *testing.T) {
 	cfg := sampleBridgeConfig()
-	s, _ := newConfigTestServer(t, cfg)
+	fixed := time.Date(2026, 5, 4, 1, 2, 3, 0, time.UTC)
+	s, _ := newConfigTestServer(t, cfg, WithClock(clocktest.NewAt(fixed)))
 
 	rec := httptest.NewRecorder()
 	req := adminRequest(http.MethodPost, "/api/v1/admin/config/transactions")
@@ -144,8 +146,8 @@ func TestHandleConfigTxnCreate_WithTTL(t *testing.T) {
 	createdAt, err := time.Parse(time.RFC3339, body["created_at"].(string))
 	require.NoError(t, err)
 
-	diff := expiresAt.Sub(createdAt)
-	assert.InDelta(t, 2*time.Minute, diff, float64(time.Second))
+	assert.Equal(t, fixed, createdAt)
+	assert.Equal(t, fixed.Add(2*time.Minute), expiresAt)
 }
 
 func TestHandleConfigTxnCreate_Conflict(t *testing.T) {
@@ -373,7 +375,8 @@ func TestHandleConfigTxnRollback_AllowsNewTransaction(t *testing.T) {
 
 func TestConfigTxn_AutoTimeout(t *testing.T) {
 	cfg := sampleBridgeConfig()
-	s, _ := newConfigTestServer(t, cfg)
+	clk := clocktest.NewAt(time.Date(2026, 5, 4, 1, 2, 3, 4, time.UTC))
+	s, _ := newConfigTestServer(t, cfg, WithClock(clk))
 
 	// Create transaction with very short TTL.
 	rec := httptest.NewRecorder()
@@ -387,6 +390,7 @@ func TestConfigTxn_AutoTimeout(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&createBody))
 	txnID := createBody["txn_id"].(string)
 
+	clk.Advance(101 * time.Millisecond)
 	wait.Until(t, 2*time.Second, "transaction expired", func() bool {
 		r := httptest.NewRecorder()
 		rq := adminRequest(http.MethodPatch, "/api/v1/admin/config/transactions/"+txnID)

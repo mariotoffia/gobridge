@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -74,6 +75,7 @@ type Server struct {
 	cfg                Config
 	logger             *slog.Logger
 	audit              ports.AuditLogger
+	clk                clock.Clock
 	configTxn          *configTxnManager // nil when config management is disabled
 
 	admin    *http.Server
@@ -98,6 +100,15 @@ func WithAuditLogger(a ports.AuditLogger) Option {
 	return func(s *Server) { s.audit = a }
 }
 
+// WithClock sets the clock used for request timestamps, durations, and admin transaction time.
+func WithClock(c clock.Clock) Option {
+	return func(s *Server) {
+		if c != nil {
+			s.clk = c
+		}
+	}
+}
+
 // New creates an HTTP Server bound to the given runtime.
 func New(rt *runtime.Runtime, cfg Config, opts ...Option) *Server {
 	s := &Server{rt: rt, cfg: cfg}
@@ -106,6 +117,9 @@ func New(rt *runtime.Runtime, cfg Config, opts ...Option) *Server {
 	}
 	if s.audit == nil {
 		s.audit = ports.NoopAuditLogger{}
+	}
+	if s.clk == nil {
+		s.clk = clock.System
 	}
 	if cfg.RuntimeProvider != nil {
 		s.rtProvider = cfg.RuntimeProvider
@@ -126,7 +140,7 @@ func New(rt *runtime.Runtime, cfg Config, opts ...Option) *Server {
 		s.cfg.AdminOperationTimeout = 30 * time.Second
 	}
 	if cfg.ConfigStore != nil && cfg.ConfigProvider != nil {
-		s.configTxn = newTxnManager(cfg.ConfigStore, cfg.ConfigProvider, s.logger)
+		s.configTxn = newTxnManager(cfg.ConfigStore, cfg.ConfigProvider, s.logger, s.clk)
 	}
 	return s
 }
@@ -322,7 +336,7 @@ func (s *Server) recoverMW(next http.Handler) http.Handler {
 
 func (s *Server) requestLogMW(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
+		start := s.clk.Now()
 		rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rw, r)
 		if logging.DebugEnabled(s.logger) {
@@ -330,7 +344,7 @@ func (s *Server) requestLogMW(next http.Handler) http.Handler {
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", rw.status,
-				"duration_ms", time.Since(start).Milliseconds(),
+				"duration_ms", s.clk.Since(start).Milliseconds(),
 				"remote", r.RemoteAddr,
 			)
 		}

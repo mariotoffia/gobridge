@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/stretchr/testify/assert"
@@ -361,9 +362,11 @@ func TestBug8_DLQPurge_PassesUTCToStore(t *testing.T) {
 		"Purge should receive UTC time, got location: %v", purgeTime.Location())
 }
 
-// Verifies that the audit log timestamp for DLQ purge uses UTC.
-func TestBug8_DLQPurge_AuditLogUsesUTC(t *testing.T) {
+// Verifies that the audit log timestamp for DLQ purge uses the injected UTC clock.
+func TestBug8_DLQPurge_AuditLogUsesInjectedClockUTC(t *testing.T) {
 	store := &captureDLQStore{purgeN: 3}
+	fixed := time.Date(2026, 5, 4, 10, 20, 30, 40, time.UTC)
+	clk := clocktest.NewAt(fixed)
 
 	rt := runtime.New(
 		runtime.WithInstanceID("test-utc-audit"),
@@ -371,7 +374,7 @@ func TestBug8_DLQPurge_AuditLogUsesUTC(t *testing.T) {
 	)
 	cfg := testConfig()
 	audit := &recordingAuditLogger{}
-	s := New(rt, cfg, WithAuditLogger(audit))
+	s := New(rt, cfg, WithAuditLogger(audit), WithClock(clk))
 
 	mux := http.NewServeMux()
 	s.registerAdminRoutes(mux)
@@ -389,41 +392,30 @@ func TestBug8_DLQPurge_AuditLogUsesUTC(t *testing.T) {
 	purgeEvent := events[len(events)-1]
 	assert.Equal(t, "dlq.purge", purgeEvent.Action)
 	assert.Equal(t, "success", purgeEvent.Outcome)
-	assert.Equal(t, time.UTC, purgeEvent.Timestamp.Location(),
-		"audit event timestamp should be UTC")
+	assert.Equal(t, fixed, purgeEvent.Timestamp)
 }
 
-// Verifies the Purge time argument is UTC by checking Location == time.UTC
-// and that the time is recent (within 5 seconds of now UTC).
-func TestBug8_DLQPurge_TimeIsRecentUTC(t *testing.T) {
+// Verifies the Purge time argument uses the injected UTC clock.
+func TestBug8_DLQPurge_TimeUsesInjectedClockUTC(t *testing.T) {
 	store := &captureDLQStore{purgeN: 0}
+	fixed := time.Date(2026, 5, 4, 12, 34, 56, 789, time.UTC)
+	clk := clocktest.NewAt(fixed)
 
 	rt := runtime.New(
 		runtime.WithInstanceID("test-utc-recent"),
 		runtime.WithDLQStore(store),
 	)
 	cfg := testConfig()
-	s := New(rt, cfg)
+	s := New(rt, cfg, WithClock(clk))
 
 	mux := http.NewServeMux()
 	s.registerAdminRoutes(mux)
-
-	beforeCall := time.Now().UTC()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/dlq/purge", nil)
 	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	afterCall := time.Now().UTC()
-
 	require.True(t, store.wasPurgeCalled())
-
-	purgeTime := store.getPurgeTime()
-	assert.Equal(t, time.UTC, purgeTime.Location(),
-		"purge time Location must be time.UTC")
-	assert.False(t, purgeTime.Before(beforeCall),
-		"purge time should not be before the call was made")
-	assert.False(t, purgeTime.After(afterCall),
-		"purge time should not be after the call completed")
+	assert.Equal(t, fixed, store.getPurgeTime())
 }
