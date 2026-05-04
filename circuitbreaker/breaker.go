@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 )
 
 // Breaker is a standalone circuit breaker that can wrap any
@@ -24,7 +25,20 @@ type Breaker struct {
 	lastFailureTime      time.Time
 	onStateChange        func(key string, from, to State)
 	key                  string
+	clk                  clock.Clock
 	halfOpenInFlight     atomic.Int32
+}
+
+// BreakerOption configures a Breaker.
+type BreakerOption func(*Breaker)
+
+// WithBreakerClock sets the clock used for breaker timestamps and elapsed-time checks.
+func WithBreakerClock(c clock.Clock) BreakerOption {
+	return func(b *Breaker) {
+		if c != nil {
+			b.clk = c
+		}
+	}
 }
 
 // BreakerMetrics is a point-in-time snapshot of a single circuit breaker's counters and state.
@@ -39,20 +53,25 @@ type BreakerMetrics struct {
 	LastFailureTime      time.Time
 }
 
-// NewBreaker creates a Breaker with the given key, config, and optional
-// state change callback.
-func NewBreaker(key string, cfg Config, onStateChange func(string, State, State)) *Breaker {
+// NewBreaker creates a Breaker with the given key, config, optional
+// state change callback, and options.
+func NewBreaker(key string, cfg Config, onStateChange func(string, State, State), opts ...BreakerOption) *Breaker {
 	if cfg.HalfOpenMaxProbes <= 0 {
 		cfg.HalfOpenMaxProbes = 1
 	}
 	if cfg.CountError == nil {
 		cfg.CountError = domain.IsRecoverableError
 	}
-	return &Breaker{
+	b := &Breaker{
 		key:           key,
 		config:        cfg,
 		onStateChange: onStateChange,
+		clk:           clock.System,
 	}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
 }
 
 // BeforeRequest checks the breaker state and returns ErrUnavailable
@@ -65,7 +84,7 @@ func (b *Breaker) BeforeRequest() error {
 		b.mu.Unlock()
 		return nil
 	case StateOpen:
-		elapsed := time.Since(b.openedAt)
+		elapsed := b.clk.Since(b.openedAt)
 		if elapsed >= b.config.ResetTimeout {
 			notify := b.transitionTo(StateHalfOpen)
 			b.mu.Unlock()
@@ -111,7 +130,7 @@ func (b *Breaker) AfterRequest(err error) {
 		if countable {
 			b.consecutiveFailures++
 			b.consecutiveSuccesses = 0
-			b.lastFailureTime = time.Now()
+			b.lastFailureTime = b.clk.Now()
 
 			if b.state == StateClosed && b.consecutiveFailures >= b.config.FailureThreshold {
 				notify = b.transitionTo(StateOpen)
@@ -155,7 +174,7 @@ func (b *Breaker) transitionTo(newState State) func() {
 
 	switch newState {
 	case StateOpen:
-		b.openedAt = time.Now()
+		b.openedAt = b.clk.Now()
 	case StateClosed:
 		b.consecutiveFailures = 0
 		b.consecutiveSuccesses = 0

@@ -175,6 +175,26 @@ Recommended order (smallest to largest, leaf to root):
 2. `circuitbreaker/breaker.go` — already uses time.Now in
    `transitionTo` and `consecutiveFailures` updates. Add a
    `WithBreakerClock` option.
+
+   **Status:** Resolved 2026-05-04. Circuit breaker timestamps and reset-timeout checks now use an injected breaker clock, with `clock.System` as the default implementation.
+
+   **What landed:**
+
+   - Added `WithBreakerClock` and routed breaker elapsed-time and timestamp reads through the injected clock in [circuitbreaker/breaker.go](circuitbreaker/breaker.go).
+
+   **Tests added:**
+
+   - Added deterministic fake-clock coverage for breaker failure timestamps, retry-after calculations, and open-to-half-open timing in [circuitbreaker/breaker_test.go](circuitbreaker/breaker_test.go).
+
+   **Pre-existing issues fixed in touched files (per audit instruction):**
+
+   - none.
+
+   **Follow-ups (not blockers; logged for future passes):**
+
+   - Processor-level circuit breaker construction still uses the default breaker clock; a later package sweep can thread runtime clock injection into [processors/circuitbreaker/processor.go](processors/circuitbreaker/processor.go).
+
+   **Agents/Skills used:** general-purpose, code-reviewer.
 3. `bridge/supervisor.go` — single `time.Now()` for swap timestamps.
 4. `runtime/credential_resolver.go` — TTL cache; needs clock for
    expiry checks. ~3 calls.
