@@ -1,0 +1,703 @@
+= Error-wrapping policy (Phase 2 — T002)
+:toc: macro
+:toclevels: 2
+:source-highlighter: rouge
+
+This document is the binding output of Phase 2 (task T002) of the work
+defined in `FIX-TODO-error-wrapping.md` at the repo root. It codifies how
+every Go call site that receives an `error` from a non-domain package
+must propagate that error in gobridge code. Phase 3 sweep tasks
+(T003–T012) review their PRs against this document; Phase 4 (T013) lifts
+the `wrapcheck` allow-list verbatim from §"Confirmed wrapcheck allow-list
+seed" below.
+
+The policy is self-contained: a sweep agent should be able to read this
+file plus the package they are sweeping and decide every call site
+without consulting any external context. Where this document says
+"should", a tiebreaker is given.
+
+toc::[]
+
+== Decision rules
+
+The policy applies to every call site where a function returns an
+`error` to a Go function we own that is *not* in the `domain` package.
+Apply the following decision tree, in order, top-to-bottom. Stop at
+the first rule that matches.
+
+[arabic]
+. *Is the error the return of `ctx.Err()` (or a function whose entire
+  body is `return ctx.Err()`)?* +
+  → *Pass through unchanged.* See §"Resolutions to the four open
+  questions", Q2. Justification: `errors.Is(err, context.Canceled)` and
+  `errors.Is(err, context.DeadlineExceeded)` MUST keep working, and
+  wrapping with `%w` is permitted but adds no information at this
+  layer. Allow-listed in `wrapcheck`.
+. *Is the call inside a `runtime/instrumented*.go` decorator (or any
+  other ports-implementing decorator whose only job is to forward to
+  an inner port and emit telemetry)?* +
+  → *Pass through unchanged.* The inner adapter has already classified
+  (rule 3 below) so the caller can `errors.Is` against domain
+  sentinels. Wrapping here would hide the sentinel from
+  `errors.Is`/`errors.As` chains. Allow-listed in `wrapcheck` via the
+  `ports.*` interface glob. *Tiebreaker:* if the decorator adds any
+  semantic transformation beyond observability (e.g. retry, fallback),
+  it is no longer a pass-through and must classify per rule 3.
+. *Does the failure carry a meaningful semantic class downstream
+  (transient, permanent, expired, rejected) — i.e. does the runtime
+  pipeline, retry policy, DLQ router, or metrics exporter make a
+  decision based on the class?* +
+  → *Classify with a domain sentinel via `domain.ErrXxx.Wrap(err)`.*
+  This is the default for *all outbound adapter calls* (SDK calls in
+  `adapters/**`). See §"Domain error class mapping" for the
+  sentinel-to-failure-mode table. *Tiebreaker:* when in doubt between
+  two sentinels, pick the more specific one; if still in doubt, pick
+  the `ErrorTransient` member (`IsRecoverableError` defaults unknown
+  errors to recoverable, so misclassifying as transient is the safer
+  failure mode for the retry/DLQ pipeline).
+. *Is the error internal — i.e. originates in code we own (e.g. a
+  helper in `runtime/`, `bridge/`, `bootstrap/`, a processor) and the
+  caller benefits from knowing where it happened, but no semantic class
+  is needed?* +
+  → *Wrap with context using `fmt.Errorf("subsystem: operation: %w",
+  err)`.* The format is fixed: lowercase, colon-separated, no trailing
+  punctuation, ending with `%w`. *Tiebreaker:* prefer two segments
+  (`subsystem: operation`) over one or three; the package short name
+  is the subsystem, the method or step is the operation.
+. *Is the function a thin pass-through that adds nothing — e.g. a
+  one-line forwarder in a generated stub or a trivial test helper?* +
+  → *Pass through unchanged*, but only if the function is
+  allow-listed in `.golangci.yml`. New pass-throughs that are not
+  allow-listed are rejected in review. *Tiebreaker:* if you cannot
+  point at an existing allow-list entry that covers the function's
+  signature or interface, it is *not* allow-listed; convert to rule 3
+  or rule 4.
+
+If none of rules 1–5 match, the call site is a bug in this policy and
+must be raised back to the orchestrator before the sweep proceeds.
+
+=== Rule 1 — pass-through context error
+
+When to use::
+  The call expression is exactly `ctx.Err()`, or you are returning
+  from a select branch with a `<-ctx.Done()` case.
+
+Exact Go form::
++
+[source,go]
+----
+if err := ctx.Err(); err != nil {
+    return err // pass-through: wrapcheck allow-listed via ignoreSigRegexps
+}
+----
+
+Worked examples::
+* `runtime/dispatcher.go` — `select { case <-ctx.Done(): return ctx.Err() }`.
+* Any adapter receive-loop that polls for cancellation between SDK
+  calls.
+
+Anti-patterns to reject::
+* `return fmt.Errorf("dispatcher: %w", ctx.Err())` — adds noise, breaks
+  `errors.Is(err, context.Canceled)` only when the surrounding code
+  later wraps again with another sentinel; in particular, *never*
+  classify `ctx.Err()` as `domain.ErrTimeout` — `context.DeadlineExceeded`
+  is already the canonical sentinel for that condition.
+* `return domain.ErrCanceled.Wrap(ctx.Err())` — there is no
+  `ErrCanceled` sentinel, and adding one is out of scope (Q2).
+
+=== Rule 2 — pass-through ports.* decorator forwarding
+
+When to use::
+  The receiver type is a `runtime/instrumented*` decorator (or
+  equivalent in `bridge/`), the method is implementing a `ports.*`
+  interface, and the body's last act is to return the inner port's
+  error verbatim, possibly after recording metrics or trace spans.
+
+Exact Go form::
++
+[source,go]
+----
+func (s *InstrumentedLeaseStore) Acquire(ctx context.Context, ...) (domain.LeaseToken, error) {
+    start := s.clk.Now()
+    tok, err := s.inner.Acquire(ctx, ...)
+    s.metrics.Timer(domain.MetricLeaseAcquireLatency, s.clk.Since(start), tags...)
+    if err != nil {
+        s.metrics.Counter(domain.MetricLeaseAcquireFailures, 1, tags...)
+    }
+    return tok, err // pass-through: ports.* glob allow-listed
+}
+----
+
+Worked examples::
+* `runtime/instrumented.go` — `InstrumentedLeaseStore.Acquire`,
+  `InstrumentedOutboxStore.Persist`, etc.
+* `runtime/instrumented_transport.go` — `InstrumentedTransport.Send`
+  forwarding to the inner transport.
+
+Anti-patterns to reject::
+* Wrapping with `fmt.Errorf("instrumented lease: acquire: %w", err)` —
+  hides the inner adapter's `domain.ErrXxx` from
+  `errors.Is`/`errors.As` consumers (the runtime pipeline, retry
+  policies, DLQ classifier).
+* Re-classifying the inner adapter's error inside the decorator —
+  classification is the *inner* adapter's job (rule 3), not the
+  decorator's. If a decorator needs to add classification it has
+  stopped being a decorator and must be moved out of the
+  `runtime/instrumented*.go` family.
+
+=== Rule 3 — classify with a domain sentinel
+
+When to use::
+  The call site is in `adapters/**` (or any code that talks to an
+  external SDK / library / OS resource), and the error needs to be
+  understood by the runtime pipeline for retry / DLQ / drop / expire
+  decisions.
+
+Exact Go form::
++
+[source,go]
+----
+out, err := s.client.SendMessage(ctx, in)
+if err != nil {
+    return domain.ErrUnavailable.
+        Wrap(err).
+        With("queue", queueURL)
+}
+----
+
+Selection of the sentinel is governed by §"Domain error class mapping".
+Use `.With(key, value)` to attach context (queue URL, message ID,
+partition key) when the value is useful for an operator triaging the
+error in logs.
+
+Worked examples::
+* `adapters/aws/transport/sqs.SendMessage` — wrap throttling /
+  `RequestLimitExceeded` as `domain.ErrThrottled.Wrap(err)`; wrap
+  network errors as `domain.ErrConnectionLost.Wrap(err)`; wrap
+  `InvalidMessageContents` as `domain.ErrInvalidPayload.Wrap(err)`.
+* `adapters/aws/store/dynamodblease.Acquire` —
+  `ConditionalCheckFailedException` is `domain.ErrAlreadyExists` (when
+  the lease is held by another owner) or `domain.ErrStaleFencingToken`
+  (when renewing with an outdated token). `ProvisionedThroughputExceeded`
+  is `domain.ErrThrottled`.
+* `adapters/azure/transport/servicebus.Send` — broker-busy →
+  `domain.ErrBrokerBusy`; auth → `domain.ErrTemporaryAuthFailure` or
+  `domain.ErrNotAuthorized` depending on whether the SDK reports the
+  failure as transient.
+
+Anti-patterns to reject::
+* Inventing a new `domain.ErrXxx` for an adapter-specific quirk. The
+  set in `domain/errors.go` is the *closed* taxonomy for Phase 3;
+  additions require a separate design note.
+* Stacking sentinels (`domain.ErrThrottled.Wrap(domain.ErrTransient.Wrap(err))`)
+  — the outermost sentinel wins for `errors.Is` and the inner one is
+  noise.
+* Using `domain.ErrTimeout` for `context.DeadlineExceeded` — the
+  context error is already the canonical sentinel; only use
+  `ErrTimeout` for SDK-reported deadline failures that are *not*
+  context-driven (e.g. broker-side ack timeout).
+* Logging *and* returning the same wrapped error — log at the
+  composition root, not at the wrap site, to avoid duplicate log
+  lines.
+
+=== Rule 4 — wrap with context
+
+When to use::
+  The error originates in our own code (`runtime/`, `bridge/`,
+  `bootstrap/`, `processors/`, `validate/`, `httpapi/`), and the
+  caller needs to know *where* it happened but does not need to
+  branch on a domain class. Typical case: a helper in `runtime/`
+  validates an internal invariant, or a processor combines two
+  internal calls and returns the first failure.
+
+Exact Go form::
++
+[source,go]
+----
+if err := r.bindings.Resolve(ctx, msg); err != nil {
+    return fmt.Errorf("runtime: resolve binding: %w", err)
+}
+----
+
+Format rules::
+* Lowercase. No trailing punctuation. No trailing space.
+* Two segments: `subsystem: operation`. The subsystem is the package
+  short name (`runtime`, `bridge`, `bootstrap`, `processors`,
+  `httpapi`, `validate`, `config`). The operation is the verb +
+  noun describing the step (`resolve binding`, `decode envelope`,
+  `start dispatcher`).
+* Always end with `: %w`. Never use `%v` or `%s` on an error value
+  that has not already been formatted.
+* Do *not* include the function name; the subsystem and operation
+  must be enough. If you find yourself wanting `Foo.Bar:` in the
+  message, the operation segment is too vague — fix that instead.
+
+Worked examples::
+* `runtime.dispatcher.Start` failing to subscribe →
+  `fmt.Errorf("runtime: start dispatcher: %w", err)`.
+* `bootstrap.Run` failing to load config →
+  `fmt.Errorf("bootstrap: load config: %w", err)`.
+* `processors.Filter.Process` failing CEL evaluation →
+  `fmt.Errorf("processors/filter: evaluate predicate: %w", err)`. The
+  subsystem may include a sub-package suffix when several processors
+  exist under the same package root.
+
+Anti-patterns to reject::
+* `fmt.Errorf("error: %w", err)` — zero information.
+* `fmt.Errorf("failed to resolve binding: %w", err)` — "failed to" is
+  noise; the presence of an error already implies failure.
+* `errors.Wrap(err, "...")` — `pkg/errors` is not used in this
+  repository; use the stdlib `fmt.Errorf("%w", ...)`.
+
+=== Rule 5 — pass-through (allow-listed only)
+
+When to use::
+  Reserved for the two cases listed in §"Confirmed wrapcheck
+  allow-list seed": `ctx.Err()` (rule 1) and `ports.*` decorator
+  forwarding (rule 2). Reviewers must not invoke this rule for any
+  new pattern without first amending this document.
+
+== Domain error class mapping
+
+This table is the closed taxonomy for Phase 3. Source of truth for
+the sentinels themselves is `/Users/mariotoffia/progs/github/gobridge/domain/errors.go`.
+For any failure mode not listed, fall back to the rule-3 tiebreaker
+(prefer the more specific sentinel; if uncertain, prefer
+`ErrUnavailable` for transport faults and `ErrInvalidPayload` for
+data faults).
+
+=== Transports — publish / send
+
+[cols="1,2,2", options="header"]
+|===
+| Adapter family | SDK failure mode | Domain sentinel
+| AWS SQS (`adapters/aws/transport/sqs`)
+| `RequestLimitExceeded`, `ThrottlingException`, HTTP 429
+| `domain.ErrThrottled`
+| AWS SQS
+| `ServiceUnavailable`, HTTP 5xx (other than 429)
+| `domain.ErrUnavailable`
+| AWS SQS
+| Network error (`net.OpError`, `io.EOF` on send)
+| `domain.ErrConnectionLost`
+| AWS SQS
+| `InvalidMessageContents`, payload size violation
+| `domain.ErrInvalidPayload` / `domain.ErrPayloadTooLarge`
+| AWS SQS
+| `AccessDenied`, `MissingAuthenticationToken`
+| `domain.ErrNotAuthorized`
+| AWS SQS
+| Expired credentials, STS lease expired (recoverable on refresh)
+| `domain.ErrTemporaryAuthFailure`
+| Azure Service Bus (`adapters/azure/transport/servicebus`)
+| `ServerBusy` (transient)
+| `domain.ErrBrokerBusy`
+| Azure Service Bus
+| `MessagingEntityNotFound`
+| `domain.ErrNotFound`
+| Azure Service Bus
+| `Unauthorized` (token expired) — refresh viable
+| `domain.ErrTemporaryAuthFailure`
+| Azure Service Bus
+| `Unauthorized` (RBAC denial) — refresh will not help
+| `domain.ErrNotAuthorized`
+| Azure Service Bus
+| `MessageSizeExceeded`
+| `domain.ErrPayloadTooLarge`
+| AMQP 0.9.1 / 1.0 (`adapters/amqp/transport/*`)
+| Connection close, channel close on send
+| `domain.ErrConnectionLost`
+| AMQP 0.9.1 / 1.0
+| `precondition-failed`, `resource-locked`
+| `domain.ErrUnavailable`
+| AMQP 0.9.1 / 1.0
+| `access-refused`
+| `domain.ErrNotAuthorized`
+| AMQP 0.9.1 / 1.0
+| Frame / encoder error
+| `domain.ErrProtocolError`
+| MQTT Paho (`adapters/mqtt/transport/paho`)
+| `ErrNotConnected`, broker disconnect
+| `domain.ErrConnectionLost`
+| MQTT Paho
+| `BadUserNameOrPassword`, `NotAuthorized`
+| `domain.ErrNotAuthorized`
+| MQTT Paho
+| `QoSNotSupported`
+| `domain.ErrQoSNotSupported`
+| MQTT Paho
+| Broker rejection (`Server unavailable`)
+| `domain.ErrUnavailable`
+|===
+
+=== Transports — receive / lease-renewal
+
+[cols="1,2,2", options="header"]
+|===
+| Adapter family | SDK failure mode | Domain sentinel
+| All transports
+| Receive returns no message because connection dropped
+| `domain.ErrConnectionLost`
+| All transports
+| Visibility-timeout / lock-renewal lost (Service Bus, SQS)
+| `domain.ErrStaleFencingToken`
+| All transports
+| Message marked filtered by broker subscription rule
+| `domain.ErrMessageFiltered`
+| Service Bus / SQS
+| Message TTL expired before delivery
+| `domain.ErrMessageExpired`
+| AMQP / MQTT
+| Subscription rejected (topic ACL)
+| `domain.ErrNotAuthorized` (permanent) or `domain.ErrTemporaryAuthFailure` (token-driven)
+|===
+
+=== Stores — DDB and SQLite
+
+[cols="1,2,2", options="header"]
+|===
+| Adapter family | SDK failure mode | Domain sentinel
+| DDB (lease, outbox, dlq)
+| `ResourceNotFoundException`
+| `domain.ErrNotFound`
+| DDB lease
+| `ConditionalCheckFailedException` on `Acquire` (lease held)
+| `domain.ErrAlreadyExists`
+| DDB lease
+| `ConditionalCheckFailedException` on `Renew` (token mismatch)
+| `domain.ErrStaleFencingToken`
+| DDB outbox
+| `ConditionalCheckFailedException` on `Persist` (duplicate record)
+| `domain.ErrDuplicateRecord`
+| DDB any
+| `ProvisionedThroughputExceededException`, `ThrottlingException`
+| `domain.ErrThrottled`
+| DDB any
+| Network / 5xx
+| `domain.ErrUnavailable`
+| DDB any
+| `AccessDenied`
+| `domain.ErrNotAuthorized`
+| SQLite (outbox, dlq, lease-memory)
+| `sql.ErrNoRows`
+| `domain.ErrNotFound`
+| SQLite
+| `UNIQUE constraint failed`
+| `domain.ErrDuplicateRecord` (outbox) or `domain.ErrAlreadyExists` (lease)
+| SQLite
+| `database is locked`, `SQLITE_BUSY`
+| `domain.ErrThrottled`
+| SQLite
+| Driver error / `io.EOF`
+| `domain.ErrConnectionLost`
+| SQLite
+| Schema mismatch on open
+| `domain.ErrVersionMismatch`
+|===
+
+=== Configuration / credentials
+
+[cols="1,2,2", options="header"]
+|===
+| Source | Failure mode | Domain sentinel
+| AWS SSM (`adapters/aws/credentials/ssm`)
+| `ParameterNotFound`
+| `domain.ErrNotFound`
+| AWS SSM
+| `ThrottlingException`
+| `domain.ErrThrottled`
+| AWS SSM
+| `AccessDeniedException` (IAM denial)
+| `domain.ErrNotAuthorized`
+| AWS SSM / file
+| Expired credentials
+| `domain.ErrTemporaryAuthFailure`
+| File (`adapters/native/credentials/file`, `adapters/native/config/file`)
+| `os.ErrNotExist`
+| `domain.ErrNotFound`
+| File
+| `os.ErrPermission`
+| `domain.ErrNotAuthorized`
+| File
+| Decode / parse error (JSON, YAML, TOML)
+| `domain.ErrInvalidPayload` (the configuration is treated as a payload)
+|===
+
+=== Observability — metrics / tracing
+
+Observability emit calls are *non-classified* by convention. The
+runtime pipeline does not branch on metric / span emit failures, and
+classifying them would couple unrelated concerns. Use *rule 4* (wrap
+with context):
+
+[source,go]
+----
+if err := e.client.PutMetricData(ctx, in); err != nil {
+    return fmt.Errorf("cloudwatch: put metric data: %w", err)
+}
+----
+
+Applies to:
+
+* `adapters/otel/metrics`
+* `adapters/otel/tracing`
+* `adapters/aws/metrics/cloudwatch`
+
+If an observability backend's failure ever needs to feed back into
+the runtime (e.g. to trigger a circuit breaker around the exporter),
+classify it then — but document the new rule in this file first.
+
+== Resolutions to the four open questions
+
+=== Q1 — `ports.*` policy: wrap or allow-list?
+
+*Decision:* Allow-list `ports.*` interface forwarding via decorators.
+Decorator implementations of `ports.*` interfaces in
+`runtime/instrumented*.go` (and any future `bridge/` decorators that
+exist solely to add observability or telemetry) MUST pass the inner
+error through verbatim. Classification happens at the inner adapter
+boundary (rule 3). Wrapping is *forbidden* in pure decorators.
+
+*Rationale:* (a) The runtime pipeline relies on
+`errors.Is(err, domain.ErrXxx)` to route failures to retry / DLQ /
+drop. Re-wrapping a `domain.BridgeError` in a decorator with
+`fmt.Errorf("...: %w", err)` keeps `errors.Is` working *only as long
+as no consumer compares against the concrete `*BridgeError` type via
+`errors.As`*; in practice `domain.AsBridgeError` does exactly that, so
+re-wrapping is harmful. (b) Decorators that add semantics (retry,
+fallback, circuit-breaker) are not pass-throughs and fall under rule 3
+already — they live outside `runtime/instrumented*.go` (e.g.
+`circuitbreaker/`, `processors/circuitbreaker/`). (c) The "no
+backward compatibility" constraint from the user context lets us
+codify this without preserving any current decorator behaviour.
+
+*Implementation note for sweep agents:* When sweeping `runtime/`
+(T003 or whichever sweep covers it), audit every method on a type
+named `Instrumented*` or `*Decorator`. If a method does anything more
+than (i) call inner, (ii) emit metrics / spans, (iii) return inner's
+result, *move the extra logic out of the decorator* before the sweep
+lands. The decorator must be a strict pass-through after the sweep.
+Add a `var _ ports.Xxx = (*InstrumentedXxx)(nil)` assertion if not
+already present.
+
+=== Q2 — `ctx.Err()` (~20 sites)
+
+*Decision:* Allow-list. Pass `ctx.Err()` through unchanged.
+
+*Rationale:* `context.Canceled` and `context.DeadlineExceeded` are
+sentinels recognised across the entire Go ecosystem.
+`errors.Is(err, context.Canceled)` is the idiomatic check for
+cancellation propagation; wrapping with `fmt.Errorf("...: %w",
+ctx.Err())` is permitted by `errors.Is` semantics but adds no
+information at the layer that calls `ctx.Err()` directly. Adding a
+`domain.ErrCanceled` would duplicate the stdlib sentinel without
+benefit. The runtime pipeline already understands
+`context.DeadlineExceeded` as transient via `IsRecoverableError`
+(unknown errors default to recoverable, which is the desired
+behaviour for cancellation).
+
+*Implementation note for sweep agents:* Match the regexp
+`\.Err\(\) error$` against the call site's resolved signature; if it
+matches and the receiver is `context.Context`, the site is
+allow-listed. Do not add a wrap. If wrapcheck still flags it after
+the seed allow-list lands, report it to the orchestrator — the regexp
+in the seed is intended to cover this exact case.
+
+=== Q3 — Cross-module workspace boundaries
+
+*Decision:* Widen `wrapcheck.ignorePackageGlobs` to cover *every*
+in-repo module under `github.com/mariotoffia/gobridge/...`. Treat
+the entire repository as one logical project regardless of `go.work`
+module layout. Do *not* introduce a "wrap at composition root"
+ceremony for cross-module calls.
+
+*Rationale:* (a) The `go.work` layout is an artefact of independent
+Go module versioning for adapters; it does not reflect a logical
+boundary that the error model should track. (b) Wrapping at every
+cross-module boundary would force every `runtime → adapters`,
+`bridge → runtime`, and `httpapi → bridge` call to wrap, producing
+a forest of `fmt.Errorf("bridge: dispatch: %w", err)` shells around
+already-classified `*BridgeError` values — pure noise. (c) The user
+context confirms there is no backward-compatibility constraint, so
+we can pick the cleanest answer; the cleanest answer is "treat the
+repo as one project, classify at the SDK boundary, propagate
+verbatim everywhere else".
+
+*Implementation note for sweep agents:* The seed below uses
+`github.com/mariotoffia/gobridge/...` as a single glob, which covers
+all current modules and any future ones added to `go.work`. When
+adding a new module, no `.golangci.yml` change is required. Sweep
+agents must *not* introduce wraps at module boundaries (e.g.
+`bootstrap → bridge`); apply rules 1–4 as if the module split did
+not exist.
+
+=== Q4 — Test files (10)
+
+*Decision:* Exclude `_test.go` files and the entire `testutil/`
+tree from `wrapcheck`. Do *not* exclude `tests/integration` or
+`tests/longrunning` — those are end-to-end harnesses that exercise
+production wrapping behaviour and must surface wrapcheck violations
+the same way production code does (since they import `domain` and
+exercise `errors.Is` checks).
+
+*Rationale:* `_test.go` files are noise for wrapcheck — they routinely
+construct synthetic errors, return them straight from helpers, and
+gain no value from `%w` discipline. `testutil/` is a fixture module
+hierarchy whose entire purpose is to set up local services
+(rabbitmqlocal, asblocal, etc.) for tests; its error returns are
+ergonomic helpers for tests, not production error chains.
+`tests/integration` and `tests/longrunning` are *callers* of
+production code — they are the right place for wrapcheck to catch
+regressions, not noise.
+
+*Implementation note for sweep agents:* The seed below uses
+`path: _test\.go` and `path: testutil/`. Sweep PRs touching test
+files should still apply the rule-1 / rule-2 conventions where they
+naturally fit (idiomatic Go), but reviewers must not block a sweep
+on test-file wrap discipline.
+
+== Confirmed wrapcheck allow-list seed (binding for T013)
+
+The following block is the *binding* configuration for T013. It
+should be pasted into `.golangci.yml` under `linters.settings` and
+`issues.exclude-rules` respectively, replacing the Phase 1 seed in
+`FIX-TODO-error-wrapping.md` §"Suggested wrapcheck allow-list seed".
+
+[source,yaml]
+----
+linters:
+  settings:
+    wrapcheck:
+      # Allow-listed function signatures (Q2): context.Context.Err()
+      # and any *.Err() method returning a single error are idiomatic
+      # propagation points; wrapping adds no info.
+      ignoreSigs:
+        - .Err()
+      ignoreSigRegexps:
+        - \.Err\(\) error$
+
+      # Allow-listed packages (Q1, Q3): the entire gobridge module
+      # graph is one logical project. Decorator forwarding of
+      # ports.* errors must remain transparent so domain sentinels
+      # survive errors.Is/errors.As checks downstream.
+      ignorePackageGlobs:
+        - github.com/mariotoffia/gobridge/...
+
+      # Allow-listed interfaces (Q1): any method whose receiver
+      # implements a ports.* interface is treated as decorator
+      # forwarding by default. Real classification happens in the
+      # leaf adapter that calls the SDK.
+      ignoreInterfaceRegexps:
+        - ^github\.com/mariotoffia/gobridge/ports\.
+
+issues:
+  exclusions:
+    rules:
+      # Q4: test files and the testutil fixture tree are exempt.
+      - linters: [wrapcheck]
+        path: "_test\\.go$"
+      - linters: [wrapcheck]
+        path: "testutil/"
+      # tests/integration and tests/longrunning are NOT excluded —
+      # they exercise production wrap discipline.
+----
+
+=== Adjustments from the Phase 1 suggestion
+
+* `ignorePackageGlobs` widened from
+  `github.com/mariotoffia/gobridge/ports` +
+  `github.com/mariotoffia/gobridge/domain` to a single repo-wide
+  glob `github.com/mariotoffia/gobridge/...` per Q3. The
+  `domain` and `ports` packages remain covered (subset).
+* `ignoreInterfaceRegexps` tightened from `^(?i)ports\.` to
+  `^github\.com/mariotoffia/gobridge/ports\.`. The Phase 1 regexp
+  was case-insensitive and unanchored to the module path; that
+  would also match third-party packages whose name starts with
+  "ports". The new regexp is anchored to our module.
+* `ignoreSigs` reduced to `.Err()` (the bare form). The
+  `.Err\(\) error$` form moved to `ignoreSigRegexps` where it
+  belongs syntactically.
+* No change to the test-file exclude rules (they match Phase 1).
+* Added an explicit non-rule: `tests/integration` and
+  `tests/longrunning` are *not* excluded — sweep agents must not
+  add an exclude for them.
+* Rewrote the seed's `issues:` block from golangci-lint v1
+  `issues.exclude-rules` to v2 `issues.exclusions.rules` to match
+  the repo's `.golangci.yml` `version: "2"` schema, so T013 can
+  paste the seed verbatim without a config-load failure.
+
+== Sweep checklist (binding for T003–T012)
+
+Reviewers of any Phase 3 sweep PR copy this list into the PR
+description and check every item before approving. A sweep PR that
+fails any single item is rejected.
+
+* [ ] Every error return from an SDK / external library call uses
+  either `domain.ErrXxx.Wrap(err)` (rule 3) or
+  `fmt.Errorf("subsystem: op: %w", err)` (rule 4) per the decision
+  tree.
+* [ ] `domain.ErrXxx` selection follows §"Domain error class
+  mapping". No new `domain.ErrXxx` codes were invented; if the
+  mapping is ambiguous for a call site, the sweep linked back to
+  this document in the PR description and chose the tiebreaker.
+* [ ] No new pass-through returns introduced unless the function
+  matches rule 1 (`ctx.Err()`) or rule 2 (`ports.*` decorator
+  forwarding in `runtime/instrumented*.go`).
+* [ ] Decorators in `runtime/instrumented*.go` remain strict
+  pass-throughs (no classification, no wrapping). If a decorator
+  added semantics, those semantics moved to a non-decorator type
+  in the same package or a sibling package before the sweep landed.
+* [ ] `errors.Is`-based callers still resolve domain sentinels: run
+  `go test ./...` for the swept package *and* its caller packages
+  (e.g. when sweeping `adapters/aws/transport/sqs`, also run
+  `go test ./runtime/... ./bridge/...`). All tests pass.
+* [ ] `make lint-go` passes for the swept package with `wrapcheck`
+  temporarily enabled in `.golangci.yml` (uncomment the
+  `# - wrapcheck` line locally; do *not* commit the uncomment until
+  T013).
+* [ ] No `fmt.Errorf` with `%v` on an error value (only `%w`).
+* [ ] No `fmt.Errorf` strings starting with `"failed to"`,
+  `"error: "`, `"could not "` — those are noise per rule 4
+  formatting.
+* [ ] No double-wrap: `domain.ErrXxx.Wrap(err)` is never itself the
+  argument to `fmt.Errorf("%w", ...)`.
+* [ ] Observability adapters (`adapters/otel/*`,
+  `adapters/aws/metrics/cloudwatch`) use rule 4 (wrap with
+  context), not rule 3 (classify).
+* [ ] `_test.go` and `testutil/` files are not touched purely for
+  wrapcheck conformance; if they were touched, the change is
+  motivated by something else.
+
+== Out-of-scope / follow-ups
+
+The following items are explicitly deferred. Sweep agents must not
+attempt to address them in T003–T012 and reviewers must not block
+sweep PRs on them.
+
+* *Bootstrap / `cmd/` composition root.* Resolved by Q3: composition
+  roots use rule 4 (wrap with context) for any error returned to
+  `main`. No special "composition root wrap" ceremony is required.
+* *New `domain.ErrXxx` codes.* If a sweep encounters a failure mode
+  that does not fit any sentinel in §"Domain error class mapping",
+  the sweep agent files a follow-up issue and uses the rule-3
+  tiebreaker (prefer `ErrUnavailable` for transport, prefer
+  `ErrInvalidPayload` for data) for the current PR. A follow-up
+  design note will extend the taxonomy.
+* *`errors.Join` for multi-error returns.* Out of scope. None of the
+  current Phase 1 violations involve `errors.Join`. If a future
+  sweep introduces one, raise it back to the orchestrator.
+* *Logging discipline.* This document does not cover where errors
+  are logged. Convention: log at the composition root only. Sweep
+  agents must not add log statements at wrap sites.
+* *`pkg/errors` migration.* The repository does not use
+  `github.com/pkg/errors`. If any vendored dependency exposes its
+  errors, treat them as opaque and apply rule 3 or rule 4 — do not
+  unwrap into `pkg/errors`-specific helpers.
+* *Cross-module retry / circuit-breaker policy.* `circuitbreaker/`
+  and `processors/circuitbreaker/` already use rule 3 by virtue of
+  being at the SDK boundary (they wrap transports). No change here.
+* *Decorator audit beyond `runtime/instrumented*.go`.* If sweep
+  agents discover decorators outside that file family that match
+  the rule-2 shape, this document should be updated to enumerate
+  them. Until then, reviewers apply rule 2 only to
+  `runtime/instrumented*.go`.

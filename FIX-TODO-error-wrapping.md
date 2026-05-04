@@ -229,7 +229,21 @@ forwarding + `ctx.Err` + tests + testutil), narrowing the genuine
 SDK-boundary fix surface to ~80–90 wraps. Phase 2 (T002) should
 confirm or adjust this seed before Phase 3 sweeps begin.
 
-### Phase 2 — Decide per-call wrap vs classify
+### Phase 2 — Decide per-call wrap vs classify - DONE
+
+**Status:** Resolved 2026-05-04. Authoritative policy authored at
+[`_design/error-wrapping-policy.adoc`](_design/error-wrapping-policy.adoc)
+(703 lines). Codifies the decision tree, `domain.ErrXxx` sentinel
+mapping per adapter family, the four open-question resolutions
+(allow-list `ports.*` decorator forwarding; allow-list `ctx.Err()`;
+single repo-wide `github.com/mariotoffia/gobridge/...` glob per
+the no-backcompat constraint; exempt `_test.go` and `testutil/`,
+keep `tests/integration` and `tests/longrunning` enforced),
+the binding wrapcheck allow-list seed for T013 (golangci-lint
+v2 schema), and a deterministic 11-item sweep checklist for
+T003–T012 reviewers. `make lint` passes. Reviewed by `code-reviewer`
+across two rounds (initial v1→v2 YAML schema correction landed in
+round 1).
 
 For each violation, choose:
 
