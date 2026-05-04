@@ -124,7 +124,7 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 
 	asbClient, err := buildClient(r.cfg.Connection)
 	if err != nil {
-		return domain.ErrUnavailable.Wrap(fmt.Errorf("servicebus receiver: build client: %w", err))
+		return err
 	}
 
 	opts := &azservicebus.ReceiverOptions{}

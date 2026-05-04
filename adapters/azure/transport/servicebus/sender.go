@@ -222,7 +222,7 @@ func (s *Sender) ensureClient(ctx context.Context) error {
 
 	asbClient, err := buildClient(s.cfg.Connection)
 	if err != nil {
-		return fmt.Errorf("servicebus sender: %w", err)
+		return err
 	}
 
 	entityName := s.entityName()
@@ -230,7 +230,7 @@ func (s *Sender) ensureClient(ctx context.Context) error {
 	sender, err := asbClient.NewSender(entityName, nil)
 	if err != nil {
 		_ = asbClient.Close(ctx)
-		return fmt.Errorf("servicebus sender: create sender for %q: %w", entityName, err)
+		return MapError(fmt.Errorf("servicebus sender: create sender for %q: %w", entityName, err))
 	}
 
 	s.client = sender
