@@ -138,6 +138,12 @@ func (rt *Runtime) DeepHealth(ctx context.Context) DeepHealth {
 	// Collect session health from route entries.
 	seen := make(map[string]bool)
 	for _, e := range rt.entries {
+		// Routes whose AddRoute caller passed a nil *SessionConfig
+		// (e.g. SQS->SQS routes that have no MQTT session at all)
+		// are intentionally excluded from session-health aggregation.
+		// Test authors: passing nil sessCfg for an MQTT route means
+		// gobridgesync will report "ready" without ever observing
+		// that session — use requireMQTTSessionReady to catch this.
 		if e.session == nil || e.sessCfg == nil {
 			continue
 		}
