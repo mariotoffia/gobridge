@@ -2,6 +2,7 @@ package mqttlocal
 
 import (
 	"fmt"
+	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 	"os"
 	"os/exec"
 	"testing"
@@ -103,7 +104,7 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 	b.start()
 
 	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "-f", b.name).Run()
+		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", b.name)
 		_ = os.Remove(b.confPath)
 		if dataDir != "" {
 			_ = os.RemoveAll(dataDir)
@@ -116,7 +117,7 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 func (b *BrokerInstance) start() {
 	b.t.Helper()
 
-	_ = exec.Command("docker", "rm", "-f", b.name).Run()
+	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", b.name)
 
 	args := []string{
 		"run", "-d",
@@ -135,7 +136,7 @@ func (b *BrokerInstance) start() {
 	}
 	args = append(args, b.cfg.image)
 
-	out, err := exec.Command("docker", args...).CombinedOutput()
+	out, err := dockerexec.Run(dockerexec.RunTimeout, args...)
 	if err != nil {
 		b.t.Fatalf("mqttlocal.BrokerInstance: docker run: %v\n%s", err, out)
 	}
@@ -168,7 +169,7 @@ func (b *BrokerInstance) Stop() {
 	if b.stopped {
 		return
 	}
-	out, err := exec.Command("docker", "kill", b.name).CombinedOutput()
+	out, err := dockerexec.Run(dockerexec.ExecTimeout, "kill", b.name)
 	if err != nil {
 		b.t.Logf("mqttlocal.BrokerInstance.Stop: docker kill: %v\n%s", err, out)
 	}
@@ -183,7 +184,7 @@ func (b *BrokerInstance) Restart() {
 		b.Stop()
 	}
 	// Remove the dead container so we can reuse the name.
-	_ = exec.Command("docker", "rm", "-f", b.name).Run()
+	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", b.name)
 	b.start()
 }
 
@@ -196,7 +197,7 @@ func (b *BrokerInstance) StopGraceful() {
 	if b.stopped {
 		return
 	}
-	out, err := exec.Command("docker", "stop", "-t", "5", b.name).CombinedOutput()
+	out, err := dockerexec.Run(dockerexec.RemoveTimeout, "stop", "-t", "5", b.name)
 	if err != nil {
 		b.t.Logf("mqttlocal.BrokerInstance.StopGraceful: docker stop: %v\n%s", err, out)
 	}
@@ -212,7 +213,7 @@ func (b *BrokerInstance) RestartGraceful() {
 	if !b.stopped {
 		b.StopGraceful()
 	}
-	out, err := exec.Command("docker", "start", b.name).CombinedOutput()
+	out, err := dockerexec.Run(dockerexec.ExecTimeout, "start", b.name)
 	if err != nil {
 		logContainerFailure(b.name)
 		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: docker start: %v\n%s", err, out)

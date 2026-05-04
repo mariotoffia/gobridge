@@ -1,6 +1,6 @@
 module github.com/mariotoffia/gobridge/testutil/ddblocal
 
-go 1.24.0
+go 1.25.0
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.5
@@ -22,4 +22,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.17 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.9 // indirect
 	github.com/aws/smithy-go v1.24.2 // indirect
+	github.com/mariotoffia/gobridge v0.0.0
 )
+
+replace github.com/mariotoffia/gobridge => ../..

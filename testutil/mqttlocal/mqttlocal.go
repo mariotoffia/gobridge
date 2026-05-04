@@ -40,6 +40,7 @@ package mqttlocal
 
 import (
 	"fmt"
+	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 	"net"
 	"net/url"
 	"os"
@@ -362,7 +363,7 @@ func startContainer(c config) (mqttURL, wsURLOut, cName string, cleanup func(), 
 
 	name := fmt.Sprintf("gobridge-mqtt-%d", mqttPort)
 
-	_ = exec.Command("docker", "rm", "-f", name).Run()
+	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
 
 	args := []string{
 		"run", "-d",
@@ -383,14 +384,14 @@ func startContainer(c config) (mqttURL, wsURLOut, cName string, cleanup func(), 
 
 	args = append(args, c.image)
 
-	out, err := exec.Command("docker", args...).CombinedOutput()
+	out, err := dockerexec.Run(dockerexec.RunTimeout, args...)
 	if err != nil {
 		_ = os.Remove(confPath)
 		return "", "", "", nil, fmt.Errorf("docker run: %w\n%s", err, out)
 	}
 
 	cleanup = func() {
-		_ = exec.Command("docker", "rm", "-f", name).Run()
+		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
 		_ = os.Remove(confPath)
 	}
 

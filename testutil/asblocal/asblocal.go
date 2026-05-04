@@ -27,6 +27,7 @@ package asblocal
 
 import (
 	"fmt"
+	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 	"net"
 	"os"
 	"os/exec"
@@ -204,21 +205,21 @@ func startContainers() (string, func(), error) {
 	sqlName := containerPrefix + "sql-" + suffix
 	emuName := containerPrefix + "emu-" + suffix
 
-	_ = exec.Command("docker", "rm", "-f", sqlName).Run()
-	_ = exec.Command("docker", "rm", "-f", emuName).Run()
-	_ = exec.Command("docker", "network", "rm", netName).Run()
+	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", sqlName)
+	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", emuName)
+	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "network", "rm", netName)
 
 	cleanup := func() {
-		_ = exec.Command("docker", "rm", "-f", emuName).Run()
-		_ = exec.Command("docker", "rm", "-f", sqlName).Run()
-		_ = exec.Command("docker", "network", "rm", netName).Run()
+		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", emuName)
+		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", sqlName)
+		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "network", "rm", netName)
 		if configPath != "" {
 			_ = os.Remove(configPath)
 		}
 	}
 
 	// Create Docker network.
-	out, err := exec.Command("docker", "network", "create", netName).CombinedOutput()
+	out, err := dockerexec.Run(dockerexec.ExecTimeout, "network", "create", netName)
 	if err != nil {
 		return "", nil, fmt.Errorf("docker network create: %w\n%s", err, out)
 	}
@@ -238,14 +239,14 @@ func startContainers() (string, func(), error) {
 	configPath = cfgFile.Name()
 
 	// Start SQL Server.
-	out, err = exec.Command("docker", "run", "-d",
+	out, err = dockerexec.Run(dockerexec.RunTimeout, "run", "-d",
 		"--name", sqlName,
 		"--network", netName,
 		"--network-alias", "sqledge",
 		"-e", "ACCEPT_EULA=Y",
 		"-e", "MSSQL_SA_PASSWORD="+sqlPassword,
 		sqlImageName(),
-	).CombinedOutput()
+	)
 	if err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("docker run sql: %w\n%s", err, out)
@@ -261,7 +262,7 @@ func startContainers() (string, func(), error) {
 	time.Sleep(5 * time.Second)
 
 	// Start Service Bus Emulator.
-	out, err = exec.Command("docker", "run", "-d",
+	out, err = dockerexec.Run(dockerexec.RunTimeout, "run", "-d",
 		"--name", emuName,
 		"--network", netName,
 		"-p", fmt.Sprintf("127.0.0.1:%d:5672", amqpPort),
@@ -271,7 +272,7 @@ func startContainers() (string, func(), error) {
 		"-e", "MSSQL_SA_PASSWORD="+sqlPassword,
 		"-e", "ACCEPT_EULA=Y",
 		emulatorImageName(),
-	).CombinedOutput()
+	)
 	if err != nil {
 		logContainerFailure(sqlName)
 		cleanup()
@@ -388,41 +389,41 @@ func configJSON() string {
 }
 
 func removeOrphans(prefix string) {
-	out, err := exec.Command("docker", "ps", "-aq",
-		"--filter", "name="+prefix).Output()
+	out, err := dockerexec.Run(dockerexec.InspectTimeout, "ps", "-aq",
+		"--filter", "name="+prefix)
 	if err != nil || len(out) == 0 {
 		return
 	}
 	ids := strings.Fields(strings.TrimSpace(string(out)))
 	if len(ids) > 0 {
 		args := append([]string{"rm", "-f"}, ids...)
-		_ = exec.Command("docker", args...).Run()
+		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, args...)
 	}
 }
 
 func removeNetworks(prefix string) {
-	out, err := exec.Command("docker", "network", "ls", "-q",
-		"--filter", "name="+prefix).Output()
+	out, err := dockerexec.Run(dockerexec.InspectTimeout, "network", "ls", "-q",
+		"--filter", "name="+prefix)
 	if err != nil || len(out) == 0 {
 		return
 	}
 	ids := strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
-		_ = exec.Command("docker", "network", "rm", id).Run()
+		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "network", "rm", id)
 	}
 }
 
 func isContainerRunning(name string) bool {
-	out, err := exec.Command("docker", "inspect",
-		"--format", "{{.State.Running}}", name).Output()
+	out, err := dockerexec.Run(dockerexec.InspectTimeout, "inspect",
+		"--format", "{{.State.Running}}", name)
 	return err == nil && len(out) > 0 && out[0] == 't'
 }
 
 func waitForContainerHealthy(name string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		out, err := exec.Command("docker", "inspect",
-			"--format", "{{.State.Running}} {{.State.ExitCode}}", name).Output()
+		out, err := dockerexec.Run(dockerexec.InspectTimeout, "inspect",
+			"--format", "{{.State.Running}} {{.State.ExitCode}}", name)
 		if err == nil {
 			s := strings.TrimSpace(string(out))
 			if strings.HasPrefix(s, "true") {
@@ -467,7 +468,7 @@ func stabilize(port int) error {
 }
 
 func logContainerFailure(name string) {
-	out, _ := exec.Command("docker", "logs", "--tail", "50", name).CombinedOutput()
+	out, _ := dockerexec.Run(dockerexec.LogsTimeout, "logs", "--tail", "50", name)
 	if len(out) > 0 {
 		fmt.Fprintf(os.Stderr, "--- docker logs %s ---\n%s\n--- end ---\n", name, out)
 	}
