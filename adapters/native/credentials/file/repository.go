@@ -273,7 +273,7 @@ func (r *Repository) uriToPath(serverURI string) (string, error) {
 func (r *Repository) pathToURI(filePath string) (string, error) {
 	relPath, err := filepath.Rel(r.basePath, filePath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("file credentials: relative path: %w", err)
 	}
 
 	relPath = strings.TrimSuffix(relPath, FileExtension)

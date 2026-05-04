@@ -266,7 +266,7 @@ func (r *Repository) ensureClient(ctx context.Context) error {
 	r.clientOnce.Do(func() {
 		cfg, err := buildAWSConfig(ctx, r.cfg.Region, r.cfg.Endpoint, r.cfg.Profile)
 		if err != nil {
-			r.clientErr = domain.ErrUnavailable.Wrap(fmt.Errorf("ssm: build AWS config: %w", err))
+			r.clientErr = err
 			return
 		}
 		r.client = awsssm.NewFromConfig(cfg)
