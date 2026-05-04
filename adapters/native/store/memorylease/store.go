@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -24,16 +25,21 @@ type Store struct {
 	mu      sync.Mutex
 	leases  map[string]*leaseEntry
 	nextVer atomic.Uint64
-	now     func() time.Time // injectable clock for testing
+	clk     clock.Clock // injectable clock for testing
 	logger  *slog.Logger
 }
 
 // Option configures a Store.
 type Option func(*Store)
 
-// WithClock overrides the time source (defaults to time.Now).
-func WithClock(fn func() time.Time) Option {
-	return func(s *Store) { s.now = fn }
+// WithClock overrides the clock used for timestamps.
+// Defaults to clock.System when nil or not set.
+func WithClock(c clock.Clock) Option {
+	return func(s *Store) {
+		if c != nil {
+			s.clk = c
+		}
+	}
 }
 
 // WithLogger sets a structured logger for trace-level diagnostics.
@@ -45,7 +51,7 @@ func WithLogger(l *slog.Logger) Option {
 func NewStore(opts ...Option) *Store {
 	s := &Store{
 		leases: make(map[string]*leaseEntry),
-		now:    time.Now,
+		clk:    clock.System,
 	}
 	for _, o := range opts {
 		o(s)
@@ -61,7 +67,7 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := s.now()
+	now := s.clk.Now()
 	if e, ok := s.leases[leaseID]; ok && now.Before(e.expiresAt) {
 		return domain.LeaseToken{}, domain.ErrAlreadyExists.
 			WithMessage("lease already held").
@@ -95,7 +101,7 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseTok
 			With("leaseID", leaseID)
 	}
 
-	now := s.now()
+	now := s.clk.Now()
 	if !now.Before(e.expiresAt) {
 		return domain.LeaseToken{}, domain.ErrStaleFencingToken.
 			WithMessage("lease expired, must re-acquire").

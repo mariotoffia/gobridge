@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "FIX-TODO-clock-injection.md",
-  "source_sha": "fe19ae96b98b9adf52cd95d8df666825cc2442fd712e25982a0ea8a8e70603e8",
+  "source_sha": "a5477b7c8f8c06c9593e4281db786a616a7ca41eb6a171b6166d343c38a504c9",
   "indexed_at": "2026-05-04T06:28:05Z",
   "status_convention": "No explicit status markers; numbered list entries, phase headings, and acceptance bullets without markers default to pending",
   "tasks": [
@@ -19,7 +19,7 @@
     {
       "id": "T002",
       "title": "Phase 2 \u2014 Inject clocks per package",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This is Go refactoring work to add clock.Clock fields or WithClock options while preserving defaults.",

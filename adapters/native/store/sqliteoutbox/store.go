@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 
 	_ "modernc.org/sqlite"
@@ -42,12 +43,31 @@ CREATE INDEX IF NOT EXISTS idx_outbox_partition_status ON outbox(partition_key, 
 // persistence in tests and single-process deployments.
 type Store struct {
 	db     *sql.DB
+	clk    clock.Clock
 	logger *slog.Logger
+}
+
+// Option configures a Store.
+type Option func(*Store)
+
+// WithClock overrides the clock used for timestamps.
+// Defaults to clock.System when nil or not set.
+func WithClock(c clock.Clock) Option {
+	return func(s *Store) {
+		if c != nil {
+			s.clk = c
+		}
+	}
+}
+
+// WithLogger sets a structured logger for trace-level diagnostics.
+func WithLogger(l *slog.Logger) Option {
+	return func(s *Store) { s.logger = l }
 }
 
 // NewStore opens (or creates) a SQLite database at dbPath and runs the
 // schema migration. Use ":memory:" for a purely in-memory database.
-func NewStore(dbPath string) (*Store, error) {
+func NewStore(dbPath string, opts ...Option) (*Store, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("sqliteoutbox: open: %w", err)
@@ -63,16 +83,17 @@ func NewStore(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("sqliteoutbox: migrate: %w", err)
 	}
 
-	return &Store{db: db}, nil
+	s := &Store{db: db, clk: clock.System}
+	for _, o := range opts {
+		o(s)
+	}
+	return s, nil
 }
 
 // Close closes the underlying database connection.
 func (s *Store) Close() error {
 	return s.db.Close()
 }
-
-// SetLogger assigns a structured logger for trace-level diagnostics.
-func (s *Store) SetLogger(l *slog.Logger) { s.logger = l }
 
 func partitionKey(r *domain.OutboxRecord) string {
 	if r.SessionID != "" {
@@ -118,7 +139,7 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 
 		createdAt := r.CreatedAt
 		if createdAt.IsZero() {
-			createdAt = time.Now()
+			createdAt = s.clk.Now()
 		}
 
 		var expiresAtMs int64
@@ -230,7 +251,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.L
 
 	placeholders := make([]string, len(recordIDs))
 	args := make([]any, 0, len(recordIDs)+2)
-	args = append(args, time.Now().UnixMilli())
+	args = append(args, s.clk.Now().UnixMilli())
 	for i, id := range recordIDs {
 		placeholders[i] = "?"
 		args = append(args, id)

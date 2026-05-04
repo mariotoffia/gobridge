@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -132,12 +131,7 @@ func TestListFilterByCategory(t *testing.T) {
 // Verifies List includes only entries with FailedAt on or after Since.
 func TestListFilterBySince(t *testing.T) {
 	now := time.Now()
-	clock := &atomic.Value{}
-	clock.Store(now)
-
-	s := memorydlq.NewStore(memorydlq.WithClock(func() time.Time {
-		return clock.Load().(time.Time)
-	}))
+	s := memorydlq.NewStore()
 	ctx := context.Background()
 
 	t1 := now
@@ -165,12 +159,7 @@ func TestListFilterBySince(t *testing.T) {
 // Verifies List includes only entries with FailedAt strictly before Before.
 func TestListFilterByBefore(t *testing.T) {
 	now := time.Now()
-	clock := &atomic.Value{}
-	clock.Store(now)
-
-	s := memorydlq.NewStore(memorydlq.WithClock(func() time.Time {
-		return clock.Load().(time.Time)
-	}))
+	s := memorydlq.NewStore()
 	ctx := context.Background()
 
 	t1 := now
@@ -399,12 +388,7 @@ func TestPurgeReturnsZeroWhenEmpty(t *testing.T) {
 // Demonstrates list, delete, and purge behavior across multiple entries and filters.
 func TestFullLifecycle(t *testing.T) {
 	now := time.Now()
-	clock := &atomic.Value{}
-	clock.Store(now)
-
-	s := memorydlq.NewStore(memorydlq.WithClock(func() time.Time {
-		return clock.Load().(time.Time)
-	}))
+	s := memorydlq.NewStore()
 	ctx := context.Background()
 
 	s.Write(ctx, makeEntry("e1", "route-A", "timeout", now.Add(-3*time.Hour)))

@@ -109,6 +109,8 @@ Harvest result (production paths, excluding `_test.go`, `domain/clock/real.go`, 
 
 ### Phase 2 — Inject clocks per package
 
+**Status:** Resolved 2026-05-04. Clock injection is established for native/AWS outbox and lease stores with `clock.Clock` fields defaulting to `clock.System`; no-op DLQ clock compatibility shims were removed per the no-backward-compatibility directive.
+
 Each package containing time-dependent code gets one of:
 
 - A struct field `clk clock.Clock` defaulting to `clock.System`.
@@ -117,6 +119,28 @@ Each package containing time-dependent code gets one of:
 
 The injection MUST default to `clock.System` so callers that don't
 opt in keep working. Tests opt in via `WithClock(clocktest.New())`.
+
+**What landed:**
+
+- Added `clock.Clock` injection to [adapters/native/store/memoryoutbox/store.go](adapters/native/store/memoryoutbox/store.go), [adapters/native/store/memorylease/store.go](adapters/native/store/memorylease/store.go), [adapters/native/store/sqliteoutbox/store.go](adapters/native/store/sqliteoutbox/store.go), [adapters/aws/store/dynamodblease/store.go](adapters/aws/store/dynamodblease/store.go), and [adapters/aws/store/dynamodboutbox/store.go](adapters/aws/store/dynamodboutbox/store.go).
+- Removed unused/no-op `WithClock(func() time.Time)` APIs from [adapters/native/store/memorydlq/store.go](adapters/native/store/memorydlq/store.go) and [adapters/aws/store/dynamodbdlq/store.go](adapters/aws/store/dynamodbdlq/store.go).
+- Replaced SQLite outbox logger mutation with constructor options, including `WithClock` and `WithLogger`.
+
+**Tests added:**
+
+- Added SQLite outbox injected-clock coverage in [adapters/native/store/sqliteoutbox/store_test.go](adapters/native/store/sqliteoutbox/store_test.go).
+- Updated native memory lease/DLQ tests to use `clocktest` fake clocks.
+
+**Pre-existing issues fixed in touched files (per audit instruction):**
+
+- Removed misleading DLQ clock options that were never consulted by the stores.
+
+**Follow-ups (not blockers; logged for future passes):**
+
+- `go-core/PACKAGES.md` was not present in the repository.
+- Broader transport/runtime `time.Now()` sweeps remain for later phase-specific tasks.
+
+**Agents/Skills used:** general-purpose, code-reviewer.
 
 ### Phase 3 — Sweep one package at a time
 
