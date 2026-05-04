@@ -53,3 +53,7 @@ reports/
 
 # Git worktrees
 .worktrees/
+
+# work-tasklist skill sidecars (generated index files; regenerable from source)
+*.work-tasklist.json
+*.work-tasklist.runner-state.json
