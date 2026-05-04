@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "FIX-TODO-clock-injection.md",
-  "source_sha": "9cb8377401a5e17561ed0e358e2a8253dfaeca79b3fb0f339dc86d733ca15c90",
+  "source_sha": "dd89ccee928f33bc5d336fa7dc8c5d9403ec42fb565fb55a6730e6a643d86eff",
   "indexed_at": "2026-05-04T07:18:22Z",
   "status_convention": "No explicit status markers; numbered list entries, phase headings, and acceptance bullets without markers default to pending",
   "tasks": [
@@ -63,7 +63,7 @@
     {
       "id": "T006",
       "title": "runtime/credential_resolver.go \u2014 inject clock for TTL cache expiry",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This requires Go runtime refactoring around cache expiry semantics and multiple time.Now calls.",

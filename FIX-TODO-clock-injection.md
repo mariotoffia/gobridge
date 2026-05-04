@@ -219,6 +219,28 @@ Recommended order (smallest to largest, leaf to root):
    **Agents/Skills used:** general-purpose, code-reviewer.
 4. `runtime/credential_resolver.go` — TTL cache; needs clock for
    expiry checks. ~3 calls.
+
+   **Status:** Resolved 2026-05-04. Credential resolver cache expiry, eviction, and stats now use an injected `clock.Clock`, defaulting to `clock.System`, so TTL behavior can be tested deterministically without direct wall-clock reads.
+
+   **What landed:**
+
+   - Added `clock.Clock` injection and `WithCredentialClock` in [runtime/credential_resolver.go](runtime/credential_resolver.go).
+   - Replaced all direct cache `time.Now()` reads in [runtime/credential_resolver.go](runtime/credential_resolver.go) with the resolver clock.
+   - Converted cache-expiry tests in [runtime/credential_resolver_test.go](runtime/credential_resolver_test.go) from `time.Sleep` to `clocktest.Fake` advancement.
+
+   **Tests added:**
+
+   - Updated `TestCredentialResolver_CacheExpiry`, `TestCredentialResolver_CacheEvictsExpired`, and `TestCredentialResolver_CacheStats_AccurateExpiredCount` to use deterministic fake clocks.
+
+   **Pre-existing issues fixed in touched files (per audit instruction):**
+
+   - Removed sleep-driven race windows from credential resolver cache-expiry tests.
+
+   **Follow-ups (not blockers; logged for future passes):**
+
+   - none.
+
+   **Agents/Skills used:** general-purpose, code-reviewer.
 5. `runtime/credentials_poll.go` — RNG seed; replace
    `time.Now().UnixNano()` with `clk.Now().UnixNano()`.
 6. `runtime/dlq_router.go` — `FailedAt` field on DLQ entries.
