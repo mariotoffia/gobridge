@@ -65,7 +65,7 @@ func warmupAMQP() error {
 			lastErr = err
 			fmt.Fprintf(os.Stderr, "asb warmup attempt %d failed: %v\n", attempt, err)
 		}
-		time.Sleep(backoff)
+		time.Sleep(backoff) // OTHER: external emulator warmup backoff between probes
 	}
 	if lastErr != nil {
 		return fmt.Errorf("asb warmup exhausted budget %s: %w", totalBudget, lastErr)

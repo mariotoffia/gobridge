@@ -381,6 +381,7 @@ type FakeOutboxStore struct {
 	ClaimFn       func(partitionKey, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error)
 	CompleteErr   error
 	CompleteFn    func([]string, domain.LeaseToken) error
+	CompleteCtxFn func(context.Context, []string, domain.LeaseToken) error
 	StaleClaimAge time.Duration
 }
 
@@ -457,11 +458,15 @@ func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string,
 	return claimed, nil
 }
 
-func (s *FakeOutboxStore) Complete(_ context.Context, recordIDs []string, token domain.LeaseToken) error {
+func (s *FakeOutboxStore) Complete(ctx context.Context, recordIDs []string, token domain.LeaseToken) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.CompleteFn != nil {
+	if s.CompleteCtxFn != nil {
+		if err := s.CompleteCtxFn(ctx, recordIDs, token); err != nil {
+			return err
+		}
+	} else if s.CompleteFn != nil {
 		if err := s.CompleteFn(recordIDs, token); err != nil {
 			return err
 		}
