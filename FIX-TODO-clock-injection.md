@@ -311,6 +311,27 @@ Recommended order (smallest to largest, leaf to root):
 
    **Agents/Skills used:** general-purpose, code-reviewer.
 8. `runtime/session_manager*.go` — lease renewal scheduling.
+
+   **Status:** Resolved 2026-05-04. Session manager lease-audit timestamps and lease acquire/renew latency measurements now use the manager's injected `clock.Clock`, removing direct wall-clock reads from the production session-manager timing path.
+
+   **What landed:**
+
+   - Replaced the lease audit timestamp in [runtime/session_manager.go](runtime/session_manager.go) with `m.clk.Now().UTC()`.
+   - Replaced lease acquire and renew latency timing in [runtime/session_manager_lease.go](runtime/session_manager_lease.go) with `m.clk.Now()` / `m.clk.Since()`.
+
+   **Tests added:**
+
+   - none — existing fake-clock renewal coverage in [runtime/session_manager_clock_test.go](runtime/session_manager_clock_test.go) continues to cover injected-clock scheduling.
+
+   **Pre-existing issues fixed in touched files (per audit instruction):**
+
+   - none.
+
+   **Follow-ups (not blockers; logged for future passes):**
+
+   - [runtime/session_manager_clock_test.go](runtime/session_manager_clock_test.go) still uses small real-time waits as test-goroutine synchronization guards; these are outside the production forbidigo gate but can be replaced with channel-based synchronization in a later test cleanup.
+
+   **Agents/Skills used:** general-purpose, code-reviewer.
 9. `runtime/outbox_drainer_loop.go` — drain cycle timestamps.
 10. `runtime/instrumented*.go` — metric timestamps.
 11. `httpapi/{admin,admin_dlq,config_txn,server}.go` — request-time

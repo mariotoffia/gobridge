@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "FIX-TODO-clock-injection.md",
-  "source_sha": "9e162205a0fa806cc848aebad3442d6bbc1fd561af905c25707b602dbf5b4345",
+  "source_sha": "fe0014d1950ce12f66033ffbe5cbf61d28d5e0024f65ad6485d046289bf8e499",
   "indexed_at": "2026-05-04T07:51:57Z",
   "status_convention": "No explicit status markers; numbered list entries, phase headings, and acceptance bullets without markers default to pending",
   "tasks": [
@@ -107,7 +107,7 @@
     {
       "id": "T010",
       "title": "runtime/session_manager*.go \u2014 inject clock for lease renewal scheduling",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This requires Go runtime scheduling changes where leases depend on current time.",
