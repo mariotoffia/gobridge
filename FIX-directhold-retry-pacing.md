@@ -67,7 +67,7 @@ explicit hint always wins.
 
 ## Tasks
 
-### 1. Compute pacing in one helper
+### 1. Compute pacing in one helper - DONE
 
 Add a small helper (unexported) in `runtime/route_runner_dispatch.go`
 or a new `runtime/route_runner_retry.go`:
@@ -119,7 +119,7 @@ fallbacks, not transient-send retries. Read the context per call:
   already pass non-zero literals; leave alone or migrate to the
   helper as a follow-up.
 
-### 2. Unit coverage
+### 2. Unit coverage - DONE
 
 Create `runtime/route_runner_retry_test.go` (new file) with at least:
 

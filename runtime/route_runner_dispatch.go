@@ -147,8 +147,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 			return r.ackDelivery(ctx, del)
 		}
 
-		retryAfter := domain.GetRetryAfter(sendErr)
-		return r.retryOrFallback(ctx, del, env, retryAfter, sendErr)
+		return r.retryOrFallback(ctx, del, env, retryDelay(r.policy, receiveCount(env)+1, sendErr), sendErr)
 	}
 
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, plan.BindingID, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
@@ -261,8 +260,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 	if domain.IsRecoverableError(err) {
 		r.metrics.Counter(domain.MetricRouteErrors, 1,
 			domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID})
-		retryAfter := domain.GetRetryAfter(err)
-		return r.retryOrFallback(ctx, del, env, retryAfter, err)
+		return r.retryOrFallback(ctx, del, env, retryDelay(r.policy, receiveCount(env)+1, err), err)
 	}
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", err, 0); dlqErr != nil {
 		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("DLQ write failed: %w", dlqErr))
