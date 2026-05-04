@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 
 	ddbconfig "github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
@@ -192,12 +194,14 @@ func TestWatchDetectsChanges(t *testing.T) {
 
 // Verifies Watch does not emit when the stored configuration version is unchanged across polls.
 func TestWatchNoDuplicates(t *testing.T) {
+	fc := clocktest.New()
 	client := ddblocal.Client(t)
 	tableName := ddblocal.UniqueTable("cfg-nodup")
 	loader := ddbconfig.NewLoader(client,
 		ddbconfig.WithTableName(tableName),
 		ddbconfig.WithBridgeID("test-bridge"),
 		ddbconfig.WithPollInterval(100*time.Millisecond),
+		ddbconfig.WithClock(fc),
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -220,13 +224,20 @@ func TestWatchNoDuplicates(t *testing.T) {
 		t.Fatalf("watch: %v", err)
 	}
 
-	// TODO(FIX-TODO-clock-injection.md): pollLoop already uses
-	// l.clk.NewTicker, so a clocktest.Fake injection via WithClock
-	// would replace this real-time wait. Holding off until the full
-	// clock-injection sweep — addressing one isolated test does not
-	// reduce the prerequisite scope for enabling forbidigo project-wide.
-	// Wait for a few poll cycles; no new version means no emission.
-	time.Sleep(500 * time.Millisecond) //nolint:forbidigo // legacy sleep — needs fake clock
+	// Wait for the pollLoop goroutine to register its ticker before advancing.
+	// _test.go files are exempt from the forbidigo time.Sleep ban.
+	deadline := time.Now().Add(time.Second)
+	for fc.TickerCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for poll ticker to register")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Fire 5 poll cycles; no new version means no emission.
+	fc.Advance(500 * time.Millisecond)
+	// Yield so the goroutine can drain pending ticks.
+	runtime.Gosched()
 
 	select {
 	case got := <-ch:

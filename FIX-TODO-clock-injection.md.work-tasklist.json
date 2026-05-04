@@ -195,7 +195,7 @@
     {
       "id": "T018",
       "title": "Phase 4 \u2014 Address the loader_test.go TODO",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "test-automator",
       "agent_rationale": "This requires rewriting a Go test to use clocktest.Fake instead of real sleep timing.",
@@ -206,7 +206,7 @@
     {
       "id": "T019",
       "title": "Drop loader_test.go forbidigo nolint and time.Sleep once fake-clock variant works",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "test-automator",
       "agent_rationale": "This is test cleanup and validation after replacing real-time waiting with fake-clock advancement.",

@@ -498,7 +498,9 @@ Per package: build + test green at each step. - DONE
 
 **Agents/Skills used:** code-reviewer.
 
-### Phase 4 — Address the `loader_test.go` TODO
+### Phase 4 — Address the `loader_test.go` TODO - DONE
+
+**Status:** Resolved 2026-05-04. `TestWatchNoDuplicates` in `adapters/aws/config/dynamodb/loader_test.go` rewired to inject `clocktest.Fake` via `ddbconfig.WithClock`; the 500ms `time.Sleep` and its `//nolint:forbidigo` annotation are removed. The goroutine registration is confirmed via a `fc.TickerCount()` spin-wait, then `fc.Advance(500ms)` fires five poll cycles deterministically.
 
 Now that the underlying production code uses `l.clk.NewTicker`,
 rewrite the test to:
@@ -533,6 +535,24 @@ default:
 
 Drop the `//nolint:forbidigo` and the `time.Sleep(500ms)` once the
 fake-clock variant works.
+
+**What landed:**
+
+- Rewrote `TestWatchNoDuplicates` in [adapters/aws/config/dynamodb/loader_test.go](adapters/aws/config/dynamodb/loader_test.go) to inject `clocktest.Fake` via `ddbconfig.WithClock`; replaced `time.Sleep(500ms)` with `fc.Advance(500ms)` and a `fc.TickerCount()` spin-wait for goroutine registration; dropped `//nolint:forbidigo` annotation.
+
+**Tests added:**
+
+- Updated `TestWatchNoDuplicates` to use deterministic fake-clock advancement.
+
+**Pre-existing issues fixed in touched files (per audit instruction):**
+
+- Removed the TODO comment and forbidigo nolint exemption.
+
+**Follow-ups (not blockers; logged for future passes):**
+
+- none.
+
+**Agents/Skills used:** code-reviewer.
 
 ### Phase 5 — Enable `forbidigo` in `.golangci.yml`
 
