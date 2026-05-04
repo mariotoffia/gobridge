@@ -160,7 +160,7 @@
 ./tests/longrunning/gap_shutdown_edge_test.go:121:	time.Sleep(2 * time.Second) // SYNC: let final deliveries reach collector via MQTT
 ./tests/longrunning/longrunning_helpers_test.go:308:	time.Sleep(500 * time.Millisecond) // OTHER: let container fully stop before restarting
 ./tests/longrunning/longrunning_helpers_test.go:633:// replacing the brittle time.Sleep(200ms) pattern after Reconcile.
-./tests/longrunning/longrunning_helpers_test.go:664:		time.Sleep(50 * time.Millisecond) // SYNC: poll for bridge readiness
+./tests/longrunning/longrunning_helpers_test.go:684:		time.Sleep(50 * time.Millisecond) // SYNC: poll for bridge readiness
 ./tests/longrunning/longrunning_perf_helpers_test.go:151:		time.Sleep(50 * time.Millisecond) // OTHER: let finalizers run between GC cycles
 ./tests/longrunning/longrunning_test.go:446:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 ./tests/longrunning/res_gap_validation_test.go:141:	time.Sleep(30 * time.Second) // NEGATIVE: verify no messages reach target after all sends fail
@@ -174,8 +174,8 @@
 ./tests/longrunning/uc38_outbox_modes_test.go:195:			time.Sleep(500 * time.Millisecond) // SYNC: poll interval for SQS queue depth check
 ./tests/longrunning/uc38_outbox_modes_test.go:285:	time.Sleep(idleWait) // SYNC: observe drain cycles during idle period
 ./tests/longrunning/uc38_outbox_modes_test.go:91:	time.Sleep(10 * time.Second) // OTHER: let outbox fill while sender is paused
-./tests/longrunning/uc42_broker_resilience_test.go:101:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
-./tests/longrunning/uc42_broker_resilience_test.go:207:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
+./tests/longrunning/uc42_broker_resilience_test.go:102:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
+./tests/longrunning/uc42_broker_resilience_test.go:214:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 ./tests/longrunning/uc48_broker_multihop_test.go:141:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 ./tests/longrunning/uc48_broker_multihop_test.go:278:		time.Sleep(time.Duration(flapDownSec) * time.Second) // OTHER: scenario timing — broker flap downtime
 ./tests/longrunning/uc48_broker_multihop_test.go:505:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down during message queuing

@@ -41,7 +41,7 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 	brokerURL := broker.URL()
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc42-in")
-	leaseStore, outboxStore := setupDynamoStores(t)
+	leaseStore, outboxStore := setupDynamoStoresForRestart(t)
 	dlq := &lrDLQStore{}
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -84,6 +84,7 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 	defer func() { _ = rt.Stop(context.Background()) }()
 
 	gobridgesync(t, 10*time.Second, rt)
+	requireMQTTSessionReady(t, rt, sessionID)
 
 	// Send messages to SQS.
 	t.Logf("UC42: sending %d messages to SQS-IN", msgCount)
@@ -108,6 +109,7 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 	// outbox drainer, MQTT session, broker, and collector subscription
 	// are all operational — no sleep required.
 	sendProbe(t, sqsInClient, sqsInURL, collector, 30*time.Second)
+	requireMQTTSessionReady(t, rt, sessionID)
 
 	// Wait for all messages to arrive after recovery.
 	// EnvelopeFromPublish now sets Envelope.ID from mqtt.message-id,
@@ -187,13 +189,18 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 		Resolver: goruntime.NewStaticResolver(
 			domain.DispatchPlan{BindingID: "uc43-bind", Address: outTopic},
 		),
+		Bindings: []domain.DestinationBinding{
+			{ID: "uc43-bind", SessionID: sessionID},
+		},
 		SourceCapabilities: directHoldCaps,
 	}
-	require.NoError(t, rt.AddRoute(routeCfg, sqsRx, mqttSnd, sess, nil))
+	sc := lrSessionConfig(sessionID)
+	require.NoError(t, rt.AddRoute(routeCfg, sqsRx, mqttSnd, sess, &sc))
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
 
 	gobridgesync(t, 10*time.Second, rt)
+	requireMQTTSessionReady(t, rt, sessionID)
 
 	t.Logf("UC43: sending %d messages to SQS-IN (vis=10s)", msgCount)
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
@@ -214,6 +221,7 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 	// wait for all messages to arrive. Persistent collector ensures the
 	// broker queues messages during the reconnection gap.
 	gobridgesync(t, 30*time.Second, rt)
+	requireMQTTSessionReady(t, rt, sessionID)
 	lrWaitFor(t, 180*time.Second,
 		fmt.Sprintf("collector >= %d after restart", msgCount),
 		func() bool { return collector.count() >= msgCount })

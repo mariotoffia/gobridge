@@ -643,6 +643,26 @@ func waitSubReady(t *testing.T, sess *paho.Session, timeout time.Duration) {
 	})
 }
 
+// requireMQTTSessionReady asserts that the runtime reports the given
+// session as Connected and Ready. Fails fast (no polling) — call after
+// gobridgesync returns to verify the helper saw the session at all.
+// gobridgesync silently skips runtime entries with sessCfg == nil
+// (see runtime/bridge_health.go); this assertion catches that
+// misconfiguration so the test fails loudly instead of passing
+// vacuously.
+func requireMQTTSessionReady(t *testing.T, rt *goruntime.Runtime, sessionID string) {
+	t.Helper()
+	dh := rt.DeepHealth(context.Background())
+	for _, sd := range dh.Sessions {
+		if sd.SessionID == sessionID {
+			require.True(t, sd.Connected, "session %s not connected", sessionID)
+			require.True(t, sd.Ready, "session %s not ready", sessionID)
+			return
+		}
+	}
+	t.Fatalf("session %s missing from runtime health (likely sessCfg==nil at AddRoute)", sessionID)
+}
+
 // gobridgesync waits until all runtimes report ReadyForTraffic and
 // ServiceLevel Full via DeepHealth. On timeout, logs detailed health
 // for each bridge and fails the test.

@@ -1,5 +1,7 @@
 # FIX — Harden UC42 / UC43 broker-restart longrunning tests
 
+**Status:** Resolved 2026-05-04. UC42 now uses `setupDynamoStoresForRestart`, UC43 declares the `uc43-bind` binding and a non-nil `*SessionConfig` (built via `lrSessionConfig`), and a fail-fast `requireMQTTSessionReady` helper guards against `sessCfg==nil` regressions in both tests. The skip-rule in `runtime/bridge_health.go` now carries an explanatory comment. Verified via `go build ./...`, `go vet ./...`, `go build -tags=longrunning ./tests/longrunning/...`, `go vet -tags=longrunning ./tests/longrunning/...`, `go test -short -race ./runtime/...`, and `make lint` (all pass). Audit allowlist line numbers refreshed for the line-shift introduced by the new helper.
+
 > Companion files: `FIX-directhold-retry-pacing.md`,
 > `FIX-shared-outbox-completion.md`,
 > `FIX-docker-exec-timeout.md`.
