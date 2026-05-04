@@ -109,9 +109,9 @@ func sqsMQTTSQSBridge(
 func TestUC17_LargePayloads_200KB(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 500
-		paySize  = 200 * 1024
-		pollTimeout  = 180 * time.Second
+		msgCount    = 500
+		paySize     = 200 * 1024
+		pollTimeout = 180 * time.Second
 	)
 	inURL, inClient := setupSQSQueue(t, "uc17-in")
 	outURL, outClient := setupSQSQueue(t, "uc17-out")
@@ -167,8 +167,8 @@ func TestUC17_LargePayloads_200KB(t *testing.T) {
 func TestUC18_TinyPayloads_HighThroughput(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 50000
-		pollTimeout  = 300 * time.Second
+		msgCount    = 50000
+		pollTimeout = 300 * time.Second
 	)
 	inURL, inClient := setupSQSQueue(t, "uc18-in")
 	collector := newMQTTCollector(t, "uc18/data", "uc18-col")
@@ -225,9 +225,9 @@ func TestUC18_TinyPayloads_HighThroughput(t *testing.T) {
 func TestUC19_MixedPayloadSizes(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		perClass = 1000
-		total    = 3000
-		pollTimeout  = 180 * time.Second
+		perClass    = 1000
+		total       = 3000
+		pollTimeout = 180 * time.Second
 	)
 	inURL, inClient := setupSQSQueue(t, "uc19-in")
 	collector := newMQTTCollector(t, "uc19/data", "uc19-col")
@@ -291,9 +291,9 @@ func TestUC19_MixedPayloadSizes(t *testing.T) {
 func TestUC20_HeaderHeavy_50Headers(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount  = 1000
-		headerQty = 50
-		pollTimeout   = 120 * time.Second
+		msgCount    = 1000
+		headerQty   = 50
+		pollTimeout = 120 * time.Second
 	)
 	inURL, inClient := setupSQSQueue(t, "uc20-in")
 	collector := newMQTTCollector(t, "uc20/data", "uc20-col")
@@ -354,8 +354,8 @@ func TestUC20_HeaderHeavy_50Headers(t *testing.T) {
 func TestUC21_BinaryPayload_RoundTrip(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 1000
-		pollTimeout  = 120 * time.Second
+		msgCount    = 1000
+		pollTimeout = 120 * time.Second
 	)
 	inURL, inClient := setupSQSQueue(t, "uc21-in")
 	outURL, outClient := setupSQSQueue(t, "uc21-out")

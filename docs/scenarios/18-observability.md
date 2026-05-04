@@ -196,8 +196,8 @@ func main() {
 		runtime.WithMetrics(metrics),
 		runtime.WithTracer(tracer),
 	).
-		RegisterTransport("mqtt", paho.NewBridgeFactory()).
-		RegisterTransport("sqs", sqs.NewBridgeFactory()).
+		RegisterTransport("mqtt", paho.NewFactory()).
+		RegisterTransport("sqs", sqs.NewFactory()).
 		Build(ctx)
 	if err != nil {
 		logger.Error("failed to build runtime", "error", err)

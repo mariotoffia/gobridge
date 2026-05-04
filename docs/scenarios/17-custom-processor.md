@@ -239,8 +239,8 @@ func main() {
 	})
 
 	rt, err := bridge.NewBuilder(cfg).
-		RegisterTransport("mqtt", paho.NewBridgeFactory()).
-		RegisterTransport("sqs", sqs.NewBridgeFactory()).
+		RegisterTransport("mqtt", paho.NewFactory()).
+		RegisterTransport("sqs", sqs.NewFactory()).
 		RegisterProcessor("rate-limit", rl).
 		Build(ctx)
 	if err != nil {

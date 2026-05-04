@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -23,38 +24,41 @@ func TestEnvelope_HasExpiry(t *testing.T) {
 
 // TestEnvelope_IsExpired verifies IsExpired for no expiry, past ExpiresAt, and future ExpiresAt.
 func TestEnvelope_IsExpired(t *testing.T) {
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	clk := clocktest.NewAt(now)
 	e := &domain.Envelope{}
-	if e.IsExpired() {
+	if e.IsExpired(clk) {
 		t.Fatal("no expiry should not be expired")
 	}
 
-	e.ExpiresAt = time.Now().Add(-time.Second)
-	if !e.IsExpired() {
+	e.ExpiresAt = now.Add(-time.Second)
+	if !e.IsExpired(clk) {
 		t.Fatal("past ExpiresAt should be expired")
 	}
 
-	e.ExpiresAt = time.Now().Add(time.Hour)
-	if e.IsExpired() {
+	e.ExpiresAt = now.Add(time.Hour)
+	if e.IsExpired(clk) {
 		t.Fatal("future ExpiresAt should not be expired")
 	}
 }
 
 // TestEnvelope_RemainingTTL verifies RemainingTTL is zero without expiry or when expired, and positive before ExpiresAt.
 func TestEnvelope_RemainingTTL(t *testing.T) {
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	clk := clocktest.NewAt(now)
 	e := &domain.Envelope{}
-	if r := e.RemainingTTL(); r != 0 {
+	if r := e.RemainingTTL(clk); r != 0 {
 		t.Fatalf("no expiry: expected 0, got %v", r)
 	}
 
-	e.ExpiresAt = time.Now().Add(-time.Minute)
-	if r := e.RemainingTTL(); r != 0 {
+	e.ExpiresAt = now.Add(-time.Minute)
+	if r := e.RemainingTTL(clk); r != 0 {
 		t.Fatalf("expired: expected 0, got %v", r)
 	}
 
-	e.ExpiresAt = time.Now().Add(10 * time.Second)
-	rem := e.RemainingTTL()
-	if rem <= 0 || rem > 10*time.Second {
-		t.Fatalf("expected positive remaining TTL <= 10s, got %v", rem)
+	e.ExpiresAt = now.Add(10 * time.Second)
+	if rem := e.RemainingTTL(clk); rem != 10*time.Second {
+		t.Fatalf("expected remaining TTL 10s, got %v", rem)
 	}
 }
 

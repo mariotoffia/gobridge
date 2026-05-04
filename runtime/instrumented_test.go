@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -14,7 +16,7 @@ import (
 func TestInstrumentedLeaseStore_AcquireRecordsLatency(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeLeaseStore()
-	store := runtime.NewInstrumentedLeaseStore(inner, rec)
+	store := runtime.NewInstrumentedLeaseStore(inner, rec, clock.System)
 
 	_, err := store.Acquire(context.Background(), "lease-1", "owner-1", 30*time.Second, nil)
 	if err != nil {
@@ -43,7 +45,7 @@ func TestInstrumentedLeaseStore_AcquireFailureRecordsCounter(t *testing.T) {
 	tok, _ := inner.Acquire(context.Background(), "lease-1", "other", 30*time.Second, nil)
 	_ = tok
 
-	store := runtime.NewInstrumentedLeaseStore(inner, rec)
+	store := runtime.NewInstrumentedLeaseStore(inner, rec, clock.System)
 	_, _ = store.Acquire(context.Background(), "lease-1", "me", 30*time.Second, nil)
 
 	failures := rec.FindEntries(domain.MetricLeaseAcquireFailures)
@@ -56,7 +58,7 @@ func TestInstrumentedLeaseStore_AcquireFailureRecordsCounter(t *testing.T) {
 func TestInstrumentedLeaseStore_RenewRecordsLatency(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeLeaseStore()
-	store := runtime.NewInstrumentedLeaseStore(inner, rec)
+	store := runtime.NewInstrumentedLeaseStore(inner, rec, clock.System)
 
 	tok, _ := store.Acquire(context.Background(), "lease-1", "owner-1", 30*time.Second, nil)
 	rec.Reset()
@@ -76,7 +78,7 @@ func TestInstrumentedLeaseStore_RenewRecordsLatency(t *testing.T) {
 func TestInstrumentedOutboxStore_PersistRecordsLatency(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeOutboxStore()
-	store := runtime.NewInstrumentedOutboxStore(inner, rec)
+	store := runtime.NewInstrumentedOutboxStore(inner, rec, clock.System)
 
 	records := []domain.OutboxRecord{{
 		ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1",
@@ -101,7 +103,7 @@ func TestInstrumentedOutboxStore_PersistRecordsLatency(t *testing.T) {
 func TestInstrumentedOutboxStore_CompleteDelegates(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeOutboxStore()
-	store := runtime.NewInstrumentedOutboxStore(inner, rec)
+	store := runtime.NewInstrumentedOutboxStore(inner, rec, clock.System)
 
 	records := []domain.OutboxRecord{
 		{ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", SessionID: "s1",
@@ -137,7 +139,7 @@ func TestInstrumentedOutboxStore_CompleteDelegates(t *testing.T) {
 func TestInstrumentedOutboxStore_QueryPendingRecordsDepth(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeOutboxStore()
-	store := runtime.NewInstrumentedOutboxStore(inner, rec)
+	store := runtime.NewInstrumentedOutboxStore(inner, rec, clock.System)
 
 	pk := domain.OutboxPartitionKey("s1", "b1")
 
@@ -173,7 +175,7 @@ func TestInstrumentedSender_RecordsSendLatency(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeSender()
 	sender := runtime.NewInstrumentedSender(inner, rec,
-		domain.MetricMQTTPublishLatency, domain.TagKeySessionID, "sess-1")
+		domain.MetricMQTTPublishLatency, domain.TagKeySessionID, "sess-1", clock.System)
 
 	env := &domain.Envelope{ID: "msg-1", Payload: []byte("test")}
 	err := sender.Send(context.Background(), env)
@@ -195,7 +197,7 @@ func TestInstrumentedReceiver_RecordsReceiveLatency(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeReceiver()
 	receiver := runtime.NewInstrumentedReceiver(inner, rec,
-		domain.MetricSQSReceiveLatency, domain.TagKeyQueueURL, "https://sqs/q1")
+		domain.MetricSQSReceiveLatency, domain.TagKeyQueueURL, "https://sqs/q1", clock.System)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -220,7 +222,7 @@ func TestInstrumentedReceiver_RecordsReceiveLatency(t *testing.T) {
 func TestInstrumentedOutboxStore_ExpireDelegates(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeOutboxStore()
-	store := runtime.NewInstrumentedOutboxStore(inner, rec)
+	store := runtime.NewInstrumentedOutboxStore(inner, rec, clock.System)
 
 	records := []domain.OutboxRecord{
 		{ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", SessionID: "s1",
@@ -241,7 +243,7 @@ func TestInstrumentedDelivery_ExtendCountsVisibilityExtension(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeReceiver()
 	receiver := runtime.NewInstrumentedReceiver(inner, rec,
-		domain.MetricSQSReceiveLatency, domain.TagKeyQueueURL, "https://sqs/q1")
+		domain.MetricSQSReceiveLatency, domain.TagKeyQueueURL, "https://sqs/q1", clock.System)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -262,3 +264,148 @@ func TestInstrumentedDelivery_ExtendCountsVisibilityExtension(t *testing.T) {
 	}
 }
 
+func TestInstrumentedLeaseStore_AcquireLatencyUsesInjectedClock(t *testing.T) {
+	clk := clocktest.NewAt(time.Unix(100, 0))
+	rec := &ports.RecordingExporter{}
+	inner := &advancingLeaseStore{LeaseStore: NewFakeLeaseStore(), clk: clk, advance: 250 * time.Millisecond}
+	store := runtime.NewInstrumentedLeaseStore(inner, rec, clk)
+
+	_, err := store.Acquire(context.Background(), "lease-1", "owner-1", time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	timers := rec.FindEntries(domain.MetricLeaseAcquireLatency)
+	if len(timers) != 1 {
+		t.Fatalf("expected 1 acquire timer, got %d", len(timers))
+	}
+	if timers[0].Duration != 250*time.Millisecond {
+		t.Fatalf("duration = %s, want 250ms", timers[0].Duration)
+	}
+}
+
+func TestInstrumentedLeaseStore_RenewLatencyUsesInjectedClock(t *testing.T) {
+	clk := clocktest.NewAt(time.Unix(100, 0))
+	rec := &ports.RecordingExporter{}
+	base := NewFakeLeaseStore()
+	tok, err := base.Acquire(context.Background(), "lease-1", "owner-1", time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := &advancingLeaseStore{LeaseStore: base, clk: clk, advance: 175 * time.Millisecond}
+	store := runtime.NewInstrumentedLeaseStore(inner, rec, clk)
+
+	_, err = store.Renew(context.Background(), "lease-1", tok, time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	timers := rec.FindEntries(domain.MetricLeaseRenewLatency)
+	if len(timers) != 1 {
+		t.Fatalf("expected 1 renew timer, got %d", len(timers))
+	}
+	if timers[0].Duration != 175*time.Millisecond {
+		t.Fatalf("duration = %s, want 175ms", timers[0].Duration)
+	}
+}
+
+func TestInstrumentedOutboxStore_PersistLatencyUsesInjectedClock(t *testing.T) {
+	clk := clocktest.NewAt(time.Unix(100, 0))
+	rec := &ports.RecordingExporter{}
+	inner := &advancingOutboxStore{OutboxStore: NewFakeOutboxStore(), clk: clk, advance: 90 * time.Millisecond}
+	store := runtime.NewInstrumentedOutboxStore(inner, rec, clk)
+
+	err := store.Persist(context.Background(), []domain.OutboxRecord{{
+		ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", Envelope: domain.Envelope{ID: "env-1"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	timers := rec.FindEntries(domain.MetricOutboxPersistLatency)
+	if len(timers) != 1 {
+		t.Fatalf("expected 1 persist timer, got %d", len(timers))
+	}
+	if timers[0].Duration != 90*time.Millisecond {
+		t.Fatalf("duration = %s, want 90ms", timers[0].Duration)
+	}
+}
+
+func TestInstrumentedSender_SendLatencyUsesInjectedClock(t *testing.T) {
+	clk := clocktest.NewAt(time.Unix(100, 0))
+	rec := &ports.RecordingExporter{}
+	inner := NewFakeSender()
+	inner.SendFn = func(*domain.Envelope) error {
+		clk.Advance(125 * time.Millisecond)
+		return nil
+	}
+	sender := runtime.NewInstrumentedSender(inner, rec,
+		domain.MetricMQTTPublishLatency, domain.TagKeySessionID, "sess-1", clk)
+
+	err := sender.Send(context.Background(), &domain.Envelope{ID: "msg-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	timers := rec.FindEntries(domain.MetricMQTTPublishLatency)
+	if len(timers) != 1 {
+		t.Fatalf("expected 1 send timer, got %d", len(timers))
+	}
+	if timers[0].Duration != 125*time.Millisecond {
+		t.Fatalf("duration = %s, want 125ms", timers[0].Duration)
+	}
+}
+
+func TestInstrumentedReceiver_RunLatencyUsesInjectedClock(t *testing.T) {
+	clk := clocktest.NewAt(time.Unix(100, 0))
+	rec := &ports.RecordingExporter{}
+	inner := NewFakeReceiver()
+	receiver := runtime.NewInstrumentedReceiver(inner, rec,
+		domain.MetricSQSReceiveLatency, domain.TagKeyQueueURL, "https://sqs/q1", clk)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		_ = inner.Emit(ctx, NewFakeDelivery(&domain.Envelope{ID: "msg-1"}))
+		cancel()
+	}()
+
+	_ = receiver.Run(ctx, func(context.Context, ports.Delivery) error {
+		clk.Advance(300 * time.Millisecond)
+		return nil
+	})
+
+	timers := rec.FindEntries(domain.MetricSQSReceiveLatency)
+	if len(timers) != 1 {
+		t.Fatalf("expected 1 receive timer, got %d", len(timers))
+	}
+	if timers[0].Duration != 300*time.Millisecond {
+		t.Fatalf("duration = %s, want 300ms", timers[0].Duration)
+	}
+}
+
+type advancingLeaseStore struct {
+	ports.LeaseStore
+	clk     *clocktest.Fake
+	advance time.Duration
+}
+
+func (s *advancingLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+	s.clk.Advance(s.advance)
+	return s.LeaseStore.Acquire(ctx, leaseID, ownerID, ttl, endpoints)
+}
+
+func (s *advancingLeaseStore) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+	s.clk.Advance(s.advance)
+	return s.LeaseStore.Renew(ctx, leaseID, token, ttl, endpoints)
+}
+
+type advancingOutboxStore struct {
+	ports.OutboxStore
+	clk     *clocktest.Fake
+	advance time.Duration
+}
+
+func (s *advancingOutboxStore) Persist(ctx context.Context, records []domain.OutboxRecord) error {
+	s.clk.Advance(s.advance)
+	return s.OutboxStore.Persist(ctx, records)
+}

@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
-	"github.com/mariotoffia/gobridge/config"
+
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -58,8 +58,8 @@ func TestIntegration_Cluster_ForwardToBridge(t *testing.T) {
 	defer cancel()
 
 	// Bridge B — no locator, processes locally through a real runtime.
-	factoryB := transport.NewBridgeFactory()
-	recvB, err := factoryB.NewReceiver(ctx, config.ReceiverDef{ID: "route-cluster"}, nil)
+	factoryB := transport.NewFactory()
+	recvB, err := factoryB.NewReceiver(ctx, ports.ReceiverSpec{ID: "route-cluster"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver B: %v", err)
 	}
@@ -89,11 +89,11 @@ func TestIntegration_Cluster_ForwardToBridge(t *testing.T) {
 		local: false,
 	}
 	fwdA := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
-	factoryA := transport.NewBridgeFactory(
+	factoryA := transport.NewFactory(
 		transport.WithRouteLocator(locA),
 		transport.WithMessageForwarder(fwdA),
 	)
-	recvA, err := factoryA.NewReceiver(ctx, config.ReceiverDef{ID: "route-cluster"}, nil)
+	recvA, err := factoryA.NewReceiver(ctx, ports.ReceiverSpec{ID: "route-cluster"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver A: %v", err)
 	}
@@ -162,8 +162,8 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 	defer cancel()
 
 	// Bridge B — local SSE sender.
-	factoryB := transport.NewBridgeFactory()
-	senderB, err := factoryB.NewSender(ctx, config.SenderDef{
+	factoryB := transport.NewFactory()
+	senderB, err := factoryB.NewSender(ctx, ports.SenderSpec{
 		ID: "sse-cluster", Options: map[string]any{"mode": "sse"},
 	}, nil)
 	if err != nil {
@@ -177,8 +177,8 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 		peer:  &domain.PeerInfo{InstanceID: "bridge-b", Endpoints: map[string]string{"http": serverB.URL}},
 		local: false,
 	}
-	factoryA := transport.NewBridgeFactory(transport.WithRouteLocator(locA))
-	senderA, err := factoryA.NewSender(ctx, config.SenderDef{
+	factoryA := transport.NewFactory(transport.WithRouteLocator(locA))
+	senderA, err := factoryA.NewSender(ctx, ports.SenderSpec{
 		ID: "sse-cluster", Options: map[string]any{"mode": "sse"},
 	}, nil)
 	if err != nil {
@@ -288,11 +288,11 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 	// Bridge B — locator says remote(A), but forwarded flag bypasses that.
 	locB := &stubLocator{peer: peerA, local: false}
 	fwdB := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
-	factoryB := transport.NewBridgeFactory(
+	factoryB := transport.NewFactory(
 		transport.WithRouteLocator(locB),
 		transport.WithMessageForwarder(fwdB),
 	)
-	recvB, err := factoryB.NewReceiver(ctx, config.ReceiverDef{ID: "route-loop"}, nil)
+	recvB, err := factoryB.NewReceiver(ctx, ports.ReceiverSpec{ID: "route-loop"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver B: %v", err)
 	}
@@ -319,11 +319,11 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 	// Bridge A — locator says remote(B), forwards via HTTPForwarder.
 	locA := &stubLocator{peer: peerB, local: false}
 	fwdA := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
-	factoryA := transport.NewBridgeFactory(
+	factoryA := transport.NewFactory(
 		transport.WithRouteLocator(locA),
 		transport.WithMessageForwarder(fwdA),
 	)
-	recvA, err := factoryA.NewReceiver(ctx, config.ReceiverDef{ID: "route-loop"}, nil)
+	recvA, err := factoryA.NewReceiver(ctx, ports.ReceiverSpec{ID: "route-loop"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver A: %v", err)
 	}
@@ -398,11 +398,11 @@ func TestIntegration_Cluster_ForwardToDeadPeer(t *testing.T) {
 		local: false,
 	}
 	fwd := transport.NewHTTPForwarder("/transport/http", 2*time.Second)
-	factory := transport.NewBridgeFactory(
+	factory := transport.NewFactory(
 		transport.WithRouteLocator(loc),
 		transport.WithMessageForwarder(fwd),
 	)
-	recv, err := factory.NewReceiver(ctx, config.ReceiverDef{ID: "route-dead"}, nil)
+	recv, err := factory.NewReceiver(ctx, ports.ReceiverSpec{ID: "route-dead"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -449,8 +449,8 @@ func TestIntegration_Cluster_ForwardPreservesEnvelope(t *testing.T) {
 	defer cancel()
 
 	// Bridge B — processes locally through a real runtime.
-	factoryB := transport.NewBridgeFactory()
-	recvB, err := factoryB.NewReceiver(ctx, config.ReceiverDef{ID: "route-preserve"}, nil)
+	factoryB := transport.NewFactory()
+	recvB, err := factoryB.NewReceiver(ctx, ports.ReceiverSpec{ID: "route-preserve"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver B: %v", err)
 	}
@@ -475,11 +475,11 @@ func TestIntegration_Cluster_ForwardPreservesEnvelope(t *testing.T) {
 		local: false,
 	}
 	fwdA := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
-	factoryA := transport.NewBridgeFactory(
+	factoryA := transport.NewFactory(
 		transport.WithRouteLocator(locA),
 		transport.WithMessageForwarder(fwdA),
 	)
-	recvA, err := factoryA.NewReceiver(ctx, config.ReceiverDef{ID: "route-preserve"}, nil)
+	recvA, err := factoryA.NewReceiver(ctx, ports.ReceiverSpec{ID: "route-preserve"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver A: %v", err)
 	}
@@ -566,8 +566,8 @@ func TestIntegration_Cluster_ForwardDivergentReceiverID(t *testing.T) {
 	)
 
 	// Bridge B — receiver registered under receiverID, runtime route under routeID.
-	factoryB := transport.NewBridgeFactory()
-	recvB, err := factoryB.NewReceiver(ctx, config.ReceiverDef{ID: receiverID}, nil)
+	factoryB := transport.NewFactory()
+	recvB, err := factoryB.NewReceiver(ctx, ports.ReceiverSpec{ID: receiverID}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver B: %v", err)
 	}
@@ -592,11 +592,11 @@ func TestIntegration_Cluster_ForwardDivergentReceiverID(t *testing.T) {
 		local: false,
 	}
 	fwdA := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
-	factoryA := transport.NewBridgeFactory(
+	factoryA := transport.NewFactory(
 		transport.WithRouteLocator(locA),
 		transport.WithMessageForwarder(fwdA),
 	)
-	recvA, err := factoryA.NewReceiver(ctx, config.ReceiverDef{ID: receiverID}, nil)
+	recvA, err := factoryA.NewReceiver(ctx, ports.ReceiverSpec{ID: receiverID}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver A: %v", err)
 	}

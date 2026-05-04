@@ -127,7 +127,7 @@ type failingHandler struct{}
 func (failingHandler) Enabled(context.Context, slog.Level) bool  { return true }
 func (failingHandler) Handle(context.Context, slog.Record) error { return errWriteFailed }
 func (failingHandler) WithAttrs([]slog.Attr) slog.Handler        { return failingHandler{} }
-func (failingHandler) WithGroup(string) slog.Handler              { return failingHandler{} }
+func (failingHandler) WithGroup(string) slog.Handler             { return failingHandler{} }
 
 var errWriteFailed = errors.New("write failed")
 

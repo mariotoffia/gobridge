@@ -213,9 +213,11 @@ func TestDeliveryHook_DirectHold_NoHook_NoopSafe(t *testing.T) {
 // OnSettled because the delivery is retried by the transport.
 //
 // ───────────────────────────────────────────────
-//   sender.Send → transient error → del.Retry
-//   OnAttempt(egress, err=transient) ✓
-//   OnSettled NOT called              ✓
+//
+//	sender.Send → transient error → del.Retry
+//	OnAttempt(egress, err=transient) ✓
+//	OnSettled NOT called              ✓
+//
 // ───────────────────────────────────────────────
 func TestDeliveryHook_DirectHold_TransientRetry_NoSettled(t *testing.T) {
 	hook := &recordingHook{}
@@ -326,9 +328,11 @@ func TestDeliveryHook_DirectHold_MaxAttemptFromPolicy(t *testing.T) {
 // because the source does not support retry and no DLQ is configured.
 //
 // ───────────────────────────────────────────────
-//   sender.Send → transient → del.Retry → ErrNotSupported
-//   DLQ store = nil → message dropped
-//   OnSettled(err=reason) ✓
+//
+//	sender.Send → transient → del.Retry → ErrNotSupported
+//	DLQ store = nil → message dropped
+//	OnSettled(err=reason) ✓
+//
 // ───────────────────────────────────────────────
 func TestDeliveryHook_DirectHold_Drop_NoDLQ_RetryUnsupported(t *testing.T) {
 	hook := &recordingHook{}
@@ -478,4 +482,3 @@ func TestDeliveryHook_DirectHold_ConcurrentDeliveries(t *testing.T) {
 		t.Errorf("expected %d settled, got %d", n, hook.SettledCount())
 	}
 }
-

@@ -178,8 +178,8 @@ func TestDelivery_AutoExtend_CallsRenew(t *testing.T) {
 		time.Sleep(1 * time.Millisecond)
 	}
 
-	fake.Advance(1100 * time.Millisecond)  // past one tick interval (lockDuration/2 = 1s)
-	time.Sleep(20 * time.Millisecond)      // OTHER: let goroutine process tick
+	fake.Advance(1100 * time.Millisecond) // past one tick interval (lockDuration/2 = 1s)
+	time.Sleep(20 * time.Millisecond)     // OTHER: let goroutine process tick
 	d.stop()
 
 	count := renewCount.Load()
@@ -207,7 +207,7 @@ func TestDelivery_AutoExtend_StopsOnAck(t *testing.T) {
 		t.Fatalf("Ack failed: %v", err)
 	}
 
-	fake.Advance(3 * time.Second) // well past tick interval — if ticker was alive it would fire
+	fake.Advance(3 * time.Second)     // well past tick interval — if ticker was alive it would fire
 	time.Sleep(20 * time.Millisecond) // OTHER: goroutine teardown yield
 
 	count := renewCount.Load()
@@ -235,7 +235,7 @@ func TestDelivery_AutoExtend_StopsOnRetry(t *testing.T) {
 		t.Fatalf("Retry failed: %v", err)
 	}
 
-	fake.Advance(3 * time.Second) // well past tick interval — if ticker was alive it would fire
+	fake.Advance(3 * time.Second)     // well past tick interval — if ticker was alive it would fire
 	time.Sleep(20 * time.Millisecond) // OTHER: goroutine teardown yield
 
 	count := renewCount.Load()
@@ -295,7 +295,7 @@ func TestDelivery_AutoExtend_UsesLockedUntil(t *testing.T) {
 	lockedUntil := time.Now().Add(4 * time.Second)
 	env := &domain.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{
-		MessageID:  "test-msg",
+		MessageID:   "test-msg",
 		LockedUntil: &lockedUntil,
 	}
 	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, true, nil, nil, nil)

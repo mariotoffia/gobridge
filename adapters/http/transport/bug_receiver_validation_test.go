@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
-	"github.com/mariotoffia/gobridge/config"
+
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -20,8 +20,8 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestBugReceiver_RejectsNonJSONContentType(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "ct-test"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "ct-test"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -58,8 +58,8 @@ func TestBugReceiver_RejectsNonJSONContentType(t *testing.T) {
 }
 
 func TestBugReceiver_AcceptsJSONContentType(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "ct-json"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "ct-json"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -108,8 +108,8 @@ func TestBugReceiver_AcceptsJSONContentType(t *testing.T) {
 }
 
 func TestBugReceiver_AcceptsMissingContentType(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "ct-empty"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "ct-empty"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -163,8 +163,8 @@ func TestBugReceiver_AcceptsMissingContentType(t *testing.T) {
 }
 
 func TestBugReceiver_AcceptsJSONWithCharset(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "ct-charset"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "ct-charset"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -223,8 +223,8 @@ func TestBugReceiver_AcceptsJSONWithCharset(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBugReceiver_GeneratesIDWhenEmpty(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "id-gen"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "id-gen"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -283,8 +283,8 @@ func TestBugReceiver_GeneratesIDWhenEmpty(t *testing.T) {
 }
 
 func TestBugReceiver_PreservesExplicitID(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "id-keep"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "id-keep"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -340,8 +340,8 @@ func TestBugReceiver_PreservesExplicitID(t *testing.T) {
 }
 
 func TestBugReceiver_GeneratedIDsAreUnique(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "id-unique"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "id-unique"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}

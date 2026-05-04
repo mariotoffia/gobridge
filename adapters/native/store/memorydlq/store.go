@@ -19,7 +19,6 @@ var _ ports.DLQStore = (*Store)(nil)
 type Store struct {
 	mu      sync.Mutex
 	entries map[string]domain.DLQEntry
-	now     func() time.Time
 	logger  *slog.Logger
 }
 
@@ -31,16 +30,10 @@ func WithLogger(l *slog.Logger) Option {
 	return func(s *Store) { s.logger = l }
 }
 
-// WithClock overrides the time source (defaults to time.Now).
-func WithClock(fn func() time.Time) Option {
-	return func(s *Store) { s.now = fn }
-}
-
 // NewStore creates a new in-memory DLQStore.
 func NewStore(opts ...Option) *Store {
 	s := &Store{
 		entries: make(map[string]domain.DLQEntry),
-		now:     time.Now,
 	}
 	for _, o := range opts {
 		o(s)

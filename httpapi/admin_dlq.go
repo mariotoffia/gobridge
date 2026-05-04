@@ -372,12 +372,12 @@ func (s *Server) handleDLQDeleteByFilter(w http.ResponseWriter, r *http.Request)
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body struct {
-		RouteID         string `json:"route_id"`
-		Category        string `json:"category"`
-		Since           string `json:"since"`
-		Before          string `json:"before"`
-		Limit           int    `json:"limit"`
-		ConfirmDeleteAll bool  `json:"confirm_delete_all"`
+		RouteID          string `json:"route_id"`
+		Category         string `json:"category"`
+		Since            string `json:"since"`
+		Before           string `json:"before"`
+		Limit            int    `json:"limit"`
+		ConfirmDeleteAll bool   `json:"confirm_delete_all"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
@@ -445,7 +445,7 @@ func (s *Server) handleDLQPurge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	count, err := store.Purge(r.Context(), time.Now().UTC())
+	count, err := store.Purge(r.Context(), s.clk.Now().UTC())
 	if err != nil {
 		s.emitAudit(r, "dlq.purge", "dlq", "", "failure", map[string]any{"error": err.Error()})
 		writeErr(w, http.StatusInternalServerError, "DLQ purge failed")

@@ -63,7 +63,7 @@ type TLSConfig struct {
 	// fields override the corresponding *File fields.
 	CACertPEM string
 	CertPEM   string
-	KeyPEM   string
+	KeyPEM    string
 
 	InsecureSkipVerify bool
 }
@@ -115,6 +115,7 @@ type SenderConfig struct {
 	Session        *Session
 	Logger         *slog.Logger
 	Metrics        ports.MetricsExporter
+	Clock          clock.Clock
 }
 
 // DefaultSessionOptions returns SessionOptions with sensible defaults.

@@ -32,12 +32,12 @@ type NoopExporter struct{}
 
 var _ MetricsExporter = (*NoopExporter)(nil)
 
-func (n *NoopExporter) Counter(string, int64, ...domain.Tag)          {}
-func (n *NoopExporter) Gauge(string, float64, ...domain.Tag)          {}
-func (n *NoopExporter) Histogram(string, float64, ...domain.Tag)      {}
-func (n *NoopExporter) Timer(string, time.Duration, ...domain.Tag)    {}
-func (n *NoopExporter) Flush(context.Context) error                   { return nil }
-func (n *NoopExporter) Close(context.Context) error                   { return nil }
+func (n *NoopExporter) Counter(string, int64, ...domain.Tag)       {}
+func (n *NoopExporter) Gauge(string, float64, ...domain.Tag)       {}
+func (n *NoopExporter) Histogram(string, float64, ...domain.Tag)   {}
+func (n *NoopExporter) Timer(string, time.Duration, ...domain.Tag) {}
+func (n *NoopExporter) Flush(context.Context) error                { return nil }
+func (n *NoopExporter) Close(context.Context) error                { return nil }
 
 // RecordingExporter is a MetricsExporter that records all emitted
 // metrics in memory. It is safe for concurrent use and intended

@@ -6,8 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodbstreams"
 	dstreamtypes "github.com/aws/aws-sdk-go-v2/service/dynamodbstreams/types"
-
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // streamLoop consumes DynamoDB Streams records for the watched table
@@ -21,7 +20,7 @@ import (
 // latest open shard on the next iteration. Cadence between GetRecords
 // calls is governed by streamPollInterval through the injected clock,
 // so tests can drive it deterministically.
-func (l *Loader) streamLoop(ctx context.Context, ch chan<- *config.BridgeConfig, streamArn string) {
+func (l *Loader) streamLoop(ctx context.Context, ch chan<- *ports.BridgeConfig, streamArn string) {
 	defer close(ch)
 
 	var shardIter string

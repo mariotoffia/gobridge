@@ -4,17 +4,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // TestToRoutePolicy_FieldMapping validates that all RouteDef fields are mapped
 // to the corresponding RoutePolicy fields.
 func TestToRoutePolicy_FieldMapping(t *testing.T) {
-	rd := config.RouteDef{
+	rd := ports.RouteDef{
 		DeliveryMode: "shared_outbox",
 		DispatchMode: "fan_out",
-		Policy: config.PolicyDef{
+		Policy: ports.PolicyDef{
 			MaxInFlight:        50,
 			MaxReplayAttempts:  3,
 			MaxOutboxDepth:     500,
@@ -55,9 +55,9 @@ func TestToRoutePolicy_FieldMapping(t *testing.T) {
 // TestToRoutePolicy_BackoffDurations validates that backoff duration strings
 // are parsed correctly into time.Duration values.
 func TestToRoutePolicy_BackoffDurations(t *testing.T) {
-	rd := config.RouteDef{
-		Policy: config.PolicyDef{
-			Backoff: config.BackoffDef{
+	rd := ports.RouteDef{
+		Policy: ports.PolicyDef{
+			Backoff: ports.BackoffDef{
 				InitialInterval: "500ms",
 				MaxInterval:     "10s",
 				Multiplier:      1.5,
@@ -81,7 +81,7 @@ func TestToRoutePolicy_BackoffDurations(t *testing.T) {
 // TestToSessionConfig_FromRouteSessionDef validates that RouteSessionDef
 // fields are mapped to the runtime.SessionConfig struct.
 func TestToSessionConfig_FromRouteSessionDef(t *testing.T) {
-	rs := &config.RouteSessionDef{
+	rs := &ports.RouteSessionDef{
 		SessionID:         "mqtt-sess",
 		LeaseTTL:          "60s",
 		RenewInterval:     "20s",
@@ -118,8 +118,8 @@ func TestToSessionConfig_NilReturnsNil(t *testing.T) {
 // TestToRoutePolicy_SendTimeoutAndDepthCacheTTL validates that the new
 // duration fields are parsed and mapped correctly.
 func TestToRoutePolicy_SendTimeoutAndDepthCacheTTL(t *testing.T) {
-	rd := config.RouteDef{
-		Policy: config.PolicyDef{
+	rd := ports.RouteDef{
+		Policy: ports.PolicyDef{
 			SendTimeout:   "5s",
 			DepthCacheTTL: "200ms",
 		},
@@ -139,8 +139,8 @@ func TestToRoutePolicy_SendTimeoutAndDepthCacheTTL(t *testing.T) {
 // TestToRoutePolicy_AllowFlags validates that AllowUnfenced and AllowRetryDrop
 // are wired from config to domain.
 func TestToRoutePolicy_AllowFlags(t *testing.T) {
-	rd := config.RouteDef{
-		Policy: config.PolicyDef{
+	rd := ports.RouteDef{
+		Policy: ports.PolicyDef{
 			AllowUnfenced:  true,
 			AllowRetryDrop: true,
 		},
@@ -157,8 +157,8 @@ func TestToRoutePolicy_AllowFlags(t *testing.T) {
 // TestToRoutePolicy_InvalidSendTimeout validates that invalid send_timeout
 // duration strings return an error.
 func TestToRoutePolicy_InvalidSendTimeout(t *testing.T) {
-	rd := config.RouteDef{
-		Policy: config.PolicyDef{SendTimeout: "banana"},
+	rd := ports.RouteDef{
+		Policy: ports.PolicyDef{SendTimeout: "banana"},
 	}
 	_, err := toRoutePolicyE(rd)
 	if err == nil {
@@ -169,7 +169,7 @@ func TestToRoutePolicy_InvalidSendTimeout(t *testing.T) {
 // TestToSessionConfig_DrainMaxFields validates that DrainMaxBatchSize and
 // DrainMaxConcurrency are wired from config to runtime.
 func TestToSessionConfig_DrainMaxFields(t *testing.T) {
-	rs := &config.RouteSessionDef{
+	rs := &ports.RouteSessionDef{
 		SessionID:           "s1",
 		DrainMaxBatchSize:   200,
 		DrainMaxConcurrency: 5,
@@ -189,7 +189,7 @@ func TestToSessionConfig_DrainMaxFields(t *testing.T) {
 // TestToDrainStrategy_FixedPoll validates fixed_poll drain strategy construction.
 // FixedPoll applies ±25% jitter, so we check within tolerance.
 func TestToDrainStrategy_FixedPoll(t *testing.T) {
-	rs := &config.RouteSessionDef{
+	rs := &ports.RouteSessionDef{
 		SessionID:     "s1",
 		DrainInterval: "5s",
 	}
@@ -205,9 +205,9 @@ func TestToDrainStrategy_FixedPoll(t *testing.T) {
 // TestToDrainStrategy_AdaptiveBackoff validates adaptive_backoff drain strategy
 // construction from a DrainStrategyDef.
 func TestToDrainStrategy_AdaptiveBackoff(t *testing.T) {
-	rs := &config.RouteSessionDef{
+	rs := &ports.RouteSessionDef{
 		SessionID: "s1",
-		DrainStrategy: &config.DrainStrategyDef{
+		DrainStrategy: &ports.DrainStrategyDef{
 			Type:        "adaptive_backoff",
 			MinInterval: "1s",
 			MaxInterval: "30s",

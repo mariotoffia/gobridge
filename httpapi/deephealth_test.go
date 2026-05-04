@@ -37,7 +37,7 @@ func newStubSession(connected, ready bool) *stubSession {
 	}
 }
 
-func (s *stubSession) Start(context.Context) error                        { return nil }
+func (s *stubSession) Start(context.Context) error                         { return nil }
 func (s *stubSession) Reconcile(context.Context, domain.SessionPlan) error { return nil }
 func (s *stubSession) Health(context.Context) ports.SessionHealth {
 	return ports.SessionHealth{

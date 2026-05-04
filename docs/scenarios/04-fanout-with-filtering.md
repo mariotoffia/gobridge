@@ -130,8 +130,8 @@ func main() {
     })
 
     rt, _ := bridge.NewBuilder(cfg).
-        RegisterTransport("mqtt", paho.NewBridgeFactory(nil)).
-        RegisterTransport("sqs", sqs.NewBridgeFactory(nil)).
+        RegisterTransport("mqtt", paho.NewFactory(nil)).
+        RegisterTransport("sqs", sqs.NewFactory(nil)).
         RegisterProcessor(tempFilter).
         RegisterProcessor(humidFilter).
         Build(context.Background())

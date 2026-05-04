@@ -1,0 +1,145 @@
+# FIX-TODO — Test-quality sweep (gates dropping the `_test.go` exclusion for default linters)
+
+> Carve-out from the architectural TODOs that survived the
+> April 2026 sprint. Companion files: `FIX-004.md`, `FIX-006.md`,
+> `FIX-TODO-clock-injection.md`, `FIX-TODO-error-wrapping.md`,
+> `FIX-TODO-return-types.md`.
+
+## Why this exists
+
+`golangci-lint`'s default linter set (`errcheck`, `staticcheck`,
+`ineffassign`, `unused`, `govet`) is **excluded from `_test.go`
+files** today via this rule in `.golangci.yml`:
+
+```yaml
+- linters: [errcheck, staticcheck, ineffassign, unused]
+  path: "_test\\.go$"
+```
+
+The exclusion was added during FIX-005 because the test code
+contains pre-existing issues that would block the pipeline:
+unchecked `defer Close()` errors, single-case `select` blocks,
+empty `if errors.Is` branches, lifted loop conditions, etc.
+
+Sweeping these issues is genuinely useful — they catch real bugs
+in test fixtures that mask production failures. But it's a separate
+focused task from the architectural FIX-* sweep.
+
+## Current state (snapshot at FIX-009)
+
+Counted by adapter at the time the exclusion was added:
+
+```text
+adapters/mqtt/transport/paho        — 11 issues
+adapters/aws/store/dynamodb*        —  ~5
+adapters/native/credentials/file    —  1
+adapters/native/store/sqlite*       —  ~3
+testutil/{asblocal,localstack,
+          rabbitmqlocal,s3local}    — ~10 (errcheck on Close)
+runtime/                            —  ~5 errcheck
+config/                             —  ~3
+httpapi/                            —  ~5
+```
+
+The numbers are approximate (the exact list is regenerable by
+removing the exclusion and running `make lint-go`).
+
+Common failure patterns in tests:
+
+1. `defer sess.Close()` — errcheck wants the error checked or
+   explicitly discarded. Fix: `defer func() { _ = sess.Close() }()`.
+2. `select { case <-ch: }` — staticcheck S1000 wants
+   `<-ch` directly. Fix: replace with the bare receive.
+3. `if errors.Is(err, X) { /* empty */ }` — staticcheck SA9003.
+   Fix: remove the dead branch or add an actual handler.
+4. `for rows.Next() { ... if err := rows.Scan(...); err != nil { rows.Close(); return ... } }`
+   — staticcheck QF1006 wants the close lifted into the loop's exit.
+5. Unused test helper: `unused`. Fix: delete or use.
+
+## Approach
+
+### Phase 1 — Decide the scope unit
+
+Two approaches:
+
+- **All-at-once**: drop the exclusion, fix every violation in one
+  sweep, commit a single "test-quality cleanup" PR.
+- **Per-package**: drop the exclusion for one path at a time,
+  fix that package's violations, commit, repeat.
+
+Per-package is safer: each commit is reviewable and reverts cleanly
+if a "fix" breaks the test's intent.
+
+### Phase 2 — Per-package fix template
+
+For each package:
+
+1. Remove the path from the exclusion (or scope the exclusion
+   tighter):
+   ```yaml
+   - linters: [errcheck, staticcheck, ineffassign, unused]
+     path: "_test\\.go$"
+     # path-except not yet supported in golangci-lint v2; alternative:
+     # use multiple narrower exclusions, e.g. specific subpaths only.
+   ```
+   Easier alternative: keep the exclusion in place, and instead use
+   a `nolint:errcheck` directive on the lines you can't yet fix —
+   but the goal is to FIX, not silence.
+2. Run `golangci-lint run ./<pkg>/...` to enumerate.
+3. Fix each issue in the smallest reasonable change. Common patterns:
+   - `defer x.Close()` → `defer func() { _ = x.Close() }()`
+   - `x.Close()` (where x is *sql.DB / io.Closer) → `_ = x.Close()`
+   - `select { case x := <-ch: ... }` (single case) → `x := <-ch; ...`
+   - Empty error branch → delete or add real handler.
+4. Run `go test -race ./<pkg>/...` to verify behaviour preserved.
+5. Commit `FIX-TODO-test-quality: clean up <pkg>`.
+
+### Phase 3 — When all packages pass
+
+Drop the exclusion entirely from `.golangci.yml`:
+
+```yaml
+exclusions:
+  rules:
+    # (this block deleted)
+    # - linters: [errcheck, staticcheck, ineffassign, unused]
+    #   path: "_test\\.go$"
+```
+
+`make lint` passes. Future test code that introduces these issues
+fails the gate.
+
+## Cost estimate
+
+- ≈ 50–80 violation sites across all packages.
+- Each fix is < 5 lines.
+- Total: **1–2 dedicated days** (most time spent reading test
+  context to make the right judgement, not editing).
+
+## Risks
+
+- **Hiding a real test bug.** `errors.Is` with empty branch may
+  have been a TODO marker for a real handler that was never
+  written. Read each context before deleting.
+- **Test rendered useless.** Replacing a single-case select with a
+  bare receive removes the cancellability semantics if the test
+  ever needed them. Verify the test's intent first.
+- **Flake amplification.** Some "lifted close" patterns were
+  defensive — restructuring may surface a race that was previously
+  benign. Run with `-race -count=10` before commit.
+
+## Acceptance
+
+- The `_test.go` exclusion for default linters is removed from
+  `.golangci.yml`.
+- `make lint` passes across all modules.
+- A trial unchecked `defer Close()` in a test file fails the gate.
+- Test suite green with `-race -count=3` (smoke for new flakes).
+
+## Related
+
+- Original plan: `FINAL_DDD_HEX_CLEAN_FIX_PLAN.md` § FIX-005.
+- Sibling carve-outs: `FIX-TODO-clock-injection.md`,
+  `FIX-TODO-error-wrapping.md`, `FIX-TODO-return-types.md`.
+- The exclusion lives in `.golangci.yml` near the bottom of
+  `exclusions.rules`.

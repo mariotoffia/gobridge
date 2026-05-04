@@ -1,0 +1,491 @@
+version: 3
+workdir: .
+
+# ============================================================================
+# gobridge architecture policy
+#
+# This file is the machine-checked expression of three architectural styles
+# this project commits to:
+#
+#   * Clean Architecture (Robert C. Martin)
+#       Concentric layers; the Dependency Rule states that source-code
+#       dependencies must point inward only. Outer layers know nothing the
+#       inner layers do not expose.
+#
+#   * Hexagonal Architecture (Alistair Cockburn) -- Ports & Adapters
+#       The application core sits inside the hexagon; ports define the
+#       contracts that cross the boundary; adapters live outside and
+#       implement those ports.
+#
+#   * Domain-Driven Design (Eric Evans)
+#       The domain layer is pure (no infrastructure). The ubiquitous
+#       language and domain invariants live there. Application services
+#       orchestrate use cases over domain types.
+#
+# Each component declared below is a node in those models, NOT a project
+# convenience bucket. Editing this file MUST keep the mapping intact:
+# components map to architectural roles, dependencies follow the
+# Dependency Rule. See `.claude/CLAUDE.md` for the maintenance contract.
+# ============================================================================
+
+allow:
+  # Vendor lint enabled: components must explicitly declare every external
+  # dependency via canUse. The inner ring is stdlib-only; this is now
+  # machine-checked, not a wiki claim.
+  depOnAnyVendor: false
+  # Deep scan: detect cross-component leaks via method calls and structural
+  # typing, not only direct imports. Catches phantom dependencies that
+  # bypass the import graph.
+  deepScan: true
+  ignoreNotFoundComponents: false
+
+exclude:
+  - .claude
+  - .cursor
+  - .git
+  - .worktrees
+  - audit
+  - domain/clock/clocktest
+  - docs
+  - ports/storetest
+  - reports
+  - scripts
+  - spec
+  - tests
+  - testutil
+
+excludeFiles:
+  - "^.*_test\\.go$"
+
+# ============================================================================
+# Components
+#
+# Mapping to Clean / Hex / DDD layers:
+#
+#   Layer 1 -- Enterprise Business Rules (Clean) / Domain (DDD) / Inside the
+#              hexagon (Hex)
+#       domain
+#
+#   Layer 2 -- Application Business Rules / Use Cases (Clean) /
+#              Application services (DDD) / Inside the hexagon (Hex)
+#       ports     -- Driving + driven port interfaces
+#       config    -- Shared kernel: parsed configuration DTOs that cross
+#                    the hexagon boundary
+#       runtime   -- Use case orchestration (route execution engine)
+#       bridge    -- Composition factory: assembles use cases from config
+#       validate  -- Use case helpers: invariants over ports + domain
+#
+#   Layer 3 -- Interface Adapters (Clean) / Adapters (Hex) /
+#              Infrastructure (DDD)
+#       httpapi             -- Driving adapter (HTTP delivery mechanism)
+#       processors          -- In-process driven adapters (message
+#                              transformation chain)
+#       adapter_transport_* -- Driven adapters: message transport
+#       adapter_store_*     -- Driven adapters: persistence
+#       adapter_config_*    -- Driving adapters: configuration sources
+#       adapter_credentials_* -- Driven adapters: secret resolution
+#       adapter_metrics_* / adapter_tracing_* -- Driven adapters:
+#                              observability export
+#       adapter_cluster_*   -- Driven adapters: cluster topology
+#
+#   Layer 4 -- Frameworks & Drivers (Clean) / Composition root /
+#              Outside everything
+#       cmd
+#       deployment
+#
+#   Cross-cutting utilities (technically inside Layer 1/2 because they
+#   carry no infrastructure dependencies, used by any layer above):
+#       logging         -- slog wrapper providing TRACE level
+#       observability   -- slog correlation handler
+#       circuitbreaker  -- domain stability primitive (state machine)
+#
+# Adapter components are split by technology to enforce the hexagonal
+# rule that each port may have multiple independent adapters: a bug in
+# one transport adapter must never propagate via shared imports to
+# another.
+# ============================================================================
+components:
+  # ---- Layer 1: Domain ----
+  domain: { in: [domain, domain/**] }
+
+  # ---- Layer 2: Ports + Application Services + Shared Kernel ----
+  ports: { in: [ports, ports/**] }
+  config: { in: [config, config/**] }
+  runtime: { in: [runtime, runtime/**] }
+  bridge: { in: [bridge, bridge/**] }
+  validate: { in: [validate, validate/**] }
+
+  # ---- Cross-cutting utilities ----
+  logging: { in: [logging, logging/**] }
+  observability: { in: [observability, observability/**] }
+  circuitbreaker: { in: [circuitbreaker, circuitbreaker/**] }
+
+  # ---- Layer 3: Interface Adapters ----
+  # Driving adapter: HTTP admin / monitor delivery mechanism.
+  httpapi: { in: [httpapi, httpapi/**] }
+
+  # In-process processor adapters (message transformation chain).
+  processors: { in: [processors, processors/**] }
+
+  # Driven adapters: message transport. One component per technology so
+  # that a flaw in one adapter cannot leak into another via shared types.
+  adapter_transport_mqtt_paho: { in: [adapters/mqtt/transport/paho] }
+  adapter_transport_sqs: { in: [adapters/aws/transport/sqs] }
+  adapter_transport_servicebus: { in: [adapters/azure/transport/servicebus] }
+  adapter_transport_amqp091: { in: [adapters/amqp/transport/amqp091] }
+  adapter_transport_amqp10: { in: [adapters/amqp/transport/amqp10] }
+  adapter_transport_http: { in: [adapters/http/transport] }
+
+  # Driven adapters: persistence implementations. One component per
+  # backing store so that, e.g., the SQLite outbox cannot accidentally
+  # depend on the DynamoDB lease store.
+  adapter_store_native_memorylease: { in: [adapters/native/store/memorylease] }
+  adapter_store_native_memoryoutbox:
+    { in: [adapters/native/store/memoryoutbox] }
+  adapter_store_native_memorydlq: { in: [adapters/native/store/memorydlq] }
+  adapter_store_native_sqliteoutbox:
+    { in: [adapters/native/store/sqliteoutbox] }
+  adapter_store_native_sqlitedlq: { in: [adapters/native/store/sqlitedlq] }
+  adapter_store_aws_dynamodblease: { in: [adapters/aws/store/dynamodblease] }
+  adapter_store_aws_dynamodboutbox: { in: [adapters/aws/store/dynamodboutbox] }
+  adapter_store_aws_dynamodbdlq: { in: [adapters/aws/store/dynamodbdlq] }
+
+  # Aggregator components: the only place allowed to import its own
+  # store implementations. This expresses the hexagonal rule that an
+  # adapter implementation MUST NOT depend on its aggregator (no upward
+  # references) but the aggregator MAY depend on its implementations.
+  adapter_store_native_factory: { in: [adapters/native/store] }
+  adapter_store_aws_factory: { in: [adapters/aws/store] }
+
+  # Driving adapters that produce a *config.BridgeConfig. These are the
+  # single adapter category permitted to import the `config` shared
+  # kernel because that IS their reason to exist.
+  adapter_config_native_file: { in: [adapters/native/config/file] }
+  adapter_config_aws_dynamodb: { in: [adapters/aws/config/dynamodb] }
+
+  # Driven adapters: credential resolution.
+  adapter_credentials_native_file: { in: [adapters/native/credentials/file] }
+  adapter_credentials_aws_ssm: { in: [adapters/aws/credentials/ssm] }
+
+  # Driven adapters: observability export.
+  adapter_metrics_cloudwatch: { in: [adapters/aws/metrics/cloudwatch] }
+  adapter_metrics_otel: { in: [adapters/otel/metrics] }
+  adapter_tracing_otel: { in: [adapters/otel/tracing] }
+
+  # Driven adapters: cluster topology resolution.
+  adapter_cluster_native: { in: [adapters/native/cluster] }
+  adapter_cluster_aws: { in: [adapters/aws/cluster/ecs] }
+
+  # ---- Layer 4: Frameworks & Drivers (composition root) ----
+  cmd: { in: [cmd, cmd/**] }
+  deployment: { in: [deployment, deployment/**] }
+
+# ============================================================================
+# Vendor whitelist
+#
+# Each named entry is a vendor library this codebase is permitted to use.
+# Components opt in via `canUse:`. Adding a new vendor requires an
+# explicit, reviewable line here; this is the architectural admission
+# control for external dependencies.
+# ============================================================================
+vendors:
+  # Sentinel used to satisfy the lint-schema "at least one entry"
+  # requirement for components that intentionally have no vendor
+  # imports. The pattern matches no real import path; if any external
+  # dep is added to such a component the lint will fail and force the
+  # component policy to be updated, making the breach reviewable.
+  _no_external_deps_: { in: __no_external_deps_sentinel__ }
+
+  # Inner-ring concession: the config shared kernel parses YAML/JSON.
+  yaml: { in: gopkg.in/yaml.v3 }
+
+  # Adapter SDKs.
+  fsnotify: { in: github.com/fsnotify/fsnotify }
+  paho: { in: ["github.com/eclipse/paho.golang/**"] }
+  amqp091: { in: github.com/rabbitmq/amqp091-go }
+  amqp10: { in: github.com/Azure/go-amqp }
+  asb:
+    {
+      in:
+        [
+          "github.com/Azure/azure-sdk-for-go/**",
+          "github.com/Azure/azure-amqp-common-go/**",
+        ],
+    }
+  aws:
+    { in: ["github.com/aws/aws-sdk-go-v2/**", "github.com/aws/smithy-go/**"] }
+  sqlite: { in: modernc.org/sqlite }
+  otel:
+    {
+      in:
+        [
+          "go.opentelemetry.io/otel/**",
+          "go.opentelemetry.io/proto/**",
+          "google.golang.org/grpc/**",
+          "google.golang.org/protobuf/**",
+          "google.golang.org/genproto/**",
+        ],
+    }
+
+  # Processor-specific.
+  ojg: { in: ["github.com/ohler55/ojg/**"] }
+
+# ============================================================================
+# Dependency rules
+#
+# The Dependency Rule (Clean Architecture): source-code dependencies
+# point inward. Each rule below either expresses an inward dependency,
+# or a constrained sideways dependency (cross-cutting utility, shared
+# kernel, or aggregator -> implementation).
+# ============================================================================
+deps:
+  # ---- Layer 1: Domain ----
+  # Domain is the innermost layer. It has no project dependencies and no
+  # external dependencies. The sentinel vendor entry makes the
+  # zero-dependency claim machine-checked.
+  domain:
+    canUse: [_no_external_deps_]
+
+  # ---- Layer 2: Ports + Application Services + Shared Kernel ----
+
+  # Ports define the contracts adapters implement. They reference domain
+  # value objects only; they MUST NOT know about config, runtime,
+  # bridge, or any adapter.
+  ports:
+    mayDependOn:
+      - domain
+
+  # The config package is the YAML/JSON parser, validator, merger,
+  # and on-disk manager that produces *ports.BridgeConfig values.
+  # The blueprint TYPE definitions live in ports/; this package
+  # contributes only behavior (parse, validate, merge, write, watch).
+  # It depends on ports for the data shape and on yaml.v3 for the
+  # serialization format. It MUST NOT depend on runtime or bridge
+  # (the consumers).
+  config:
+    mayDependOn:
+      - domain
+      - ports
+    canUse:
+      - yaml
+
+  # Cross-cutting utilities. None of them carry external dependencies.
+  logging:
+    canUse: [_no_external_deps_]
+  observability:
+    canUse: [_no_external_deps_]
+  # circuitbreaker may depend on ports because *Breaker satisfies the
+  # ports.CircuitBreaker contract — adapters depend on the port only,
+  # never on this package directly.
+  circuitbreaker:
+    mayDependOn:
+      - domain
+      - ports
+
+  # validate hosts invariants over ports + domain. It MUST NOT depend on
+  # config (validators receive ports.*Spec values, not config.*Def),
+  # runtime, or bridge.
+  validate:
+    mayDependOn:
+      - domain
+      - ports
+
+  # runtime is the use-case engine. Per the Dependency Rule it depends
+  # only on inward layers. logging + observability are cross-cutting
+  # utilities; they carry no infrastructure.
+  runtime:
+    mayDependOn:
+      - domain
+      - ports
+      - logging
+      - observability
+
+  # bridge is the composition factory: it reads ports.BridgeConfig and
+  # builds a runtime.Runtime. It MUST NOT depend on the config parser
+  # package (the composition root injects a ports.BlueprintValidator
+  # via WithBlueprintValidator) and MUST NOT depend on any adapter.
+  bridge:
+    mayDependOn:
+      - domain
+      - logging
+      - ports
+      - runtime
+
+  # ---- Layer 3: Interface Adapters ----
+
+  # httpapi is a driving adapter (HTTP delivery mechanism). It exposes
+  # admin/monitor over the runtime use cases and consumes the
+  # ports.ConfigStore boundary for the config admin transactions API.
+  # It MUST NOT depend on the config parser package directly (the
+  # composition root injects a ports.ConfigStore implementation via
+  # httpapi.Config.ConfigStore). It MUST NOT depend on any other
+  # adapter.
+  httpapi:
+    mayDependOn:
+      - domain
+      - logging
+      - observability
+      - ports
+      - runtime
+
+  # Processors are in-process driven adapters that participate in the
+  # message-transformation chain. They depend on ports + domain and may
+  # use the circuitbreaker utility because circuit breaking is itself a
+  # processor (processors/circuitbreaker exists). They MUST NOT depend
+  # on transport, store, or any other adapter.
+  processors:
+    mayDependOn:
+      - circuitbreaker
+      - domain
+      - ports
+    canUse:
+      - ojg
+
+  # ---- Layer 3: Driven adapters -- message transport ----
+  #
+  # Each transport adapter depends only on ports + domain (with logging
+  # for diagnostics). It MUST NOT depend on bridge, config, runtime, or
+  # any other transport. Vendor SDKs are listed explicitly so swapping
+  # SDKs is a reviewable policy change.
+  #
+  # A transport may opt into the `circuitbreaker` cross-cutting utility
+  # only when its implementation actually uses it; absent that, the
+  # rule is removed to prevent accidental coupling.
+
+  # MQTT Paho wraps its sender in a circuit breaker (cb_sender.go) but
+  # consumes the ports.CircuitBreaker contract only — the implementation
+  # is supplied by the composition root.
+  adapter_transport_mqtt_paho:
+    mayDependOn: [domain, logging, ports]
+    canUse: [paho]
+
+  adapter_transport_sqs:
+    mayDependOn: [domain, logging, ports]
+    canUse: [aws]
+
+  adapter_transport_servicebus:
+    mayDependOn: [domain, logging, ports]
+    canUse: [asb]
+
+  adapter_transport_amqp091:
+    mayDependOn: [domain, logging, ports]
+    canUse: [amqp091]
+
+  adapter_transport_amqp10:
+    mayDependOn: [domain, logging, ports]
+    canUse: [amqp10]
+
+  # HTTP transport is stdlib-only.
+  adapter_transport_http:
+    mayDependOn: [domain, logging, ports]
+
+  # ---- Layer 3: Driven adapters -- store implementations ----
+  #
+  # Store impls are leaves of the adapter graph: they implement a port
+  # and depend on nothing else. They MUST NOT import their aggregator;
+  # the aggregator imports them, never the reverse.
+
+  adapter_store_native_memorylease:
+    mayDependOn: [domain, logging, ports]
+  adapter_store_native_memoryoutbox:
+    mayDependOn: [domain, logging, ports]
+  adapter_store_native_memorydlq:
+    mayDependOn: [domain, logging, ports]
+  adapter_store_native_sqliteoutbox:
+    mayDependOn: [domain, logging, ports]
+    canUse: [sqlite]
+  adapter_store_native_sqlitedlq:
+    mayDependOn: [domain, logging, ports]
+    canUse: [sqlite]
+  adapter_store_aws_dynamodblease:
+    mayDependOn: [domain, logging, ports]
+    canUse: [aws]
+  adapter_store_aws_dynamodboutbox:
+    mayDependOn: [domain, logging, ports]
+    canUse: [aws]
+  adapter_store_aws_dynamodbdlq:
+    mayDependOn: [domain, logging, ports]
+    canUse: [aws]
+
+  # ---- Layer 3: Store factory aggregators ----
+  #
+  # Aggregators are the single category permitted to import their own
+  # store implementations. This is the only "outward" sideways rule in
+  # the policy: a logical inversion -- the aggregator presents a single
+  # ports.StoreFactory port to the application by composing several
+  # leaf implementations.
+  adapter_store_native_factory:
+    mayDependOn:
+      - domain
+      - logging
+      - ports
+      - adapter_store_native_memorylease
+      - adapter_store_native_memoryoutbox
+      - adapter_store_native_memorydlq
+      - adapter_store_native_sqliteoutbox
+      - adapter_store_native_sqlitedlq
+
+  adapter_store_aws_factory:
+    mayDependOn:
+      - domain
+      - logging
+      - ports
+      - adapter_store_aws_dynamodblease
+      - adapter_store_aws_dynamodboutbox
+      - adapter_store_aws_dynamodbdlq
+    canUse: [aws]
+
+  # ---- Layer 3: Config-source adapters ----
+  #
+  # The single adapter category permitted to import the `config` parser
+  # package. Their job is to produce *ports.BridgeConfig from an
+  # external source (file, DynamoDB, …) using the parser/validator/
+  # merger functions in `config`. They depend on ports for the data
+  # shape (BridgeConfig + Loader/Watcher/Reloader contracts) and on
+  # config for the parsing/serialization behavior.
+  adapter_config_native_file:
+    mayDependOn: [config, domain, logging, ports]
+    canUse: [fsnotify]
+  adapter_config_aws_dynamodb:
+    mayDependOn: [config, domain, logging, ports]
+    canUse: [aws]
+
+  # ---- Layer 3: Credential adapters ----
+  adapter_credentials_native_file:
+    mayDependOn: [domain, logging, ports]
+  adapter_credentials_aws_ssm:
+    mayDependOn: [domain, logging, ports]
+    canUse: [aws]
+
+  # ---- Layer 3: Observability adapters ----
+  adapter_metrics_cloudwatch:
+    mayDependOn: [domain, logging, ports]
+    canUse: [aws]
+  adapter_metrics_otel:
+    mayDependOn: [domain, logging, ports]
+    canUse: [otel]
+  adapter_tracing_otel:
+    mayDependOn: [domain, logging, ports]
+    canUse: [otel]
+
+  # ---- Layer 3: Cluster resolver adapters ----
+  adapter_cluster_native:
+    mayDependOn: [domain, logging, ports]
+  adapter_cluster_aws:
+    mayDependOn: [domain, logging, ports]
+    canUse: [aws]
+
+  # ---- Layer 4: Composition root ----
+  #
+  # cmd and deployment are the outermost layer. They wire concrete
+  # adapters into the bridge builder; they may import any project
+  # package and any vendor library. There is no architectural reason
+  # to constrain them: they ARE the boundary between the architecture
+  # and the operating environment.
+  cmd:
+    anyProjectDeps: true
+    anyVendorDeps: true
+
+  deployment:
+    anyProjectDeps: true
+    anyVendorDeps: true

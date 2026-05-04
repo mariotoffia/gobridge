@@ -7,25 +7,26 @@ import (
 
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/ports"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // directHoldConfig returns a minimal config with a direct_hold route.
-func directHoldConfig() *config.BridgeConfig {
-	return &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "b1"},
-		Receivers: []config.ReceiverDef{
+func directHoldConfig() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1"},
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx1", Transport: "sqs"},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx1", Transport: "sqs"},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "b1", SenderID: "tx1", Address: "queue://out"},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:           "r1",
 				ReceiverID:   "rx1",
@@ -38,7 +39,7 @@ func directHoldConfig() *config.BridgeConfig {
 
 // buildWith creates a builder from cfg, registers fakeTransportFactory for
 // each named transport, and registers fakeStoreFactory for "memory".
-func buildWith(cfg *config.BridgeConfig, transports ...string) *Builder {
+func buildWith(cfg *ports.BridgeConfig, transports ...string) *Builder {
 	b := NewBuilder(cfg)
 	for _, t := range transports {
 		b.RegisterTransport(t, &fakeTransportFactory{})
@@ -143,9 +144,14 @@ func TestBuilder_PrepareComplete_SharedOutbox(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestBuilder_PrepareFailsOnInvalidConfig validates that Prepare rejects
-// an empty BridgeConfig due to missing bridge.id.
+// an empty BridgeConfig when the composition root has supplied a
+// blueprint validator. The validator is injected via
+// WithBlueprintValidator so the bridge package itself does not depend
+// on the config parser.
 func TestBuilder_PrepareFailsOnInvalidConfig(t *testing.T) {
-	_, err := NewBuilder(&config.BridgeConfig{}).Prepare(context.Background())
+	_, err := NewBuilder(&ports.BridgeConfig{},
+		WithBlueprintValidator(config.Validate),
+	).Prepare(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "config validation")
 }
@@ -153,10 +159,10 @@ func TestBuilder_PrepareFailsOnInvalidConfig(t *testing.T) {
 // TestBuilder_PrepareFailsOnMissingStoreFactory validates that Prepare
 // fails when the config references a store type with no registered factory.
 func TestBuilder_PrepareFailsOnMissingStoreFactory(t *testing.T) {
-	cfg := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "b1"},
-		Stores: config.StoresConfig{
-			Lease: &config.StoreConfig{Type: "dynamodb"},
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1"},
+		Stores: ports.StoresConfig{
+			Lease: &ports.StoreConfig{Type: "dynamodb"},
 		},
 	}
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 )
 
@@ -149,6 +150,40 @@ func TestDispatchHeadersRoundTrip(t *testing.T) {
 	}
 	if v, ok := pending[0].DispatchHeaders["x-custom"]; !ok || v != "value" {
 		t.Fatalf("dispatch header x-custom: %v", pending[0].DispatchHeaders)
+	}
+}
+
+// Verifies WithClock controls default CreatedAt timestamps for persisted records.
+func TestWithClockControlsCreatedAt(t *testing.T) {
+	clk := clocktest.NewAt(time.Date(2026, 5, 4, 12, 30, 45, 123000000, time.UTC))
+	s, err := sqliteoutbox.NewStore(":memory:", sqliteoutbox.WithClock(clk))
+	if err != nil {
+		t.Fatalf("NewStore(:memory:): %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	r := domain.OutboxRecord{
+		ID:         "clk-1",
+		RouteID:    "route-1",
+		EnvelopeID: "env-clk-1",
+		BindingID:  "bind-clk-1",
+		SessionID:  "sess-clk",
+		Envelope:   domain.Envelope{ID: "env-clk-1", Subject: "test"},
+	}
+	if err := s.Persist(ctx, []domain.OutboxRecord{r}); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	pending, err := s.QueryPending(ctx, "SESSION#sess-clk", 10)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected 1, got %d", len(pending))
+	}
+	if !pending[0].CreatedAt.Equal(clk.Now()) {
+		t.Fatalf("createdAt: got %v, want %v", pending[0].CreatedAt, clk.Now())
 	}
 }
 

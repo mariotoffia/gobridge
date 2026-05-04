@@ -13,8 +13,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/logging"
 )
 
 const (
@@ -46,7 +47,7 @@ type Store struct {
 	compactGrace   time.Duration
 	staleClaim     time.Duration
 	maxReplayCount int
-	now            func() time.Time
+	clk            clock.Clock
 	logger         *slog.Logger
 }
 
@@ -77,9 +78,14 @@ func WithMaxReplayCount(n int) Option {
 	return func(s *Store) { s.maxReplayCount = n }
 }
 
-// WithClock overrides the time source (defaults to time.Now).
-func WithClock(fn func() time.Time) Option {
-	return func(s *Store) { s.now = fn }
+// WithClock overrides the clock used for timestamps.
+// Defaults to clock.System when nil or not set.
+func WithClock(c clock.Clock) Option {
+	return func(s *Store) {
+		if c != nil {
+			s.clk = c
+		}
+	}
 }
 
 // WithLogger sets the structured logger for trace/debug diagnostics.
@@ -95,7 +101,7 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 		compactGrace:   defaultCompactionGrace,
 		staleClaim:     defaultStaleClaimDuration,
 		maxReplayCount: domain.DefaultMaxReplayAttempts,
-		now:            time.Now,
+		clk:            clock.System,
 	}
 	for _, o := range opts {
 		o(s)
@@ -180,7 +186,7 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 		return nil
 	}
 
-	now := s.now()
+	now := s.clk.Now()
 
 	if len(records) == 1 {
 		return s.persistSingle(ctx, &records[0], now)
@@ -254,7 +260,7 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, 
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: claim", "partition_key", partitionKey, "limit", limit)
 	}
 
-	now := s.now()
+	now := s.clk.Now()
 	staleThreshold := now.Add(-s.staleClaim)
 
 	filterExpr := "(#st = :pending) OR (#st = :claimed AND claimed_at < :stale)"
@@ -370,7 +376,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.L
 		return nil
 	}
 
-	now := s.now()
+	now := s.clk.Now()
 	ttlEpoch := now.Add(s.compactGrace).Unix()
 
 	for _, id := range recordIDs {

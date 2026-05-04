@@ -192,15 +192,16 @@ func TestAdaptiveBackoff_CapsAtMax(t *testing.T) {
 // MinInterval to MaxInterval and back after reset.
 //
 // Timeline:
-//   Call  recordsFound  Returned Interval
-//   ────────────────────────────────────────
-//   1     0             200ms (100ms * 2)
-//   2     0             400ms
-//   3     0             800ms
-//   4     0             1s (capped at 1s)
-//   5     0             1s (stays capped)
-//   6     3             100ms (reset)
-//   7     0             200ms (backs off again)
+//
+//	Call  recordsFound  Returned Interval
+//	────────────────────────────────────────
+//	1     0             200ms (100ms * 2)
+//	2     0             400ms
+//	3     0             800ms
+//	4     0             1s (capped at 1s)
+//	5     0             1s (stays capped)
+//	6     3             100ms (reset)
+//	7     0             200ms (backs off again)
 func TestAdaptiveBackoff_FullRamp(t *testing.T) {
 	ab := domain.NewAdaptiveBackoff(100*time.Millisecond, 1*time.Second, 2.0)
 

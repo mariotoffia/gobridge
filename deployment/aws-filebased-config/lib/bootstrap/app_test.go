@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/config"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -77,8 +78,8 @@ func TestApp_ReloadsWhenConfigFileAppearsAndRejectsInvalidChanges(t *testing.T) 
 		_ = app.Stop(context.Background())
 	})
 
-	valid := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+	valid := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:             "bridge-b",
 			DeploymentMode: "standalone",
 			LogLevel:       "debug",
@@ -91,12 +92,12 @@ func TestApp_ReloadsWhenConfigFileAppearsAndRejectsInvalidChanges(t *testing.T) 
 		return applied != nil && applied.Bridge.LogLevel == "debug"
 	}, 3*time.Second, 100*time.Millisecond)
 
-	invalid := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+	invalid := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:             "bridge-b",
 			DeploymentMode: "standalone",
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{ID: "broken-route", ReceiverID: "missing", Bindings: []string{"missing"}},
 		},
 	}
@@ -109,15 +110,15 @@ func TestApp_ReloadsWhenConfigFileAppearsAndRejectsInvalidChanges(t *testing.T) 
 }
 
 func TestResolveInputs_InjectsHTTPSecretsWithoutMutatingLogicalConfig(t *testing.T) {
-	logical := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+	logical := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:             "bridge-c",
 			DeploymentMode: "standalone",
 		},
-		Receivers: []config.ReceiverDef{
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx", Transport: "http", Options: map[string]any{"path": "/rx"}},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx", Transport: "http", Options: map[string]any{"path": "/tx"}},
 		},
 	}
@@ -147,8 +148,8 @@ func TestResolveInputs_InjectsHTTPSecretsWithoutMutatingLogicalConfig(t *testing
 }
 
 func TestResolveInputs_ErrorOnMissingAdminKey(t *testing.T) {
-	logical := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+	logical := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:             "bridge-e",
 			DeploymentMode: "standalone",
 		},
@@ -169,12 +170,12 @@ func TestResolveInputs_ErrorOnMissingAdminKey(t *testing.T) {
 }
 
 func TestResolveInputs_ErrorOnMissingReceiverKey(t *testing.T) {
-	logical := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+	logical := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:             "bridge-f",
 			DeploymentMode: "standalone",
 		},
-		Receivers: []config.ReceiverDef{
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx", Transport: "http", Options: map[string]any{"path": "/rx"}},
 		},
 	}
@@ -205,20 +206,20 @@ func TestValidateFilesystemProfile_RejectsUnsupportedClusterFeatures(t *testing.
 
 	// Clustered deployment_mode is allowed on filesystem profiles;
 	// only features requiring distributed coordination are rejected.
-	err := validateFilesystemProfile(replicated, &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+	err := validateFilesystemProfile(replicated, &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:             "bridge-d",
 			DeploymentMode: "clustered",
 		},
 	})
 	require.NoError(t, err)
 
-	err = validateFilesystemProfile(replicated, &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+	err = validateFilesystemProfile(replicated, &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:             "bridge-d",
 			DeploymentMode: "standalone",
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{ID: "r1", DeliveryMode: "shared_outbox"},
 		},
 	})

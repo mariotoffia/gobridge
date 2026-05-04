@@ -165,7 +165,7 @@ Load config and wire everything in Go:
 cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
 
 rt, err := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("mqtt", paho.NewBridgeFactory(logger)).
+    RegisterTransport("mqtt", paho.NewFactory(logger)).
     RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).
     RegisterProcessor("my-filter", filterProc).
     Build(ctx)
@@ -244,7 +244,7 @@ func main() {
     )
 
     // 5. Register transport and store factories
-    sup.RegisterTransport("mqtt", paho.NewBridgeFactory(logger))
+    sup.RegisterTransport("mqtt", paho.NewFactory(logger))
     sup.RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory())
 
     // 6. Start watching and run

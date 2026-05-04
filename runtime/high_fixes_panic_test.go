@@ -29,8 +29,10 @@ import (
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Receiver.Run panics → startBackground recovers →
-//   componentErrors populated → healthy=false
+//
+//	Receiver.Run panics → startBackground recovers →
+//	componentErrors populated → healthy=false
+//
 // ───────────────────────────────────────────────
 //
 // Assertions:

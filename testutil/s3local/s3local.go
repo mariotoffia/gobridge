@@ -227,7 +227,7 @@ func startContainer() (string, string, func(), error) {
 		if e != nil {
 			return e
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("health status %d", resp.StatusCode)
 		}
@@ -285,7 +285,7 @@ func waitForServiceReady(ep string, timeout time.Duration) error {
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(ep + "/minio/health/live")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return nil
 			}

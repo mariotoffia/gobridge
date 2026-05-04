@@ -16,8 +16,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodbstreams"
 	dstreamtypes "github.com/aws/aws-sdk-go-v2/service/dynamodbstreams/types"
 
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // fakeDDB implements the ddbAPI surface used by the loader's Load path.
@@ -66,12 +66,12 @@ func (f *fakeDDB) DescribeTable(ctx context.Context, params *awsddb.DescribeTabl
 // batches supplied by the test. Once the queue is drained, subsequent
 // calls return empty batches so the consumer idles.
 type fakeStreams struct {
-	mu               sync.Mutex
-	describeCalls    atomic.Int32
-	shardIterCalls   atomic.Int32
-	getRecordsCalls  atomic.Int32
-	batches          [][]dstreamtypes.Record
-	closeAfterDrain  bool
+	mu              sync.Mutex
+	describeCalls   atomic.Int32
+	shardIterCalls  atomic.Int32
+	getRecordsCalls atomic.Int32
+	batches         [][]dstreamtypes.Record
+	closeAfterDrain bool
 }
 
 func (f *fakeStreams) enqueue(batch []dstreamtypes.Record) {
@@ -144,8 +144,8 @@ func TestStreamLoopEmitsOnWatchedKeyChange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	cfg := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:       "stream-test",
 			LogLevel: "debug",
 		},
@@ -174,7 +174,7 @@ func TestStreamLoopEmitsOnWatchedKeyChange(t *testing.T) {
 		clk:                fc,
 	}
 
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	go loader.streamLoop(ctx, ch, "arn:aws:dynamodb:::stream/test")
 
 	// First emission happens before the inter-GetRecords wait, so the
@@ -246,7 +246,7 @@ func TestStreamLoopIgnoresUnrelatedRecords(t *testing.T) {
 		clk:                fc,
 	}
 
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	go loader.streamLoop(ctx, ch, "arn:test")
 
 	// Wait until the goroutine has consumed the batch (GetRecords>=1)

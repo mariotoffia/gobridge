@@ -10,8 +10,9 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -24,6 +25,7 @@ type Receiver struct {
 	asbClient   *azservicebus.Client
 	logger      *slog.Logger
 	metrics     ports.MetricsExporter
+	clk         clock.Clock
 	initMu      sync.Mutex
 	closeOnce   sync.Once
 	started     chan struct{}
@@ -43,7 +45,18 @@ func NewReceiver(cfg ReceiverConfig, logger *slog.Logger) (*Receiver, error) {
 	if m == nil {
 		m = &ports.NoopExporter{}
 	}
-	return &Receiver{cfg: cfg, logger: l, metrics: m, started: make(chan struct{})}, nil
+	clk := cfg.Clock
+	if clk == nil {
+		clk = clock.System
+	}
+	return &Receiver{cfg: cfg, logger: l, metrics: m, clk: clk, started: make(chan struct{})}, nil
+}
+
+func (r *Receiver) clock() clock.Clock {
+	if r.clk != nil {
+		return r.clk
+	}
+	return clock.System
 }
 
 // Started returns a channel that is closed once the receiver's poll
@@ -192,7 +205,7 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			return ctx.Err()
 		}
 
-		pollStart := time.Now()
+		pollStart := r.clock().Now()
 		msgs, err := r.client.ReceiveMessages(ctx, r.cfg.MaxMessages, nil)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -205,15 +218,15 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 					"retry_after", delay,
 				)
 			}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-r.cfg.Clock.After(delay):
-		}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-r.clock().After(delay):
+			}
 			continue
 		}
 
-		r.metrics.Timer(domain.MetricASBReceiveLatency, time.Since(pollStart),
+		r.metrics.Timer(domain.MetricASBReceiveLatency, r.clock().Since(pollStart),
 			domain.Tag{Key: domain.TagKeyEntity, Value: r.entityName()})
 		backoff.reset()
 
@@ -283,7 +296,7 @@ func (r *Receiver) convertMessage(ctx context.Context, msg *azservicebus.Receive
 		Subject:   subject,
 		Payload:   msg.Body,
 		Headers:   headers,
-		CreatedAt: time.Now(),
+		CreatedAt: r.clock().Now(),
 	}
 
 	if msg.ExpiresAt != nil {
@@ -308,7 +321,7 @@ func (r *Receiver) convertMessage(ctx context.Context, msg *azservicebus.Receive
 		r.cfg.autoExtendEnabled(),
 		r.logger,
 		r.metrics,
-		r.cfg.Clock,
+		r.clock(),
 		r.cfg.MinAutoExtendInterval,
 	)
 }

@@ -124,9 +124,9 @@ func (m *SessionManager) runExclusive(ctx context.Context) error {
 func (m *SessionManager) acquireLeaseWithRetry(ctx context.Context) (domain.LeaseToken, error) {
 	leaseTag := domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID}
 	for {
-		start := time.Now()
+		start := m.clk.Now()
 		token, err := m.leaseStore.Acquire(ctx, m.sessionID, m.ownerID, m.leaseTTL, m.endpoints)
-		m.metrics.Timer(domain.MetricLeaseAcquireLatency, time.Since(start), leaseTag)
+		m.metrics.Timer(domain.MetricLeaseAcquireLatency, m.clk.Since(start), leaseTag)
 		if err == nil {
 			return token, nil
 		}
@@ -167,9 +167,9 @@ func (m *SessionManager) renewLoop(ctx context.Context) error {
 			m.mu.Unlock()
 
 			leaseTag := domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID}
-			start := time.Now()
+			start := m.clk.Now()
 			newToken, err := m.leaseStore.Renew(ctx, m.sessionID, token, m.leaseTTL, m.endpoints)
-			m.metrics.Timer(domain.MetricLeaseRenewLatency, time.Since(start), leaseTag)
+			m.metrics.Timer(domain.MetricLeaseRenewLatency, m.clk.Since(start), leaseTag)
 
 			if err != nil {
 				consecutiveFailures++

@@ -3,36 +3,37 @@ package config
 import (
 	"testing"
 
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func validConfig() *BridgeConfig {
-	return &BridgeConfig{
-		Bridge: BridgeSettings{ID: "b1"},
-		Stores: StoresConfig{
-			Lease:  &StoreConfig{Type: "memory"},
-			Outbox: &StoreConfig{Type: "memory"},
+func validConfig() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1"},
+		Stores: ports.StoresConfig{
+			Lease:  &ports.StoreConfig{Type: "memory"},
+			Outbox: &ports.StoreConfig{Type: "memory"},
 		},
-		Sessions: []SessionDef{
+		Sessions: []ports.SessionDef{
 			{ID: "s1", Transport: "mqtt", SessionMode: "exclusive"},
 		},
-		Receivers: []ReceiverDef{
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx1", Transport: "sqs"},
 		},
-		Senders: []SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx1", Transport: "mqtt", SessionID: "s1"},
 		},
-		Bindings: []BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "bind1", SenderID: "tx1", SessionID: "s1", Address: "topic/a"},
 		},
-		Routes: []RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:           "r1",
 				ReceiverID:   "rx1",
 				DeliveryMode: "shared_outbox",
 				Bindings:     []string{"bind1"},
-				Session: &RouteSessionDef{
+				Session: &ports.RouteSessionDef{
 					SessionID: "s1",
 					SenderID:  "tx1",
 				},
@@ -59,7 +60,7 @@ func TestValidate_MissingBridgeID(t *testing.T) {
 // Verifies Validate rejects duplicate session IDs.
 func TestValidate_DuplicateSessionIDs(t *testing.T) {
 	cfg := validConfig()
-	cfg.Sessions = append(cfg.Sessions, SessionDef{ID: "s1", Transport: "mqtt"})
+	cfg.Sessions = append(cfg.Sessions, ports.SessionDef{ID: "s1", Transport: "mqtt"})
 	err := Validate(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "duplicate id")
@@ -214,18 +215,18 @@ func TestValidate_ValidDeploymentModes(t *testing.T) {
 
 // Verifies Validate accepts a direct_hold route without session stores when the graph is otherwise valid.
 func TestValidate_DirectHold(t *testing.T) {
-	cfg := &BridgeConfig{
-		Bridge: BridgeSettings{ID: "b1"},
-		Receivers: []ReceiverDef{
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1"},
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx1", Transport: "sqs"},
 		},
-		Senders: []SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx1", Transport: "mqtt"},
 		},
-		Bindings: []BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "b1", SenderID: "tx1", Address: "topic/x"},
 		},
-		Routes: []RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:           "r1",
 				ReceiverID:   "rx1",
@@ -283,19 +284,19 @@ func TestValidate_ValidDurations(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func validConfigForDurationTests() *BridgeConfig {
-	return &BridgeConfig{
-		Bridge: BridgeSettings{ID: "test"},
-		Receivers: []ReceiverDef{
+func validConfigForDurationTests() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test"},
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx1", Transport: "mqtt"},
 		},
-		Senders: []SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx1", Transport: "mqtt"},
 		},
-		Bindings: []BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "b1", SenderID: "tx1", Address: "topic/x"},
 		},
-		Routes: []RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:           "r1",
 				ReceiverID:   "rx1",

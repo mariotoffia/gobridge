@@ -65,6 +65,7 @@ type ReceiverConfig struct {
 	Session       *Session
 	Logger        *slog.Logger
 	Metrics       ports.MetricsExporter
+	Clock         clock.Clock
 }
 
 // SenderConfig holds AMQP 0-9-1 sender-specific configuration.
@@ -77,6 +78,7 @@ type SenderConfig struct {
 	Session    *Session
 	Logger     *slog.Logger
 	Metrics    ports.MetricsExporter
+	Clock      clock.Clock
 }
 
 // DefaultSessionOptions returns SessionOptions with recommended defaults.
@@ -241,6 +243,9 @@ func (c SenderConfig) validate() error {
 func (c *SenderConfig) applyDefaults() {
 	if c.Timeout == 0 {
 		c.Timeout = 30 * time.Second
+	}
+	if c.Clock == nil {
+		c.Clock = clock.System
 	}
 }
 

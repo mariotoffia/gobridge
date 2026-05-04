@@ -357,7 +357,7 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 			recordCount, firstBatch)
 	}
 	if firstBatch == 0 {
-		t.Fatalf("expected at least one successful send before the "+
+		t.Fatalf("expected at least one successful send before the " +
 			"legacy deadline fired; got 0")
 	}
 }

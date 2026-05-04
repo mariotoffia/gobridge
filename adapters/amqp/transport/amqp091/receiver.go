@@ -8,11 +8,11 @@ import (
 	"io"
 	"log/slog"
 	"sync"
-	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -27,6 +27,7 @@ type Receiver struct {
 	session     *Session
 	logger      *slog.Logger
 	metrics     ports.MetricsExporter
+	clk         clock.Clock
 	started     chan struct{}
 	startedOnce sync.Once
 }
@@ -37,6 +38,13 @@ func NewReceiver(cfg ReceiverConfig) *Receiver {
 	if m == nil {
 		m = &ports.NoopExporter{}
 	}
+	clk := cfg.Clock
+	if clk == nil && cfg.Session != nil {
+		clk = cfg.Session.clk
+	}
+	if clk == nil {
+		clk = clock.System
+	}
 	l := cfg.Logger
 	if l == nil && cfg.Session != nil {
 		l = cfg.Session.logger
@@ -46,8 +54,16 @@ func NewReceiver(cfg ReceiverConfig) *Receiver {
 		session: cfg.Session,
 		logger:  l,
 		metrics: m,
+		clk:     clk,
 		started: make(chan struct{}),
 	}
+}
+
+func (r *Receiver) clock() clock.Clock {
+	if r.clk != nil {
+		return r.clk
+	}
+	return clock.System
 }
 
 // Started returns a channel that is closed once the receiver's
@@ -111,7 +127,7 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 	if err != nil {
 		return MapError(err)
 	}
-	defer ch.Close()
+	defer func() { _ = ch.Close() }()
 
 	if r.cfg.PrefetchCount > 0 || r.cfg.PrefetchSize > 0 {
 		if err := ch.Qos(r.cfg.PrefetchCount, r.cfg.PrefetchSize, false); err != nil {
@@ -129,7 +145,7 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 		consumerTag = r.cfg.ConsumerTag + "-" + consumerTag
 	}
 
-	consumeStart := time.Now()
+	consumeStart := r.clock().Now()
 	deliveries, err := ch.Consume(
 		r.cfg.QueueName,
 		consumerTag,
@@ -142,7 +158,7 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 	if err != nil {
 		return MapError(err)
 	}
-	r.metrics.Timer(domain.MetricAMQP091ConsumeLatency, time.Since(consumeStart),
+	r.metrics.Timer(domain.MetricAMQP091ConsumeLatency, r.clock().Since(consumeStart),
 		domain.Tag{Key: domain.TagKeyEntity, Value: r.cfg.QueueName})
 
 	r.startedOnce.Do(func() { close(r.started) })
@@ -190,8 +206,8 @@ func (r *Receiver) handleDelivery(ctx context.Context, d amqp.Delivery, emit fun
 		)
 	}
 
-	env := deliveryToEnvelope(d)
-	del := NewDelivery(env, d, r.logger, r.metrics)
+	env := deliveryToEnvelope(d, r.clock())
+	del := NewDelivery(env, d, r.logger, r.metrics, r.clock())
 
 	if err := emit(ctx, del); err != nil {
 		if logging.DebugEnabled(r.logger) {
@@ -274,13 +290,16 @@ func (r *Receiver) waitForReconnect(ctx context.Context) bool {
 	}
 }
 
-func deliveryToEnvelope(d amqp.Delivery) *domain.Envelope {
+func deliveryToEnvelope(d amqp.Delivery, clk clock.Clock) *domain.Envelope {
+	if clk == nil {
+		clk = clock.System
+	}
 	env := &domain.Envelope{
 		ID:        d.MessageId,
 		Subject:   d.RoutingKey,
 		Payload:   d.Body,
 		Headers:   deliveryToHeaders(d),
-		CreatedAt: time.Now(),
+		CreatedAt: clk.Now(),
 	}
 	if env.ID == "" {
 		env.ID = generateEnvelopeID()

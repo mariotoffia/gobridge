@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -31,6 +32,16 @@ func WithCredentialCacheDisabled() CredentialResolverOption {
 	return func(r *CredentialResolver) { r.cacheDisabled = true }
 }
 
+// WithCredentialClock sets the clock used for TTL expiry checks.
+// Defaults to clock.System. Use clocktest.Fake in tests for determinism.
+func WithCredentialClock(clk clock.Clock) CredentialResolverOption {
+	return func(r *CredentialResolver) {
+		if clk != nil {
+			r.clk = clk
+		}
+	}
+}
+
 // CredentialResolver implements ports.CredentialStore by dispatching to
 // registered CredentialRepository backends based on URI scheme and
 // longest namespace prefix match.
@@ -40,6 +51,7 @@ type CredentialResolver struct {
 	cache         map[string]*credCacheEntry
 	cacheTTL      time.Duration
 	cacheDisabled bool
+	clk           clock.Clock
 }
 
 type credCacheEntry struct {
@@ -53,6 +65,7 @@ func NewCredentialResolver(opts ...CredentialResolverOption) *CredentialResolver
 		repos:    make([]ports.CredentialRepository, 0),
 		cache:    make(map[string]*credCacheEntry),
 		cacheTTL: DefaultCredentialCacheTTL,
+		clk:      clock.System,
 	}
 	for _, o := range opts {
 		o(r)
@@ -150,7 +163,7 @@ func (r *CredentialResolver) getCached(uri string) *domain.CredentialSet {
 	if !ok {
 		return nil
 	}
-	if time.Now().After(entry.expiresAt) {
+	if r.clk.Now().After(entry.expiresAt) {
 		r.mu.Lock()
 		if current, exists := r.cache[uri]; exists && current == entry {
 			delete(r.cache, uri)
@@ -188,10 +201,10 @@ func (r *CredentialResolver) setCached(uri string, creds *domain.CredentialSet) 
 	defer r.mu.Unlock()
 	r.cache[uri] = &credCacheEntry{
 		creds:     creds,
-		expiresAt: time.Now().Add(r.cacheTTL),
+		expiresAt: r.clk.Now().Add(r.cacheTTL),
 	}
 	if len(r.cache) > maxCredentialCacheEntries {
-		now := time.Now()
+		now := r.clk.Now()
 		for k, e := range r.cache {
 			if now.After(e.expiresAt) {
 				delete(r.cache, k)
@@ -251,7 +264,7 @@ func (r *CredentialResolver) CacheStats() CredentialCacheStats {
 	defer r.mu.RUnlock()
 
 	var expired int
-	now := time.Now()
+	now := r.clk.Now()
 	for _, e := range r.cache {
 		if now.After(e.expiresAt) {
 			expired++

@@ -14,10 +14,10 @@ type DrainStrategy interface {
 }
 
 // Default drain strategy values.
-var (
-	DefaultFixedPollInterval        = 1 * time.Second
-	DefaultAdaptiveMinInterval      = 100 * time.Millisecond
-	DefaultAdaptiveMaxInterval      = 30 * time.Second
+const (
+	DefaultFixedPollInterval         = 1 * time.Second
+	DefaultAdaptiveMinInterval       = 100 * time.Millisecond
+	DefaultAdaptiveMaxInterval       = 30 * time.Second
 	DefaultAdaptiveBackoffMultiplier = 2.0
 )
 

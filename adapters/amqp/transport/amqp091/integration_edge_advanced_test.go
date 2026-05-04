@@ -296,9 +296,11 @@ func TestIntegration_Edge_HeaderRoundTrip(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Send 3 messages → Consumer with PrefetchCount=1
-//   Consumer holds each delivery, verifies only 1 at a time
-//   Then acks, receives next
+//
+//	Send 3 messages → Consumer with PrefetchCount=1
+//	Consumer holds each delivery, verifies only 1 at a time
+//	Then acks, receives next
+//
 // ───────────────────────────────────────────────
 func TestIntegration_Edge_PrefetchHonored(t *testing.T) {
 	var buf bytes.Buffer

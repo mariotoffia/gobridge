@@ -13,6 +13,7 @@ import (
 	"github.com/Azure/go-amqp"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -27,6 +28,7 @@ type Receiver struct {
 	session *Session
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
+	clk     clock.Clock
 
 	started     chan struct{}
 	startedOnce sync.Once
@@ -55,13 +57,28 @@ func NewReceiver(cfg ReceiverConfig, session *Session) (*Receiver, error) {
 	if m == nil {
 		m = &ports.NoopExporter{}
 	}
+	clk := cfg.Clock
+	if clk == nil && session != nil {
+		clk = session.clock()
+	}
+	if clk == nil {
+		clk = clock.System
+	}
 	return &Receiver{
 		cfg:     cfg,
 		session: session,
 		logger:  l,
 		metrics: m,
+		clk:     clk,
 		started: make(chan struct{}),
 	}, nil
+}
+
+func (r *Receiver) clock() clock.Clock {
+	if r.clk != nil {
+		return r.clk
+	}
+	return clock.System
 }
 
 // Started returns a channel that is closed once the receiver's link
@@ -163,7 +180,7 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 			continue
 		}
 
-		start := time.Now()
+		start := r.clock().Now()
 		msg, err := link.Receive(ctx, nil)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -190,12 +207,12 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-r.cfg.Clock.After(delay):
+			case <-r.clock().After(delay):
 			}
 			continue
 		}
 
-		r.metrics.Timer(domain.MetricAMQP10ReceiveLatency, time.Since(start),
+		r.metrics.Timer(domain.MetricAMQP10ReceiveLatency, r.clock().Since(start),
 			domain.Tag{Key: domain.TagKeyEntity, Value: r.cfg.Address})
 		backoff.reset()
 
@@ -240,7 +257,7 @@ func (r *Receiver) convertMessage(ctx context.Context, msg *amqp.Message, link *
 		Subject:   subject,
 		Payload:   body,
 		Headers:   headers,
-		CreatedAt: time.Now(),
+		CreatedAt: r.clock().Now(),
 	}
 
 	if msg.Properties != nil && msg.Properties.AbsoluteExpiryTime != nil {
@@ -255,7 +272,7 @@ func (r *Receiver) convertMessage(ctx context.Context, msg *amqp.Message, link *
 		)
 	}
 
-	return NewDelivery(env, msg, link, r.logger, r.metrics)
+	return NewDelivery(env, msg, link, r.logger, r.metrics, r.clock())
 }
 
 // handleLinkError detaches the receiver's link after a non-transient

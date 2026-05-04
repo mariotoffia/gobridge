@@ -9,6 +9,7 @@ import (
 	"github.com/Azure/go-amqp"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -31,6 +32,7 @@ type Sender struct {
 	session *Session
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
+	clk     clock.Clock
 
 	mu sync.Mutex
 	// link is the active publish link; nil when no link has been created
@@ -58,12 +60,27 @@ func NewSender(cfg SenderConfig, session *Session) (*Sender, error) {
 	if m == nil {
 		m = &ports.NoopExporter{}
 	}
+	clk := cfg.Clock
+	if clk == nil && session != nil {
+		clk = session.clock()
+	}
+	if clk == nil {
+		clk = clock.System
+	}
 	return &Sender{
 		cfg:     cfg,
 		session: session,
 		logger:  l,
 		metrics: m,
+		clk:     clk,
 	}, nil
+}
+
+func (s *Sender) clock() clock.Clock {
+	if s.clk != nil {
+		return s.clk
+	}
+	return clock.System
 }
 
 // Send publishes a single envelope to the AMQP 1.0 broker.
@@ -107,7 +124,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	linkConn := s.linkConn
 	s.mu.Unlock()
 
-	start := time.Now()
+	start := s.clock().Now()
 
 	err := link.Send(sendCtx, msg, nil)
 	if err != nil {
@@ -115,7 +132,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 		return MapError(err)
 	}
 
-	elapsed := time.Since(start)
+	elapsed := s.clock().Since(start)
 	s.metrics.Timer(domain.MetricAMQP10SendLatency, elapsed,
 		domain.Tag{Key: domain.TagKeyEntity, Value: s.cfg.Address})
 

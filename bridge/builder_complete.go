@@ -69,7 +69,7 @@ func (b *Builder) Complete(ctx context.Context, prep *PreparedBuild) (_ *runtime
 				refresher.WatchSender(ctx, uri, snd)
 			}
 		}
-		runtime.AttachCredentialRefresher(rt, refresher)
+		runtime.AttachCredentialCloser(rt, refresher.Close)
 	}
 
 	return rt, nil
@@ -115,7 +115,7 @@ func (b *Builder) wireRoutes(
 			}
 			if tf, ok := b.transports[transport]; ok {
 				caps = tf.Capabilities()
-				if vtp, ok := tf.(VisibilityTimeoutProvider); ok {
+				if vtp, ok := tf.(ports.VisibilityTimeoutProvider); ok {
 					sourceVisTimeout = vtp.VisibilityTimeout()
 				}
 			}
@@ -251,7 +251,7 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context) (map[string]ports.S
 			}
 			sd.Options = opts
 		}
-		sess, err := tf.NewSession(ctx, sd)
+		sess, err := tf.NewSession(ctx, sessionSpecFrom(sd))
 		if err != nil {
 			cleanup("")
 			return nil, nil, fmt.Errorf("bridge: create session %q: %w", sd.ID, err)
@@ -297,7 +297,7 @@ func (b *Builder) buildReceiversWithURIs(ctx context.Context, sessions map[strin
 			}
 			rd.Options = opts
 		}
-		recv, err := tf.NewReceiver(ctx, rd, sess)
+		recv, err := tf.NewReceiver(ctx, receiverSpecFrom(rd), sess)
 		if err != nil {
 			return nil, nil, fmt.Errorf("bridge: create receiver %q: %w", rd.ID, err)
 		}
@@ -338,7 +338,7 @@ func (b *Builder) buildSendersWithURIs(ctx context.Context, sessions map[string]
 			}
 			sd.Options = opts
 		}
-		snd, err := tf.NewSender(ctx, sd, sess)
+		snd, err := tf.NewSender(ctx, senderSpecFrom(sd), sess)
 		if err != nil {
 			return nil, nil, fmt.Errorf("bridge: create sender %q: %w", sd.ID, err)
 		}

@@ -31,7 +31,7 @@ func TestRouterPanic_OtherHandlerStillRuns(t *testing.T) {
 
 	var (
 		handler2Called atomic.Bool
-		wg            sync.WaitGroup
+		wg             sync.WaitGroup
 	)
 
 	// Handler 1: panics

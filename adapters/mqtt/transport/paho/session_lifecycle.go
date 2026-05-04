@@ -45,7 +45,7 @@ func (s *Session) Start(ctx context.Context) error {
 			"session_mode", s.mode,
 		)
 	}
-	connectStart := time.Now()
+	connectStart := s.clock().Now()
 
 	serverURLs, err := parseURLs(s.opts.BrokerURLs)
 	if err != nil {
@@ -260,7 +260,7 @@ func (s *Session) Start(ctx context.Context) error {
 	s.starting = false
 	s.mu.Unlock()
 
-	elapsed := time.Since(connectStart)
+	elapsed := s.clock().Since(connectStart)
 	s.metrics.Timer(domain.MetricMQTTConnectLatency, elapsed,
 		domain.Tag{Key: domain.TagKeySessionID, Value: s.opts.ClientID})
 	if logging.DebugEnabled(s.logger) {

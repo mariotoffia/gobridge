@@ -33,8 +33,8 @@ import (
 func TestUC4_Bidirectional_SQS_MQTT(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 2000
-		pollTimeout  = 120 * time.Second
+		msgCount    = 2000
+		pollTimeout = 120 * time.Second
 	)
 
 	// -- Infrastructure: SQS queues ----------------------------------------

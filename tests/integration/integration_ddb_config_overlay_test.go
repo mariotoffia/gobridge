@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // ===============================================================
@@ -22,7 +22,7 @@ func TestDDBOverlay_MergesSessionsFromDDB(t *testing.T) {
 	ctx := context.Background()
 
 	overlay := minimalOverlay("test-bridge")
-	overlay.Sessions = []config.SessionDef{
+	overlay.Sessions = []ports.SessionDef{
 		{ID: "mqtt-1", Transport: "fake", Options: map[string]any{"broker": "tcp://localhost:1883"}},
 	}
 	if err := loader.Save(ctx, overlay); err != nil {
@@ -51,7 +51,7 @@ func TestDDBOverlay_ReplacesSessionByID(t *testing.T) {
 	ctx := context.Background()
 
 	overlay := minimalOverlay("test-bridge")
-	overlay.Sessions = []config.SessionDef{
+	overlay.Sessions = []ports.SessionDef{
 		{ID: "s1", Transport: "fake", Options: map[string]any{"broker": "tcp://new-host:1883"}},
 	}
 	if err := loader.Save(ctx, overlay); err != nil {
@@ -113,9 +113,9 @@ func TestDDBOverlay_ReplacesRouteByID(t *testing.T) {
 	loader := ddbConfigLoader(t, "overlay-rrepl")
 	ctx := context.Background()
 
-	overlay := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Routes: []config.RouteDef{
+	overlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Routes: []ports.RouteDef{
 			{
 				ID:           "r1",
 				ReceiverID:   "rx-base",
@@ -123,8 +123,8 @@ func TestDDBOverlay_ReplacesRouteByID(t *testing.T) {
 				Bindings:     []string{"bind-base"},
 			},
 		},
-		Stores: config.StoresConfig{
-			Outbox: &config.StoreConfig{Type: "memory"},
+		Stores: ports.StoresConfig{
+			Outbox: &ports.StoreConfig{Type: "memory"},
 		},
 	}
 	if err := loader.Save(ctx, overlay); err != nil {
@@ -153,8 +153,8 @@ func TestDDBOverlay_OverridesBridgeSettings(t *testing.T) {
 	loader := ddbConfigLoader(t, "overlay-bset")
 	ctx := context.Background()
 
-	overlay := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+	overlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:           "test-bridge",
 			LogLevel:     "debug",
 			DrainTimeout: "5s",
@@ -188,9 +188,9 @@ func TestDDBOverlay_ReplacesConfigWatch(t *testing.T) {
 	loader := ddbConfigLoader(t, "overlay-cw")
 	ctx := context.Background()
 
-	overlay := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		ConfigWatch: &config.ConfigWatchDef{
+	overlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		ConfigWatch: &ports.ConfigWatchDef{
 			Mode:         "poll",
 			PollInterval: "1s",
 		},
@@ -223,10 +223,10 @@ func TestDDBOverlay_ReplacesStorePerRole(t *testing.T) {
 	loader := ddbConfigLoader(t, "overlay-store")
 	ctx := context.Background()
 
-	overlay := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Stores: config.StoresConfig{
-			Outbox: &config.StoreConfig{Type: "memory"},
+	overlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Stores: ports.StoresConfig{
+			Outbox: &ports.StoreConfig{Type: "memory"},
 		},
 	}
 	if err := loader.Save(ctx, overlay); err != nil {
@@ -286,9 +286,9 @@ func TestDDBOverlay_PartialOverlay_OnlyAddsNewSenders(t *testing.T) {
 	loader := ddbConfigLoader(t, "overlay-psend")
 	ctx := context.Background()
 
-	overlay := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Senders: []config.SenderDef{
+	overlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Senders: []ports.SenderDef{
 			{ID: "tx-2", Transport: "fake"},
 		},
 	}

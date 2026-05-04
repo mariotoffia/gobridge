@@ -222,7 +222,7 @@ func TestHeadersToPublishing(t *testing.T) {
 func TestHeadersToPublishing_ExcludesReserved(t *testing.T) {
 	headers := map[string]any{
 		HeaderDeliveryTag:          uint64(1),
-		HeaderRedelivered:         true,
+		HeaderRedelivered:          true,
 		domain.HeaderCorrelationID: "injected",
 		"custom":                   "keep",
 	}
@@ -264,13 +264,13 @@ func TestEnvelopeToPublishing(t *testing.T) {
 		Subject: "order.created",
 		Payload: []byte(`{"order":1}`),
 		Headers: map[string]any{
-			HeaderContentType:     "application/json",
+			HeaderContentType:        "application/json",
 			domain.HeaderContentType: "application/json",
-			"tenant":              "acme",
+			"tenant":                 "acme",
 		},
 	}
 
-	pub := envelopeToPublishing(env, SenderConfig{})
+	pub := envelopeToPublishing(env, SenderConfig{}, nil)
 
 	if string(pub.Body) != `{"order":1}` {
 		t.Errorf("Body = %q", pub.Body)
@@ -292,7 +292,7 @@ func TestEnvelopeToPublishing_HeaderMessageIDPrecedence(t *testing.T) {
 		},
 	}
 
-	pub := envelopeToPublishing(env, SenderConfig{})
+	pub := envelopeToPublishing(env, SenderConfig{}, nil)
 
 	if pub.MessageId != "from-header" {
 		t.Errorf("MessageId = %q, want %q", pub.MessageId, "from-header")
@@ -306,7 +306,7 @@ func TestEnvelopeToPublishing_Expiry(t *testing.T) {
 		ExpiresAt: time.Now().Add(5 * time.Second),
 	}
 
-	pub := envelopeToPublishing(env, SenderConfig{})
+	pub := envelopeToPublishing(env, SenderConfig{}, nil)
 
 	if pub.Expiration == "" {
 		t.Fatal("Expiration should be set for envelope with TTL")
@@ -323,7 +323,7 @@ func TestEnvelopeToPublishing_FallbackContentType(t *testing.T) {
 		},
 	}
 
-	pub := envelopeToPublishing(env, SenderConfig{})
+	pub := envelopeToPublishing(env, SenderConfig{}, nil)
 
 	if pub.ContentType != "text/xml" {
 		t.Errorf("ContentType = %q, want %q", pub.ContentType, "text/xml")

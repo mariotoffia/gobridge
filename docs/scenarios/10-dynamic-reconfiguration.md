@@ -145,7 +145,7 @@ func main() {
     )
 
     // 5. Register transport and store factories
-    sup.RegisterTransport("mqtt", paho.NewBridgeFactory(logger))
+    sup.RegisterTransport("mqtt", paho.NewFactory(logger))
     sup.RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory())
 
     // 6. Start watching and run (blocks until ctx cancelled)

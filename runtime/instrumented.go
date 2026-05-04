@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -13,21 +14,22 @@ import (
 type InstrumentedLeaseStore struct {
 	inner   ports.LeaseStore
 	metrics ports.MetricsExporter
+	clk     clock.Clock
 }
 
 var _ ports.LeaseStore = (*InstrumentedLeaseStore)(nil)
 
 // NewInstrumentedLeaseStore decorates inner with metrics instrumentation.
-func NewInstrumentedLeaseStore(inner ports.LeaseStore, metrics ports.MetricsExporter) *InstrumentedLeaseStore {
-	return &InstrumentedLeaseStore{inner: inner, metrics: metrics}
+func NewInstrumentedLeaseStore(inner ports.LeaseStore, metrics ports.MetricsExporter, clk clock.Clock) *InstrumentedLeaseStore {
+	return &InstrumentedLeaseStore{inner: inner, metrics: metrics, clk: instrumentedClock(clk)}
 }
 
 func (s *InstrumentedLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
-	start := time.Now()
+	start := s.clk.Now()
 	tok, err := s.inner.Acquire(ctx, leaseID, ownerID, ttl, endpoints)
 	tags := []domain.Tag{{Key: domain.TagKeyLeaseID, Value: leaseID}}
 
-	s.metrics.Timer(domain.MetricLeaseAcquireLatency, time.Since(start), tags...)
+	s.metrics.Timer(domain.MetricLeaseAcquireLatency, s.clk.Since(start), tags...)
 	if err != nil {
 		s.metrics.Counter(domain.MetricLeaseAcquireFailures, 1, tags...)
 	}
@@ -35,10 +37,10 @@ func (s *InstrumentedLeaseStore) Acquire(ctx context.Context, leaseID, ownerID s
 }
 
 func (s *InstrumentedLeaseStore) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
-	start := time.Now()
+	start := s.clk.Now()
 	tok, err := s.inner.Renew(ctx, leaseID, token, ttl, endpoints)
 	tags := []domain.Tag{{Key: domain.TagKeyLeaseID, Value: leaseID}}
-	s.metrics.Timer(domain.MetricLeaseRenewLatency, time.Since(start), tags...)
+	s.metrics.Timer(domain.MetricLeaseRenewLatency, s.clk.Since(start), tags...)
 	return tok, err
 }
 
@@ -54,21 +56,22 @@ func (s *InstrumentedLeaseStore) Current(ctx context.Context, leaseID string) (d
 type InstrumentedOutboxStore struct {
 	inner   ports.OutboxStore
 	metrics ports.MetricsExporter
+	clk     clock.Clock
 }
 
 var _ ports.OutboxStore = (*InstrumentedOutboxStore)(nil)
 
 // NewInstrumentedOutboxStore decorates inner with metrics instrumentation.
-func NewInstrumentedOutboxStore(inner ports.OutboxStore, metrics ports.MetricsExporter) *InstrumentedOutboxStore {
-	return &InstrumentedOutboxStore{inner: inner, metrics: metrics}
+func NewInstrumentedOutboxStore(inner ports.OutboxStore, metrics ports.MetricsExporter, clk clock.Clock) *InstrumentedOutboxStore {
+	return &InstrumentedOutboxStore{inner: inner, metrics: metrics, clk: instrumentedClock(clk)}
 }
 
 func (s *InstrumentedOutboxStore) Persist(ctx context.Context, records []domain.OutboxRecord) error {
-	start := time.Now()
+	start := s.clk.Now()
 	err := s.inner.Persist(ctx, records)
 	if len(records) > 0 {
 		tags := []domain.Tag{{Key: domain.TagKeyRouteID, Value: records[0].RouteID}}
-		s.metrics.Timer(domain.MetricOutboxPersistLatency, time.Since(start), tags...)
+		s.metrics.Timer(domain.MetricOutboxPersistLatency, s.clk.Since(start), tags...)
 	}
 	return err
 }
@@ -101,4 +104,11 @@ func (s *InstrumentedOutboxStore) QueryPending(ctx context.Context, partitionKey
 		s.metrics.Gauge(domain.MetricOutboxDepth, float64(len(recs)), tags...)
 	}
 	return recs, err
+}
+
+func instrumentedClock(clk clock.Clock) clock.Clock {
+	if clk == nil {
+		return clock.System
+	}
+	return clk
 }

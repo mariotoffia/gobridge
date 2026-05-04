@@ -1,6 +1,8 @@
 package config
 
-// DefaultMerge merges an overlay BridgeConfig on top of a base config.
+import "github.com/mariotoffia/gobridge/ports"
+
+// DefaultMerge merges an overlay ports.BridgeConfig on top of a base config.
 // The merge follows these rules:
 //   - Bridge settings: overlay non-zero fields override base
 //   - ConfigWatch: overlay replaces base if non-nil
@@ -9,8 +11,8 @@ package config
 //     replaces existing entries matching by ID
 //   - HTTP: overlay replaces base if non-nil
 //
-// The base is not modified; a new BridgeConfig is returned.
-func DefaultMerge(base, overlay *BridgeConfig) (*BridgeConfig, error) {
+// The base is not modified; a new ports.BridgeConfig is returned.
+func DefaultMerge(base, overlay *ports.BridgeConfig) (*ports.BridgeConfig, error) {
 	out := *base
 
 	mergeBridgeSettings(&out.Bridge, &overlay.Bridge)
@@ -22,11 +24,11 @@ func DefaultMerge(base, overlay *BridgeConfig) (*BridgeConfig, error) {
 
 	mergeStores(&out.Stores, &overlay.Stores)
 
-	out.Sessions = mergeByID(base.Sessions, overlay.Sessions, func(s SessionDef) string { return s.ID })
-	out.Receivers = mergeByID(base.Receivers, overlay.Receivers, func(r ReceiverDef) string { return r.ID })
-	out.Senders = mergeByID(base.Senders, overlay.Senders, func(s SenderDef) string { return s.ID })
-	out.Bindings = mergeByID(base.Bindings, overlay.Bindings, func(b BindingDef) string { return b.ID })
-	out.Routes = mergeByID(base.Routes, overlay.Routes, func(r RouteDef) string { return r.ID })
+	out.Sessions = mergeByID(base.Sessions, overlay.Sessions, func(s ports.SessionDef) string { return s.ID })
+	out.Receivers = mergeByID(base.Receivers, overlay.Receivers, func(r ports.ReceiverDef) string { return r.ID })
+	out.Senders = mergeByID(base.Senders, overlay.Senders, func(s ports.SenderDef) string { return s.ID })
+	out.Bindings = mergeByID(base.Bindings, overlay.Bindings, func(b ports.BindingDef) string { return b.ID })
+	out.Routes = mergeByID(base.Routes, overlay.Routes, func(r ports.RouteDef) string { return r.ID })
 
 	if overlay.HTTP != nil {
 		h := *overlay.HTTP
@@ -36,7 +38,7 @@ func DefaultMerge(base, overlay *BridgeConfig) (*BridgeConfig, error) {
 	return &out, nil
 }
 
-func mergeBridgeSettings(base, overlay *BridgeSettings) {
+func mergeBridgeSettings(base, overlay *ports.BridgeSettings) {
 	if overlay.ID != "" {
 		base.ID = overlay.ID
 	}
@@ -63,7 +65,7 @@ func mergeBridgeSettings(base, overlay *BridgeSettings) {
 	}
 }
 
-func mergeStores(base, overlay *StoresConfig) {
+func mergeStores(base, overlay *ports.StoresConfig) {
 	if overlay.Lease != nil {
 		sc := *overlay.Lease
 		base.Lease = &sc

@@ -128,11 +128,11 @@ func TestConditionEval_BareField_NilHeaders(t *testing.T) {
 
 func TestConditionEval_AllOperators(t *testing.T) {
 	tests := []struct {
-		name     string
-		cond     MatchCondition
-		env      *domain.Envelope
-		wantOK   bool
-		wantErr  bool
+		name    string
+		cond    MatchCondition
+		env     *domain.Envelope
+		wantOK  bool
+		wantErr bool
 	}{
 		// eq
 		{"eq_match", MatchCondition{"subject", OpEquals, "orders"}, &domain.Envelope{Subject: "orders"}, true, false},

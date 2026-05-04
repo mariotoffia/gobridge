@@ -97,7 +97,7 @@ func TestReceiver_RunStripsReservedHeaders(t *testing.T) {
 					Body:      []byte("body"),
 					ApplicationProperties: map[string]any{
 						domain.HeaderCorrelationID: "injected",
-						"safe-header":             "ok",
+						"safe-header":              "ok",
 					},
 				},
 			}, nil

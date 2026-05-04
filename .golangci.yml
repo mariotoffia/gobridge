@@ -1,0 +1,236 @@
+# golangci-lint configuration for gobridge.
+#
+# This file enforces the file-level and symbol-level rules that
+# go-arch-lint cannot express. The two layers overlap deliberately on
+# the most architecturally load-bearing checks (the Dependency Rule)
+# so a violation must defeat both to slip through.
+#
+# Companion: see .go-arch-lint.yml for component-level dependency
+# direction; see .claude/CLAUDE.md for the maintenance contract.
+#
+# Depguard is fully enforcing the inward-only
+# Dependency Rule across domain, ports, adapters, and runtime — every
+# deny entry that was deferred for FIX-002/003 is now active.
+# forbidigo bans time.Now in production code (clock-injection sweep done).
+# interfacebloat and revive complexity are enabled at thresholds
+# tuned to the current state; tightening them requires splitting
+# bridge.Builder.wireRoutes (~80 cog. complexity) and config.validate
+# (~144) into per-step helpers, which is its own refactor. The
+# remaining deferred linters (wrapcheck, ireturn) each describe their own
+# prerequisite sweep in the TODOs below.
+
+version: "2"
+
+run:
+  # Conformance test fixtures live under ports/storetest. They are
+  # not production code; treat them like test files (excluded from
+  # arch lint via excludeFiles, excluded here too).
+  build-tags: []
+
+linters:
+  default: standard
+  enable:
+    - depguard
+    - forbidigo
+    - gochecknoglobals
+    - gochecknoinits
+    - interfacebloat
+    - revive
+    # TODO(FIX-TODO-error-wrapping.md): enable once boundary-error
+    # wrapping is swept across all adapters.
+    # - wrapcheck
+    # TODO(FIX-TODO-return-types.md): enable once exported functions
+    # stop returning unnamed interfaces in adapter code.
+    # - ireturn
+
+  settings:
+    interfacebloat:
+      # Working ISP threshold for ports. The plan target is 5; the
+      # current codebase has two ports at 6 (MetricsExporter,
+      # DLQStore). Set to 6 for now — tighten to 5 once those ports
+      # are split.
+      max: 6
+
+    # forbidigo bans direct time.Now() in production code. Exempt paths:
+    # domain/clock/real.go, domain/clock/clocktest/, _test.go, ports/storetest/.
+    forbidigo:
+      forbid:
+        - pattern: '^time\.Now$'
+          msg: "use clock.Now via dependency injection (see domain/clock)"
+
+    depguard:
+      rules:
+        # The domain layer must not depend on outer layers. This is
+        # the most-load-bearing of all rules: domain purity is what
+        # makes DDD aggregates testable in isolation.
+        domain:
+          list-mode: lax
+          files:
+            - "**/domain/**/*.go"
+            - "!$test"
+          deny:
+            - pkg: "github.com/mariotoffia/gobridge/ports"
+              desc: "domain must not depend on ports"
+            - pkg: "github.com/mariotoffia/gobridge/config"
+              desc: "domain must not depend on config"
+            - pkg: "github.com/mariotoffia/gobridge/runtime"
+              desc: "domain must not depend on runtime"
+            - pkg: "github.com/mariotoffia/gobridge/bridge"
+              desc: "domain must not depend on bridge"
+
+        # Ports must not leak technology types. config is gated on
+        # FIX-003 (the bridge handover currently keeps config DTOs in
+        # the inner ring transitively).
+        ports:
+          list-mode: lax
+          files:
+            - "**/ports/**/*.go"
+            - "!**/ports/storetest/**"
+            - "!$test"
+          deny:
+            - pkg: "net/http"
+              desc: "ports must not depend on stdlib HTTP types — wire HTTP-specific concerns at the composition root"
+            - pkg: "database/sql"
+              desc: "ports must not expose stdlib SQL types"
+            - pkg: "github.com/mariotoffia/gobridge/config"
+              desc: "ports must not depend on config"
+            - pkg: "github.com/mariotoffia/gobridge/bridge"
+              desc: "ports must not depend on bridge"
+            - pkg: "github.com/mariotoffia/gobridge/runtime"
+              desc: "ports must not depend on runtime"
+
+        # Adapters must not reach into composition or application
+        # layers. Config-source adapters under adapters/*/config/* are
+        # exempted because their job is to produce *config.BridgeConfig.
+        adapters-no-bridge:
+          list-mode: lax
+          files:
+            - "**/adapters/**/*.go"
+            - "!**/adapters/*/config/**"
+            - "!$test"
+          deny:
+            - pkg: "github.com/mariotoffia/gobridge/bridge"
+              desc: "adapters must not depend on bridge (composition root)"
+            - pkg: "github.com/mariotoffia/gobridge/runtime"
+              desc: "adapters must not depend on runtime"
+            - pkg: "github.com/mariotoffia/gobridge/config"
+              desc: "only adapters/*/config/* may depend on config; other adapters consume ports specs"
+
+        # Runtime is application orchestration; no composition root
+        # types and no config parser dependency. Post-FIX-003 the
+        # bridge hands runtime *ports.BridgeConfig values, so the
+        # config deny is enforceable from the file level too.
+        runtime-no-bridge:
+          list-mode: lax
+          files:
+            - "**/runtime/**/*.go"
+            - "!$test"
+          deny:
+            - pkg: "github.com/mariotoffia/gobridge/config"
+              desc: "runtime must not depend on the config parser; consume *ports.BridgeConfig instead"
+            - pkg: "github.com/mariotoffia/gobridge/bridge"
+              desc: "runtime must not depend on bridge (composition root)"
+
+    revive:
+      rules:
+        - name: max-public-structs
+          arguments: [25]
+        # Thresholds are tuned to accommodate the current state of
+        # bridge.Builder (wireRoutes ~80) and config.validate (~144,
+        # which is itself a smell — the schema validator is doing too
+        # much). FIX-005 final pass should ratchet these down toward
+        # 15 once those functions are split into per-step helpers.
+        - name: cognitive-complexity
+          arguments: [150]
+        - name: cyclomatic
+          arguments: [150]
+        - name: empty-block
+
+  exclusions:
+    paths:
+      # Conformance test fixtures: not production code.
+      - "ports/storetest/.*"
+
+    rules:
+      # The default linter set (errcheck, staticcheck, ineffassign,
+      # unused, govet) finds pre-existing issues across test code
+      # (uncaught Close errors, single-case selects, empty branches).
+      # TODO(FIX-TODO-test-quality.md): drop this exclusion after
+      # the test-quality sweep.
+      - linters: [errcheck, staticcheck, ineffassign, unused]
+        path: "_test\\.go$"
+      # forbidigo active exemptions (time.Now allowed in):
+      #   - domain/clock/real.go: the Clock implementation itself
+      #   - domain/clock/clocktest/: fake-clock test helpers
+      #   - _test.go files: test synchronisation and "right-now" semantics
+      #   - ports/storetest/: conformance test suite fixtures (not production
+      #     code; classified out-of-gate in the clock-injection harvest)
+      #   - testutil/: local service helpers (Docker broker/DDB lifecycle);
+      #     use real time for unique names and polling deadlines as documented
+      #     in the Phase 1 harvest; out of the production forbidigo gate
+      - linters: [forbidigo]
+        path: "domain/clock/real\\.go$"
+      - linters: [forbidigo]
+        path: "domain/clock/clocktest/"
+      - linters: [forbidigo]
+        path: "_test\\.go$"
+      - linters: [forbidigo]
+        path: "ports/storetest/"
+      - linters: [forbidigo]
+        path: "testutil/"
+
+      # gochecknoglobals / gochecknoinits exemptions:
+      #
+      # - domain/clock/clock.go declares the `var System Clock` service
+      #   locator — the canonical entry point for production code that
+      #   does NOT yet use injected clocks. Documented architectural
+      #   exemption.
+      # - domain/route.go declares the legacy `var DefaultBackoffPolicy`
+      #   (struct value, cannot be const). Already marked Deprecated in
+      #   the source; new code uses NewDefaultBackoffPolicy().
+      # - config/validate_resolver.go declares two lookup maps used by
+      #   the validator. Go has no const map literal; the maps are
+      #   functionally immutable.
+      # - adapters/http/transport/receiver.go declares an atomic.Uint64
+      #   counter for HTTP-side monotonic envelope IDs. Package-shared
+      #   counter (not per-receiver), legitimate atomic usage.
+      # - testutil/* packages share docker-container lifecycle state
+      #   (broker URL, cleanup callback, container name) across the
+      #   tests that import them. The state IS a singleton by design.
+      # - test files routinely declare package-level fixtures and
+      #   helper init() blocks — outside the rule's scope.
+      - linters: [gochecknoglobals]
+        path: "^domain/clock/clock\\.go$"
+      - linters: [gochecknoglobals]
+        path: "^domain/route\\.go$"
+      - linters: [gochecknoglobals]
+        path: "^config/validate_resolver\\.go$"
+      # Adapter `headers.go` files declare well-known-header lookup
+      # maps (Go has no const map literal). The pattern covers any
+      # adapter package's headers.go.
+      - linters: [gochecknoglobals]
+        path: "adapters/.*headers\\.go$"
+      - linters: [gochecknoglobals]
+        path: "^adapters/http/transport/receiver\\.go$"
+      - linters: [gochecknoglobals, gochecknoinits]
+        path: "^testutil/"
+      # The custom analyzers under scripts/ follow the go/analysis
+      # framework's required pattern: a package-level Analyzer var
+      # plus its config (vendor patterns, etc.).
+      - linters: [gochecknoglobals]
+        path: "^scripts/"
+      - linters: [gochecknoglobals, gochecknoinits]
+        path: "_test\\.go$"
+
+      # CredentialAdmin is a coordination interface that legitimately
+      # exceeds five methods. Whitelist explicitly so the threshold
+      # ratchet still bites everywhere else.
+      - linters: [interfacebloat]
+        path: "ports/credentials\\.go$"
+
+      # Revive's complexity / public-structs checks aim at production
+      # code; tests are excluded from architecture lint and are
+      # exempted here for symmetry. Test setup is allowed to be
+      # intricate — that is how it gets coverage.
+      - linters: [revive]
+        path: "_test\\.go$"

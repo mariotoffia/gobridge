@@ -78,11 +78,12 @@ func TestStartCtx_SetDuringStartSimulation(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   1. Create parent ctx with cancel
-//   2. Store as startCtx (simulating Start)
-//   3. Derive reconCtx from startCtx with 30s timeout
-//   4. Cancel parent
-//   5. Verify reconCtx is cancelled with context.Canceled
+//  1. Create parent ctx with cancel
+//  2. Store as startCtx (simulating Start)
+//  3. Derive reconCtx from startCtx with 30s timeout
+//  4. Cancel parent
+//  5. Verify reconCtx is cancelled with context.Canceled
+//
 // ───────────────────────────────────────────────
 func TestStartCtx_CancellationPropagates(t *testing.T) {
 	parentCtx, parentCancel := context.WithCancel(context.Background())
@@ -111,9 +112,10 @@ func TestStartCtx_CancellationPropagates(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   1. Create long-lived parent context
-//   2. Derive reconCtx with very short timeout (10ms)
-//   3. Wait and verify reconCtx expires with DeadlineExceeded
+//  1. Create long-lived parent context
+//  2. Derive reconCtx with very short timeout (10ms)
+//  3. Wait and verify reconCtx expires with DeadlineExceeded
+//
 // ───────────────────────────────────────────────
 func TestStartCtx_ReconTimeoutHonoured(t *testing.T) {
 	parentCtx := context.Background()

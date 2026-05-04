@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
 )
@@ -47,7 +46,7 @@ func (r *RouteRunner) resolvePlans(ctx context.Context, env *domain.Envelope) ([
 }
 
 func (r *RouteRunner) buildOutboxRecords(env *domain.Envelope, plans []domain.DispatchPlan) []domain.OutboxRecord {
-	now := time.Now()
+	now := r.clk.Now()
 	records := make([]domain.OutboxRecord, len(plans))
 
 	for i, plan := range plans {

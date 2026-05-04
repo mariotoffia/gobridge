@@ -234,10 +234,10 @@ func main() {
 
 ## BridgeFactory
 
-`BridgeFactory` implements `bridge.TransportFactory` and creates sessions, receivers, and senders from declarative `config.*Def` definitions. It wraps the lower-level factories (`Factory`, `ReceiverFactory`, `SenderFactory`) for use with the bridge runtime.
+`BridgeFactory` implements `ports.TransportFactory` and creates sessions, receivers, and senders from declarative `config.*Def` definitions. It wraps the lower-level factories (`Factory`, `ReceiverFactory`, `SenderFactory`) for use with the bridge runtime.
 
 ```go
-factory := amqp091.NewBridgeFactory(logger, metricsExporter)
+factory := amqp091.NewFactory(logger, metricsExporter)
 ```
 
 ## Reconnection

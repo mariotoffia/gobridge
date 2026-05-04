@@ -114,7 +114,7 @@ func TestUC57_StaleClaimRecovery(t *testing.T) {
 	sessB := setupMQTTSessionWithBroker(t, brokerURL, mqttIDB,
 		domain.SessionExclusive, 65535)
 	sndB := setupMQTTSender(t, sessB)
-	rxB := newSQSReceiver(t, sqsInURL) // Same queue — picks up remaining msgs.
+	rxB := newSQSReceiver(t, sqsInURL)     // Same queue — picks up remaining msgs.
 	scB := lrSessionConfig(leaseSessionID) // Same lease — competes for ownership.
 
 	rtB := goruntime.New(
@@ -234,7 +234,7 @@ func TestUC58_DoubleDrainPrevention(t *testing.T) {
 	sessB := setupMQTTSessionWithBroker(t, brokerURL, mqttIDB,
 		domain.SessionExclusive, 65535)
 	sndB := setupMQTTSender(t, sessB)
-	rxB := newSQSReceiver(t, sqsInURL) // Same SQS queue — competing consumers.
+	rxB := newSQSReceiver(t, sqsInURL)     // Same SQS queue — competing consumers.
 	scB := lrSessionConfig(leaseSessionID) // Same lease — competing for ownership.
 
 	rtB := goruntime.New(

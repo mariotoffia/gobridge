@@ -112,18 +112,32 @@ func TestUC22_TenRule_MatchRule_Routing(t *testing.T) {
 	// Send 500 msgs per rule with appropriate headers.
 	headerGenerators := []func(i int) map[string]string{
 		func(i int) map[string]string { return map[string]string{"route_key": "rule-0", "seq": strconv.Itoa(i)} },
-		func(i int) map[string]string { return map[string]string{"route_key": fmt.Sprintf("pfx-1-%d", i), "seq": strconv.Itoa(i)} },
-		func(i int) map[string]string { return map[string]string{"route_key": fmt.Sprintf("x-cnt2-%d", i), "seq": strconv.Itoa(i)} },
-		func(i int) map[string]string { return map[string]string{"route_key": fmt.Sprintf("rgx-3-%d", i), "seq": strconv.Itoa(i)} },
-		func(i int) map[string]string { return map[string]string{"priority": "901", "route_key": "other", "seq": strconv.Itoa(i)} },
+		func(i int) map[string]string {
+			return map[string]string{"route_key": fmt.Sprintf("pfx-1-%d", i), "seq": strconv.Itoa(i)}
+		},
+		func(i int) map[string]string {
+			return map[string]string{"route_key": fmt.Sprintf("x-cnt2-%d", i), "seq": strconv.Itoa(i)}
+		},
+		func(i int) map[string]string {
+			return map[string]string{"route_key": fmt.Sprintf("rgx-3-%d", i), "seq": strconv.Itoa(i)}
+		},
+		func(i int) map[string]string {
+			return map[string]string{"priority": "901", "route_key": "other", "seq": strconv.Itoa(i)}
+		},
 		func(i int) map[string]string {
 			vals := []string{"in-5a", "in-5b", "in-5c"}
 			return map[string]string{"route_key": vals[i%3], "seq": strconv.Itoa(i)}
 		},
 		func(i int) map[string]string { return map[string]string{"route_key": "rule-6", "seq": strconv.Itoa(i)} },
-		func(i int) map[string]string { return map[string]string{"route_key": fmt.Sprintf("pfx-7-%d", i), "seq": strconv.Itoa(i)} },
-		func(i int) map[string]string { return map[string]string{"route_key": fmt.Sprintf("x-cnt8-%d", i), "seq": strconv.Itoa(i)} },
-		func(i int) map[string]string { return map[string]string{"route_key": fmt.Sprintf("rgx-9-%d", i), "seq": strconv.Itoa(i)} },
+		func(i int) map[string]string {
+			return map[string]string{"route_key": fmt.Sprintf("pfx-7-%d", i), "seq": strconv.Itoa(i)}
+		},
+		func(i int) map[string]string {
+			return map[string]string{"route_key": fmt.Sprintf("x-cnt8-%d", i), "seq": strconv.Itoa(i)}
+		},
+		func(i int) map[string]string {
+			return map[string]string{"route_key": fmt.Sprintf("rgx-9-%d", i), "seq": strconv.Itoa(i)}
+		},
 	}
 	for ruleIdx := 0; ruleIdx < ruleCount; ruleIdx++ {
 		for j := 0; j < msgsPerRule; j++ {
@@ -152,9 +166,9 @@ func TestUC22_TenRule_MatchRule_Routing(t *testing.T) {
 func TestUC23_SubjectPrefix_Routing(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		perPrefix = 1000
-		total     = 3000
-		pollTimeout   = 90 * time.Second
+		perPrefix   = 1000
+		total       = 3000
+		pollTimeout = 90 * time.Second
 	)
 	qOrders, sqsC := setupSQSQueue(t, "uc23-orders")
 	qEvents, _ := setupSQSQueue(t, "uc23-events")
@@ -233,9 +247,9 @@ func TestUC23_SubjectPrefix_Routing(t *testing.T) {
 func TestUC24_DynamicAddress_Templates(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		perCombo = 1000
-		total    = 3000
-		pollTimeout  = 90 * time.Second
+		perCombo    = 1000
+		total       = 3000
+		pollTimeout = 90 * time.Second
 	)
 	inURL, inClient := setupSQSQueue(t, "uc24-in")
 	dlq := &lrDLQStore{}
@@ -374,8 +388,8 @@ func TestUC25_FilterProcessor_90Percent_Drop(t *testing.T) {
 func TestUC26_FiveStage_ProcessorChain(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount = 2000
-		pollTimeout  = 120 * time.Second
+		msgCount    = 2000
+		pollTimeout = 120 * time.Second
 	)
 	inURL, inClient := setupSQSQueue(t, "uc26-in")
 	outURL, outClient := setupSQSQueue(t, "uc26-out")

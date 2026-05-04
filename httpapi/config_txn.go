@@ -5,12 +5,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
-	"os"
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // Default transaction TTL when the client does not specify one.
@@ -21,10 +22,10 @@ const maxTxnTTL = 30 * time.Minute
 
 // Sentinel errors returned by configTxnManager methods.
 var (
-	errTxnActive          = errors.New("another transaction is already active")
-	errTxnNotFound        = errors.New("transaction not found")
-	errTxnExpired         = errors.New("transaction has expired")
-	errVersionConflict    = errors.New("config version conflict")
+	errTxnActive       = errors.New("another transaction is already active")
+	errTxnNotFound     = errors.New("transaction not found")
+	errTxnExpired      = errors.New("transaction has expired")
+	errVersionConflict = errors.New("config version conflict")
 )
 
 // ConfigTransaction represents an in-progress configuration change.
@@ -35,8 +36,8 @@ type ConfigTransaction struct {
 	PatchCount int       `json:"patch_count"`
 
 	baseVersion int // config version when the transaction was created
-	patches     []*config.BridgeConfig
-	merged      *config.BridgeConfig
+	patches     []*ports.BridgeConfig
+	merged      *ports.BridgeConfig
 }
 
 // configTxnManager manages the single active config transaction.
@@ -44,20 +45,26 @@ type ConfigTransaction struct {
 type configTxnManager struct {
 	mu             sync.Mutex
 	active         *ConfigTransaction
-	configFilePath string
-	configProvider func() *config.BridgeConfig
+	store          ports.ConfigStore
+	configProvider func() *ports.BridgeConfig
 	logger         *slog.Logger
-	timeoutTimer   *time.Timer
+	clk            clock.Clock
+	timeoutTimer   clock.Timer
+	timeoutCancel  chan struct{}
 }
 
 // newTxnManager creates a new transaction manager.
-// path is the config file to write on commit.
+// store is the persistence boundary used for validate/merge/save/load.
 // provider returns the current effective config (e.g. Supervisor.Config).
-func newTxnManager(path string, provider func() *config.BridgeConfig, logger *slog.Logger) *configTxnManager {
+func newTxnManager(store ports.ConfigStore, provider func() *ports.BridgeConfig, logger *slog.Logger, clk clock.Clock) *configTxnManager {
+	if clk == nil {
+		clk = clock.System
+	}
 	return &configTxnManager{
-		configFilePath: path,
+		store:          store,
 		configProvider: provider,
 		logger:         logger,
+		clk:            clk,
 	}
 }
 
@@ -79,7 +86,7 @@ func (m *configTxnManager) Begin(ttl time.Duration) (*ConfigTransaction, error) 
 		ttl = maxTxnTTL
 	}
 
-	now := time.Now().UTC()
+	now := m.clk.Now().UTC()
 
 	baseVersion := 0
 	if current := m.configProvider(); current != nil {
@@ -87,14 +94,25 @@ func (m *configTxnManager) Begin(ttl time.Duration) (*ConfigTransaction, error) 
 	}
 
 	txn := &ConfigTransaction{
-		ID:          generateTxnID(),
+		ID:          generateTxnID(m.clk),
 		CreatedAt:   now,
 		ExpiresAt:   now.Add(ttl),
 		baseVersion: baseVersion,
 	}
 	m.active = txn
 
-	m.timeoutTimer = time.AfterFunc(ttl, m.expire)
+	m.timeoutTimer = m.clk.NewTimer(ttl)
+	m.timeoutCancel = make(chan struct{})
+	timer := m.timeoutTimer
+	cancel := m.timeoutCancel
+	txnID := txn.ID
+	go func() {
+		select {
+		case <-timer.C():
+			m.expire(txnID)
+		case <-cancel:
+		}
+	}()
 
 	return txn, nil
 }
@@ -103,7 +121,7 @@ func (m *configTxnManager) Begin(ttl time.Duration) (*ConfigTransaction, error) 
 // overlay on top of the current effective config plus all previous patches,
 // validates the result, and returns the merged preview along with any
 // validation warnings. Returns an error if the merged config is invalid.
-func (m *configTxnManager) Patch(txnID string, overlay *config.BridgeConfig) (*config.BridgeConfig, []string, error) {
+func (m *configTxnManager) Patch(txnID string, overlay *ports.BridgeConfig) (*ports.BridgeConfig, []string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -123,7 +141,7 @@ func (m *configTxnManager) Patch(txnID string, overlay *config.BridgeConfig) (*c
 		return nil, nil, err
 	}
 
-	warnings, valErr := config.ValidateWithWarnings(merged)
+	warnings, valErr := m.store.Validate(merged)
 	if valErr != nil {
 		// Remove the bad patch.
 		m.active.patches = m.active.patches[:len(m.active.patches)-1]
@@ -137,7 +155,7 @@ func (m *configTxnManager) Patch(txnID string, overlay *config.BridgeConfig) (*c
 
 // Preview returns the current merged state of the transaction without
 // adding a new patch.
-func (m *configTxnManager) Preview(txnID string) (*config.BridgeConfig, error) {
+func (m *configTxnManager) Preview(txnID string) (*ports.BridgeConfig, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -181,7 +199,7 @@ func (m *configTxnManager) Commit(txnID string) (int, error) {
 		return 0, err
 	}
 
-	if _, valErr := config.ValidateWithWarnings(merged); valErr != nil {
+	if _, valErr := m.store.Validate(merged); valErr != nil {
 		return 0, valErr
 	}
 
@@ -198,7 +216,7 @@ func (m *configTxnManager) Commit(txnID string) (int, error) {
 	newVersion := diskVersion + 1
 	merged.Version = newVersion
 
-	if err := config.WriteFile(m.configFilePath, merged); err != nil {
+	if err := m.store.Save(merged); err != nil {
 		return 0, fmt.Errorf("config write failed: %w", err)
 	}
 
@@ -206,12 +224,15 @@ func (m *configTxnManager) Commit(txnID string) (int, error) {
 	return newVersion, nil
 }
 
-// readDiskVersion reads the config file from disk and returns its version.
-// Returns 0 if the file does not exist or has no version field.
+// readDiskVersion reads the current config from the underlying store
+// and returns its version. Returns 0 (with no error) when the store
+// reports the underlying source does not yet exist (errors.Is the
+// stdlib fs.ErrNotExist sentinel); the txn API signals "first-write"
+// semantics via baseVersion=0.
 func (m *configTxnManager) readDiskVersion() (int, error) {
-	diskCfg, err := config.ParseFile(m.configFilePath, config.FormatAuto)
+	diskCfg, err := m.store.Load()
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return 0, nil
 		}
 		return 0, err
@@ -240,11 +261,11 @@ func (m *configTxnManager) Active() *ConfigTransaction {
 }
 
 // expire is called by the timeout timer to auto-rollback a stale transaction.
-func (m *configTxnManager) expire() {
+func (m *configTxnManager) expire(txnID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.active == nil {
+	if m.active == nil || m.active.ID != txnID {
 		return
 	}
 
@@ -266,7 +287,7 @@ func (m *configTxnManager) checkTxn(txnID string) error {
 	if m.active.ID != txnID {
 		return errTxnNotFound
 	}
-	if time.Now().UTC().After(m.active.ExpiresAt) {
+	if m.clk.Now().UTC().After(m.active.ExpiresAt) {
 		m.cleanupLocked()
 		return errTxnExpired
 	}
@@ -275,7 +296,7 @@ func (m *configTxnManager) checkTxn(txnID string) error {
 
 // computeMerged builds the merged config from the current effective config
 // plus all accumulated patches. Must be called with mu held.
-func (m *configTxnManager) computeMerged() (*config.BridgeConfig, error) {
+func (m *configTxnManager) computeMerged() (*ports.BridgeConfig, error) {
 	base := m.configProvider()
 	if base == nil {
 		return nil, fmt.Errorf("no current config available")
@@ -283,7 +304,7 @@ func (m *configTxnManager) computeMerged() (*config.BridgeConfig, error) {
 
 	result := base
 	for i, patch := range m.active.patches {
-		merged, err := config.DefaultMerge(result, patch)
+		merged, err := m.store.Merge(result, patch)
 		if err != nil {
 			return nil, fmt.Errorf("merge patch %d: %w", i, err)
 		}
@@ -304,15 +325,19 @@ func (m *configTxnManager) cleanupLocked() {
 		m.timeoutTimer.Stop()
 		m.timeoutTimer = nil
 	}
+	if m.timeoutCancel != nil {
+		close(m.timeoutCancel)
+		m.timeoutCancel = nil
+	}
 	m.active = nil
 }
 
 // generateTxnID returns a random 16-character hex string.
-func generateTxnID() string {
+func generateTxnID(clk clock.Clock) string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
 		// Fallback to timestamp-based ID on rand failure.
-		return fmt.Sprintf("txn-%d", time.Now().UnixNano())
+		return fmt.Sprintf("txn-%d", clk.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
 }

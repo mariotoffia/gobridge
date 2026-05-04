@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
-	"github.com/mariotoffia/gobridge/config"
+
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -25,14 +25,14 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestEdgeR3_DuplicateReceiverID_ReturnsError(t *testing.T) {
-	factory := transport.NewBridgeFactory()
+	factory := transport.NewFactory()
 
-	_, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "dup"}, nil)
+	_, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "dup"}, nil)
 	if err != nil {
 		t.Fatalf("first NewReceiver: %v", err)
 	}
 
-	_, err = factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "dup"}, nil)
+	_, err = factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "dup"}, nil)
 	if err == nil {
 		t.Fatal("expected error for duplicate receiver ID, got nil")
 	}
@@ -46,16 +46,16 @@ func TestEdgeR3_DuplicateReceiverID_ReturnsError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeR3_DuplicateSenderID_ReturnsError(t *testing.T) {
-	factory := transport.NewBridgeFactory()
+	factory := transport.NewFactory()
 
-	_, err := factory.NewSender(context.Background(), config.SenderDef{
+	_, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID: "dup-sse", Options: map[string]any{"mode": "sse"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("first NewSender: %v", err)
 	}
 
-	_, err = factory.NewSender(context.Background(), config.SenderDef{
+	_, err = factory.NewSender(context.Background(), ports.SenderSpec{
 		ID: "dup-sse", Options: map[string]any{"mode": "sse"},
 	}, nil)
 	if err == nil {
@@ -81,8 +81,8 @@ func TestEdgeR3_InvalidExpiresAtReturns400(t *testing.T) {
 		{"partial_date", "2026-03-28"},
 	}
 
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "bad-exp"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "bad-exp"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -121,8 +121,8 @@ func TestEdgeR3_InvalidExpiresAtReturns400(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeR3_ValidExpiresAtAccepted(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "good-exp"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "good-exp"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -178,8 +178,8 @@ func TestEdgeR3_ValidExpiresAtAccepted(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeR3_SSEHeartbeatDelivered(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	_, err := factory.NewSender(context.Background(), config.SenderDef{
+	factory := transport.NewFactory()
+	_, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID: "sse-hb",
 		Options: map[string]any{
 			"mode":               "sse",
@@ -232,8 +232,8 @@ func TestEdgeR3_SSEHeartbeatDelivered(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeR3_ConcurrentPOSTProcessing(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "concurrent"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "concurrent"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -299,9 +299,9 @@ func TestEdgeR3_ConcurrentPOSTProcessing(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeR3_CustomPathPrefix(t *testing.T) {
-	factory := transport.NewBridgeFactory(transport.WithPathPrefix("/custom/api"))
+	factory := transport.NewFactory(transport.WithPathPrefix("/custom/api"))
 
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "pfx"}, nil)
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "pfx"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -388,8 +388,8 @@ func TestEdgeR3_ForwarderContextCancelled(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeR3_NilPayload(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "nil-payload"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "nil-payload"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -460,11 +460,11 @@ func TestEdgeR3_RemoteRouteNoForwarderReturns502(t *testing.T) {
 	locator := &stubLocator{peer: remotePeer, local: false}
 
 	// Factory with locator but NO forwarder.
-	factory := transport.NewBridgeFactory(
+	factory := transport.NewFactory(
 		transport.WithRouteLocator(locator),
 	)
 
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "nofwd"}, nil)
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "nofwd"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -499,8 +499,8 @@ func TestEdgeR3_RemoteRouteNoForwarderReturns502(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeR3_SSEResponseHeaders(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	_, err := factory.NewSender(context.Background(), config.SenderDef{
+	factory := transport.NewFactory()
+	_, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID: "sse-headers", Options: map[string]any{"mode": "sse"},
 	}, nil)
 	if err != nil {
@@ -541,8 +541,8 @@ func TestEdgeR3_SSEResponseHeaders(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeR3_SSESendContextCancelled(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	sender, err := factory.NewSender(context.Background(), config.SenderDef{
+	factory := transport.NewFactory()
+	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID: "sse-ctx", Options: map[string]any{"mode": "sse"},
 	}, nil)
 	if err != nil {

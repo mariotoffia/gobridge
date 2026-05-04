@@ -104,7 +104,7 @@ func (a *App) Start(ctx context.Context) error {
 		a.credentialStore = store
 	}
 
-	source := newOptionalFileSource(a.cfg.ConfigFilePath, func() *config.BridgeConfig {
+	source := newOptionalFileSource(a.cfg.ConfigFilePath, func() *ports.BridgeConfig {
 		return defaultLogicalConfig(a.cfg)
 	})
 	watcher := newPollWatcher(a.cfg, a.logger)
@@ -135,7 +135,7 @@ func (a *App) Start(ctx context.Context) error {
 		AdminAPIKeyProvider:   a.apiKeysRef.AdminKey,
 		MonitorAPIKeyProvider: a.apiKeysRef.MonitorKey,
 		RuntimeProvider:       a.runtimeRef.Get,
-		ConfigFilePath:        a.cfg.ConfigFilePath,
+		ConfigStore:           &config.FileStore{Path: a.cfg.ConfigFilePath},
 		ConfigProvider:        a.logicalRef.Get,
 	}
 	a.httpServer = httpapi.New(nil, apiCfg,
@@ -244,11 +244,11 @@ func (a *App) TransportURL() string {
 	return a.transportServer.URL()
 }
 
-func (a *App) CurrentLogicalConfig() *config.BridgeConfig {
+func (a *App) CurrentLogicalConfig() *ports.BridgeConfig {
 	return a.logicalRef.Get()
 }
 
-func (a *App) CurrentAppliedConfig() *config.BridgeConfig {
+func (a *App) CurrentAppliedConfig() *ports.BridgeConfig {
 	return a.appliedRef.Get()
 }
 
@@ -256,7 +256,7 @@ func (a *App) CurrentRuntime() *goruntime.Runtime {
 	return a.runtimeRef.Get()
 }
 
-func (a *App) watchLoop(ctx context.Context, watchCh <-chan *config.BridgeConfig) {
+func (a *App) watchLoop(ctx context.Context, watchCh <-chan *ports.BridgeConfig) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -287,8 +287,8 @@ const (
 )
 
 type runtimePlan struct {
-	logical  *config.BridgeConfig
-	resolved *config.BridgeConfig
+	logical  *ports.BridgeConfig
+	resolved *ports.BridgeConfig
 	inputs   *resolvedInputs
 	mode     swapMode
 
@@ -297,7 +297,7 @@ type runtimePlan struct {
 	runtime  *goruntime.Runtime
 }
 
-func (a *App) applyLogicalConfig(ctx context.Context, logical *config.BridgeConfig) error {
+func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfig) error {
 	if err := validateFilesystemProfile(a.cfg, logical); err != nil {
 		return err
 	}
@@ -318,7 +318,7 @@ func (a *App) applyLogicalConfig(ctx context.Context, logical *config.BridgeConf
 	}
 }
 
-func (a *App) prepareRuntimePlan(ctx context.Context, logical *config.BridgeConfig) (*runtimePlan, error) {
+func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfig) (*runtimePlan, error) {
 	inputs, err := resolveInputs(ctx, a.parameterResolver, a.cfg, logical)
 	if err != nil {
 		return nil, err
@@ -357,7 +357,7 @@ func (a *App) applyOverlap(
 	ctx context.Context,
 	plan *runtimePlan,
 	oldRuntime *goruntime.Runtime,
-	oldApplied *config.BridgeConfig,
+	oldApplied *ports.BridgeConfig,
 ) error {
 	if err := plan.runtime.Start(ctx); err != nil {
 		return fmt.Errorf("bootstrap: start runtime: %w", err)
@@ -386,7 +386,7 @@ func (a *App) applyPrepareCommit(
 	ctx context.Context,
 	plan *runtimePlan,
 	oldRuntime *goruntime.Runtime,
-	oldApplied *config.BridgeConfig,
+	oldApplied *ports.BridgeConfig,
 ) error {
 	if oldRuntime != nil {
 		if err := stopRuntime(oldRuntime, oldApplied); err != nil {
@@ -409,7 +409,7 @@ func (a *App) applyPrepareCommit(
 	return nil
 }
 
-func (a *App) recoverPrevious(ctx context.Context, logical *config.BridgeConfig) {
+func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) {
 	if logical == nil {
 		a.runtimeRef.Set(nil)
 		a.appliedRef.Set(nil)
@@ -452,4 +452,3 @@ func (a *App) installPlan(plan *runtimePlan) {
 	a.apiKeysRef.Set(plan.inputs.AdminAPIKey, plan.inputs.MonitorAPIKey)
 	a.handlerRef.Set(plan.registry.transportHandler())
 }
-

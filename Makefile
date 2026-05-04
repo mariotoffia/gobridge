@@ -3,12 +3,17 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test test-integration test-long-running lint lint-fix clean tidy sync help
+.PHONY: all build test test-integration test-long-running lint lint-fix lint-gofmt lint-go-vet lint-go lint-arch lint-arch-report lint-arch-mapping lint-arch-mapping-test lint-arch-check clean tidy sync help
 .PHONY: build-core build-mqtt build-aws build-azure
 .PHONY: install vulncheck update update-major outdated
 .PHONY: docker-up docker-down docker-clean
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
+.PHONY: arch-graph dupl-report goconst-report arch-quality
+.PHONY: build-aclcheck lint-acl build-aggcheck lint-aggregate
+
+GOBRIDGE_GO_CACHE ?= /tmp/gobridge-go-build-cache
+export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
 
 # Default target
 all: build test
@@ -118,13 +123,107 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 # Lint targets
 # ============================================================================
 
-lint: ## Lint all workspace modules
-	@echo "Linting..."
-	golangci-lint run ./...
+lint: lint-arch-check lint-gofmt lint-go-vet lint-go lint-aggregate ## Run all static checks across the workspace
+
+lint-go: ## Run golangci-lint across all workspace modules (uses .golangci.yml at the repo root)
+	@echo "Running golangci-lint across all modules..."
+	@bash -c 'set -e; mkdir -p "$(GOBRIDGE_GO_CACHE)"; export GOCACHE="$(GOBRIDGE_GO_CACHE)"; \
+	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" | sort); do \
+		dir=$$(dirname "$$modfile"); \
+		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then \
+			echo "--- Skipping $$dir (no default-tag packages) ---"; \
+			continue; \
+		fi; \
+		echo "--- golangci-lint $$dir ---"; \
+		(cd "$$dir" && golangci-lint run --timeout=5m ./...); \
+	done'
 
 lint-fix: ## Lint and auto-fix all workspace modules
 	@echo "Linting with auto-fix..."
-	golangci-lint run --fix ./...
+	@gofmt -w $$(git ls-files '*.go')
+
+lint-gofmt: ## Check Go formatting across tracked Go files
+	@echo "Checking Go formatting..."
+	@FILES=$$(gofmt -l $$(git ls-files '*.go')); \
+	if [ -n "$$FILES" ]; then \
+		echo "$$FILES"; \
+		echo ""; \
+		echo "Go files need formatting. Run: make lint-fix"; \
+		exit 1; \
+	fi
+
+lint-go-vet: ## Run go vet across all workspace modules
+	@echo "Running go vet across all modules..."
+	@bash -c 'set -e; mkdir -p "$(GOBRIDGE_GO_CACHE)"; export GOCACHE="$(GOBRIDGE_GO_CACHE)"; \
+	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" | sort); do \
+		dir=$$(dirname "$$modfile"); \
+		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then \
+			echo "--- Skipping $$dir (no default-tag packages) ---"; \
+			continue; \
+		fi; \
+		echo "--- Vetting $$dir ---"; \
+		(cd "$$dir" && go vet ./...); \
+	done'
+
+lint-arch: ## Check architecture dependencies (strict)
+	@echo "Linting architecture..."
+	go-arch-lint check --project-path . --max-warnings 1024 --output-color=false
+
+lint-arch-report: ## Write a non-blocking architecture lint report
+	@mkdir -p reports
+	@echo "Linting architecture..."
+	@bash -c 'set -o pipefail; go-arch-lint check --project-path . --max-warnings 1024 --output-color=false 2>&1 | tee reports/go-arch-lint.log; rc=$$?; \
+		if [ $$rc -ne 0 ]; then \
+			echo ""; \
+			echo "Architecture warnings captured in reports/go-arch-lint.log"; \
+			exit 0; \
+		fi'
+	@go-arch-lint graph --out reports/go-arch-lint-graph.svg
+
+lint-arch-mapping: ## Show package-to-component mapping (debug aid)
+	@echo "Resolving architecture component mapping..."
+	@go-arch-lint mapping --project-path . --scheme grouped --output-color=false
+
+lint-arch-check: lint-arch lint-arch-mapping-test ## Run strict lint and the regression mapping test
+	@echo "Architecture lint and mapping test passed."
+
+lint-arch-mapping-test: ## Verify key packages map to their expected lint components
+	@echo "Verifying architecture component mapping..."
+	@bash scripts/lint-arch-mapping-test.sh
+
+build-aclcheck: ## Build the aclcheck custom analyzer
+	@mkdir -p bin
+	@cd scripts/aclcheck && go build -o $(PWD)/bin/aclcheck ./...
+
+# lint-acl is currently advisory (writes a report) rather than blocking
+# because the existing adapters were not built with the acl_*.go naming
+# convention. Promoting it to part of `make lint` requires first
+# refactoring each adapter so its SDK boundary lives in acl_*.go files
+# (a separate, large task). The analyzer is in place so any NEW
+# adapter can adopt the convention from day one.
+lint-acl: build-aclcheck ## Run aclcheck (advisory) — writes reports/aclcheck.log
+	@mkdir -p reports
+	@echo "Running aclcheck (advisory)..."
+	@bash -c ': > reports/aclcheck.log; for modfile in $$(find ./adapters -name go.mod -not -path "*/vendor/*" | sort); do \
+		dir=$$(dirname "$$modfile"); \
+		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then continue; fi; \
+		echo "--- aclcheck $$dir ---" >> reports/aclcheck.log; \
+		(cd "$$dir" && go vet -vettool=$(PWD)/bin/aclcheck ./... 2>>$(PWD)/reports/aclcheck.log) || true; \
+	done; true'
+	@violations=$$(grep -cE 'vendor SDK import' reports/aclcheck.log || echo 0); \
+		echo "ACL boundary report at reports/aclcheck.log ($$violations file-level violations across adapters)"
+
+build-aggcheck: ## Build the aggcheck custom analyzer
+	@mkdir -p bin
+	@cd scripts/aggcheck && go build -o $(PWD)/bin/aggcheck ./...
+
+# lint-aggregate is enforcing: aggregate-like types in domain/ must
+# live in *_aggregate.go files and declare a Validate() method. The
+# convention is opt-in — pure value objects and types whose mutation
+# is via pointer receiver are NOT aggregates and are exempt.
+lint-aggregate: build-aggcheck ## Enforce aggregate-root naming convention in domain/
+	@echo "Checking domain aggregate conventions..."
+	@go vet -vettool=$(PWD)/bin/aggcheck ./domain/...
 
 # ============================================================================
 # Maintenance targets
@@ -171,10 +270,44 @@ install: ## Install all development and CI tools
 	go install github.com/icholy/gomajor@latest
 	go install github.com/psampaz/go-mod-outdated@latest
 	go install github.com/loov/goda@latest
+	go install github.com/fe3dback/go-arch-lint@latest
+	go install github.com/mibk/dupl@latest
+	go install github.com/jgautheron/goconst/cmd/goconst@latest
 
-check: build lint test audit-timings audit-test-timings ## Run full CI check (no Docker, integration skipped)
+check: build lint lint-arch-check test audit-timings audit-test-timings ## Run full CI check (no Docker, integration skipped)
 
-check-all: build lint test-integration audit-timings audit-test-timings ## Run full CI check including integration (Docker required)
+check-all: build lint lint-arch-check test-integration audit-timings audit-test-timings ## Run full CI check including integration (Docker required)
+
+# ============================================================================
+# Architecture-quality reports (advisory, non-blocking)
+#
+# These targets produce review aids — they are not gates. Forcing them
+# to pass would push contributors toward over-abstraction (the opposite
+# of what good DDD wants). Run them at release time or when
+# investigating a smell that lint cannot pinpoint.
+# ============================================================================
+
+arch-graph: ## Dump the workspace module dep graph as text (LLM/grep-friendly)
+	@mkdir -p reports
+	@echo "Dumping module dep graph..."
+	@go mod graph > reports/arch-graph.txt
+	@echo "Wrote reports/arch-graph.txt ($$(wc -l < reports/arch-graph.txt | tr -d ' ') edges)"
+	@echo "Inspect with: grep '^github.com/mariotoffia/gobridge ' reports/arch-graph.txt"
+
+dupl-report: ## Find duplicate code blocks across the workspace (advisory)
+	@mkdir -p reports
+	@echo "Scanning for duplicate code (threshold 75 tokens)..."
+	@dupl -threshold 75 ./... > reports/dupl.log || true
+	@echo "Duplicate-code report at reports/dupl.log"
+
+goconst-report: ## Find repeated string/numeric literals (advisory)
+	@mkdir -p reports
+	@echo "Scanning for repeated literals (>=4 occurrences, >=5 chars)..."
+	@goconst -min-occurrences 4 -min-length 5 ./... > reports/goconst.log || true
+	@echo "Repeated-literals report at reports/goconst.log"
+
+arch-quality: arch-graph dupl-report goconst-report lint-acl ## Run all advisory architecture-quality reports
+	@echo "Architecture-quality reports written under reports/"
 
 # ============================================================================
 # Audit targets

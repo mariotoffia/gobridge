@@ -4,25 +4,26 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // MergeFunc combines an overlay config on top of a base config.
-// The base must not be modified; a new BridgeConfig should be returned.
-type MergeFunc func(base, overlay *BridgeConfig) (*BridgeConfig, error)
+// The base must not be modified; a new ports.BridgeConfig should be returned.
+type MergeFunc func(base, overlay *ports.BridgeConfig) (*ports.BridgeConfig, error)
 
 // Layer represents a configuration source with optional change watching.
 type Layer struct {
 	Name    string
-	Loader  Loader
-	Watcher Watcher // nil if the source does not support watching
+	Loader  ports.Loader
+	Watcher ports.Watcher // nil if the source does not support watching
 }
 
 // Manager coordinates multiple config sources in a layered stack.
 // A base layer is loaded first, then overlays are merged on top in order.
 // The merged result is validated before being returned.
 //
-// Manager satisfies config.Loader and config.Watcher, and by structural
-// typing also satisfies ports.ConfigReloader.
+// Manager satisfies ports.Loader, ports.Watcher, and ports.Reloader.
 type Manager struct {
 	base     Layer
 	overlays []Layer
@@ -30,7 +31,7 @@ type Manager struct {
 	logger   *slog.Logger
 
 	mu      sync.Mutex
-	configs map[string]*BridgeConfig // cached per-layer configs
+	configs map[string]*ports.BridgeConfig // cached per-layer configs
 	stopCh  chan struct{}
 	doneCh  chan struct{} // closed when watchLoop exits
 	running bool
@@ -62,7 +63,7 @@ func NewManager(base Layer, opts ...ManagerOption) *Manager {
 	m := &Manager{
 		base:    base,
 		mergeFn: DefaultMerge,
-		configs: make(map[string]*BridgeConfig),
+		configs: make(map[string]*ports.BridgeConfig),
 	}
 	for _, o := range opts {
 		o(m)
@@ -74,7 +75,7 @@ func NewManager(base Layer, opts ...ManagerOption) *Manager {
 // MergeFunc. Only the final merged result is validated via
 // config.Validate (individual layers are not validated independently
 // since a layer may be intentionally incomplete).
-func (m *Manager) Load(ctx context.Context) (*BridgeConfig, error) {
+func (m *Manager) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 	baseCfg, err := m.base.Loader.Load(ctx)
 	if err != nil {
 		return nil, err
@@ -108,12 +109,12 @@ func (m *Manager) Load(ctx context.Context) (*BridgeConfig, error) {
 	return merged, nil
 }
 
-// Watch starts watching all layers that have a Watcher. On any change
+// Watch starts watching all layers that have a ports.Watcher. On any change
 // it re-loads that layer, re-merges all layers, validates the merged
 // result, and emits it on the returned channel. Invalid merged configs
 // are logged and dropped (not emitted). The channel is closed when ctx
 // is cancelled or Stop is called.
-func (m *Manager) Watch(ctx context.Context) (<-chan *BridgeConfig, error) {
+func (m *Manager) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error) {
 	m.mu.Lock()
 	if m.running {
 		m.mu.Unlock()
@@ -126,7 +127,7 @@ func (m *Manager) Watch(ctx context.Context) (<-chan *BridgeConfig, error) {
 	doneCh := m.doneCh
 	m.mu.Unlock()
 
-	out := make(chan *BridgeConfig, 1)
+	out := make(chan *ports.BridgeConfig, 1)
 	ctx, cancel := context.WithCancel(ctx)
 
 	go m.watchLoop(ctx, cancel, out, stopCh, doneCh)
@@ -151,7 +152,7 @@ func (m *Manager) Stop() {
 	m.mu.Unlock()
 }
 
-func (m *Manager) watchLoop(ctx context.Context, cancel context.CancelFunc, out chan *BridgeConfig, stopCh <-chan struct{}, doneCh chan struct{}) {
+func (m *Manager) watchLoop(ctx context.Context, cancel context.CancelFunc, out chan *ports.BridgeConfig, stopCh <-chan struct{}, doneCh chan struct{}) {
 	defer func() {
 		cancel()
 		close(out)
@@ -160,7 +161,7 @@ func (m *Manager) watchLoop(ctx context.Context, cancel context.CancelFunc, out 
 
 	type layerEvent struct {
 		name string
-		cfg  *BridgeConfig
+		cfg  *ports.BridgeConfig
 	}
 
 	fanIn := make(chan layerEvent, 4)
@@ -179,7 +180,7 @@ func (m *Manager) watchLoop(ctx context.Context, cancel context.CancelFunc, out 
 			return
 		}
 		wg.Add(1)
-		go func(name string, ch <-chan *BridgeConfig) {
+		go func(name string, ch <-chan *ports.BridgeConfig) {
 			defer wg.Done()
 			for cfg := range ch {
 				select {
@@ -236,7 +237,7 @@ func (m *Manager) watchLoop(ctx context.Context, cancel context.CancelFunc, out 
 
 // rebuild re-merges all layers from cached configs, re-loading any
 // layer whose cached config is nil.
-func (m *Manager) rebuild(ctx context.Context) (*BridgeConfig, error) {
+func (m *Manager) rebuild(ctx context.Context) (*ports.BridgeConfig, error) {
 	m.mu.Lock()
 	baseCfg := m.configs[m.base.Name]
 	m.mu.Unlock()

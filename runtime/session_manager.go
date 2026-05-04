@@ -278,7 +278,7 @@ func (m *SessionManager) emitLeaseAudit(ctx context.Context, action, outcome str
 		detail["error"] = err.Error()
 	}
 	m.audit.Log(ctx, ports.AuditEvent{
-		Timestamp:  time.Now().UTC(),
+		Timestamp:  m.clk.Now().UTC(),
 		Action:     action,
 		Actor:      m.ownerID,
 		Resource:   "lease",

@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,7 +34,7 @@ func swapChan(n int) (func(SwapEvent), <-chan SwapEvent) {
 func TestSupervisor_OverlapBuildFailure_KeepsOldRunning(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s := newTestSupervisor(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
 	oldRt := s.Runtime()
@@ -53,7 +52,7 @@ func TestSupervisor_OverlapBuildFailure_SwapEventHasError(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	initial := quickCfg("r1")
 	s := newTestSupervisor(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, _ := quickSupervisorRun(s, initial, ch)
 	defer cancel()
 
@@ -70,7 +69,7 @@ func TestSupervisor_OverlapBuildFailure_SwapEventHasError(t *testing.T) {
 func TestSupervisor_OverlapBuildFailure_NextValidConfigWorks(t *testing.T) {
 	onSwap, swaps := swapChan(2)
 	s := newTestSupervisor(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 2)
+	ch := make(chan *ports.BridgeConfig, 2)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
 
@@ -88,13 +87,13 @@ func TestSupervisor_OverlapBuildFailure_NextValidConfigWorks(t *testing.T) {
 func TestSupervisor_PrepareFailure_KeepsOldRunning(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, _ := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
 	oldRt := s.Runtime()
 
 	bad := supervisorTestConfigWithSession("r2", "s1")
-	bad.Stores.Lease = &config.StoreConfig{Type: "unknown"}
+	bad.Stores.Lease = &ports.StoreConfig{Type: "unknown"}
 	require.True(t, sendConfig(ch, bad, time.Second))
 	ev := awaitSwap(t, swaps)
 	require.Error(t, ev.Error)
@@ -106,12 +105,12 @@ func TestSupervisor_PrepareFailure_KeepsOldRunning(t *testing.T) {
 func TestSupervisor_PrepareFailure_NextValidConfigWorks(t *testing.T) {
 	onSwap, swaps := swapChan(2)
 	s, _ := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 2)
+	ch := make(chan *ports.BridgeConfig, 2)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
 
 	bad := supervisorTestConfigWithSession("r2", "s1")
-	bad.Stores.Lease = &config.StoreConfig{Type: "unknown"}
+	bad.Stores.Lease = &ports.StoreConfig{Type: "unknown"}
 	require.True(t, sendConfig(ch, bad, time.Second))
 	require.Error(t, awaitSwap(t, swaps).Error)
 
@@ -126,10 +125,10 @@ func TestSupervisor_PrepareFailure_NextValidConfigWorks(t *testing.T) {
 func TestSupervisor_CompleteFailure_AfterStop(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, ef := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
-	ef.SessionFn = func(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+	ef.SessionFn = func(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 		return nil, fmt.Errorf("connection refused")
 	}
 	require.True(t, sendConfig(ch, supervisorTestConfigWithSession("r2", "s1"), time.Second))
@@ -141,10 +140,10 @@ func TestSupervisor_CompleteFailure_AfterStop(t *testing.T) {
 func TestSupervisor_CompleteFailure_SwapEventReportsDegraded(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, ef := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
-	ef.SessionFn = func(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+	ef.SessionFn = func(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 		return nil, fmt.Errorf("connection refused")
 	}
 	require.True(t, sendConfig(ch, supervisorTestConfigWithSession("r2", "s1"), time.Second))
@@ -157,10 +156,10 @@ func TestSupervisor_CompleteFailure_SwapEventReportsDegraded(t *testing.T) {
 func TestSupervisor_CompleteFailure_NextConfigRecovers(t *testing.T) {
 	onSwap, swaps := swapChan(2)
 	s, ef := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 2)
+	ch := make(chan *ports.BridgeConfig, 2)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
-	ef.SessionFn = func(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+	ef.SessionFn = func(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 		return nil, fmt.Errorf("connection refused")
 	}
 	require.True(t, sendConfig(ch, supervisorTestConfigWithSession("r2", "s1"), time.Second))
@@ -177,16 +176,16 @@ func TestSupervisor_CompleteFailure_NextConfigRecovers(t *testing.T) {
 func TestSupervisor_StartFailure_Overlap(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, _ := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
 
-	bad := &config.BridgeConfig{
-		Bridge:    config.BridgeSettings{ID: "test-bridge", DrainTimeout: "100ms"},
-		Receivers: []config.ReceiverDef{{ID: "rx", Transport: "exclusive"}},
-		Senders:   []config.SenderDef{{ID: "tx", Transport: "fake"}},
-		Bindings:  []config.BindingDef{{ID: "b1", SenderID: "tx", Address: "addr/test"}},
-		Routes:    []config.RouteDef{{ID: "fail-start", ReceiverID: "rx", DeliveryMode: "direct_hold", Bindings: []string{"b1"}}},
+	bad := &ports.BridgeConfig{
+		Bridge:    ports.BridgeSettings{ID: "test-bridge", DrainTimeout: "100ms"},
+		Receivers: []ports.ReceiverDef{{ID: "rx", Transport: "exclusive"}},
+		Senders:   []ports.SenderDef{{ID: "tx", Transport: "fake"}},
+		Bindings:  []ports.BindingDef{{ID: "b1", SenderID: "tx", Address: "addr/test"}},
+		Routes:    []ports.RouteDef{{ID: "fail-start", ReceiverID: "rx", DeliveryMode: "direct_hold", Bindings: []string{"b1"}}},
 	}
 	require.True(t, sendConfig(ch, bad, time.Second))
 	ev := awaitSwap(t, swaps)
@@ -201,7 +200,7 @@ func TestSupervisor_StartFailure_Overlap(t *testing.T) {
 func TestSupervisor_StartFailure_PrepareCommit(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, _ := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
 
@@ -221,16 +220,16 @@ func TestSupervisor_StartFailure_PrepareCommit(t *testing.T) {
 func TestSupervisor_StartFailure_NextConfigRecovers(t *testing.T) {
 	onSwap, swaps := swapChan(2)
 	s, _ := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 2)
+	ch := make(chan *ports.BridgeConfig, 2)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
 
-	bad := &config.BridgeConfig{
-		Bridge:    config.BridgeSettings{ID: "test-bridge", DrainTimeout: "100ms"},
-		Receivers: []config.ReceiverDef{{ID: "rx", Transport: "exclusive"}},
-		Senders:   []config.SenderDef{{ID: "tx", Transport: "fake"}},
-		Bindings:  []config.BindingDef{{ID: "b1", SenderID: "tx", Address: "addr/test"}},
-		Routes:    []config.RouteDef{{ID: "fail-start", ReceiverID: "rx", DeliveryMode: "direct_hold", Bindings: []string{"b1"}}},
+	bad := &ports.BridgeConfig{
+		Bridge:    ports.BridgeSettings{ID: "test-bridge", DrainTimeout: "100ms"},
+		Receivers: []ports.ReceiverDef{{ID: "rx", Transport: "exclusive"}},
+		Senders:   []ports.SenderDef{{ID: "tx", Transport: "fake"}},
+		Bindings:  []ports.BindingDef{{ID: "b1", SenderID: "tx", Address: "addr/test"}},
+		Routes:    []ports.RouteDef{{ID: "fail-start", ReceiverID: "rx", DeliveryMode: "direct_hold", Bindings: []string{"b1"}}},
 	}
 	require.True(t, sendConfig(ch, bad, time.Second))
 	require.Error(t, awaitSwap(t, swaps).Error)
@@ -244,7 +243,7 @@ func TestSupervisor_StartFailure_NextConfigRecovers(t *testing.T) {
 func TestSupervisor_StopTimeout_Overlap(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s := newTestSupervisor(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	initial := quickCfg("r1")
 	initial.Bridge.DrainTimeout = "100ms"
 	cancel, _ := quickSupervisorRun(s, initial, ch)
@@ -259,7 +258,7 @@ func TestSupervisor_StopTimeout_Overlap(t *testing.T) {
 func TestSupervisor_StopTimeout_PrepareCommit(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, _ := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	initial := quickCfg("r1")
 	initial.Bridge.DrainTimeout = "100ms"
 	cancel, _ := quickSupervisorRun(s, initial, ch)
@@ -276,7 +275,7 @@ func TestSupervisor_StopTimeout_PrepareCommit(t *testing.T) {
 func TestSupervisor_FailingSessionClose(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s := newTestSupervisor(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	initial := quickCfg("r1")
 	initial.Bridge.DrainTimeout = "100ms"
 	cancel, _ := quickSupervisorRun(s, initial, ch)
@@ -291,7 +290,7 @@ func TestSupervisor_FailingSessionClose(t *testing.T) {
 func TestSupervisor_StopErrorDoesNotPreventSwap(t *testing.T) {
 	onSwap, swaps := swapChan(2)
 	s := newTestSupervisor(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 2)
+	ch := make(chan *ports.BridgeConfig, 2)
 	initial := quickCfg("r1")
 	initial.Bridge.DrainTimeout = "100ms"
 	cancel, _ := quickSupervisorRun(s, initial, ch)
@@ -309,13 +308,13 @@ func TestSupervisor_BrokerUnreachable_Overlap(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s := newTestSupervisor(WithOnSwap(onSwap))
 	s.RegisterTransport("broken", &failingTransportFactory{sessionErr: fmt.Errorf("broker unreachable")})
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
 	oldRt := s.Runtime()
 
 	bad := quickCfg("r2")
-	bad.Sessions = []config.SessionDef{{ID: "s1", Transport: "broken"}}
+	bad.Sessions = []ports.SessionDef{{ID: "s1", Transport: "broken"}}
 	require.True(t, sendConfig(ch, bad, time.Second))
 	ev := awaitSwap(t, swaps)
 	require.Error(t, ev.Error)
@@ -327,10 +326,10 @@ func TestSupervisor_BrokerUnreachable_Overlap(t *testing.T) {
 func TestSupervisor_BrokerUnreachable_PrepareCommit(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, ef := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
-	ef.SessionFn = func(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+	ef.SessionFn = func(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 		return nil, fmt.Errorf("broker unreachable")
 	}
 	require.True(t, sendConfig(ch, supervisorTestConfigWithSession("r2", "s1"), time.Second))
@@ -343,7 +342,7 @@ func TestSupervisor_BrokerUnreachable_PrepareCommit(t *testing.T) {
 func TestSupervisor_NoTransportsRegistered(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s := newTestSupervisor(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
 
@@ -360,7 +359,7 @@ func TestSupervisor_NoTransportsRegistered(t *testing.T) {
 func TestSupervisor_SwapCallback_NotCalledOnInvalidConfig(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s := newTestSupervisor(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
 
@@ -373,7 +372,7 @@ func TestSupervisor_SwapCallback_NotCalledOnInvalidConfig(t *testing.T) {
 // TestSupervisor_RuntimeAccessor_DuringSwap validates that concurrent Runtime() calls during swaps cause no panics.
 func TestSupervisor_RuntimeAccessor_DuringSwap(t *testing.T) {
 	s := newTestSupervisor()
-	ch := make(chan *config.BridgeConfig, 10)
+	ch := make(chan *ports.BridgeConfig, 10)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
 
@@ -396,7 +395,7 @@ func TestSupervisor_RuntimeAccessor_DuringSwap(t *testing.T) {
 // TestSupervisor_ConfigAccessor_DuringSwap validates that concurrent Config() calls always return non-nil after startup.
 func TestSupervisor_ConfigAccessor_DuringSwap(t *testing.T) {
 	s := newTestSupervisor()
-	ch := make(chan *config.BridgeConfig, 10)
+	ch := make(chan *ports.BridgeConfig, 10)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
 
@@ -420,7 +419,7 @@ func TestSupervisor_ConfigAccessor_DuringSwap(t *testing.T) {
 func TestSupervisor_ConcurrentApplySerializes(t *testing.T) {
 	onSwap, swaps := swapChan(2)
 	s := newTestSupervisor(WithOnSwap(onSwap))
-	ch := make(chan *config.BridgeConfig, 2)
+	ch := make(chan *ports.BridgeConfig, 2)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
 
@@ -434,7 +433,7 @@ func TestSupervisor_ConcurrentApplySerializes(t *testing.T) {
 // TestSupervisor_ContextCancel_DuringSwap validates that cancelling the context causes Run to return without hanging.
 func TestSupervisor_ContextCancel_DuringSwap(t *testing.T) {
 	s := newTestSupervisor()
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := runSupervisorAsync(ctx, s, quickCfg("r1"), ch)
 	waitForRuntime(s, swapTimeout)
@@ -451,7 +450,7 @@ func TestSupervisor_ContextCancel_DuringSwap(t *testing.T) {
 // TestSupervisor_ChannelClosed_WhileApplying validates that closing the config channel causes Run to complete gracefully.
 func TestSupervisor_ChannelClosed_WhileApplying(t *testing.T) {
 	s := newTestSupervisor()
-	ch := make(chan *config.BridgeConfig, 1)
+	ch := make(chan *ports.BridgeConfig, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errCh := runSupervisorAsync(ctx, s, quickCfg("r1"), ch)

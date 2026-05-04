@@ -94,7 +94,7 @@ func (s *SSESender) SetRouteID(routeID string) {
 
 // Send broadcasts an envelope to all connected SSE clients.
 func (s *SSESender) Send(ctx context.Context, env *domain.Envelope) error {
-	start := time.Now()
+	start := s.cfg.clock.Now()
 
 	select {
 	case <-ctx.Done():
@@ -132,7 +132,7 @@ func (s *SSESender) Send(ctx context.Context, env *domain.Envelope) error {
 	for _, c := range clients {
 		select {
 		case <-ctx.Done():
-			s.cfg.metrics.Timer(domain.MetricSSEBroadcastLatency, time.Since(start))
+			s.cfg.metrics.Timer(domain.MetricSSEBroadcastLatency, s.cfg.clock.Since(start))
 			return ctx.Err()
 		case c.events <- eventBytes:
 		default:
@@ -144,7 +144,7 @@ func (s *SSESender) Send(ctx context.Context, env *domain.Envelope) error {
 		}
 	}
 
-	s.cfg.metrics.Timer(domain.MetricSSEBroadcastLatency, time.Since(start))
+	s.cfg.metrics.Timer(domain.MetricSSEBroadcastLatency, s.cfg.clock.Since(start))
 	return nil
 }
 
@@ -174,9 +174,9 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			httpEndpoint, ok := node.Endpoints["http"]
 			if ok {
 				if logging.DebugEnabled(s.cfg.logger) {
-				s.cfg.logger.Log(context.Background(), logging.LevelDebug, "sse: redirecting to peer",
-					"route_id", rid, "peer", node.InstanceID)
-			}
+					s.cfg.logger.Log(context.Background(), logging.LevelDebug, "sse: redirecting to peer",
+						"route_id", rid, "peer", node.InstanceID)
+				}
 				http.Redirect(w, r, httpEndpoint+s.cfg.path, http.StatusTemporaryRedirect)
 				return
 			}
@@ -246,10 +246,10 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type sseEvent struct {
-	ID      string         `json:"id"`
-	Subject string         `json:"subject"`
+	ID      string          `json:"id"`
+	Subject string          `json:"subject"`
 	Payload json.RawMessage `json:"payload"`
-	Headers map[string]any `json:"headers,omitempty"`
+	Headers map[string]any  `json:"headers,omitempty"`
 }
 
 func formatSSE(event, id string, data []byte) []byte {

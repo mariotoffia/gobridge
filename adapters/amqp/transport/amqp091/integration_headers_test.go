@@ -61,7 +61,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 			HeaderType:          "test.event",
 			HeaderAppID:         "gobridge-test",
 			HeaderPriority:      uint8(5),
-			"x-custom-key":     "custom-value",
+			"x-custom-key":      "custom-value",
 		},
 	}
 

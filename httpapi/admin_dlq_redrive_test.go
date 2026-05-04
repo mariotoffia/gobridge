@@ -76,8 +76,10 @@ func redriveReq(body string) *http.Request {
 //
 // Flow:
 // ───────────────────────────────────────────────
-//   store.Get("e1") → rt.Inject("test-route") → store.Delete("e1")
-//   store.Get("e2") → rt.Inject("test-route") → store.Delete("e2")
+//
+//	store.Get("e1") → rt.Inject("test-route") → store.Delete("e1")
+//	store.Get("e2") → rt.Inject("test-route") → store.Delete("e2")
+//
 // ───────────────────────────────────────────────
 func TestHandleDLQRedrive_AllSuccess(t *testing.T) {
 	mux, dlq, sender := redriveSetup(t)

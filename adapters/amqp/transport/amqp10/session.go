@@ -104,6 +104,13 @@ func NewSession(opts SessionOptions, mode domain.SessionMode, logger *slog.Logge
 
 // Conn returns the underlying AMQP connection. Receivers and senders
 // use this to check connection liveness.
+func (s *Session) clock() clock.Clock {
+	if s.clk != nil {
+		return s.clk
+	}
+	return clock.System
+}
+
 func (s *Session) Conn() amqpConn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -174,7 +181,7 @@ func (s *Session) Start(ctx context.Context) error {
 		)
 	}
 
-	connectStart := time.Now()
+	connectStart := s.clock().Now()
 
 	if err := s.connect(ctx); err != nil {
 		s.mu.Lock()
@@ -183,7 +190,7 @@ func (s *Session) Start(ctx context.Context) error {
 		return err
 	}
 
-	elapsed := time.Since(connectStart)
+	elapsed := s.clock().Since(connectStart)
 	s.metrics.Timer(domain.MetricAMQP10ConnectLatency, elapsed,
 		domain.Tag{Key: domain.TagKeySessionID, Value: s.opts.ContainerID})
 
@@ -280,7 +287,7 @@ func (s *Session) connect(ctx context.Context) error {
 // does not have queue/exchange declare operations — links are created
 // lazily when receivers and senders start.
 func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error {
-	reconcileStart := time.Now()
+	reconcileStart := s.clock().Now()
 
 	s.mu.Lock()
 	s.plan = &plan
@@ -300,7 +307,7 @@ func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error 
 
 	s.pushEvent(ports.SessionReconciled, nil)
 
-	elapsed := time.Since(reconcileStart)
+	elapsed := s.clock().Since(reconcileStart)
 	s.metrics.Timer(domain.MetricAMQP10ReconcileLatency, elapsed,
 		domain.Tag{Key: domain.TagKeySessionID, Value: s.opts.ContainerID})
 
@@ -467,7 +474,7 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 		return
 	}
 
-	ev := ports.SessionEvent{Type: t, Err: err, Timestamp: time.Now()}
+	ev := ports.SessionEvent{Type: t, Err: err, Timestamp: s.clock().Now()}
 	select {
 	case s.events <- ev:
 	default:
@@ -502,7 +509,7 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 // immediate disconnect detection, falling back to a configurable
 // ticker (SessionOptions.ConnectionMonitorFallback) as a sanity check.
 func (s *Session) monitorLoop(ctx context.Context) {
-	fallback := s.clk.NewTicker(s.opts.ConnectionMonitorFallback)
+	fallback := s.clock().NewTicker(s.opts.ConnectionMonitorFallback)
 	defer fallback.Stop()
 
 	for {
@@ -620,7 +627,7 @@ func (s *Session) handleReconnect(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-s.clk.After(sleepDur):
+		case <-s.clock().After(sleepDur):
 		}
 
 		delay = time.Duration(float64(delay) * s.opts.ReconnectMultiplier)

@@ -56,8 +56,10 @@ func makePeakTracker() (sender *ConcurrentSender, peak *int64) {
 //
 // Scenario:
 // ───────────────────────────────────────────────────────────────────
-//   MaxInFlight=5, emit 10 messages with 50ms processing each.
-//   With concurrency, peak > 1 goroutine active simultaneously.
+//
+//	MaxInFlight=5, emit 10 messages with 50ms processing each.
+//	With concurrency, peak > 1 goroutine active simultaneously.
+//
 // ───────────────────────────────────────────────────────────────────
 func TestRouteRunner_ConcurrentDelivery(t *testing.T) {
 	sender, peak := makePeakTracker()
@@ -111,9 +113,11 @@ func TestRouteRunner_ConcurrentDelivery(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────────────────────────
-//   MaxInFlight=2, processing takes 100ms per message.
-//   Emit 4 messages: first 2 start immediately, 3rd blocks until
-//   a slot frees up. Peak never exceeds 2.
+//
+//	MaxInFlight=2, processing takes 100ms per message.
+//	Emit 4 messages: first 2 start immediately, 3rd blocks until
+//	a slot frees up. Peak never exceeds 2.
+//
 // ───────────────────────────────────────────────────────────────────
 func TestRouteRunner_BackpressureOnSemFull(t *testing.T) {
 	var concurrentPeak int64
@@ -183,8 +187,10 @@ func TestRouteRunner_BackpressureOnSemFull(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────────────────────────
-//   Emit a message that takes 200ms to process, then cancel context.
-//   Verify Run does not return until the in-flight message finishes.
+//
+//	Emit a message that takes 200ms to process, then cancel context.
+//	Verify Run does not return until the in-flight message finishes.
+//
 // ───────────────────────────────────────────────────────────────────
 func TestRouteRunner_GracefulShutdownWaitsInFlight(t *testing.T) {
 	var sendCompleted int64
@@ -239,8 +245,10 @@ func TestRouteRunner_GracefulShutdownWaitsInFlight(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────────────────────────
-//   2 routes, each MaxInFlight=5, globalMaxInFlight=3.
-//   Each route emits 3 messages (6 total). Peak concurrency ≤ 3.
+//
+//	2 routes, each MaxInFlight=5, globalMaxInFlight=3.
+//	Each route emits 3 messages (6 total). Peak concurrency ≤ 3.
+//
 // ───────────────────────────────────────────────────────────────────
 func TestGlobalSemaphore_LimitsCrossRoute(t *testing.T) {
 	var concurrentPeak int64

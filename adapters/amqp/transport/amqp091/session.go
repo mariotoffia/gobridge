@@ -108,6 +108,13 @@ func NewSession(opts SessionOptions, mode domain.SessionMode, logger *slog.Logge
 
 // brokerURL returns the broker URL with credentials injected from the
 // most recently applied credential material (see ApplyCredentials).
+func (s *Session) clock() clock.Clock {
+	if s.clk != nil {
+		return s.clk
+	}
+	return clock.System
+}
+
 func (s *Session) brokerURL() string {
 	s.mu.Lock()
 	u, p := s.liveCreds.Username, s.liveCreds.Password
@@ -184,7 +191,7 @@ func (s *Session) Start(ctx context.Context) error {
 			"session_mode", s.mode,
 		)
 	}
-	connectStart := time.Now()
+	connectStart := s.clock().Now()
 
 	connectCtx, connectCancel := context.WithTimeout(ctx, s.opts.ConnectTimeout)
 	defer connectCancel()
@@ -213,7 +220,7 @@ func (s *Session) Start(ctx context.Context) error {
 	s.mu.Unlock()
 
 	safeBroker := s.safeBrokerURL()
-	elapsed := time.Since(connectStart)
+	elapsed := s.clock().Since(connectStart)
 	s.metrics.Timer(domain.MetricAMQP091ConnectLatency, elapsed,
 		domain.Tag{Key: domain.TagKeySessionID, Value: safeBroker})
 	if logging.DebugEnabled(s.logger) {
@@ -270,7 +277,7 @@ func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error 
 }
 
 func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan domain.SessionPlan) error {
-	reconcileStart := time.Now()
+	reconcileStart := s.clock().Now()
 
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "amqp091: reconcile",
@@ -298,7 +305,7 @@ func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan domai
 		}
 	}
 
-	elapsed := time.Since(reconcileStart)
+	elapsed := s.clock().Since(reconcileStart)
 	s.metrics.Timer(domain.MetricAMQP091ReconcileLatency, elapsed,
 		domain.Tag{Key: domain.TagKeySessionID, Value: s.safeBrokerURL()})
 	if logging.DebugEnabled(s.logger) {
@@ -333,7 +340,7 @@ func (s *Session) declareSubscription(conn amqpConnection, sub domain.Subscripti
 	if err != nil {
 		return MapError(err)
 	}
-	defer ch.Close()
+	defer func() { _ = ch.Close() }()
 
 	if exchangeName != "" {
 		if err := ch.ExchangeDeclare(exchangeName, exchangeType, durable, autoDelete, false, false, nil); err != nil {
@@ -378,7 +385,7 @@ func (s *Session) declarePublisher(conn amqpConnection, pub domain.PublisherPlan
 	if err != nil {
 		return MapError(err)
 	}
-	defer ch.Close()
+	defer func() { _ = ch.Close() }()
 
 	if err := ch.ExchangeDeclare(exchangeName, exchangeType, durable, autoDelete, false, false, nil); err != nil {
 		return MapError(err)
@@ -549,7 +556,7 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 		return
 	}
 
-	ev := ports.SessionEvent{Type: t, Err: err, Timestamp: time.Now()}
+	ev := ports.SessionEvent{Type: t, Err: err, Timestamp: s.clock().Now()}
 	select {
 	case s.events <- ev:
 	default:
@@ -670,7 +677,7 @@ func (s *Session) doReconnect(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-s.clk.After(sleepDur):
+		case <-s.clock().After(sleepDur):
 		}
 
 		connectCtx, connectCancel := context.WithTimeout(ctx, s.opts.ConnectTimeout)
@@ -744,7 +751,7 @@ func (s *Session) dialWithTimeout(ctx context.Context) (amqpConnection, error) {
 		// Drain the channel in the background and close any leaked connection.
 		go func() {
 			if r := <-ch; r.conn != nil {
-				r.conn.Close()
+				_ = r.conn.Close()
 			}
 		}()
 		return nil, fmt.Errorf("amqp091: dial timeout: %w", ctx.Err())

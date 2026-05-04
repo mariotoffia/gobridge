@@ -181,7 +181,7 @@ func TestIntegration_SQS_SenderReceiver_FullRoundTrip(t *testing.T) {
 		Payload: []byte(`{"order_id":"12345","amount":99.95}`),
 		Headers: map[string]any{
 			"X-Correlation-ID": "corr-abc-123",
-			"X-Priority":      42,
+			"X-Priority":       42,
 			"X-Source":         "integration-test",
 		},
 	}

@@ -21,13 +21,15 @@ import (
 //
 // Pipeline:
 // ───────────────────────────────────────────────────────────
-//   HTTP PATCH (add route r2) → commit → disk write
-//                                           ↓
-//                                   file watcher (poll 100ms)
-//                                           ↓
-//                                   config manager re-merge
-//                                           ↓
-//                                   supervisor swap → runtime has r2
+//
+//	HTTP PATCH (add route r2) → commit → disk write
+//	                                        ↓
+//	                                file watcher (poll 100ms)
+//	                                        ↓
+//	                                config manager re-merge
+//	                                        ↓
+//	                                supervisor swap → runtime has r2
+//
 // ───────────────────────────────────────────────────────────
 func TestConfigAPI_Pipeline_CommitAddsRoute_SupervisorSwaps(t *testing.T) {
 	if testing.Short() {

@@ -14,9 +14,9 @@ import (
 
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 
+	cb "github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
-	cb "github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/processors/circuitbreaker"
 	"github.com/mariotoffia/gobridge/processors/transform"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -40,20 +40,22 @@ import (
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Phase 1: Sustained transient failures for tenant "A"
 //
-//        ○ CLOSED ──5 failures──▶ ● OPEN
-//              │                      │
-//              │                 (fail-fast)
-//              │                      │
-//   Phase 2: Wait > ResetTimeout      │
-//              │                      │
-//              │               ● HALF-OPEN
-//              │                      │
-//   Phase 3: 2 successes              │
-//              │                      │
-//              ▼                      ▼
-//        ◎ CLOSED ◀──success────── probe
+//	Phase 1: Sustained transient failures for tenant "A"
+//
+//	     ○ CLOSED ──5 failures──▶ ● OPEN
+//	           │                      │
+//	           │                 (fail-fast)
+//	           │                      │
+//	Phase 2: Wait > ResetTimeout      │
+//	           │                      │
+//	           │               ● HALF-OPEN
+//	           │                      │
+//	Phase 3: 2 successes              │
+//	           │                      │
+//	           ▼                      ▼
+//	     ◎ CLOSED ◀──success────── probe
+//
 // ───────────────────────────────────────────────
 //
 // Test Parameters:
@@ -230,15 +232,17 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Input JSON:
-//     {"user":{"name":"X"},"items":[{"price":9.99}],
-//      "metadata":{"count":"42"},"extra":"drop_me"}
 //
-//   ──▶ [Transform Processor] ──▶
+//	Input JSON:
+//	  {"user":{"name":"X"},"items":[{"price":9.99}],
+//	   "metadata":{"count":"42"},"extra":"drop_me"}
 //
-//   Output JSON (DropUnmapped=true):
-//     {"userName":"X","firstItemPrice":9.99,
-//      "itemCount":42,"fallback":"default_val"}
+//	──▶ [Transform Processor] ──▶
+//
+//	Output JSON (DropUnmapped=true):
+//	  {"userName":"X","firstItemPrice":9.99,
+//	   "itemCount":42,"fallback":"default_val"}
+//
 // ───────────────────────────────────────────────
 //
 // Assertions:

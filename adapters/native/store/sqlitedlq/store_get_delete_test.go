@@ -204,10 +204,10 @@ func TestDeleteByFilter_CombinedFilters(t *testing.T) {
 	t2 := t1.Add(1 * time.Hour)
 	t3 := t1.Add(2 * time.Hour)
 
-	writeEntry(t, s, "sdf-m1", "route-A", "timeout", t1) // no: before Since
-	writeEntry(t, s, "sdf-m2", "route-A", "timeout", t2) // yes: matches all
+	writeEntry(t, s, "sdf-m1", "route-A", "timeout", t1)  // no: before Since
+	writeEntry(t, s, "sdf-m2", "route-A", "timeout", t2)  // yes: matches all
 	writeEntry(t, s, "sdf-m3", "route-A", "rejected", t2) // no: wrong category
-	writeEntry(t, s, "sdf-m4", "route-B", "timeout", t2) // no: wrong route
+	writeEntry(t, s, "sdf-m4", "route-B", "timeout", t2)  // no: wrong route
 
 	n, err := s.DeleteByFilter(ctx, domain.DLQFilter{
 		RouteID:  "route-A",

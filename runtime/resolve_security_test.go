@@ -37,10 +37,12 @@ import (
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Template: "devices/{id}/cmd"
-//   Header:   id = "{id}"
-//   Old code: infinite loop (rescans from pos 0)
-//   Fixed:    renders "devices/{id}/cmd" (literal braces in output)
+//
+//	Template: "devices/{id}/cmd"
+//	Header:   id = "{id}"
+//	Old code: infinite loop (rescans from pos 0)
+//	Fixed:    renders "devices/{id}/cmd" (literal braces in output)
+//
 // ───────────────────────────────────────────────
 func TestRenderAddress_SelfReference(t *testing.T) {
 	vars := map[string]any{"id": "{id}"}
@@ -71,10 +73,12 @@ func TestRenderAddress_GrowingValue(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Template: "devices/{device_id}/commands"
-//   Headers:  device_id = "{api_token}", api_token = "SECRET"
-//   Old code: renders "devices/SECRET/commands" (leak!)
-//   Fixed:    renders "devices/{api_token}/commands" (no leak)
+//
+//	Template: "devices/{device_id}/commands"
+//	Headers:  device_id = "{api_token}", api_token = "SECRET"
+//	Old code: renders "devices/SECRET/commands" (leak!)
+//	Fixed:    renders "devices/{api_token}/commands" (no leak)
+//
 // ───────────────────────────────────────────────
 func TestRenderAddress_TemplateInjection(t *testing.T) {
 	vars := map[string]any{

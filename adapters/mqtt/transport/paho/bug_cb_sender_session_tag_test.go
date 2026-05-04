@@ -10,8 +10,6 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-var _ = circuitbreaker.NewBreaker // retain import for second test
-
 // ═══════════════════════════════════════════════════════════════════════════
 // RES-MQTT-CBTAG: CircuitBreakerSender circuit_open metric is missing
 //                 the session_id tag emitted on every other failure path.
@@ -52,17 +50,16 @@ func TestRes_CBSender_CircuitOpen_TagsSessionID(t *testing.T) {
 
 	inner := NewSender(sess, SenderOptions{Timeout: 1 * time.Second})
 
-	cbs := NewCircuitBreakerSender(inner, CBConfig{
+	br := circuitbreaker.NewBreaker("res-cbtag-breaker", circuitbreaker.Config{
 		FailureThreshold: 1,
 		SuccessThreshold: 1,
 		ResetTimeout:     10 * time.Minute,
-	})
+		CountError:       domain.IsRecoverableError,
+	}, nil)
+	cbs := NewCircuitBreakerSender(inner, br)
 
 	// Force the underlying breaker open by simulating a recoverable
 	// failure. Pre-flight a call so the breaker counts the trip.
-	// The default CountError used by NewCircuitBreakerSender is
-	// domain.IsRecoverableError, so we use a recoverable BridgeError
-	// to ensure the trip counts.
 	_ = cbs.breaker.BeforeRequest()
 	cbs.breaker.AfterRequest(domain.ErrUnavailable.Wrap(context.Canceled))
 
@@ -80,9 +77,9 @@ func TestRes_CBSender_CircuitOpen_TagsSessionID(t *testing.T) {
 	}
 
 	var (
-		reasonOK    bool
-		sessionOK   bool
-		sessionVal  string
+		reasonOK   bool
+		sessionOK  bool
+		sessionVal string
 	)
 	for _, e := range entries {
 		var seenReason, seenSession bool

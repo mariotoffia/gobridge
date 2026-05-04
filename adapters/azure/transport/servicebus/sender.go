@@ -7,12 +7,12 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -38,6 +38,7 @@ type Sender struct {
 	initMu    sync.Mutex
 	logger    *slog.Logger
 	metrics   ports.MetricsExporter
+	clk       clock.Clock
 }
 
 // NewSender creates a Service Bus Sender. The underlying AMQP connection
@@ -52,7 +53,18 @@ func NewSender(cfg SenderConfig) (*Sender, error) {
 	if m == nil {
 		m = &ports.NoopExporter{}
 	}
-	return &Sender{cfg: cfg, client: cfg.Client, logger: cfg.Logger, metrics: m}, nil
+	clk := cfg.Clock
+	if clk == nil {
+		clk = clock.System
+	}
+	return &Sender{cfg: cfg, client: cfg.Client, logger: cfg.Logger, metrics: m, clk: clk}, nil
+}
+
+func (s *Sender) clock() clock.Clock {
+	if s.clk != nil {
+		return s.clk
+	}
+	return clock.System
 }
 
 func (s *Sender) entityName() string {
@@ -80,7 +92,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	defer cancel()
 
 	msg := s.buildMessage(env)
-	start := time.Now()
+	start := s.clock().Now()
 	if err := s.client.SendMessage(sendCtx, msg, nil); err != nil {
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(ctx, logging.LevelDebug, "servicebus: send failed",
@@ -89,7 +101,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 		return MapError(err)
 	}
 
-	s.metrics.Timer(domain.MetricASBSendLatency, time.Since(start),
+	s.metrics.Timer(domain.MetricASBSendLatency, s.clock().Since(start),
 		domain.Tag{Key: domain.TagKeyEntity, Value: s.entityName()})
 
 	return nil
@@ -123,7 +135,7 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 			)
 		}
 
-		start := time.Now()
+		start := s.clock().Now()
 		msgBatch, err := s.client.NewMessageBatch(sendCtx, nil)
 		if err != nil {
 			return sent, MapError(err)
@@ -174,7 +186,7 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 			sent += int(msgBatch.NumMessages())
 		}
 
-		s.metrics.Timer(domain.MetricASBSendBatchLatency, time.Since(start),
+		s.metrics.Timer(domain.MetricASBSendBatchLatency, s.clock().Since(start),
 			domain.Tag{Key: domain.TagKeyEntity, Value: s.entityName()})
 	}
 
@@ -252,7 +264,7 @@ func (s *Sender) buildMessage(env *domain.Envelope) *azservicebus.Message {
 		msg.MessageID = &env.ID
 	}
 	if env.HasExpiry() {
-		if ttl := env.RemainingTTL(); ttl > 0 {
+		if ttl := env.RemainingTTL(s.clock()); ttl > 0 {
 			msg.TimeToLive = &ttl
 		}
 	}

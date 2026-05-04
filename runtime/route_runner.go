@@ -108,15 +108,6 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 	}
 	policy := cfg.Policy.WithDefaults()
 
-	var dc *outboxDepthCache
-	if policy.DeliveryMode == domain.DeliverySharedOutbox {
-		depthTTL := cfg.DepthCacheTTL
-		if depthTTL <= 0 {
-			depthTTL = domain.DefaultDepthCacheTTL
-		}
-		dc = newOutboxDepthCache(depthTTL)
-	}
-
 	panicRetry := cfg.PanicRetryTimeout
 	if panicRetry <= 0 {
 		panicRetry = 5 * time.Second
@@ -129,6 +120,15 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 	clk := cfg.Clock
 	if clk == nil {
 		clk = clock.System
+	}
+
+	var dc *outboxDepthCache
+	if policy.DeliveryMode == domain.DeliverySharedOutbox {
+		depthTTL := cfg.DepthCacheTTL
+		if depthTTL <= 0 {
+			depthTTL = domain.DefaultDepthCacheTTL
+		}
+		dc = newOutboxDepthCache(depthTTL, clk)
 	}
 
 	r := &RouteRunner{
@@ -324,7 +324,7 @@ func (r *RouteRunner) processDelivery(ctx context.Context, del ports.Delivery) {
 }
 
 func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) error {
-	start := time.Now()
+	start := r.clk.Now()
 
 	env := del.Envelope()
 
@@ -368,7 +368,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		MaxAttempts: r.policy.MaxReplayAttempts,
 	})
 
-	if env.IsExpired() {
+	if env.IsExpired(r.clk) {
 		err := r.handleExpired(ctx, del, env)
 		if err != nil {
 			span.SetError(err)
@@ -416,7 +416,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 	}
 
 	routeTag := domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID}
-	r.metrics.Timer(domain.MetricDeliveryE2ELatency, time.Since(start), routeTag)
+	r.metrics.Timer(domain.MetricDeliveryE2ELatency, r.clk.Since(start), routeTag)
 
 	return deliveryErr
 }

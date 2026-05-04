@@ -9,15 +9,15 @@ import (
 
 // Config holds the configuration for the CloudWatch metrics exporter.
 type Config struct {
-	Region         string        `json:"region,omitempty"`
-	Namespace      string        `json:"namespace"`
-	DefaultTags    []domain.Tag  `json:"defaultTags,omitempty"`
-	FlushInterval  time.Duration `json:"flushInterval,omitempty"`
+	Region          string        `json:"region,omitempty"`
+	Namespace       string        `json:"namespace"`
+	DefaultTags     []domain.Tag  `json:"defaultTags,omitempty"`
+	FlushInterval   time.Duration `json:"flushInterval,omitempty"`
 	FlushRPCTimeout time.Duration `json:"flushRPCTimeout,omitempty"`
-	BufferSize     int           `json:"bufferSize,omitempty"`
-	MaxBatchSize   int           `json:"maxBatchSize,omitempty"`
-	Endpoint       string        `json:"endpoint,omitempty"`
-	Clock          clock.Clock   `json:"-"`
+	BufferSize      int           `json:"bufferSize,omitempty"`
+	MaxBatchSize    int           `json:"maxBatchSize,omitempty"`
+	Endpoint        string        `json:"endpoint,omitempty"`
+	Clock           clock.Clock   `json:"-"`
 }
 
 // Option is a functional option for configuring the exporter.

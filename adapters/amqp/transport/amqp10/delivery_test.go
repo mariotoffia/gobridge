@@ -21,7 +21,7 @@ func newTestDelivery(settle settler) *Delivery {
 		Payload: []byte("hello"),
 	}
 	msg := &amqp.Message{Data: [][]byte{[]byte("hello")}}
-	return NewDelivery(env, msg, settle, slog.Default(), &ports.NoopExporter{})
+	return NewDelivery(env, msg, settle, slog.Default(), &ports.NoopExporter{}, nil)
 }
 
 func TestDelivery_Envelope(t *testing.T) {
@@ -172,7 +172,7 @@ func TestDelivery_NilMetrics(t *testing.T) {
 	msg := &amqp.Message{}
 	s := newMockSettler()
 
-	d := NewDelivery(env, msg, s, slog.Default(), nil)
+	d := NewDelivery(env, msg, s, slog.Default(), nil, nil)
 	if err := d.Ack(context.Background()); err != nil {
 		t.Fatalf("Ack() with nil metrics error = %v", err)
 	}

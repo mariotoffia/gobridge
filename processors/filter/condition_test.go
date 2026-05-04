@@ -6,7 +6,6 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
-
 func TestCondition_Equals(t *testing.T) {
 	tests := []struct {
 		name   string

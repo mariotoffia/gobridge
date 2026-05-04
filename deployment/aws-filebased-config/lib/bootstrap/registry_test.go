@@ -5,26 +5,24 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/bridge"
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 )
 
-// stubFactory is a minimal bridge.TransportFactory for swap mode detection tests.
+// stubFactory is a minimal ports.TransportFactory for swap mode detection tests.
 type stubFactory struct {
 	capabilities []ports.Capability
 }
 
-var _ bridge.TransportFactory = (*stubFactory)(nil)
+var _ ports.TransportFactory = (*stubFactory)(nil)
 
-func (f *stubFactory) NewSession(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+func (f *stubFactory) NewSession(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 	return nil, nil
 }
-func (f *stubFactory) NewReceiver(_ context.Context, _ config.ReceiverDef, _ ports.Session) (ports.Receiver, error) {
+func (f *stubFactory) NewReceiver(_ context.Context, _ ports.ReceiverSpec, _ ports.Session) (ports.Receiver, error) {
 	return nil, nil
 }
-func (f *stubFactory) NewSender(_ context.Context, _ config.SenderDef, _ ports.Session) (ports.Sender, error) {
+func (f *stubFactory) NewSender(_ context.Context, _ ports.SenderSpec, _ ports.Session) (ports.Sender, error) {
 	return nil, nil
 }
 func (f *stubFactory) Capabilities() []ports.Capability {
@@ -33,12 +31,12 @@ func (f *stubFactory) Capabilities() []ports.Capability {
 
 func TestDetectSwapMode_OverlapWhenNoExclusiveIdentity(t *testing.T) {
 	reg := &factoryRegistry{
-		cfg: &config.BridgeConfig{
-			Sessions: []config.SessionDef{
+		cfg: &ports.BridgeConfig{
+			Sessions: []ports.SessionDef{
 				{ID: "http-sess", Transport: "http"},
 			},
 		},
-		transports: map[string]bridge.TransportFactory{
+		transports: map[string]ports.TransportFactory{
 			"http": &stubFactory{capabilities: []ports.Capability{ports.CapHTTPEndpoint}},
 		},
 	}
@@ -49,12 +47,12 @@ func TestDetectSwapMode_OverlapWhenNoExclusiveIdentity(t *testing.T) {
 
 func TestDetectSwapMode_PrepareCommitWhenExclusiveIdentity(t *testing.T) {
 	reg := &factoryRegistry{
-		cfg: &config.BridgeConfig{
-			Sessions: []config.SessionDef{
+		cfg: &ports.BridgeConfig{
+			Sessions: []ports.SessionDef{
 				{ID: "mqtt-sess", Transport: "mqtt"},
 			},
 		},
-		transports: map[string]bridge.TransportFactory{
+		transports: map[string]ports.TransportFactory{
 			"mqtt": &stubFactory{capabilities: []ports.Capability{ports.CapExclusiveIdentity}},
 		},
 	}
@@ -65,12 +63,12 @@ func TestDetectSwapMode_PrepareCommitWhenExclusiveIdentity(t *testing.T) {
 
 func TestDetectSwapMode_UnknownTransportSkipped(t *testing.T) {
 	reg := &factoryRegistry{
-		cfg: &config.BridgeConfig{
-			Sessions: []config.SessionDef{
+		cfg: &ports.BridgeConfig{
+			Sessions: []ports.SessionDef{
 				{ID: "unknown-sess", Transport: "unknown"},
 			},
 		},
-		transports: map[string]bridge.TransportFactory{},
+		transports: map[string]ports.TransportFactory{},
 	}
 
 	mode := reg.detectSwapMode(reg.cfg)
@@ -79,8 +77,8 @@ func TestDetectSwapMode_UnknownTransportSkipped(t *testing.T) {
 
 func TestTransportHandler_ReturnsNotFoundWhenNoHTTPEndpoints(t *testing.T) {
 	reg := &factoryRegistry{
-		cfg: &config.BridgeConfig{
-			Receivers: []config.ReceiverDef{
+		cfg: &ports.BridgeConfig{
+			Receivers: []ports.ReceiverDef{
 				{ID: "rx", Transport: "mqtt"},
 			},
 		},
@@ -102,6 +100,9 @@ type fakeResponseWriter struct {
 	body    []byte
 }
 
-func (w *fakeResponseWriter) Header() http.Header        { return w.headers }
-func (w *fakeResponseWriter) Write(b []byte) (int, error) { w.body = append(w.body, b...); return len(b), nil }
-func (w *fakeResponseWriter) WriteHeader(code int)        { w.code = code }
+func (w *fakeResponseWriter) Header() http.Header { return w.headers }
+func (w *fakeResponseWriter) Write(b []byte) (int, error) {
+	w.body = append(w.body, b...)
+	return len(b), nil
+}
+func (w *fakeResponseWriter) WriteHeader(code int) { w.code = code }

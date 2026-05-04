@@ -286,7 +286,7 @@ func TestUC29_MessageTTL_Expiry(t *testing.T) {
 	defer func() { _ = rt.Stop(context.Background()) }()
 
 	// Inject messages with ExpiresAt in the past (already expired).
-	// The route runner checks env.IsExpired() before processing.
+	// The route runner checks env.IsExpired(clock) before processing.
 	for i := 0; i < msgCount; i++ {
 		env := &domain.Envelope{
 			ID:        fmt.Sprintf("uc29-msg-%d", i),

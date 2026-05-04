@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
-	"github.com/mariotoffia/gobridge/config"
+
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -87,8 +87,8 @@ func postJSON(t *testing.T, handler http.Handler, url string, body map[string]an
 // ---------------------------------------------------------------------------
 
 func TestHTTPDelivery_AckSignalsCompletion(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "ack-test"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "ack-test"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -151,8 +151,8 @@ func TestHTTPDelivery_AckSignalsCompletion(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHTTPDelivery_RetrySignalsError(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "retry-test"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "retry-test"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -211,8 +211,8 @@ func TestHTTPDelivery_RetrySignalsError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHTTPDelivery_ExtendReturnsNotSupported(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "extend-test"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "extend-test"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -260,8 +260,8 @@ func TestHTTPDelivery_ExtendReturnsNotSupported(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReceiver_LocalProcessing(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "local"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "local"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -334,12 +334,12 @@ func TestReceiver_ClusterForward(t *testing.T) {
 	locator := &stubLocator{peer: remotePeer, local: false}
 	fwd := &recordingForwarder{}
 
-	factory := transport.NewBridgeFactory(
+	factory := transport.NewFactory(
 		transport.WithRouteLocator(locator),
 		transport.WithMessageForwarder(fwd),
 	)
 
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "cluster"}, nil)
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "cluster"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -399,12 +399,12 @@ func TestReceiver_ForwardedRequestNotReforwarded(t *testing.T) {
 	locator := &stubLocator{peer: remotePeer, local: false}
 	fwd := &recordingForwarder{}
 
-	factory := transport.NewBridgeFactory(
+	factory := transport.NewFactory(
 		transport.WithRouteLocator(locator),
 		transport.WithMessageForwarder(fwd),
 	)
 
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "noreforward"}, nil)
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "noreforward"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -467,8 +467,8 @@ func TestReceiver_ForwardedRequestNotReforwarded(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSSESender_BroadcastToClients(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	sender, err := factory.NewSender(context.Background(), config.SenderDef{
+	factory := transport.NewFactory()
+	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID:      "sse-broadcast",
 		Options: map[string]any{"mode": "sse"},
 	}, nil)
@@ -554,11 +554,11 @@ func TestSSESender_RedirectWhenRemote(t *testing.T) {
 	}
 	locator := &stubLocator{peer: remotePeer, local: false}
 
-	factory := transport.NewBridgeFactory(
+	factory := transport.NewFactory(
 		transport.WithRouteLocator(locator),
 	)
 
-	sender, err := factory.NewSender(context.Background(), config.SenderDef{
+	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID:      "sse-redirect",
 		Options: map[string]any{"mode": "sse"},
 	}, nil)
@@ -653,9 +653,9 @@ func TestHTTPForwarder_ForwardSuccess(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFactory_CreatesReceiversAndSenders(t *testing.T) {
-	factory := transport.NewBridgeFactory()
+	factory := transport.NewFactory()
 
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{
 		ID:      "recv-1",
 		Options: map[string]any{},
 	}, nil)
@@ -666,7 +666,7 @@ func TestFactory_CreatesReceiversAndSenders(t *testing.T) {
 		t.Fatal("NewReceiver returned nil")
 	}
 
-	sender, err := factory.NewSender(context.Background(), config.SenderDef{
+	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID:      "sender-1",
 		Options: map[string]any{"mode": "sse"},
 	}, nil)

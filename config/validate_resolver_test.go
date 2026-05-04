@@ -3,23 +3,25 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/mariotoffia/gobridge/ports"
 )
 
-func validRouteWithResolver() *BridgeConfig {
-	return &BridgeConfig{
-		Bridge: BridgeSettings{ID: "test"},
-		Receivers: []ReceiverDef{
+func validRouteWithResolver() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test"},
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx1", Transport: "http"},
 		},
-		Senders: []SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx1", Transport: "http"},
 			{ID: "tx2", Transport: "http"},
 		},
-		Bindings: []BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "b1", SenderID: "tx1", Address: "/events/a"},
 			{ID: "b2", SenderID: "tx2", Address: "/events/b"},
 		},
-		Routes: []RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:         "r1",
 				ReceiverID: "rx1",
@@ -31,11 +33,11 @@ func validRouteWithResolver() *BridgeConfig {
 
 func TestValidateResolver_RulesType_Valid(t *testing.T) {
 	cfg := validRouteWithResolver()
-	cfg.Routes[0].Resolver = &ResolverDef{
+	cfg.Routes[0].Resolver = &ports.ResolverDef{
 		Type:           "rules",
 		DefaultBinding: "b2",
-		Rules: []RuleDef{
-			{BindingID: "b1", Match: []ConditionDef{
+		Rules: []ports.RuleDef{
+			{BindingID: "b1", Match: []ports.ConditionDef{
 				{Field: "subject", Operator: "prefix", Value: "orders."},
 			}},
 		},
@@ -47,7 +49,7 @@ func TestValidateResolver_RulesType_Valid(t *testing.T) {
 
 func TestValidateResolver_InvalidType(t *testing.T) {
 	cfg := validRouteWithResolver()
-	cfg.Routes[0].Resolver = &ResolverDef{Type: "unknown"}
+	cfg.Routes[0].Resolver = &ports.ResolverDef{Type: "unknown"}
 	err := Validate(cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid resolver type")
@@ -59,10 +61,10 @@ func TestValidateResolver_InvalidType(t *testing.T) {
 
 func TestValidateResolver_DefaultBindingNotInRoute(t *testing.T) {
 	cfg := validRouteWithResolver()
-	cfg.Routes[0].Resolver = &ResolverDef{
+	cfg.Routes[0].Resolver = &ports.ResolverDef{
 		Type:           "rules",
 		DefaultBinding: "nonexistent",
-		Rules:          []RuleDef{{BindingID: "b1"}},
+		Rules:          []ports.RuleDef{{BindingID: "b1"}},
 	}
 	err := Validate(cfg)
 	if err == nil {
@@ -75,10 +77,10 @@ func TestValidateResolver_DefaultBindingNotInRoute(t *testing.T) {
 
 func TestValidateResolver_RuleBindingNotInRoute(t *testing.T) {
 	cfg := validRouteWithResolver()
-	cfg.Routes[0].Resolver = &ResolverDef{
+	cfg.Routes[0].Resolver = &ports.ResolverDef{
 		Type: "rules",
-		Rules: []RuleDef{
-			{BindingID: "nonexistent", Match: []ConditionDef{
+		Rules: []ports.RuleDef{
+			{BindingID: "nonexistent", Match: []ports.ConditionDef{
 				{Field: "subject", Operator: "eq", Value: "x"},
 			}},
 		},
@@ -94,7 +96,7 @@ func TestValidateResolver_RuleBindingNotInRoute(t *testing.T) {
 
 func TestValidateResolver_HeaderMap_Valid(t *testing.T) {
 	cfg := validRouteWithResolver()
-	cfg.Routes[0].Resolver = &ResolverDef{
+	cfg.Routes[0].Resolver = &ports.ResolverDef{
 		Type:      "header_map",
 		HeaderKey: "x-tenant",
 		HeaderMap: map[string]string{"acme": "b1", "globex": "b2"},
@@ -106,7 +108,7 @@ func TestValidateResolver_HeaderMap_Valid(t *testing.T) {
 
 func TestValidateResolver_HeaderMap_MissingKey(t *testing.T) {
 	cfg := validRouteWithResolver()
-	cfg.Routes[0].Resolver = &ResolverDef{
+	cfg.Routes[0].Resolver = &ports.ResolverDef{
 		Type:      "header_map",
 		HeaderMap: map[string]string{"acme": "b1"},
 	}
@@ -121,7 +123,7 @@ func TestValidateResolver_HeaderMap_MissingKey(t *testing.T) {
 
 func TestValidateResolver_HeaderMap_EmptyMap(t *testing.T) {
 	cfg := validRouteWithResolver()
-	cfg.Routes[0].Resolver = &ResolverDef{
+	cfg.Routes[0].Resolver = &ports.ResolverDef{
 		Type:      "header_map",
 		HeaderKey: "x-tenant",
 		HeaderMap: map[string]string{},
@@ -134,7 +136,7 @@ func TestValidateResolver_HeaderMap_EmptyMap(t *testing.T) {
 
 func TestValidateResolver_HeaderMap_UnknownBinding(t *testing.T) {
 	cfg := validRouteWithResolver()
-	cfg.Routes[0].Resolver = &ResolverDef{
+	cfg.Routes[0].Resolver = &ports.ResolverDef{
 		Type:      "header_map",
 		HeaderKey: "x-tenant",
 		HeaderMap: map[string]string{"acme": "nonexistent"},
@@ -150,10 +152,10 @@ func TestValidateResolver_HeaderMap_UnknownBinding(t *testing.T) {
 
 func TestValidateResolver_Rules_InvalidOperator(t *testing.T) {
 	cfg := validRouteWithResolver()
-	cfg.Routes[0].Resolver = &ResolverDef{
+	cfg.Routes[0].Resolver = &ports.ResolverDef{
 		Type: "rules",
-		Rules: []RuleDef{
-			{BindingID: "b1", Match: []ConditionDef{
+		Rules: []ports.RuleDef{
+			{BindingID: "b1", Match: []ports.ConditionDef{
 				{Field: "subject", Operator: "bogus", Value: "x"},
 			}},
 		},
@@ -169,10 +171,10 @@ func TestValidateResolver_Rules_InvalidOperator(t *testing.T) {
 
 func TestValidateResolver_Rules_InvalidRegex(t *testing.T) {
 	cfg := validRouteWithResolver()
-	cfg.Routes[0].Resolver = &ResolverDef{
+	cfg.Routes[0].Resolver = &ports.ResolverDef{
 		Type: "rules",
-		Rules: []RuleDef{
-			{BindingID: "b1", Match: []ConditionDef{
+		Rules: []ports.RuleDef{
+			{BindingID: "b1", Match: []ports.ConditionDef{
 				{Field: "subject", Operator: "regex", Value: "[invalid("},
 			}},
 		},
@@ -189,10 +191,10 @@ func TestValidateResolver_Rules_InvalidRegex(t *testing.T) {
 func TestValidateResolver_Rules_RegexTooLong(t *testing.T) {
 	cfg := validRouteWithResolver()
 	longPattern := strings.Repeat("a", maxRegexPatternLen+1)
-	cfg.Routes[0].Resolver = &ResolverDef{
+	cfg.Routes[0].Resolver = &ports.ResolverDef{
 		Type: "rules",
-		Rules: []RuleDef{
-			{BindingID: "b1", Match: []ConditionDef{
+		Rules: []ports.RuleDef{
+			{BindingID: "b1", Match: []ports.ConditionDef{
 				{Field: "subject", Operator: "regex", Value: longPattern},
 			}},
 		},
@@ -208,10 +210,10 @@ func TestValidateResolver_Rules_RegexTooLong(t *testing.T) {
 
 func TestValidateResolver_Rules_EmptyField(t *testing.T) {
 	cfg := validRouteWithResolver()
-	cfg.Routes[0].Resolver = &ResolverDef{
+	cfg.Routes[0].Resolver = &ports.ResolverDef{
 		Type: "rules",
-		Rules: []RuleDef{
-			{BindingID: "b1", Match: []ConditionDef{
+		Rules: []ports.RuleDef{
+			{BindingID: "b1", Match: []ports.ConditionDef{
 				{Field: "", Operator: "eq", Value: "x"},
 			}},
 		},
@@ -227,9 +229,9 @@ func TestValidateResolver_Rules_EmptyField(t *testing.T) {
 
 func TestValidateResolver_Rules_EmptyRulesNoDefault(t *testing.T) {
 	cfg := validRouteWithResolver()
-	cfg.Routes[0].Resolver = &ResolverDef{
+	cfg.Routes[0].Resolver = &ports.ResolverDef{
 		Type:  "rules",
-		Rules: []RuleDef{},
+		Rules: []ports.RuleDef{},
 	}
 	err := Validate(cfg)
 	if err == nil {
@@ -239,7 +241,7 @@ func TestValidateResolver_Rules_EmptyRulesNoDefault(t *testing.T) {
 
 func TestValidateResolver_AllType_Valid(t *testing.T) {
 	cfg := validRouteWithResolver()
-	cfg.Routes[0].Resolver = &ResolverDef{Type: "all"}
+	cfg.Routes[0].Resolver = &ports.ResolverDef{Type: "all"}
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("expected valid, got: %v", err)
 	}
@@ -247,7 +249,7 @@ func TestValidateResolver_AllType_Valid(t *testing.T) {
 
 func TestValidateResolver_StaticType_Valid(t *testing.T) {
 	cfg := validRouteWithResolver()
-	cfg.Routes[0].Resolver = &ResolverDef{Type: "static"}
+	cfg.Routes[0].Resolver = &ports.ResolverDef{Type: "static"}
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("expected valid, got: %v", err)
 	}

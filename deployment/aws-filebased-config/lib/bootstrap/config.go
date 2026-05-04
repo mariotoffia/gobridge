@@ -13,6 +13,7 @@ import (
 	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	"github.com/mariotoffia/gobridge/config"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // maxBootstrapFileSize limits the bootstrap config file to 1 MiB to prevent
@@ -70,14 +71,14 @@ func LoadBootstrapConfigJSON(data []byte) (deployinfra.BootstrapConfig, error) {
 
 type optionalFileSource struct {
 	path     string
-	fallback func() *config.BridgeConfig
+	fallback func() *ports.BridgeConfig
 }
 
-func newOptionalFileSource(path string, fallback func() *config.BridgeConfig) config.Loader {
+func newOptionalFileSource(path string, fallback func() *ports.BridgeConfig) ports.Loader {
 	return &optionalFileSource{path: path, fallback: fallback}
 }
 
-func (s *optionalFileSource) Load(_ context.Context) (*config.BridgeConfig, error) {
+func (s *optionalFileSource) Load(_ context.Context) (*ports.BridgeConfig, error) {
 	cfg, err := config.ParseFile(s.path, config.FormatAuto)
 	if err == nil {
 		return cfg, nil
@@ -88,7 +89,7 @@ func (s *optionalFileSource) Load(_ context.Context) (*config.BridgeConfig, erro
 	return nil, err
 }
 
-func newPollWatcher(cfg deployinfra.BootstrapConfig, logger *slog.Logger) config.Watcher {
+func newPollWatcher(cfg deployinfra.BootstrapConfig, logger *slog.Logger) ports.Watcher {
 	var opts []fileconfig.WatcherOption
 	opts = append(opts,
 		fileconfig.WithMode(fileconfig.ModePoll),
@@ -100,9 +101,9 @@ func newPollWatcher(cfg deployinfra.BootstrapConfig, logger *slog.Logger) config
 	return fileconfig.NewWatcher(cfg.ConfigFilePath, opts...)
 }
 
-func defaultLogicalConfig(cfg deployinfra.BootstrapConfig) *config.BridgeConfig {
-	return &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+func defaultLogicalConfig(cfg deployinfra.BootstrapConfig) *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:              cfg.BridgeID,
 			DeploymentMode:  "standalone",
 			ShutdownTimeout: "30s",
@@ -111,7 +112,7 @@ func defaultLogicalConfig(cfg deployinfra.BootstrapConfig) *config.BridgeConfig 
 	}
 }
 
-func cloneBridgeConfig(cfg *config.BridgeConfig) (*config.BridgeConfig, error) {
+func cloneBridgeConfig(cfg *ports.BridgeConfig) (*ports.BridgeConfig, error) {
 	if cfg == nil {
 		return nil, nil
 	}
@@ -122,7 +123,7 @@ func cloneBridgeConfig(cfg *config.BridgeConfig) (*config.BridgeConfig, error) {
 	return config.Parse(bytes.NewReader(data), config.FormatYAML)
 }
 
-func hasHTTPTransportEndpoints(cfg *config.BridgeConfig) bool {
+func hasHTTPTransportEndpoints(cfg *ports.BridgeConfig) bool {
 	if cfg == nil {
 		return false
 	}
@@ -139,7 +140,7 @@ func hasHTTPTransportEndpoints(cfg *config.BridgeConfig) bool {
 	return false
 }
 
-func validateFilesystemProfile(cfg deployinfra.BootstrapConfig, logical *config.BridgeConfig) error {
+func validateFilesystemProfile(cfg deployinfra.BootstrapConfig, logical *ports.BridgeConfig) error {
 	if logical == nil {
 		return fmt.Errorf("bootstrap: logical config is nil")
 	}

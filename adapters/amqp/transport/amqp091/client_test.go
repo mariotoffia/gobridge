@@ -5,11 +5,11 @@ import "testing"
 // verifies injectCredentials merges user-info into a broker URL.
 func TestInjectCredentials(t *testing.T) {
 	tests := []struct {
-		name     string
-		broker   string
-		user     string
-		pass     string
-		want     string
+		name   string
+		broker string
+		user   string
+		pass   string
+		want   string
 	}{
 		{
 			name:   "empty username returns original",

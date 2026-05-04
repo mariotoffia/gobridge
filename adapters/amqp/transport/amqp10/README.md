@@ -250,10 +250,10 @@ func main() {
 
 ### Using BridgeFactory
 
-For declarative setups, use `BridgeFactory` which implements `bridge.TransportFactory`:
+For declarative setups, use `BridgeFactory` which implements `ports.TransportFactory`:
 
 ```go
-factory := amqp10.NewBridgeFactory(logger, metricsExporter)
+factory := amqp10.NewFactory(logger, metricsExporter)
 
 // The bridge runtime calls these with config.SessionDef, config.ReceiverDef, etc.
 session, _ := factory.NewSession(ctx, sessionDef)

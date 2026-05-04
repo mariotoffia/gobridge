@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -36,7 +36,7 @@ func NewSender(session *Session, opts SenderOptions) *Sender {
 
 // Send publishes the envelope to the MQTT broker. The topic is taken from
 // env.Subject; if empty, opts.DefaultTopic is used. Headers are mapped to
-// MQTT 5 user properties. Message expiry is derived from env.RemainingTTL().
+// MQTT 5 user properties. Message expiry is derived from the session clock.
 //
 // Returns nil when the broker has accepted the message (PUBACK / PUBCOMP).
 // Returns a classified domain.BridgeError on failure.
@@ -50,7 +50,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 		return domain.ErrUnavailable.WithMessage("MQTT session not connected")
 	}
 
-	pub := PublishFromEnvelope(env, s.opts)
+	pub := PublishFromEnvelope(env, s.opts, s.session.clock())
 
 	topic := pub.Topic
 	if topic == "" {
@@ -73,9 +73,9 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 
 	sessionTag := domain.Tag{Key: domain.TagKeySessionID, Value: s.session.opts.ClientID}
 
-	start := time.Now()
+	start := s.session.clock().Now()
 	resp, err := cm.Publish(ctx, pub)
-	elapsed := time.Since(start)
+	elapsed := s.session.clock().Since(start)
 
 	if err != nil {
 		s.metrics.Timer(domain.MetricMQTTPublishLatency, elapsed, sessionTag)

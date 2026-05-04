@@ -54,9 +54,9 @@ func TestBug5_ContainsAny_CaseSensitive(t *testing.T) {
 // MapError misclassifies mixed-case connection errors.
 func TestBug5_MapError_MissesUpperCaseConnectionRefused(t *testing.T) {
 	tests := []struct {
-		name       string
-		errMsg     string
-		wantCode   domain.ErrorCode // what the buggy code actually returns
+		name        string
+		errMsg      string
+		wantCode    domain.ErrorCode // what the buggy code actually returns
 		correctCode domain.ErrorCode // what it should return
 	}{
 		{
@@ -68,13 +68,13 @@ func TestBug5_MapError_MissesUpperCaseConnectionRefused(t *testing.T) {
 		{
 			"Title Case (fixed)",
 			"Connection Refused",
-			domain.ErrConnectionLost.Code,  // fixed: case-insensitive match
+			domain.ErrConnectionLost.Code, // fixed: case-insensitive match
 			domain.ErrConnectionLost.Code,
 		},
 		{
 			"embedded Title (fixed)",
 			"dial tcp: Connection Refused by peer",
-			domain.ErrConnectionLost.Code,  // fixed: case-insensitive match
+			domain.ErrConnectionLost.Code, // fixed: case-insensitive match
 			domain.ErrConnectionLost.Code,
 		},
 	}

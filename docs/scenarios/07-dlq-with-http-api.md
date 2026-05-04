@@ -282,8 +282,8 @@ The deep health endpoint returns 200 when ready for traffic, 503 otherwise, with
 cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
 
 rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("mqtt", paho.NewBridgeFactory(logger)).
-    RegisterTransport("sqs", sqs.NewBridgeFactory(logger)).
+    RegisterTransport("mqtt", paho.NewFactory(logger)).
+    RegisterTransport("sqs", sqs.NewFactory(logger)).
     RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).
     Build(ctx)
 

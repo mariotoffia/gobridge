@@ -25,9 +25,9 @@ import (
 // (sqslocal.Client, mqttlocal.BrokerURL, ddblocal.Client) for actual
 // connections; these fields are informational / for logging.
 type testInfra struct {
-	SQSEndpoint  string
-	DDBEndpoint  string
-	MQTTBroker   string
+	SQSEndpoint string
+	DDBEndpoint string
+	MQTTBroker  string
 }
 
 // withFreshInfra kills all orphaned gobridge containers, then force-starts

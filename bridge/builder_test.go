@@ -36,13 +36,13 @@ func (f *fakeSender) Send(ctx context.Context, env *domain.Envelope) error { ret
 
 type fakeTransportFactory struct{}
 
-func (f *fakeTransportFactory) NewSession(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+func (f *fakeTransportFactory) NewSession(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 	return &fakeSession{}, nil
 }
-func (f *fakeTransportFactory) NewReceiver(_ context.Context, _ config.ReceiverDef, _ ports.Session) (ports.Receiver, error) {
+func (f *fakeTransportFactory) NewReceiver(_ context.Context, _ ports.ReceiverSpec, _ ports.Session) (ports.Receiver, error) {
 	return &fakeReceiver{}, nil
 }
-func (f *fakeTransportFactory) NewSender(_ context.Context, _ config.SenderDef, _ ports.Session) (ports.Sender, error) {
+func (f *fakeTransportFactory) NewSender(_ context.Context, _ ports.SenderSpec, _ ports.Session) (ports.Sender, error) {
 	return &fakeSender{}, nil
 }
 func (f *fakeTransportFactory) Capabilities() []ports.Capability {
@@ -78,13 +78,13 @@ func (f *fakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]do
 
 type fakeStoreFactory struct{}
 
-func (f *fakeStoreFactory) NewLeaseStore(_ context.Context, _ config.StoreConfig) (ports.LeaseStore, error) {
+func (f *fakeStoreFactory) NewLeaseStore(_ context.Context, _ ports.StoreSpec) (ports.LeaseStore, error) {
 	return &fakeLeaseStore{}, nil
 }
-func (f *fakeStoreFactory) NewOutboxStore(_ context.Context, _ config.StoreConfig) (ports.OutboxStore, error) {
+func (f *fakeStoreFactory) NewOutboxStore(_ context.Context, _ ports.StoreSpec) (ports.OutboxStore, error) {
 	return &fakeOutboxStore{}, nil
 }
-func (f *fakeStoreFactory) NewDLQStore(_ context.Context, _ config.StoreConfig) (ports.DLQStore, error) {
+func (f *fakeStoreFactory) NewDLQStore(_ context.Context, _ ports.StoreSpec) (ports.DLQStore, error) {
 	return nil, nil
 }
 
@@ -101,42 +101,42 @@ func (f *fakeCredentialStore) Resolve(_ context.Context, uri string) (*domain.Cr
 
 type capturingTransportFactory struct {
 	fakeTransportFactory
-	capturedSessionDef config.SessionDef
+	capturedSessionSpec ports.SessionSpec
 }
 
-func (c *capturingTransportFactory) NewSession(_ context.Context, def config.SessionDef) (ports.Session, error) {
-	c.capturedSessionDef = def
+func (c *capturingTransportFactory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.Session, error) {
+	c.capturedSessionSpec = spec
 	return &fakeSession{}, nil
 }
 
 // --- tests ---
 
-func testConfig() *config.BridgeConfig {
-	return &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test-bridge"},
-		Stores: config.StoresConfig{
-			Lease:  &config.StoreConfig{Type: "memory"},
-			Outbox: &config.StoreConfig{Type: "memory"},
+func testConfig() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test-bridge"},
+		Stores: ports.StoresConfig{
+			Lease:  &ports.StoreConfig{Type: "memory"},
+			Outbox: &ports.StoreConfig{Type: "memory"},
 		},
-		Sessions: []config.SessionDef{
+		Sessions: []ports.SessionDef{
 			{ID: "mqtt-s1", Transport: "mqtt", SessionMode: "exclusive"},
 		},
-		Receivers: []config.ReceiverDef{
+		Receivers: []ports.ReceiverDef{
 			{ID: "sqs-rx", Transport: "sqs"},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "mqtt-tx", Transport: "mqtt", SessionID: "mqtt-s1"},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "b1", SenderID: "mqtt-tx", SessionID: "mqtt-s1", Address: "topic/test"},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:           "r1",
 				ReceiverID:   "sqs-rx",
 				DeliveryMode: "shared_outbox",
 				Bindings:     []string{"b1"},
-				Session: &config.RouteSessionDef{
+				Session: &ports.RouteSessionDef{
 					SessionID: "mqtt-s1",
 					SenderID:  "mqtt-tx",
 				},
@@ -190,29 +190,32 @@ func TestBuilder_MissingStoreFactory(t *testing.T) {
 	assert.Contains(t, err.Error(), "no store factory")
 }
 
-// Verifies Build surfaces config validation errors for an empty bridge configuration.
+// Verifies Build surfaces config validation errors for an empty bridge
+// configuration when the composition root has supplied a validator
+// (config.Validate via WithBlueprintValidator).
 func TestBuilder_InvalidConfig(t *testing.T) {
-	cfg := &config.BridgeConfig{}
+	cfg := &ports.BridgeConfig{}
 
-	_, err := NewBuilder(cfg).Build(context.Background())
+	_, err := NewBuilder(cfg, WithBlueprintValidator(config.Validate)).
+		Build(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "config validation")
 }
 
 // Verifies Build constructs a direct_hold route without session-scoped stores when the config is valid.
 func TestBuilder_DirectHoldRoute(t *testing.T) {
-	cfg := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "b1"},
-		Receivers: []config.ReceiverDef{
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1"},
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx1", Transport: "sqs"},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx1", Transport: "sqs"},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "b1", SenderID: "tx1", Address: "queue://out"},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:           "r1",
 				ReceiverID:   "rx1",
@@ -263,9 +266,9 @@ func TestBuilder_WithCredentialStore(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, rt)
 
-	assert.Equal(t, "resolved-user", mqttFactory.capturedSessionDef.Options["username"])
-	assert.Equal(t, "resolved-pass", mqttFactory.capturedSessionDef.Options["password"])
-	_, hasURI := mqttFactory.capturedSessionDef.Options["credentials_uri"]
+	assert.Equal(t, "resolved-user", mqttFactory.capturedSessionSpec.Options["username"])
+	assert.Equal(t, "resolved-pass", mqttFactory.capturedSessionSpec.Options["password"])
+	_, hasURI := mqttFactory.capturedSessionSpec.Options["credentials_uri"]
 	assert.False(t, hasURI, "credentials_uri should be removed after resolution")
 }
 
@@ -299,9 +302,9 @@ func TestBuilder_CredentialInlineOverride(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, rt)
 
-	assert.Equal(t, "inline-user", mqttFactory.capturedSessionDef.Options["username"],
+	assert.Equal(t, "inline-user", mqttFactory.capturedSessionSpec.Options["username"],
 		"inline value should take precedence over resolved credential")
-	assert.Equal(t, "resolved-pass", mqttFactory.capturedSessionDef.Options["password"],
+	assert.Equal(t, "resolved-pass", mqttFactory.capturedSessionSpec.Options["password"],
 		"password should be resolved from credential store")
 }
 
@@ -360,13 +363,13 @@ func TestBuilder_Standalone_NonDistributedStore_OK(t *testing.T) {
 // (nil, nil) instead of a valid store or an error.
 type nilLeaseStoreFactory struct{}
 
-func (f *nilLeaseStoreFactory) NewLeaseStore(_ context.Context, _ config.StoreConfig) (ports.LeaseStore, error) {
+func (f *nilLeaseStoreFactory) NewLeaseStore(_ context.Context, _ ports.StoreSpec) (ports.LeaseStore, error) {
 	return nil, nil
 }
-func (f *nilLeaseStoreFactory) NewOutboxStore(_ context.Context, _ config.StoreConfig) (ports.OutboxStore, error) {
+func (f *nilLeaseStoreFactory) NewOutboxStore(_ context.Context, _ ports.StoreSpec) (ports.OutboxStore, error) {
 	return &fakeOutboxStore{}, nil
 }
-func (f *nilLeaseStoreFactory) NewDLQStore(_ context.Context, _ config.StoreConfig) (ports.DLQStore, error) {
+func (f *nilLeaseStoreFactory) NewDLQStore(_ context.Context, _ ports.StoreSpec) (ports.DLQStore, error) {
 	return nil, nil
 }
 func (f *nilLeaseStoreFactory) IsDistributed() bool { return true }
@@ -377,7 +380,7 @@ func (f *nilLeaseStoreFactory) IsDistributed() bool { return true }
 func TestBuilder_ClusteredMode_NilLeaseStore_RejectsStartup(t *testing.T) {
 	cfg := testConfig()
 	cfg.Bridge.DeploymentMode = "clustered"
-	cfg.Stores.Lease = &config.StoreConfig{Type: "sqlite"}
+	cfg.Stores.Lease = &ports.StoreConfig{Type: "sqlite"}
 
 	_, err := NewBuilder(cfg).
 		RegisterTransport("mqtt", &fakeTransportFactory{}).
@@ -426,7 +429,7 @@ func TestBuilder_PolicyFieldsReachRuntime(t *testing.T) {
 	cfg := testConfig()
 	cfg.Routes[0].DeliveryMode = "direct_hold"
 	cfg.Routes[0].Session = nil
-	cfg.Routes[0].Policy = config.PolicyDef{
+	cfg.Routes[0].Policy = ports.PolicyDef{
 		SendTimeout:    "5s",
 		DepthCacheTTL:  "100ms",
 		AllowUnfenced:  true,

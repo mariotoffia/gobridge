@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 func writeYAML(t *testing.T, path string, bridgeID string) {
@@ -113,7 +114,7 @@ func TestWatcher_WithWatchConfig_Poll(t *testing.T) {
 	path := filepath.Join(dir, "bridge.yaml")
 	writeYAML(t, path, "initial")
 
-	def := &config.ConfigWatchDef{
+	def := &ports.ConfigWatchDef{
 		Mode:         "poll",
 		PollInterval: "100ms",
 	}
@@ -128,7 +129,7 @@ func TestWatcher_WithWatchConfig_Poll(t *testing.T) {
 }
 
 func TestWatcher_WithWatchConfig_Notify(t *testing.T) {
-	def := &config.ConfigWatchDef{
+	def := &ports.ConfigWatchDef{
 		Mode:     "notify",
 		Debounce: "200ms",
 	}

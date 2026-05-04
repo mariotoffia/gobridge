@@ -95,7 +95,7 @@ func (d *OutboxDrainer) finalDrain(parent context.Context) error {
 }
 
 func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken) (int, error) {
-	start := time.Now()
+	start := d.clk.Now()
 	sessionTag := domain.Tag{Key: domain.TagKeySessionID, Value: d.partitionKey}
 	routeTag := domain.Tag{Key: domain.TagKeyRouteID, Value: d.routeID}
 
@@ -207,7 +207,8 @@ loop:
 	batchCancel()
 	workCancel()
 
-	d.metrics.Timer(domain.MetricOutboxDrainLatency, time.Since(start), sessionTag)
+	duration := d.clk.Since(start)
+	d.metrics.Timer(domain.MetricOutboxDrainLatency, duration, sessionTag)
 
 	successTotal := int(atomic.LoadInt64(&successCount))
 	d.fireBatchComplete(successTotal)
@@ -227,7 +228,7 @@ loop:
 		d.logger.Log(ctx, logging.LevelDebug, "drain batch complete",
 			"partition_key", d.partitionKey,
 			"success_count", atomic.LoadInt64(&successCount),
-			"duration", time.Since(start),
+			"duration", duration,
 		)
 	}
 

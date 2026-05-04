@@ -36,16 +36,16 @@ func TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization(t *test
 		Subject: "t",
 		Payload: []byte("p"),
 		Headers: map[string]any{
-			domain.HeaderCorrelationID:   "corr",         // mapped to MQTT CorrelationData
-			domain.HeaderContentType:     "text/plain",   // mapped to MQTT ContentType
-			domain.HeaderCausationID:     "cause",        // forwarded as user property
-			domain.HeaderIdempotencyKey:  "idem",         // forwarded
-			domain.HeaderTenantID:        "tenant-7",     // forwarded
-			domain.HeaderRouteID:         "internal-rt",  // forwarded (debatable)
-			domain.HeaderSourceID:        "internal-src", // forwarded (debatable)
+			domain.HeaderCorrelationID:  "corr",         // mapped to MQTT CorrelationData
+			domain.HeaderContentType:    "text/plain",   // mapped to MQTT ContentType
+			domain.HeaderCausationID:    "cause",        // forwarded as user property
+			domain.HeaderIdempotencyKey: "idem",         // forwarded
+			domain.HeaderTenantID:       "tenant-7",     // forwarded
+			domain.HeaderRouteID:        "internal-rt",  // forwarded (debatable)
+			domain.HeaderSourceID:       "internal-src", // forwarded (debatable)
 		},
 	}
-	pub := PublishFromEnvelope(env, SenderOptions{QoS: 1})
+	pub := PublishFromEnvelope(env, SenderOptions{QoS: 1}, nil)
 	if pub.Properties == nil {
 		t.Fatal("expected properties to be set")
 	}
@@ -380,4 +380,3 @@ func TestAnaMore_Receiver_RunningGuard_DoesNotLeakAfterPanic(t *testing.T) {
 	cancel2()
 	<-res
 }
-

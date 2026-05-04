@@ -34,13 +34,15 @@ import (
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   SQS ──▶ [Outbox Persist] ──▶ [Slow Drain] ──▶ MQTT
-//                                      │
-//                                 Stop() called
-//                                      │
-//                                 finalDrain runs
-//                                      ▼
-//                              Records completed
+//
+//	SQS ──▶ [Outbox Persist] ──▶ [Slow Drain] ──▶ MQTT
+//	                                   │
+//	                              Stop() called
+//	                                   │
+//	                              finalDrain runs
+//	                                   ▼
+//	                           Records completed
+//
 // ───────────────────────────────────────────────
 //
 // Test Parameters:
@@ -138,13 +140,15 @@ func TestGAP_ShutdownWithOutboxInFlight(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Goroutine 1 ──┐
-//                  ├──▶ rt.Stop() simultaneously
-//   Goroutine 2 ──┘
-//                          │
-//                          ▼
-//                   No panic, no deadlock
-//                   rt.IsRunning() == false
+//
+//	Goroutine 1 ──┐
+//	               ├──▶ rt.Stop() simultaneously
+//	Goroutine 2 ──┘
+//	                       │
+//	                       ▼
+//	                No panic, no deadlock
+//	                rt.IsRunning() == false
+//
 // ───────────────────────────────────────────────
 //
 // Assertions:

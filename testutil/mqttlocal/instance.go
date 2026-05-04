@@ -26,14 +26,14 @@ import (
 //	broker.Stop()      // simulate broker outage
 //	broker.Restart()   // broker comes back
 type BrokerInstance struct {
-	t         testing.TB
-	cfg       config
-	port      int
-	name      string
-	confPath  string
-	dataDir   string // host-side temp dir for Mosquitto persistence data
-	url       string
-	stopped   bool
+	t        testing.TB
+	cfg      config
+	port     int
+	name     string
+	confPath string
+	dataDir  string // host-side temp dir for Mosquitto persistence data
+	url      string
+	stopped  bool
 }
 
 // NewBrokerInstance starts a fresh Mosquitto container with the given options.
@@ -46,10 +46,10 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 	}
 
 	c := config{
-		image:           "eclipse-mosquitto:latest",
-		maxInflightMsgs: -1,
-		maxQueuedMsgs:   -1,
-		maxQueuedBytes:  -1,
+		image:            "eclipse-mosquitto:latest",
+		maxInflightMsgs:  -1,
+		maxQueuedMsgs:    -1,
+		maxQueuedBytes:   -1,
 		messageSizeLimit: -1,
 	}
 	for _, o := range opts {

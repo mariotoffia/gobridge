@@ -43,7 +43,7 @@ their own connections.
 ## MQTT (Paho)
 
 **Transport name:** `mqtt`
-**Factory:** `paho.NewBridgeFactory(logger)`
+**Factory:** `paho.NewFactory(logger)`
 **Capabilities:** `stateful_session`, `exclusive_identity`
 
 MQTT requires a session. Multiple receivers and senders can share one session
@@ -155,7 +155,7 @@ in the `topics[]` array on the `ReceiverDef`, not in the `options` map.
 ## AWS SQS
 
 **Transport name:** `sqs`
-**Factory:** `sqs.NewBridgeFactory(logger)`
+**Factory:** `sqs.NewFactory(logger)`
 **Capabilities:** `visibility_extension`, `source_redelivery`
 
 SQS is stateless -- no sessions are needed. Each receiver and sender opens
@@ -259,7 +259,7 @@ Either `queue_url` or `queue_name` must be provided.
 ## Azure Service Bus
 
 **Transport name:** `servicebus`
-**Factory:** `servicebus.NewBridgeFactory(logger)`
+**Factory:** `servicebus.NewFactory(logger)`
 **Capabilities:** `visibility_extension`
 
 Azure Service Bus is stateless in GoBridge (no bridge-level sessions).
@@ -363,7 +363,7 @@ Either `connection_string` or `namespace` is required.
 ## HTTP Transport
 
 **Transport name:** `http`
-**Factory:** `httptransport.NewBridgeFactory(opts...)`
+**Factory:** `httptransport.NewFactory(opts...)`
 **Capabilities:** `http_endpoint`
 **OpenAPI spec:** `spec/http-adapter/http-api.yaml`
 
@@ -480,7 +480,7 @@ The HTTP factory accepts functional options at registration time:
 ## RabbitMQ (AMQP 0-9-1)
 
 **Transport name:** `amqp091`
-**Factory:** `amqp091.NewBridgeFactory(logger)`
+**Factory:** `amqp091.NewFactory(logger)`
 **Capabilities:** `stateful_session`, `source_redelivery`
 
 RabbitMQ uses a stateful session. A `Session` owns a single AMQP connection
@@ -612,7 +612,7 @@ This declares:
 ## AMQP 1.0
 
 **Transport name:** `amqp10`
-**Factory:** `amqp10.NewBridgeFactory(logger)`
+**Factory:** `amqp10.NewFactory(logger)`
 **Capabilities:** `stateful_session`
 
 The AMQP 1.0 adapter works with any broker that speaks the AMQP 1.0 wire
@@ -775,12 +775,12 @@ Register transport factories on the `Builder` (one-shot) or `Supervisor`
 ```go
 // Builder (one-shot)
 rt, err := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("mqtt", paho.NewBridgeFactory(logger)).
-    RegisterTransport("sqs", sqs.NewBridgeFactory(logger)).
-    RegisterTransport("servicebus", servicebus.NewBridgeFactory(logger)).
-    RegisterTransport("amqp091", amqp091.NewBridgeFactory(logger)).
-    RegisterTransport("amqp10", amqp10.NewBridgeFactory(logger)).
-    RegisterTransport("http", httptransport.NewBridgeFactory(
+    RegisterTransport("mqtt", paho.NewFactory(logger)).
+    RegisterTransport("sqs", sqs.NewFactory(logger)).
+    RegisterTransport("servicebus", servicebus.NewFactory(logger)).
+    RegisterTransport("amqp091", amqp091.NewFactory(logger)).
+    RegisterTransport("amqp10", amqp10.NewFactory(logger)).
+    RegisterTransport("http", httptransport.NewFactory(
         httptransport.WithFactoryLogger(logger),
     )).
     RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).
@@ -788,12 +788,12 @@ rt, err := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
 
 // Supervisor (survives hot-reload)
 sup := bridge.NewSupervisor()
-sup.RegisterTransport("mqtt", paho.NewBridgeFactory(logger))
-sup.RegisterTransport("sqs", sqs.NewBridgeFactory(logger))
-sup.RegisterTransport("servicebus", servicebus.NewBridgeFactory(logger))
-sup.RegisterTransport("amqp091", amqp091.NewBridgeFactory(logger))
-sup.RegisterTransport("amqp10", amqp10.NewBridgeFactory(logger))
-sup.RegisterTransport("http", httptransport.NewBridgeFactory(
+sup.RegisterTransport("mqtt", paho.NewFactory(logger))
+sup.RegisterTransport("sqs", sqs.NewFactory(logger))
+sup.RegisterTransport("servicebus", servicebus.NewFactory(logger))
+sup.RegisterTransport("amqp091", amqp091.NewFactory(logger))
+sup.RegisterTransport("amqp10", amqp10.NewFactory(logger))
+sup.RegisterTransport("http", httptransport.NewFactory(
     httptransport.WithFactoryLogger(logger),
 ))
 ```

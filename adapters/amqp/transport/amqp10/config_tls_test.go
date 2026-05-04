@@ -35,7 +35,7 @@ func TestBuildTLSConfig_Disabled(t *testing.T) {
 // TestBuildTLSConfig_InsecureSkipVerify validates the flag is set correctly.
 func TestBuildTLSConfig_InsecureSkipVerify(t *testing.T) {
 	cfg, err := BuildTLSConfig(&TLSConfig{
-		Enable:            true,
+		Enable:             true,
 		InsecureSkipVerify: true,
 	})
 	if err != nil {
@@ -74,7 +74,7 @@ func TestBuildTLSConfig_BadCACert(t *testing.T) {
 // TestBuildTLSConfig_BadKeyPair validates error on non-existent cert files.
 func TestBuildTLSConfig_BadKeyPair(t *testing.T) {
 	_, err := BuildTLSConfig(&TLSConfig{
-		Enable:  true,
+		Enable:   true,
 		CertFile: "/nonexistent/cert.pem",
 		KeyFile:  "/nonexistent/key.pem",
 	})

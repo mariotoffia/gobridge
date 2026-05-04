@@ -76,13 +76,13 @@ type ddbAPI interface {
 }
 
 var (
-	_ ports.ConfigLoader   = (*Loader)(nil)
-	_ ports.ConfigReloader = (*Loader)(nil)
+	_ ports.Loader   = (*Loader)(nil)
+	_ ports.Reloader = (*Loader)(nil)
 )
 
-// Loader implements ports.ConfigLoader and ports.ConfigReloader using a
-// DynamoDB table. The full BridgeConfig is stored as a single JSON item
-// with an accompanying numeric version attribute.
+// Loader implements ports.Loader and ports.Reloader using a DynamoDB
+// table. The full BridgeConfig is stored as a single JSON item with an
+// accompanying numeric version attribute.
 //
 // Two change-detection modes are supported, selectable via WithWatchMode:
 //
@@ -173,7 +173,7 @@ func WithClock(c clock.Clock) Option {
 	}
 }
 
-// NewLoader creates a DynamoDB-backed ConfigLoader.
+// NewLoader creates a DynamoDB-backed ports.Reloader.
 func NewLoader(client *dynamodb.Client, opts ...Option) *Loader {
 	l := &Loader{
 		client:             client,
@@ -194,7 +194,7 @@ func NewLoader(client *dynamodb.Client, opts ...Option) *Loader {
 func (l *Loader) pk() string { return "config#" + l.bridgeID }
 
 // Load retrieves the current BridgeConfig from DynamoDB.
-func (l *Loader) Load(ctx context.Context) (*config.BridgeConfig, error) {
+func (l *Loader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 	out, err := l.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: &l.tableName,
 		Key: map[string]ddbtypes.AttributeValue{
@@ -241,28 +241,26 @@ func (l *Loader) Load(ctx context.Context) (*config.BridgeConfig, error) {
 // If streams are not available or no streams client has been supplied
 // through WithStreamsClient, Watch transparently falls back to ModePoll
 // and logs a warning.
-func (l *Loader) Watch(ctx context.Context) (<-chan *config.BridgeConfig, error) {
-	ch := make(chan *config.BridgeConfig, 1)
+func (l *Loader) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error) {
+	ch := make(chan *ports.BridgeConfig, 1)
 
-	effective := l.mode
-	if effective == ModeStreams {
+	if l.mode == ModeStreams {
 		arn, reason := l.resolveStreamArn(ctx)
-		switch {
-		case reason != "":
+		if reason != "" {
 			if l.logger != nil {
 				l.logger.Warn("dynamodb config loader: falling back to poll mode",
 					"reason", reason,
 					"table", l.tableName,
 				)
 			}
-			effective = ModePoll
-		default:
+		} else {
 			go l.streamLoop(ctx, ch, arn)
 			return ch, nil
 		}
 	}
 
-	go l.pollLoop(ctx, ch)
+	ticker := l.clk.NewTicker(l.pollInterval)
+	go l.pollLoop(ctx, ch, ticker)
 	return ch, nil
 }
 
@@ -293,15 +291,13 @@ func (l *Loader) resolveStreamArn(ctx context.Context) (string, string) {
 	return *out.Table.LatestStreamArn, ""
 }
 
-func (l *Loader) pollLoop(ctx context.Context, ch chan<- *config.BridgeConfig) {
+func (l *Loader) pollLoop(ctx context.Context, ch chan<- *ports.BridgeConfig, ticker clock.Ticker) {
 	defer close(ch)
+	defer ticker.Stop()
 
 	l.mu.Lock()
 	lastSeen := l.lastVersion
 	l.mu.Unlock()
-
-	ticker := l.clk.NewTicker(l.pollInterval)
-	defer ticker.Stop()
 
 	for {
 		select {
@@ -359,7 +355,7 @@ func (l *Loader) currentVersion(ctx context.Context) (int64, error) {
 
 // Save writes a BridgeConfig to DynamoDB, auto-incrementing the version.
 // This is useful for tests and admin tooling.
-func (l *Loader) Save(ctx context.Context, cfg *config.BridgeConfig) error {
+func (l *Loader) Save(ctx context.Context, cfg *ports.BridgeConfig) error {
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("dynamodb config save: marshal: %w", err)

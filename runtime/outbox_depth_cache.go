@@ -3,6 +3,8 @@ package runtime
 import (
 	"sync"
 	"time"
+
+	"github.com/mariotoffia/gobridge/domain/clock"
 )
 
 type depthEntry struct {
@@ -17,14 +19,14 @@ type outboxDepthCache struct {
 	mu      sync.RWMutex
 	entries map[string]depthEntry
 	ttl     time.Duration
-	now     func() time.Time
+	clk     clock.Clock
 }
 
-func newOutboxDepthCache(ttl time.Duration) *outboxDepthCache {
+func newOutboxDepthCache(ttl time.Duration, clk clock.Clock) *outboxDepthCache {
 	return &outboxDepthCache{
 		entries: make(map[string]depthEntry),
 		ttl:     ttl,
-		now:     time.Now,
+		clk:     clk,
 	}
 }
 
@@ -39,7 +41,7 @@ func (c *outboxDepthCache) isUnderCapacity(partitionKey string) bool {
 	if !ok {
 		return false
 	}
-	if c.now().Sub(entry.checkedAt) > c.ttl {
+	if c.clk.Now().Sub(entry.checkedAt) > c.ttl {
 		return false
 	}
 	return !entry.atCapacity
@@ -48,7 +50,7 @@ func (c *outboxDepthCache) isUnderCapacity(partitionKey string) bool {
 const depthCacheMaxEntries = 1000
 
 func (c *outboxDepthCache) update(partitionKey string, atCapacity bool) {
-	now := c.now()
+	now := c.clk.Now()
 	c.mu.Lock()
 	c.entries[partitionKey] = depthEntry{
 		atCapacity: atCapacity,

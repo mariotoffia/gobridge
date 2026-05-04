@@ -26,7 +26,8 @@ import (
 // the depth cache miss path) on the first message delivery.
 //
 // Data flow:
-//   Receiver → RouteRunner → depthCache miss → QueryPending → Persist
+//
+//	Receiver → RouteRunner → depthCache miss → QueryPending → Persist
 func TestRouteRunner_SharedOutbox_DepthCacheExercised(t *testing.T) {
 	outbox := NewQueryCountingOutboxStore()
 	receiver := NewFakeReceiver()
@@ -67,7 +68,8 @@ func TestRouteRunner_SharedOutbox_DepthCacheExercised(t *testing.T) {
 // route never calls QueryPending because no depth cache is allocated.
 //
 // Data flow:
-//   Receiver → RouteRunner → directHold → Send → Ack
+//
+//	Receiver → RouteRunner → directHold → Send → Ack
 func TestRouteRunner_DirectHold_NoQueryPending(t *testing.T) {
 	outbox := NewQueryCountingOutboxStore()
 	receiver := NewFakeReceiver()
@@ -114,10 +116,12 @@ func TestRouteRunner_DirectHold_NoQueryPending(t *testing.T) {
 // ═══════════════════════════════════════════════════════════════════════
 // Index    Expected suffix    Old bug (rune)
 // ─────────────────────────────────────────────────────────────────────
-//   0       "0"               "0" ✓
-//   9       "9"               "9" ✓
-//  10       "10"              ":" ✗ (rune 58)
-//  99       "99"              "c" ✗ (rune 147)
+//
+//	 0       "0"               "0" ✓
+//	 9       "9"               "9" ✓
+//	10       "10"              ":" ✗ (rune 58)
+//	99       "99"              "c" ✗ (rune 147)
+//
 // ═══════════════════════════════════════════════════════════════════════
 // NOTE: This test mirrors the naming pattern in bridge.go:Start (drainer
 // loop). Keep the format string in sync if bridge.go changes.
@@ -219,7 +223,8 @@ func TestOutboxDrainerConfig_DrainBatchSize_Custom(t *testing.T) {
 // confirms no additional work is needed.
 //
 // Timeline:
-//   ──[persist records]──[first drain cycle]──[cancel ctx]──[finalDrain]──
+//
+//	──[persist records]──[first drain cycle]──[cancel ctx]──[finalDrain]──
 func TestOutboxDrainer_FinalDrain_CompletesAfterCancel(t *testing.T) {
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
 
@@ -273,12 +278,14 @@ func TestOutboxDrainer_FinalDrain_CompletesAfterCancel(t *testing.T) {
 // values are silently clamped to 0 (global throttling disabled).
 //
 // ═══════════════════════════════════════════════════════════════════════
-//   Input n        Effective    globalSem
-//   ─────────────────────────────────────────
-//     5            5            chan(5)
-//     0            0            nil
-//    -1            0            nil
-//    MinInt        0            nil
+//
+//	Input n        Effective    globalSem
+//	─────────────────────────────────────────
+//	  5            5            chan(5)
+//	  0            0            nil
+//	 -1            0            nil
+//	 MinInt        0            nil
+//
 // ═══════════════════════════════════════════════════════════════════════
 func TestWithGlobalMaxInFlight_NegativeClampedToZero(t *testing.T) {
 	cases := []struct {
@@ -349,10 +356,12 @@ func (s *signalingStrategy) NextInterval(n int) time.Duration {
 // a negative DrainBatchSize is clamped to the default (100).
 //
 // ═══════════════════════════════════════════════════════════════════════
-//   Input     Effective
-//   ───────────────────
-//    -1       100
-//    -100     100
+//
+//	Input     Effective
+//	───────────────────
+//	 -1       100
+//	 -100     100
+//
 // ═══════════════════════════════════════════════════════════════════════
 func TestOutboxDrainerConfig_DrainBatchSize_NegativeClamped(t *testing.T) {
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
@@ -377,7 +386,9 @@ func TestOutboxDrainerConfig_DrainBatchSize_NegativeClamped(t *testing.T) {
 // that DrainMaxBatchSize < DrainBatchSize is raised to match DrainBatchSize.
 //
 // ═══════════════════════════════════════════════════════════════════════
-//   DrainBatchSize=200, DrainMaxBatchSize=50 → effective max = 200
+//
+//	DrainBatchSize=200, DrainMaxBatchSize=50 → effective max = 200
+//
 // ═══════════════════════════════════════════════════════════════════════
 func TestOutboxDrainerConfig_DrainMaxBatchSize_FloorsToBatchSize(t *testing.T) {
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}

@@ -26,16 +26,16 @@ var _ ports.Delivery = (*sqsDelivery)(nil)
 //
 // The receiver's poll loop creates a three-level context tree per message:
 //
-//	pollLoop ctx (caller-owned, e.g. test WithTimeout)
-//	  └─ deliveryCtx (WithCancel) — passed to emit() and to newDelivery
-//	       └─ autoExtendCtx (WithCancel) — scoped to the auto-extend goroutine
+//		pollLoop ctx (caller-owned, e.g. test WithTimeout)
+//		  └─ deliveryCtx (WithCancel) — passed to emit() and to newDelivery
+//		       └─ autoExtendCtx (WithCancel) — scoped to the auto-extend goroutine
 //
-//   - deliveryCtx is canceled by cleanupContext() after the Ack/Retry SQS
-//     call completes, to reclaim the context node.
-//   - autoExtendCtx is canceled by stopAutoExtend() before the SQS call,
-//     so the goroutine stops before we delete/re-queue the message.
-//   - If auto-extend fails 3 consecutive times, it calls processingCancel
-//     (= deliveryCtx cancel) so the emit callback receives a canceled ctx.
+//	  - deliveryCtx is canceled by cleanupContext() after the Ack/Retry SQS
+//	    call completes, to reclaim the context node.
+//	  - autoExtendCtx is canceled by stopAutoExtend() before the SQS call,
+//	    so the goroutine stops before we delete/re-queue the message.
+//	  - If auto-extend fails 3 consecutive times, it calls processingCancel
+//	    (= deliveryCtx cancel) so the emit callback receives a canceled ctx.
 //
 // # Why separate stopAutoExtend and cleanupContext
 //
@@ -135,7 +135,7 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 		)
 	}
 
-	start := time.Now()
+	start := d.clk.Now()
 	_, err := d.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
 		QueueUrl:      aws.String(d.queueURL),
 		ReceiptHandle: aws.String(d.receiptHandle),
@@ -143,7 +143,7 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 	if err != nil {
 		return MapError(err)
 	}
-	d.metrics.Timer(domain.MetricSQSDeleteLatency, time.Since(start),
+	d.metrics.Timer(domain.MetricSQSDeleteLatency, d.clk.Since(start),
 		domain.Tag{Key: domain.TagKeyQueueURL, Value: d.queueURL})
 	return nil
 }
@@ -195,7 +195,7 @@ func (d *sqsDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 // Extend does NOT stop auto-extend — the goroutine keeps running and
 // will maintain the new timeout. Call Ack or Retry to finalize.
 func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
-	timeout := int32(time.Until(until).Seconds())
+	timeout := int32(until.Sub(d.clk.Now()).Seconds())
 	if timeout < 0 {
 		timeout = 0
 	}

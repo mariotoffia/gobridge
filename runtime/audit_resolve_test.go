@@ -29,7 +29,9 @@ import (
 //
 // binding.Options = map[string]any{"tags": []string{"a"}}
 // plan.Headers["tags"].([]string)[0] = "modified"
-//   → binding.Options["tags"][0] == "modified"  (WRONG)
+//
+//	→ binding.Options["tags"][0] == "modified"  (WRONG)
+//
 // ═══════════════════════════════════════════════════════════════════
 func TestCopyHeaders_ShallowCopy_MutableSlice(t *testing.T) {
 	original := map[string]any{

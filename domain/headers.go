@@ -21,8 +21,8 @@ const (
 	HeaderTraceState      = "tracestate"
 	HeaderTenantID        = "x-bridge.tenant-id"
 	HeaderRouteOverride   = "x-bridge.route-override"
-	HeaderForwardedFrom  = "x-bridge.forwarded-from"
-	HeaderForwardedHop   = "x-bridge.forwarded-hop"
+	HeaderForwardedFrom   = "x-bridge.forwarded-from"
+	HeaderForwardedHop    = "x-bridge.forwarded-hop"
 )
 
 // IsReservedHeader returns true if the key uses the reserved x-bridge. prefix.

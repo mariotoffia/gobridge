@@ -30,11 +30,13 @@ import (
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Set activeSubs to {"topic/a": 1, "topic/c": 0}
-//   Set plan with {"topic/a": 1, "topic/b": 0}
-//   Simulate the OnConnectionUp callback logic:
-//     save old → clear → call reconcile → reconcile fails → restore
-//   Expected: activeSubs restored to {"topic/a": 1, "topic/c": 0}
+//
+//	Set activeSubs to {"topic/a": 1, "topic/c": 0}
+//	Set plan with {"topic/a": 1, "topic/b": 0}
+//	Simulate the OnConnectionUp callback logic:
+//	  save old → clear → call reconcile → reconcile fails → restore
+//	Expected: activeSubs restored to {"topic/a": 1, "topic/c": 0}
+//
 // ───────────────────────────────────────────────
 //
 // Assertions:
@@ -286,10 +288,12 @@ func TestStartCtx_StoredInSession(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   Create parent context with cancel
-//   Derive reconnect context with 30s timeout from parent
-//   Cancel parent
-//   Expected: reconnect context is also cancelled
+//
+//	Create parent context with cancel
+//	Derive reconnect context with 30s timeout from parent
+//	Cancel parent
+//	Expected: reconnect context is also cancelled
+//
 // ───────────────────────────────────────────────
 //
 // Assertions:
@@ -345,8 +349,8 @@ func TestReconnectContext_IndependentFromBackground(t *testing.T) {
 // callback, verifying all invariants hold.
 //
 // This test simulates two consecutive reconnect cycles:
-//   1. First reconnect: reconcile fails → activeSubs restored
-//   2. Second reconnect: uses restored state for correct delta
+//  1. First reconnect: reconcile fails → activeSubs restored
+//  2. Second reconnect: uses restored state for correct delta
 func TestOnConnectionUp_RestorePattern_EndToEnd(t *testing.T) {
 	s := NewSession(
 		SessionOptions{

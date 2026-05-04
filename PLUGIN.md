@@ -42,20 +42,37 @@ type Session interface {
 }
 ```
 
-### Bridge Factory
+### Transport Factory (ports-first)
 
-To integrate with the builder, implement `bridge.TransportFactory` (from `bridge/factories.go`):
+To integrate with the builder, implement `ports.TransportFactory` (from `ports/factories.go`):
 
 ```go
 type TransportFactory interface {
-    NewSession(ctx context.Context, def config.SessionDef) (ports.Session, error)
-    NewReceiver(ctx context.Context, def config.ReceiverDef, session ports.Session) (ports.Receiver, error)
-    NewSender(ctx context.Context, def config.SenderDef, session ports.Session) (ports.Sender, error)
+    NewSession(ctx context.Context, spec ports.SessionSpec) (ports.Session, error)
+    NewReceiver(ctx context.Context, spec ports.ReceiverSpec, session ports.Session) (ports.Receiver, error)
+    NewSender(ctx context.Context, spec ports.SenderSpec, session ports.Session) (ports.Sender, error)
     Capabilities() []ports.Capability
 }
 ```
 
+The bridge converts the declarative `config.*Def` shapes into generic
+`ports.*Spec` values before invoking the factory. The plugin only sees
+ports types, so a transport adapter never needs to import `bridge` or
+`config` — its only inner-ring dependencies are `ports` (and `domain`,
+`logging` as needed).
+
 For stateless transports, `NewSession` should return `(nil, nil)`.
+
+Optional companion interfaces (also in `ports`):
+
+- `ports.VisibilityTimeoutProvider` — declares the source visibility
+  timeout used by the runtime validator (e.g. SQS).
+
+Transports that expose HTTP endpoints (e.g. the HTTP source / SSE
+sink) deliberately do not have a port-level abstraction: HTTP handlers
+are inherently HTTP, so the composition root wires them via the
+adapter's concrete type rather than through `ports/` (keeping
+`net/http` out of the inner ring).
 
 ### Registration
 
@@ -87,7 +104,7 @@ adapters/mycloud/transport/myqueue/
 ├── sender.go           # ports.Sender implementation
 ├── delivery.go         # ports.Delivery implementation
 ├── headers.go          # Transport-specific header mapping
-├── factory.go          # Bridge factory (TransportFactory)
+├── factory.go          # Transport factory (ports.TransportFactory)
 ├── receiver_test.go    # Unit tests
 └── sender_test.go
 ```
@@ -100,7 +117,13 @@ adapters/mycloud/transport/myqueue/
 
 3. **Header mapping**: Map transport-native message properties to `domain.Envelope.Headers` and vice versa. Strip `x-bridge.*` reserved headers at ingress.
 
-4. **Config parsing**: Parse `options map[string]any` from config definitions into typed config structs. Provide `ConfigFromOptions(map[string]any) (*Config, error)` helpers.
+4. **Config parsing**: Parse `Options map[string]any` from `ports.*Spec`
+   values into typed structs that live INSIDE the plugin package.
+   Provide `ReceiverConfigFromOptions`, `SenderConfigFromOptions`, and
+   `SessionOptionsFromMap` helpers (or equivalent). Plugin-specific
+   shapes MUST NOT be added to the core `config` package — keeping core
+   `config` generic is what lets new plugins ship without forking
+   gobridge.
 
 5. **Capabilities**: Return appropriate `ports.Capability` values:
    - `CapStatefulSession` -- transport uses sessions (e.g. MQTT)
@@ -115,14 +138,18 @@ adapters/mycloud/transport/myqueue/
 ```go
 var _ ports.Receiver = (*Receiver)(nil)
 var _ ports.Sender = (*Sender)(nil)
-var _ bridge.TransportFactory = (*BridgeFactory)(nil)
+var _ ports.TransportFactory = (*Factory)(nil)
 ```
 
 ### Reference Implementations
 
-- **Stateful (MQTT)**: `adapters/mqtt/transport/paho/` -- full Session with Reconcile, BridgeFactory wraps low-level Factory
-- **Stateless (SQS)**: `adapters/aws/transport/sqs/` -- no Session, supports BatchSender, visibility extension
-- **Stateless (ASB)**: `adapters/azure/transport/servicebus/` -- auto-extend message lock, batch send with size-limited batches
+- **Stateful (MQTT)**: `adapters/mqtt/transport/paho/` -- full Session
+  with Reconcile; `paho.Factory` directly satisfies `ports.TransportFactory`.
+- **Stateless (SQS)**: `adapters/aws/transport/sqs/` -- composes
+  `ReceiverFactory` and `SenderFactory` into a unified `Factory` that
+  also satisfies `ports.VisibilityTimeoutProvider`.
+- **Stateless (ASB)**: `adapters/azure/transport/servicebus/` -- auto-
+  extend message lock, batch send with size-limited batches.
 
 ## Store Adapters
 
@@ -156,17 +183,28 @@ type DLQStore interface {
 }
 ```
 
-### Bridge Factory
+### Store Factory (ports-first)
 
-Implement `bridge.StoreFactory` (from `bridge/factories.go`):
+Implement `ports.StoreFactory` (from `ports/stores.go`):
 
 ```go
 type StoreFactory interface {
-    NewLeaseStore(ctx context.Context, cfg config.StoreConfig) (ports.LeaseStore, error)
-    NewOutboxStore(ctx context.Context, cfg config.StoreConfig) (ports.OutboxStore, error)
-    NewDLQStore(ctx context.Context, cfg config.StoreConfig) (ports.DLQStore, error)
+    NewLeaseStore(ctx context.Context, spec ports.StoreSpec) (ports.LeaseStore, error)
+    NewOutboxStore(ctx context.Context, spec ports.StoreSpec) (ports.OutboxStore, error)
+    NewDLQStore(ctx context.Context, spec ports.StoreSpec) (ports.DLQStore, error)
 }
 ```
+
+`ports.StoreSpec` carries the generic `{ Type, Options }` produced by
+the bridge from `config.StoreConfig`. Like transport plugins, store
+plugins read their typed shape from `spec.Options` — they never import
+the core `config` package.
+
+Optional companion interface:
+
+- `ports.DistributedStoreFactory.IsDistributed() bool` — returns true
+  when the store provides cross-process coordination. Required for
+  clustered deployments.
 
 Return `(nil, nil)` for store types the factory does not support.
 
@@ -404,10 +442,18 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 
 ## Module Conventions
 
-1. **Separate go.mod**: Every adapter and processor is its own Go module
-2. **Add to go.work**: `go work use ./adapters/mycloud/...` then `go work sync`
-3. **doc.go**: Every package needs a `doc.go` explaining its purpose
-4. **Compile-time checks**: `var _ ports.X = (*T)(nil)` for all implemented interfaces
-5. **Error mapping**: Transport adapters must have an `errors.go` mapping SDK errors to `domain.BridgeError`
-6. **Config helpers**: Provide `ConfigFromOptions(map[string]any)` functions
-7. **No runtime imports**: Adapters and processors must never import `runtime/` or `bridge/`
+1. **Separate go.mod**: Every adapter and processor is its own Go module.
+2. **Add to go.work**: `go work use ./adapters/mycloud/...` then `go work sync`.
+3. **doc.go**: Every package needs a `doc.go` explaining its purpose.
+4. **Compile-time checks**: `var _ ports.X = (*T)(nil)` for all implemented interfaces.
+5. **Error mapping**: Transport adapters must have an `errors.go` mapping SDK errors to `domain.BridgeError`.
+6. **Config helpers**: Provide `ReceiverConfigFromOptions`, `SenderConfigFromOptions`,
+   `SessionOptionsFromMap`, etc. — typed plugin shapes live inside the
+   plugin package, never inside core `config`.
+7. **Hexagonal direction**: Adapters depend on `ports`, `domain`, and
+   their own SDK only. Adapters MUST NOT import `bridge`, `config`,
+   `runtime`, or other unrelated adapters. The architecture lint
+   (`make lint-arch`) enforces this; cross-adapter imports fail CI.
+8. **Config-source adapters are special**: packages under
+   `adapters/*/config/*` are the single category allowed to import
+   `config` (they exist to load `*config.BridgeConfig`).

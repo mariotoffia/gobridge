@@ -3,20 +3,21 @@ package config
 import (
 	"testing"
 
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestDefaultMerge_BridgeSettings(t *testing.T) {
-	base := &BridgeConfig{
-		Bridge: BridgeSettings{
+	base := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:             "base-bridge",
 			DeploymentMode: "standalone",
 			LogLevel:       "info",
 		},
 	}
-	overlay := &BridgeConfig{
-		Bridge: BridgeSettings{
+	overlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			DeploymentMode: "clustered",
 			LogLevel:       "debug",
 		},
@@ -31,14 +32,14 @@ func TestDefaultMerge_BridgeSettings(t *testing.T) {
 }
 
 func TestDefaultMerge_BridgeSettings_ZeroNotOverridden(t *testing.T) {
-	base := &BridgeConfig{
-		Bridge: BridgeSettings{
+	base := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:       "b1",
 			LogLevel: "warn",
 		},
 	}
-	overlay := &BridgeConfig{
-		Bridge: BridgeSettings{},
+	overlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{},
 	}
 
 	merged, err := DefaultMerge(base, overlay)
@@ -47,16 +48,16 @@ func TestDefaultMerge_BridgeSettings_ZeroNotOverridden(t *testing.T) {
 }
 
 func TestDefaultMerge_Stores_OverlayReplacesPerRole(t *testing.T) {
-	base := &BridgeConfig{
-		Bridge: BridgeSettings{ID: "b1"},
-		Stores: StoresConfig{
-			Lease:  &StoreConfig{Type: "memory"},
-			Outbox: &StoreConfig{Type: "memory"},
+	base := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1"},
+		Stores: ports.StoresConfig{
+			Lease:  &ports.StoreConfig{Type: "memory"},
+			Outbox: &ports.StoreConfig{Type: "memory"},
 		},
 	}
-	overlay := &BridgeConfig{
-		Stores: StoresConfig{
-			Lease: &StoreConfig{Type: "dynamodb", Options: map[string]any{"table": "leases"}},
+	overlay := &ports.BridgeConfig{
+		Stores: ports.StoresConfig{
+			Lease: &ports.StoreConfig{Type: "dynamodb", Options: map[string]any{"table": "leases"}},
 		},
 	}
 
@@ -69,15 +70,15 @@ func TestDefaultMerge_Stores_OverlayReplacesPerRole(t *testing.T) {
 }
 
 func TestDefaultMerge_SessionsByID(t *testing.T) {
-	base := &BridgeConfig{
-		Bridge: BridgeSettings{ID: "b1"},
-		Sessions: []SessionDef{
+	base := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1"},
+		Sessions: []ports.SessionDef{
 			{ID: "s1", Transport: "mqtt"},
 			{ID: "s2", Transport: "mqtt"},
 		},
 	}
-	overlay := &BridgeConfig{
-		Sessions: []SessionDef{
+	overlay := &ports.BridgeConfig{
+		Sessions: []ports.SessionDef{
 			{ID: "s2", Transport: "sqs"},
 			{ID: "s3", Transport: "sqs"},
 		},
@@ -93,14 +94,14 @@ func TestDefaultMerge_SessionsByID(t *testing.T) {
 }
 
 func TestDefaultMerge_RoutesByID(t *testing.T) {
-	base := &BridgeConfig{
-		Bridge: BridgeSettings{ID: "b1"},
-		Routes: []RouteDef{
+	base := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1"},
+		Routes: []ports.RouteDef{
 			{ID: "r1", ReceiverID: "recv1"},
 		},
 	}
-	overlay := &BridgeConfig{
-		Routes: []RouteDef{
+	overlay := &ports.BridgeConfig{
+		Routes: []ports.RouteDef{
 			{ID: "r1", ReceiverID: "recv2"},
 			{ID: "r2", ReceiverID: "recv3"},
 		},
@@ -115,12 +116,12 @@ func TestDefaultMerge_RoutesByID(t *testing.T) {
 }
 
 func TestDefaultMerge_HTTP_OverlayReplacesWhole(t *testing.T) {
-	base := &BridgeConfig{
-		Bridge: BridgeSettings{ID: "b1"},
-		HTTP:   &HTTPConfig{AdminAddr: ":8080", AdminAPIKey: "key1"},
+	base := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1"},
+		HTTP:   &ports.HTTPConfig{AdminAddr: ":8080", AdminAPIKey: "key1"},
 	}
-	overlay := &BridgeConfig{
-		HTTP: &HTTPConfig{AdminAddr: ":9090", AdminAPIKey: "key2"},
+	overlay := &ports.BridgeConfig{
+		HTTP: &ports.HTTPConfig{AdminAddr: ":9090", AdminAPIKey: "key2"},
 	}
 
 	merged, err := DefaultMerge(base, overlay)
@@ -131,11 +132,11 @@ func TestDefaultMerge_HTTP_OverlayReplacesWhole(t *testing.T) {
 }
 
 func TestDefaultMerge_HTTP_NilOverlayPreservesBase(t *testing.T) {
-	base := &BridgeConfig{
-		Bridge: BridgeSettings{ID: "b1"},
-		HTTP:   &HTTPConfig{AdminAddr: ":8080", AdminAPIKey: "key1"},
+	base := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1"},
+		HTTP:   &ports.HTTPConfig{AdminAddr: ":8080", AdminAPIKey: "key1"},
 	}
-	overlay := &BridgeConfig{}
+	overlay := &ports.BridgeConfig{}
 
 	merged, err := DefaultMerge(base, overlay)
 	require.NoError(t, err)
@@ -145,12 +146,12 @@ func TestDefaultMerge_HTTP_NilOverlayPreservesBase(t *testing.T) {
 }
 
 func TestDefaultMerge_ConfigWatch(t *testing.T) {
-	base := &BridgeConfig{
-		Bridge:      BridgeSettings{ID: "b1"},
-		ConfigWatch: &ConfigWatchDef{Mode: "notify", Debounce: "100ms"},
+	base := &ports.BridgeConfig{
+		Bridge:      ports.BridgeSettings{ID: "b1"},
+		ConfigWatch: &ports.ConfigWatchDef{Mode: "notify", Debounce: "100ms"},
 	}
-	overlay := &BridgeConfig{
-		ConfigWatch: &ConfigWatchDef{Mode: "poll", PollInterval: "15s"},
+	overlay := &ports.BridgeConfig{
+		ConfigWatch: &ports.ConfigWatchDef{Mode: "poll", PollInterval: "15s"},
 	}
 
 	merged, err := DefaultMerge(base, overlay)
@@ -161,15 +162,15 @@ func TestDefaultMerge_ConfigWatch(t *testing.T) {
 }
 
 func TestDefaultMerge_DoesNotMutateBase(t *testing.T) {
-	base := &BridgeConfig{
-		Bridge: BridgeSettings{ID: "b1", LogLevel: "info"},
-		Sessions: []SessionDef{
+	base := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1", LogLevel: "info"},
+		Sessions: []ports.SessionDef{
 			{ID: "s1", Transport: "mqtt"},
 		},
 	}
-	overlay := &BridgeConfig{
-		Bridge: BridgeSettings{LogLevel: "debug"},
-		Sessions: []SessionDef{
+	overlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{LogLevel: "debug"},
+		Sessions: []ports.SessionDef{
 			{ID: "s1", Transport: "sqs"},
 		},
 	}
@@ -182,20 +183,20 @@ func TestDefaultMerge_DoesNotMutateBase(t *testing.T) {
 }
 
 func TestDefaultMerge_ClusteredWithDistributedOverlay(t *testing.T) {
-	base := &BridgeConfig{
-		Bridge: BridgeSettings{
+	base := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:             "bridge1",
 			DeploymentMode: "clustered",
 		},
-		Stores: StoresConfig{
-			Lease:  &StoreConfig{Type: "memory"},
-			Outbox: &StoreConfig{Type: "memory"},
+		Stores: ports.StoresConfig{
+			Lease:  &ports.StoreConfig{Type: "memory"},
+			Outbox: &ports.StoreConfig{Type: "memory"},
 		},
 	}
-	overlay := &BridgeConfig{
-		Stores: StoresConfig{
-			Lease:  &StoreConfig{Type: "dynamodb"},
-			Outbox: &StoreConfig{Type: "dynamodb"},
+	overlay := &ports.BridgeConfig{
+		Stores: ports.StoresConfig{
+			Lease:  &ports.StoreConfig{Type: "dynamodb"},
+			Outbox: &ports.StoreConfig{Type: "dynamodb"},
 		},
 	}
 

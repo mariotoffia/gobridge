@@ -7,8 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/logging"
 )
 
 // Store implements ports.OutboxStore in memory for unit tests.
@@ -17,7 +18,7 @@ type Store struct {
 	mu            sync.Mutex
 	records       map[string]*domain.OutboxRecord // keyed by record ID
 	dedup         map[string]bool                 // keyed by "EnvelopeID\x00BindingID"
-	now           func() time.Time
+	clk           clock.Clock
 	logger        *slog.Logger
 	latestVersion map[string]uint64 // per-partition fencing token version
 }
@@ -25,9 +26,14 @@ type Store struct {
 // Option configures a Store.
 type Option func(*Store)
 
-// WithClock overrides the time source (defaults to time.Now).
-func WithClock(fn func() time.Time) Option {
-	return func(s *Store) { s.now = fn }
+// WithClock overrides the clock used for timestamps.
+// Defaults to clock.System when nil or not set.
+func WithClock(c clock.Clock) Option {
+	return func(s *Store) {
+		if c != nil {
+			s.clk = c
+		}
+	}
 }
 
 // WithLogger sets a structured logger for trace-level diagnostics.
@@ -40,7 +46,7 @@ func NewStore(opts ...Option) *Store {
 	s := &Store{
 		records:       make(map[string]*domain.OutboxRecord),
 		dedup:         make(map[string]bool),
-		now:           time.Now,
+		clk:           clock.System,
 		latestVersion: make(map[string]uint64),
 	}
 	for _, o := range opts {
@@ -75,7 +81,7 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 		}
 	}
 
-	now := s.now()
+	now := s.clk.Now()
 	for i := range records {
 		r := records[i] // copy
 		r.Status = domain.OutboxPending
@@ -125,7 +131,7 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 		candidates = candidates[:limit]
 	}
 
-	now := s.now()
+	now := s.clk.Now()
 	result := make([]domain.OutboxRecord, 0, len(candidates))
 	for _, r := range candidates {
 		r.Status = domain.OutboxClaimed
@@ -160,7 +166,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.L
 				With("givenVersion", token.Version)
 		}
 		r.Status = domain.OutboxCompleted
-		r.CompletedAt = s.now()
+		r.CompletedAt = s.clk.Now()
 	}
 	return nil
 }

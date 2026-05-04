@@ -7,10 +7,16 @@
 *.dll
 *.so
 *.dylib
+.DS_Store
 
 # Go compiled binaries (bare names — convention: use .out postfix)
 /gobridge
 /cmd/gobridge/gobridge
+
+# Local build outputs
+/bin/
+/scripts/aclcheck/aclcheck
+/scripts/aggcheck/aggcheck
 
 # Test binary, built with `go test -c`
 *.test

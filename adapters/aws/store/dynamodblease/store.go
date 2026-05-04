@@ -12,8 +12,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/logging"
 )
 
 const (
@@ -41,7 +42,7 @@ type Store struct {
 	client      *dynamodb.Client
 	tableName   string
 	gracePeriod time.Duration
-	now         func() time.Time
+	clk         clock.Clock
 	logger      *slog.Logger
 }
 
@@ -59,9 +60,14 @@ func WithGracePeriod(d time.Duration) Option {
 	return func(s *Store) { s.gracePeriod = d }
 }
 
-// WithClock overrides the time source (defaults to time.Now).
-func WithClock(fn func() time.Time) Option {
-	return func(s *Store) { s.now = fn }
+// WithClock overrides the clock used for timestamps.
+// Defaults to clock.System when nil or not set.
+func WithClock(c clock.Clock) Option {
+	return func(s *Store) {
+		if c != nil {
+			s.clk = c
+		}
+	}
 }
 
 // WithLogger sets the structured logger for trace/debug diagnostics.
@@ -75,7 +81,7 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 		client:      client,
 		tableName:   defaultTableName,
 		gracePeriod: defaultGracePeriod,
-		now:         time.Now,
+		clk:         clock.System,
 	}
 	for _, o := range opts {
 		o(s)
@@ -92,7 +98,7 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodblease: acquire", "lease_id", leaseID, "owner_id", ownerID)
 	}
 
-	now := s.now()
+	now := s.clk.Now()
 	expiresAt := now.Add(ttl)
 	pk := leaseKey(leaseID)
 
@@ -183,7 +189,7 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseTok
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodblease: renew", "lease_id", leaseID, "owner_id", token.Owner)
 	}
 
-	now := s.now()
+	now := s.clk.Now()
 	expiresAt := now.Add(ttl)
 	pk := leaseKey(leaseID)
 
@@ -237,7 +243,7 @@ func (s *Store) Release(ctx context.Context, leaseID string, token domain.LeaseT
 	}
 
 	pk := leaseKey(leaseID)
-	now := s.now()
+	now := s.clk.Now()
 
 	_, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.tableName,

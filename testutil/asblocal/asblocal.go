@@ -48,7 +48,7 @@ const (
 	containerPrefix = "gobridge-asblocal-"
 	networkPrefix   = "gobridge-asbnet-"
 
-	defaultSQLImage     = "mcr.microsoft.com/mssql/server:2022-latest"
+	defaultSQLImage      = "mcr.microsoft.com/mssql/server:2022-latest"
 	defaultEmulatorImage = "mcr.microsoft.com/azure-messaging/servicebus-emulator:latest"
 
 	sqlPassword = "Str0ngPa$$w0rd!"
@@ -61,17 +61,15 @@ type options struct {
 }
 
 var (
-	mu            sync.Mutex
-	resolved      bool
-	fromEnv       bool
-	connStr       string
-	sqlContainer  string
-	emuContainer  string
-	networkName   string
-	configPath    string
-	cleanupFn     func()
-	initErr       error
-	opts          options
+	mu           sync.Mutex
+	resolved     bool
+	fromEnv      bool
+	connStr      string
+	emuContainer string
+	configPath   string
+	cleanupFn    func()
+	initErr      error
+	opts         options
 )
 
 // Option configures the ASB emulator test infrastructure.
@@ -280,9 +278,7 @@ func startContainers() (string, func(), error) {
 		return "", nil, fmt.Errorf("docker run emulator: %w\n%s", err, out)
 	}
 
-	sqlContainer = sqlName
 	emuContainer = emuName
-	networkName = netName
 
 	if err := waitForContainerHealthy(emuName, 30*time.Second); err != nil {
 		logContainerFailure(emuName)

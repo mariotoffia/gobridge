@@ -116,10 +116,12 @@ func TestPushEvent_AfterClose_IsNoop(t *testing.T) {
 //
 // Scenario:
 // ───────────────────────────────────────────────────────────────────────
-//   Buffer capacity = 16
-//   Push 16 events (types 0..15), filling the buffer
-//   Push 1 more event (type SessionError)
-//   The oldest event should be dropped; newest should be present
+//
+//	Buffer capacity = 16
+//	Push 16 events (types 0..15), filling the buffer
+//	Push 1 more event (type SessionError)
+//	The oldest event should be dropped; newest should be present
+//
 // ───────────────────────────────────────────────────────────────────────
 //
 // Assertions:

@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -156,7 +158,12 @@ func TestDLQRouter_Route_StoreWriteError_Propagated(t *testing.T) {
 // Verifies all DLQEntry fields are correctly populated from the Route call.
 func TestDLQRouter_Route_AllFieldsPopulated(t *testing.T) {
 	store := NewFakeDLQStore()
-	dlq := runtime.NewDLQRouter(store)
+	failedAt := time.Date(2026, 5, 4, 12, 34, 56, 789, time.UTC)
+	clk := clocktest.NewAt(failedAt)
+	dlq := runtime.NewDLQRouterFromConfig(runtime.DLQRouterConfig{
+		Store: store,
+		Clock: clk,
+	})
 
 	env := &domain.Envelope{
 		ID:      "msg-all",
@@ -208,8 +215,8 @@ func TestDLQRouter_Route_AllFieldsPopulated(t *testing.T) {
 	if entry.LastError == "" {
 		t.Fatal("LastError should not be empty")
 	}
-	if entry.FailedAt.IsZero() {
-		t.Fatal("FailedAt should be set")
+	if !entry.FailedAt.Equal(failedAt) {
+		t.Fatalf("expected FailedAt from injected clock %s, got %s", failedAt, entry.FailedAt)
 	}
 	if entry.Attempts != 7 {
 		t.Fatalf("expected Attempts 7, got %d", entry.Attempts)

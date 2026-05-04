@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 
 	ddbconfig "github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb"
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
 
@@ -34,14 +36,14 @@ func newLoader(t *testing.T, prefix string) *ddbconfig.Loader {
 	return loader
 }
 
-func sampleConfig() *config.BridgeConfig {
-	return &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+func sampleConfig() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:              "test-bridge",
 			ShutdownTimeout: "10s",
 			LogLevel:        "info",
 		},
-		Sessions: []config.SessionDef{
+		Sessions: []ports.SessionDef{
 			{
 				ID:        "mqtt-1",
 				Transport: "mqtt",
@@ -50,24 +52,24 @@ func sampleConfig() *config.BridgeConfig {
 				},
 			},
 		},
-		Receivers: []config.ReceiverDef{
+		Receivers: []ports.ReceiverDef{
 			{
 				ID:        "rx-1",
 				Transport: "mqtt",
 				SessionID: "mqtt-1",
-				Topics: []config.SubscriptionDef{
+				Topics: []ports.SubscriptionDef{
 					{Topic: "sensors/#", QoS: 1},
 				},
 			},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{
 				ID:        "tx-1",
 				Transport: "mqtt",
 				SessionID: "mqtt-1",
 			},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:         "route-1",
 				ReceiverID: "rx-1",
@@ -192,12 +194,14 @@ func TestWatchDetectsChanges(t *testing.T) {
 
 // Verifies Watch does not emit when the stored configuration version is unchanged across polls.
 func TestWatchNoDuplicates(t *testing.T) {
+	fc := clocktest.New()
 	client := ddblocal.Client(t)
 	tableName := ddblocal.UniqueTable("cfg-nodup")
 	loader := ddbconfig.NewLoader(client,
 		ddbconfig.WithTableName(tableName),
 		ddbconfig.WithBridgeID("test-bridge"),
 		ddbconfig.WithPollInterval(100*time.Millisecond),
+		ddbconfig.WithClock(fc),
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -220,9 +224,14 @@ func TestWatchNoDuplicates(t *testing.T) {
 		t.Fatalf("watch: %v", err)
 	}
 
-	// TODO(clock): replace with fake-clock advance once pollLoop uses clk ticker.
-	// Wait for a few poll cycles; no new version means no emission.
-	time.Sleep(500 * time.Millisecond) //nolint:forbidigo // legacy sleep — needs fake clock
+	if got := fc.TickerCount(); got != 1 {
+		t.Fatalf("expected poll ticker to be registered synchronously, got %d", got)
+	}
+
+	// Fire 5 poll cycles; no new version means no emission.
+	fc.Advance(500 * time.Millisecond)
+	// Yield so the goroutine can drain pending ticks.
+	runtime.Gosched()
 
 	select {
 	case got := <-ch:

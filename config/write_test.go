@@ -6,46 +6,47 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func testConfig() *BridgeConfig {
-	return &BridgeConfig{
-		Bridge: BridgeSettings{
+func testConfig() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:              "bridge-1",
 			DeploymentMode:  "standalone",
 			ShutdownTimeout: "30s",
 		},
-		Sessions: []SessionDef{
+		Sessions: []ports.SessionDef{
 			{
 				ID:        "mqtt-sess",
 				Transport: "mqtt",
 				Options:   map[string]any{"client_id": "factory-a"},
 			},
 		},
-		Receivers: []ReceiverDef{
+		Receivers: []ports.ReceiverDef{
 			{
 				ID:        "sqs-rx",
 				Transport: "sqs",
-				Topics: []SubscriptionDef{
+				Topics: []ports.SubscriptionDef{
 					{Topic: "orders", QoS: 1},
 				},
 			},
 		},
-		Senders: []SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "mqtt-tx", Transport: "mqtt", SessionID: "mqtt-sess"},
 		},
-		Bindings: []BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "bind-a", SenderID: "mqtt-tx", SessionID: "mqtt-sess", Address: "factory/a/orders"},
 		},
-		Routes: []RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:           "sqs-to-mqtt",
 				ReceiverID:   "sqs-rx",
 				DeliveryMode: "direct_hold",
 				Bindings:     []string{"bind-a"},
-				Policy: PolicyDef{
+				Policy: ports.PolicyDef{
 					MaxInFlight:        100,
 					OnExpired:          "dlq",
 					OnPermanentFailure: "dlq",
@@ -80,8 +81,8 @@ func TestMarshalYAML_RoundTrip(t *testing.T) {
 }
 
 func TestMarshalYAML_OmitsEmptyFields(t *testing.T) {
-	cfg := &BridgeConfig{
-		Bridge: BridgeSettings{ID: "minimal"},
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "minimal"},
 	}
 
 	data, err := MarshalYAML(cfg)
@@ -120,7 +121,7 @@ func TestWriteFile_PreservesPermissions(t *testing.T) {
 	// Create file with custom permissions.
 	require.NoError(t, os.WriteFile(path, []byte("bridge:\n  id: old\n"), 0600))
 
-	cfg := &BridgeConfig{Bridge: BridgeSettings{ID: "new"}}
+	cfg := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "new"}}
 	require.NoError(t, WriteFile(path, cfg))
 
 	info, err := os.Stat(path)
@@ -133,11 +134,11 @@ func TestWriteFile_OverwritesExisting(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 
 	// Write initial config.
-	cfg1 := &BridgeConfig{Bridge: BridgeSettings{ID: "first"}}
+	cfg1 := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "first"}}
 	require.NoError(t, WriteFile(path, cfg1))
 
 	// Overwrite with different config.
-	cfg2 := &BridgeConfig{Bridge: BridgeSettings{ID: "second"}}
+	cfg2 := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "second"}}
 	require.NoError(t, WriteFile(path, cfg2))
 
 	parsed, err := ParseFile(path, FormatYAML)
@@ -149,7 +150,7 @@ func TestWriteFile_NewFile_DefaultPermissions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "new-config.yaml")
 
-	cfg := &BridgeConfig{Bridge: BridgeSettings{ID: "fresh"}}
+	cfg := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "fresh"}}
 	require.NoError(t, WriteFile(path, cfg))
 
 	info, err := os.Stat(path)

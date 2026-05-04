@@ -18,8 +18,11 @@
 //   - CredentialStore: URI-based credential resolution
 //   - CredentialRepository: per-backend credential adapter
 //   - CredentialAdmin: credential lifecycle management (CRUD)
-//   - ConfigLoader: bridge configuration loading from external sources
-//   - ConfigReloader: configuration loading with change-watching
+//
+// Configuration loader/watcher contracts live in the config package
+// (ports.Loader, ports.Watcher, ports.Reloader) because their
+// signatures intrinsically depend on *ports.BridgeConfig. Keeping
+// them in config preserves the rule that ports imports only domain.
 //
 // Adapter modules under adapters/ implement these interfaces.
 // The bridge/runtime package (future) depends on these interfaces.

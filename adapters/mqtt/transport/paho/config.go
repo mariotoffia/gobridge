@@ -7,6 +7,8 @@ import (
 	"math"
 	"os"
 	"time"
+
+	"github.com/mariotoffia/gobridge/domain/clock"
 )
 
 // SessionOptions holds MQTT connection and session configuration.
@@ -32,6 +34,7 @@ type SessionOptions struct {
 	// autopaho default (10s). Shorter values speed up reconnection in
 	// test environments but increase load on the broker in production.
 	ReconnectDelay time.Duration
+	Clock          clock.Clock
 }
 
 // ReceiverOptions holds MQTT receiver-specific configuration.
@@ -41,12 +44,11 @@ type ReceiverOptions struct {
 
 // SenderOptions holds MQTT sender-specific configuration.
 type SenderOptions struct {
-	DefaultTopic     string
-	QoS              byte
-	Retain           bool
-	Timeout          time.Duration
+	DefaultTopic       string
+	QoS                byte
+	Retain             bool
+	Timeout            time.Duration
 	ThrottleRetryAfter time.Duration
-	CircuitBreaker   *CBConfig // nil = disabled (opt-in)
 }
 
 // TLSConfig holds TLS settings for the MQTT connection.
@@ -68,7 +70,7 @@ type TLSConfig struct {
 	// it takes precedence over the corresponding *File field.
 	CACertPEM string
 	CertPEM   string
-	KeyPEM   string
+	KeyPEM    string
 
 	InsecureSkipVerify bool
 }
@@ -80,6 +82,7 @@ func DefaultSessionOptions() SessionOptions {
 		ConnectTimeout:   30 * time.Second,
 		ReconnectTimeout: 30 * time.Second,
 		CleanStart:       true,
+		Clock:            clock.System,
 	}
 }
 

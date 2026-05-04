@@ -112,6 +112,10 @@ type SenderConfig struct {
 
 	// Metrics is an optional metrics exporter for adapter-internal metrics.
 	Metrics ports.MetricsExporter
+
+	// Clock provides message timestamps and operation timing.
+	// When nil defaults to clock.System.
+	Clock clock.Clock
 }
 
 func (c *ReceiverConfig) validate() error {
@@ -163,6 +167,9 @@ func (c *SenderConfig) validate() error {
 }
 
 func (c *SenderConfig) applyDefaults() {
+	if c.Clock == nil {
+		c.Clock = clock.System
+	}
 	if c.BatchSize <= 0 {
 		c.BatchSize = 10
 	}

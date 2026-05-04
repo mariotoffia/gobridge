@@ -5,13 +5,13 @@ import (
 	"testing"
 
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // Verifies the memory store factory returns a non-nil lease store.
 func TestMemoryStoreFactory_NewLeaseStore(t *testing.T) {
 	f := nativestore.NewMemoryStoreFactory()
-	s, err := f.NewLeaseStore(context.Background(), config.StoreConfig{})
+	s, err := f.NewLeaseStore(context.Background(), ports.StoreSpec{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -23,7 +23,7 @@ func TestMemoryStoreFactory_NewLeaseStore(t *testing.T) {
 // Verifies the memory store factory returns a non-nil outbox store.
 func TestMemoryStoreFactory_NewOutboxStore(t *testing.T) {
 	f := nativestore.NewMemoryStoreFactory()
-	s, err := f.NewOutboxStore(context.Background(), config.StoreConfig{})
+	s, err := f.NewOutboxStore(context.Background(), ports.StoreSpec{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestMemoryStoreFactory_NewOutboxStore(t *testing.T) {
 // Verifies the memory store factory returns a non-nil DLQ store.
 func TestMemoryStoreFactory_NewDLQStore(t *testing.T) {
 	f := nativestore.NewMemoryStoreFactory()
-	s, err := f.NewDLQStore(context.Background(), config.StoreConfig{})
+	s, err := f.NewDLQStore(context.Background(), ports.StoreSpec{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestMemoryStoreFactory_NewDLQStore(t *testing.T) {
 // Verifies the SQLite store factory returns a nil lease store.
 func TestSQLiteStoreFactory_NewLeaseStore_ReturnsError(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
-	s, err := f.NewLeaseStore(context.Background(), config.StoreConfig{})
+	s, err := f.NewLeaseStore(context.Background(), ports.StoreSpec{})
 	if err == nil {
 		t.Fatal("expected error for unimplemented SQLite lease store")
 	}
@@ -59,11 +59,11 @@ func TestSQLiteStoreFactory_NewLeaseStore_ReturnsError(t *testing.T) {
 // Verifies the SQLite factory builds an outbox store when a database path is configured.
 func TestSQLiteStoreFactory_NewOutboxStore(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
-	cfg := config.StoreConfig{
+	spec := ports.StoreSpec{
 		Options: map[string]any{"path": ":memory:"},
 	}
 
-	s, err := f.NewOutboxStore(context.Background(), cfg)
+	s, err := f.NewOutboxStore(context.Background(), spec)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -75,11 +75,11 @@ func TestSQLiteStoreFactory_NewOutboxStore(t *testing.T) {
 // Verifies the SQLite factory builds a DLQ store when a database path is configured.
 func TestSQLiteStoreFactory_NewDLQStore(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
-	cfg := config.StoreConfig{
+	spec := ports.StoreSpec{
 		Options: map[string]any{"path": ":memory:"},
 	}
 
-	s, err := f.NewDLQStore(context.Background(), cfg)
+	s, err := f.NewDLQStore(context.Background(), spec)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,12 +92,12 @@ func TestSQLiteStoreFactory_NewDLQStore(t *testing.T) {
 func TestSQLiteStoreFactory_MissingPath(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
 
-	_, err := f.NewOutboxStore(context.Background(), config.StoreConfig{})
+	_, err := f.NewOutboxStore(context.Background(), ports.StoreSpec{})
 	if err == nil {
 		t.Fatal("expected error for missing path option")
 	}
 
-	_, err = f.NewDLQStore(context.Background(), config.StoreConfig{
+	_, err = f.NewDLQStore(context.Background(), ports.StoreSpec{
 		Options: map[string]any{"other": "value"},
 	})
 	if err == nil {

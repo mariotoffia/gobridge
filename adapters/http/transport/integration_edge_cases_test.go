@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
-	"github.com/mariotoffia/gobridge/config"
+
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -24,8 +24,8 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestEdge_ReceiverDoubleRunNoPanic(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "double-run"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "double-run"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -76,8 +76,8 @@ func TestEdge_ReceiverDoubleRunNoPanic(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdge_SubjectRequired(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	_, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "no-subject"}, nil)
+	factory := transport.NewFactory()
+	_, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "no-subject"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestEdge_SubjectRequired(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	recv, _ := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "no-subj2"}, nil)
+	recv, _ := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "no-subj2"}, nil)
 	go func() {
 		_ = recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
 			return d.Ack(context.Background())
@@ -109,8 +109,8 @@ func TestEdge_SubjectRequired(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdge_ReservedHeadersStrippedAtIngress(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "strip-hdrs"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "strip-hdrs"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -285,8 +285,8 @@ func TestEdge_ForwarderRemoteReturns500(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdge_SSEFieldSanitization(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	sender, err := factory.NewSender(context.Background(), config.SenderDef{
+	factory := transport.NewFactory()
+	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID: "sse-sanitize", Options: map[string]any{"mode": "sse"},
 	}, nil)
 	if err != nil {
@@ -363,8 +363,8 @@ func TestEdge_SSEFieldSanitization(t *testing.T) {
 
 func TestEdge_LocatorErrorReturns502(t *testing.T) {
 	loc := &stubLocator{err: errors.New("lease service unavailable")}
-	factory := transport.NewBridgeFactory(transport.WithRouteLocator(loc))
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "loc-err"}, nil)
+	factory := transport.NewFactory(transport.WithRouteLocator(loc))
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "loc-err"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -397,8 +397,8 @@ func TestEdge_LocatorErrorReturns502(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdge_SendWithNoClients(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	sender, err := factory.NewSender(context.Background(), config.SenderDef{
+	factory := transport.NewFactory()
+	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID: "sse-empty", Options: map[string]any{"mode": "sse"},
 	}, nil)
 	if err != nil {
@@ -423,8 +423,8 @@ func TestEdge_ErrorResponsesAreGeneric(t *testing.T) {
 	loc := &stubLocator{
 		err: errors.New("DynamoDB connection refused: host=10.0.1.5:8000"),
 	}
-	factory := transport.NewBridgeFactory(transport.WithRouteLocator(loc))
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "generic-err"}, nil)
+	factory := transport.NewFactory(transport.WithRouteLocator(loc))
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "generic-err"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}

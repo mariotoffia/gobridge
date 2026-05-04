@@ -125,7 +125,7 @@ routes:
 
 // writeBridgeConfigYAML marshals a BridgeConfig to JSON (which is valid
 // YAML) and writes it to a temp file. Returns the file path.
-func writeBridgeConfigYAML(t *testing.T, cfg *config.BridgeConfig) string {
+func writeBridgeConfigYAML(t *testing.T, cfg *ports.BridgeConfig) string {
 	t.Helper()
 	data, err := json.Marshal(cfg)
 	if err != nil {
@@ -175,7 +175,7 @@ func newTestConfigManager(t *testing.T, basePath string, loader *ddbconfig.Loade
 }
 
 // waitForConfig reads a config from the channel with a timeout.
-func waitForConfig(t *testing.T, ch <-chan *config.BridgeConfig, timeout time.Duration) *config.BridgeConfig {
+func waitForConfig(t *testing.T, ch <-chan *ports.BridgeConfig, timeout time.Duration) *ports.BridgeConfig {
 	t.Helper()
 	select {
 	case cfg, ok := <-ch:
@@ -193,7 +193,7 @@ func waitForConfig(t *testing.T, ch <-chan *config.BridgeConfig, timeout time.Du
 }
 
 // waitForNoConfig asserts that no config arrives within the given duration.
-func waitForNoConfig(t *testing.T, ch <-chan *config.BridgeConfig, duration time.Duration) {
+func waitForNoConfig(t *testing.T, ch <-chan *ports.BridgeConfig, duration time.Duration) {
 	t.Helper()
 	select {
 	case cfg := <-ch:
@@ -209,27 +209,27 @@ func waitForNoConfig(t *testing.T, ch <-chan *config.BridgeConfig, duration time
 
 // minimalOverlay returns a BridgeConfig with only the bridge ID set.
 // This is the smallest valid overlay (all merges are non-destructive).
-func minimalOverlay(bridgeID string) *config.BridgeConfig {
-	return &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: bridgeID},
+func minimalOverlay(bridgeID string) *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: bridgeID},
 	}
 }
 
 // overlayWithRoute creates a config overlay that adds a complete route
 // (receiver, sender, binding, route) using the fake transport.
-func overlayWithRoute(bridgeID, routeID string) *config.BridgeConfig {
-	return &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: bridgeID},
-		Receivers: []config.ReceiverDef{
+func overlayWithRoute(bridgeID, routeID string) *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: bridgeID},
+		Receivers: []ports.ReceiverDef{
 			{ID: routeID + "-rx", Transport: "fake"},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: routeID + "-tx", Transport: "fake"},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: routeID + "-b", SenderID: routeID + "-tx", Address: "addr/" + routeID},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:           routeID,
 				ReceiverID:   routeID + "-rx",
@@ -276,7 +276,7 @@ type cfgFakeSender struct{}
 
 func (s *cfgFakeSender) Send(_ context.Context, _ *domain.Envelope) error { return nil }
 
-// cfgFakeTransportFactory implements bridge.TransportFactory for test configs
+// cfgFakeTransportFactory implements ports.TransportFactory for test configs
 // that use transport="fake".
 type cfgFakeTransportFactory struct {
 	mu            sync.Mutex
@@ -285,21 +285,21 @@ type cfgFakeTransportFactory struct {
 	senderCalls   int
 }
 
-func (f *cfgFakeTransportFactory) NewSession(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+func (f *cfgFakeTransportFactory) NewSession(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 	f.mu.Lock()
 	f.sessionCalls++
 	f.mu.Unlock()
 	return newCfgFakeSession(), nil
 }
 
-func (f *cfgFakeTransportFactory) NewReceiver(_ context.Context, _ config.ReceiverDef, _ ports.Session) (ports.Receiver, error) {
+func (f *cfgFakeTransportFactory) NewReceiver(_ context.Context, _ ports.ReceiverSpec, _ ports.Session) (ports.Receiver, error) {
 	f.mu.Lock()
 	f.receiverCalls++
 	f.mu.Unlock()
 	return &cfgFakeReceiver{}, nil
 }
 
-func (f *cfgFakeTransportFactory) NewSender(_ context.Context, _ config.SenderDef, _ ports.Session) (ports.Sender, error) {
+func (f *cfgFakeTransportFactory) NewSender(_ context.Context, _ ports.SenderSpec, _ ports.Session) (ports.Sender, error) {
 	f.mu.Lock()
 	f.senderCalls++
 	f.mu.Unlock()
@@ -322,15 +322,15 @@ type cfgBrokenTransportFactory struct {
 	err error
 }
 
-func (f *cfgBrokenTransportFactory) NewSession(_ context.Context, _ config.SessionDef) (ports.Session, error) {
+func (f *cfgBrokenTransportFactory) NewSession(_ context.Context, _ ports.SessionSpec) (ports.Session, error) {
 	return nil, f.err
 }
 
-func (f *cfgBrokenTransportFactory) NewReceiver(_ context.Context, _ config.ReceiverDef, _ ports.Session) (ports.Receiver, error) {
+func (f *cfgBrokenTransportFactory) NewReceiver(_ context.Context, _ ports.ReceiverSpec, _ ports.Session) (ports.Receiver, error) {
 	return nil, f.err
 }
 
-func (f *cfgBrokenTransportFactory) NewSender(_ context.Context, _ config.SenderDef, _ ports.Session) (ports.Sender, error) {
+func (f *cfgBrokenTransportFactory) NewSender(_ context.Context, _ ports.SenderSpec, _ ports.Session) (ports.Sender, error) {
 	return nil, f.err
 }
 
@@ -382,13 +382,13 @@ func (s *cfgFakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([
 
 type cfgFakeStoreFactory struct{}
 
-func (f *cfgFakeStoreFactory) NewLeaseStore(_ context.Context, _ config.StoreConfig) (ports.LeaseStore, error) {
+func (f *cfgFakeStoreFactory) NewLeaseStore(_ context.Context, _ ports.StoreSpec) (ports.LeaseStore, error) {
 	return &cfgFakeLeaseStore{}, nil
 }
-func (f *cfgFakeStoreFactory) NewOutboxStore(_ context.Context, _ config.StoreConfig) (ports.OutboxStore, error) {
+func (f *cfgFakeStoreFactory) NewOutboxStore(_ context.Context, _ ports.StoreSpec) (ports.OutboxStore, error) {
 	return &cfgFakeOutboxStore{}, nil
 }
-func (f *cfgFakeStoreFactory) NewDLQStore(_ context.Context, _ config.StoreConfig) (ports.DLQStore, error) {
+func (f *cfgFakeStoreFactory) NewDLQStore(_ context.Context, _ ports.StoreSpec) (ports.DLQStore, error) {
 	return nil, nil
 }
 
@@ -410,8 +410,8 @@ func newCfgTestSupervisor(opts ...bridge.SupervisorOption) *bridge.Supervisor {
 func runSupervisorInBackground(
 	ctx context.Context,
 	s *bridge.Supervisor,
-	cfg *config.BridgeConfig,
-	changes <-chan *config.BridgeConfig,
+	cfg *ports.BridgeConfig,
+	changes <-chan *ports.BridgeConfig,
 ) (context.CancelFunc, <-chan error) {
 	ctx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)
@@ -456,13 +456,13 @@ func waitForSupervisorRouteID(t *testing.T, s *bridge.Supervisor, routeID string
 
 // Interface compliance checks.
 var (
-	_ bridge.TransportFactory = (*cfgFakeTransportFactory)(nil)
-	_ bridge.TransportFactory = (*cfgBrokenTransportFactory)(nil)
-	_ bridge.TransportFactory = (*cfgExclusiveTransportFactory)(nil)
-	_ bridge.StoreFactory     = (*cfgFakeStoreFactory)(nil)
-	_ ports.Session           = (*cfgFakeSession)(nil)
-	_ ports.Receiver          = (*cfgFakeReceiver)(nil)
-	_ ports.Sender            = (*cfgFakeSender)(nil)
-	_ ports.LeaseStore        = (*cfgFakeLeaseStore)(nil)
-	_ ports.OutboxStore       = (*cfgFakeOutboxStore)(nil)
+	_ ports.TransportFactory = (*cfgFakeTransportFactory)(nil)
+	_ ports.TransportFactory = (*cfgBrokenTransportFactory)(nil)
+	_ ports.TransportFactory = (*cfgExclusiveTransportFactory)(nil)
+	_ ports.StoreFactory     = (*cfgFakeStoreFactory)(nil)
+	_ ports.Session          = (*cfgFakeSession)(nil)
+	_ ports.Receiver         = (*cfgFakeReceiver)(nil)
+	_ ports.Sender           = (*cfgFakeSender)(nil)
+	_ ports.LeaseStore       = (*cfgFakeLeaseStore)(nil)
+	_ ports.OutboxStore      = (*cfgFakeOutboxStore)(nil)
 )

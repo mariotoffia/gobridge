@@ -6,6 +6,7 @@ import (
 
 	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 )
 
 type metricType int
@@ -41,15 +42,17 @@ type batcher struct {
 	maxSize     int
 	mu          sync.Mutex
 	aggregates  map[string]*aggregate
+	clk         clock.Clock
 }
 
-func newBatcher(namespace string, defaultTags []domain.Tag, maxSize int) *batcher {
+func newBatcher(namespace string, defaultTags []domain.Tag, maxSize int, clk clock.Clock) *batcher {
 	return &batcher{
 		namespace:   namespace,
 		defaultTags: defaultTags,
 		buffer:      make([]metricData, 0, maxSize),
 		maxSize:     maxSize,
 		aggregates:  make(map[string]*aggregate),
+		clk:         clk,
 	}
 }
 
@@ -82,7 +85,7 @@ func (b *batcher) add(md metricData) bool {
 		return len(b.buffer) >= b.maxSize
 	}
 
-	md.timestamp = time.Now()
+	md.timestamp = b.clk.Now()
 	b.buffer = append(b.buffer, md)
 	return len(b.buffer) >= b.maxSize
 }
@@ -108,7 +111,7 @@ func (b *batcher) drain() []cwtypes.MetricDatum {
 		})
 	}
 
-	now := time.Now()
+	now := b.clk.Now()
 	for key, agg := range b.aggregates {
 		name := metricNameFromKey(key)
 		dims := b.buildDimensions(agg.tags)

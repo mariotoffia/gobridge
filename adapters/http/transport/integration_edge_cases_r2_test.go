@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
-	"github.com/mariotoffia/gobridge/config"
+
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -24,8 +24,8 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestEdgeR2_EmitReturnsError(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "emit-err-r2"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "emit-err-r2"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -59,8 +59,8 @@ func TestEdgeR2_EmitReturnsError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeR2_RequestTimeout504(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "timeout-r2"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "timeout-r2"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -103,8 +103,8 @@ func TestEdgeR2_RequestTimeout504(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeR2_SSEAuthRequired(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	_, err := factory.NewSender(context.Background(), config.SenderDef{
+	factory := transport.NewFactory()
+	_, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID:      "sse-auth-r2",
 		Options: map[string]any{"mode": "sse", "api_key": "sse-secret"},
 	}, nil)
@@ -143,8 +143,8 @@ func TestEdgeR2_SSEAuthRequired(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeR2_SSEMaxClients(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	sender, err := factory.NewSender(context.Background(), config.SenderDef{
+	factory := transport.NewFactory()
+	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID:      "sse-maxcli-r2",
 		Options: map[string]any{"mode": "sse", "max_clients": 2},
 	}, nil)
@@ -237,8 +237,8 @@ func TestEdgeR2_ForwarderClusterKey(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeR2_UnsupportedSenderMode(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	_, err := factory.NewSender(context.Background(), config.SenderDef{
+	factory := transport.NewFactory()
+	_, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID:      "ws-sender-r2",
 		Options: map[string]any{"mode": "websocket"},
 	}, nil)
@@ -255,8 +255,8 @@ func TestEdgeR2_UnsupportedSenderMode(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeR2_CaseInsensitiveHeaderStripping(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	recv, err := factory.NewReceiver(context.Background(), config.ReceiverDef{ID: "case-strip-r2"}, nil)
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "case-strip-r2"}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -317,8 +317,8 @@ func TestEdgeR2_CaseInsensitiveHeaderStripping(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeR2_SSENoConnectionHeader(t *testing.T) {
-	factory := transport.NewBridgeFactory()
-	_, err := factory.NewSender(context.Background(), config.SenderDef{
+	factory := transport.NewFactory()
+	_, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID:      "sse-conn-r2",
 		Options: map[string]any{"mode": "sse"},
 	}, nil)

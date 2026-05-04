@@ -36,7 +36,7 @@ import (
 
 const (
 	uc2MsgsPerFactory = 1000
-	uc2PollTimeout        = 90 * time.Second
+	uc2PollTimeout    = 90 * time.Second
 )
 
 func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {

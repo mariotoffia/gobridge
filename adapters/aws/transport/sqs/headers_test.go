@@ -14,9 +14,9 @@ import (
 func TestAttributesToHeaders_StripsReservedPrefix(t *testing.T) {
 	attrs := map[string]sqstypes.MessageAttributeValue{
 		domain.HeaderCorrelationID: {DataType: aws.String("String"), StringValue: aws.String("injected")},
-		domain.HeaderRouteID:      {DataType: aws.String("String"), StringValue: aws.String("injected-route")},
-		"custom-key":              {DataType: aws.String("String"), StringValue: aws.String("allowed")},
-		"traceparent":             {DataType: aws.String("String"), StringValue: aws.String("00-trace")},
+		domain.HeaderRouteID:       {DataType: aws.String("String"), StringValue: aws.String("injected-route")},
+		"custom-key":               {DataType: aws.String("String"), StringValue: aws.String("allowed")},
+		"traceparent":              {DataType: aws.String("String"), StringValue: aws.String("00-trace")},
 	}
 
 	h := attributesToHeaders(attrs, nil)
@@ -55,9 +55,9 @@ func TestAttributesToHeaders_BinaryValue(t *testing.T) {
 // Verifies system attributes are converted to typed header values with an sqs. prefix.
 func TestAttributesToHeaders_SystemAttributes(t *testing.T) {
 	sysAttrs := map[string]string{
-		"SentTimestamp":          "1700000000000",
+		"SentTimestamp":           "1700000000000",
 		"ApproximateReceiveCount": "3",
-		"SenderId":               "AIDXXX",
+		"SenderId":                "AIDXXX",
 	}
 
 	h := attributesToHeaders(nil, sysAttrs)

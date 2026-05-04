@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -17,21 +17,21 @@ import (
 // background workers drain them to the store asynchronously, avoiding
 // blocking route runner semaphore slots on slow DLQ writes.
 type DLQRouter struct {
-	store        ports.DLQStore
-	buffer       chan domain.DLQEntry
-	bufferSize   int
-	writeTimeout time.Duration
-	enqTimeout   time.Duration
-	workers      int
-	wg           sync.WaitGroup
-	logger       *slog.Logger
-	metrics      ports.MetricsExporter
-	clk          clock.Clock
-	mu           sync.Mutex // guards started, stopped, and sendWg.Add
-	started      bool
-	stopped      bool
-	done              chan struct{}    // closed by Close() to signal Route() to exit select
-	sendWg            sync.WaitGroup  // tracks goroutines in the Route select
+	store             ports.DLQStore
+	buffer            chan domain.DLQEntry
+	bufferSize        int
+	writeTimeout      time.Duration
+	enqTimeout        time.Duration
+	workers           int
+	wg                sync.WaitGroup
+	logger            *slog.Logger
+	metrics           ports.MetricsExporter
+	clk               clock.Clock
+	mu                sync.Mutex // guards started, stopped, and sendWg.Add
+	started           bool
+	stopped           bool
+	done              chan struct{}  // closed by Close() to signal Route() to exit select
+	sendWg            sync.WaitGroup // tracks goroutines in the Route select
 	tokenFn           func() (domain.LeaseToken, bool)
 	writeMaxAttempts  int
 	writeRetryBackoff domain.BackoffPolicy
@@ -155,9 +155,9 @@ func (r *DLQRouter) Close() {
 	close(r.done) // signal Route() goroutines to exit select
 	r.mu.Unlock()
 
-	r.sendWg.Wait()  // wait for all Route() calls to exit select
-	close(r.buffer)   // safe: no Route() is sending
-	r.wg.Wait()       // wait for workers to drain remaining entries
+	r.sendWg.Wait() // wait for all Route() calls to exit select
+	close(r.buffer) // safe: no Route() is sending
+	r.wg.Wait()     // wait for workers to drain remaining entries
 	r.started = false
 }
 
@@ -224,7 +224,7 @@ func (r *DLQRouter) buildEntry(
 		Category:      category,
 		ErrorCode:     errorCode,
 		LastError:     reason,
-		FailedAt:      time.Now(),
+		FailedAt:      r.clk.Now(),
 		Attempts:      attempts,
 	}
 }

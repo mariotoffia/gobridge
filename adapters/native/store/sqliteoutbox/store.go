@@ -9,8 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/logging"
 
 	_ "modernc.org/sqlite"
 )
@@ -42,37 +43,57 @@ CREATE INDEX IF NOT EXISTS idx_outbox_partition_status ON outbox(partition_key, 
 // persistence in tests and single-process deployments.
 type Store struct {
 	db     *sql.DB
+	clk    clock.Clock
 	logger *slog.Logger
+}
+
+// Option configures a Store.
+type Option func(*Store)
+
+// WithClock overrides the clock used for timestamps.
+// Defaults to clock.System when nil or not set.
+func WithClock(c clock.Clock) Option {
+	return func(s *Store) {
+		if c != nil {
+			s.clk = c
+		}
+	}
+}
+
+// WithLogger sets a structured logger for trace-level diagnostics.
+func WithLogger(l *slog.Logger) Option {
+	return func(s *Store) { s.logger = l }
 }
 
 // NewStore opens (or creates) a SQLite database at dbPath and runs the
 // schema migration. Use ":memory:" for a purely in-memory database.
-func NewStore(dbPath string) (*Store, error) {
+func NewStore(dbPath string, opts ...Option) (*Store, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("sqliteoutbox: open: %w", err)
 	}
 
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("sqliteoutbox: pragma: %w", err)
 	}
 
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("sqliteoutbox: migrate: %w", err)
 	}
 
-	return &Store{db: db}, nil
+	s := &Store{db: db, clk: clock.System}
+	for _, o := range opts {
+		o(s)
+	}
+	return s, nil
 }
 
 // Close closes the underlying database connection.
 func (s *Store) Close() error {
 	return s.db.Close()
 }
-
-// SetLogger assigns a structured logger for trace-level diagnostics.
-func (s *Store) SetLogger(l *slog.Logger) { s.logger = l }
 
 func partitionKey(r *domain.OutboxRecord) string {
 	if r.SessionID != "" {
@@ -90,7 +111,7 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 	if err != nil {
 		return fmt.Errorf("sqliteoutbox: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO outbox (id, partition_key, route_id, envelope_id, binding_id,
@@ -99,7 +120,7 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 	if err != nil {
 		return fmt.Errorf("sqliteoutbox: prepare: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for i := range records {
 		r := &records[i]
@@ -118,7 +139,7 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 
 		createdAt := r.CreatedAt
 		if createdAt.IsZero() {
-			createdAt = time.Now()
+			createdAt = s.clk.Now()
 		}
 
 		var expiresAtMs int64
@@ -162,7 +183,7 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 	if err != nil {
 		return nil, fmt.Errorf("sqliteoutbox: begin tx: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck
 
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id FROM outbox
@@ -179,12 +200,12 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, fmt.Errorf("sqliteoutbox: scan id: %w", err)
 		}
 		ids = append(ids, id)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqliteoutbox: rows err: %w", err)
 	}
@@ -230,7 +251,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.L
 
 	placeholders := make([]string, len(recordIDs))
 	args := make([]any, 0, len(recordIDs)+2)
-	args = append(args, time.Now().UnixMilli())
+	args = append(args, s.clk.Now().UnixMilli())
 	for i, id := range recordIDs {
 		placeholders[i] = "?"
 		args = append(args, id)
@@ -291,7 +312,7 @@ func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]domai
 	if err != nil {
 		return nil, fmt.Errorf("sqliteoutbox: query pending: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return scanRecords(rows)
 }
@@ -318,7 +339,7 @@ func (s *Store) fetchByIDs(ctx context.Context, ids []string) ([]domain.OutboxRe
 	if err != nil {
 		return nil, fmt.Errorf("sqliteoutbox: fetch by ids: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return scanRecords(rows)
 }
@@ -327,14 +348,14 @@ func scanRecords(rows *sql.Rows) ([]domain.OutboxRecord, error) {
 	var result []domain.OutboxRecord
 	for rows.Next() {
 		var (
-			r            domain.OutboxRecord
-			pk           string
-			envJSON      string
-			headersJSON  sql.NullString
-			status       string
-			createdAtMs  int64
-			expiresAtMs  int64
-			completedMs  int64
+			r           domain.OutboxRecord
+			pk          string
+			envJSON     string
+			headersJSON sql.NullString
+			status      string
+			createdAtMs int64
+			expiresAtMs int64
+			completedMs int64
 		)
 		err := rows.Scan(
 			&r.ID, &pk, &r.RouteID, &r.EnvelopeID, &r.BindingID, &r.SessionID,

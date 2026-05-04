@@ -14,8 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/logging"
 )
 
 const (
@@ -35,7 +35,7 @@ const (
 	attrEnvelopeJSON  = "envelope_json"
 	attrFailedAt      = "failed_at"
 	attrAttempts      = "attempts"
-	attrTTL = "ttl"
+	attrTTL           = "ttl"
 )
 
 // Store implements ports.DLQStore using DynamoDB with conditional writes
@@ -45,7 +45,6 @@ type Store struct {
 	client      *dynamodb.Client
 	tableName   string
 	gracePeriod time.Duration
-	now         func() time.Time
 	logger      *slog.Logger
 }
 
@@ -63,11 +62,6 @@ func WithGracePeriod(d time.Duration) Option {
 	return func(s *Store) { s.gracePeriod = d }
 }
 
-// WithClock overrides the time source (defaults to time.Now).
-func WithClock(fn func() time.Time) Option {
-	return func(s *Store) { s.now = fn }
-}
-
 // WithLogger sets the structured logger for trace/debug diagnostics.
 func WithLogger(l *slog.Logger) Option {
 	return func(s *Store) { s.logger = l }
@@ -79,7 +73,6 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 		client:      client,
 		tableName:   defaultTableName,
 		gracePeriod: defaultGracePeriod,
-		now:         time.Now,
 	}
 	for _, o := range opts {
 		o(s)

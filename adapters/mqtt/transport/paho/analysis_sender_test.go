@@ -82,7 +82,7 @@ func TestAnaSender_EmptyTopicAndNoDefault_ReturnsErrInvalidTopic(t *testing.T) {
 // broker.
 func TestAnaSender_DefaultTopicUsedWhenSubjectEmpty(t *testing.T) {
 	env := &domain.Envelope{Payload: []byte("x")}
-	pub := PublishFromEnvelope(env, SenderOptions{DefaultTopic: "fallback/t", QoS: 1})
+	pub := PublishFromEnvelope(env, SenderOptions{DefaultTopic: "fallback/t", QoS: 1}, nil)
 	if pub.Topic != "fallback/t" {
 		t.Fatalf("topic = %q, want %q", pub.Topic, "fallback/t")
 	}
@@ -161,7 +161,13 @@ func TestAnaCBSender_NewCircuitBreakerSender_NilSession_NoPanic(t *testing.T) {
 			t.Fatalf("constructor panicked: %v", rv)
 		}
 	}()
-	cbs := NewCircuitBreakerSender(&Sender{metrics: &noopTestExporter{}}, CBConfig{})
+	br := circuitbreaker.NewBreaker("ana-cb-nilsess", circuitbreaker.Config{
+		FailureThreshold: 5,
+		SuccessThreshold: 2,
+		ResetTimeout:     30 * time.Second,
+		CountError:       domain.IsRecoverableError,
+	}, nil)
+	cbs := NewCircuitBreakerSender(&Sender{metrics: &noopTestExporter{}}, br)
 	if cbs == nil {
 		t.Fatal("constructor returned nil")
 	}
@@ -188,11 +194,13 @@ func TestAnaCBSender_NonRecoverableError_DoesNotTripCircuit(t *testing.T) {
 
 	inner := NewSender(sess, SenderOptions{Timeout: time.Second})
 
-	cbs := NewCircuitBreakerSender(inner, CBConfig{
+	br := circuitbreaker.NewBreaker("ana-cb-nonrec", circuitbreaker.Config{
 		FailureThreshold: 1, // very low: any countable failure trips
 		SuccessThreshold: 1,
 		ResetTimeout:     10 * time.Minute,
-	})
+		CountError:       domain.IsRecoverableError,
+	}, nil)
+	cbs := NewCircuitBreakerSender(inner, br)
 
 	// First call: invalid topic → non-recoverable → not counted.
 	_ = cbs.Send(context.Background(), &domain.Envelope{Payload: []byte("p")})
@@ -271,25 +279,6 @@ func TestAnaCBSender_ErrUnavailableWithRetryAfter(t *testing.T) {
 	}
 	if be.RetryAfter == 0 {
 		t.Fatal("expected RetryAfter > 0 from open breaker")
-	}
-}
-
-// TestAnaCBSender_CBConfigDefaults_AreSane validates that the zero-value
-// CBConfig produces non-zero defaults so that operators do not get
-// surprising behaviour from an unset config.
-func TestAnaCBSender_CBConfigDefaults_AreSane(t *testing.T) {
-	cfg := CBConfig{}.toCircuitBreakerConfig()
-	if cfg.FailureThreshold <= 0 {
-		t.Errorf("default FailureThreshold = %d, want > 0", cfg.FailureThreshold)
-	}
-	if cfg.SuccessThreshold <= 0 {
-		t.Errorf("default SuccessThreshold = %d, want > 0", cfg.SuccessThreshold)
-	}
-	if cfg.ResetTimeout <= 0 {
-		t.Errorf("default ResetTimeout = %v, want > 0", cfg.ResetTimeout)
-	}
-	if cfg.CountError == nil {
-		t.Error("default CountError must not be nil")
 	}
 }
 

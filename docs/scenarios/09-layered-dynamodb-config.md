@@ -236,8 +236,8 @@ func main() {
         ),
     )
 
-    sup.RegisterTransport("mqtt", paho.NewBridgeFactory(logger))
-    sup.RegisterTransport("sqs", sqs.NewBridgeFactory(logger))
+    sup.RegisterTransport("mqtt", paho.NewFactory(logger))
+    sup.RegisterTransport("sqs", sqs.NewFactory(logger))
     sup.RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory())
     sup.RegisterStoreFactory("dynamodb", awsstore.NewDynamoDBStoreFactory(ddbClient))
 

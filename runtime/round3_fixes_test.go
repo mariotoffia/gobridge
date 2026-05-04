@@ -27,10 +27,12 @@ import (
 //
 // Scenario:
 // ───────────────────────────────────────────────
-//   DrainTimeout:  500ms
-//   SendTimeout:   2s
-//   Sender blocks: 800ms  (> drainTimeout, < SendTimeout)
-//   Expected:      send succeeds, record completed
+//
+//	DrainTimeout:  500ms
+//	SendTimeout:   2s
+//	Sender blocks: 800ms  (> drainTimeout, < SendTimeout)
+//	Expected:      send succeeds, record completed
+//
 // ───────────────────────────────────────────────
 //
 // Assertions:

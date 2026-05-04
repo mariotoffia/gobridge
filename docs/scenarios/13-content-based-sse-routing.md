@@ -232,7 +232,7 @@ func main() {
     httpFactory := adaptershttp.NewBridgeFactory()
 
     sup, _ := bridge.NewBuilder(cfg).
-        RegisterTransport("mqtt", paho.NewBridgeFactory(nil)).
+        RegisterTransport("mqtt", paho.NewFactory(nil)).
         RegisterTransport("http", httpFactory).
         Build(context.Background())
 

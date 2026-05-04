@@ -1,4 +1,4 @@
-// Package file implements config.Loader and config.Watcher for file-based
+// Package file implements ports.Loader and ports.Watcher for file-based
 // configuration sources.
 //
 // Source wraps config.ParseFile to load a BridgeConfig from a YAML or JSON
@@ -11,5 +11,5 @@
 //     suitable for network mounts where fsnotify is unreliable
 //
 // Watch mode and intervals can be configured programmatically or via
-// config.ConfigWatchDef from the YAML config itself.
+// ports.ConfigWatchDef from the YAML config itself.
 package file

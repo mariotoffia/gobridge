@@ -11,8 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -27,6 +28,7 @@ type receiverConfig struct {
 	forwarder   ports.MessageForwarder
 	metrics     ports.MetricsExporter
 	logger      *slog.Logger
+	clock       clock.Clock
 }
 
 // Receiver implements ports.Receiver for HTTP ingress.
@@ -45,6 +47,9 @@ func newReceiver(cfg receiverConfig) *Receiver {
 	}
 	if cfg.metrics == nil {
 		cfg.metrics = &ports.NoopExporter{}
+	}
+	if cfg.clock == nil {
+		cfg.clock = clock.System
 	}
 	return &Receiver{
 		cfg:   cfg,
@@ -85,7 +90,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 
 // ServeHTTP handles incoming HTTP POST requests and converts them to deliveries.
 func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	start := time.Now()
+	start := r.cfg.clock.Now()
 	ctx := req.Context()
 
 	select {
@@ -129,7 +134,7 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	env, err := body.toEnvelope()
+	env, err := body.toEnvelope(r.cfg.clock)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -159,16 +164,16 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 			r.cfg.metrics.Counter(domain.MetricClusterForwards, 1)
-			fwdStart := time.Now()
+			fwdStart := r.cfg.clock.Now()
 			if err := r.cfg.forwarder.Forward(ctx, node, r.cfg.id, env); err != nil {
-				r.cfg.metrics.Timer(domain.MetricHTTPForwardLatency, time.Since(fwdStart))
+				r.cfg.metrics.Timer(domain.MetricHTTPForwardLatency, r.cfg.clock.Since(fwdStart))
 				if r.cfg.logger != nil {
 					r.cfg.logger.Error("forward failed", "route", routeID, "peer", node.InstanceID, "error", err)
 				}
 				writeError(w, http.StatusBadGateway, "forward failed")
 				return
 			}
-			r.cfg.metrics.Timer(domain.MetricHTTPForwardLatency, time.Since(fwdStart))
+			r.cfg.metrics.Timer(domain.MetricHTTPForwardLatency, r.cfg.clock.Since(fwdStart))
 			writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
 			return
 		}
@@ -185,7 +190,7 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	select {
 	case result := <-del.done:
-		r.cfg.metrics.Timer(domain.MetricHTTPIngressLatency, time.Since(start))
+		r.cfg.metrics.Timer(domain.MetricHTTPIngressLatency, r.cfg.clock.Since(start))
 		if result.err != nil {
 			writeError(w, http.StatusInternalServerError, "processing failed")
 		} else {
@@ -204,17 +209,20 @@ type ingressRequest struct {
 	ExpiresAt string          `json:"expires_at,omitempty"`
 }
 
-func (r *ingressRequest) toEnvelope() (*domain.Envelope, error) {
+func (r *ingressRequest) toEnvelope(clk clock.Clock) (*domain.Envelope, error) {
+	if clk == nil {
+		clk = clock.System
+	}
 	id := r.ID
 	if id == "" {
-		id = generateHTTPEnvelopeID()
+		id = generateHTTPEnvelopeID(clk)
 	}
 	env := &domain.Envelope{
 		ID:        id,
 		Subject:   r.Subject,
 		Payload:   []byte(r.Payload),
 		Headers:   r.Headers,
-		CreatedAt: time.Now(),
+		CreatedAt: clk.Now(),
 	}
 	if r.ExpiresAt != "" {
 		t, err := time.Parse(time.RFC3339, r.ExpiresAt)
@@ -228,7 +236,10 @@ func (r *ingressRequest) toEnvelope() (*domain.Envelope, error) {
 
 var httpIDCounter atomic.Uint64
 
-func generateHTTPEnvelopeID() string {
+func generateHTTPEnvelopeID(clk clock.Clock) string {
+	if clk == nil {
+		clk = clock.System
+	}
 	n := httpIDCounter.Add(1)
-	return fmt.Sprintf("http-%d-%d", time.Now().UnixNano(), n)
+	return fmt.Sprintf("http-%d-%d", clk.Now().UnixNano(), n)
 }

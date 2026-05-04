@@ -11,24 +11,19 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 )
 
 // Validates the in-memory lease store against the shared conformance suite with a fake clock.
 func TestConformanceSuite(t *testing.T) {
-	now := time.Now()
-	clock := &atomic.Value{}
-	clock.Store(now)
-
-	s := memorylease.NewStore(memorylease.WithClock(func() time.Time {
-		return clock.Load().(time.Time)
-	}))
+	clk := clocktest.New()
+	s := memorylease.NewStore(memorylease.WithClock(clk))
 
 	storetest.RunLeaseStoreTests(t, s, &storetest.LeaseTestOptions{
 		LeaseTTL: 10 * time.Second,
 		WaitForExpiry: func(ttl time.Duration) {
-			prev := clock.Load().(time.Time)
-			clock.Store(prev.Add(ttl + time.Second))
+			clk.Advance(ttl + time.Second)
 		},
 	})
 }
@@ -69,12 +64,8 @@ func TestAcquireAlreadyHeldLease(t *testing.T) {
 // Verifies a new owner can Acquire after the previous lease expires with an increased version.
 func TestAcquireExpiredLease(t *testing.T) {
 	now := time.Now()
-	clock := &atomic.Value{}
-	clock.Store(now)
-
-	s := memorylease.NewStore(memorylease.WithClock(func() time.Time {
-		return clock.Load().(time.Time)
-	}))
+	clk := clocktest.NewAt(now)
+	s := memorylease.NewStore(memorylease.WithClock(clk))
 	ctx := context.Background()
 
 	tok1, err := s.Acquire(ctx, "lease-1", "owner-A", 10*time.Second, nil)
@@ -83,7 +74,7 @@ func TestAcquireExpiredLease(t *testing.T) {
 	}
 
 	// Advance past expiry.
-	clock.Store(now.Add(11 * time.Second))
+	clk.Advance(11 * time.Second)
 
 	tok2, err := s.Acquire(ctx, "lease-1", "owner-B", 30*time.Second, nil)
 	if err != nil {
@@ -100,12 +91,8 @@ func TestAcquireExpiredLease(t *testing.T) {
 // Verifies Renew extends expiry without changing the fencing version when the token matches.
 func TestRenewSuccess(t *testing.T) {
 	now := time.Now()
-	clock := &atomic.Value{}
-	clock.Store(now)
-
-	s := memorylease.NewStore(memorylease.WithClock(func() time.Time {
-		return clock.Load().(time.Time)
-	}))
+	clk := clocktest.NewAt(now)
+	s := memorylease.NewStore(memorylease.WithClock(clk))
 	ctx := context.Background()
 
 	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 10*time.Second, nil)
@@ -113,7 +100,7 @@ func TestRenewSuccess(t *testing.T) {
 		t.Fatalf("acquire: %v", err)
 	}
 
-	clock.Store(now.Add(5 * time.Second))
+	clk.Advance(5 * time.Second)
 	renewed, err := s.Renew(ctx, "lease-1", tok, 10*time.Second, nil)
 	if err != nil {
 		t.Fatalf("renew: %v", err)
@@ -135,12 +122,8 @@ func TestRenewSuccess(t *testing.T) {
 // Verifies Renew returns ErrStaleFencingToken when the lease has expired (bug exposure test).
 func TestRenewExpiredLease(t *testing.T) {
 	now := time.Now()
-	clock := &atomic.Value{}
-	clock.Store(now)
-
-	s := memorylease.NewStore(memorylease.WithClock(func() time.Time {
-		return clock.Load().(time.Time)
-	}))
+	clk := clocktest.NewAt(now)
+	s := memorylease.NewStore(memorylease.WithClock(clk))
 	ctx := context.Background()
 
 	tok, err := s.Acquire(ctx, "lease-1", "owner-A", 10*time.Second, nil)
@@ -149,7 +132,7 @@ func TestRenewExpiredLease(t *testing.T) {
 	}
 
 	// Advance past expiry.
-	clock.Store(now.Add(11 * time.Second))
+	clk.Advance(11 * time.Second)
 
 	_, err = s.Renew(ctx, "lease-1", tok, 10*time.Second, nil)
 	if !errors.Is(err, domain.ErrStaleFencingToken) {
@@ -325,12 +308,8 @@ func TestConcurrentAcquire(t *testing.T) {
 // Verifies fencing versions increase across repeated acquire-release cycles on the same lease.
 func TestVersionMonotonicallyIncreases(t *testing.T) {
 	now := time.Now()
-	clock := &atomic.Value{}
-	clock.Store(now)
-
-	s := memorylease.NewStore(memorylease.WithClock(func() time.Time {
-		return clock.Load().(time.Time)
-	}))
+	clk := clocktest.NewAt(now)
+	s := memorylease.NewStore(memorylease.WithClock(clk))
 	ctx := context.Background()
 
 	var versions []uint64
@@ -352,4 +331,3 @@ func TestVersionMonotonicallyIncreases(t *testing.T) {
 		}
 	}
 }
-

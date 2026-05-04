@@ -11,16 +11,16 @@ import (
 type mockSQSClient struct {
 	mu sync.Mutex
 
-	ReceiveMessageFn         func(ctx context.Context, in *awssqs.ReceiveMessageInput, opts ...func(*awssqs.Options)) (*awssqs.ReceiveMessageOutput, error)
-	DeleteMessageFn          func(ctx context.Context, in *awssqs.DeleteMessageInput, opts ...func(*awssqs.Options)) (*awssqs.DeleteMessageOutput, error)
+	ReceiveMessageFn          func(ctx context.Context, in *awssqs.ReceiveMessageInput, opts ...func(*awssqs.Options)) (*awssqs.ReceiveMessageOutput, error)
+	DeleteMessageFn           func(ctx context.Context, in *awssqs.DeleteMessageInput, opts ...func(*awssqs.Options)) (*awssqs.DeleteMessageOutput, error)
 	ChangeMessageVisibilityFn func(ctx context.Context, in *awssqs.ChangeMessageVisibilityInput, opts ...func(*awssqs.Options)) (*awssqs.ChangeMessageVisibilityOutput, error)
-	SendMessageFn            func(ctx context.Context, in *awssqs.SendMessageInput, opts ...func(*awssqs.Options)) (*awssqs.SendMessageOutput, error)
-	SendMessageBatchFn       func(ctx context.Context, in *awssqs.SendMessageBatchInput, opts ...func(*awssqs.Options)) (*awssqs.SendMessageBatchOutput, error)
-	GetQueueUrlFn            func(ctx context.Context, in *awssqs.GetQueueUrlInput, opts ...func(*awssqs.Options)) (*awssqs.GetQueueUrlOutput, error)
+	SendMessageFn             func(ctx context.Context, in *awssqs.SendMessageInput, opts ...func(*awssqs.Options)) (*awssqs.SendMessageOutput, error)
+	SendMessageBatchFn        func(ctx context.Context, in *awssqs.SendMessageBatchInput, opts ...func(*awssqs.Options)) (*awssqs.SendMessageBatchOutput, error)
+	GetQueueUrlFn             func(ctx context.Context, in *awssqs.GetQueueUrlInput, opts ...func(*awssqs.Options)) (*awssqs.GetQueueUrlOutput, error)
 
-	DeleteCalls              []awssqs.DeleteMessageInput
-	ChangeVisibilityCalls    []awssqs.ChangeMessageVisibilityInput
-	SendCalls                []awssqs.SendMessageInput
+	DeleteCalls           []awssqs.DeleteMessageInput
+	ChangeVisibilityCalls []awssqs.ChangeMessageVisibilityInput
+	SendCalls             []awssqs.SendMessageInput
 }
 
 var _ sqsAPI = (*mockSQSClient)(nil)

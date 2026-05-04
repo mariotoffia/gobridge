@@ -6,11 +6,12 @@ import (
 
 	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 )
 
 // Verifies batcher add stores a counter datum with correct name, value, unit, and dimensions.
 func TestBatcher_AddCounter(t *testing.T) {
-	b := newBatcher("Test", nil, 100)
+	b := newBatcher("Test", nil, 100, clock.System)
 
 	full := b.add(metricData{
 		name:       "test.counter",
@@ -40,7 +41,7 @@ func TestBatcher_AddCounter(t *testing.T) {
 
 // Verifies histogram samples aggregate into StatisticValues on drain.
 func TestBatcher_AddHistogram(t *testing.T) {
-	b := newBatcher("Test", nil, 100)
+	b := newBatcher("Test", nil, 100, clock.System)
 
 	for _, v := range []float64{10, 20, 30, 40, 50} {
 		b.add(metricData{
@@ -80,7 +81,7 @@ func TestBatcher_DefaultTags(t *testing.T) {
 		{Key: "service", Value: "bridge"},
 		{Key: "env", Value: "prod"},
 	}
-	b := newBatcher("Test", defaults, 100)
+	b := newBatcher("Test", defaults, 100, clock.System)
 
 	b.add(metricData{
 		name:       "m",
@@ -110,7 +111,7 @@ func TestBatcher_DefaultTags(t *testing.T) {
 
 // Verifies add returns full once the batcher reaches its capacity.
 func TestBatcher_BufferFull(t *testing.T) {
-	b := newBatcher("Test", nil, 5)
+	b := newBatcher("Test", nil, 5, clock.System)
 
 	for i := 0; i < 4; i++ {
 		if b.add(metricData{name: "m", value: float64(i), metricType: metricTypeCounter}) {
@@ -124,7 +125,7 @@ func TestBatcher_BufferFull(t *testing.T) {
 
 // Verifies drain empties mixed counter and histogram state.
 func TestBatcher_DrainClears(t *testing.T) {
-	b := newBatcher("Test", nil, 100)
+	b := newBatcher("Test", nil, 100, clock.System)
 	b.add(metricData{name: "c", value: 1, metricType: metricTypeCounter})
 	b.add(metricData{name: "h", value: 10, metricType: metricTypeHistogram})
 
@@ -143,7 +144,7 @@ func TestBatcher_DimensionLimit(t *testing.T) {
 	for i := 0; i < 35; i++ {
 		tags = append(tags, domain.Tag{Key: "k" + string(rune('A'+i)), Value: "v"})
 	}
-	b := newBatcher("Test", tags, 100)
+	b := newBatcher("Test", tags, 100, clock.System)
 	b.add(metricData{name: "m", value: 1, metricType: metricTypeCounter})
 
 	data := b.drain()
@@ -154,7 +155,7 @@ func TestBatcher_DimensionLimit(t *testing.T) {
 
 // Verifies histograms with different tag sets produce separate aggregated datums.
 func TestBatcher_MultipleHistogramKeys(t *testing.T) {
-	b := newBatcher("Test", nil, 100)
+	b := newBatcher("Test", nil, 100, clock.System)
 
 	b.add(metricData{name: "latency", value: 10, tags: []domain.Tag{{Key: "r", Value: "A"}}, metricType: metricTypeHistogram})
 	b.add(metricData{name: "latency", value: 20, tags: []domain.Tag{{Key: "r", Value: "B"}}, metricType: metricTypeHistogram})
@@ -237,7 +238,7 @@ func TestMetricNameFromKey(t *testing.T) {
 
 // Verifies histogram datums preserve the configured standard unit on drain.
 func TestBatcher_HistogramUnit(t *testing.T) {
-	b := newBatcher("Test", nil, 100)
+	b := newBatcher("Test", nil, 100, clock.System)
 	b.add(metricData{
 		name:       "timer",
 		value:      42,

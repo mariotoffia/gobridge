@@ -3,15 +3,15 @@ package httpapi
 import (
 	"testing"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestSanitizeConfig_RedactsAPIKeys(t *testing.T) {
-	cfg := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test"},
-		HTTP: &config.HTTPConfig{
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test"},
+		HTTP: &ports.HTTPConfig{
 			AdminAPIKey:   "secret-admin-key",
 			MonitorAPIKey: "secret-monitor-key",
 		},
@@ -26,15 +26,15 @@ func TestSanitizeConfig_RedactsAPIKeys(t *testing.T) {
 }
 
 func TestSanitizeConfig_NilHTTP(t *testing.T) {
-	cfg := &config.BridgeConfig{Bridge: config.BridgeSettings{ID: "test"}}
+	cfg := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "test"}}
 	sanitized := sanitizeConfig(cfg)
 	assert.Nil(t, sanitized.HTTP)
 }
 
 func TestSanitizeConfig_EmptyKeys(t *testing.T) {
-	cfg := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test"},
-		HTTP:   &config.HTTPConfig{},
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test"},
+		HTTP:   &ports.HTTPConfig{},
 	}
 
 	sanitized := sanitizeConfig(cfg)
@@ -43,9 +43,9 @@ func TestSanitizeConfig_EmptyKeys(t *testing.T) {
 }
 
 func TestSanitizeConfig_RedactsTransportEndpointAPIKeys(t *testing.T) {
-	cfg := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test"},
-		Receivers: []config.ReceiverDef{
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test"},
+		Receivers: []ports.ReceiverDef{
 			{
 				ID:        "rx-http",
 				Transport: "http",
@@ -55,7 +55,7 @@ func TestSanitizeConfig_RedactsTransportEndpointAPIKeys(t *testing.T) {
 				},
 			},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{
 				ID:        "tx-http",
 				Transport: "http",
@@ -136,9 +136,9 @@ func TestRedactAPIKeyOption_EdgeCases(t *testing.T) {
 }
 
 func TestSanitizeConfig_MixedReceiversWithAndWithoutAPIKey(t *testing.T) {
-	cfg := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test"},
-		Receivers: []config.ReceiverDef{
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test"},
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx-mqtt", Transport: "mqtt", Options: map[string]any{"topic": "#"}},
 			{ID: "rx-http", Transport: "http", Options: map[string]any{"api_key": "secret"}},
 			{ID: "rx-sqs", Transport: "sqs"},
@@ -154,8 +154,8 @@ func TestSanitizeConfig_MixedReceiversWithAndWithoutAPIKey(t *testing.T) {
 }
 
 func TestSanitizeConfig_EmptyReceiverAndSenderSlices(t *testing.T) {
-	cfg := &config.BridgeConfig{
-		Bridge: config.BridgeSettings{ID: "test"},
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "test"},
 	}
 	sanitized := sanitizeConfig(cfg)
 	assert.Nil(t, sanitized.Receivers)

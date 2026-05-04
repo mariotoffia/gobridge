@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -147,16 +148,16 @@ func TestDetectFormat(t *testing.T) {
 	assert.Equal(t, FormatYAML, detectFormat("config.txt"))
 }
 
-// Verifies BridgeSettings duration helpers parse explicit shutdown and drain timeout strings to nanoseconds.
+// Verifies ports.BridgeSettings duration helpers parse explicit shutdown and drain timeout strings to nanoseconds.
 func TestBridgeSettings_Durations(t *testing.T) {
-	bs := BridgeSettings{ShutdownTimeout: "10s", DrainTimeout: "5s"}
+	bs := ports.BridgeSettings{ShutdownTimeout: "10s", DrainTimeout: "5s"}
 	assert.Equal(t, 10*1e9, float64(bs.ShutdownTimeoutDuration()))
 	assert.Equal(t, 5*1e9, float64(bs.DrainTimeoutDuration()))
 }
 
-// Verifies BridgeSettings duration helpers apply the default 30s when shutdown and drain timeouts are unset.
+// Verifies ports.BridgeSettings duration helpers apply the default 30s when shutdown and drain timeouts are unset.
 func TestBridgeSettings_DurationDefaults(t *testing.T) {
-	bs := BridgeSettings{}
+	bs := ports.BridgeSettings{}
 	assert.Equal(t, 30*1e9, float64(bs.ShutdownTimeoutDuration()))
 	assert.Equal(t, 30*1e9, float64(bs.DrainTimeoutDuration()))
 }

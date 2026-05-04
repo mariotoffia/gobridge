@@ -3,8 +3,8 @@ package bootstrap
 import (
 	"testing"
 
-	"github.com/mariotoffia/gobridge/config"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,17 +25,17 @@ func TestValidateFilesystemProfile_AdditionalCases(t *testing.T) {
 	}
 
 	t.Run("rejects route.session under filesystem_replicated topology", func(t *testing.T) {
-		err := validateFilesystemProfile(replicated, &config.BridgeConfig{
-			Bridge: config.BridgeSettings{
+		err := validateFilesystemProfile(replicated, &ports.BridgeConfig{
+			Bridge: ports.BridgeSettings{
 				ID:             "bridge-v",
 				DeploymentMode: "standalone",
 			},
-			Routes: []config.RouteDef{
+			Routes: []ports.RouteDef{
 				{
 					ID:         "r1",
 					ReceiverID: "rx",
 					Bindings:   []string{"b1"},
-					Session: &config.RouteSessionDef{
+					Session: &ports.RouteSessionDef{
 						SessionID: "sess-1",
 						SenderID:  "tx-1",
 					},
@@ -48,11 +48,11 @@ func TestValidateFilesystemProfile_AdditionalCases(t *testing.T) {
 	})
 
 	t.Run("allows bridge.cluster.endpoints on filesystem profile", func(t *testing.T) {
-		err := validateFilesystemProfile(single, &config.BridgeConfig{
-			Bridge: config.BridgeSettings{
+		err := validateFilesystemProfile(single, &ports.BridgeConfig{
+			Bridge: ports.BridgeSettings{
 				ID:             "bridge-v",
 				DeploymentMode: "standalone",
-				Cluster: &config.ClusterConfig{
+				Cluster: &ports.ClusterConfig{
 					Endpoints: map[string]string{
 						"node-1": "http://node-1:8080",
 					},
@@ -69,12 +69,12 @@ func TestValidateFilesystemProfile_AdditionalCases(t *testing.T) {
 	})
 
 	t.Run("non-replicated topology allows shared_outbox route", func(t *testing.T) {
-		err := validateFilesystemProfile(single, &config.BridgeConfig{
-			Bridge: config.BridgeSettings{
+		err := validateFilesystemProfile(single, &ports.BridgeConfig{
+			Bridge: ports.BridgeSettings{
 				ID:             "bridge-v",
 				DeploymentMode: "standalone",
 			},
-			Routes: []config.RouteDef{
+			Routes: []ports.RouteDef{
 				{
 					ID:           "r1",
 					ReceiverID:   "rx",

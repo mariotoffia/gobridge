@@ -8,18 +8,17 @@ import (
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
 	"github.com/mariotoffia/gobridge/bridge"
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 type factoryRegistry struct {
-	cfg        *config.BridgeConfig
+	cfg        *ports.BridgeConfig
 	builder    *bridge.Builder
-	transports map[string]bridge.TransportFactory
-	http       *httptransport.BridgeFactory
+	transports map[string]ports.TransportFactory
+	http       *httptransport.Factory
 }
 
-func (a *App) newFactoryRegistry(runtimeCfg *config.BridgeConfig) *factoryRegistry {
+func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistry {
 	var opts []bridge.BuilderOption
 	if a.logger != nil {
 		opts = append(opts, bridge.WithLogger(a.logger))
@@ -29,12 +28,12 @@ func (a *App) newFactoryRegistry(runtimeCfg *config.BridgeConfig) *factoryRegist
 	}
 	builder := bridge.NewBuilder(runtimeCfg, opts...)
 
-	transports := map[string]bridge.TransportFactory{
-		"mqtt": paho.NewBridgeFactory(a.logger),
-		"sqs":  sqsadapter.NewBridgeFactory(a.logger),
+	transports := map[string]ports.TransportFactory{
+		"mqtt": paho.NewFactory(a.logger),
+		"sqs":  sqsadapter.NewFactory(a.logger),
 	}
 
-	httpFactory := httptransport.NewBridgeFactory(httptransport.WithFactoryLogger(a.logger))
+	httpFactory := httptransport.NewFactory(httptransport.WithFactoryLogger(a.logger))
 	transports["http"] = httpFactory
 
 	for name, factory := range transports {
@@ -51,7 +50,7 @@ func (a *App) newFactoryRegistry(runtimeCfg *config.BridgeConfig) *factoryRegist
 	}
 }
 
-func (r *factoryRegistry) detectSwapMode(cfg *config.BridgeConfig) swapMode {
+func (r *factoryRegistry) detectSwapMode(cfg *ports.BridgeConfig) swapMode {
 	for _, session := range cfg.Sessions {
 		factory, ok := r.transports[session.Transport]
 		if !ok {

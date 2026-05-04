@@ -135,7 +135,7 @@ func main() {
     cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
 
     rt, _ := bridge.NewBuilder(cfg).
-        RegisterTransport("mqtt", paho.NewBridgeFactory(nil)).
+        RegisterTransport("mqtt", paho.NewFactory(nil)).
         Build(context.Background())
 
     ctx, cancel := context.WithCancel(context.Background())

@@ -7,6 +7,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -129,16 +130,17 @@ func TestBreaker_OpenToHalfOpen_AfterResetTimeout(t *testing.T) {
 		ResetTimeout:      50 * time.Millisecond,
 		HalfOpenMaxProbes: 1,
 	}.WithDefaults()
+	fake := clocktest.NewAt(time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC))
 
 	var transitions []string
 	b := circuitbreaker.NewBreaker("test", cfg, func(key string, from, to circuitbreaker.State) {
 		transitions = append(transitions, from.String()+"->"+to.String())
-	})
+	}, circuitbreaker.WithBreakerClock(fake))
 
 	_ = b.BeforeRequest()
 	b.AfterRequest(domain.ErrTimeout)
 
-	b.ForceStateForTest(circuitbreaker.StateOpen, time.Now().Add(-100*time.Millisecond))
+	fake.Advance(100 * time.Millisecond)
 
 	err := b.BeforeRequest()
 	if err != nil {
@@ -287,6 +289,44 @@ func TestBreaker_GetMetrics_Snapshot(t *testing.T) {
 	}
 	if m.LastFailureTime.IsZero() {
 		t.Fatal("expected non-zero LastFailureTime after a failure")
+	}
+}
+
+func TestBreaker_WithBreakerClockControlsFailureAndResetTiming(t *testing.T) {
+	start := time.Date(2026, 5, 4, 8, 30, 0, 0, time.UTC)
+	fake := clocktest.NewAt(start)
+	cfg := circuitbreaker.Config{
+		FailureThreshold:  1,
+		SuccessThreshold:  1,
+		ResetTimeout:      10 * time.Second,
+		HalfOpenMaxProbes: 1,
+	}.WithDefaults()
+
+	b := circuitbreaker.NewBreaker("clocked", cfg, nil, circuitbreaker.WithBreakerClock(fake))
+
+	if err := b.BeforeRequest(); err != nil {
+		t.Fatalf("closed breaker should allow request: %v", err)
+	}
+	b.AfterRequest(domain.ErrTimeout)
+
+	m := b.GetMetrics()
+	if !m.LastFailureTime.Equal(start) {
+		t.Fatalf("LastFailureTime = %v, want %v", m.LastFailureTime, start)
+	}
+	if m.State != circuitbreaker.StateOpen.String() {
+		t.Fatalf("state = %s, want open", m.State)
+	}
+
+	fake.Advance(9 * time.Second)
+	if err := b.BeforeRequest(); err == nil {
+		t.Fatal("open breaker should reject before injected ResetTimeout elapses")
+	} else if retryAfter := domain.GetRetryAfter(err); retryAfter != time.Second {
+		t.Fatalf("RetryAfter = %v, want 1s", retryAfter)
+	}
+
+	fake.Advance(time.Second)
+	if err := b.BeforeRequest(); err != nil {
+		t.Fatalf("breaker should allow half-open probe after injected ResetTimeout: %v", err)
 	}
 }
 

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 	"github.com/stretchr/testify/assert"
@@ -19,26 +21,26 @@ import (
 )
 
 // sampleBridgeConfig returns a minimal valid BridgeConfig for testing.
-func sampleBridgeConfig() *config.BridgeConfig {
-	return &config.BridgeConfig{
-		Bridge: config.BridgeSettings{
+func sampleBridgeConfig() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
 			ID:              "test-bridge",
 			DeploymentMode:  "standalone",
 			ShutdownTimeout: "30s",
 		},
-		Sessions: []config.SessionDef{
+		Sessions: []ports.SessionDef{
 			{ID: "sess-1", Transport: "mqtt"},
 		},
-		Receivers: []config.ReceiverDef{
+		Receivers: []ports.ReceiverDef{
 			{ID: "rx-1", Transport: "sqs"},
 		},
-		Senders: []config.SenderDef{
+		Senders: []ports.SenderDef{
 			{ID: "tx-1", Transport: "mqtt", SessionID: "sess-1"},
 		},
-		Bindings: []config.BindingDef{
+		Bindings: []ports.BindingDef{
 			{ID: "bind-1", SenderID: "tx-1", SessionID: "sess-1", Address: "topic/a"},
 		},
-		Routes: []config.RouteDef{
+		Routes: []ports.RouteDef{
 			{
 				ID:           "route-1",
 				ReceiverID:   "rx-1",
@@ -46,7 +48,7 @@ func sampleBridgeConfig() *config.BridgeConfig {
 				Bindings:     []string{"bind-1"},
 			},
 		},
-		HTTP: &config.HTTPConfig{
+		HTTP: &ports.HTTPConfig{
 			AdminAPIKey:   "super-secret-admin-key-1234",
 			MonitorAPIKey: "super-secret-monitor-key-5678",
 		},
@@ -54,7 +56,7 @@ func sampleBridgeConfig() *config.BridgeConfig {
 }
 
 // newConfigTestServer creates a Server wired for config API testing.
-func newConfigTestServer(t *testing.T, cfg *config.BridgeConfig) (*Server, string) {
+func newConfigTestServer(t *testing.T, cfg *ports.BridgeConfig, opts ...Option) (*Server, string) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -65,10 +67,10 @@ func newConfigTestServer(t *testing.T, cfg *config.BridgeConfig) (*Server, strin
 
 	rt := runtime.New(runtime.WithInstanceID("config-test"))
 	apiCfg := testConfig()
-	apiCfg.ConfigFilePath = path
-	apiCfg.ConfigProvider = func() *config.BridgeConfig { return cfg }
+	apiCfg.ConfigStore = &config.FileStore{Path: path}
+	apiCfg.ConfigProvider = func() *ports.BridgeConfig { return cfg }
 
-	s := New(rt, apiCfg)
+	s := New(rt, apiCfg, opts...)
 	return s, path
 }
 
@@ -125,7 +127,8 @@ func TestHandleConfigTxnCreate_Returns201(t *testing.T) {
 
 func TestHandleConfigTxnCreate_WithTTL(t *testing.T) {
 	cfg := sampleBridgeConfig()
-	s, _ := newConfigTestServer(t, cfg)
+	fixed := time.Date(2026, 5, 4, 1, 2, 3, 0, time.UTC)
+	s, _ := newConfigTestServer(t, cfg, WithClock(clocktest.NewAt(fixed)))
 
 	rec := httptest.NewRecorder()
 	req := adminRequest(http.MethodPost, "/api/v1/admin/config/transactions")
@@ -143,8 +146,8 @@ func TestHandleConfigTxnCreate_WithTTL(t *testing.T) {
 	createdAt, err := time.Parse(time.RFC3339, body["created_at"].(string))
 	require.NoError(t, err)
 
-	diff := expiresAt.Sub(createdAt)
-	assert.InDelta(t, 2*time.Minute, diff, float64(time.Second))
+	assert.Equal(t, fixed, createdAt)
+	assert.Equal(t, fixed.Add(2*time.Minute), expiresAt)
 }
 
 func TestHandleConfigTxnCreate_Conflict(t *testing.T) {
@@ -372,7 +375,8 @@ func TestHandleConfigTxnRollback_AllowsNewTransaction(t *testing.T) {
 
 func TestConfigTxn_AutoTimeout(t *testing.T) {
 	cfg := sampleBridgeConfig()
-	s, _ := newConfigTestServer(t, cfg)
+	clk := clocktest.NewAt(time.Date(2026, 5, 4, 1, 2, 3, 4, time.UTC))
+	s, _ := newConfigTestServer(t, cfg, WithClock(clk))
 
 	// Create transaction with very short TTL.
 	rec := httptest.NewRecorder()
@@ -386,6 +390,7 @@ func TestConfigTxn_AutoTimeout(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&createBody))
 	txnID := createBody["txn_id"].(string)
 
+	clk.Advance(101 * time.Millisecond)
 	wait.Until(t, 2*time.Second, "transaction expired", func() bool {
 		r := httptest.NewRecorder()
 		rq := adminRequest(http.MethodPatch, "/api/v1/admin/config/transactions/"+txnID)

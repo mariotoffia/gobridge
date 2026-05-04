@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -163,14 +164,16 @@ func TestCredentialResolver_CacheExpiry(t *testing.T) {
 	}
 	repo := &stubRepo{scheme: "file", creds: creds}
 
-	r := NewCredentialResolver(WithCredentialCacheTTL(10 * time.Millisecond))
+	const ttl = 10 * time.Millisecond
+	clk := clocktest.New()
+	r := NewCredentialResolver(WithCredentialCacheTTL(ttl), WithCredentialClock(clk))
 	r.Register(repo)
 
 	_, err := r.Resolve(context.Background(), "file://data")
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), repo.callCount.Load())
 
-	time.Sleep(20 * time.Millisecond) // FIXED: wait for cache TTL (10ms) to expire
+	clk.Advance(ttl + time.Nanosecond)
 
 	_, err = r.Resolve(context.Background(), "file://data")
 	require.NoError(t, err)
@@ -266,7 +269,9 @@ func TestCredentialResolver_CacheEvictsExpired(t *testing.T) {
 	}
 	repo := &stubRepo{scheme: "file", creds: creds}
 
-	r := NewCredentialResolver(WithCredentialCacheTTL(time.Millisecond))
+	const ttl = time.Millisecond
+	clk := clocktest.New()
+	r := NewCredentialResolver(WithCredentialCacheTTL(ttl), WithCredentialClock(clk))
 	r.Register(repo)
 
 	for i := range maxCredentialCacheEntries {
@@ -276,7 +281,7 @@ func TestCredentialResolver_CacheEvictsExpired(t *testing.T) {
 	}
 	assert.Equal(t, maxCredentialCacheEntries, r.CacheStats().Size)
 
-	time.Sleep(20 * time.Millisecond) // FIXED: wait for cache TTL (1ms) to expire
+	clk.Advance(ttl + time.Nanosecond)
 
 	_, err := r.Resolve(context.Background(), "file://fresh-after-expiry")
 	require.NoError(t, err)
@@ -412,7 +417,9 @@ func TestCredentialResolver_CacheStats_AccurateExpiredCount(t *testing.T) {
 	}
 	repo := &stubRepo{scheme: "file", creds: creds}
 
-	r := NewCredentialResolver(WithCredentialCacheTTL(10 * time.Millisecond))
+	const ttl = 10 * time.Millisecond
+	clk := clocktest.New()
+	r := NewCredentialResolver(WithCredentialCacheTTL(ttl), WithCredentialClock(clk))
 	r.Register(repo)
 
 	uris := []string{"file://a", "file://b", "file://c"}
@@ -426,7 +433,7 @@ func TestCredentialResolver_CacheStats_AccurateExpiredCount(t *testing.T) {
 	assert.Equal(t, 3, stats.Active)
 	assert.Equal(t, 0, stats.Expired)
 
-	time.Sleep(20 * time.Millisecond) // FIXED: wait for cache TTL (10ms) to expire
+	clk.Advance(ttl + time.Nanosecond)
 
 	stats = r.CacheStats()
 	assert.Equal(t, 3, stats.Size, "expired entries remain in cache until evicted")
@@ -461,4 +468,19 @@ func TestCredentialResolver_Register_MultipleRepos_SameSchemeNamespace(t *testin
 		"first registered repo should win when namespace lengths are equal")
 	assert.Equal(t, int32(1), repoA.callCount.Load())
 	assert.Equal(t, int32(0), repoB.callCount.Load())
+}
+
+func TestNewCredentialResolver_NilClockOptionKeepsDefault(t *testing.T) {
+	// Regression: WithCredentialClock(nil) must not clobber the clock.System
+	// default, otherwise the first cache touch panics on r.clk.Now().
+	r := NewCredentialResolver(WithCredentialClock(nil))
+
+	creds := &domain.CredentialSet{Password: &domain.PasswordCredential{Username: "x"}}
+	repo := &stubRepo{scheme: "pms", namespace: "tenant", creds: creds}
+	r.Register(repo)
+
+	require.NotPanics(t, func() {
+		_, err := r.Resolve(context.Background(), "pms://tenant/secret")
+		require.NoError(t, err)
+	})
 }

@@ -1,5 +1,5 @@
 // Package bridge provides the composition root for constructing a fully wired
-// runtime.Runtime from a declarative config.BridgeConfig. It uses registered
+// runtime.Runtime from a declarative ports.BridgeConfig. It uses registered
 // transport and store factories to create concrete adapters and wire them into
 // routes, sessions, and outbox drainers.
 //

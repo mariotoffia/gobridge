@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
 )
@@ -47,4 +48,31 @@ type ReceiverFactory interface {
 // The session parameter may be nil for stateless transports.
 type SenderFactory interface {
 	NewSender(ctx context.Context, spec SenderSpec, session Session) (Sender, error)
+}
+
+// TransportFactory is the port-level contract a transport adapter
+// implements so it can be registered with bridge.Builder. It composes
+// the per-role factories with a Capabilities query used by the runtime
+// validator.
+//
+// Stateless transports (e.g. SQS, HTTP) return (nil, nil) from
+// NewSession. The session parameter passed to NewReceiver/NewSender
+// may be nil for stateless transports.
+type TransportFactory interface {
+	SessionFactory
+	ReceiverFactory
+	SenderFactory
+
+	// Capabilities returns the transport capabilities relevant for
+	// startup validation (e.g. visibility extension, stateful session).
+	Capabilities() []Capability
+}
+
+// VisibilityTimeoutProvider is an optional interface that
+// TransportFactory implementations may satisfy to declare the source
+// visibility timeout. The runtime validator uses this value to check
+// that SendTimeout does not exceed half the visibility window, which
+// would cause duplicate processing.
+type VisibilityTimeoutProvider interface {
+	VisibilityTimeout() time.Duration
 }

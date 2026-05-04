@@ -6,7 +6,6 @@ import (
 	"maps"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -16,17 +15,25 @@ import (
 // making it safe to call Prepare while an old runtime still holds
 // exclusive transport connections.
 type PreparedBuild struct {
-	cfg    *config.BridgeConfig
+	cfg    *ports.BridgeConfig
 	stores *storeResult
 	rtOpts []runtime.Option
 }
 
-// Prepare validates config and builds stores but does NOT create
-// transport sessions, receivers, or senders. This is the first phase
-// of the two-phase build used by the Supervisor in PrepareCommit mode.
+// Prepare builds stores but does NOT create transport sessions,
+// receivers, or senders. This is the first phase of the two-phase
+// build used by the Supervisor in PrepareCommit mode.
+//
+// When a ports.BlueprintValidator was supplied via
+// WithBlueprintValidator, it runs first; the builder does not import
+// the config parser, so the composition root injects the validator
+// (typically config.Validate). When no validator is set the bridge
+// trusts the input.
 func (b *Builder) Prepare(ctx context.Context) (*PreparedBuild, error) {
-	if err := config.Validate(b.cfg); err != nil {
-		return nil, fmt.Errorf("bridge: config validation: %w", err)
+	if b.validator != nil {
+		if err := b.validator(b.cfg); err != nil {
+			return nil, fmt.Errorf("bridge: config validation: %w", err)
+		}
 	}
 
 	stores, err := b.buildStores(ctx)
@@ -82,8 +89,8 @@ type storeResult struct {
 	dlqDist    bool
 }
 
-func isDistributedFactory(sf StoreFactory) bool {
-	if df, ok := sf.(DistributedStoreFactory); ok {
+func isDistributedFactory(sf ports.StoreFactory) bool {
+	if df, ok := sf.(ports.DistributedStoreFactory); ok {
 		return df.IsDistributed()
 	}
 	return false
@@ -97,7 +104,7 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		if !ok {
 			return nil, fmt.Errorf("bridge: no store factory registered for lease type %q", sc.Type)
 		}
-		s, err := sf.NewLeaseStore(ctx, *sc)
+		s, err := sf.NewLeaseStore(ctx, storeSpecFrom(*sc))
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create lease store: %w", err)
 		}
@@ -115,7 +122,7 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		if err := b.injectStaleClaimDuration(sc); err != nil {
 			return nil, err
 		}
-		s, err := sf.NewOutboxStore(ctx, *sc)
+		s, err := sf.NewOutboxStore(ctx, storeSpecFrom(*sc))
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create outbox store: %w", err)
 		}
@@ -130,7 +137,7 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		if !ok {
 			return nil, fmt.Errorf("bridge: no store factory registered for dlq type %q", sc.Type)
 		}
-		s, err := sf.NewDLQStore(ctx, *sc)
+		s, err := sf.NewDLQStore(ctx, storeSpecFrom(*sc))
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create dlq store: %w", err)
 		}
@@ -189,7 +196,7 @@ func (b *Builder) resolveClusterEndpoints(ctx context.Context) map[string]string
 // The method works on a shallow copy of sc.Options so that the
 // original config is not mutated, allowing safe re-derivation on
 // subsequent Build() calls with the same config.
-func (b *Builder) injectStaleClaimDuration(sc *config.StoreConfig) error {
+func (b *Builder) injectStaleClaimDuration(sc *ports.StoreConfig) error {
 	if sc.Options != nil {
 		if _, explicit := sc.Options["stale_claim_duration"]; explicit {
 			return nil

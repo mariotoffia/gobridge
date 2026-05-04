@@ -108,7 +108,7 @@ sequenceDiagram
 cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
 
 rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("sqs", sqs.NewBridgeFactory(logger)).
+    RegisterTransport("sqs", sqs.NewFactory(logger)).
     Build(ctx)
 
 rt.Start(ctx)

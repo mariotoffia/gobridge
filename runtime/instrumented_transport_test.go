@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -19,6 +21,7 @@ func TestInstrumentedDelivery_Ack_EmitsGenericMetric(t *testing.T) {
 		rec,
 		"TestReceiveLatency",
 		"session_id", "mqtt-1",
+		clock.System,
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -58,6 +61,7 @@ func TestInstrumentedDelivery_Extend_EmitsGenericMetric(t *testing.T) {
 		rec,
 		"TestReceiveLatency",
 		"session_id", "mqtt-1",
+		clock.System,
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -75,6 +79,46 @@ func TestInstrumentedDelivery_Extend_EmitsGenericMetric(t *testing.T) {
 				domain.MetricSQSVisibilityExtensions)
 		}
 	}
+}
+
+func TestInstrumentedDelivery_AckLatencyUsesInjectedClock(t *testing.T) {
+	clk := clocktest.NewAt(time.Unix(100, 0))
+	rec := &ports.RecordingExporter{}
+	inner := &advancingDelivery{Delivery: NewFakeDelivery(&domain.Envelope{ID: "test"}), clk: clk, advance: 40 * time.Millisecond}
+
+	wrapped := goruntime.NewInstrumentedReceiver(
+		&singleDeliveryReceiver{del: inner},
+		rec,
+		"TestReceiveLatency",
+		"session_id", "mqtt-1",
+		clk,
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_ = wrapped.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
+		return del.Ack(ctx)
+	})
+
+	timers := rec.FindEntries(domain.MetricAckLatency)
+	if len(timers) != 1 {
+		t.Fatalf("expected 1 ack timer, got %d", len(timers))
+	}
+	if timers[0].Duration != 40*time.Millisecond {
+		t.Fatalf("duration = %s, want 40ms", timers[0].Duration)
+	}
+}
+
+type advancingDelivery struct {
+	ports.Delivery
+	clk     *clocktest.Fake
+	advance time.Duration
+}
+
+func (d *advancingDelivery) Ack(ctx context.Context) error {
+	d.clk.Advance(d.advance)
+	return d.Delivery.Ack(ctx)
 }
 
 type singleDeliveryReceiver struct {
