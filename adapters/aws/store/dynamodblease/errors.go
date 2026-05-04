@@ -1,4 +1,4 @@
-package dynamodbdlq
+package dynamodblease
 
 import (
 	"context"
@@ -10,16 +10,6 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
-func isConditionFailed(err error) bool {
-	var ccf *ddbtypes.ConditionalCheckFailedException
-	return errors.As(err, &ccf)
-}
-
-func isResourceInUse(err error) bool {
-	var riue *ddbtypes.ResourceInUseException
-	return errors.As(err, &riue)
-}
-
 // mapError classifies a DynamoDB SDK error per the error-wrapping policy
 // DDB mapping table.
 //
@@ -30,11 +20,10 @@ func isResourceInUse(err error) bool {
 // `domain.ErrTimeout` or `domain.ErrUnavailable` — those sentinels are
 // reserved for SDK-reported deadline/availability failures.
 //
-// Caller-handled outcomes (ConditionalCheckFailedException for
-// idempotent duplicate writes and silently-skipped Delete misses,
-// ResourceInUseException on EnsureTable) are not classified here —
-// call sites short-circuit those before invoking mapError so the
-// DLQ-specific semantics (ErrDuplicateRecord) are preserved.
+// Caller-handled outcomes (ConditionalCheckFailedException) are not
+// classified here — call sites short-circuit those before invoking
+// mapError so the lease-specific semantics (ErrAlreadyExists,
+// ErrStaleFencingToken, ErrNotFound for released items) are preserved.
 func mapError(err error) error {
 	if err == nil {
 		return nil
@@ -79,6 +68,8 @@ func mapError(err error) error {
 		return domain.ErrUnavailable.Wrap(err)
 	}
 
+	// Safe default: unknown SDK errors are treated as transient
+	// (recoverable) so the runtime retry/DLQ pipeline can react.
 	return domain.ErrUnavailable.Wrap(err)
 }
 

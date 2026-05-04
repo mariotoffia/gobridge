@@ -165,13 +165,16 @@ func (s *Store) CreateTable(ctx context.Context) error {
 		if isResourceInUse(err) {
 			return nil
 		}
-		return fmt.Errorf("dynamodboutbox: create table: %w", err)
+		return wrapErr(err, "create outbox table failed", "table", s.table)
 	}
 
 	waiter := dynamodb.NewTableExistsWaiter(s.client)
-	return waiter.Wait(ctx, &dynamodb.DescribeTableInput{
+	if err := waiter.Wait(ctx, &dynamodb.DescribeTableInput{
 		TableName: aws.String(s.table),
-	}, 2*time.Minute)
+	}, 2*time.Minute); err != nil {
+		return wrapErr(err, "wait for outbox table to exist failed", "table", s.table)
+	}
+	return nil
 }
 
 // Persist writes outbox records atomically. For a single record, it uses
@@ -212,7 +215,7 @@ func (s *Store) persistSingle(ctx context.Context, r *domain.OutboxRecord, now t
 				With("envelopeID", r.EnvelopeID).
 				With("bindingID", r.BindingID)
 		}
-		return fmt.Errorf("dynamodboutbox: persist: %w", err)
+		return wrapErr(err, "outbox persist failed", "envelopeID", r.EnvelopeID, "bindingID", r.BindingID)
 	}
 	return nil
 }
@@ -245,7 +248,7 @@ func (s *Store) persistFanOut(ctx context.Context, records []domain.OutboxRecord
 			return domain.ErrDuplicateRecord.
 				WithMessage("duplicate outbox record in fan-out batch")
 		}
-		return fmt.Errorf("dynamodboutbox: persist fan-out: %w", err)
+		return wrapErr(err, "outbox persist fan-out failed", "recordCount", len(records))
 	}
 	return nil
 }
@@ -296,7 +299,7 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, 
 
 		queryOut, err := s.client.Query(ctx, input)
 		if err != nil {
-			return nil, fmt.Errorf("dynamodboutbox: query claimable: %w", err)
+			return nil, wrapErr(err, "outbox claim query failed", "partitionKey", partitionKey)
 		}
 
 		for _, item := range queryOut.Items {
@@ -346,7 +349,7 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, 
 				if isConditionFailed(err) {
 					continue
 				}
-				return nil, fmt.Errorf("dynamodboutbox: claim update: %w", err)
+				return nil, wrapErr(err, "outbox claim update failed", "partitionKey", pk, "ownerID", ownerID)
 			}
 
 			rec, err := unmarshalRecord(updateOut.Attributes)
@@ -419,7 +422,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.L
 					With("recordID", id).
 					With("givenVersion", token.Version)
 			}
-			return fmt.Errorf("dynamodboutbox: complete: %w", err)
+			return wrapErr(err, "outbox complete update failed", "recordID", id, "ownerID", token.Owner)
 		}
 	}
 
@@ -469,7 +472,7 @@ func (s *Store) expireByStatus(ctx context.Context, status string, beforeMs, ttl
 
 		out, err := s.client.Query(ctx, input)
 		if err != nil {
-			return count, fmt.Errorf("dynamodboutbox: expire query: %w", err)
+			return count, wrapErr(err, "outbox expire query failed", "status", status)
 		}
 
 		for _, item := range out.Items {
@@ -502,7 +505,7 @@ func (s *Store) expireByStatus(ctx context.Context, status string, beforeMs, ttl
 				if isConditionFailed(err) {
 					continue
 				}
-				return count, fmt.Errorf("dynamodboutbox: expire update: %w", err)
+				return count, wrapErr(err, "outbox expire update failed", "partitionKey", pk)
 			}
 			count++
 		}
@@ -548,7 +551,7 @@ func (s *Store) QueryPending(ctx context.Context, partitionKey string, limit int
 
 		out, err := s.client.Query(ctx, input)
 		if err != nil {
-			return nil, fmt.Errorf("dynamodboutbox: query pending: %w", err)
+			return nil, wrapErr(err, "outbox query pending failed", "partitionKey", partitionKey)
 		}
 
 		for _, item := range out.Items {
@@ -589,7 +592,7 @@ func (s *Store) resolveRecordKeys(ctx context.Context, recordID string) (string,
 		Limit: aws.Int32(1),
 	})
 	if err != nil {
-		return "", "", fmt.Errorf("dynamodboutbox: resolve record keys: %w", err)
+		return "", "", wrapErr(err, "outbox resolve record keys failed", "recordID", recordID)
 	}
 
 	if len(out.Items) == 0 {

@@ -127,7 +127,7 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 		return domain.LeaseToken{Version: 1, Owner: ownerID}, nil
 	}
 	if !isConditionFailed(err) {
-		return domain.LeaseToken{}, err
+		return domain.LeaseToken{}, wrapErr(err, "", "leaseID", leaseID, "ownerID", ownerID)
 	}
 
 	// Item exists -- attempt expired takeover with atomic version increment.
@@ -172,7 +172,7 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 				WithMessage("lease already held").
 				With("leaseID", leaseID)
 		}
-		return domain.LeaseToken{}, err
+		return domain.LeaseToken{}, wrapErr(err, "lease takeover update failed", "leaseID", leaseID, "ownerID", ownerID)
 	}
 
 	ver, err := numAttr(result.Attributes, attrVersion)
@@ -228,7 +228,7 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseTok
 		if isConditionFailed(err) {
 			return domain.LeaseToken{}, s.classifyConditionFailure(ctx, leaseID)
 		}
-		return domain.LeaseToken{}, err
+		return domain.LeaseToken{}, wrapErr(err, "lease renew update failed", "leaseID", leaseID, "ownerID", token.Owner)
 	}
 	return token, nil
 }
@@ -271,7 +271,7 @@ func (s *Store) Release(ctx context.Context, leaseID string, token domain.LeaseT
 		if isConditionFailed(err) {
 			return s.classifyConditionFailure(ctx, leaseID)
 		}
-		return err
+		return wrapErr(err, "lease release update failed", "leaseID", leaseID, "ownerID", token.Owner)
 	}
 	return nil
 }
@@ -288,7 +288,7 @@ func (s *Store) Current(ctx context.Context, leaseID string) (domain.LeaseInfo, 
 		ConsistentRead: aws.Bool(true),
 	})
 	if err != nil {
-		return domain.LeaseInfo{}, err
+		return domain.LeaseInfo{}, wrapErr(err, "lease get failed", "leaseID", leaseID)
 	}
 	owner := strAttr(result.Item, attrOwner)
 	if len(result.Item) == 0 || owner == "" {
@@ -327,13 +327,16 @@ func (s *Store) EnsureTable(ctx context.Context) error {
 		if errors.As(err, &inUse) {
 			return nil
 		}
-		return err
+		return wrapErr(err, "create lease table failed", "table", s.tableName)
 	}
 
 	waiter := dynamodb.NewTableExistsWaiter(s.client)
-	return waiter.Wait(ctx, &dynamodb.DescribeTableInput{
+	if err := waiter.Wait(ctx, &dynamodb.DescribeTableInput{
 		TableName: &s.tableName,
-	}, 30*time.Second)
+	}, 30*time.Second); err != nil {
+		return wrapErr(err, "wait for lease table to exist failed", "table", s.tableName)
+	}
+	return nil
 }
 
 // classifyConditionFailure distinguishes between "item not found" and
@@ -394,7 +397,11 @@ func numAttr(attrs map[string]ddbtypes.AttributeValue, key string) (uint64, erro
 	if !ok {
 		return 0, fmt.Errorf("attribute %q is not a number", key)
 	}
-	return strconv.ParseUint(n.Value, 10, 64)
+	parsed, err := strconv.ParseUint(n.Value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("dynamodblease: parse number attribute %q: %w", key, err)
+	}
+	return parsed, nil
 }
 
 func strAttr(attrs map[string]ddbtypes.AttributeValue, key string) string {
