@@ -43,6 +43,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 )
 
 const containerPrefix = "gobridge-sqslocal-"
@@ -278,7 +279,7 @@ func startContainer() (string, string, func(), error) {
 	}
 
 	name := containerPrefix + fmt.Sprintf("%d", port)
-	_ = exec.Command("docker", "rm", "-f", name).Run()
+	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
 
 	args := []string{"run", "-d",
 		"--name", name,
@@ -291,15 +292,14 @@ func startContainer() (string, string, func(), error) {
 		args = append(args, "--cpus", opts.cpus)
 	}
 	args = append(args, "softwaremill/elasticmq-native:latest")
-	cmd := exec.Command("docker", args...)
-	out, err := cmd.CombinedOutput()
+	out, err := dockerexec.Run(dockerexec.RunTimeout, args...)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("docker run: %w\n%s", err, out)
 	}
 
 	ep := fmt.Sprintf("http://127.0.0.1:%d", port)
 	cleanup := func() {
-		_ = exec.Command("docker", "rm", "-f", name).Run()
+		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
 	}
 
 	if err := waitForContainerHealthy(name, 15*time.Second); err != nil {
@@ -327,29 +327,29 @@ func startContainer() (string, string, func(), error) {
 }
 
 func removeOrphans(prefix string) {
-	out, err := exec.Command("docker", "ps", "-aq",
-		"--filter", "name="+prefix).Output()
+	out, err := dockerexec.Run(dockerexec.InspectTimeout, "ps", "-aq",
+		"--filter", "name="+prefix)
 	if err != nil || len(out) == 0 {
 		return
 	}
 	ids := strings.Fields(strings.TrimSpace(string(out)))
 	if len(ids) > 0 {
 		args := append([]string{"rm", "-f"}, ids...)
-		_ = exec.Command("docker", args...).Run()
+		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, args...)
 	}
 }
 
 func isContainerRunning(name string) bool {
-	out, err := exec.Command("docker", "inspect",
-		"--format", "{{.State.Running}}", name).Output()
+	out, err := dockerexec.Run(dockerexec.InspectTimeout, "inspect",
+		"--format", "{{.State.Running}}", name)
 	return err == nil && len(out) > 0 && out[0] == 't'
 }
 
 func waitForContainerHealthy(name string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		out, err := exec.Command("docker", "inspect",
-			"--format", "{{.State.Running}} {{.State.ExitCode}}", name).Output()
+		out, err := dockerexec.Run(dockerexec.InspectTimeout, "inspect",
+			"--format", "{{.State.Running}} {{.State.ExitCode}}", name)
 		if err == nil {
 			s := strings.TrimSpace(string(out))
 			if strings.HasPrefix(s, "true") {
@@ -389,7 +389,7 @@ func stabilize(probe func() error) error {
 }
 
 func logContainerFailure(name string) {
-	out, _ := exec.Command("docker", "logs", "--tail", "30", name).CombinedOutput()
+	out, _ := dockerexec.Run(dockerexec.LogsTimeout, "logs", "--tail", "30", name)
 	if len(out) > 0 {
 		fmt.Fprintf(os.Stderr, "--- docker logs %s ---\n%s\n--- end ---\n", name, out)
 	}

@@ -1,4 +1,25 @@
-# FIX — Bound `docker run` exec time in `testutil/*local` helpers
+# FIX — Bound `docker run` exec time in `testutil/*local` helpers - DONE
+
+**Status:** Resolved 2026-05-04. Added a shared docker CLI timeout wrapper, migrated local fixture helpers to bounded docker calls, covered the wrapper with tests, and documented timeout defaults.
+
+**What landed:**
+- [testutil/dockerexec/dockerexec.go](testutil/dockerexec/dockerexec.go) adds bounded `docker` command execution with default timeouts.
+- [testutil/dockerexec/dockerexec_test.go](testutil/dockerexec/dockerexec_test.go) covers success and timeout behavior using a fake docker binary.
+- [testutil/rabbitmqlocal/rabbitmqlocal.go](testutil/rabbitmqlocal/rabbitmqlocal.go), [testutil/ddblocal/ddblocal.go](testutil/ddblocal/ddblocal.go), [testutil/asblocal/asblocal.go](testutil/asblocal/asblocal.go), [testutil/mqttlocal/](testutil/mqttlocal/), [testutil/artemislocal/artemislocal.go](testutil/artemislocal/artemislocal.go), [testutil/sqslocal/sqslocal.go](testutil/sqslocal/sqslocal.go), [testutil/localstack/localstack.go](testutil/localstack/localstack.go), and [testutil/s3local/s3local.go](testutil/s3local/s3local.go) now use `dockerexec.Run` for docker CLI calls.
+- [tests/longrunning/README.md](tests/longrunning/README.md) documents Docker fixture timeout defaults.
+
+**Tests added:**
+- `TestRunSucceedsWithDockerOnPath`
+- `TestRunTimesOut`
+
+**Pre-existing issues fixed in touched files (per audit instruction):**
+- none
+
+**Follow-ups (not blockers; logged for future passes):**
+- `make test` is currently blocked by the existing timing audit finding in `adapters/azure/transport/servicebus/integration_test.go:68`.
+- Targeted longrunning execution still exposes existing `TestGap_AMQP091_To_MQTT_CrossTransport` subject preservation failures and a `TestUC43_BrokerKillRestart_DirectHold` broker restart error.
+
+**Agents/Skills used:** work-tasklist runner · golang-pro · code-reviewer
 
 > Companion files: `FIX-directhold-retry-pacing.md`,
 > `FIX-shared-outbox-completion.md`,

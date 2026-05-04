@@ -20,6 +20,23 @@ MQTT_BROKER_URL=tcp://127.0.0.1:1883 \
   go test -race -timeout 1200s -v -tags=longrunning ./tests/longrunning/...
 ```
 
+## Docker fixture timeouts
+
+Docker-backed fixture helpers use `testutil/dockerexec` for every `docker`
+CLI call so a stuck daemon or image pull fails fast instead of consuming the
+full long-running package timeout. Defaults are:
+
+| Operation | Timeout |
+|-----------|---------|
+| `docker run -d` | 90 s |
+| `docker rm -f` / `docker stop` | 30 s |
+| `docker inspect` / `docker ps` | 10 s |
+| `docker logs` | 10 s |
+| Other helper `docker` commands (`start`, `kill`, `network`) | 30 s |
+
+New fixture helpers should call `dockerexec.Run` instead of plain
+`exec.Command("docker", ...)`.
+
 ## Mosquitto Configuration
 
 TestMain configures Mosquitto for high throughput:
