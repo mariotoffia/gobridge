@@ -184,7 +184,7 @@
     {
       "id": "T017",
       "title": "Per package: build and test green at each step",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "test-automator",
       "agent_rationale": "This is validation work requiring package-level build and test execution after each refactor step.",

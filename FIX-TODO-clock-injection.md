@@ -476,7 +476,27 @@ Recommended order (smallest to largest, leaf to root):
 
     **Agents/Skills used:** golang-pro, code-reviewer.
 
-Per package: build + test green at each step.
+Per package: build + test green at each step. - DONE
+
+**Status:** Resolved 2026-05-04. All packages touched during the clock-injection sweep (T003–T016) verified green: domain, circuitbreaker, bridge, runtime, adapters/http/transport, httpapi, adapters/amqp/transport/amqp091, adapters/amqp/transport/amqp10, adapters/aws/transport/sqs, adapters/azure/transport/servicebus, adapters/mqtt/transport/paho, adapters/native/credentials/file, adapters/native/store/sqliteoutbox, adapters/native/store/memoryoutbox, adapters/native/store/memorylease, adapters/aws/store/dynamodblease, adapters/aws/store/dynamodboutbox — all build clean and unit tests pass under `go test -short -race -timeout 120s ./...`.
+
+**What landed:**
+
+- No code changes — verification checkpoint only.
+
+**Tests added:**
+
+- none.
+
+**Pre-existing issues fixed in touched files (per audit instruction):**
+
+- none.
+
+**Follow-ups (not blockers; logged for future passes):**
+
+- none.
+
+**Agents/Skills used:** code-reviewer.
 
 ### Phase 4 — Address the `loader_test.go` TODO
 
