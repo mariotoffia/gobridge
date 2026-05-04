@@ -9,13 +9,13 @@ import (
 	"log/slog"
 	"strconv"
 	"sync"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -34,6 +34,7 @@ type Sender struct {
 	initMu   sync.Mutex
 	logger   *slog.Logger
 	metrics  ports.MetricsExporter
+	clk      clock.Clock
 }
 
 // NewSender creates an SQS Sender. The sender resolves its queue URL
@@ -47,12 +48,24 @@ func NewSender(cfg SenderConfig) (*Sender, error) {
 	if m == nil {
 		m = &ports.NoopExporter{}
 	}
+	clk := cfg.Clock
+	if clk == nil {
+		clk = clock.System
+	}
 	return &Sender{
 		cfg:      cfg,
 		queueURL: cfg.QueueURL,
 		logger:   cfg.Logger,
 		metrics:  m,
+		clk:      clk,
 	}, nil
+}
+
+func (s *Sender) clock() clock.Clock {
+	if s.clk != nil {
+		return s.clk
+	}
+	return clock.System
 }
 
 // Send submits a single envelope to SQS.
@@ -74,7 +87,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 
 	input := s.buildSendInput(env)
 
-	start := time.Now()
+	start := s.clock().Now()
 	_, err := s.client.SendMessage(sendCtx, input)
 	if err != nil {
 		if logging.DebugEnabled(s.logger) {
@@ -84,7 +97,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 		return MapError(err)
 	}
 
-	s.metrics.Timer(domain.MetricSQSSendLatency, time.Since(start),
+	s.metrics.Timer(domain.MetricSQSSendLatency, s.clock().Since(start),
 		domain.Tag{Key: domain.TagKeyQueueURL, Value: s.queueURL})
 
 	return nil
@@ -128,7 +141,7 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 
 		batchCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 
-		start := time.Now()
+		start := s.clock().Now()
 		result, err := s.client.SendMessageBatch(batchCtx, &awssqs.SendMessageBatchInput{
 			QueueUrl: aws.String(s.queueURL),
 			Entries:  entries,
@@ -141,7 +154,7 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 			continue
 		}
 
-		s.metrics.Timer(domain.MetricSQSSendBatchLatency, time.Since(start),
+		s.metrics.Timer(domain.MetricSQSSendBatchLatency, s.clock().Since(start),
 			domain.Tag{Key: domain.TagKeyQueueURL, Value: s.queueURL})
 
 		sent += len(result.Successful)

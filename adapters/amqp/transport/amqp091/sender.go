@@ -4,11 +4,11 @@ import (
 	"context"
 	"log/slog"
 	"sync"
-	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -25,6 +25,7 @@ type Sender struct {
 	session *Session
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
+	clk     clock.Clock
 
 	mu      sync.Mutex
 	ch      *amqp.Channel
@@ -39,6 +40,13 @@ func NewSender(cfg SenderConfig) *Sender {
 	if m == nil {
 		m = &ports.NoopExporter{}
 	}
+	clk := cfg.Clock
+	if clk == nil && cfg.Session != nil {
+		clk = cfg.Session.clk
+	}
+	if clk == nil {
+		clk = clock.System
+	}
 	l := cfg.Logger
 	if l == nil && cfg.Session != nil {
 		l = cfg.Session.logger
@@ -48,7 +56,15 @@ func NewSender(cfg SenderConfig) *Sender {
 		session: cfg.Session,
 		logger:  l,
 		metrics: m,
+		clk:     clk,
 	}
+}
+
+func (s *Sender) clock() clock.Clock {
+	if s.clk != nil {
+		return s.clk
+	}
+	return clock.System
 }
 
 // Send publishes a single envelope to the AMQP broker with publisher
@@ -56,7 +72,7 @@ func NewSender(cfg SenderConfig) *Sender {
 // and the envelope's Subject. The entire publish+confirm cycle is
 // serialized to prevent confirm-channel races under concurrent callers.
 func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
-	pub := envelopeToPublishing(env, s.cfg)
+	pub := envelopeToPublishing(env, s.cfg, s.clock())
 	exchange := s.cfg.Exchange
 	routingKey := s.cfg.RoutingKey
 	if routingKey == "" {
@@ -103,11 +119,11 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 		}
 	}
 
-	start := time.Now()
+	start := s.clock().Now()
 	if err := ch.PublishWithContext(sendCtx, exchange, routingKey, s.cfg.Mandatory, s.cfg.Immediate, pub); err != nil {
 		s.resetChannelLocked()
 		s.mu.Unlock()
-		s.metrics.Timer(domain.MetricAMQP091PublishLatency, time.Since(start), sessionTag)
+		s.metrics.Timer(domain.MetricAMQP091PublishLatency, s.clock().Since(start), sessionTag)
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(ctx, logging.LevelDebug, "amqp091: publish failed",
 				"exchange", exchange, "routing_key", routingKey, "error", err)
@@ -121,7 +137,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	}
 	s.mu.Unlock()
 
-	elapsed := time.Since(start)
+	elapsed := s.clock().Since(start)
 	s.metrics.Timer(domain.MetricAMQP091PublishLatency, elapsed, sessionTag)
 
 	if confirmErr != nil {

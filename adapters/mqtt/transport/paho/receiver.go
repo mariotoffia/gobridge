@@ -85,7 +85,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 			)
 		}
 
-		env := EnvelopeFromPublish(pub)
+		env := EnvelopeFromPublish(pub, r.session.clock())
 		del := NewDelivery(env)
 		if err := emit(runCtx, del); err != nil {
 			if logging.DebugEnabled(r.logger) {

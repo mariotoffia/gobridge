@@ -28,7 +28,7 @@ func TestReceiver_ConvertMessage(t *testing.T) {
 		},
 	}
 
-	env := deliveryToEnvelope(d)
+	env := deliveryToEnvelope(d, nil)
 
 	if env.ID != "msg-500" {
 		t.Errorf("ID = %q, want %q", env.ID, "msg-500")
@@ -57,7 +57,7 @@ func TestReceiver_ConvertMessage_GeneratesID(t *testing.T) {
 		Body:       []byte("body"),
 	}
 
-	env := deliveryToEnvelope(d)
+	env := deliveryToEnvelope(d, nil)
 
 	if env.ID == "" {
 		t.Error("expected auto-generated ID")
@@ -75,7 +75,7 @@ func TestReceiver_ConvertMessage_ZeroTimestamp(t *testing.T) {
 		RoutingKey: "evt",
 	}
 
-	env := deliveryToEnvelope(d)
+	env := deliveryToEnvelope(d, nil)
 
 	if env.CreatedAt.Before(before) {
 		t.Error("CreatedAt should be >= time.Now() at call time")

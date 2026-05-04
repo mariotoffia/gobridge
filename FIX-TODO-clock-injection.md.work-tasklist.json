@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "FIX-TODO-clock-injection.md",
-  "source_sha": "94e28ff302f4cd67ae57e5f0f86964f51192d0f2dcfa72e086eaf9aa2a183e80",
+  "source_sha": "40d69d537ba3c8428133b7529b37c9e9a1e83717f72e3b7b14e4a04bd36fe386",
   "indexed_at": "2026-05-04T00:00:00Z",
   "status_convention": "No explicit status markers; numbered list entries, phase headings, and acceptance bullets without markers default to pending",
   "tasks": [
@@ -151,7 +151,7 @@
     {
       "id": "T014",
       "title": "adapters/*/transport/* \u2014 inject clocks for message timestamps and deadlines",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This is broad Go adapter refactoring across transports to remove direct time.Now usage.",

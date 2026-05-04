@@ -24,7 +24,7 @@ func makeTestDelivery(acker *mockAcknowledger, tag uint64) (*Delivery, *domain.E
 		DeliveryTag:  tag,
 		RoutingKey:   "test.subject",
 	}
-	return NewDelivery(env, raw, slog.Default(), &ports.NoopExporter{}), env
+	return NewDelivery(env, raw, slog.Default(), &ports.NoopExporter{}, nil), env
 }
 
 // verifies Delivery.Envelope returns the stored envelope.
@@ -156,7 +156,7 @@ func TestDelivery_AckThenRetry(t *testing.T) {
 func TestDelivery_NilMetrics(t *testing.T) {
 	env := &domain.Envelope{ID: "x"}
 	raw := amqp.Delivery{Acknowledger: newMockAcknowledger()}
-	del := NewDelivery(env, raw, nil, nil)
+	del := NewDelivery(env, raw, nil, nil, nil)
 
 	if del.metrics == nil {
 		t.Fatal("metrics should be non-nil (NoopExporter)")

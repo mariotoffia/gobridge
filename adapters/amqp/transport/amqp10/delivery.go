@@ -9,6 +9,7 @@ import (
 	"github.com/Azure/go-amqp"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -34,6 +35,7 @@ type Delivery struct {
 	settle  settler
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
+	clk     clock.Clock
 
 	mu       sync.Mutex
 	settled  bool
@@ -47,9 +49,13 @@ func NewDelivery(
 	settle settler,
 	logger *slog.Logger,
 	metrics ports.MetricsExporter,
+	clk clock.Clock,
 ) *Delivery {
 	if metrics == nil {
 		metrics = &ports.NoopExporter{}
+	}
+	if clk == nil {
+		clk = clock.System
 	}
 	return &Delivery{
 		env:     env,
@@ -57,6 +63,7 @@ func NewDelivery(
 		settle:  settle,
 		logger:  logger,
 		metrics: metrics,
+		clk:     clk,
 	}
 }
 
@@ -85,9 +92,9 @@ func (d *Delivery) Ack(ctx context.Context) error {
 		)
 	}
 
-	start := time.Now()
+	start := d.clk.Now()
 	err := d.settle.AcceptMessage(ctx, d.msg)
-	d.metrics.Timer(domain.MetricAMQP10AcceptLatency, time.Since(start))
+	d.metrics.Timer(domain.MetricAMQP10AcceptLatency, d.clk.Since(start))
 
 	if err != nil {
 		return MapError(err)

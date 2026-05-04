@@ -94,7 +94,7 @@ func (s *SSESender) SetRouteID(routeID string) {
 
 // Send broadcasts an envelope to all connected SSE clients.
 func (s *SSESender) Send(ctx context.Context, env *domain.Envelope) error {
-	start := time.Now()
+	start := s.cfg.clock.Now()
 
 	select {
 	case <-ctx.Done():
@@ -132,7 +132,7 @@ func (s *SSESender) Send(ctx context.Context, env *domain.Envelope) error {
 	for _, c := range clients {
 		select {
 		case <-ctx.Done():
-			s.cfg.metrics.Timer(domain.MetricSSEBroadcastLatency, time.Since(start))
+			s.cfg.metrics.Timer(domain.MetricSSEBroadcastLatency, s.cfg.clock.Since(start))
 			return ctx.Err()
 		case c.events <- eventBytes:
 		default:
@@ -144,7 +144,7 @@ func (s *SSESender) Send(ctx context.Context, env *domain.Envelope) error {
 		}
 	}
 
-	s.cfg.metrics.Timer(domain.MetricSSEBroadcastLatency, time.Since(start))
+	s.cfg.metrics.Timer(domain.MetricSSEBroadcastLatency, s.cfg.clock.Since(start))
 	return nil
 }
 

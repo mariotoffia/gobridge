@@ -9,6 +9,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -23,6 +24,7 @@ type Delivery struct {
 	raw     amqp.Delivery
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
+	clk     clock.Clock
 
 	mu       sync.Mutex
 	settled  bool
@@ -30,15 +32,19 @@ type Delivery struct {
 }
 
 // NewDelivery wraps an amqp091.Delivery as a ports.Delivery.
-func NewDelivery(env *domain.Envelope, raw amqp.Delivery, logger *slog.Logger, metrics ports.MetricsExporter) *Delivery {
+func NewDelivery(env *domain.Envelope, raw amqp.Delivery, logger *slog.Logger, metrics ports.MetricsExporter, clk clock.Clock) *Delivery {
 	if metrics == nil {
 		metrics = &ports.NoopExporter{}
+	}
+	if clk == nil {
+		clk = clock.System
 	}
 	return &Delivery{
 		env:     env,
 		raw:     raw,
 		logger:  logger,
 		metrics: metrics,
+		clk:     clk,
 	}
 }
 
@@ -65,9 +71,9 @@ func (d *Delivery) Ack(ctx context.Context) error {
 			"delivery_tag", d.raw.DeliveryTag,
 		)
 	}
-	ackStart := time.Now()
+	ackStart := d.clk.Now()
 	err := d.raw.Ack(false)
-	d.metrics.Timer(domain.MetricAMQP091AckLatency, time.Since(ackStart),
+	d.metrics.Timer(domain.MetricAMQP091AckLatency, d.clk.Since(ackStart),
 		domain.Tag{Key: domain.TagKeyEntity, Value: d.raw.RoutingKey})
 
 	if err != nil {

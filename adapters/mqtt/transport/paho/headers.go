@@ -41,8 +41,11 @@ func isPrintableASCII(s string) bool {
 //  1. mqtt.message-id user property (set by PublishFromEnvelope)
 //  2. x-bridge.correlation-id from CorrelationData
 //  3. Deterministic derivation from topic + payload hash
-func EnvelopeFromPublish(pub *pahov5.Publish) *domain.Envelope {
-	now := time.Now()
+func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *domain.Envelope {
+	if clk == nil {
+		clk = clock.System
+	}
+	now := clk.Now()
 
 	env := &domain.Envelope{
 		Subject:   pub.Topic,
@@ -117,7 +120,10 @@ func EnvelopeFromPublish(pub *pahov5.Publish) *domain.Envelope {
 // PublishFromEnvelope converts a domain.Envelope into an MQTT publish packet
 // with mapped headers and message expiry. The Envelope.ID is included as a
 // mqtt.message-id user property so EnvelopeFromPublish can recover it.
-func PublishFromEnvelope(env *domain.Envelope, opts SenderOptions) *pahov5.Publish {
+func PublishFromEnvelope(env *domain.Envelope, opts SenderOptions, clk clock.Clock) *pahov5.Publish {
+	if clk == nil {
+		clk = clock.System
+	}
 	topic := env.Subject
 	if topic == "" {
 		topic = opts.DefaultTopic
@@ -141,7 +147,7 @@ func PublishFromEnvelope(env *domain.Envelope, opts SenderOptions) *pahov5.Publi
 	}
 
 	if env.HasExpiry() {
-		remaining := env.RemainingTTL(clock.System)
+		remaining := env.RemainingTTL(clk)
 		if remaining > 0 {
 			secs := uint32(remaining.Seconds())
 			if secs == 0 {

@@ -405,6 +405,31 @@ Recommended order (smallest to largest, leaf to root):
     **Agents/Skills used:** general-purpose, code-reviewer.
 12. `adapters/*/transport/*` — message timestamps, deadlines. Each
     transport adapter is one PR of work.
+
+    **Status:** Resolved 2026-05-04. Transport adapter message timestamps, latency measurements, deadlines, and TTL calculations now use injected `clock.Clock` instances across AMQP 0-9-1, AMQP 1.0, SQS, Azure Service Bus, HTTP, and MQTT without retaining legacy no-clock compatibility APIs.
+
+    **What landed:**
+
+    - Threaded clocks through AMQP 0-9-1 delivery, headers, receiver, sender, session, and config paths in [adapters/amqp/transport/amqp091](adapters/amqp/transport/amqp091).
+    - Threaded clocks through AMQP 1.0 delivery, receiver, sender, session, and config paths in [adapters/amqp/transport/amqp10](adapters/amqp/transport/amqp10).
+    - Threaded clocks through SQS delivery, receiver, sender, and config paths in [adapters/aws/transport/sqs](adapters/aws/transport/sqs).
+    - Threaded clocks through Azure Service Bus delivery, receiver, sender, and config paths in [adapters/azure/transport/servicebus](adapters/azure/transport/servicebus).
+    - Threaded clocks through HTTP factory, receiver, and SSE sender paths in [adapters/http/transport](adapters/http/transport).
+    - Threaded clocks through MQTT/Paho headers, receiver, sender, session, health, lifecycle, and reconcile paths in [adapters/mqtt/transport/paho](adapters/mqtt/transport/paho).
+
+    **Tests added:**
+
+    - none — updated existing tests for new clock-threaded helper signatures.
+
+    **Pre-existing issues fixed in touched files (per audit instruction):**
+
+    - none.
+
+    **Follow-ups (not blockers; logged for future passes):**
+
+    - Consider capturing a single `now := clk.Now()` in Azure Service Bus `newDelivery` lock-remaining math for stricter fake-clock determinism.
+
+    **Agents/Skills used:** golang-pro, code-reviewer.
 13. `adapters/native/credentials/file/repository.go` — file mtime
     polling.
 14. `adapters/native/store/sqliteoutbox/store.go` — record

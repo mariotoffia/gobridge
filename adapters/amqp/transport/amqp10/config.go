@@ -115,6 +115,7 @@ type SenderConfig struct {
 	Session        *Session
 	Logger         *slog.Logger
 	Metrics        ports.MetricsExporter
+	Clock          clock.Clock
 }
 
 // DefaultSessionOptions returns SessionOptions with sensible defaults.

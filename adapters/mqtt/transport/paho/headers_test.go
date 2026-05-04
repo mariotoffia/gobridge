@@ -15,7 +15,7 @@ func TestEnvelopeFromPublish_BasicFields(t *testing.T) {
 		Payload: []byte("hello"),
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	if env.Subject != "test/topic" {
 		t.Errorf("subject = %q, want %q", env.Subject, "test/topic")
@@ -38,7 +38,7 @@ func TestEnvelopeFromPublish_CorrelationAndContentType(t *testing.T) {
 		},
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	v, ok := domain.GetHeaderString(env.Headers, domain.HeaderCorrelationID)
 	if !ok || v != "corr-123" {
@@ -61,7 +61,7 @@ func TestEnvelopeFromPublish_MessageExpiry(t *testing.T) {
 	}
 
 	before := time.Now()
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 	after := time.Now()
 
 	if env.ExpiresAt.IsZero() {
@@ -86,7 +86,7 @@ func TestEnvelopeFromPublish_UserProperties(t *testing.T) {
 		},
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	if v, _ := domain.GetHeaderString(env.Headers, "traceparent"); v != "00-abc-def-01" {
 		t.Errorf("traceparent = %q, want %q", v, "00-abc-def-01")
@@ -109,7 +109,7 @@ func TestEnvelopeFromPublish_StripsReservedHeaders(t *testing.T) {
 		},
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	if _, ok := env.Headers["x-bridge.route-id"]; ok {
 		t.Error("reserved header x-bridge.route-id should be stripped")
@@ -131,7 +131,7 @@ func TestEnvelopeFromPublish_ResponseTopic(t *testing.T) {
 		},
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	if v, _ := domain.GetHeaderString(env.Headers, "mqtt.response-topic"); v != "reply/to" {
 		t.Errorf("response-topic = %q, want %q", v, "reply/to")
@@ -146,7 +146,7 @@ func TestPublishFromEnvelope_BasicFields(t *testing.T) {
 	}
 	opts := SenderOptions{QoS: 1, Retain: true}
 
-	pub := PublishFromEnvelope(env, opts)
+	pub := PublishFromEnvelope(env, opts, nil)
 
 	if pub.Topic != "out/topic" {
 		t.Errorf("topic = %q, want %q", pub.Topic, "out/topic")
@@ -167,7 +167,7 @@ func TestPublishFromEnvelope_DefaultTopic(t *testing.T) {
 	env := &domain.Envelope{Payload: []byte("x")}
 	opts := SenderOptions{DefaultTopic: "fallback/topic", QoS: 0}
 
-	pub := PublishFromEnvelope(env, opts)
+	pub := PublishFromEnvelope(env, opts, nil)
 
 	if pub.Topic != "fallback/topic" {
 		t.Errorf("topic = %q, want %q", pub.Topic, "fallback/topic")
@@ -188,7 +188,7 @@ func TestPublishFromEnvelope_Headers(t *testing.T) {
 	}
 	opts := SenderOptions{QoS: 1}
 
-	pub := PublishFromEnvelope(env, opts)
+	pub := PublishFromEnvelope(env, opts, nil)
 
 	if pub.Properties == nil {
 		t.Fatal("properties should be set")
@@ -223,7 +223,7 @@ func TestPublishFromEnvelope_MessageExpiry(t *testing.T) {
 	}
 	opts := SenderOptions{QoS: 1}
 
-	pub := PublishFromEnvelope(env, opts)
+	pub := PublishFromEnvelope(env, opts, nil)
 
 	if pub.Properties == nil || pub.Properties.MessageExpiry == nil {
 		t.Fatal("MessageExpiry should be set")
@@ -241,7 +241,7 @@ func TestPublishFromEnvelope_NoProperties(t *testing.T) {
 	}
 	opts := SenderOptions{QoS: 0}
 
-	pub := PublishFromEnvelope(env, opts)
+	pub := PublishFromEnvelope(env, opts, nil)
 
 	if pub.Properties != nil {
 		for _, u := range pub.Properties.User {
@@ -260,7 +260,7 @@ func TestEnvelopeFromPublish_RejectsNonPrintableCorrelationData(t *testing.T) {
 		},
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	if _, ok := env.Headers[domain.HeaderCorrelationID]; ok {
 		t.Error("non-printable correlation data should be rejected")
@@ -282,7 +282,7 @@ func TestEnvelopeFromPublish_RejectsOversizedCorrelationData(t *testing.T) {
 		},
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	if _, ok := env.Headers[domain.HeaderCorrelationID]; ok {
 		t.Error("oversized correlation data should be rejected")
@@ -299,7 +299,7 @@ func TestEnvelopeFromPublish_RejectsNonPrintableContentType(t *testing.T) {
 		},
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	if _, ok := env.Headers[domain.HeaderContentType]; ok {
 		t.Error("non-printable content type should be rejected")
@@ -317,7 +317,7 @@ func TestEnvelopeFromPublish_AcceptsValidCorrelationData(t *testing.T) {
 		},
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	v, ok := domain.GetHeaderString(env.Headers, domain.HeaderCorrelationID)
 	if !ok || v != "550e8400-e29b-41d4-a716-446655440000" {
@@ -340,7 +340,7 @@ func TestEnvelopeFromPublish_TimeConsistency(t *testing.T) {
 		},
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	diff := env.ExpiresAt.Sub(env.CreatedAt)
 	if diff != 300*time.Second {
@@ -356,7 +356,7 @@ func TestEnvelopeFromPublish_NilProperties(t *testing.T) {
 		Payload: []byte("p"),
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	if len(env.Headers) > 0 {
 		t.Errorf("expected no headers for nil properties, got %v", env.Headers)
@@ -377,7 +377,7 @@ func TestEnvelopeFromPublish_MixedCaseReservedHeaders(t *testing.T) {
 		},
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	if _, ok := env.Headers["X-Bridge.Route-Id"]; ok {
 		t.Error("mixed-case reserved header should be stripped")
@@ -400,7 +400,7 @@ func TestEnvelopeFromPublish_RejectsNonPrintableResponseTopic(t *testing.T) {
 		},
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	if _, ok := env.Headers[headerMQTTResponseTopic]; ok {
 		t.Error("non-printable response topic should be rejected")
@@ -425,7 +425,7 @@ func TestEnvelopeFromPublish_RejectsOversizedUserProperty(t *testing.T) {
 		},
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	if _, ok := env.Headers["normal-key"]; ok {
 		t.Error("oversized user property value should be rejected")
@@ -448,7 +448,7 @@ func TestEnvelopeFromPublish_RejectsNonPrintableUserPropertyKey(t *testing.T) {
 		},
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	if _, ok := env.Headers["bad\nkey"]; ok {
 		t.Error("user property with non-printable key should be rejected")
@@ -470,7 +470,7 @@ func TestEnvelopeFromPublish_IDFromMessageIDHeader(t *testing.T) {
 		},
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	if env.ID != "my-envelope-id" {
 		t.Errorf("ID = %q, want %q", env.ID, "my-envelope-id")
@@ -492,7 +492,7 @@ func TestEnvelopeFromPublish_IDPrecedence_MsgIDOverCorrelation(t *testing.T) {
 		},
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	if env.ID != "msg-id" {
 		t.Errorf("ID = %q, want %q (mqtt.message-id should take precedence)", env.ID, "msg-id")
@@ -508,7 +508,7 @@ func TestEnvelopeFromPublish_IDFromCorrelation(t *testing.T) {
 		},
 	}
 
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 
 	if env.ID != "corr-fallback" {
 		t.Errorf("ID = %q, want %q (should fall back to correlation-id)", env.ID, "corr-fallback")
@@ -523,8 +523,8 @@ func TestEnvelopeFromPublish_IDFallbackRandom(t *testing.T) {
 		Payload: []byte("some-payload"),
 	}
 
-	env1 := EnvelopeFromPublish(pub)
-	env2 := EnvelopeFromPublish(pub)
+	env1 := EnvelopeFromPublish(pub, nil)
+	env2 := EnvelopeFromPublish(pub, nil)
 
 	if env1.ID == "" {
 		t.Fatal("fallback ID should not be empty")
@@ -544,7 +544,7 @@ func TestPublishFromEnvelope_IncludesMessageID(t *testing.T) {
 		Subject: "t",
 		Payload: []byte("p"),
 	}
-	pub := PublishFromEnvelope(env, SenderOptions{QoS: 1})
+	pub := PublishFromEnvelope(env, SenderOptions{QoS: 1}, nil)
 
 	if pub.Properties == nil {
 		t.Fatal("properties should be set")
@@ -568,8 +568,8 @@ func TestRoundTrip_EnvelopeID(t *testing.T) {
 		Payload: []byte("data"),
 	}
 
-	pub := PublishFromEnvelope(original, SenderOptions{QoS: 1})
-	restored := EnvelopeFromPublish(pub)
+	pub := PublishFromEnvelope(original, SenderOptions{QoS: 1}, nil)
+	restored := EnvelopeFromPublish(pub, nil)
 
 	if restored.ID != original.ID {
 		t.Errorf("Envelope.ID round-trip: got %q, want %q", restored.ID, original.ID)
@@ -589,8 +589,8 @@ func TestRoundTrip_EnvelopePublishEnvelope(t *testing.T) {
 	}
 
 	opts := SenderOptions{QoS: 1}
-	pub := PublishFromEnvelope(original, opts)
-	restored := EnvelopeFromPublish(pub)
+	pub := PublishFromEnvelope(original, opts, nil)
+	restored := EnvelopeFromPublish(pub, nil)
 
 	if restored.Subject != original.Subject {
 		t.Errorf("subject = %q, want %q", restored.Subject, original.Subject)

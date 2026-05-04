@@ -82,7 +82,7 @@ func TestAnaSender_EmptyTopicAndNoDefault_ReturnsErrInvalidTopic(t *testing.T) {
 // broker.
 func TestAnaSender_DefaultTopicUsedWhenSubjectEmpty(t *testing.T) {
 	env := &domain.Envelope{Payload: []byte("x")}
-	pub := PublishFromEnvelope(env, SenderOptions{DefaultTopic: "fallback/t", QoS: 1})
+	pub := PublishFromEnvelope(env, SenderOptions{DefaultTopic: "fallback/t", QoS: 1}, nil)
 	if pub.Topic != "fallback/t" {
 		t.Fatalf("topic = %q, want %q", pub.Topic, "fallback/t")
 	}

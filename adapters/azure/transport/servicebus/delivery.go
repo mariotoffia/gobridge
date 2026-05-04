@@ -67,8 +67,8 @@ func newDelivery(
 	if autoExtend && lockDuration > 0 {
 		interval := lockDuration / 2
 
-		if msg.LockedUntil != nil && msg.LockedUntil.After(time.Now()) {
-			remaining := time.Until(*msg.LockedUntil)
+		if msg.LockedUntil != nil && msg.LockedUntil.After(clk.Now()) {
+			remaining := msg.LockedUntil.Sub(clk.Now())
 			interval = remaining / 2
 		}
 
@@ -97,14 +97,14 @@ func (d *asbDelivery) Ack(ctx context.Context) error {
 		)
 	}
 
-	start := time.Now()
+	start := d.clk.Now()
 	if err := d.client.CompleteMessage(ctx, d.msg, nil); err != nil {
 		return MapError(err)
 	}
 
 	// MetricASBCompleteLatency is emitted here because the InstrumentedDelivery
 	// wrapper uses the generic MetricAckLatency; this gives ASB-specific detail.
-	d.metrics.Timer(domain.MetricASBCompleteLatency, time.Since(start))
+	d.metrics.Timer(domain.MetricASBCompleteLatency, d.clk.Since(start))
 
 	return nil
 }
@@ -156,13 +156,13 @@ func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 			newMsg.TimeToLive = d.msg.TimeToLive
 		}
 
-		enqueueAt := time.Now().Add(after)
-		schedStart := time.Now()
+		enqueueAt := d.clk.Now().Add(after)
+		schedStart := d.clk.Now()
 		seqNums, err := d.scheduler.ScheduleMessages(ctx, []*azservicebus.Message{newMsg}, enqueueAt, nil)
 		if err != nil {
 			return MapError(err)
 		}
-		d.metrics.Timer(domain.MetricASBScheduleLatency, time.Since(schedStart))
+		d.metrics.Timer(domain.MetricASBScheduleLatency, d.clk.Since(schedStart))
 
 		if err := d.client.CompleteMessage(ctx, d.msg, nil); err != nil {
 			if cancelErr := d.scheduler.CancelScheduledMessages(ctx, seqNums, nil); cancelErr != nil && d.logger != nil {

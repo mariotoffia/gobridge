@@ -33,7 +33,7 @@ func TestDelivery091_AckFails_ThenRetry_ReportsError(t *testing.T) {
 		Acknowledger: acker,
 		DeliveryTag:  1,
 	}
-	d := NewDelivery(env, raw, slog.Default(), &ports.NoopExporter{})
+	d := NewDelivery(env, raw, slog.Default(), &ports.NoopExporter{}, nil)
 
 	err1 := d.Ack(context.Background())
 	if err1 == nil {
@@ -58,7 +58,7 @@ func TestDelivery091_RetryFails_ThenAck_ReportsError(t *testing.T) {
 		Acknowledger: acker,
 		DeliveryTag:  2,
 	}
-	d := NewDelivery(env, raw, slog.Default(), &ports.NoopExporter{})
+	d := NewDelivery(env, raw, slog.Default(), &ports.NoopExporter{}, nil)
 
 	err1 := d.Retry(context.Background(), 0, nil)
 	if err1 == nil {
@@ -79,7 +79,7 @@ func TestDelivery091_ConcurrentSettlement(t *testing.T) {
 		Acknowledger: acker,
 		DeliveryTag:  3,
 	}
-	d := NewDelivery(env, raw, slog.Default(), &ports.NoopExporter{})
+	d := NewDelivery(env, raw, slog.Default(), &ports.NoopExporter{}, nil)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {

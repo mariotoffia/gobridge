@@ -216,7 +216,7 @@ func TestAnaHdr_PublishFromEnvelope_NilEnvelopeHeaders_NoCrash(t *testing.T) {
 			t.Fatalf("PublishFromEnvelope panicked: %v", rv)
 		}
 	}()
-	pub := PublishFromEnvelope(env, SenderOptions{QoS: 0})
+	pub := PublishFromEnvelope(env, SenderOptions{QoS: 0}, nil)
 	if pub == nil || pub.Topic != "t" {
 		t.Fatalf("expected pub with topic t, got %+v", pub)
 	}
@@ -236,7 +236,7 @@ func TestAnaHdr_PublishFromEnvelope_NonStringHeaderValueIsSkipped(t *testing.T) 
 			"good-key":   "ok",
 		},
 	}
-	pub := PublishFromEnvelope(env, SenderOptions{QoS: 1})
+	pub := PublishFromEnvelope(env, SenderOptions{QoS: 1}, nil)
 
 	if pub.Properties == nil {
 		t.Fatal("properties should be set when at least one mappable header is present")
@@ -278,7 +278,7 @@ func TestAnaHdr_GenerateEnvelopeID_UniqueAcrossManyCalls(t *testing.T) {
 // the deep-copy).
 func TestAnaHdr_EnvelopeFromPublish_PreservesPayload(t *testing.T) {
 	pub := &pahov5.Publish{Topic: "t", Payload: []byte("data")}
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 	if string(env.Payload) != "data" {
 		t.Fatalf("payload = %q, want %q", env.Payload, "data")
 	}
@@ -293,7 +293,7 @@ func TestAnaHdr_EnvelopeFromPublish_OversizedResponseTopic_Dropped(t *testing.T)
 			ResponseTopic: strings.Repeat("a", maxHeaderValueLen+1),
 		},
 	}
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 	if _, ok := env.Headers[headerMQTTResponseTopic]; ok {
 		t.Error("oversized response topic must be dropped")
 	}
@@ -309,7 +309,7 @@ func TestAnaHdr_EnvelopeFromPublish_AcceptsEmptyUserPropertyValue(t *testing.T) 
 			User: []pahov5.UserProperty{{Key: "k", Value: ""}},
 		},
 	}
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 	if v, ok := domain.GetHeaderString(env.Headers, "k"); !ok || v != "" {
 		t.Fatalf("empty user property value should be accepted, got ok=%v v=%q", ok, v)
 	}
@@ -319,7 +319,7 @@ func TestAnaHdr_EnvelopeFromPublish_AcceptsEmptyUserPropertyValue(t *testing.T) 
 // the publish has nil Properties when no header-derived data exists.
 func TestAnaHdr_PublishFromEnvelope_EmptyEnvelope_NoProperties(t *testing.T) {
 	env := &domain.Envelope{Subject: "t", Payload: []byte{}}
-	pub := PublishFromEnvelope(env, SenderOptions{QoS: 0})
+	pub := PublishFromEnvelope(env, SenderOptions{QoS: 0}, nil)
 	if pub.Properties != nil {
 		t.Errorf("expected nil Properties for empty envelope, got %+v", pub.Properties)
 	}
@@ -329,7 +329,7 @@ func TestAnaHdr_PublishFromEnvelope_EmptyEnvelope_NoProperties(t *testing.T) {
 // empty topic on the publish is preserved (do not invent data).
 func TestAnaHdr_EnvelopeFromPublish_EmptyTopicAccepted(t *testing.T) {
 	pub := &pahov5.Publish{Topic: "", Payload: []byte("p")}
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 	if env.Subject != "" {
 		t.Errorf("Subject = %q, want empty", env.Subject)
 	}
@@ -344,7 +344,7 @@ func TestAnaHdr_PublishFromEnvelope_OnlyMessageExpiry_HasProperties(t *testing.T
 		Payload:   []byte("p"),
 		ExpiresAt: nowPlus(60),
 	}
-	pub := PublishFromEnvelope(env, SenderOptions{QoS: 1})
+	pub := PublishFromEnvelope(env, SenderOptions{QoS: 1}, nil)
 	if pub.Properties == nil {
 		t.Fatal("expected Properties because ExpiresAt was set")
 	}
@@ -365,7 +365,7 @@ func TestAnaHdr_EnvelopeFromPublish_MessageExpiryZeroValue_NoExpiresAt(t *testin
 			MessageExpiry: &expiry,
 		},
 	}
-	env := EnvelopeFromPublish(pub)
+	env := EnvelopeFromPublish(pub, nil)
 	// An expiry of 0 seconds means "expired immediately"; the header
 	// translation just adds 0 → ExpiresAt is set but equals CreatedAt.
 	if env.ExpiresAt.IsZero() {

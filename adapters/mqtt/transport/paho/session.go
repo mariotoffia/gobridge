@@ -11,6 +11,7 @@ import (
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -21,6 +22,7 @@ type Session struct {
 	mode    domain.SessionMode
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
+	clk     clock.Clock
 
 	mu        sync.Mutex
 	cm        *autopaho.ConnectionManager
@@ -75,11 +77,15 @@ func NewSession(opts SessionOptions, mode domain.SessionMode, logger *slog.Logge
 	if len(metrics) > 0 && metrics[0] != nil {
 		m = metrics[0]
 	}
+	if opts.Clock == nil {
+		opts.Clock = clock.System
+	}
 	return &Session{
 		opts:       opts,
 		mode:       mode,
 		logger:     logger,
 		metrics:    m,
+		clk:        opts.Clock,
 		events:     make(chan ports.SessionEvent, 16),
 		router:     newRouter(logger, m),
 		activeSubs: make(map[string]byte),
@@ -88,6 +94,13 @@ func NewSession(opts SessionOptions, mode domain.SessionMode, logger *slog.Logge
 
 // ConnectionManager returns the underlying autopaho.ConnectionManager.
 // Receiver and Sender use this to issue subscribe/publish calls.
+func (s *Session) clock() clock.Clock {
+	if s.clk != nil {
+		return s.clk
+	}
+	return clock.System
+}
+
 func (s *Session) ConnectionManager() *autopaho.ConnectionManager {
 	s.mu.Lock()
 	defer s.mu.Unlock()

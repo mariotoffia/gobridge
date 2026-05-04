@@ -135,7 +135,7 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 		)
 	}
 
-	start := time.Now()
+	start := d.clk.Now()
 	_, err := d.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
 		QueueUrl:      aws.String(d.queueURL),
 		ReceiptHandle: aws.String(d.receiptHandle),
@@ -143,7 +143,7 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 	if err != nil {
 		return MapError(err)
 	}
-	d.metrics.Timer(domain.MetricSQSDeleteLatency, time.Since(start),
+	d.metrics.Timer(domain.MetricSQSDeleteLatency, d.clk.Since(start),
 		domain.Tag{Key: domain.TagKeyQueueURL, Value: d.queueURL})
 	return nil
 }
@@ -195,7 +195,7 @@ func (d *sqsDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 // Extend does NOT stop auto-extend — the goroutine keeps running and
 // will maintain the new timeout. Call Ack or Retry to finalize.
 func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
-	timeout := int32(time.Until(until).Seconds())
+	timeout := int32(until.Sub(d.clk.Now()).Seconds())
 	if timeout < 0 {
 		timeout = 0
 	}

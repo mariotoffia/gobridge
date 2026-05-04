@@ -38,7 +38,7 @@ func TestDelivery_AckFails_ThenRetry_ReportsError(t *testing.T) {
 
 	env := &domain.Envelope{ID: "bug2-test"}
 	msg := &amqp.Message{}
-	d := NewDelivery(env, msg, settler, slog.Default(), &ports.NoopExporter{})
+	d := NewDelivery(env, msg, settler, slog.Default(), &ports.NoopExporter{}, nil)
 
 	err1 := d.Ack(context.Background())
 	if err1 == nil {
@@ -62,7 +62,7 @@ func TestDelivery_RetryFails_ThenAck_ReportsError(t *testing.T) {
 
 	env := &domain.Envelope{ID: "bug2-reverse"}
 	msg := &amqp.Message{}
-	d := NewDelivery(env, msg, settler, slog.Default(), &ports.NoopExporter{})
+	d := NewDelivery(env, msg, settler, slog.Default(), &ports.NoopExporter{}, nil)
 
 	err1 := d.Retry(context.Background(), 0, nil)
 	if err1 == nil {
@@ -81,7 +81,7 @@ func TestDelivery_ConcurrentSettlement(t *testing.T) {
 	settler := newMockSettler()
 	env := &domain.Envelope{ID: "concurrent-test"}
 	msg := &amqp.Message{}
-	d := NewDelivery(env, msg, settler, slog.Default(), &ports.NoopExporter{})
+	d := NewDelivery(env, msg, settler, slog.Default(), &ports.NoopExporter{}, nil)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
@@ -112,7 +112,7 @@ func TestDelivery_Extend_NotSupported(t *testing.T) {
 	settler := newMockSettler()
 	env := &domain.Envelope{ID: "extend-test"}
 	msg := &amqp.Message{}
-	d := NewDelivery(env, msg, settler, slog.Default(), &ports.NoopExporter{})
+	d := NewDelivery(env, msg, settler, slog.Default(), &ports.NoopExporter{}, nil)
 
 	err := d.Extend(context.Background(), time.Now().Add(time.Minute))
 	if !errors.Is(err, domain.ErrNotSupported) {

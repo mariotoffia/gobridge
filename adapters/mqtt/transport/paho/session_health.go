@@ -2,7 +2,6 @@ package paho
 
 import (
 	"context"
-	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -81,7 +80,7 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 		return
 	}
 
-	ev := ports.SessionEvent{Type: t, Err: err, Timestamp: time.Now()}
+	ev := ports.SessionEvent{Type: t, Err: err, Timestamp: s.clock().Now()}
 	select {
 	case s.events <- ev:
 	default:

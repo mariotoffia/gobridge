@@ -107,7 +107,7 @@ func BenchmarkEnvelopeFromPublish(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = EnvelopeFromPublish(pub)
+		_ = EnvelopeFromPublish(pub, nil)
 	}
 }
 
@@ -138,6 +138,6 @@ func BenchmarkPublishFromEnvelope(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = PublishFromEnvelope(env, opts)
+		_ = PublishFromEnvelope(env, opts, nil)
 	}
 }

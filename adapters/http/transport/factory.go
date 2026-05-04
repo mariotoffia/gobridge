@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -24,6 +25,7 @@ type Factory struct {
 	forwarder       ports.MessageForwarder
 	metrics         ports.MetricsExporter
 	logger          *slog.Logger
+	clock           clock.Clock
 	mu              sync.Mutex
 	registeredPaths map[string]bool
 }
@@ -54,6 +56,10 @@ func WithFactoryLogger(l *slog.Logger) FactoryOption {
 // WithPathPrefix overrides the default URL prefix (default: "/transport/http").
 func WithPathPrefix(prefix string) FactoryOption {
 	return func(f *Factory) { f.pathPrefix = prefix }
+}
+
+func WithClock(clk clock.Clock) FactoryOption {
+	return func(f *Factory) { f.clock = clk }
 }
 
 // NewFactory creates an HTTP transport factory.
@@ -92,6 +98,7 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, _ port
 		forwarder:   f.forwarder,
 		metrics:     f.metrics,
 		logger:      f.logger,
+		clock:       f.clock,
 	})
 
 	pattern := "POST " + path
@@ -133,6 +140,7 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, _ ports.Se
 		locator:           f.locator,
 		metrics:           f.metrics,
 		logger:            f.logger,
+		clock:             f.clock,
 	})
 
 	pattern := "GET " + path

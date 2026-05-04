@@ -45,7 +45,7 @@ func TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization(t *test
 			domain.HeaderSourceID:       "internal-src", // forwarded (debatable)
 		},
 	}
-	pub := PublishFromEnvelope(env, SenderOptions{QoS: 1})
+	pub := PublishFromEnvelope(env, SenderOptions{QoS: 1}, nil)
 	if pub.Properties == nil {
 		t.Fatal("expected properties to be set")
 	}

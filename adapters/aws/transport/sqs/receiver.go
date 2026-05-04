@@ -57,6 +57,13 @@ func NewReceiver(cfg ReceiverConfig, logger *slog.Logger) (*Receiver, error) {
 	return &Receiver{cfg: cfg, logger: l, metrics: m, clk: clk, started: make(chan struct{})}, nil
 }
 
+func (r *Receiver) clock() clock.Clock {
+	if r.clk != nil {
+		return r.clk
+	}
+	return clock.System
+}
+
 // Started returns a channel that is closed once the receiver's poll
 // loop is live and ready to process messages. It satisfies
 // ports.ReceiverStartedSignaler.
@@ -106,7 +113,7 @@ func (r *Receiver) pollLoop(
 			return ctx.Err()
 		}
 
-		pollStart := time.Now()
+		pollStart := r.clock().Now()
 		pollCtx, pollCancel := context.WithTimeout(ctx, pollTimeout)
 		output, err := r.client.ReceiveMessage(pollCtx, &awssqs.ReceiveMessageInput{
 			QueueUrl:              aws.String(queueURL),
@@ -133,15 +140,15 @@ func (r *Receiver) pollLoop(
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-r.clk.After(delay):
+			case <-r.clock().After(delay):
 			}
 			continue
 		}
 
-		r.metrics.Timer(domain.MetricSQSPollLatency, time.Since(pollStart),
+		r.metrics.Timer(domain.MetricSQSPollLatency, r.clock().Since(pollStart),
 			domain.Tag{Key: domain.TagKeyQueueURL, Value: queueURL})
 		if len(output.Messages) > 0 {
-			perMsg := time.Since(pollStart) / time.Duration(len(output.Messages))
+			perMsg := r.clock().Since(pollStart) / time.Duration(len(output.Messages))
 			r.metrics.Timer(domain.MetricSQSReceiveLatency, perMsg,
 				domain.Tag{Key: domain.TagKeyQueueURL, Value: queueURL})
 		}
@@ -228,7 +235,7 @@ func (r *Receiver) convertMessage(
 		ID:        aws.ToString(msg.MessageId),
 		Subject:   subject,
 		Payload:   []byte(body),
-		CreatedAt: time.Now(),
+		CreatedAt: r.clock().Now(),
 	}
 
 	if r.cfg.SNSUnwrap {
@@ -266,7 +273,7 @@ func (r *Receiver) convertMessage(
 		processingCancel,
 		r.logger,
 		r.metrics,
-		r.cfg.Clock,
+		r.clock(),
 	)
 }
 

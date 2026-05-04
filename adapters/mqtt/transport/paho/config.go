@@ -7,6 +7,8 @@ import (
 	"math"
 	"os"
 	"time"
+
+	"github.com/mariotoffia/gobridge/domain/clock"
 )
 
 // SessionOptions holds MQTT connection and session configuration.
@@ -32,6 +34,7 @@ type SessionOptions struct {
 	// autopaho default (10s). Shorter values speed up reconnection in
 	// test environments but increase load on the broker in production.
 	ReconnectDelay time.Duration
+	Clock          clock.Clock
 }
 
 // ReceiverOptions holds MQTT receiver-specific configuration.
@@ -79,6 +82,7 @@ func DefaultSessionOptions() SessionOptions {
 		ConnectTimeout:   30 * time.Second,
 		ReconnectTimeout: 30 * time.Second,
 		CleanStart:       true,
+		Clock:            clock.System,
 	}
 }
 

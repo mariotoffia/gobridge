@@ -3,7 +3,6 @@ package paho
 import (
 	"context"
 	"maps"
-	"time"
 
 	"github.com/eclipse/paho.golang/autopaho"
 	pahov5 "github.com/eclipse/paho.golang/paho"
@@ -39,7 +38,7 @@ func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error 
 }
 
 func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager, plan domain.SessionPlan) error {
-	reconcileStart := time.Now()
+	reconcileStart := s.clock().Now()
 	s.reconcileMu.Lock()
 	defer s.reconcileMu.Unlock()
 
@@ -127,7 +126,7 @@ func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager,
 		}
 	}
 
-	elapsed := time.Since(reconcileStart)
+	elapsed := s.clock().Since(reconcileStart)
 	s.metrics.Timer(domain.MetricMQTTReconcileLatency, elapsed,
 		domain.Tag{Key: domain.TagKeySessionID, Value: s.opts.ClientID})
 	if logging.DebugEnabled(s.logger) {
