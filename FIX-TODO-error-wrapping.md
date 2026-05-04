@@ -262,7 +262,7 @@ For each violation, choose:
 
 Recommended order:
 
-1. AWS SQS transport (most error paths)
+1. AWS SQS transport (most error paths) - DONE
 2. Azure Service Bus transport
 3. AMQP 0.9.1 transport
 4. AMQP 1.0 transport
