@@ -266,7 +266,7 @@ Recommended order:
 2. Azure Service Bus transport - DONE
 3. AMQP 0.9.1 transport - DONE
 4. AMQP 1.0 transport - DONE
-5. MQTT Paho transport
+5. MQTT Paho transport - DONE
 6. AWS DynamoDB stores (lease/outbox/dlq)
 7. Native SQLite stores
 8. Credentials adapters
