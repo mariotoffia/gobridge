@@ -287,6 +287,29 @@ Recommended order (smallest to largest, leaf to root):
 
    **Agents/Skills used:** general-purpose, code-reviewer.
 7. `runtime/route_runner.go` + helpers — backoff math.
+
+   **Status:** Resolved 2026-05-04. Route runner delivery latency and shared-outbox record creation timestamps now use the runner's injected `clock.Clock`, removing direct wall-clock reads from route-runner timing paths.
+
+   **What landed:**
+
+   - Replaced route-runner delivery latency timing in [runtime/route_runner.go](runtime/route_runner.go) with `r.clk.Now()` / `r.clk.Since()`.
+   - Replaced shared-outbox record `CreatedAt` timestamps in [runtime/route_runner_helpers.go](runtime/route_runner_helpers.go) with `r.clk.Now()`.
+   - Added fake-clock coverage in [runtime/route_runner_clock_test.go](runtime/route_runner_clock_test.go) for latency metrics and outbox `CreatedAt` timestamps.
+
+   **Tests added:**
+
+   - Added `TestRouteRunner_E2ELatencyUsesInjectedClock`.
+   - Added `TestRouteRunner_SharedOutboxCreatedAtUsesInjectedClock`.
+
+   **Pre-existing issues fixed in touched files (per audit instruction):**
+
+   - none.
+
+   **Follow-ups (not blockers; logged for future passes):**
+
+   - none.
+
+   **Agents/Skills used:** general-purpose, code-reviewer.
 8. `runtime/session_manager*.go` — lease renewal scheduling.
 9. `runtime/outbox_drainer_loop.go` — drain cycle timestamps.
 10. `runtime/instrumented*.go` — metric timestamps.

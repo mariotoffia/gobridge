@@ -324,7 +324,7 @@ func (r *RouteRunner) processDelivery(ctx context.Context, del ports.Delivery) {
 }
 
 func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) error {
-	start := time.Now()
+	start := r.clk.Now()
 
 	env := del.Envelope()
 
@@ -416,7 +416,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 	}
 
 	routeTag := domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID}
-	r.metrics.Timer(domain.MetricDeliveryE2ELatency, time.Since(start), routeTag)
+	r.metrics.Timer(domain.MetricDeliveryE2ELatency, r.clk.Since(start), routeTag)
 
 	return deliveryErr
 }
