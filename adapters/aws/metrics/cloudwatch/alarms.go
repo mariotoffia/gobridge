@@ -138,7 +138,7 @@ func EnsureAlarms(ctx context.Context, client cloudWatchAPI, alarms []AlarmDefin
 		}
 
 		if _, err := client.PutMetricAlarm(ctx, input); err != nil {
-			return fmt.Errorf("cloudwatch: PutMetricAlarm %s: %w", a.Name, err)
+			return fmt.Errorf("cloudwatch: put metric alarm: %w", err)
 		}
 	}
 	return nil

@@ -270,7 +270,7 @@ Recommended order:
 6. AWS DynamoDB stores (lease/outbox/dlq) - DONE
 7. Native SQLite stores - DONE
 8. Credentials adapters - DONE
-9. Metrics / tracing adapters
+9. Metrics / tracing adapters - DONE
 10. Runtime internal boundaries
 
 Per package: every error return wrapped or classified, build + test
