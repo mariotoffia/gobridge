@@ -7,6 +7,7 @@
 *.dll
 *.so
 *.dylib
+.DS_Store
 
 # Go compiled binaries (bare names — convention: use .out postfix)
 /gobridge
