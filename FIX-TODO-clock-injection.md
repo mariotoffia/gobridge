@@ -454,7 +454,27 @@ Recommended order (smallest to largest, leaf to root):
 
     **Agents/Skills used:** golang-pro, code-reviewer.
 14. `adapters/native/store/sqliteoutbox/store.go` — record
-    timestamps.
+    timestamps. - DONE
+
+    **Status:** Resolved 2026-05-04. Clock injection already present from Phase 2 sweep. `Store.clk clock.Clock` field, `WithClock` option, and `s.clk.Now()` usage in `Persist` (createdAt) and `Complete` (completedAt) confirmed; `TestWithClockControlsCreatedAt` test passes; no production `time.Now()` calls remain.
+
+    **What landed:**
+
+    - No new changes required — [adapters/native/store/sqliteoutbox/store.go](adapters/native/store/sqliteoutbox/store.go) and [adapters/native/store/sqliteoutbox/store_test.go](adapters/native/store/sqliteoutbox/store_test.go) already fully migrated as part of T002.
+
+    **Tests added:**
+
+    - none — `TestWithClockControlsCreatedAt` already present.
+
+    **Pre-existing issues fixed in touched files (per audit instruction):**
+
+    - none.
+
+    **Follow-ups (not blockers; logged for future passes):**
+
+    - none.
+
+    **Agents/Skills used:** golang-pro, code-reviewer.
 
 Per package: build + test green at each step.
 
