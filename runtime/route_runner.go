@@ -368,7 +368,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		MaxAttempts: r.policy.MaxReplayAttempts,
 	})
 
-	if env.IsExpired() {
+	if env.IsExpired(r.clk) {
 		err := r.handleExpired(ctx, del, env)
 		if err != nil {
 			span.SetError(err)

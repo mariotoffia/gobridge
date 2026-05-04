@@ -8,6 +8,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 )
 
 // Well-known header keys for AMQP 0-9-1 system properties.
@@ -187,7 +188,7 @@ func envelopeToPublishing(env *domain.Envelope, cfg SenderConfig) amqp.Publishin
 	}
 
 	if env.HasExpiry() {
-		if ttl := env.RemainingTTL(); ttl > 0 {
+		if ttl := env.RemainingTTL(clock.System); ttl > 0 {
 			pub.Expiration = fmt.Sprintf("%d", ttl.Milliseconds())
 		}
 	}

@@ -9,6 +9,7 @@ import (
 
 	pahov5 "github.com/eclipse/paho.golang/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 )
 
 const headerMQTTResponseTopic = "mqtt.response-topic"
@@ -140,7 +141,7 @@ func PublishFromEnvelope(env *domain.Envelope, opts SenderOptions) *pahov5.Publi
 	}
 
 	if env.HasExpiry() {
-		remaining := env.RemainingTTL()
+		remaining := env.RemainingTTL(clock.System)
 		if remaining > 0 {
 			secs := uint32(remaining.Seconds())
 			if secs == 0 {

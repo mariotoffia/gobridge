@@ -13,7 +13,7 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRec
 	routeTag := domain.Tag{Key: domain.TagKeyRouteID, Value: d.routeID}
 	attempt := rec.ReplayCount + 1
 
-	if env.HasExpiry() && env.IsExpired() {
+	if env.HasExpiry() && env.IsExpired(d.clk) {
 		d.metrics.Counter(domain.MetricOutboxExpiredBeforeSend, 1, routeTag)
 		return d.handleExpired(ctx, rec, token)
 	}

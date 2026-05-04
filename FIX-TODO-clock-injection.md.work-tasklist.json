@@ -1,8 +1,8 @@
 {
   "$schema": "v2",
   "source": "FIX-TODO-clock-injection.md",
-  "source_sha": "a5477b7c8f8c06c9593e4281db786a616a7ca41eb6a171b6166d343c38a504c9",
-  "indexed_at": "2026-05-04T06:28:05Z",
+  "source_sha": "a558ffe5193b6025de7e0aa30bd0ad497506effab9d940dec81fea6d761ea70a",
+  "indexed_at": "2026-05-04T07:18:22Z",
   "status_convention": "No explicit status markers; numbered list entries, phase headings, and acceptance bullets without markers default to pending",
   "tasks": [
     {
@@ -30,7 +30,7 @@
     {
       "id": "T003",
       "title": "domain/envelope.go \u2014 handle HasExpired clock usage",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This requires modifying domain Go code to avoid direct time.Now in expiry checks.",

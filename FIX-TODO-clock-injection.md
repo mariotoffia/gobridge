@@ -149,6 +149,29 @@ Recommended order (smallest to largest, leaf to root):
 1. `domain/envelope.go` — only `HasExpired`. Add a `Clock`-taking
    method overload OR move the check to the route runner that
    already has a clock.
+
+   **Status:** Resolved 2026-05-04. Envelope expiry and TTL calculations now require an injected clock argument, removing direct wall-clock reads from `domain/envelope.go` without retaining the old no-arg API.
+
+   **What landed:**
+
+   - Updated clock-aware expiry APIs in [domain/envelope.go](domain/envelope.go).
+   - Passed injected runtime clocks in [runtime/route_runner.go](runtime/route_runner.go) and [runtime/outbox_drainer_retry.go](runtime/outbox_drainer_retry.go).
+   - Updated remaining TTL call sites in [adapters/amqp/transport/amqp091/headers.go](adapters/amqp/transport/amqp091/headers.go), [adapters/azure/transport/servicebus/sender.go](adapters/azure/transport/servicebus/sender.go), [adapters/mqtt/transport/paho/headers.go](adapters/mqtt/transport/paho/headers.go), and [adapters/mqtt/transport/paho/sender.go](adapters/mqtt/transport/paho/sender.go).
+   - Updated long-running test documentation in [tests/longrunning/uc27_failure_recovery_test.go](tests/longrunning/uc27_failure_recovery_test.go).
+
+   **Tests added:**
+
+   - Updated [domain/envelope_test.go](domain/envelope_test.go) to use a deterministic fake clock for expiry and TTL assertions.
+
+   **Pre-existing issues fixed in touched files (per audit instruction):**
+
+   - none.
+
+   **Follow-ups (not blockers; logged for future passes):**
+
+   - none.
+
+   **Agents/Skills used:** golang-pro, code-reviewer.
 2. `circuitbreaker/breaker.go` — already uses time.Now in
    `transitionTo` and `consecutiveFailures` updates. Add a
    `WithBreakerClock` option.

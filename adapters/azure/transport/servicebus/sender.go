@@ -12,6 +12,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -252,7 +253,7 @@ func (s *Sender) buildMessage(env *domain.Envelope) *azservicebus.Message {
 		msg.MessageID = &env.ID
 	}
 	if env.HasExpiry() {
-		if ttl := env.RemainingTTL(); ttl > 0 {
+		if ttl := env.RemainingTTL(clock.System); ttl > 0 {
 			msg.TimeToLive = &ttl
 		}
 	}

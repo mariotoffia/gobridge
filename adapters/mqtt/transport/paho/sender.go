@@ -36,7 +36,7 @@ func NewSender(session *Session, opts SenderOptions) *Sender {
 
 // Send publishes the envelope to the MQTT broker. The topic is taken from
 // env.Subject; if empty, opts.DefaultTopic is used. Headers are mapped to
-// MQTT 5 user properties. Message expiry is derived from env.RemainingTTL().
+// MQTT 5 user properties. Message expiry is derived from env.RemainingTTL(clock.System).
 //
 // Returns nil when the broker has accepted the message (PUBACK / PUBCOMP).
 // Returns a classified domain.BridgeError on failure.

@@ -17,22 +17,22 @@ func (e *Envelope) HasExpiry() bool {
 	return !e.ExpiresAt.IsZero()
 }
 
-// IsExpired returns true if the envelope has expired.
-func (e *Envelope) IsExpired() bool {
-	return e.HasExpiry() && time.Now().After(e.ExpiresAt)
+// IsExpired returns true if the envelope has expired according to clk.
+func (e *Envelope) IsExpired(clk interface{ Now() time.Time }) bool {
+	return e.HasExpiry() && clk.Now().After(e.ExpiresAt)
 }
 
-// RemainingTTL returns the time remaining before expiry.
+// RemainingTTL returns the time remaining before expiry according to clk.
 // Returns 0 if the envelope has no expiry or is already expired.
-func (e *Envelope) RemainingTTL() time.Duration {
+func (e *Envelope) RemainingTTL(clk interface{ Now() time.Time }) time.Duration {
 	if !e.HasExpiry() {
 		return 0
 	}
-	rem := time.Until(e.ExpiresAt)
-	if rem < 0 {
+	now := clk.Now()
+	if !e.ExpiresAt.After(now) {
 		return 0
 	}
-	return rem
+	return e.ExpiresAt.Sub(now)
 }
 
 // Clone returns a deep copy of the envelope, including a recursively
