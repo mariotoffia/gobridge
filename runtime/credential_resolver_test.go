@@ -469,3 +469,18 @@ func TestCredentialResolver_Register_MultipleRepos_SameSchemeNamespace(t *testin
 	assert.Equal(t, int32(1), repoA.callCount.Load())
 	assert.Equal(t, int32(0), repoB.callCount.Load())
 }
+
+func TestNewCredentialResolver_NilClockOptionKeepsDefault(t *testing.T) {
+	// Regression: WithCredentialClock(nil) must not clobber the clock.System
+	// default, otherwise the first cache touch panics on r.clk.Now().
+	r := NewCredentialResolver(WithCredentialClock(nil))
+
+	creds := &domain.CredentialSet{Password: &domain.PasswordCredential{Username: "x"}}
+	repo := &stubRepo{scheme: "pms", namespace: "tenant", creds: creds}
+	r.Register(repo)
+
+	require.NotPanics(t, func() {
+		_, err := r.Resolve(context.Background(), "pms://tenant/secret")
+		require.NoError(t, err)
+	})
+}

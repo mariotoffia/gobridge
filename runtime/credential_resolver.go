@@ -35,7 +35,11 @@ func WithCredentialCacheDisabled() CredentialResolverOption {
 // WithCredentialClock sets the clock used for TTL expiry checks.
 // Defaults to clock.System. Use clocktest.Fake in tests for determinism.
 func WithCredentialClock(clk clock.Clock) CredentialResolverOption {
-	return func(r *CredentialResolver) { r.clk = clk }
+	return func(r *CredentialResolver) {
+		if clk != nil {
+			r.clk = clk
+		}
+	}
 }
 
 // CredentialResolver implements ports.CredentialStore by dispatching to
