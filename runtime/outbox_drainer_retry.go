@@ -3,10 +3,19 @@ package runtime
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+func (d *OutboxDrainer) completeCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	timeout := d.policy.SendTimeout
+	if timeout <= 0 || timeout > 5*time.Second {
+		timeout = 5 * time.Second
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), timeout)
+}
 
 func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRecord, token domain.LeaseToken) error {
 	env := &rec.Envelope
@@ -50,7 +59,10 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRec
 	})
 
 	if sendErr == nil {
-		if completeErr := d.outboxStore.Complete(ctx, []string{rec.ID}, token); completeErr != nil {
+		completeCtx, completeCancel := d.completeCtx(ctx)
+		completeErr := d.outboxStore.Complete(completeCtx, []string{rec.ID}, token)
+		completeCancel()
+		if completeErr != nil {
 			d.metrics.Counter(domain.MetricOutboxDuplicateRisk, 1, routeTag)
 			d.log(ctx, slog.LevelError, "complete failed after successful send, message may be re-delivered",
 				"record_id", rec.ID, "error", completeErr)
@@ -87,7 +99,10 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRec
 			Err:         sendErr,
 			Terminal:    true,
 		})
-		return d.outboxStore.Complete(ctx, []string{rec.ID}, token)
+		completeCtx, completeCancel := d.completeCtx(ctx)
+		completeErr := d.outboxStore.Complete(completeCtx, []string{rec.ID}, token)
+		completeCancel()
+		return completeErr
 	}
 
 	if ctx.Err() != nil {
@@ -117,7 +132,10 @@ func (d *OutboxDrainer) handleExpired(ctx context.Context, rec *domain.OutboxRec
 		Err:         domain.ErrMessageExpired,
 		Terminal:    true,
 	})
-	return d.outboxStore.Complete(ctx, []string{rec.ID}, token)
+	completeCtx, completeCancel := d.completeCtx(ctx)
+	completeErr := d.outboxStore.Complete(completeCtx, []string{rec.ID}, token)
+	completeCancel()
+	return completeErr
 }
 
 func (d *OutboxDrainer) handlePoison(ctx context.Context, rec *domain.OutboxRecord, token domain.LeaseToken) error {
@@ -136,5 +154,8 @@ func (d *OutboxDrainer) handlePoison(ctx context.Context, rec *domain.OutboxReco
 		Err:         poisonErr,
 		Terminal:    true,
 	})
-	return d.outboxStore.Complete(ctx, []string{rec.ID}, token)
+	completeCtx, completeCancel := d.completeCtx(ctx)
+	completeErr := d.outboxStore.Complete(completeCtx, []string{rec.ID}, token)
+	completeCancel()
+	return completeErr
 }

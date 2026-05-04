@@ -83,7 +83,7 @@ duplicate delivery.
 
 ## Tasks
 
-### 1. Plumb a parent context into the drainer
+### 1. Plumb a parent context into the drainer - DONE
 
 `OutboxDrainer` already has access to the runtime via `bridge_start.go`
 (see `mgr := newSessionManagerWithMetrics(...)` etc.). Add a field:
@@ -108,7 +108,7 @@ Verify by reading `runtime/outbox_drainer_loop.go` around the
 `workCtx` construction: the `ctx` parameter of `runDrainCycle`
 **is** the runtime ctx, so `WithoutCancel(ctx)` is correct.
 
-### 2. Helper for complete-context
+### 2. Helper for complete-context - DONE
 
 ```go
 // completeCtx returns a context for OutboxStore.Complete that is not
@@ -132,7 +132,7 @@ err := d.outboxStore.Complete(cctx, []string{rec.ID}, token)
 ccancel()
 ```
 
-### 3. Regression test
+### 3. Regression test - DONE
 
 Add `runtime/outbox_drainer_complete_deadline_test.go`:
 
@@ -152,7 +152,7 @@ Run:
 go test -race -run 'TestOutboxDrainer_Complete' ./runtime/...
 ```
 
-### 4. Verify with broker-restart longrunning targets
+### 4. Verify with broker-restart longrunning targets - DONE
 
 ```bash
 go test -race -timeout 1200s -v -tags=longrunning \

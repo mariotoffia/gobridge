@@ -26,6 +26,7 @@
 ./adapters/azure/transport/servicebus/delivery_test.go:261:	time.Sleep(200 * time.Millisecond) // NEGATIVE: verify no lock renewal when auto-extend disabled (tightened from 1500ms)
 ./adapters/azure/transport/servicebus/delivery_test.go:304:	time.Sleep(2500 * time.Millisecond)
 ./adapters/azure/transport/servicebus/delivery_test.go:306:	time.Sleep(100 * time.Millisecond) // SYNC: drain after stop
+./adapters/azure/transport/servicebus/integration_test.go:68:		time.Sleep(backoff) // OTHER: external emulator warmup backoff between probes
 ./adapters/http/transport/benchmark_test.go:103:				time.Sleep(time.Millisecond) // OTHER: polling for SSE client registration in benchmark
 ./adapters/http/transport/integration_edge_cases_r3_test.go:357:		time.Sleep(2 * time.Second) // OTHER: simulates slow remote for context cancellation test
 ./adapters/http/transport/integration_single_bridge_test.go:54:		time.Sleep(10 * time.Millisecond) // OTHER: internal polling interval in test helper
