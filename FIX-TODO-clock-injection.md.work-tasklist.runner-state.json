@@ -1,0 +1,12 @@
+{
+  "$schema": "v1",
+  "tasklist_path": "/Users/mariotoffia/progs/github/gobridge/FIX-TODO-clock-injection.md",
+  "task_id": "T020",
+  "phase": "implement",
+  "review_round": 0,
+  "scratch": {
+    "task_title": "Phase 5 — Enable forbidigo in .golangci.yml",
+    "user_message": "MUST: No backward compatability",
+    "also_covers": ["T021", "T022", "T023", "T024", "T025"]
+  }
+}

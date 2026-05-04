@@ -554,7 +554,11 @@ fake-clock variant works.
 
 **Agents/Skills used:** code-reviewer.
 
-### Phase 5 — Enable `forbidigo` in `.golangci.yml`
+### Phase 5 — Enable `forbidigo` in `.golangci.yml` — DONE
+
+**Status:** Resolved 2026-05-04. `forbidigo` enabled in `.golangci.yml`; two
+missed callers fixed (`batcher.go` and `outbox_depth_cache.go`); all production
+code lint-clean; negative-test confirmed the rule fires on injected `time.Now`.
 
 ```yaml
 linters:
@@ -567,6 +571,41 @@ test-file and `domain/clock/real.go` / `clocktest/` exemptions).
 
 `make lint` should pass with no `forbidigo` violations remaining.
 A trial `time.Now()` in a production file should fail the gate.
+
+**What landed:**
+
+- Enabled `forbidigo` in `.golangci.yml` (linters.enable block).
+- Fixed `adapters/aws/metrics/cloudwatch/batcher.go`: added `clk clock.Clock`
+  field to `batcher` struct; updated `newBatcher(namespace, defaultTags, maxSize, clk)`
+  signature; replaced 2× `time.Now()` with `b.clk.Now()`; no backward-compat shim.
+- Updated `adapters/aws/metrics/cloudwatch/exporter.go`: passes `e.config.Clock`
+  to `newBatcher`.
+- Updated `adapters/aws/metrics/cloudwatch/exporter_test.go`: 8 `newBatcher` calls
+  updated to pass `clock.System`.
+- Fixed `runtime/outbox_depth_cache.go`: replaced `now func() time.Time` with
+  `clk clock.Clock`; updated `newOutboxDepthCache(ttl, clk)` signature; all
+  `c.now()` → `c.clk.Now()`.
+- Updated `runtime/route_runner.go`: moved depth cache creation after clock
+  resolution; passes `clk` to `newOutboxDepthCache`.
+- Added `ports/storetest/` and `testutil/` forbidigo exclusions (both are
+  explicitly out-of-production-gate per Phase 1 harvest).
+- Negative-test confirmed: injecting `func() time.Time { return time.Now() }`
+  in `runtime/` causes golangci-lint to report `use of time.Now forbidden`.
+
+**Tests added:**
+
+- No new test files; existing tests pass with updated signatures.
+
+**Pre-existing issues fixed in touched files (per audit instruction):**
+
+- `outbox_depth_cache.go`: migrated from legacy `now func() time.Time` pattern
+  to standard `clock.Clock` interface.
+
+**Follow-ups (not blockers; logged for future passes):**
+
+- none.
+
+**Agents/Skills used:** forbidigo negative-test via manual golangci-lint run.
 
 ## Cost estimate
 

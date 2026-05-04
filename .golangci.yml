@@ -11,12 +11,12 @@
 # Depguard is fully enforcing the inward-only
 # Dependency Rule across domain, ports, adapters, and runtime — every
 # deny entry that was deferred for FIX-002/003 is now active.
+# forbidigo bans time.Now in production code (clock-injection sweep done).
 # interfacebloat and revive complexity are enabled at thresholds
 # tuned to the current state; tightening them requires splitting
 # bridge.Builder.wireRoutes (~80 cog. complexity) and config.validate
 # (~144) into per-step helpers, which is its own refactor. The
-# remaining deferred linters (forbidigo, gochecknoglobals,
-# gochecknoinits, wrapcheck, ireturn) each describe their own
+# remaining deferred linters (wrapcheck, ireturn) each describe their own
 # prerequisite sweep in the TODOs below.
 
 version: "2"
@@ -31,16 +31,11 @@ linters:
   default: standard
   enable:
     - depguard
+    - forbidigo
     - gochecknoglobals
     - gochecknoinits
     - interfacebloat
     - revive
-    # TODO(FIX-TODO-clock-injection.md): enable forbidigo after a
-    # clock-injection sweep across runtime/, bridge/, httpapi/ and
-    # the timestamping adapters (~40 production callers of time.Now
-    # today). Enabling now would force ~40 file-level exemptions and
-    # the rule would have no teeth on new violations either.
-    # - forbidigo
     # TODO(FIX-TODO-error-wrapping.md): enable once boundary-error
     # wrapping is swept across all adapters.
     # - wrapcheck
@@ -56,9 +51,8 @@ linters:
       # are split.
       max: 6
 
-    # forbidigo settings retained so re-enabling (per
-    # FIX-TODO-clock-injection.md) is a one-line change in the
-    # `linters.enable:` block above.
+    # forbidigo bans direct time.Now() in production code. Exempt paths:
+    # domain/clock/real.go, domain/clock/clocktest/, _test.go, ports/storetest/.
     forbidigo:
       forbid:
         - pattern: '^time\.Now$'
@@ -165,16 +159,25 @@ linters:
       # the test-quality sweep.
       - linters: [errcheck, staticcheck, ineffassign, unused]
         path: "_test\\.go$"
-      # forbidigo exclusions retained for the eventual
-      # FIX-TODO-clock-injection.md re-enablement. Today the linter
-      # is disabled in `enable:` above; these blocks document the
-      # legitimate exemptions.
+      # forbidigo active exemptions (time.Now allowed in):
+      #   - domain/clock/real.go: the Clock implementation itself
+      #   - domain/clock/clocktest/: fake-clock test helpers
+      #   - _test.go files: test synchronisation and "right-now" semantics
+      #   - ports/storetest/: conformance test suite fixtures (not production
+      #     code; classified out-of-gate in the clock-injection harvest)
+      #   - testutil/: local service helpers (Docker broker/DDB lifecycle);
+      #     use real time for unique names and polling deadlines as documented
+      #     in the Phase 1 harvest; out of the production forbidigo gate
       - linters: [forbidigo]
         path: "domain/clock/real\\.go$"
       - linters: [forbidigo]
         path: "domain/clock/clocktest/"
       - linters: [forbidigo]
         path: "_test\\.go$"
+      - linters: [forbidigo]
+        path: "ports/storetest/"
+      - linters: [forbidigo]
+        path: "testutil/"
 
       # gochecknoglobals / gochecknoinits exemptions:
       #

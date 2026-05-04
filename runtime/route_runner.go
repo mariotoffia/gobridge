@@ -108,15 +108,6 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 	}
 	policy := cfg.Policy.WithDefaults()
 
-	var dc *outboxDepthCache
-	if policy.DeliveryMode == domain.DeliverySharedOutbox {
-		depthTTL := cfg.DepthCacheTTL
-		if depthTTL <= 0 {
-			depthTTL = domain.DefaultDepthCacheTTL
-		}
-		dc = newOutboxDepthCache(depthTTL)
-	}
-
 	panicRetry := cfg.PanicRetryTimeout
 	if panicRetry <= 0 {
 		panicRetry = 5 * time.Second
@@ -129,6 +120,15 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 	clk := cfg.Clock
 	if clk == nil {
 		clk = clock.System
+	}
+
+	var dc *outboxDepthCache
+	if policy.DeliveryMode == domain.DeliverySharedOutbox {
+		depthTTL := cfg.DepthCacheTTL
+		if depthTTL <= 0 {
+			depthTTL = domain.DefaultDepthCacheTTL
+		}
+		dc = newOutboxDepthCache(depthTTL, clk)
 	}
 
 	r := &RouteRunner{

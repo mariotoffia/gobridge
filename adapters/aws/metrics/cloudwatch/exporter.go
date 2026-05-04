@@ -48,7 +48,7 @@ func New(ctx context.Context, namespace string, opts ...Option) (*Exporter, erro
 		e.client = cloudwatch.NewFromConfig(cfg)
 	}
 
-	e.batcher = newBatcher(e.config.Namespace, e.config.DefaultTags, e.config.BufferSize)
+	e.batcher = newBatcher(e.config.Namespace, e.config.DefaultTags, e.config.BufferSize, e.config.Clock)
 
 	e.wg.Add(1)
 	go e.flushLoop()

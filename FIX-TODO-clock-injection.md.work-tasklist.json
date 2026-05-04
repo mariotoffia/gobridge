@@ -217,7 +217,7 @@
     {
       "id": "T020",
       "title": "Phase 5 \u2014 Enable forbidigo in .golangci.yml",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This requires enabling the Go lint gate after production time.Now calls are migrated.",
@@ -228,7 +228,7 @@
     {
       "id": "T021",
       "title": "Drop production file-level forbidigo exclusions",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This is lint configuration cleanup tied to completing the Go clock-injection migration.",
@@ -239,7 +239,7 @@
     {
       "id": "T022",
       "title": "Verify make lint passes with no forbidigo violations",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "test-automator",
       "agent_rationale": "This is automated validation of the completed lint configuration and clock migration.",
@@ -250,7 +250,7 @@
     {
       "id": "T023",
       "title": "Verify trial time.Now in production fails the lint gate",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "test-automator",
       "agent_rationale": "This is a negative validation test for the forbidigo lint gate behavior.",
@@ -261,7 +261,7 @@
     {
       "id": "T024",
       "title": "Ensure forbidigo is enabled in .golangci.yml",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This acceptance item requires checking or changing Go lint configuration.",
@@ -272,7 +272,7 @@
     {
       "id": "T025",
       "title": "Ensure only allowed forbidigo exclusions remain",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This acceptance item requires lint configuration review for allowed clock-related exemptions only.",
@@ -283,7 +283,7 @@
     {
       "id": "T026",
       "title": "Ensure adapters/aws/config/dynamodb/loader_test.go no longer needs forbidigo escape hatch or sleep",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "test-automator",
       "agent_rationale": "This acceptance item is focused on deterministic Go test cleanup around fake clock usage.",
@@ -294,7 +294,7 @@
     {
       "id": "T027",
       "title": "Shrink audit/timing-allowlist.txt for needs fake clock entries",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This requires updating project audit metadata after production timing code is migrated to fake-clock support.",
@@ -302,5 +302,6 @@
       "body_suggested_skills": [],
       "review_round": 0
     }
-  ]
+  ],
+  "lastCommitSHA": "de66cd4950da1f92df8dd0d43c42b2b006a60b41"
 }
