@@ -276,7 +276,24 @@ Recommended order:
 Per package: every error return wrapped or classified, build + test
 green, commit.
 
-### Phase 4 — Configure `wrapcheck` in `.golangci.yml`
+### Phase 4 — Configure `wrapcheck` in `.golangci.yml` - DONE
+
+**Status:** APPROVED 2026-05-04. Added `linters.settings.wrapcheck` block
+to `.golangci.yml` carrying the binding allow-list seed from
+`_design/error-wrapping-policy.adoc` §"Confirmed wrapcheck allow-list seed
+(binding for T013)" — `ignore-sigs: [.Err()]`, `ignore-sig-regexps:
+[\.Err\(\) error$]`, `ignore-package-globs:
+[github.com/mariotoffia/gobridge/...]`, `ignore-interface-regexps:
+[^github\.com/mariotoffia/gobridge/ports\.]`. Translated the upstream
+camelCase keys in the design-doc snippet to the kebab-case keys required
+by the golangci-lint v2 schema (semantics unchanged). Appended two
+`wrapcheck` exclusions under `linters.exclusions.rules` scoped to
+`_test\.go$` and `testutil/` per Q4 of the design doc; integration and
+longrunning tests remain subject to the rule. The `# - wrapcheck` enable
+line stays commented — T014 flips it after the Phase 5 sweep — and the
+TODO comment around it was refreshed to describe the residual work.
+`golangci-lint config verify` is clean and `make lint` reports `0 issues.`
+across every module. Diff confined to `.golangci.yml` (44 ins / 2 del).
 
 Tune the linter's allow list for known-OK pass-throughs:
 

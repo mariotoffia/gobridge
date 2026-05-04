@@ -36,8 +36,10 @@ linters:
     - gochecknoinits
     - interfacebloat
     - revive
-    # TODO(FIX-TODO-error-wrapping.md): enable once boundary-error
-    # wrapping is swept across all adapters.
+    # TODO(FIX-TODO-error-wrapping.md): the wrapcheck allow-list under
+    # linters.settings.wrapcheck below is in place (T013). The only
+    # remaining step is the Phase 5 sweep + flipping this enable on
+    # (T014). Until then, wrapcheck stays disabled.
     # - wrapcheck
     # TODO(FIX-TODO-return-types.md): enable once exported functions
     # stop returning unnamed interfaces in adapter code.
@@ -130,6 +132,35 @@ linters:
               desc: "runtime must not depend on the config parser; consume *ports.BridgeConfig instead"
             - pkg: "github.com/mariotoffia/gobridge/bridge"
               desc: "runtime must not depend on bridge (composition root)"
+
+    # wrapcheck allow-list (binding seed from
+    # _design/error-wrapping-policy.adoc §"Confirmed wrapcheck
+    # allow-list seed (binding for T013)"). The linter itself is not
+    # yet enabled in linters.enable above — T014 flips it on after the
+    # Phase 5 sweep. Configuring the allow-list now means the enable
+    # flip is a one-line change.
+    wrapcheck:
+      # Allow-listed function signatures (Q2): context.Context.Err()
+      # and any *.Err() method returning a single error are idiomatic
+      # propagation points; wrapping adds no info.
+      ignore-sigs:
+        - .Err()
+      ignore-sig-regexps:
+        - \.Err\(\) error$
+
+      # Allow-listed packages (Q1, Q3): the entire gobridge module
+      # graph is one logical project. Decorator forwarding of
+      # ports.* errors must remain transparent so domain sentinels
+      # survive errors.Is/errors.As checks downstream.
+      ignore-package-globs:
+        - github.com/mariotoffia/gobridge/...
+
+      # Allow-listed interfaces (Q1): any method whose receiver
+      # implements a ports.* interface is treated as decorator
+      # forwarding by default. Real classification happens in the
+      # leaf adapter that calls the SDK.
+      ignore-interface-regexps:
+        - ^github\.com/mariotoffia/gobridge/ports\.
 
     revive:
       rules:
@@ -234,3 +265,14 @@ linters:
       # intricate — that is how it gets coverage.
       - linters: [revive]
         path: "_test\\.go$"
+
+      # wrapcheck Q4 exemptions: test files routinely construct
+      # synthetic errors and return them straight from helpers; the
+      # testutil/ tree is a fixture module hierarchy whose entire
+      # purpose is local-service setup for tests. Neither benefits
+      # from %w discipline. tests/integration and tests/longrunning
+      # are NOT excluded — they exercise production wrap discipline.
+      - linters: [wrapcheck]
+        path: "_test\\.go$"
+      - linters: [wrapcheck]
+        path: "testutil/"
