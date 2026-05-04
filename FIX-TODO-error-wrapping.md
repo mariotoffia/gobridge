@@ -268,7 +268,7 @@ Recommended order:
 4. AMQP 1.0 transport - DONE
 5. MQTT Paho transport - DONE
 6. AWS DynamoDB stores (lease/outbox/dlq) - DONE
-7. Native SQLite stores
+7. Native SQLite stores - DONE
 8. Credentials adapters
 9. Metrics / tracing adapters
 10. Runtime internal boundaries

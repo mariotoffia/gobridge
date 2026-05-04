@@ -70,17 +70,17 @@ func WithLogger(l *slog.Logger) Option {
 func NewStore(dbPath string, opts ...Option) (*Store, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("sqliteoutbox: open: %w", err)
+		return nil, wrapErr(err, "sqliteoutbox: open", "path", dbPath)
 	}
 
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("sqliteoutbox: pragma: %w", err)
+		return nil, wrapErr(err, "sqliteoutbox: pragma", "path", dbPath)
 	}
 
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("sqliteoutbox: migrate: %w", err)
+		return nil, wrapErr(err, "sqliteoutbox: migrate", "path", dbPath)
 	}
 
 	s := &Store{db: db, clk: clock.System}
@@ -92,7 +92,10 @@ func NewStore(dbPath string, opts ...Option) (*Store, error) {
 
 // Close closes the underlying database connection.
 func (s *Store) Close() error {
-	return s.db.Close()
+	if err := s.db.Close(); err != nil {
+		return wrapErr(err, "sqliteoutbox: close")
+	}
+	return nil
 }
 
 func partitionKey(r *domain.OutboxRecord) string {
@@ -109,7 +112,7 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("sqliteoutbox: begin tx: %w", err)
+		return wrapErr(err, "sqliteoutbox: begin tx", "recordCount", len(records))
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -118,7 +121,7 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 		 session_id, address, envelope_json, headers_json, status, created_at, expires_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`)
 	if err != nil {
-		return fmt.Errorf("sqliteoutbox: prepare: %w", err)
+		return wrapErr(err, "sqliteoutbox: prepare persist", "recordCount", len(records))
 	}
 	defer func() { _ = stmt.Close() }()
 
@@ -159,7 +162,8 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 					With("envelopeID", r.EnvelopeID).
 					With("bindingID", r.BindingID)
 			}
-			return fmt.Errorf("sqliteoutbox: insert: %w", err)
+			return wrapErr(err, "sqliteoutbox: insert",
+				"envelopeID", r.EnvelopeID, "bindingID", r.BindingID)
 		}
 
 		n, _ := res.RowsAffected()
@@ -171,7 +175,10 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return wrapErr(err, "sqliteoutbox: commit persist", "recordCount", len(records))
+	}
+	return nil
 }
 
 func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error) {
@@ -181,7 +188,7 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("sqliteoutbox: begin tx: %w", err)
+		return nil, wrapErr(err, "sqliteoutbox: begin tx claim", "partitionKey", pk)
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck
 
@@ -193,7 +200,7 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 		pk, token.Version, limit,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("sqliteoutbox: query claimable: %w", err)
+		return nil, wrapErr(err, "sqliteoutbox: query claimable", "partitionKey", pk)
 	}
 
 	var ids []string
@@ -201,13 +208,13 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			_ = rows.Close()
-			return nil, fmt.Errorf("sqliteoutbox: scan id: %w", err)
+			return nil, wrapErr(err, "sqliteoutbox: scan claim id", "partitionKey", pk)
 		}
 		ids = append(ids, id)
 	}
 	_ = rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("sqliteoutbox: rows err: %w", err)
+		return nil, wrapErr(err, "sqliteoutbox: rows err claim", "partitionKey", pk)
 	}
 
 	if len(ids) == 0 {
@@ -230,11 +237,13 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 		args...,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("sqliteoutbox: update claim: %w", err)
+		return nil, wrapErr(err, "sqliteoutbox: update claim",
+			"partitionKey", pk, "ownerID", ownerID, "recordCount", len(ids))
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("sqliteoutbox: commit claim: %w", err)
+		return nil, wrapErr(err, "sqliteoutbox: commit claim",
+			"partitionKey", pk, "ownerID", ownerID)
 	}
 
 	return s.fetchByIDs(ctx, ids)
@@ -266,7 +275,8 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.L
 		args...,
 	)
 	if err != nil {
-		return fmt.Errorf("sqliteoutbox: complete: %w", err)
+		return wrapErr(err, "sqliteoutbox: complete",
+			"recordCount", len(recordIDs), "ownerID", token.Owner)
 	}
 
 	n, _ := res.RowsAffected()
@@ -288,7 +298,7 @@ func (s *Store) Expire(ctx context.Context, before time.Time) (int, error) {
 		before.UnixMilli(),
 	)
 	if err != nil {
-		return 0, fmt.Errorf("sqliteoutbox: expire: %w", err)
+		return 0, wrapErr(err, "sqliteoutbox: expire")
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
@@ -310,7 +320,7 @@ func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]domai
 		pk, limit,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("sqliteoutbox: query pending: %w", err)
+		return nil, wrapErr(err, "sqliteoutbox: query pending", "partitionKey", pk)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -337,7 +347,7 @@ func (s *Store) fetchByIDs(ctx context.Context, ids []string) ([]domain.OutboxRe
 		args...,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("sqliteoutbox: fetch by ids: %w", err)
+		return nil, wrapErr(err, "sqliteoutbox: fetch by ids", "recordCount", len(ids))
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -363,7 +373,7 @@ func scanRecords(rows *sql.Rows) ([]domain.OutboxRecord, error) {
 			&r.ReplayCount, &createdAtMs, &expiresAtMs, &completedMs,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("sqliteoutbox: scan: %w", err)
+			return nil, wrapErr(err, "sqliteoutbox: scan record")
 		}
 
 		r.Status = domain.OutboxStatus(status)
@@ -386,7 +396,10 @@ func scanRecords(rows *sql.Rows) ([]domain.OutboxRecord, error) {
 
 		result = append(result, r)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, wrapErr(err, "sqliteoutbox: rows err scan")
+	}
+	return result, nil
 }
 
 func nullableString(b []byte) sql.NullString {
@@ -394,8 +407,4 @@ func nullableString(b []byte) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: string(b), Valid: true}
-}
-
-func isUniqueViolation(err error) bool {
-	return strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
