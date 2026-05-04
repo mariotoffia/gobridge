@@ -1,8 +1,8 @@
 {
   "$schema": "v2",
   "source": "FIX-TODO-clock-injection.md",
-  "source_sha": "b21a791cc4717c5bea85dba3127b8816f5748e2f095cd46d9b515e21bd69d093",
-  "indexed_at": "2026-05-04T07:18:22Z",
+  "source_sha": "6e9bf55f988ba5b499194c711542577ca2b69fc4cd45e4c6ed818760d65ab834",
+  "indexed_at": "2026-05-04T07:51:57Z",
   "status_convention": "No explicit status markers; numbered list entries, phase headings, and acceptance bullets without markers default to pending",
   "tasks": [
     {
@@ -85,7 +85,7 @@
     {
       "id": "T008",
       "title": "runtime/dlq_router.go \u2014 inject clock for FailedAt timestamps",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This requires updating Go DLQ routing code to timestamp failed entries through the clock abstraction.",

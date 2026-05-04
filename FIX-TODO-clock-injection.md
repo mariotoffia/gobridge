@@ -265,6 +265,27 @@ Recommended order (smallest to largest, leaf to root):
 
    **Agents/Skills used:** general-purpose, code-reviewer.
 6. `runtime/dlq_router.go` — `FailedAt` field on DLQ entries.
+
+   **Status:** Resolved 2026-05-04. DLQ entry failure timestamps now use the router's injected `clock.Clock`, removing the direct wall-clock read from `runtime/dlq_router.go`.
+
+   **What landed:**
+
+   - Replaced `time.Now()` with `r.clk.Now()` for `domain.DLQEntry.FailedAt` in [runtime/dlq_router.go](runtime/dlq_router.go).
+   - Updated [runtime/dlq_router_test.go](runtime/dlq_router_test.go) to construct the router with `clocktest.Fake` and assert the persisted `FailedAt` matches the injected instant.
+
+   **Tests added:**
+
+   - Updated `TestDLQRouter_Route_AllFieldsPopulated` with deterministic fake-clock coverage for `FailedAt`.
+
+   **Pre-existing issues fixed in touched files (per audit instruction):**
+
+   - none.
+
+   **Follow-ups (not blockers; logged for future passes):**
+
+   - none.
+
+   **Agents/Skills used:** general-purpose, code-reviewer.
 7. `runtime/route_runner.go` + helpers — backoff math.
 8. `runtime/session_manager*.go` — lease renewal scheduling.
 9. `runtime/outbox_drainer_loop.go` — drain cycle timestamps.

@@ -224,7 +224,7 @@ func (r *DLQRouter) buildEntry(
 		Category:      category,
 		ErrorCode:     errorCode,
 		LastError:     reason,
-		FailedAt:      time.Now(),
+		FailedAt:      r.clk.Now(),
 		Attempts:      attempts,
 	}
 }
