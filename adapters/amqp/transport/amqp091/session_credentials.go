@@ -80,7 +80,10 @@ func (s *Session) ApplyCredentials(ctx context.Context, set *domain.CredentialSe
 	}
 	// Closing the connection triggers NotifyClose in reconnectLoop,
 	// which calls doReconnect with the updated brokerURL()/TLS.
-	return conn.Close()
+	if err := conn.Close(); err != nil {
+		return MapError(err)
+	}
+	return nil
 }
 
 // applyAMQPTLSMaterial mirrors the paho helper: returns true when the
