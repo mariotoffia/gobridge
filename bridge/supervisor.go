@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -59,6 +60,7 @@ type Supervisor struct {
 	pollCredStore                ports.PullCredentialStore
 	pollCredConfig               ports.PollBasedWrapperConfig
 	logger                       *slog.Logger
+	clk                          clock.Clock
 	swapMode                     SwapMode
 	strategy                     ReconfigStrategy
 	onSwap                       func(SwapEvent)
@@ -75,6 +77,15 @@ type SupervisorOption func(*Supervisor)
 // the runtimes it creates.
 func WithSupervisorLogger(l *slog.Logger) SupervisorOption {
 	return func(s *Supervisor) { s.logger = l }
+}
+
+// WithSupervisorClock sets the clock used for swap timing.
+func WithSupervisorClock(c clock.Clock) SupervisorOption {
+	return func(s *Supervisor) {
+		if c != nil {
+			s.clk = c
+		}
+	}
 }
 
 // WithSwapMode overrides the automatic swap mode detection.
@@ -154,6 +165,7 @@ func NewSupervisor(opts ...SupervisorOption) *Supervisor {
 		processors: make(map[string]ports.Processor),
 		swapMode:   SwapAuto,
 		strategy:   NewDirectStrategy(),
+		clk:        clock.System,
 	}
 	for _, o := range opts {
 		o(s)
@@ -245,7 +257,7 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 }
 
 func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
-	start := time.Now()
+	start := s.clk.Now()
 	mode := s.detectSwapMode(newCfg)
 
 	s.mu.RLock()
@@ -268,7 +280,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		NewConfig: newCfg,
 		SwapMode:  mode,
 		Error:     err,
-		Duration:  time.Since(start),
+		Duration:  s.clk.Since(start),
 	}
 
 	if err != nil {

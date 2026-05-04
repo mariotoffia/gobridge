@@ -196,6 +196,27 @@ Recommended order (smallest to largest, leaf to root):
 
    **Agents/Skills used:** general-purpose, code-reviewer.
 3. `bridge/supervisor.go` — single `time.Now()` for swap timestamps.
+
+   **Status:** Resolved 2026-05-04. Supervisor swap duration measurement now uses an injected `clock.Clock`, defaulting to `clock.System`, so tests can deterministically drive elapsed reconfiguration time without direct wall-clock reads.
+
+   **What landed:**
+
+   - Added `clock.Clock` injection and `WithSupervisorClock` to [bridge/supervisor.go](bridge/supervisor.go).
+   - Replaced the direct `time.Now()` / `time.Since()` swap-duration measurement with the supervisor clock.
+
+   **Tests added:**
+
+   - Added deterministic fake-clock coverage for swap callback duration in [bridge/supervisor_test.go](bridge/supervisor_test.go).
+
+   **Pre-existing issues fixed in touched files (per audit instruction):**
+
+   - none.
+
+   **Follow-ups (not blockers; logged for future passes):**
+
+   - none.
+
+   **Agents/Skills used:** general-purpose, code-reviewer.
 4. `runtime/credential_resolver.go` — TTL cache; needs clock for
    expiry checks. ~3 calls.
 5. `runtime/credentials_poll.go` — RNG seed; replace

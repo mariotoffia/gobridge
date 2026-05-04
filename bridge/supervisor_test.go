@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,6 +35,22 @@ func awaitSwapSignal(t *testing.T, ch <-chan struct{}) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("swap timed out")
 	}
+}
+
+type clockAdvancingTransportFactory struct {
+	fakeTransportFactory
+	clk           *clocktest.Fake
+	advanceOnCall int
+	advanceBy     time.Duration
+	calls         int
+}
+
+func (f *clockAdvancingTransportFactory) NewReceiver(ctx context.Context, spec ports.ReceiverSpec, sess ports.Session) (ports.Receiver, error) {
+	f.calls++
+	if f.calls == f.advanceOnCall {
+		f.clk.Advance(f.advanceBy)
+	}
+	return f.fakeTransportFactory.NewReceiver(ctx, spec, sess)
 }
 
 // TestSupervisor_InitialBuildAndStart validates that the initial config produces a running runtime.
@@ -356,6 +373,32 @@ func TestSupervisor_SwapCallback_Success(t *testing.T) {
 	assert.Equal(t, "r2", ev.NewConfig.Routes[0].ID)
 	assert.Greater(t, ev.Duration, time.Duration(0))
 	assert.Equal(t, SwapOverlap, ev.SwapMode)
+}
+
+func TestSupervisor_SwapCallback_UsesInjectedClockForDuration(t *testing.T) {
+	fakeClock := clocktest.NewAt(time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC))
+	const swapDuration = 42 * time.Second
+
+	var ev SwapEvent
+	done := make(chan struct{}, 1)
+	s := newTestSupervisor(
+		WithSupervisorClock(fakeClock),
+		WithOnSwap(func(e SwapEvent) { ev = e; done <- struct{}{} }),
+	)
+	s.RegisterTransport("fake", &clockAdvancingTransportFactory{
+		clk:           fakeClock,
+		advanceOnCall: 2,
+		advanceBy:     swapDuration,
+	})
+
+	ch := make(chan *ports.BridgeConfig, 1)
+	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
+	defer func() { cancel(); <-errCh }()
+	require.True(t, sendConfig(ch, quickCfg("r2"), time.Second))
+	awaitSwapSignal(t, done)
+
+	assert.NoError(t, ev.Error)
+	assert.Equal(t, swapDuration, ev.Duration)
 }
 
 // TestSupervisor_SwapCallback_BuildFailure validates SwapEvent fields when build fails.

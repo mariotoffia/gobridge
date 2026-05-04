@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "FIX-TODO-clock-injection.md",
-  "source_sha": "41c9f3d2988c24af7ff030aa9dbbb2de6dc18adbe3dd5d01fe913ff70174df20",
+  "source_sha": "9cb8377401a5e17561ed0e358e2a8253dfaeca79b3fb0f339dc86d733ca15c90",
   "indexed_at": "2026-05-04T07:18:22Z",
   "status_convention": "No explicit status markers; numbered list entries, phase headings, and acceptance bullets without markers default to pending",
   "tasks": [
@@ -52,7 +52,7 @@
     {
       "id": "T005",
       "title": "bridge/supervisor.go \u2014 inject clock for swap timestamps",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This is targeted Go refactoring for replacing a direct timestamp call with an injected clock.",
