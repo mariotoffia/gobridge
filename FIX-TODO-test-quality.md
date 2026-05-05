@@ -172,7 +172,16 @@ fails the gate.
   three modules. No code changes were required for this task; only
   this progress note. Phase 3 (T009) will drop the exclusion
   globally and re-confirm.
-- T003 — Clean up adapters/native/credentials/file test-quality (~1 issue) — pending
+- **T003 — Clean up adapters/native/credentials/file test-quality (~1 issue) — DONE (2026-05-05)**
+  Verified clean: ran `golangci-lint run ./...` against
+  `adapters/native/credentials/file` with the `_test.go` exclusion for
+  default linters (`errcheck`, `staticcheck`, `ineffassign`, `unused`)
+  temporarily removed — 0 issues. The ~1-issue snapshot in "Current
+  state" was taken before subsequent FIX-* sweeps (wrapcheck/ireturn
+  cleanups) incidentally cleared the file. `go test -race -count=1
+  ./...` green. No code changes were required for this task; only
+  this progress note. Phase 3 (T009) will drop the exclusion globally
+  and re-confirm.
 - T004 — Clean up adapters/native/store/sqlite* test-quality (~3 issues) — pending
 - T005 — Clean up testutil/{asblocal,localstack,rabbitmqlocal,s3local} test-quality (~10 issues) — pending
 - T006 — Clean up runtime/ test-quality (~5 errcheck) — pending
