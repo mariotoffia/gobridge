@@ -292,24 +292,6 @@ on narrow command/config ports or small DTOs specific to the use case.
 4. Update call sites atomically with no compatibility aliases.
 5. Run `make lint && make test`.
 
-### Finding F-007: Domain May Need Bounded-Context Subcomponents
-
-**Status:** Open. Tracked in detail by [FIX-004.md](FIX-004.md).
-
-**Problem:** A single `domain` component is acceptable for adoption, but it can
-hide accidental coupling between unrelated domain subdomains if the domain
-grows.
-
-**Target:** Split `domain` into `shared` / `messaging` / `persistence` /
-`routing` / `connectivity` sub-packages with explicit cross-context dependency
-rules.
-
-**How to solve:** See [FIX-004.md](FIX-004.md) for the executable runbook
-(target structure, phased sed plan, lint-policy YAML, depguard rules,
-acceptance criteria). The lint-policy implications live in that runbook so
-this plan does not duplicate them; this finding exists only to record that
-the split is an explicit architectural goal, not an accidental omission.
-
 ### Finding F-008: Vendor Admission Control Must Stay Explicit
 
 **Status:** Present in current policy; must be maintained.
@@ -375,7 +357,6 @@ commands, contributors will miss at least one of them.
 | ARCH-004 | Remove adapter dependency on concrete `circuitbreaker` | Go expert + Architecture expert | `skill-create-test`, `skill-asiidoc-documentation` | No expected move | Introduce a resilience port, make concrete breaker satisfy it, wire in composition root, remove adapter `mayDependOn: circuitbreaker`. | `make lint && make test` |
 | ARCH-005 | Remove infrastructure types from `ports` | API expert + Go expert + Architecture expert | `skill-create-test`, `skill-asiidoc-documentation` | Possibly | Replace HTTP-specific port shapes with transport-neutral ports. Keep `net/http` in HTTP adapters. No backwards-compatible `HTTPMountable` shim. | `make lint && make test` |
 | ARCH-006 | Narrow `bridge`/`httpapi` config coupling | API expert + Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | Possibly | Split broad parsed config access into narrow use-case DTOs or ports. Keep parsing out of runtime. | `make lint && make test` |
-| ARCH-007 | Split domain into bounded-context components — see [FIX-004.md](FIX-004.md) | Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | Yes | Runbook in FIX-004.md. Do not duplicate the phased plan here. | `make lint && make test` |
 | ARCH-008 | Keep vendor admission explicit | Go expert + AWS expert + API expert | `skill-create-test`, `skill-asiidoc-documentation` | No | Add vendor entries only with matching component `canUse`. AWS SDK stays in AWS adapters/deployment. HTTP dependencies stay in HTTP adapters. | `make lint && make test` |
 | ARCH-009 | Add optional architecture linting for tests | Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | No expected move | Add as advisory first, then promote only when signal is high. Do not weaken production lint. | `make lint && make test` |
 | ARCH-010 | Keep `make lint` as the single static-health gate | Go expert | `skill-create-test`, `skill-asiidoc-documentation` | No | Include architecture lint, mapping regression, gofmt, and multi-module `go vet`. Add future static checks here, not as hidden side commands. | `make lint && make test` |
