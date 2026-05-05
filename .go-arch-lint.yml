@@ -204,6 +204,16 @@ vendors:
   # not. Restricted to the config component just like yaml.
   mapstructure: { in: github.com/go-viper/mapstructure/v2 }
 
+  # NOTE on encoding/json (FIX-003 Phase 5):
+  # go-arch-lint's vendor lint governs only third-party imports; stdlib
+  # packages are exempt and cannot be denied via `vendors:` / `canUse:`.
+  # The architectural intent -- domain and ports MUST NOT depend on
+  # encoding/json -- is therefore enforced by the `cfgshape` analyzer
+  # for inner-ring `json.RawMessage` denial and by code review for the
+  # broader `encoding/json` ban. The blueprint marshallers that
+  # historically lived in ports/ have been relocated to config/ to keep
+  # the inner ring format-neutral.
+
   # Adapter SDKs.
   fsnotify: { in: github.com/fsnotify/fsnotify }
   paho: { in: ["github.com/eclipse/paho.golang/**"] }
@@ -255,12 +265,14 @@ deps:
 
   # Ports define the contracts adapters implement. They reference domain
   # value objects only; they MUST NOT know about config, runtime,
-  # bridge, or any adapter.
+  # bridge, or any adapter. Per FIX-003 Phase 5 the inner ring is
+  # format-neutral: ports does NOT carry yaml/json/mapstructure runtime
+  # dependencies. Wire-format marshalling lives in config/.
   ports:
     mayDependOn:
       - domain
     canUse:
-      - yaml
+      - _no_external_deps_
 
   # The config package is the YAML/JSON parser, validator, merger,
   # and on-disk manager that produces *ports.BridgeConfig values.

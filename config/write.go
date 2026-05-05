@@ -5,14 +5,14 @@ import (
 	"os"
 	"path/filepath"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// MarshalYAML serialises a ports.BridgeConfig to YAML bytes.
+// MarshalYAML serialises a ports.BridgeConfig to YAML bytes, projecting
+// each typed PluginConfig into the canonical `options` map. See
+// blueprint_marshal.go for the rationale.
 func MarshalYAML(cfg *ports.BridgeConfig) ([]byte, error) {
-	data, err := yaml.Marshal(cfg)
+	data, err := marshalBridgeConfigYAML(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("config: marshal yaml: %w", err)
 	}

@@ -3,7 +3,6 @@ package dynamodb
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -252,7 +251,7 @@ func (l *Loader) currentVersion(ctx context.Context) (int64, error) {
 // Save writes a BridgeConfig to DynamoDB, auto-incrementing the version.
 // This is useful for tests and admin tooling.
 func (l *Loader) Save(ctx context.Context, cfg *ports.BridgeConfig) error {
-	data, err := json.Marshal(cfg)
+	data, err := config.MarshalBridgeConfigJSON(cfg)
 	if err != nil {
 		return fmt.Errorf("dynamodb config save: marshal: %w", err)
 	}

@@ -1,8 +1,8 @@
 {
   "$schema": "v2",
   "source": "FIX-003.md",
-  "source_sha": "dd76a27eb91609285108bc2db94684877b689f1f1e70688f86eb074e8dc811d6",
-  "indexed_at": "2026-05-05T15:00:00Z",
+  "source_sha": "a5dd0808cd2a5df5fcc87abef746a7cbab7b6f5bf749dcdeb3a891d34a596219",
+  "indexed_at": "2026-05-05T15:30:00Z",
   "status_convention": "H3 ### Phase N \u2014 Title (no status suffixes; all phases pending until orchestrator appends ' - DONE')",
   "tasks": [
     {
@@ -63,7 +63,7 @@
     {
       "id": "PHASE5",
       "title": "Tighten arch lint vendor admission",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "thiink-clean-arch-reviewer",
       "agent_rationale": "This phase adjusts architecture lint boundaries for inner-ring dependencies, matching Clean Architecture review expertise.",
