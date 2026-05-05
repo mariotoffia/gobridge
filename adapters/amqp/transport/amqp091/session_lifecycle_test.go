@@ -28,7 +28,7 @@ func TestSession_Start_ConcurrentBlocksUntilReady(t *testing.T) {
 	dialStart := make(chan struct{}, 1)
 	releaseDial := make(chan struct{})
 	mc := newMockConnection()
-	mc.NotifyCloseFn = func(ch chan *amqp.Error) chan *amqp.Error { return ch }
+	_ = mc // NotifyClose mock auto-allocates
 
 	s := newResilienceSession(func(string) (amqpConnection, error) {
 		select {
@@ -89,8 +89,9 @@ func TestSession_Start_ConcurrentBlocksUntilReady(t *testing.T) {
 // see bgDone==nil and skip the wait, leaving a transient goroutine leak.
 func TestSession_Close_ImmediatelyAfterStart_NoLeak(t *testing.T) {
 	mc := newMockConnection()
-	notifyCh := make(chan *amqp.Error, 1)
-	mc.NotifyCloseFn = func(chan *amqp.Error) chan *amqp.Error { return notifyCh }
+	notifyCh := make(chan error, 1)
+	_ = notifyCh
+	mc.NotifyCloseChan = notifyCh
 
 	s := newResilienceSession(func(string) (amqpConnection, error) { return mc, nil })
 
@@ -135,9 +136,10 @@ func TestRedactURL_InvalidURL_Consistent(t *testing.T) {
 // channel; we only care that the plan field is updated.
 func TestSession_Reconcile_OverwritePlan_ReplacesSubscriptions(t *testing.T) {
 	mc := newMockConnection()
-	notifyCh := make(chan *amqp.Error, 1)
-	mc.NotifyCloseFn = func(chan *amqp.Error) chan *amqp.Error { return notifyCh }
-	mc.ChannelFn = func() (*amqp.Channel, error) {
+	notifyCh := make(chan error, 1)
+	_ = notifyCh
+	mc.NotifyCloseChan = notifyCh
+	mc.ChannelFn = func() (*amqpChannel, error) {
 		return nil, errors.New("channel unavailable in unit test")
 	}
 
@@ -183,11 +185,12 @@ func TestSession_Reconcile_OverwritePlan_ReplacesSubscriptions(t *testing.T) {
 // publisher-only plans to be silently ignored.
 func TestSession_Reconcile_PublisherOnlyPlan_StoresAndRuns(t *testing.T) {
 	mc := newMockConnection()
-	notifyCh := make(chan *amqp.Error, 1)
-	mc.NotifyCloseFn = func(chan *amqp.Error) chan *amqp.Error { return notifyCh }
+	notifyCh := make(chan error, 1)
+	_ = notifyCh
+	mc.NotifyCloseChan = notifyCh
 
 	var channelCalls atomic.Int32
-	mc.ChannelFn = func() (*amqp.Channel, error) {
+	mc.ChannelFn = func() (*amqpChannel, error) {
 		channelCalls.Add(1)
 		return nil, errors.New("channel unavailable in unit test")
 	}

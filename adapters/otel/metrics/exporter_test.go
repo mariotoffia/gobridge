@@ -92,28 +92,28 @@ func TestOptions(t *testing.T) {
 }
 
 // Verifies buildAttributes merges default and per-metric tags into OTel attributes.
-func TestExporter_BuildAttributes(t *testing.T) {
-	e := &Exporter{}
+func TestMeterClient_BuildAttributes(t *testing.T) {
+	c := &otelMeterClient{}
 
-	attrs := e.buildAttributes([]domain.Tag{{Key: "key1", Value: "val1"}})
+	attrs := c.buildAttributes([]domain.Tag{{Key: "key1", Value: "val1"}})
 	if len(attrs) != 1 {
 		t.Errorf("expected 1 attribute, got %d", len(attrs))
 	}
 
-	e.defaultAttrs = []attribute.KeyValue{
+	c.defaultAttrs = []attribute.KeyValue{
 		attribute.String("default", "value"),
 	}
 
-	attrs = e.buildAttributes([]domain.Tag{{Key: "key1", Value: "val1"}})
+	attrs = c.buildAttributes([]domain.Tag{{Key: "key1", Value: "val1"}})
 	if len(attrs) != 2 {
 		t.Errorf("expected 2 attributes, got %d", len(attrs))
 	}
 }
 
 // Verifies buildAttributes returns an empty slice when no tags are provided.
-func TestExporter_BuildAttributesEmpty(t *testing.T) {
-	e := &Exporter{}
-	attrs := e.buildAttributes(nil)
+func TestMeterClient_BuildAttributesEmpty(t *testing.T) {
+	c := &otelMeterClient{}
+	attrs := c.buildAttributes(nil)
 	if len(attrs) != 0 {
 		t.Errorf("expected 0 attributes, got %d", len(attrs))
 	}

@@ -99,7 +99,7 @@ func TestHealth_ServiceLevel(t *testing.T) {
 			// Simulate connection state.
 			if tc.connected {
 				s.mu.Lock()
-				s.cm = &autopaho.ConnectionManager{}
+				s.cm = &pahoConn{cm: &autopaho.ConnectionManager{}}
 				s.connected = true
 				s.mu.Unlock()
 			}

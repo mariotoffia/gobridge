@@ -2,15 +2,10 @@ package amqp10
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"io"
 	"log/slog"
 	mathrand "math/rand/v2"
 	"sync"
 	"time"
-
-	"github.com/Azure/go-amqp"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -21,8 +16,6 @@ import (
 var _ ports.Receiver = (*Receiver)(nil)
 
 // Receiver implements ports.Receiver for AMQP 1.0 links.
-// It creates a receiver link on the session's AMQP session and loops
-// calling Receive, converting messages to deliveries.
 type Receiver struct {
 	cfg     ReceiverConfig
 	session *Session
@@ -33,13 +26,8 @@ type Receiver struct {
 	started     chan struct{}
 	startedOnce sync.Once
 
-	mu   sync.Mutex
-	link *amqp.Receiver
-	// linkConn captures WHICH session connection the current link was
-	// created on. handleLinkError passes this (not the session's CURRENT
-	// connection) to notifyDisconnect so a stale link error surfacing
-	// AFTER the session has already reconnected to a new connection
-	// cannot incorrectly tear down the new connection.
+	mu       sync.Mutex
+	link     *receiverLink
 	linkConn amqpConn
 }
 
@@ -82,12 +70,10 @@ func (r *Receiver) clock() clock.Clock {
 }
 
 // Started returns a channel that is closed once the receiver's link
-// has been created and the receive loop is live. It satisfies
-// ports.ReceiverStartedSignaler.
+// has been created and the receive loop is live.
 func (r *Receiver) Started() <-chan struct{} { return r.started }
 
-// Run creates a receiver link and enters the receive loop. It blocks until
-// the context is cancelled or emit returns an error.
+// Run creates a receiver link and enters the receive loop.
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
 	if logging.DebugEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelDebug, "amqp10: receiver starting",
@@ -138,20 +124,15 @@ func (r *Receiver) createLink(ctx context.Context) error {
 	if sess == nil {
 		return domain.ErrUnavailable.WithMessage("amqp10: session not connected")
 	}
-	// Capture the connection THIS link is being created on so a later
-	// failure carries the right identity to notifyDisconnect, even if
-	// the session has reconnected in the meantime (see handleLinkError).
 	conn := r.session.Conn()
 
-	opts := &amqp.ReceiverOptions{
-		Credit:             int32(r.cfg.LinkCredit),
-		SourceCapabilities: []string{r.cfg.Routing.capability()},
-	}
-	if r.cfg.DurabilityMode > 0 {
-		opts.Durability = amqp.Durability(r.cfg.DurabilityMode)
-	}
-
-	recv, err := sess.NewReceiver(ctx, r.cfg.Address, opts)
+	recv, err := sess.NewReceiverLink(
+		ctx,
+		r.cfg.Address,
+		int32(r.cfg.LinkCredit),
+		r.cfg.DurabilityMode,
+		r.cfg.Routing.capability(),
+	)
 	if err != nil {
 		return MapError(err)
 	}
@@ -181,7 +162,7 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 		}
 
 		start := r.clock().Now()
-		msg, err := link.Receive(ctx, nil)
+		del, err := link.Receive(ctx, r.cfg.Address, r.logger, r.metrics, r.clock())
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -216,7 +197,13 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 			domain.Tag{Key: domain.TagKeyEntity, Value: r.cfg.Address})
 		backoff.reset()
 
-		del := r.convertMessage(ctx, msg, link)
+		if logging.TraceEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelTrace, "amqp10: received message",
+				"address", redactURL(r.cfg.Address),
+				"message_id", del.Envelope().ID,
+				"body_len", len(del.Envelope().Payload),
+			)
+		}
 
 		if err := emit(ctx, del); err != nil {
 			return err
@@ -224,65 +211,9 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 	}
 }
 
-func (r *Receiver) convertMessage(ctx context.Context, msg *amqp.Message, link *amqp.Receiver) *Delivery {
-	headers := messageToHeaders(msg)
-
-	var msgID string
-	if msg.Properties != nil && msg.Properties.MessageID != nil {
-		if s, ok := msg.Properties.MessageID.(string); ok {
-			msgID = s
-		}
-	}
-
-	subject := r.cfg.Address
-	if msg.Properties != nil && msg.Properties.Subject != nil {
-		subject = *msg.Properties.Subject
-	}
-
-	var body []byte
-	if len(msg.Data) > 0 {
-		body = msg.Data[0]
-	} else if msg.Value != nil {
-		if b, ok := msg.Value.([]byte); ok {
-			body = b
-		}
-	}
-
-	if msgID == "" {
-		msgID = generateEnvelopeID()
-	}
-
-	env := &domain.Envelope{
-		ID:        msgID,
-		Subject:   subject,
-		Payload:   body,
-		Headers:   headers,
-		CreatedAt: r.clock().Now(),
-	}
-
-	if msg.Properties != nil && msg.Properties.AbsoluteExpiryTime != nil {
-		env.ExpiresAt = *msg.Properties.AbsoluteExpiryTime
-	}
-
-	if logging.TraceEnabled(r.logger) {
-		r.logger.Log(ctx, logging.LevelTrace, "amqp10: received message",
-			"address", redactURL(r.cfg.Address),
-			"message_id", msgID,
-			"body_len", len(body),
-		)
-	}
-
-	return NewDelivery(env, msg, link, r.logger, r.metrics, r.clock())
-}
-
 // handleLinkError detaches the receiver's link after a non-transient
-// failure. When the failure is connection-level it forwards a disconnect
-// notification to the session, identifying the failed connection by the
-// pointer captured at link-creation time (NOT the session's CURRENT
-// connection). This ensures a stale link error from the previous
-// connection lifecycle cannot tear down a freshly-reconnected
-// connection — the session's stale-pointer guard would otherwise match
-// the current connection and incorrectly destroy it.
+// failure, forwarding connection-level errors to the session via the
+// connection identity captured at link-creation time.
 func (r *Receiver) handleLinkError(err error) {
 	r.mu.Lock()
 	link := r.link
@@ -322,18 +253,9 @@ func (r *Receiver) waitAndReconnect(ctx context.Context) error {
 		return domain.ErrUnavailable.WithMessage("amqp10: no session")
 	}
 
-	// Use Subscribe so multiple receivers (and any user-side observer
-	// reading from Events()) all receive the SessionConnected event
-	// independently.
 	events, unsub := r.session.Subscribe()
 	defer unsub()
 
-	// Race window: between the receiver's Receive failing and reaching
-	// this point, the session may have ALREADY reconnected and emitted
-	// SessionConnected. That event was delivered to whatever subscribers
-	// existed at the time and is gone — we subscribed too late. Probe
-	// the current health up front so we proceed immediately when the
-	// session is already healthy, instead of waiting indefinitely.
 	if h := r.session.Health(ctx); h.Connected {
 		if logging.TraceEnabled(r.logger) {
 			r.logger.Log(ctx, logging.LevelTrace,
@@ -419,12 +341,4 @@ func (b *backoff) next() time.Duration {
 
 func (b *backoff) reset() {
 	b.current = backoffInitial
-}
-
-func generateEnvelopeID() string {
-	b := make([]byte, 16)
-	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		panic("amqp10: crypto/rand unavailable: " + err.Error())
-	}
-	return hex.EncodeToString(b)
 }

@@ -7,8 +7,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodbstreams"
 	dstreamtypes "github.com/aws/aws-sdk-go-v2/service/dynamodbstreams/types"
+
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+// Streams-side SDK boundary.
+//
+// This file is the streams half of the dynamodb config ACL: it owns
+// the only references to dynamodbstreams.* / dstreamtypes.* outside of
+// the session interface declaration. The streamLoop orchestration body
+// also lives here so the SDK record types never escape ACL files.
 
 // streamLoop consumes DynamoDB Streams records for the watched table
 // and emits parsed BridgeConfig values on ch when a modification
@@ -27,7 +35,7 @@ func (l *Loader) streamLoop(ctx context.Context, ch chan<- *ports.BridgeConfig, 
 	var shardIter string
 	for {
 		if shardIter == "" {
-			iter, err := l.acquireLatestIterator(ctx, streamArn)
+			iter, err := l.session.acquireLatestIterator(ctx, streamArn)
 			if err != nil {
 				if l.logger != nil {
 					l.logger.Warn("dynamodb config loader: stream shard discovery failed",
@@ -49,9 +57,7 @@ func (l *Loader) streamLoop(ctx context.Context, ch chan<- *ports.BridgeConfig, 
 			shardIter = iter
 		}
 
-		out, err := l.streams.GetRecords(ctx, &dynamodbstreams.GetRecordsInput{
-			ShardIterator: aws.String(shardIter),
-		})
+		records, nextIter, err := l.session.getRecords(ctx, shardIter)
 		if err != nil {
 			if l.logger != nil {
 				l.logger.Warn("dynamodb config loader: GetRecords failed",
@@ -66,8 +72,8 @@ func (l *Loader) streamLoop(ctx context.Context, ch chan<- *ports.BridgeConfig, 
 			continue
 		}
 
-		for _, rec := range out.Records {
-			if !l.matchesWatchedKey(rec) {
+		for _, rec := range records {
+			if !matchesWatchedKey(rec, l.pk()) {
 				continue
 			}
 			cfg, err := l.Load(ctx)
@@ -85,11 +91,7 @@ func (l *Loader) streamLoop(ctx context.Context, ch chan<- *ports.BridgeConfig, 
 			}
 		}
 
-		if out.NextShardIterator == nil {
-			shardIter = ""
-		} else {
-			shardIter = *out.NextShardIterator
-		}
+		shardIter = nextIter
 
 		if !l.waitTick(ctx) {
 			return
@@ -112,8 +114,8 @@ func (l *Loader) waitTick(ctx context.Context) bool {
 // returns a LATEST-type iterator for it. An empty string return (with
 // nil error) indicates there are currently no open shards and the
 // caller should retry later.
-func (l *Loader) acquireLatestIterator(ctx context.Context, streamArn string) (string, error) {
-	desc, err := l.streams.DescribeStream(ctx, &dynamodbstreams.DescribeStreamInput{
+func (s *session) acquireLatestIterator(ctx context.Context, streamArn string) (string, error) {
+	desc, err := s.streams.DescribeStream(ctx, &dynamodbstreams.DescribeStreamInput{
 		StreamArn: aws.String(streamArn),
 	})
 	if err != nil {
@@ -124,9 +126,9 @@ func (l *Loader) acquireLatestIterator(ctx context.Context, streamArn string) (s
 	}
 
 	var shardID *string
-	for _, s := range desc.StreamDescription.Shards {
-		if s.SequenceNumberRange != nil && s.SequenceNumberRange.EndingSequenceNumber == nil {
-			shardID = s.ShardId
+	for _, sh := range desc.StreamDescription.Shards {
+		if sh.SequenceNumberRange != nil && sh.SequenceNumberRange.EndingSequenceNumber == nil {
+			shardID = sh.ShardId
 			break
 		}
 	}
@@ -134,7 +136,7 @@ func (l *Loader) acquireLatestIterator(ctx context.Context, streamArn string) (s
 		return "", nil
 	}
 
-	iter, err := l.streams.GetShardIterator(ctx, &dynamodbstreams.GetShardIteratorInput{
+	iter, err := s.streams.GetShardIterator(ctx, &dynamodbstreams.GetShardIteratorInput{
 		StreamArn:         aws.String(streamArn),
 		ShardId:           shardID,
 		ShardIteratorType: dstreamtypes.ShardIteratorTypeLatest,
@@ -148,15 +150,33 @@ func (l *Loader) acquireLatestIterator(ctx context.Context, streamArn string) (s
 	return *iter.ShardIterator, nil
 }
 
+// getRecords fetches the next batch of stream records using shardIter.
+// It returns the records, the next shard iterator (empty string when
+// the shard is closed and re-discovery is required), and any error
+// from the SDK call.
+func (s *session) getRecords(ctx context.Context, shardIter string) ([]dstreamtypes.Record, string, error) {
+	out, err := s.streams.GetRecords(ctx, &dynamodbstreams.GetRecordsInput{
+		ShardIterator: aws.String(shardIter),
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if out.NextShardIterator != nil {
+		next = *out.NextShardIterator
+	}
+	return out.Records, next, nil
+}
+
 // matchesWatchedKey returns true when the streams record refers to the
-// single PK/SK pair this loader tracks (config#<bridgeID> / current).
-// Records for unrelated items are ignored to avoid spurious reloads.
-func (l *Loader) matchesWatchedKey(rec dstreamtypes.Record) bool {
+// (pk, current) pair this loader tracks. Records for unrelated items
+// are ignored to avoid spurious reloads.
+func matchesWatchedKey(rec dstreamtypes.Record, pk string) bool {
 	if rec.Dynamodb == nil || rec.Dynamodb.Keys == nil {
 		return false
 	}
 	pkAttr, ok := rec.Dynamodb.Keys[attrPK].(*dstreamtypes.AttributeValueMemberS)
-	if !ok || pkAttr.Value != l.pk() {
+	if !ok || pkAttr.Value != pk {
 		return false
 	}
 	skAttr, ok := rec.Dynamodb.Keys[attrSK].(*dstreamtypes.AttributeValueMemberS)

@@ -3,8 +3,6 @@ package paho
 import (
 	"testing"
 
-	pahov5 "github.com/eclipse/paho.golang/paho"
-
 	"github.com/mariotoffia/gobridge/domain"
 )
 
@@ -42,7 +40,7 @@ import (
 // regression test for BUG-RPS. The classifier must accept topics that
 // appear AFTER a rejected topic in the toSub vector.
 func TestBugRPS_ClassifyMixedReasons_PersistsAllSuccesses(t *testing.T) {
-	toSub := []pahov5.SubscribeOptions{
+	toSub := []subscribeSpec{
 		{Topic: "a", QoS: 0}, // 0x00 success
 		{Topic: "b", QoS: 1}, // 0x80 unspecified error
 		{Topic: "c", QoS: 1}, // 0x01 success
@@ -85,7 +83,7 @@ func TestBugRPS_ClassifyMixedReasons_PersistsAllSuccesses(t *testing.T) {
 // TestBugRPS_ClassifyAllSuccess_NoError validates the happy path: all
 // reasons succeed, no error returned.
 func TestBugRPS_ClassifyAllSuccess_NoError(t *testing.T) {
-	toSub := []pahov5.SubscribeOptions{
+	toSub := []subscribeSpec{
 		{Topic: "a", QoS: 0},
 		{Topic: "b", QoS: 1},
 	}
@@ -102,7 +100,7 @@ func TestBugRPS_ClassifyAllSuccess_NoError(t *testing.T) {
 // validates the worst case: all topics rejected. No succeeded entries,
 // the FIRST rejected topic surfaces in errTopic.
 func TestBugRPS_ClassifyAllRejected_NoSuccessesAndFirstErrorRetained(t *testing.T) {
-	toSub := []pahov5.SubscribeOptions{
+	toSub := []subscribeSpec{
 		{Topic: "x", QoS: 1},
 		{Topic: "y", QoS: 1},
 	}
@@ -124,7 +122,7 @@ func TestBugRPS_ClassifyAllRejected_NoSuccessesAndFirstErrorRetained(t *testing.
 // accepted. This matches the previous implementation and avoids
 // gratuitous unsubscribe loops on broker quirks.
 func TestBugRPS_ClassifyShortReasons_TreatedAsSucceeded(t *testing.T) {
-	toSub := []pahov5.SubscribeOptions{
+	toSub := []subscribeSpec{
 		{Topic: "a", QoS: 0},
 		{Topic: "b", QoS: 1},
 		{Topic: "c", QoS: 2},
@@ -155,7 +153,7 @@ func TestBugRPS_ClassifyEmptyToSub_ReturnsEmpty(t *testing.T) {
 // surfaced in the error. This keeps the behaviour deterministic and
 // matches the convention used by other transport adapters.
 func TestBugRPS_ClassifyFirstErrorPriority(t *testing.T) {
-	toSub := []pahov5.SubscribeOptions{
+	toSub := []subscribeSpec{
 		{Topic: "a", QoS: 1},
 		{Topic: "b", QoS: 1},
 		{Topic: "c", QoS: 1},

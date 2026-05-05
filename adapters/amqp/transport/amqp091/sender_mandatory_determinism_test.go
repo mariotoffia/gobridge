@@ -33,7 +33,7 @@ import (
 // that when a return is already buffered on the channel,
 // checkReturnedLocked detects it without any wait.
 func TestSender_CheckReturned_NonBlocking_DetectsBufferedReturn(t *testing.T) {
-	s := &Sender{}
+
 	returnsCh := make(chan amqp.Return, 1)
 	returnsCh <- amqp.Return{
 		ReplyCode:  312,
@@ -43,7 +43,7 @@ func TestSender_CheckReturned_NonBlocking_DetectsBufferedReturn(t *testing.T) {
 	}
 
 	start := time.Now()
-	err := s.checkReturnedLocked(returnsCh)
+	err := domainifyReturn(checkReturn(returnsCh))
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -66,11 +66,11 @@ func TestSender_CheckReturned_NonBlocking_DetectsBufferedReturn(t *testing.T) {
 //
 // This is the regression guard against the old 50 ms grace timer.
 func TestSender_CheckReturned_NonBlocking_NoReturn_ReturnsImmediately(t *testing.T) {
-	s := &Sender{}
+
 	returnsCh := make(chan amqp.Return, 1)
 
 	start := time.Now()
-	err := s.checkReturnedLocked(returnsCh)
+	err := domainifyReturn(checkReturn(returnsCh))
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -86,8 +86,8 @@ func TestSender_CheckReturned_NonBlocking_NoReturn_ReturnsImmediately(t *testing
 // TestSender_CheckReturned_NilChannel returns nil without blocking
 // (covers the !Mandatory case).
 func TestSender_CheckReturned_NilChannel(t *testing.T) {
-	s := &Sender{}
-	if err := s.checkReturnedLocked(nil); err != nil {
+
+	if err := domainifyReturn(checkReturn(nil)); err != nil {
 		t.Fatalf("checkReturnedLocked(nil) = %v, want nil", err)
 	}
 }
@@ -96,12 +96,12 @@ func TestSender_CheckReturned_NilChannel(t *testing.T) {
 // return) without blocking. This handles the case where the channel
 // has been closed by a Close on the underlying *amqp.Channel.
 func TestSender_CheckReturned_ClosedChannel(t *testing.T) {
-	s := &Sender{}
+
 	returnsCh := make(chan amqp.Return)
 	close(returnsCh)
 
 	start := time.Now()
-	err := s.checkReturnedLocked(returnsCh)
+	err := domainifyReturn(checkReturn(returnsCh))
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -119,13 +119,13 @@ func TestSender_CheckReturned_ClosedChannel(t *testing.T) {
 // iterations and asserts the total stays well under what a single
 // 50 ms grace would cost (i.e., < ~500 ms total).
 func TestSender_CheckReturned_NoTimerInHotPath(t *testing.T) {
-	s := &Sender{}
+
 	const N = 200
 
 	start := time.Now()
 	for range N {
 		returnsCh := make(chan amqp.Return, 1)
-		_ = s.checkReturnedLocked(returnsCh)
+		_ = domainifyReturn(checkReturn(returnsCh))
 	}
 	elapsed := time.Since(start)
 
@@ -134,4 +134,15 @@ func TestSender_CheckReturned_NoTimerInHotPath(t *testing.T) {
 			"it must be non-blocking — a per-call grace timer is likely in place",
 			elapsed, N)
 	}
+}
+
+// domainifyReturn maps the ACL's *unroutableError to the same
+// domain.ErrNotFound that the Sender produces in production. Tests
+// assert against the domain error so this helper keeps the contract
+// pinned at the Sender boundary, not the ACL boundary.
+func domainifyReturn(r *unroutableError) error {
+	if r == nil {
+		return nil
+	}
+	return domain.ErrNotFound.WithMessage("amqp091: mandatory publish unroutable: " + r.ReplyText)
 }

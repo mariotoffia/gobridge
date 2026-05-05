@@ -2,14 +2,9 @@ package amqp091
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
-	"io"
 	"log/slog"
 	"sync"
-
-	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -130,7 +125,7 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 	defer func() { _ = ch.Close() }()
 
 	if r.cfg.PrefetchCount > 0 || r.cfg.PrefetchSize > 0 {
-		if err := ch.Qos(r.cfg.PrefetchCount, r.cfg.PrefetchSize, false); err != nil {
+		if err := ch.Qos(r.cfg.PrefetchCount, r.cfg.PrefetchSize); err != nil {
 			return MapError(err)
 		}
 	}
@@ -151,9 +146,9 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 		consumerTag,
 		r.cfg.AutoAck,
 		r.cfg.Exclusive,
-		false, // noLocal: RabbitMQ does not support this
-		false, // noWait
-		nil,
+		r.logger,
+		r.metrics,
+		r.clock(),
 	)
 	if err != nil {
 		return MapError(err)
@@ -163,7 +158,7 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 
 	r.startedOnce.Do(func() { close(r.started) })
 
-	chanClose := ch.NotifyClose(make(chan *amqp.Error, 1))
+	chanClose := ch.NotifyClose()
 
 	for {
 		// Priority check: if the caller has cancelled the context, return
@@ -180,9 +175,9 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 		select {
 		case <-ctx.Done():
 			return nil
-		case amqpErr := <-chanClose:
-			if amqpErr != nil {
-				return MapError(amqpErr)
+		case chanErr, ok := <-chanClose:
+			if ok && chanErr != nil {
+				return MapError(chanErr)
 			}
 			return domain.ErrConnectionLost.WithMessage("amqp091: channel closed by broker")
 		case d, ok := <-deliveries:
@@ -196,20 +191,15 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 	}
 }
 
-func (r *Receiver) handleDelivery(ctx context.Context, d amqp.Delivery, emit func(context.Context, ports.Delivery) error) error {
+func (r *Receiver) handleDelivery(ctx context.Context, d *Delivery, emit func(context.Context, ports.Delivery) error) error {
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelTrace, "amqp091: message received",
 			"queue", r.cfg.QueueName,
-			"delivery_tag", d.DeliveryTag,
-			"routing_key", d.RoutingKey,
-			"payload_len", len(d.Body),
+			"payload_len", len(d.Envelope().Payload),
 		)
 	}
 
-	env := deliveryToEnvelope(d, r.clock())
-	del := NewDelivery(env, d, r.logger, r.metrics, r.clock())
-
-	if err := emit(ctx, del); err != nil {
+	if err := emit(ctx, d); err != nil {
 		if logging.DebugEnabled(r.logger) {
 			r.logger.Log(ctx, logging.LevelDebug, "amqp091: emit error",
 				"queue", r.cfg.QueueName, "error", err)
@@ -219,7 +209,7 @@ func (r *Receiver) handleDelivery(ctx context.Context, d amqp.Delivery, emit fun
 	return nil
 }
 
-func (r *Receiver) openChannel() (*amqp.Channel, error) {
+func (r *Receiver) openChannel() (*amqpChannel, error) {
 	if r.session == nil {
 		return nil, domain.ErrUnavailable.WithMessage("amqp091: no session")
 	}
@@ -288,40 +278,4 @@ func (r *Receiver) waitForReconnect(ctx context.Context) bool {
 			}
 		}
 	}
-}
-
-func deliveryToEnvelope(d amqp.Delivery, clk clock.Clock) *domain.Envelope {
-	if clk == nil {
-		clk = clock.System
-	}
-	env := &domain.Envelope{
-		ID:        d.MessageId,
-		Subject:   d.RoutingKey,
-		Payload:   d.Body,
-		Headers:   deliveryToHeaders(d),
-		CreatedAt: clk.Now(),
-	}
-	if env.ID == "" {
-		env.ID = generateEnvelopeID()
-	}
-	if !d.Timestamp.IsZero() {
-		env.CreatedAt = d.Timestamp
-	}
-	return env
-}
-
-func generateEnvelopeID() string {
-	b := make([]byte, 16)
-	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		panic("amqp091: crypto/rand unavailable: " + err.Error())
-	}
-	return hex.EncodeToString(b)
-}
-
-func generateConsumerTag() string {
-	b := make([]byte, 8)
-	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		panic("amqp091: crypto/rand unavailable: " + err.Error())
-	}
-	return "gobridge-" + hex.EncodeToString(b)
 }

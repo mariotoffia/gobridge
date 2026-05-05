@@ -123,7 +123,7 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 # Lint targets
 # ============================================================================
 
-lint: lint-arch-check lint-gofmt lint-go-vet lint-go lint-aggregate ## Run all static checks across the workspace
+lint: lint-arch-check lint-gofmt lint-go-vet lint-go lint-aggregate lint-acl ## Run all static checks across the workspace
 
 lint-go: ## Run golangci-lint across all workspace modules (uses .golangci.yml at the repo root)
 	@echo "Running golangci-lint across all modules..."
@@ -195,23 +195,20 @@ build-aclcheck: ## Build the aclcheck custom analyzer
 	@mkdir -p bin
 	@cd scripts/aclcheck && go build -o $(PWD)/bin/aclcheck ./...
 
-# lint-acl is currently advisory (writes a report) rather than blocking
-# because the existing adapters were not built with the acl_*.go naming
-# convention. Promoting it to part of `make lint` requires first
-# refactoring each adapter so its SDK boundary lives in acl_*.go files
-# (a separate, large task). The analyzer is in place so any NEW
-# adapter can adopt the convention from day one.
-lint-acl: build-aclcheck ## Run aclcheck (advisory) — writes reports/aclcheck.log
+# lint-acl is enforcing: it runs aclcheck across every adapter module
+# and fails the build on any vendor SDK import outside an acl_*.go file
+# (or acl/ sub-directory). The aggregated log under reports/aclcheck.log
+# is preserved as a post-mortem aid; the per-module `go vet` invocation
+# is the gate.
+lint-acl: build-aclcheck ## Run aclcheck (enforcing) — fails on any non-ACL SDK import
 	@mkdir -p reports
-	@echo "Running aclcheck (advisory)..."
-	@bash -c ': > reports/aclcheck.log; for modfile in $$(find ./adapters -name go.mod -not -path "*/vendor/*" | sort); do \
+	@echo "Running aclcheck..."
+	@bash -c 'set -eo pipefail; : > reports/aclcheck.log; for modfile in $$(find ./adapters -name go.mod -not -path "*/vendor/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
 		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then continue; fi; \
-		echo "--- aclcheck $$dir ---" >> reports/aclcheck.log; \
-		(cd "$$dir" && go vet -vettool=$(PWD)/bin/aclcheck ./... 2>>$(PWD)/reports/aclcheck.log) || true; \
-	done; true'
-	@violations=$$(grep -cE 'vendor SDK import' reports/aclcheck.log || echo 0); \
-		echo "ACL boundary report at reports/aclcheck.log ($$violations file-level violations across adapters)"
+		echo "--- aclcheck $$dir ---" | tee -a reports/aclcheck.log; \
+		(cd "$$dir" && go vet -vettool=$(PWD)/bin/aclcheck ./... 2>&1) | tee -a $(PWD)/reports/aclcheck.log; \
+	done'
 
 build-aggcheck: ## Build the aggcheck custom analyzer
 	@mkdir -p bin
@@ -306,7 +303,7 @@ goconst-report: ## Find repeated string/numeric literals (advisory)
 	@goconst -min-occurrences 4 -min-length 5 ./... > reports/goconst.log || true
 	@echo "Repeated-literals report at reports/goconst.log"
 
-arch-quality: arch-graph dupl-report goconst-report lint-acl ## Run all advisory architecture-quality reports
+arch-quality: arch-graph dupl-report goconst-report ## Run all advisory architecture-quality reports
 	@echo "Architecture-quality reports written under reports/"
 
 # ============================================================================

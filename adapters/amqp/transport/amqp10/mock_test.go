@@ -11,13 +11,14 @@ import (
 // mockConn implements amqpConn for unit tests.
 type mockConn struct {
 	mu         sync.Mutex
-	session    *amqp.Session
+	session    *amqpSessionLink
 	sessionErr error
 	closeErr   error
 	closed     bool
+	done       chan struct{}
 }
 
-func (m *mockConn) NewSession(_ context.Context, _ *amqp.SessionOptions) (*amqp.Session, error) {
+func (m *mockConn) NewSession(_ context.Context) (*amqpSessionLink, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.session, m.sessionErr
@@ -27,7 +28,23 @@ func (m *mockConn) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.closed = true
+	if m.done != nil {
+		select {
+		case <-m.done:
+		default:
+			close(m.done)
+		}
+	}
 	return m.closeErr
+}
+
+func (m *mockConn) Done() <-chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.done == nil {
+		m.done = make(chan struct{})
+	}
+	return m.done
 }
 
 // mockSettler implements settler for unit tests.
@@ -70,7 +87,7 @@ func (m *mockSettler) ModifyMessage(_ context.Context, _ *amqp.Message, opts *am
 
 // mockDialFunc returns a dialFunc that yields the given connection or error.
 func mockDialFunc(conn amqpConn, err error) dialFunc {
-	return func(_ context.Context, _ string, _ *amqp.ConnOptions) (amqpConn, error) {
+	return func(_ context.Context, _ SessionOptions, _ amqp10Credentials) (amqpConn, error) {
 		return conn, err
 	}
 }

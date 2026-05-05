@@ -6,8 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	pahov5 "github.com/eclipse/paho.golang/paho"
-
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -76,16 +74,15 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 
 	errCh := make(chan error, 1)
 
-	r.session.Router().Register(r.id, func(pub *pahov5.Publish) {
+	r.session.Router().RegisterEnvelope(r.id, r.session.clock(), func(env *domain.Envelope) {
 		if logging.TraceEnabled(r.logger) {
 			r.logger.Log(runCtx, logging.LevelTrace, "mqtt: message received",
 				"receiver_id", r.id,
-				"topic", pub.Topic,
-				"payload_len", len(pub.Payload),
+				"topic", env.Subject,
+				"payload_len", len(env.Payload),
 			)
 		}
 
-		env := EnvelopeFromPublish(pub, r.session.clock())
 		del := NewDelivery(env)
 		if err := emit(runCtx, del); err != nil {
 			if logging.DebugEnabled(r.logger) {

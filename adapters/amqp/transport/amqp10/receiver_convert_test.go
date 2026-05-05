@@ -7,7 +7,6 @@
 package amqp10
 
 import (
-	"context"
 	"log/slog"
 	"testing"
 
@@ -34,8 +33,7 @@ func TestReceiver_ConvertMessage_MissingID(t *testing.T) {
 		Data: [][]byte{[]byte("payload")},
 	}
 
-	del := r.convertMessage(context.Background(), msg, nil)
-	env := del.Envelope()
+	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
 
 	if env.ID == "" {
 		t.Fatal("Envelope.ID should be auto-generated when message has no MessageID (BUG-4)")
@@ -59,8 +57,7 @@ func TestReceiver_ConvertMessage_WithID(t *testing.T) {
 		Data: [][]byte{[]byte("payload")},
 	}
 
-	del := r.convertMessage(context.Background(), msg, nil)
-	env := del.Envelope()
+	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
 
 	if env.ID != "msg-123" {
 		t.Fatalf("Envelope.ID = %q, want %q", env.ID, "msg-123")
@@ -81,8 +78,7 @@ func TestReceiver_ConvertMessage_ValueBodyExtraction(t *testing.T) {
 		Value: []byte("value-body"),
 	}
 
-	del := r.convertMessage(context.Background(), msg, nil)
-	env := del.Envelope()
+	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
 
 	if string(env.Payload) != "value-body" {
 		t.Fatalf("Payload = %q, want %q", env.Payload, "value-body")
@@ -104,8 +100,7 @@ func TestReceiver_ConvertMessage_ValueBodyNonBytes(t *testing.T) {
 		Value: "not-bytes",
 	}
 
-	del := r.convertMessage(context.Background(), msg, nil)
-	env := del.Envelope()
+	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
 
 	if env.Payload != nil {
 		t.Fatalf("Payload = %v, want nil for non-[]byte Value", env.Payload)
@@ -130,8 +125,7 @@ func TestReceiver_ConvertMessage_Subject(t *testing.T) {
 		Data: [][]byte{[]byte("data")},
 	}
 
-	del := r.convertMessage(context.Background(), msg, nil)
-	env := del.Envelope()
+	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
 
 	if env.Subject != subject {
 		t.Fatalf("Subject = %q, want %q", env.Subject, subject)
@@ -152,8 +146,7 @@ func TestReceiver_ConvertMessage_SubjectDefault(t *testing.T) {
 		Data: [][]byte{[]byte("data")},
 	}
 
-	del := r.convertMessage(context.Background(), msg, nil)
-	env := del.Envelope()
+	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
 
 	if env.Subject != "queue/default-subject" {
 		t.Fatalf("Subject = %q, want %q", env.Subject, "queue/default-subject")

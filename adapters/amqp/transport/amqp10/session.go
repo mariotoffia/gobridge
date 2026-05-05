@@ -4,11 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"math/rand/v2"
-	"net/url"
 	"sync"
 	"time"
-
-	"github.com/Azure/go-amqp"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -34,7 +31,7 @@ type Session struct {
 
 	mu        sync.Mutex
 	conn      amqpConn
-	amqpSess  *amqp.Session
+	amqpSess  *amqpSessionLink
 	events    chan ports.SessionEvent
 	closed    bool
 	connected bool
@@ -56,10 +53,7 @@ type Session struct {
 	startErr  error
 
 	// eventSubs holds per-subscriber channels for fan-out delivery of
-	// session lifecycle events. Reading from the legacy Events() channel
-	// drains the shared buffer, so every Receiver and observer that
-	// needs reconnect notifications must Subscribe to receive its own
-	// independent stream.
+	// session lifecycle events.
 	eventSubs []chan ports.SessionEvent
 
 	// liveCreds captures the latest applied credentials, consulted on
@@ -102,8 +96,6 @@ func NewSession(opts SessionOptions, mode domain.SessionMode, logger *slog.Logge
 	}
 }
 
-// Conn returns the underlying AMQP connection. Receivers and senders
-// use this to check connection liveness.
 func (s *Session) clock() clock.Clock {
 	if s.clk != nil {
 		return s.clk
@@ -111,14 +103,18 @@ func (s *Session) clock() clock.Clock {
 	return clock.System
 }
 
+// Conn returns the underlying AMQP connection. Receivers and senders
+// use this to identify which connection their links belong to.
 func (s *Session) Conn() amqpConn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.conn
 }
 
-// AMQPSession returns the underlying *amqp.Session for link creation.
-func (s *Session) AMQPSession() *amqp.Session {
+// AMQPSession returns the underlying session link wrapper for link
+// creation. Tests may inspect this; production code uses it only to
+// open new receiver/sender links.
+func (s *Session) AMQPSession() *amqpSessionLink {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.amqpSess
@@ -217,38 +213,19 @@ func (s *Session) Start(ctx context.Context) error {
 }
 
 func (s *Session) connect(ctx context.Context) error {
-	connOpts := &amqp.ConnOptions{
-		IdleTimeout:  s.opts.IdleTimeout,
-		MaxFrameSize: s.opts.MaxFrameSize,
-	}
-	if s.opts.ContainerID != "" {
-		connOpts.ContainerID = s.opts.ContainerID
-	}
 	s.mu.Lock()
-	user, pass := s.liveCreds.Username, s.liveCreds.Password
+	creds := s.liveCreds
 	s.mu.Unlock()
-	if user != "" {
-		connOpts.SASLType = amqp.SASLTypePlain(user, pass)
-	}
-
-	if s.opts.TLS != nil && s.opts.TLS.Enable {
-		tlsCfg, err := BuildTLSConfig(s.opts.TLS)
-		if err != nil {
-			return domain.ErrInvalidPayload.Wrap(err).
-				WithMessage("amqp10: invalid TLS configuration")
-		}
-		connOpts.TLSConfig = tlsCfg
-	}
 
 	connectCtx, connectCancel := context.WithTimeout(ctx, s.opts.ConnectTimeout)
 	defer connectCancel()
 
-	conn, err := s.dial(connectCtx, s.opts.Address, connOpts)
+	conn, err := s.dial(connectCtx, s.opts, creds)
 	if err != nil {
 		return MapError(err)
 	}
 
-	sess, err := conn.NewSession(connectCtx, nil)
+	sess, err := conn.NewSession(connectCtx)
 	if err != nil {
 		_ = conn.Close()
 		return MapError(err)
@@ -257,9 +234,7 @@ func (s *Session) connect(ctx context.Context) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		if sess != nil {
-			_ = sess.Close(connectCtx)
-		}
+		_ = sess.Close(connectCtx)
 		_ = conn.Close()
 		return domain.ErrUnavailable.WithMessage("amqp10: session closed during connect")
 	}
@@ -283,9 +258,9 @@ func (s *Session) connect(ctx context.Context) error {
 	return nil
 }
 
-// Reconcile stores the desired SessionPlan. Unlike AMQP 0-9-1, AMQP 1.0
-// does not have queue/exchange declare operations — links are created
-// lazily when receivers and senders start.
+// Reconcile stores the desired SessionPlan. AMQP 1.0 has no
+// queue/exchange declare operations — links are created lazily when
+// receivers and senders start.
 func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error {
 	reconcileStart := s.clock().Now()
 
@@ -346,28 +321,13 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 }
 
 // Events returns the channel on which session lifecycle events are emitted.
-//
-// The returned channel is shared. Each event is delivered to exactly one
-// reader, so callers that need to react independently to lifecycle events
-// (for example, multiple receivers waiting for SessionConnected after a
-// reconnect) MUST use Subscribe instead.
 func (s *Session) Events() <-chan ports.SessionEvent {
 	return s.events
 }
 
-// Subscribe returns a private buffered channel that receives every
-// subsequent session lifecycle event, plus an unsubscribe function that
-// removes the subscription and closes the channel. Use this when more
-// than one consumer needs to observe session events; the legacy Events
-// channel delivers each value to a single reader and would otherwise
-// starve other consumers.
-//
-// The returned channel has buffer size 16. If a slow subscriber lets it
-// fill up, additional events are dropped (non-blocking send) so a slow
-// reader cannot stall pushEvent or other subscribers.
-//
-// Unsubscribe is safe to call at most once and after the session has
-// been closed; it is also safe to invoke from defer.
+// Subscribe returns a private buffered channel of lifecycle events plus
+// an unsubscribe function. See AMQP 0-9-1 documentation for the
+// semantics; both transports implement the same contract.
 func (s *Session) Subscribe() (<-chan ports.SessionEvent, func()) {
 	ch := make(chan ports.SessionEvent, eventChannelSize)
 
@@ -409,8 +369,7 @@ func (s *Session) subscriberCount() int {
 	return len(s.eventSubs)
 }
 
-// Close gracefully disconnects the AMQP 1.0 session. It is safe to call
-// Close multiple times.
+// Close gracefully disconnects the AMQP 1.0 session.
 func (s *Session) Close(ctx context.Context) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "amqp10: session close initiated",
@@ -519,9 +478,7 @@ func (s *Session) monitorLoop(ctx context.Context) {
 
 		var connDone <-chan struct{}
 		if conn != nil {
-			if cd, ok := conn.(interface{ Done() <-chan struct{} }); ok {
-				connDone = cd.Done()
-			}
+			connDone = conn.Done()
 		}
 
 		if connDone != nil {
@@ -637,27 +594,12 @@ func (s *Session) handleReconnect(ctx context.Context) {
 	}
 }
 
-// redactURL masks any userinfo (credentials) in a broker URL so it is
-// safe for logging. Returns "<invalid-url>" for unparseable input,
-// matching the amqp091 transport so cross-transport log assertions are
-// stable.
-func redactURL(addr string) string {
-	u, err := url.Parse(addr)
-	if err != nil {
-		return "<invalid-url>"
-	}
-	if u.User != nil {
-		u.User = url.User("***")
-	}
-	return u.String()
-}
-
 // notifyDisconnect is called by receivers/senders when they detect
 // a link or session error indicating connection loss. It clears the
 // connection state so the monitor goroutine triggers reconnection.
 // The failedConn parameter identifies which connection instance failed;
 // if the session has already reconnected to a new connection, the stale
-// notification is ignored to prevent destroying a valid connection.
+// notification is ignored.
 func (s *Session) notifyDisconnect(failedConn amqpConn, err error) {
 	s.mu.Lock()
 	if s.closed || s.conn == nil || s.conn != failedConn {

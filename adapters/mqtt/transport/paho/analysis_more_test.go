@@ -102,7 +102,7 @@ func TestAnaMore_Sender_NilEnvelope_ReturnsInvalidPayload(t *testing.T) {
 		ClientID:   "ana-nil-env",
 	}, domain.SessionEphemeral, nil)
 	sess.mu.Lock()
-	sess.cm = fakeCM
+	sess.cm = &pahoConn{cm: fakeCM}
 	sess.mu.Unlock()
 
 	s := NewSender(sess, SenderOptions{Timeout: time.Second, DefaultTopic: "t"})
@@ -130,7 +130,7 @@ func TestAnaMore_ReconcileMetric_NotEmittedOnNoOp(t *testing.T) {
 		ClientID:   "ana-recon-metric-noop",
 	}, domain.SessionEphemeral, nil, rec)
 	s.mu.Lock()
-	s.cm = fakeCM
+	s.cm = &pahoConn{cm: fakeCM}
 	s.plan = &domain.SessionPlan{Subscriptions: []domain.SubscriptionPlan{{Topic: "kept"}}}
 	s.mu.Unlock()
 
@@ -153,7 +153,7 @@ func TestAnaMore_Reconcile_DesiredEqualsCurrent_NoBrokerCallNeeded(t *testing.T)
 		ClientID:   "ana-recon-delta-zero",
 	}, domain.SessionEphemeral, nil)
 	s.mu.Lock()
-	s.cm = fakeCM
+	s.cm = &pahoConn{cm: fakeCM}
 	s.activeSubs = map[string]byte{"a": 0, "b": 1}
 	s.mu.Unlock()
 

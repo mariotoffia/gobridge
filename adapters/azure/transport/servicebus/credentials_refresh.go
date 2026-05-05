@@ -116,7 +116,7 @@ func (s *Sender) ApplyCredentials(ctx context.Context, set *domain.CredentialSet
 		return domain.ErrTemporaryAuthFailure.Wrap(err)
 	}
 
-	newSender, err := asbClient.NewSender(s.entityName(), nil)
+	newSender, err := asbClient.NewSender(s.entityName())
 	if err != nil {
 		_ = asbClient.Close(ctx)
 		return domain.ErrTemporaryAuthFailure.Wrap(

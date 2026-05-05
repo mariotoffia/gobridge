@@ -86,8 +86,7 @@ func TestSender_SendBatch_NoSession(t *testing.T) {
 func TestSender_BuildMessage(t *testing.T) {
 	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
 
-	s, err := NewSender(SenderConfig{Address: "queue/out"}, sess)
-	if err != nil {
+	if _, err := NewSender(SenderConfig{Address: "queue/out"}, sess); err != nil {
 		t.Fatalf("NewSender() error = %v", err)
 	}
 
@@ -105,7 +104,7 @@ func TestSender_BuildMessage(t *testing.T) {
 		},
 	}
 
-	msg := s.buildMessage(env)
+	msg := envelopeToMessage(env)
 
 	if len(msg.Data) != 1 || string(msg.Data[0]) != "payload-data" {
 		t.Fatalf("Data = %v", msg.Data)
@@ -130,8 +129,7 @@ func TestSender_BuildMessage(t *testing.T) {
 func TestSender_BuildMessage_NoExpiry(t *testing.T) {
 	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
 
-	s, err := NewSender(SenderConfig{Address: "queue/out"}, sess)
-	if err != nil {
+	if _, err := NewSender(SenderConfig{Address: "queue/out"}, sess); err != nil {
 		t.Fatalf("NewSender() error = %v", err)
 	}
 
@@ -140,7 +138,7 @@ func TestSender_BuildMessage_NoExpiry(t *testing.T) {
 		Payload: []byte("data"),
 	}
 
-	msg := s.buildMessage(env)
+	msg := envelopeToMessage(env)
 
 	if msg.Properties.AbsoluteExpiryTime != nil {
 		t.Fatal("AbsoluteExpiryTime should be nil when no expiry set")

@@ -164,9 +164,11 @@ func TestStreamLoopEmitsOnWatchedKeyChange(t *testing.T) {
 	fc := clocktest.New()
 
 	loader := &Loader{
-		client:             ddb,
-		streams:            streams,
-		tableName:          "test-table",
+		session: &session{
+			ddb:       ddb,
+			streams:   streams,
+			tableName: "test-table",
+		},
 		bridgeID:           "stream-test",
 		pollInterval:       time.Second,
 		streamPollInterval: 100 * time.Millisecond,
@@ -236,9 +238,11 @@ func TestStreamLoopIgnoresUnrelatedRecords(t *testing.T) {
 	fc := clocktest.New()
 
 	loader := &Loader{
-		client:             ddb,
-		streams:            streams,
-		tableName:          "test-table",
+		session: &session{
+			ddb:       ddb,
+			streams:   streams,
+			tableName: "test-table",
+		},
 		bridgeID:           "stream-test",
 		pollInterval:       time.Second,
 		streamPollInterval: 50 * time.Millisecond,

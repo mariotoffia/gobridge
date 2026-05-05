@@ -14,8 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Azure/go-amqp"
-
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -40,7 +38,7 @@ func newMockSenderLink() *mockSenderLink {
 	return &mockSenderLink{sendBlock: make(chan struct{})}
 }
 
-func (m *mockSenderLink) Send(ctx context.Context, _ *amqp.Message, _ *amqp.SendOptions) error {
+func (m *mockSenderLink) SendEnvelope(ctx context.Context, _ *domain.Envelope) error {
 	cur := m.inFlight.Add(1)
 	for {
 		obs := m.maxInFlight.Load()

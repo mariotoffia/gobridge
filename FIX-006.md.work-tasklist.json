@@ -1,0 +1,119 @@
+{
+  "$schema": "v2",
+  "source": "FIX-006.md",
+  "source_sha": "4f2b2004f39bfad0a96b0a93c235953fed1cf9a06b1a2d35914bc59e9442043f",
+  "indexed_at": "2026-05-05T10:15:40Z",
+  "status_convention": "Per-task bullets appended under '## Progress' with ' \u2014 DONE' suffix on completion",
+  "tasks": [
+    {
+      "id": "FIX-006-A1",
+      "title": "Refactor adapters/native/store/sqlite{outbox,dlq} into ACL files",
+      "status": "done",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "Mechanical Go file rename/split to enforce acl_*.go boundary in the sqlite outbox+dlq adapters.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "FIX-006-A2",
+      "title": "Refactor adapters/aws/credentials/ssm into ACL files",
+      "status": "done",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "Go-level reorganization of SDK boundary into acl_*.go files in the SSM credentials adapter.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "FIX-006-A3",
+      "title": "Refactor adapters/aws/config/dynamodb into ACL files",
+      "status": "done",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "Go-level reorganization of SDK boundary into acl_*.go files in the DynamoDB config adapter.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "FIX-006-A4",
+      "title": "Refactor adapters/amqp/transport/amqp091 and amqp10 into ACL files",
+      "status": "done",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "Go file rename/split to enforce acl_*.go boundary in the AMQP 0-9-1 and AMQP 1.0 transport adapters.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "FIX-006-A5",
+      "title": "Refactor adapters/azure/transport/servicebus into ACL files",
+      "status": "done",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "Go-level reorganization of SDK boundary into acl_*.go files in the Azure Service Bus transport adapter.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "FIX-006-A6",
+      "title": "Refactor adapters/aws/metrics/cloudwatch into ACL files",
+      "status": "done",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "Go-level reorganization of SDK boundary into acl_*.go files in the CloudWatch metrics adapter.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "FIX-006-A7",
+      "title": "Refactor adapters/mqtt/transport/paho into ACL files",
+      "status": "done",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "Go file rename/split to enforce acl_*.go boundary in the Paho MQTT transport adapter.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "FIX-006-A8",
+      "title": "Refactor adapters/aws/transport/sqs into ACL files",
+      "status": "done",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "Largest adapter (18 violations); Go-level reorganization into acl_*.go files for the SQS transport adapter.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "FIX-006-A9",
+      "title": "Refactor adapters/otel/{metrics,tracing} into ACL files",
+      "status": "done",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "Go-level reorganization of SDK boundary into acl_*.go files in the OpenTelemetry metrics and tracing adapters.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "FIX-006-P2",
+      "title": "Promote lint-acl to enforcing in Makefile and update docs",
+      "status": "done",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "Makefile + analyzer wiring change to add lint-acl to the lint gate and update CLAUDE.md once all adapters are refactored.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    }
+  ]
+}

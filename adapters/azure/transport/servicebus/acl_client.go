@@ -14,8 +14,10 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 )
 
-// asbAPI is the subset of the Azure Service Bus Receiver SDK used by
-// the bridge Receiver. It enables test-double injection.
+// asbAPI is the unexported mock-seam interface for the Azure Service
+// Bus Receiver SDK. Test doubles implement this; production code uses
+// the *azservicebus.Receiver / sessionReceiverAdapter implementations
+// constructed via asbClientHandle.
 type asbAPI interface {
 	ReceiveMessages(ctx context.Context, count int, options *azservicebus.ReceiveMessagesOptions) ([]*azservicebus.ReceivedMessage, error)
 	CompleteMessage(ctx context.Context, message *azservicebus.ReceivedMessage, options *azservicebus.CompleteMessageOptions) error
@@ -30,8 +32,8 @@ type retryScheduler interface {
 	CancelScheduledMessages(ctx context.Context, sequenceNumbers []int64, options *azservicebus.CancelScheduledMessagesOptions) error
 }
 
-// asbSenderAPI is the subset of the Azure Service Bus Sender SDK used
-// by the bridge Sender.
+// asbSenderAPI is the unexported mock-seam interface for the Azure
+// Service Bus Sender SDK.
 type asbSenderAPI interface {
 	SendMessage(ctx context.Context, message *azservicebus.Message, options *azservicebus.SendMessageOptions) error
 	NewMessageBatch(ctx context.Context, options *azservicebus.MessageBatchOptions) (*azservicebus.MessageBatch, error)
@@ -45,14 +47,14 @@ var (
 	_ retryScheduler = (*azservicebus.Sender)(nil)
 )
 
-// sessionReceiverAdapter wraps *azservicebus.SessionReceiver to
-// satisfy asbAPI. Session receivers use session-level locking
+// sessionReceiverAdapter wraps *azservicebus.SessionReceiver to satisfy
+// asbAPI. Session receivers use session-level locking
 // (RenewSessionLock) rather than per-message locking.
 //
 // Rule 2 (decorator pass-through): these methods forward to the inner
 // SDK verbatim. Classification happens at the asbAPI call sites in
-// delivery.go/receiver.go via MapError; wrapping here would
-// double-classify and break errors.Is sentinel matching.
+// acl_inbound.go via MapError; wrapping here would double-classify
+// and break errors.Is sentinel matching.
 type sessionReceiverAdapter struct {
 	inner *azservicebus.SessionReceiver
 }
@@ -105,23 +107,133 @@ type ConnectionConfig struct {
 	InsecureSkipVerify bool
 }
 
-// buildClient creates an azservicebus.Client from the given connection
-// configuration. It supports connection-string auth, managed identity,
-// client-secret credentials, and the default Azure credential chain.
-// rawNewAzClient constructs an *azservicebus.Client from the connection
+// asbReceiverOptions carries the receiver-construction knobs in a
+// domain-shaped form, so callers in receiver.go never need to touch
+// SDK option types.
+type asbReceiverOptions struct {
+	// ReceiveAndDelete switches the receive mode from PeekLock (the
+	// SDK default) to ReceiveAndDelete.
+	ReceiveAndDelete bool
+	// SubQueue selects an entity sub-queue; "" = none, "deadletter"
+	// or "transferdeadletter".
+	SubQueue string
+}
+
+// asbSessionOptions is the session-receiver counterpart to asbReceiverOptions.
+type asbSessionOptions struct {
+	ReceiveAndDelete bool
+}
+
+// asbClientHandle is the unexported façade over *azservicebus.Client.
+// All methods return either domain types or unexported seam interfaces
+// (asbAPI, asbSenderAPI, retryScheduler), so consumers outside this
+// ACL never reference SDK types and never need to import the Azure
+// SDK.
+type asbClientHandle struct {
+	raw *azservicebus.Client
+}
+
+// Close terminates the underlying client connection.
+func (h *asbClientHandle) Close(ctx context.Context) error {
+	if h == nil || h.raw == nil {
+		return nil
+	}
+	if err := h.raw.Close(ctx); err != nil {
+		return fmt.Errorf("servicebus: close client: %w", err)
+	}
+	return nil
+}
+
+// NewSender returns the dual sender/scheduler handle. The underlying
+// *azservicebus.Sender satisfies both asbSenderAPI and retryScheduler;
+// returning a single value lets callers store it in either field.
+func (h *asbClientHandle) NewSender(entity string) (*azservicebus.Sender, error) {
+	s, err := h.raw.NewSender(entity, nil)
+	if err != nil {
+		return nil, fmt.Errorf("servicebus: new sender for %q: %w", entity, err)
+	}
+	return s, nil
+}
+
+// NewReceiverForQueue creates a queue receiver. opts maps onto the
+// SDK's ReceiverOptions internally.
+func (h *asbClientHandle) NewReceiverForQueue(queue string, opts asbReceiverOptions) (asbAPI, error) {
+	r, err := h.raw.NewReceiverForQueue(queue, buildReceiverOptions(opts))
+	if err != nil {
+		return nil, fmt.Errorf("servicebus: new receiver for queue %q: %w", queue, err)
+	}
+	return r, nil
+}
+
+// NewReceiverForSubscription creates a topic-subscription receiver.
+func (h *asbClientHandle) NewReceiverForSubscription(topic, subscription string, opts asbReceiverOptions) (asbAPI, error) {
+	r, err := h.raw.NewReceiverForSubscription(topic, subscription, buildReceiverOptions(opts))
+	if err != nil {
+		return nil, fmt.Errorf("servicebus: new receiver for subscription %q/%q: %w", topic, subscription, err)
+	}
+	return r, nil
+}
+
+// AcceptSessionForQueue accepts a queue session and wraps the resulting
+// *azservicebus.SessionReceiver as a sessionReceiverAdapter so callers
+// see only the asbAPI shape.
+func (h *asbClientHandle) AcceptSessionForQueue(ctx context.Context, queue, sessionID string, opts asbSessionOptions) (asbAPI, error) {
+	sr, err := h.raw.AcceptSessionForQueue(ctx, queue, sessionID, buildSessionOptions(opts))
+	if err != nil {
+		return nil, fmt.Errorf("servicebus: accept session %q on queue %q: %w", sessionID, queue, err)
+	}
+	return &sessionReceiverAdapter{inner: sr}, nil
+}
+
+// AcceptSessionForSubscription accepts a topic-subscription session.
+func (h *asbClientHandle) AcceptSessionForSubscription(ctx context.Context, topic, subscription, sessionID string, opts asbSessionOptions) (asbAPI, error) {
+	sr, err := h.raw.AcceptSessionForSubscription(ctx, topic, subscription, sessionID, buildSessionOptions(opts))
+	if err != nil {
+		return nil, fmt.Errorf("servicebus: accept session %q on subscription %q/%q: %w", sessionID, topic, subscription, err)
+	}
+	return &sessionReceiverAdapter{inner: sr}, nil
+}
+
+func buildReceiverOptions(o asbReceiverOptions) *azservicebus.ReceiverOptions {
+	out := &azservicebus.ReceiverOptions{}
+	if o.ReceiveAndDelete {
+		out.ReceiveMode = azservicebus.ReceiveModeReceiveAndDelete
+	}
+	switch o.SubQueue {
+	case "deadletter":
+		out.SubQueue = azservicebus.SubQueueDeadLetter
+	case "transferdeadletter":
+		out.SubQueue = azservicebus.SubQueueTransfer
+	}
+	return out
+}
+
+func buildSessionOptions(o asbSessionOptions) *azservicebus.SessionReceiverOptions {
+	out := &azservicebus.SessionReceiverOptions{}
+	if o.ReceiveAndDelete {
+		out.ReceiveMode = azservicebus.ReceiveModeReceiveAndDelete
+	}
+	return out
+}
+
+// rawNewAzClient constructs an *asbClientHandle from the connection
 // configuration without any domain-error classification. Callers wrap
 // the returned error with the sentinel that matches their lifecycle
 // phase (cold-init: ErrUnavailable; credential rotation:
 // ErrTemporaryAuthFailure) — keeping the chain free of double
 // classification so errors.Is matches exactly one domain sentinel.
-func rawNewAzClient(cfg ConnectionConfig) (*azservicebus.Client, error) {
+func rawNewAzClient(cfg ConnectionConfig) (*asbClientHandle, error) {
 	opts, err := buildClientOptions(cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	if cfg.ConnectionString != "" {
-		return azservicebus.NewClientFromConnectionString(cfg.ConnectionString, opts) //nolint:wrapcheck // raw helper; caller classifies
+		c, err := azservicebus.NewClientFromConnectionString(cfg.ConnectionString, opts)
+		if err != nil {
+			return nil, fmt.Errorf("servicebus: new client from connection string: %w", err)
+		}
+		return &asbClientHandle{raw: c}, nil
 	}
 
 	var cred azcore.TokenCredential
@@ -141,18 +253,22 @@ func rawNewAzClient(cfg ConnectionConfig) (*azservicebus.Client, error) {
 		return nil, fmt.Errorf("servicebus: credential: %w", err)
 	}
 
-	return azservicebus.NewClient(cfg.Namespace, cred, opts) //nolint:wrapcheck // raw helper; caller classifies
+	c, err := azservicebus.NewClient(cfg.Namespace, cred, opts)
+	if err != nil {
+		return nil, fmt.Errorf("servicebus: new client for namespace %q: %w", cfg.Namespace, err)
+	}
+	return &asbClientHandle{raw: c}, nil
 }
 
-// buildClient constructs a Service Bus client for the cold-init code
-// path (Receiver.ensureClient / Sender.ensureClient). It classifies
-// any failure with domain.ErrUnavailable so the runtime treats the
-// pipeline as transiently unavailable and retries.
+// buildClient constructs a Service Bus client handle for the cold-init
+// code path (Receiver.ensureClient / Sender.ensureClient). It
+// classifies any failure with domain.ErrUnavailable so the runtime
+// treats the pipeline as transiently unavailable and retries.
 //
 // For the credential-rotation path (ApplyCredentials), use
 // rawNewAzClient directly and classify with
 // domain.ErrTemporaryAuthFailure.
-func buildClient(cfg ConnectionConfig) (*azservicebus.Client, error) {
+func buildClient(cfg ConnectionConfig) (*asbClientHandle, error) {
 	client, err := rawNewAzClient(cfg)
 	if err != nil {
 		return nil, domain.ErrUnavailable.Wrap(err)

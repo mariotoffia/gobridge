@@ -5,8 +5,16 @@ import (
 	"fmt"
 
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+
 	"github.com/mariotoffia/gobridge/domain"
 )
+
+// SSM SDK error classification.
+//
+// This file is the error-classification half of the SSM ACL: it owns
+// the only references to ssmtypes for error sentinel checks and is
+// the single point that maps AWS SDK errors to domain.BridgeError
+// kinds.
 
 func mapAWSError(err error) error {
 	if err == nil {

@@ -14,8 +14,82 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+// messageToHeaders maps an incoming Service Bus message's system
+// properties and application properties to an envelope header map.
+// Reserved x-bridge.* headers carried in ApplicationProperties are
+// stripped to prevent injection.
+func messageToHeaders(msg *azservicebus.ReceivedMessage) map[string]any {
+	h := make(map[string]any, len(msg.ApplicationProperties)+11)
+
+	h[asbHeaderMessageID] = msg.MessageID
+	h[asbHeaderDeliveryCount] = msg.DeliveryCount
+
+	if msg.CorrelationID != nil {
+		h[asbHeaderCorrelationID] = *msg.CorrelationID
+	}
+	if msg.SessionID != nil {
+		h[asbHeaderSessionID] = *msg.SessionID
+	}
+	if msg.ContentType != nil {
+		h[asbHeaderContentType] = *msg.ContentType
+	}
+	if msg.Subject != nil {
+		h[asbHeaderSubject] = *msg.Subject
+	}
+	if msg.To != nil {
+		h[asbHeaderTo] = *msg.To
+	}
+	if msg.ReplyTo != nil {
+		h[asbHeaderReplyTo] = *msg.ReplyTo
+	}
+	if msg.TimeToLive != nil {
+		h[asbHeaderTTL] = *msg.TimeToLive
+	}
+	if msg.EnqueuedTime != nil {
+		h[asbHeaderEnqueuedTime] = *msg.EnqueuedTime
+	}
+	if msg.SequenceNumber != nil {
+		h[asbHeaderSequenceNum] = *msg.SequenceNumber
+	}
+
+	for k, v := range msg.ApplicationProperties {
+		if domain.IsReservedHeader(k) {
+			continue
+		}
+		h[k] = v
+	}
+
+	return h
+}
+
+// receivedToEnvelope translates an inbound *azservicebus.ReceivedMessage
+// to a fresh domain.Envelope using the supplied default subject.
+func receivedToEnvelope(msg *azservicebus.ReceivedMessage, defaultSubject string, clk clock.Clock) *domain.Envelope {
+	if clk == nil {
+		clk = clock.System
+	}
+	subject := defaultSubject
+	if msg.Subject != nil {
+		subject = *msg.Subject
+	}
+	env := &domain.Envelope{
+		ID:        msg.MessageID,
+		Subject:   subject,
+		Payload:   msg.Body,
+		Headers:   messageToHeaders(msg),
+		CreatedAt: clk.Now(),
+	}
+	if msg.ExpiresAt != nil {
+		env.ExpiresAt = *msg.ExpiresAt
+	}
+	return env
+}
+
 var _ ports.Delivery = (*asbDelivery)(nil)
 
+// asbDelivery wraps an inbound Azure Service Bus message and implements
+// ports.Delivery. Settlement (Ack/Retry/Extend) is forwarded to the
+// asbAPI seam; SDK-typed plumbing stays local to this ACL file.
 type asbDelivery struct {
 	env       *domain.Envelope
 	client    asbAPI
@@ -127,34 +201,7 @@ func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 			)
 		}
 
-		newMsg := &azservicebus.Message{
-			Body:    d.msg.Body,
-			Subject: d.msg.Subject,
-		}
-		if d.msg.MessageID != "" {
-			newMsg.MessageID = &d.msg.MessageID
-		}
-		if d.msg.SessionID != nil {
-			newMsg.SessionID = d.msg.SessionID
-		}
-		if d.msg.ContentType != nil {
-			newMsg.ContentType = d.msg.ContentType
-		}
-		if d.msg.CorrelationID != nil {
-			newMsg.CorrelationID = d.msg.CorrelationID
-		}
-		if len(d.msg.ApplicationProperties) > 0 {
-			newMsg.ApplicationProperties = d.msg.ApplicationProperties
-		}
-		if d.msg.ReplyTo != nil {
-			newMsg.ReplyTo = d.msg.ReplyTo
-		}
-		if d.msg.To != nil {
-			newMsg.To = d.msg.To
-		}
-		if d.msg.TimeToLive != nil {
-			newMsg.TimeToLive = d.msg.TimeToLive
-		}
+		newMsg := buildRetryMessage(d.msg)
 
 		enqueueAt := d.clk.Now().Add(after)
 		schedStart := d.clk.Now()
@@ -262,4 +309,58 @@ func (d *asbDelivery) autoExtendLoop(ctx context.Context, interval time.Duration
 			}
 		}
 	}
+}
+
+// receiveAndConvert performs a single ReceiveMessages call against the
+// asbAPI seam, then converts each SDK message into an asbDelivery. It
+// is the bridge between the SDK-typed pump and the SDK-free Receiver
+// poll loop.
+func (r *Receiver) receiveAndConvert(ctx context.Context) ([]ports.Delivery, error) {
+	msgs, err := r.client.ReceiveMessages(ctx, r.cfg.MaxMessages, nil)
+	if err != nil {
+		return nil, err
+	}
+	if logging.TraceEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelTrace, "servicebus: received",
+			"entity", r.entityName(),
+			"count", len(msgs),
+		)
+	}
+	out := make([]ports.Delivery, 0, len(msgs))
+	for _, msg := range msgs {
+		out = append(out, r.toDelivery(ctx, msg))
+	}
+	return out, nil
+}
+
+// toDelivery converts a single received SDK message into an
+// asbDelivery, attaching the configured logger, metrics, and clock.
+func (r *Receiver) toDelivery(ctx context.Context, msg *azservicebus.ReceivedMessage) *asbDelivery {
+	defaultSubject := r.cfg.QueueName
+	if defaultSubject == "" {
+		defaultSubject = r.cfg.TopicName
+	}
+	env := receivedToEnvelope(msg, defaultSubject, r.clock())
+
+	if logging.TraceEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelTrace, "servicebus: converting",
+			"entity", r.entityName(),
+			"message_id", msg.MessageID,
+			"body_len", len(msg.Body),
+		)
+	}
+
+	return newDelivery(
+		ctx,
+		env,
+		r.client,
+		r.scheduler,
+		msg,
+		r.cfg.LockDuration,
+		r.cfg.autoExtendEnabled(),
+		r.logger,
+		r.metrics,
+		r.clock(),
+		r.cfg.MinAutoExtendInterval,
+	)
 }

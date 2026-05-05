@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	amqp "github.com/rabbitmq/amqp091-go"
-
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
@@ -305,7 +303,7 @@ func TestIntegration_ConsumerTag_ReuseAfterReconnect(t *testing.T) {
 	if conn == nil {
 		t.Fatal("conn nil before drop")
 	}
-	_ = conn.(*amqp.Connection).Close()
+	_ = conn.Close()
 
 	wait.Until(t, 15*time.Second, "session reconnected", func() bool {
 		return sess.Health(ctx).Connected
