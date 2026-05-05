@@ -1,4 +1,41 @@
-# FIX-TODO — Adapter return-type cleanup (gates `ireturn`)
+# FIX-TODO — Adapter return-type cleanup (gates `ireturn`) - DONE
+
+**Status:** DONE 2026-05-05 — `ireturn` is enabled in `.golangci.yml`
+with a curated allow-list, and `make lint` is green across the
+repository.
+
+The allow-list is grouped by rationale (six categories documented
+inline in `.golangci.yml`):
+
+1. ireturn standard tokens (`error`, `empty`, `anon`, `stdlib`,
+   `generic`).
+2. Transport / store seams returned by `ports.TransportFactory` and
+   `ports.StoreFactory` implementations
+   (`Receiver`, `Sender`, `Session`, `LeaseStore`, `OutboxStore`,
+   `DLQStore`).
+3. Runtime accessors (`RouteLocator`).
+4. Domain / port polymorphic seams: `domain.DrainStrategy`,
+   `domain/clock.{Clock,Timer,Ticker}`, `ports.DestinationResolver`,
+   `ports.CredentialRepository`, `ports.Loader`, `ports.Watcher`,
+   `ports.Span`, `ports.Tracer`.
+5. Adapter-internal mock seams (lower-cased package-private
+   interfaces declared solely so unit tests can substitute the real
+   client): `amqp091.amqpConnection`, `amqp10.amqpConn`,
+   `sqs.sqsAPI`, `bootstrap.parameterResolver`.
+6. Third-party SDK interfaces we cannot avoid returning: OpenTelemetry
+   metric types (`Int64Counter`, `Float64Gauge`, `Float64Histogram`,
+   `metricdata.Aggregation`) and AWS CDK construct types (`Stack`,
+   `IFileSystem`, `AccessPoint`, `SecurityGroup`, `FargateService`,
+   `FargateTaskDefinition`).
+
+`_test.go` files are excluded from `ireturn` via a path rule —
+test-local fakes that satisfy `ports.*` interfaces are inherently
+interface-returning by construction; `ireturn` is a production rule.
+
+The constructor sweep originally described in this plan was already
+complete: every adapter `NewX` constructor returns a concrete struct,
+and only the polymorphic factory seam returns port-typed values. No
+source rewrites were required.
 
 > Carve-out from the architectural TODOs that survived the
 > April 2026 sprint. Companion files: `FIX-004.md`, `FIX-006.md`,

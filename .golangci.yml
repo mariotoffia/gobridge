@@ -37,11 +37,85 @@ linters:
     - interfacebloat
     - revive
     - wrapcheck
-    # TODO(FIX-TODO-return-types.md): enable once exported functions
-    # stop returning unnamed interfaces in adapter code.
-    # - ireturn
+    - ireturn
 
   settings:
+    # ireturn enforces "Accept Interfaces, Return Concrete Types".
+    #
+    # The allow-list below is intentionally curated and grouped by
+    # rationale. New entries require an architectural review — DO NOT
+    # extend without understanding which category the new entry
+    # belongs to.
+    #
+    # Categories:
+    #   1. ireturn standard tokens (error, empty, anon, stdlib, generic).
+    #   2. Transport / store seams returned by ports.TransportFactory
+    #      and ports.StoreFactory implementations. These factory
+    #      methods are the canonical polymorphic seam.
+    #   3. Runtime accessors that expose a configured adapter behind
+    #      its port (the runtime does not know the concrete type).
+    #   4. domain.* and ports.* interfaces that are themselves the
+    #      polymorphic seam (resolvers, strategies, repositories,
+    #      tracer/span, clock primitives).
+    #   5. Adapter-internal mock seams (lower-cased interfaces declared
+    #      inside the adapter package solely so unit tests can
+    #      substitute the real client). These never leave the package.
+    #   6. Third-party SDK interface types (OpenTelemetry metrics,
+    #      AWS CDK construct types) — we cannot return concrete
+    #      versions of these because the upstream API hands back
+    #      interfaces.
+    ireturn:
+      allow:
+        # 1. Standard tokens.
+        - error
+        - empty
+        - anon
+        - stdlib
+        - generic
+
+        # 2. Transport / store seams (TransportFactory / StoreFactory).
+        - github.com/mariotoffia/gobridge/ports.Receiver
+        - github.com/mariotoffia/gobridge/ports.Sender
+        - github.com/mariotoffia/gobridge/ports.Session
+        - github.com/mariotoffia/gobridge/ports.LeaseStore
+        - github.com/mariotoffia/gobridge/ports.OutboxStore
+        - github.com/mariotoffia/gobridge/ports.DLQStore
+
+        # 3. Runtime accessors.
+        - github.com/mariotoffia/gobridge/ports.RouteLocator
+
+        # 4. Domain / port polymorphic seams.
+        - github.com/mariotoffia/gobridge/domain.DrainStrategy
+        - github.com/mariotoffia/gobridge/domain/clock.Clock
+        - github.com/mariotoffia/gobridge/domain/clock.Timer
+        - github.com/mariotoffia/gobridge/domain/clock.Ticker
+        - github.com/mariotoffia/gobridge/ports.DestinationResolver
+        - github.com/mariotoffia/gobridge/ports.CredentialRepository
+        - github.com/mariotoffia/gobridge/ports.Loader
+        - github.com/mariotoffia/gobridge/ports.Watcher
+        - github.com/mariotoffia/gobridge/ports.Span
+        - github.com/mariotoffia/gobridge/ports.Tracer
+
+        # 5. Adapter-internal mock seams (package-private; injected
+        #    in tests). All begin with a lower-cased letter so they
+        #    cannot be imported.
+        - github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091.amqpConnection
+        - github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10.amqpConn
+        - github.com/mariotoffia/gobridge/adapters/aws/transport/sqs.sqsAPI
+        - github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/bootstrap.parameterResolver
+
+        # 6. Third-party SDK interfaces we cannot avoid returning.
+        - go.opentelemetry.io/otel/metric.Int64Counter
+        - go.opentelemetry.io/otel/metric.Float64Gauge
+        - go.opentelemetry.io/otel/metric.Float64Histogram
+        - go.opentelemetry.io/otel/sdk/metric/metricdata.Aggregation
+        - github.com/aws/aws-cdk-go/awscdk/v2.Stack
+        - github.com/aws/aws-cdk-go/awscdk/v2/awsefs.IFileSystem
+        - github.com/aws/aws-cdk-go/awscdk/v2/awsefs.AccessPoint
+        - github.com/aws/aws-cdk-go/awscdk/v2/awsec2.SecurityGroup
+        - github.com/aws/aws-cdk-go/awscdk/v2/awsecs.FargateService
+        - github.com/aws/aws-cdk-go/awscdk/v2/awsecs.FargateTaskDefinition
+
     interfacebloat:
       # Working ISP threshold for ports. The plan target is 5; the
       # current codebase has two ports at 6 (MetricsExporter,
@@ -199,6 +273,12 @@ linters:
       # TODO(FIX-TODO-test-quality.md): drop this exclusion after
       # the test-quality sweep.
       - linters: [errcheck, staticcheck, ineffassign, unused]
+        path: "_test\\.go$"
+      # ireturn: test files (_test.go) routinely declare local fakes
+      # that satisfy ports.* interfaces; the fakes are inherently
+      # interface-returning by construction. ireturn is a production
+      # rule, not a test-style rule.
+      - linters: [ireturn]
         path: "_test\\.go$"
       # forbidigo active exemptions (time.Now allowed in):
       #   - domain/clock/real.go: the Clock implementation itself
