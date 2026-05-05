@@ -41,7 +41,7 @@
     {
       "id": "PHASE3",
       "title": "Migrate `domain/route.go` runtime carriers",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This phase updates Go runtime/domain carrier types and store factory interfaces while preserving typed config flow.",
