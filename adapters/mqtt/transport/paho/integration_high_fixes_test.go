@@ -62,7 +62,7 @@ func TestIntegration_ConcurrentReconcile_NoCorruption(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
+	defer func() { _ = sess.Close(ctx) }()
 
 	select {
 	case <-sess.Events():
@@ -200,7 +200,7 @@ func TestIntegration_ReconnectTimeout_Configurable(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
+	defer func() { _ = sess.Close(ctx) }()
 
 	select {
 	case ev := <-sess.Events():
@@ -245,7 +245,7 @@ func TestIntegration_ReconnectTimeout_ZeroUsesDefault(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
+	defer func() { _ = sess.Close(ctx) }()
 
 	select {
 	case <-sess.Events():

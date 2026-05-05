@@ -336,7 +336,7 @@ func TestRes_BrokerOutage_ReconnectResubscribesAndDelivers(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(context.Background())
+	defer func() { _ = sess.Close(context.Background()) }()
 
 	drainEvents(sess, 1, 3*time.Second)
 

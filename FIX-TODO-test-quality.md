@@ -143,3 +143,27 @@ fails the gate.
   `FIX-TODO-error-wrapping.md`, `FIX-TODO-return-types.md`.
 - The exclusion lives in `.golangci.yml` near the bottom of
   `exclusions.rules`.
+
+## Progress (work-tasklist)
+
+- **T001 — Clean up adapters/mqtt/transport/paho test-quality (~11 issues) — DONE (2026-05-05)**
+  Cleaned up 11 test-quality lints in `adapters/mqtt/transport/paho`:
+  errcheck on `defer Close()` / `t.Cleanup(... Close(...))` wrapped as
+  `_ = ...`; QF1006 lifted-loop close in
+  `TestAnaIntg_MultipleReceivers_SameTopic_AllReceive` rewritten via DeMorgan
+  (preserves inner deadline/tick semantics); two single-case `select { case
+  <-time.After(d): }` rewrites to bare `<-time.After(d)` (no `ctx`/`done`
+  arms — semantically identical); SA9003 empty `errors.Is(err,
+  context.Canceled) {}` removed (its documentation comment preserved as a
+  top-level comment); orphaned `errors` import dropped; one-line bump in
+  `audit/test-timing-allowlist.txt` (241 → 240) tracking the removed import.
+  `make lint` and `make test` green. Reviewed by `thiink-test-reviewer`
+  (APPROVED first pass); codex unavailable.
+- T002 — Clean up adapters/aws/store/dynamodb* test-quality (~5 issues) — pending
+- T003 — Clean up adapters/native/credentials/file test-quality (~1 issue) — pending
+- T004 — Clean up adapters/native/store/sqlite* test-quality (~3 issues) — pending
+- T005 — Clean up testutil/{asblocal,localstack,rabbitmqlocal,s3local} test-quality (~10 issues) — pending
+- T006 — Clean up runtime/ test-quality (~5 errcheck) — pending
+- T007 — Clean up config/ test-quality (~3 issues) — pending
+- T008 — Clean up httpapi/ test-quality (~5 issues) — pending
+- T009 — Phase 3: drop the _test.go exclusion from .golangci.yml and verify make lint green — pending
