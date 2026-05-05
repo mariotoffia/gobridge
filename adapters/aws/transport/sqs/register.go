@@ -22,4 +22,3 @@ func init() {
 	ports.DefaultRegistry.Register("sqs", dec)
 	ports.DefaultRegistry.Register("aws.sqs", dec)
 }
-

@@ -48,13 +48,7 @@ func senderSpecFrom(def ports.SenderDef) ports.SenderSpec {
 	}
 }
 
-// storeSpecFrom converts a ports.StoreConfig to a ports.StoreSpec. The
-// bridge passes the typed PluginConfig through; StoreFactory
-// implementations type-assert to their concrete config (PHASE3 will
-// drop the legacy Options carrier inside StoreSpec entirely).
-func storeSpecFrom(cfg ports.StoreConfig) ports.StoreSpec {
-	return ports.StoreSpec{
-		Type:   cfg.Type,
-		Config: cfg.Config,
-	}
-}
+// Package bridge specs.go intentionally omits a StoreSpec converter:
+// post-PHASE3 the bridge passes the typed PluginConfig from
+// ports.StoreConfig directly to the StoreFactory and threads outbox
+// runtime tuning (stale claim duration) through ports.OutboxRuntimeOptions.

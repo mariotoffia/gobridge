@@ -4,9 +4,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
+
+// rawOutboxOptions wraps a map[string]any as a ports.RawConfig using
+// the canonical config.NewRawConfig implementation so tests exercise
+// the same decode path as production.
+func rawOutboxOptions(m map[string]any) ports.RawConfig {
+	return config.NewRawConfig(m)
+}
 
 func computeStaleClaimBuffer(maxStepDownGrace time.Duration) time.Duration {
 	buf := 2 * maxStepDownGrace
@@ -16,10 +24,10 @@ func computeStaleClaimBuffer(maxStepDownGrace time.Duration) time.Duration {
 	return buf
 }
 
-// TestInjectStaleClaimDuration_DefaultDerivation validates the default
+// TestOutboxRuntimeOptions_DefaultDerivation validates the default
 // derivation: one route with default StepDownGrace (15s) produces
 // stale_claim_duration = 30s.
-func TestInjectStaleClaimDuration_DefaultDerivation(t *testing.T) {
+func TestOutboxRuntimeOptions_DefaultDerivation(t *testing.T) {
 	b := newTestBuilder(&ports.BridgeConfig{
 		Stores: ports.StoresConfig{
 			Outbox: &ports.StoreConfig{Type: "memory"},
@@ -33,25 +41,21 @@ func TestInjectStaleClaimDuration_DefaultDerivation(t *testing.T) {
 		}},
 	})
 
-	sc := &ports.StoreSpec{Type: "memory"}
-	if err := b.injectStaleClaimDuration(sc); err != nil {
-		t.Fatalf("injectStaleClaimDuration: %v", err)
-	}
-
-	got, ok := sc.Options["stale_claim_duration"].(time.Duration)
-	if !ok {
-		t.Fatalf("expected time.Duration, got %T", sc.Options["stale_claim_duration"])
+	sc := &ports.StoreConfig{Type: "memory"}
+	got, err := b.outboxRuntimeOptions(sc)
+	if err != nil {
+		t.Fatalf("outboxRuntimeOptions: %v", err)
 	}
 	defaultGrace := runtime.DefaultSessionConfig("", true).StepDownGrace
 	want := defaultGrace + computeStaleClaimBuffer(defaultGrace)
-	if got != want {
-		t.Errorf("stale_claim_duration: got %v, want %v", got, want)
+	if got.StaleClaimDuration != want {
+		t.Errorf("StaleClaimDuration: got %v, want %v", got.StaleClaimDuration, want)
 	}
 }
 
-// TestInjectStaleClaimDuration_MaxAcrossRoutes validates that the
+// TestOutboxRuntimeOptions_MaxAcrossRoutes validates that the
 // derivation takes the maximum StepDownGrace across all routes.
-func TestInjectStaleClaimDuration_MaxAcrossRoutes(t *testing.T) {
+func TestOutboxRuntimeOptions_MaxAcrossRoutes(t *testing.T) {
 	b := newTestBuilder(&ports.BridgeConfig{
 		Routes: []ports.RouteDef{
 			{
@@ -73,24 +77,21 @@ func TestInjectStaleClaimDuration_MaxAcrossRoutes(t *testing.T) {
 		},
 	})
 
-	sc := &ports.StoreSpec{Type: "memory"}
-	if err := b.injectStaleClaimDuration(sc); err != nil {
-		t.Fatalf("injectStaleClaimDuration: %v", err)
-	}
-
-	got, ok := sc.Options["stale_claim_duration"].(time.Duration)
-	if !ok {
-		t.Fatalf("expected time.Duration, got %T", sc.Options["stale_claim_duration"])
+	sc := &ports.StoreConfig{Type: "memory"}
+	got, err := b.outboxRuntimeOptions(sc)
+	if err != nil {
+		t.Fatalf("outboxRuntimeOptions: %v", err)
 	}
 	wantMax := 45*time.Second + computeStaleClaimBuffer(45*time.Second)
-	if got != wantMax {
-		t.Errorf("stale_claim_duration: got %v, want %v", got, wantMax)
+	if got.StaleClaimDuration != wantMax {
+		t.Errorf("StaleClaimDuration: got %v, want %v", got.StaleClaimDuration, wantMax)
 	}
 }
 
-// TestInjectStaleClaimDuration_ExplicitSkipped validates that an
-// explicitly set stale_claim_duration is not overwritten.
-func TestInjectStaleClaimDuration_ExplicitSkipped(t *testing.T) {
+// TestOutboxRuntimeOptions_ExplicitOverride validates that an
+// explicit stale_claim_duration in the outbox raw options is
+// honored verbatim (no derivation).
+func TestOutboxRuntimeOptions_ExplicitOverride(t *testing.T) {
 	b := newTestBuilder(&ports.BridgeConfig{
 		Routes: []ports.RouteDef{{
 			ID: "r1",
@@ -101,23 +102,21 @@ func TestInjectStaleClaimDuration_ExplicitSkipped(t *testing.T) {
 		}},
 	})
 
-	sc := &ports.StoreSpec{
-		Type:    "memory",
-		Options: map[string]any{"stale_claim_duration": "2m"},
-	}
-	if err := b.injectStaleClaimDuration(sc); err != nil {
-		t.Fatalf("injectStaleClaimDuration: %v", err)
-	}
+	sc := &ports.StoreConfig{Type: "memory"}
+	sc.SetDecoded(nil, rawOutboxOptions(map[string]any{"stale_claim_duration": "2m"}))
 
-	got := sc.Options["stale_claim_duration"]
-	if got != "2m" {
-		t.Errorf("expected explicit value preserved, got %v", got)
+	got, err := b.outboxRuntimeOptions(sc)
+	if err != nil {
+		t.Fatalf("outboxRuntimeOptions: %v", err)
+	}
+	if got.StaleClaimDuration != 2*time.Minute {
+		t.Errorf("expected explicit override 2m preserved, got %v", got.StaleClaimDuration)
 	}
 }
 
-// TestInjectStaleClaimDuration_NoRouteSession validates derivation
-// when all routes have nil Session blocks.
-func TestInjectStaleClaimDuration_NoRouteSession(t *testing.T) {
+// TestOutboxRuntimeOptions_NoRouteSession validates derivation when
+// all routes have nil Session blocks.
+func TestOutboxRuntimeOptions_NoRouteSession(t *testing.T) {
 	b := newTestBuilder(&ports.BridgeConfig{
 		Routes: []ports.RouteDef{
 			{ID: "r1"},
@@ -125,32 +124,21 @@ func TestInjectStaleClaimDuration_NoRouteSession(t *testing.T) {
 		},
 	})
 
-	sc := &ports.StoreSpec{Type: "memory"}
-	if err := b.injectStaleClaimDuration(sc); err != nil {
-		t.Fatalf("injectStaleClaimDuration: %v", err)
-	}
-
-	got, ok := sc.Options["stale_claim_duration"].(time.Duration)
-	if !ok {
-		t.Fatalf("expected time.Duration, got %T", sc.Options["stale_claim_duration"])
+	sc := &ports.StoreConfig{Type: "memory"}
+	got, err := b.outboxRuntimeOptions(sc)
+	if err != nil {
+		t.Fatalf("outboxRuntimeOptions: %v", err)
 	}
 	defaultGrace2 := runtime.DefaultSessionConfig("", true).StepDownGrace
 	want2 := defaultGrace2 + computeStaleClaimBuffer(defaultGrace2)
-	if got != want2 {
-		t.Errorf("stale_claim_duration: got %v, want %v", got, want2)
+	if got.StaleClaimDuration != want2 {
+		t.Errorf("StaleClaimDuration: got %v, want %v", got.StaleClaimDuration, want2)
 	}
 }
 
-// TestInjectStaleClaimDuration_DoesNotMutateOriginalOptions validates
-// that the method does not mutate the original Options map, allowing
-// safe re-derivation on subsequent Build() calls.
-func TestInjectStaleClaimDuration_DoesNotMutateOriginalOptions(t *testing.T) {
-	original := map[string]any{"table_name": "my-outbox"}
-	sc := &ports.StoreSpec{
-		Type:    "memory",
-		Options: original,
-	}
-
+// TestOutboxRuntimeOptions_InvalidExplicitOverride validates that an
+// unparseable stale_claim_duration string returns an error.
+func TestOutboxRuntimeOptions_InvalidExplicitOverride(t *testing.T) {
 	b := newTestBuilder(&ports.BridgeConfig{
 		Routes: []ports.RouteDef{{
 			ID:      "r1",
@@ -158,16 +146,11 @@ func TestInjectStaleClaimDuration_DoesNotMutateOriginalOptions(t *testing.T) {
 		}},
 	})
 
-	if err := b.injectStaleClaimDuration(sc); err != nil {
-		t.Fatalf("injectStaleClaimDuration: %v", err)
-	}
+	sc := &ports.StoreConfig{Type: "memory"}
+	sc.SetDecoded(nil, rawOutboxOptions(map[string]any{"stale_claim_duration": "not-a-duration"}))
 
-	if _, exists := original["stale_claim_duration"]; exists {
-		t.Error("original options map was mutated — stale_claim_duration should not be in the original")
-	}
-
-	if _, exists := sc.Options["stale_claim_duration"]; !exists {
-		t.Error("new options map should contain stale_claim_duration")
+	if _, err := b.outboxRuntimeOptions(sc); err == nil {
+		t.Fatal("expected error for invalid duration string")
 	}
 }
 

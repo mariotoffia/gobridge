@@ -45,23 +45,25 @@ type DLQStore interface {
 	Purge(ctx context.Context, before time.Time) (int, error)
 }
 
-// StoreSpec carries the generic shape of a store configuration as
-// produced by the bridge from ports.StoreConfig. The typed plugin
-// config (post-stage-2 decoding) is in Config; PHASE3 will remove the
-// legacy Options carrier entirely.
-type StoreSpec struct {
-	Type    string
-	Config  PluginConfig
-	Options map[string]any
+// OutboxRuntimeOptions carries runtime tuning knobs the bridge
+// derives from the blueprint and threads through to outbox factories
+// without polluting the typed plugin config. StaleClaimDuration is
+// derived from the maximum session step-down grace and bounds how
+// long a claimed-but-not-completed outbox record waits before
+// another owner can reclaim it.
+type OutboxRuntimeOptions struct {
+	StaleClaimDuration time.Duration
 }
 
 // StoreFactory creates backing store instances (lease, outbox, DLQ)
-// from a generic StoreSpec. A factory should return (nil, nil) for a
-// store role it does not handle.
+// from a typed PluginConfig. A factory should return (nil, nil) for
+// a store role it does not handle. Implementations type-assert cfg
+// to their concrete config; cfg may be nil when the user supplied no
+// options block in the blueprint.
 type StoreFactory interface {
-	NewLeaseStore(ctx context.Context, spec StoreSpec) (LeaseStore, error)
-	NewOutboxStore(ctx context.Context, spec StoreSpec) (OutboxStore, error)
-	NewDLQStore(ctx context.Context, spec StoreSpec) (DLQStore, error)
+	NewLeaseStore(ctx context.Context, cfg PluginConfig) (LeaseStore, error)
+	NewOutboxStore(ctx context.Context, cfg PluginConfig, runtime OutboxRuntimeOptions) (OutboxStore, error)
+	NewDLQStore(ctx context.Context, cfg PluginConfig) (DLQStore, error)
 }
 
 // DistributedStoreFactory is an optional interface that StoreFactory

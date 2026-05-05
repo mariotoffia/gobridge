@@ -39,7 +39,7 @@ func (r *RouteRunner) resolvePlans(ctx context.Context, env *domain.Envelope) ([
 		return []domain.DispatchPlan{{
 			BindingID: b.ID,
 			Address:   addr,
-			Headers:   copyHeaders(b.Options),
+			Headers:   copyHeaders(b.Headers),
 		}}, nil
 	}
 	return []domain.DispatchPlan{{BindingID: r.routeID}}, nil

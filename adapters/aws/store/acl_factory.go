@@ -3,7 +3,6 @@ package awsstore
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
@@ -32,43 +31,64 @@ func NewDynamoDBStoreFactory(client *dynamodb.Client) *DynamoDBStoreFactory {
 // IsDistributed marks DynamoDB stores as cross-process coordination capable.
 func (f *DynamoDBStoreFactory) IsDistributed() bool { return true }
 
-// NewLeaseStore creates a DynamoDB-backed lease store from the spec options.
-func (f *DynamoDBStoreFactory) NewLeaseStore(_ context.Context, spec ports.StoreSpec) (ports.LeaseStore, error) {
+// NewLeaseStore creates a DynamoDB-backed lease store from the typed config.
+func (f *DynamoDBStoreFactory) NewLeaseStore(_ context.Context, cfg ports.PluginConfig) (ports.LeaseStore, error) {
+	dc, err := dynamoDBConfigFromOrZero(cfg)
+	if err != nil {
+		return nil, err
+	}
 	var opts []dynamodblease.Option
-	if name, ok := spec.Options["table_name"].(string); ok {
-		opts = append(opts, dynamodblease.WithTableName(name))
+	if dc.TableName != "" {
+		opts = append(opts, dynamodblease.WithTableName(dc.TableName))
 	}
 	return dynamodblease.NewStore(f.client, opts...), nil
 }
 
-// NewOutboxStore creates a DynamoDB-backed outbox store from the spec options.
-func (f *DynamoDBStoreFactory) NewOutboxStore(_ context.Context, spec ports.StoreSpec) (ports.OutboxStore, error) {
-	var opts []dynamodboutbox.Option
-	if name, ok := spec.Options["table_name"].(string); ok {
-		opts = append(opts, dynamodboutbox.WithTableName(name))
+// NewOutboxStore creates a DynamoDB-backed outbox store from the typed config
+// and runtime tuning options.
+func (f *DynamoDBStoreFactory) NewOutboxStore(_ context.Context, cfg ports.PluginConfig, runtime ports.OutboxRuntimeOptions) (ports.OutboxStore, error) {
+	dc, err := dynamoDBConfigFromOrZero(cfg)
+	if err != nil {
+		return nil, err
 	}
-	if raw, ok := spec.Options["stale_claim_duration"]; ok {
-		switch v := raw.(type) {
-		case time.Duration:
-			opts = append(opts, dynamodboutbox.WithStaleClaimDuration(v))
-		case string:
-			d, err := time.ParseDuration(v)
-			if err != nil {
-				return nil, fmt.Errorf("dynamodboutbox: invalid stale_claim_duration %q: %w", v, err)
-			}
-			opts = append(opts, dynamodboutbox.WithStaleClaimDuration(d))
-		default:
-			return nil, fmt.Errorf("dynamodboutbox: stale_claim_duration must be a duration string or time.Duration, got %T", raw)
-		}
+	var opts []dynamodboutbox.Option
+	if dc.TableName != "" {
+		opts = append(opts, dynamodboutbox.WithTableName(dc.TableName))
+	}
+	if runtime.StaleClaimDuration > 0 {
+		opts = append(opts, dynamodboutbox.WithStaleClaimDuration(runtime.StaleClaimDuration))
 	}
 	return dynamodboutbox.NewStore(f.client, opts...), nil
 }
 
-// NewDLQStore creates a DynamoDB-backed DLQ store from the spec options.
-func (f *DynamoDBStoreFactory) NewDLQStore(_ context.Context, spec ports.StoreSpec) (ports.DLQStore, error) {
+// NewDLQStore creates a DynamoDB-backed DLQ store from the typed config.
+func (f *DynamoDBStoreFactory) NewDLQStore(_ context.Context, cfg ports.PluginConfig) (ports.DLQStore, error) {
+	dc, err := dynamoDBConfigFromOrZero(cfg)
+	if err != nil {
+		return nil, err
+	}
 	var opts []dynamodbdlq.Option
-	if name, ok := spec.Options["table_name"].(string); ok {
-		opts = append(opts, dynamodbdlq.WithTableName(name))
+	if dc.TableName != "" {
+		opts = append(opts, dynamodbdlq.WithTableName(dc.TableName))
 	}
 	return dynamodbdlq.NewStore(f.client, opts...), nil
+}
+
+// dynamoDBConfigFromOrZero accepts a *DynamoDBConfig, DynamoDBConfig,
+// or nil. Other concrete types are an error: an unexpected
+// PluginConfig is a programming error in the composition root.
+func dynamoDBConfigFromOrZero(cfg ports.PluginConfig) (DynamoDBConfig, error) {
+	switch v := cfg.(type) {
+	case nil:
+		return DynamoDBConfig{}, nil
+	case *DynamoDBConfig:
+		if v == nil {
+			return DynamoDBConfig{}, nil
+		}
+		return *v, nil
+	case DynamoDBConfig:
+		return v, nil
+	default:
+		return DynamoDBConfig{}, fmt.Errorf("awsstore: DynamoDB store requires a *DynamoDBConfig, got %T", cfg)
+	}
 }

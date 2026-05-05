@@ -26,22 +26,23 @@ func NewMemoryStoreFactory() *MemoryStoreFactory {
 }
 
 // NewLeaseStore creates an in-memory lease store.
-func (f *MemoryStoreFactory) NewLeaseStore(_ context.Context, _ ports.StoreSpec) (ports.LeaseStore, error) {
+func (f *MemoryStoreFactory) NewLeaseStore(_ context.Context, _ ports.PluginConfig) (ports.LeaseStore, error) {
 	return memorylease.NewStore(), nil
 }
 
 // NewOutboxStore creates an in-memory outbox store.
-func (f *MemoryStoreFactory) NewOutboxStore(_ context.Context, _ ports.StoreSpec) (ports.OutboxStore, error) {
+func (f *MemoryStoreFactory) NewOutboxStore(_ context.Context, _ ports.PluginConfig, _ ports.OutboxRuntimeOptions) (ports.OutboxStore, error) {
 	return memoryoutbox.NewStore(), nil
 }
 
 // NewDLQStore creates an in-memory DLQ store.
-func (f *MemoryStoreFactory) NewDLQStore(_ context.Context, _ ports.StoreSpec) (ports.DLQStore, error) {
+func (f *MemoryStoreFactory) NewDLQStore(_ context.Context, _ ports.PluginConfig) (ports.DLQStore, error) {
 	return memorydlq.NewStore(), nil
 }
 
 // SQLiteStoreFactory creates SQLite-backed store instances.
-// Each New*Store method reads spec.Options["path"] as the database file path.
+// The factory expects a *SQLiteConfig (or SQLiteConfig) PluginConfig
+// supplying the database file path.
 type SQLiteStoreFactory struct{}
 
 // NewSQLiteStoreFactory creates a SQLiteStoreFactory.
@@ -50,13 +51,13 @@ func NewSQLiteStoreFactory() *SQLiteStoreFactory {
 }
 
 // NewLeaseStore is not supported on SQLite.
-func (f *SQLiteStoreFactory) NewLeaseStore(_ context.Context, _ ports.StoreSpec) (ports.LeaseStore, error) {
+func (f *SQLiteStoreFactory) NewLeaseStore(_ context.Context, _ ports.PluginConfig) (ports.LeaseStore, error) {
 	return nil, fmt.Errorf("nativestore: SQLite lease store is not implemented; use \"memory\" for single-instance or \"dynamodb\" for clustered deployments")
 }
 
-// NewOutboxStore creates a SQLite outbox store from the spec options.
-func (f *SQLiteStoreFactory) NewOutboxStore(_ context.Context, spec ports.StoreSpec) (ports.OutboxStore, error) {
-	path, err := requiredPath(spec)
+// NewOutboxStore creates a SQLite outbox store from the typed config.
+func (f *SQLiteStoreFactory) NewOutboxStore(_ context.Context, cfg ports.PluginConfig, _ ports.OutboxRuntimeOptions) (ports.OutboxStore, error) {
+	path, err := requiredPath(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -64,9 +65,9 @@ func (f *SQLiteStoreFactory) NewOutboxStore(_ context.Context, spec ports.StoreS
 	return sqliteoutbox.NewStore(path) //nolint:wrapcheck // Rule 2/Q3 decorator pass-through; inner sqliteoutbox.NewStore already classifies via mapError.
 }
 
-// NewDLQStore creates a SQLite DLQ store from the spec options.
-func (f *SQLiteStoreFactory) NewDLQStore(_ context.Context, spec ports.StoreSpec) (ports.DLQStore, error) {
-	path, err := requiredPath(spec)
+// NewDLQStore creates a SQLite DLQ store from the typed config.
+func (f *SQLiteStoreFactory) NewDLQStore(_ context.Context, cfg ports.PluginConfig) (ports.DLQStore, error) {
+	path, err := requiredPath(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -74,19 +75,27 @@ func (f *SQLiteStoreFactory) NewDLQStore(_ context.Context, spec ports.StoreSpec
 	return sqlitedlq.NewStore(path) //nolint:wrapcheck // Rule 2/Q3 decorator pass-through; inner sqlitedlq.NewStore already classifies via mapError.
 }
 
-func requiredPath(spec ports.StoreSpec) (string, error) {
-	if spec.Options == nil {
-		return "", fmt.Errorf("nativestore: missing required option \"path\" in store spec (options is nil)")
-	}
-	v, ok := spec.Options["path"]
+func requiredPath(cfg ports.PluginConfig) (string, error) {
+	sc, ok := sqliteConfigFrom(cfg)
 	if !ok {
-		return "", fmt.Errorf("nativestore: missing required option \"path\" in store spec")
+		return "", fmt.Errorf("nativestore: SQLite store requires a *SQLiteConfig, got %T", cfg)
 	}
-
-	path, ok := v.(string)
-	if !ok {
-		return "", fmt.Errorf("nativestore: option \"path\" must be a string, got %T", v)
+	if sc.Path == "" {
+		return "", fmt.Errorf("nativestore: missing required option \"path\" in SQLite store config")
 	}
+	return sc.Path, nil
+}
 
-	return path, nil
+func sqliteConfigFrom(cfg ports.PluginConfig) (SQLiteConfig, bool) {
+	switch v := cfg.(type) {
+	case *SQLiteConfig:
+		if v == nil {
+			return SQLiteConfig{}, false
+		}
+		return *v, true
+	case SQLiteConfig:
+		return v, true
+	default:
+		return SQLiteConfig{}, false
+	}
 }

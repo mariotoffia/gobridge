@@ -3,7 +3,6 @@ package bridge
 import (
 	"context"
 	"fmt"
-	"maps"
 	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
@@ -104,7 +103,7 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		if !ok {
 			return nil, fmt.Errorf("bridge: no store factory registered for lease type %q", sc.Type)
 		}
-		s, err := sf.NewLeaseStore(ctx, storeSpecFrom(*sc))
+		s, err := sf.NewLeaseStore(ctx, sc.Config)
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create lease store: %w", err)
 		}
@@ -119,11 +118,11 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		if !ok {
 			return nil, fmt.Errorf("bridge: no store factory registered for outbox type %q", sc.Type)
 		}
-		spec := storeSpecFrom(*sc)
-		if err := b.injectStaleClaimDuration(&spec); err != nil {
+		runtimeOpts, err := b.outboxRuntimeOptions(sc)
+		if err != nil {
 			return nil, err
 		}
-		s, err := sf.NewOutboxStore(ctx, spec)
+		s, err := sf.NewOutboxStore(ctx, sc.Config, runtimeOpts)
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create outbox store: %w", err)
 		}
@@ -138,7 +137,7 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		if !ok {
 			return nil, fmt.Errorf("bridge: no store factory registered for dlq type %q", sc.Type)
 		}
-		s, err := sf.NewDLQStore(ctx, storeSpecFrom(*sc))
+		s, err := sf.NewDLQStore(ctx, sc.Config)
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create dlq store: %w", err)
 		}
@@ -187,19 +186,27 @@ func (b *Builder) resolveClusterEndpoints(ctx context.Context) map[string]string
 	return nil
 }
 
-// injectStaleClaimDuration derives stale_claim_duration from the
-// session StepDownGrace values across all routes and injects it into
-// the outbox StoreSpec.Options carrier. This keeps the outbox reclaim
-// timeout aligned with the lease lifecycle rather than being an
-// independent hardcoded value. The derivation is skipped when the
-// user has explicitly set stale_claim_duration in YAML (carried
-// through StoreSpec.Options for now; PHASE3 will move this onto the
-// typed outbox config).
-func (b *Builder) injectStaleClaimDuration(spec *ports.StoreSpec) error {
-	if spec.Options != nil {
-		if _, explicit := spec.Options["stale_claim_duration"]; explicit {
-			return nil
-		}
+// outboxRuntimeOptions derives the runtime tuning passed to outbox
+// store factories. StaleClaimDuration is sourced in this priority:
+//
+//  1. an explicit `stale_claim_duration` entry in the outbox YAML
+//     options (read via StoreConfig.Raw()) — supports either a
+//     duration string ("2m") or a time.Duration value;
+//  2. a value derived from the maximum session step-down grace
+//     across all routes, plus a buffer.
+//
+// The derivation keeps the outbox reclaim timeout aligned with the
+// lease lifecycle without forcing every plugin config schema to
+// carry the runtime knob.
+func (b *Builder) outboxRuntimeOptions(sc *ports.StoreConfig) (ports.OutboxRuntimeOptions, error) {
+	if sc == nil {
+		return ports.OutboxRuntimeOptions{}, nil
+	}
+
+	if explicit, ok, err := explicitStaleClaimDuration(sc); err != nil {
+		return ports.OutboxRuntimeOptions{}, err
+	} else if ok {
+		return ports.OutboxRuntimeOptions{StaleClaimDuration: explicit}, nil
 	}
 
 	maxStepDownGrace := runtime.DefaultSessionConfig("", true).StepDownGrace
@@ -209,7 +216,7 @@ func (b *Builder) injectStaleClaimDuration(spec *ports.StoreSpec) error {
 		}
 		sessCfg, err := toSessionConfigE(r.Session)
 		if err != nil {
-			return fmt.Errorf("bridge: route %q: %w", r.ID, err)
+			return ports.OutboxRuntimeOptions{}, fmt.Errorf("bridge: route %q: %w", r.ID, err)
 		}
 		if sessCfg != nil && sessCfg.StepDownGrace > maxStepDownGrace {
 			maxStepDownGrace = sessCfg.StepDownGrace
@@ -217,10 +224,37 @@ func (b *Builder) injectStaleClaimDuration(spec *ports.StoreSpec) error {
 	}
 
 	staleClaimBuffer := max(2*maxStepDownGrace, 15*time.Second)
+	return ports.OutboxRuntimeOptions{
+		StaleClaimDuration: maxStepDownGrace + staleClaimBuffer,
+	}, nil
+}
 
-	opts := make(map[string]any, len(spec.Options)+1)
-	maps.Copy(opts, spec.Options)
-	opts["stale_claim_duration"] = maxStepDownGrace + staleClaimBuffer
-	spec.Options = opts
-	return nil
+// explicitStaleClaimDuration looks for a user-provided override in
+// the outbox blueprint's raw stage-1 options. It returns ok=false
+// when the override is absent.
+func explicitStaleClaimDuration(sc *ports.StoreConfig) (time.Duration, bool, error) {
+	raw := sc.Raw()
+	if raw == nil {
+		return 0, false, nil
+	}
+	var probe struct {
+		StaleClaimDuration any `mapstructure:"stale_claim_duration" yaml:"stale_claim_duration" json:"stale_claim_duration"`
+	}
+	if err := raw.Decode(&probe); err != nil {
+		return 0, false, nil
+	}
+	switch v := probe.StaleClaimDuration.(type) {
+	case nil:
+		return 0, false, nil
+	case time.Duration:
+		return v, true, nil
+	case string:
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return 0, false, fmt.Errorf("bridge: outbox stale_claim_duration: invalid duration %q: %w", v, err)
+		}
+		return d, true, nil
+	default:
+		return 0, false, fmt.Errorf("bridge: outbox stale_claim_duration: must be a duration string or time.Duration, got %T", v)
+	}
 }

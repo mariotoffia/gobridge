@@ -3,44 +3,34 @@ package amqp091
 import "github.com/mariotoffia/gobridge/domain"
 
 // subscriptionParams extracts exchange/routing_key/exchange_type/
-// durable/auto_delete from a SubscriptionPlan. PHASE2 prefers the
-// typed Config (Subscription nested params); legacy Options remain
-// supported for callers still hand-building plans.
+// durable/auto_delete from a SubscriptionPlan. The values are read
+// from the typed Config attached to SubscriptionPlan.Config (post
+// PHASE3 there is no legacy Options carrier).
 func subscriptionParams(sub domain.SubscriptionPlan) (exchange, routingKey, exchangeType string, durable, autoDelete bool) {
 	exchangeType = "direct"
-	if cfg, ok := configFromPlan(sub.Config); ok {
-		p := cfg.Subscription
-		if p.ExchangeType != "" {
-			exchangeType = p.ExchangeType
-		}
-		return p.Exchange, p.RoutingKey, exchangeType, p.Durable, p.AutoDelete
+	cfg, ok := configFromPlan(sub.Config)
+	if !ok {
+		return
 	}
-	exchange, _ = optString(sub.Options, "exchange")
-	routingKey, _ = optString(sub.Options, "routing_key")
-	if et, ok := optString(sub.Options, "exchange_type"); ok {
-		exchangeType = et
+	p := cfg.Subscription
+	if p.ExchangeType != "" {
+		exchangeType = p.ExchangeType
 	}
-	durable, _ = optBool(sub.Options, "durable")
-	autoDelete, _ = optBool(sub.Options, "auto_delete")
-	return
+	return p.Exchange, p.RoutingKey, exchangeType, p.Durable, p.AutoDelete
 }
 
 // publisherParams mirrors subscriptionParams for PublisherPlan.
 func publisherParams(pub domain.PublisherPlan) (exchangeType string, durable, autoDelete bool) {
 	exchangeType = "direct"
-	if cfg, ok := configFromPlan(pub.Config); ok {
-		p := cfg.Publisher
-		if p.ExchangeType != "" {
-			exchangeType = p.ExchangeType
-		}
-		return exchangeType, p.Durable, p.AutoDelete
+	cfg, ok := configFromPlan(pub.Config)
+	if !ok {
+		return
 	}
-	if et, ok := optString(pub.Options, "exchange_type"); ok {
-		exchangeType = et
+	p := cfg.Publisher
+	if p.ExchangeType != "" {
+		exchangeType = p.ExchangeType
 	}
-	durable, _ = optBool(pub.Options, "durable")
-	autoDelete, _ = optBool(pub.Options, "auto_delete")
-	return
+	return exchangeType, p.Durable, p.AutoDelete
 }
 
 // configFromPlan accepts both *Config and Config attached to a plan.

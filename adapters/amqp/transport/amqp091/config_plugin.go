@@ -18,11 +18,11 @@ var _ ports.CredentialedConfig = (*Config)(nil)
 // nested so a single decoder produces a Config that can populate a
 // SubscriptionPlan.Config or a binding.
 type Config struct {
-	Session      SessionOptions      `mapstructure:"session" yaml:"session" json:"session"`
-	Receiver     ReceiverParams      `mapstructure:"receiver" yaml:"receiver" json:"receiver"`
-	Sender       SenderParams        `mapstructure:"sender" yaml:"sender" json:"sender"`
-	Subscription SubscriptionParams  `mapstructure:"subscription" yaml:"subscription" json:"subscription"`
-	Publisher    PublisherParams     `mapstructure:"publisher" yaml:"publisher" json:"publisher"`
+	Session      SessionOptions     `mapstructure:"session" yaml:"session" json:"session"`
+	Receiver     ReceiverParams     `mapstructure:"receiver" yaml:"receiver" json:"receiver"`
+	Sender       SenderParams       `mapstructure:"sender" yaml:"sender" json:"sender"`
+	Subscription SubscriptionParams `mapstructure:"subscription" yaml:"subscription" json:"subscription"`
+	Publisher    PublisherParams    `mapstructure:"publisher" yaml:"publisher" json:"publisher"`
 
 	// CredentialsURIRef is the optional URI consulted by the bridge's
 	// credential store at build time. The resolved material is

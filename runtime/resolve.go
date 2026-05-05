@@ -56,7 +56,7 @@ func (r *BindingResolver) Resolve(_ context.Context, env *domain.Envelope) ([]do
 		plans = append(plans, domain.DispatchPlan{
 			BindingID: b.ID,
 			Address:   addr,
-			Headers:   copyHeaders(b.Options),
+			Headers:   copyHeaders(b.Headers),
 		})
 	}
 
@@ -266,7 +266,7 @@ func (r *RuleResolver) planForBinding(bindingID string, env *domain.Envelope) ([
 	return []domain.DispatchPlan{{
 		BindingID: b.ID,
 		Address:   addr,
-		Headers:   copyHeaders(b.Options),
+		Headers:   copyHeaders(b.Headers),
 	}}, nil
 }
 

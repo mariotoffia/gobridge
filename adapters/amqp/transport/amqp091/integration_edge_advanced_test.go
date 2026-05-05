@@ -89,10 +89,10 @@ func TestIntegration_Edge_ExchangeRouting(t *testing.T) {
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{
 			Topic: queue,
-			Options: map[string]any{
-				"exchange":    exchange,
-				"routing_key": routingKey,
-			},
+			Config: &Config{Subscription: SubscriptionParams{
+				Exchange:   exchange,
+				RoutingKey: routingKey,
+			}},
 		}},
 		Publishers: []domain.PublisherPlan{{Topic: exchange}},
 	}
@@ -163,8 +163,8 @@ func TestIntegration_Edge_ReconcilePlan(t *testing.T) {
 
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
-			{Topic: q1, Options: map[string]any{"exchange": ex, "routing_key": q1}},
-			{Topic: q2, Options: map[string]any{"exchange": ex, "routing_key": q2}},
+			{Topic: q1, Config: &Config{Subscription: SubscriptionParams{Exchange: ex, RoutingKey: q1}}},
+			{Topic: q2, Config: &Config{Subscription: SubscriptionParams{Exchange: ex, RoutingKey: q2}}},
 		},
 		Publishers: []domain.PublisherPlan{{Topic: ex}},
 	}

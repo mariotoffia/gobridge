@@ -78,13 +78,13 @@ func (f *fakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]do
 
 type fakeStoreFactory struct{}
 
-func (f *fakeStoreFactory) NewLeaseStore(_ context.Context, _ ports.StoreSpec) (ports.LeaseStore, error) {
+func (f *fakeStoreFactory) NewLeaseStore(_ context.Context, _ ports.PluginConfig) (ports.LeaseStore, error) {
 	return &fakeLeaseStore{}, nil
 }
-func (f *fakeStoreFactory) NewOutboxStore(_ context.Context, _ ports.StoreSpec) (ports.OutboxStore, error) {
+func (f *fakeStoreFactory) NewOutboxStore(_ context.Context, _ ports.PluginConfig, _ ports.OutboxRuntimeOptions) (ports.OutboxStore, error) {
 	return &fakeOutboxStore{}, nil
 }
-func (f *fakeStoreFactory) NewDLQStore(_ context.Context, _ ports.StoreSpec) (ports.DLQStore, error) {
+func (f *fakeStoreFactory) NewDLQStore(_ context.Context, _ ports.PluginConfig) (ports.DLQStore, error) {
 	return nil, nil
 }
 
@@ -390,13 +390,13 @@ func TestBuilder_Standalone_NonDistributedStore_OK(t *testing.T) {
 // (nil, nil) instead of a valid store or an error.
 type nilLeaseStoreFactory struct{}
 
-func (f *nilLeaseStoreFactory) NewLeaseStore(_ context.Context, _ ports.StoreSpec) (ports.LeaseStore, error) {
+func (f *nilLeaseStoreFactory) NewLeaseStore(_ context.Context, _ ports.PluginConfig) (ports.LeaseStore, error) {
 	return nil, nil
 }
-func (f *nilLeaseStoreFactory) NewOutboxStore(_ context.Context, _ ports.StoreSpec) (ports.OutboxStore, error) {
+func (f *nilLeaseStoreFactory) NewOutboxStore(_ context.Context, _ ports.PluginConfig, _ ports.OutboxRuntimeOptions) (ports.OutboxStore, error) {
 	return &fakeOutboxStore{}, nil
 }
-func (f *nilLeaseStoreFactory) NewDLQStore(_ context.Context, _ ports.StoreSpec) (ports.DLQStore, error) {
+func (f *nilLeaseStoreFactory) NewDLQStore(_ context.Context, _ ports.PluginConfig) (ports.DLQStore, error) {
 	return nil, nil
 }
 func (f *nilLeaseStoreFactory) IsDistributed() bool { return true }

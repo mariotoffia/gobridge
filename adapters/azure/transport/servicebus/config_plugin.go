@@ -93,10 +93,10 @@ func (c Config) toSenderConfig() SenderConfig {
 
 // CredentialsURI implements ports.CredentialedConfig.
 func (c *Config) CredentialsURI() string {
-if c == nil {
-return ""
-}
-return c.CredentialsURIRef
+	if c == nil {
+		return ""
+	}
+	return c.CredentialsURIRef
 }
 
 // ApplyCredentials implements ports.CredentialedConfig. The resolved
@@ -106,15 +106,15 @@ return c.CredentialsURIRef
 // Connection take precedence: credentialsToConnection only writes
 // when the resolved material differs.
 func (c *Config) ApplyCredentials(set *domain.CredentialSet) error {
-if c == nil {
-return errors.New("servicebus: nil config")
-}
-if set == nil {
-c.CredentialsURIRef = ""
-return nil
-}
-merged, _ := credentialsToConnection(c.Connection, set)
-c.Connection = merged
-c.CredentialsURIRef = ""
-return nil
+	if c == nil {
+		return errors.New("servicebus: nil config")
+	}
+	if set == nil {
+		c.CredentialsURIRef = ""
+		return nil
+	}
+	merged, _ := credentialsToConnection(c.Connection, set)
+	c.Connection = merged
+	c.CredentialsURIRef = ""
+	return nil
 }

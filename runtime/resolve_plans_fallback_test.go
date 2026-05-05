@@ -87,14 +87,14 @@ func TestResolvePlans_NoResolver_RenderError_RoutesDLQ(t *testing.T) {
 		"expected 1 DLQ entry for render error")
 }
 
-func TestResolvePlans_NoResolver_CopiesBindingOptions(t *testing.T) {
+func TestResolvePlans_NoResolver_CopiesBindingHeaders(t *testing.T) {
 	sender := NewFakeSender()
 
 	bindings := []domain.DestinationBinding{
 		{
 			ID:      "b1",
 			Address: "topic/out",
-			Options: map[string]any{"qos": 1, "retain": true},
+			Headers: map[string]any{"qos": 1, "retain": true},
 		},
 	}
 
@@ -122,9 +122,9 @@ func TestResolvePlans_NoResolver_CopiesBindingOptions(t *testing.T) {
 	sent := sender.GetSent()
 	require.Len(t, sent, 1)
 	assert.Equal(t, 1, sent[0].Headers["qos"],
-		"binding Options should be merged into envelope headers")
+		"binding Headers should be merged into envelope headers")
 	assert.Equal(t, true, sent[0].Headers["retain"],
-		"binding Options should be merged into envelope headers")
+		"binding Headers should be merged into envelope headers")
 }
 
 func TestResolvePlans_NoResolver_MQTTValidation(t *testing.T) {

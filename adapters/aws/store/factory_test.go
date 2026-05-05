@@ -8,10 +8,10 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// Verifies NewLeaseStore returns a non-nil lease store for dynamodb configuration.
+// Verifies NewLeaseStore returns a non-nil lease store for nil config.
 func TestDynamoDBStoreFactory_NewLeaseStore(t *testing.T) {
 	f := awsstore.NewDynamoDBStoreFactory(nil)
-	store, err := f.NewLeaseStore(context.Background(), ports.StoreSpec{Type: "dynamodb"})
+	store, err := f.NewLeaseStore(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -20,10 +20,10 @@ func TestDynamoDBStoreFactory_NewLeaseStore(t *testing.T) {
 	}
 }
 
-// Verifies NewOutboxStore returns a non-nil outbox store for dynamodb configuration.
+// Verifies NewOutboxStore returns a non-nil outbox store for nil config.
 func TestDynamoDBStoreFactory_NewOutboxStore(t *testing.T) {
 	f := awsstore.NewDynamoDBStoreFactory(nil)
-	store, err := f.NewOutboxStore(context.Background(), ports.StoreSpec{Type: "dynamodb"})
+	store, err := f.NewOutboxStore(context.Background(), nil, ports.OutboxRuntimeOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -32,10 +32,10 @@ func TestDynamoDBStoreFactory_NewOutboxStore(t *testing.T) {
 	}
 }
 
-// Verifies NewDLQStore returns a non-nil DLQ store for dynamodb configuration.
+// Verifies NewDLQStore returns a non-nil DLQ store for nil config.
 func TestDynamoDBStoreFactory_NewDLQStore(t *testing.T) {
 	f := awsstore.NewDynamoDBStoreFactory(nil)
-	store, err := f.NewDLQStore(context.Background(), ports.StoreSpec{Type: "dynamodb"})
+	store, err := f.NewDLQStore(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -44,13 +44,10 @@ func TestDynamoDBStoreFactory_NewDLQStore(t *testing.T) {
 	}
 }
 
-// Verifies optional table_name in store options is accepted for lease, outbox, and DLQ stores.
+// Verifies optional table_name in the typed config is accepted for lease, outbox, and DLQ stores.
 func TestDynamoDBStoreFactory_WithTableName(t *testing.T) {
 	f := awsstore.NewDynamoDBStoreFactory(nil)
-	cfg := ports.StoreSpec{
-		Type:    "dynamodb",
-		Options: map[string]any{"table_name": "custom-table"},
-	}
+	cfg := &awsstore.DynamoDBConfig{TableName: "custom-table"}
 
 	lease, err := f.NewLeaseStore(context.Background(), cfg)
 	if err != nil {
@@ -60,7 +57,7 @@ func TestDynamoDBStoreFactory_WithTableName(t *testing.T) {
 		t.Fatal("lease: expected non-nil store")
 	}
 
-	outbox, err := f.NewOutboxStore(context.Background(), cfg)
+	outbox, err := f.NewOutboxStore(context.Background(), cfg, ports.OutboxRuntimeOptions{})
 	if err != nil {
 		t.Fatalf("outbox: unexpected error: %v", err)
 	}

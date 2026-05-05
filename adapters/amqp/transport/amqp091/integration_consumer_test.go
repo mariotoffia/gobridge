@@ -36,10 +36,10 @@ func TestIntegration_CompetingConsumers(t *testing.T) {
 		Subscriptions: []domain.SubscriptionPlan{
 			{
 				Topic: queueName,
-				Options: map[string]any{
-					"exchange":    exchangeName,
-					"routing_key": queueName,
-				},
+				Config: &Config{Subscription: SubscriptionParams{
+					Exchange:   exchangeName,
+					RoutingKey: queueName,
+				}},
 			},
 		},
 		Publishers: []domain.PublisherPlan{
@@ -152,10 +152,10 @@ func TestIntegration_AutoAck(t *testing.T) {
 		Subscriptions: []domain.SubscriptionPlan{
 			{
 				Topic: queueName,
-				Options: map[string]any{
-					"exchange":    exchangeName,
-					"routing_key": queueName,
-				},
+				Config: &Config{Subscription: SubscriptionParams{
+					Exchange:   exchangeName,
+					RoutingKey: queueName,
+				}},
 			},
 		},
 		Publishers: []domain.PublisherPlan{
@@ -265,10 +265,10 @@ func TestIntegration_PrefetchCount(t *testing.T) {
 		Subscriptions: []domain.SubscriptionPlan{
 			{
 				Topic: queueName,
-				Options: map[string]any{
-					"exchange":    exchangeName,
-					"routing_key": queueName,
-				},
+				Config: &Config{Subscription: SubscriptionParams{
+					Exchange:   exchangeName,
+					RoutingKey: queueName,
+				}},
 			},
 		},
 		Publishers: []domain.PublisherPlan{

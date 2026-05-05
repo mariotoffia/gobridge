@@ -61,34 +61,34 @@ func (c Config) Validate() error {
 
 // CredentialsURI implements ports.CredentialedConfig.
 func (c *Config) CredentialsURI() string {
-if c == nil {
-return ""
-}
-return c.CredentialsURIRef
+	if c == nil {
+		return ""
+	}
+	return c.CredentialsURIRef
 }
 
 // ApplyCredentials implements ports.CredentialedConfig. The resolved
 // password populates Session.Username/Password (when empty) and TLS
 // material populates Session.TLS PEM fields.
 func (c *Config) ApplyCredentials(set *domain.CredentialSet) error {
-if c == nil {
-return errors.New("amqp10: nil config")
-}
-if set == nil {
-c.CredentialsURIRef = ""
-return nil
-}
-if set.Password != nil {
-if c.Session.Username == "" {
-c.Session.Username = set.Password.Username
-}
-if c.Session.Password == "" {
-c.Session.Password = set.Password.Password
-}
-}
-if set.TLS != nil {
-applyAMQP10TLSMaterial(&c.Session.TLS, set.TLS)
-}
-c.CredentialsURIRef = ""
-return nil
+	if c == nil {
+		return errors.New("amqp10: nil config")
+	}
+	if set == nil {
+		c.CredentialsURIRef = ""
+		return nil
+	}
+	if set.Password != nil {
+		if c.Session.Username == "" {
+			c.Session.Username = set.Password.Username
+		}
+		if c.Session.Password == "" {
+			c.Session.Password = set.Password.Password
+		}
+	}
+	if set.TLS != nil {
+		applyAMQP10TLSMaterial(&c.Session.TLS, set.TLS)
+	}
+	c.CredentialsURIRef = ""
+	return nil
 }
