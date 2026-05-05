@@ -1,0 +1,348 @@
+= Typed Plugin Config
+:toc: macro
+:toclevels: 2
+:source-highlighter: rouge
+
+This document describes the typed-plugin-config contract that every
+pluggable component in gobridge (transport, store, processor,
+credential source, config-source, etc.) implements. It is the binding
+output of FIX-003 (PHASE0–PHASE6, branch `fix-003-typed-plugin-config`).
+The `cfgshape` analyzer at `scripts/cfgshape/analyzer.go` enforces the
+rules below in `make lint`; this page is the human-readable companion.
+
+The page is self-contained: a plugin author should be able to read it
+plus the adapter package they are writing and decide every shape
+question without consulting any external context.
+
+toc::[]
+
+== Synopsis
+
+A plugin is a Go package under `adapters/**` that exports a concrete
+`Config` struct satisfying `ports.PluginConfig` and registers a
+decoder for it on `ports.DefaultRegistry`. The blueprint parser in
+`config/` performs a two-stage decode: stage 1 reads the wire
+discriminator (`transport: aws.sqs`, `type: sqlite`, …); stage 2
+dispatches to the registered decoder which returns a typed
+`PluginConfig`. The runtime never sees `map[string]any`.
+
+== The `PluginConfig` interface
+
+Defined in `ports/plugin_config.go`:
+
+[source,go]
+----
+// PluginConfig is the marker interface every plugin implements with
+// its own concrete config struct.
+type PluginConfig interface {
+    // Kind returns the discriminator used in the blueprint and the
+    // registry key under which the decoder is registered. It must
+    // match the value the user writes under `transport:` / `type:`.
+    Kind() string
+
+    // Validate checks the config for completeness and consistency.
+    // Validate must be a pure function: no I/O, no network, no
+    // goroutines. It runs once during config parsing.
+    Validate() error
+}
+----
+
+Both methods are mandatory and both must have non-empty bodies. The
+reasons:
+
+* `Kind()` is the one place that ties a Go type to a YAML
+  discriminator. Without it the parser cannot route a typed `options:`
+  block to its decoder.
+* `Validate()` runs at config-parse time, before the bridge assembles
+  any runtime component. An empty stub silently accepts misconfigured
+  blueprints and turns parse-time errors into 3am pages.
+
+The `cfgshape` rule 3 (`scripts/cfgshape/analyzer.go` lines ~22–30)
+rejects empty `Validate()` bodies and any `Validate()` method that has
+no test reference in a `*_test.go` file in the same package.
+
+== The registry
+
+`ports.DefaultRegistry` is a process-wide `*ports.Registry` that maps
+`kind string` to `ConfigDecoder`. Adapters self-register from `init()`;
+the import graph at the composition root determines which kinds are
+available at runtime.
+
+[source,go]
+----
+type ConfigDecoder func(raw RawConfig) (PluginConfig, error)
+
+func (r *Registry) Register(kind string, dec ConfigDecoder)
+func (r *Registry) Decode(kind string, raw RawConfig) (PluginConfig, error)
+----
+
+`Register` panics on duplicate kinds (`ports/plugin_config.go:80`):
+duplicate registration is always a programming error (typically a
+copy/paste `init()` in two adapters claiming the same discriminator)
+and must be caught at process start, not deferred to runtime.
+
+`RawConfig` is interface-only inside `ports/`. The concrete
+implementation that wraps stage-1 yaml/json output lives in
+`config/raw_config.go` so encoding libraries stay out of the inner
+ring.
+
+=== Two-stage parse
+
+Stage 1 (in `config/`) decodes the format-aware frame: IDs, transport
+discriminators, and a deferred `RawConfig` per plugin attachment
+point. Stage 2 walks the frame and calls `reg.Decode(kind, raw)` for
+each attachment point, replacing the deferred `RawConfig` with a typed
+`ports.PluginConfig` on the blueprint. The blueprint types in
+`ports/blueprint.go` (`SessionDef`, `ReceiverDef`, `SenderDef`,
+`StoreConfig`, `SubscriptionDef`, `BindingDef`) hold the typed
+`PluginConfig`; nothing else.
+
+For round-tripping, `config/blueprint_marshal.go` projects the typed
+`Config` back into the canonical `options:` wire form so emitted
+config matches the input shape.
+
+== How to add a new plugin
+
+The checklist below mirrors what `cfgshape` enforces. All four steps
+are required; any one missing fails `make lint`.
+
+[arabic]
+. *Define the `Config` struct.* Plain Go struct in the adapter
+  package, with `mapstructure:`, `yaml:`, and `json:` tags on every
+  exported field. Place it in `config.go` or `config_plugin.go` next to
+  the implementation. Keep the struct flat — nested structs are fine,
+  but no `map[string]any`, no `json.RawMessage`, no `*structpb.Struct`,
+  and no unbounded `[]byte`. Those are exactly the forbidden carriers
+  cfgshape rule 1 rejects in `ports/`/`domain/` and that should never
+  reappear at the adapter boundary either.
+. *Implement `Kind() string`.* A single-line method returning a
+  package-level constant or string literal. The value must match the
+  registry key the adapter registers under and what the user writes in
+  the blueprint.
+. *Implement `Validate() error`.* Pure function. Reject missing
+  required fields and inconsistent combinations. Add at least one
+  `*_test.go` file in the same package that references `Validate`
+  textually (the test must compile and run; cfgshape rule 3 re-reads
+  the directory and greps because vet excludes test files).
+. *Write `register.go`.* An `init()` that calls
+  `ports.DefaultRegistry.Register(kind, decoder)`. The decoder
+  decodes `raw` into the typed `Config`, calls `Validate()`, and
+  returns the value (or a pointer to it, when the type satisfies
+  `ports.CredentialedConfig` and needs mutation).
+
+The composition root then imports the package for its side effect:
+`_ "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"`.
+Unimported adapters never reach the binary.
+
+=== Worked example — transport adapter
+
+Lifted from `adapters/aws/transport/sqs/config_plugin.go` and
+`adapters/aws/transport/sqs/register.go`:
+
+[source,go]
+----
+// adapters/aws/transport/sqs/config_plugin.go
+type Config struct {
+    QueueURL          string        `mapstructure:"queue_url"          yaml:"queue_url"          json:"queue_url"`
+    QueueName         string        `mapstructure:"queue_name"         yaml:"queue_name"         json:"queue_name"`
+    Region            string        `mapstructure:"region"             yaml:"region"             json:"region"`
+    MaxMessages       int32         `mapstructure:"max_messages"       yaml:"max_messages"       json:"max_messages"`
+    WaitTimeSeconds   int32         `mapstructure:"wait_time_seconds"  yaml:"wait_time_seconds"  json:"wait_time_seconds"`
+    VisibilityTimeout int32         `mapstructure:"visibility_timeout" yaml:"visibility_timeout" json:"visibility_timeout"`
+    BatchSize         int           `mapstructure:"batch_size"         yaml:"batch_size"         json:"batch_size"`
+    Timeout           time.Duration `mapstructure:"timeout"            yaml:"timeout,omitempty"  json:"timeout,omitempty"`
+    // ...
+}
+
+func (Config) Kind() string { return "aws.sqs" }
+
+func (c Config) Validate() error {
+    if c.QueueURL == "" && c.QueueName == "" {
+        return errors.New("sqs: either queue_url or queue_name is required")
+    }
+    if c.MaxMessages < 0 || c.MaxMessages > 10 {
+        return errors.New("sqs: max_messages must be in [1,10]")
+    }
+    if c.WaitTimeSeconds < 0 || c.WaitTimeSeconds > 20 {
+        return errors.New("sqs: wait_time_seconds must be in [0,20]")
+    }
+    if c.BatchSize < 0 || c.BatchSize > 10 {
+        return errors.New("sqs: batch_size must be in [1,10]")
+    }
+    return nil
+}
+----
+
+[source,go]
+----
+// adapters/aws/transport/sqs/register.go
+package sqs
+
+import "github.com/mariotoffia/gobridge/ports"
+
+func init() {
+    dec := func(raw ports.RawConfig) (ports.PluginConfig, error) {
+        var c Config
+        if raw != nil {
+            if err := raw.Decode(&c); err != nil {
+                return nil, err
+            }
+        }
+        if err := c.Validate(); err != nil {
+            return nil, err
+        }
+        return &c, nil
+    }
+    // Short discriminator matches the conventional YAML form
+    // (`transport: sqs`); the long form mirrors Kind() for callers
+    // that prefer a fully-qualified name.
+    ports.DefaultRegistry.Register("sqs", dec)
+    ports.DefaultRegistry.Register("aws.sqs", dec)
+}
+----
+
+The interface contract is asserted at compile time in the same
+package (`adapters/aws/transport/sqs/config_plugin.go:13`):
+
+[source,go]
+----
+var _ ports.CredentialedConfig = (*Config)(nil)
+----
+
+A plain `var _ ports.PluginConfig = (*Config)(nil)` is the equivalent
+assertion when the adapter does not opt into credentials.
+
+=== Worked example — store adapter
+
+The native store package registers two kinds from one `register.go`
+(`adapters/native/store/register.go`) backed by typed configs in
+`adapters/native/store/config.go`:
+
+[source,go]
+----
+// adapters/native/store/config.go
+var (
+    _ ports.PluginConfig = (*MemoryConfig)(nil)
+    _ ports.PluginConfig = (*SQLiteConfig)(nil)
+)
+
+const (
+    MemoryKind = "memory"
+    SQLiteKind = "sqlite"
+)
+
+type MemoryConfig struct{}
+func (MemoryConfig) Kind() string     { return MemoryKind }
+func (MemoryConfig) Validate() error  { return nil }
+
+type SQLiteConfig struct {
+    Path string `mapstructure:"path" yaml:"path" json:"path"`
+}
+func (SQLiteConfig) Kind() string { return SQLiteKind }
+func (c SQLiteConfig) Validate() error {
+    if c.Path == "" {
+        return errors.New("nativestore: sqlite path is required")
+    }
+    return nil
+}
+----
+
+[source,go]
+----
+// adapters/native/store/register.go
+func init() {
+    ports.DefaultRegistry.Register(MemoryKind, decodeMemoryConfig)
+    ports.DefaultRegistry.Register(SQLiteKind, decodeSQLiteConfig)
+}
+
+func decodeSQLiteConfig(raw ports.RawConfig) (ports.PluginConfig, error) {
+    var cfg SQLiteConfig
+    if raw != nil {
+        if err := raw.Decode(&cfg); err != nil {
+            return nil, err //nolint:wrapcheck // surfaced verbatim by the registry caller.
+        }
+    }
+    if err := cfg.Validate(); err != nil {
+        return nil, err
+    }
+    return &cfg, nil
+}
+----
+
+`MemoryConfig` is the canonical example of an empty-but-required
+config: the store has no user-settable fields, but the type still
+exists so the registry contract holds and `cfgshape` rule 2 passes.
+`Validate()` is intentionally a no-op; the body is non-empty (it
+contains `return nil`) so cfgshape rule 3 is satisfied.
+
+== Enforcement
+
+The `cfgshape` analyzer (`scripts/cfgshape/analyzer.go`) runs as part
+of `make lint` and enforces three rules:
+
+[arabic]
+. *Inner-ring carriers.* Exported struct fields, function parameters,
+  and named return values in `ports/` and `domain/` whose name is
+  `Config`, `Options`, `Settings`, `Extra`, or `Raw` MUST NOT be typed
+  as `map[string]any`, `map[string]interface{}`, `json.RawMessage`,
+  `*structpb.Struct`, or unbounded `[]byte`. See
+  `scripts/cfgshape/analyzer.go:64-74`.
+. *Adapter shape.* Every plugin adapter package (one that calls
+  `ports.DefaultRegistry.Register` or exports a type satisfying
+  `ports.PluginConfig`) MUST do BOTH: contain a `register.go` calling
+  `ports.DefaultRegistry.Register`, AND export at least one type
+  satisfying `ports.PluginConfig`. Half-baked plugins fail this rule.
+  See `scripts/cfgshape/analyzer.go:13-21`.
+. *Validate body.* Every method named `Validate` on a type satisfying
+  `ports.PluginConfig` MUST have a non-empty body and at least one
+  `*_test.go` file in the same package directory that references
+  `Validate` textually. See `scripts/cfgshape/analyzer.go:22-30`.
+
+In addition, `scripts/lint-arch-mapping-test.sh` (invoked by
+`make lint-arch-mapping-test`, itself a dependency of `make lint`)
+keeps a sentinel package per adapter component pinned to its
+expected component, so accidentally broadening `adapters/**` globs
+fails the regression.
+
+The single gate is `make lint`. CI does not run a different
+combination.
+
+== Anti-patterns
+
+Reject these in review; cfgshape will reject the first three
+mechanically.
+
+* `Config map[string]any` (or any of the forbidden carrier types
+  listed above) on a struct in `ports/` or `domain/`.
+* Empty `Validate() error { return nil }` on a non-empty `Config`
+  type — non-empty means at least one user-settable field. Use a
+  no-op `Validate` only on intentionally empty configs (see
+  `adapters/native/store/config.go:30`, `MemoryConfig`).
+* Half-baked plugins: a package that calls
+  `ports.DefaultRegistry.Register` but exports no `PluginConfig`
+  type, or a package that exports a `PluginConfig` type but never
+  registers a decoder for it.
+* Stage-1-only decoding: a parser path that hands a `map[string]any`
+  to the runtime instead of going through `Registry.Decode`. The
+  runtime contract is that `SessionDef.Config`, `SenderDef.Config`,
+  etc. are typed `PluginConfig` values; if they ever held a map
+  again, every adapter factory would have to re-implement decoding.
+* Silent defaults inside `Validate()`. `Validate()` checks; it does
+  not mutate. If the adapter wants defaults, apply them in the
+  decoder before calling `Validate`, or in the factory before
+  constructing the runtime component — never in `Validate` itself,
+  because `Validate` is documented as pure.
+
+== References
+
+* `ports/plugin_config.go` — the interface, registry, and `Factory`
+  type.
+* `config/blueprint_marshal.go` — the round-trip projection back to
+  the canonical `options:` wire form.
+* `scripts/cfgshape/analyzer.go` — the enforcement rules.
+* `scripts/lint-arch-mapping-test.sh` — adapter component sentinels.
+* `FIX-003.md` — the design rationale and phased migration runbook.
+* `ARCH_LINT_PLAN.md` § F-003 / ARCH-003 — the architectural framing
+  this document closes.
+* `ARCHITECTURE.md` § "Hexagonal Architecture Layers" — the
+  layer-and-import picture this contract slots into.
