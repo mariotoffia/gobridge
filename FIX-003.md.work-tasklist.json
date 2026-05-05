@@ -1,8 +1,8 @@
 {
   "$schema": "v2",
   "source": "FIX-003.md",
-  "source_sha": "da7ec5ffafadc7862012f6cae6e3682d2a4315c2b2654fa7db526ec018f15d11",
-  "indexed_at": "2026-05-05T14:31:23Z",
+  "source_sha": "dd76a27eb91609285108bc2db94684877b689f1f1e70688f86eb074e8dc811d6",
+  "indexed_at": "2026-05-05T15:00:00Z",
   "status_convention": "H3 ### Phase N \u2014 Title (no status suffixes; all phases pending until orchestrator appends ' - DONE')",
   "tasks": [
     {
@@ -52,7 +52,7 @@
     {
       "id": "PHASE4",
       "title": "Land `cfgshape` analyzer",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This phase builds and wires a Go vet analyzer, requiring Go AST/types implementation experience.",
