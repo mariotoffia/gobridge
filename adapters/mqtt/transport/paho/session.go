@@ -7,9 +7,6 @@ import (
 	"net/url"
 	"sync"
 
-	"github.com/eclipse/paho.golang/autopaho"
-	pahov5 "github.com/eclipse/paho.golang/paho"
-
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
@@ -24,8 +21,13 @@ type Session struct {
 	metrics ports.MetricsExporter
 	clk     clock.Clock
 
-	mu        sync.Mutex
-	cm        *autopaho.ConnectionManager
+	mu sync.Mutex
+	// cm is the live connection seam. Defined as the unexported
+	// pahoConnection interface (see acl_client.go) so this file does
+	// not import the vendor SDK. Tests assign a *pahoConn wrapping a
+	// sentinel autopaho.ConnectionManager when they only need a
+	// non-nil presence.
+	cm        pahoConnection
 	cmCancel  context.CancelFunc // cancels the CM's background context on Close
 	events    chan ports.SessionEvent
 	closed    bool
@@ -101,12 +103,6 @@ func (s *Session) clock() clock.Clock {
 	return clock.System
 }
 
-func (s *Session) ConnectionManager() *autopaho.ConnectionManager {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.cm
-}
-
 // Router returns the message router for registering Receiver handlers.
 func (s *Session) Router() *router {
 	return s.router
@@ -115,35 +111,6 @@ func (s *Session) Router() *router {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
-
-// classifySubackReasons walks the SUBACK reason codes one-to-one with
-// the requested subscriptions and partitions them into accepted and
-// rejected. The first rejection's classified BridgeError is returned
-// alongside the offending topic so the caller can surface a meaningful
-// failure, but EVERY accepted topic is included in the succeeded slice
-// so the caller can persist a faithful view of broker state.
-//
-// Topics whose reason index is out of range (broker returned a short
-// SUBACK) are conservatively treated as accepted — matching the
-// previous implementation and avoiding gratuitous unsubscribe loops.
-func classifySubackReasons(toSub []pahov5.SubscribeOptions, reasons []byte) (
-	succeeded []pahov5.SubscribeOptions, firstErr *domain.BridgeError, errTopic string,
-) {
-	succeeded = make([]pahov5.SubscribeOptions, 0, len(toSub))
-	for i, opt := range toSub {
-		if i < len(reasons) {
-			if berr := MapSubscribeReasonCode(reasons[i]); berr != nil {
-				if firstErr == nil {
-					firstErr = berr
-					errTopic = opt.Topic
-				}
-				continue
-			}
-		}
-		succeeded = append(succeeded, opt)
-	}
-	return succeeded, firstErr, errTopic
-}
 
 func parseURLs(raw []string) ([]*url.URL, error) {
 	if len(raw) == 0 {

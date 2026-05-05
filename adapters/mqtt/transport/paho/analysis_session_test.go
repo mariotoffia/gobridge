@@ -205,7 +205,7 @@ func TestAnaSession_ReconcileEmptyPlanWithPriorPlan_IsNoOp(t *testing.T) {
 		ClientID:   "ana-recon-empty",
 	}, domain.SessionEphemeral, nil)
 	s.mu.Lock()
-	s.cm = fakeCM
+	s.cm = &pahoConn{cm: fakeCM}
 	s.plan = &domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: "kept", QoS: 1}},
 	}

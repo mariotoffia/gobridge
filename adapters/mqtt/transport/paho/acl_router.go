@@ -11,6 +11,7 @@ import (
 	"github.com/eclipse/paho.golang/paho/log"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -178,6 +179,16 @@ func (r *router) HandlerCount() int {
 // Stats returns diagnostic counters for the message router.
 func (r *router) Stats() (received, dropped int64) {
 	return r.routeCount.Load(), r.dropCount.Load()
+}
+
+// RegisterEnvelope adapts a domain-shaped handler so port-side files
+// (Receiver) can subscribe to incoming messages without importing the
+// vendor SDK. The translation from *paho.Publish to *domain.Envelope
+// happens here, inside the ACL.
+func (r *router) RegisterEnvelope(id string, clk clock.Clock, h func(*domain.Envelope)) {
+	r.Register(id, func(pub *pahov5.Publish) {
+		h(EnvelopeFromPublish(pub, clk))
+	})
 }
 
 // paho.Router interface stubs — registration is done via Register/Unregister.

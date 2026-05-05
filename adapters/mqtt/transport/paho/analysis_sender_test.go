@@ -57,7 +57,7 @@ func TestAnaSender_EmptyTopicAndNoDefault_ReturnsErrInvalidTopic(t *testing.T) {
 	}, domain.SessionEphemeral, nil)
 	sess.mu.Lock()
 	// Use the unexported sentinel — tests are in-package so this is OK.
-	sess.cm = fakeCM
+	sess.cm = &pahoConn{cm: fakeCM}
 	sess.mu.Unlock()
 
 	s := NewSender(sess, SenderOptions{Timeout: time.Second})
@@ -188,7 +188,7 @@ func TestAnaCBSender_NonRecoverableError_DoesNotTripCircuit(t *testing.T) {
 		ClientID:   "ana-cb-nonrec",
 	}, domain.SessionEphemeral, nil, rec)
 	sess.mu.Lock()
-	sess.cm = fakeCM
+	sess.cm = &pahoConn{cm: fakeCM}
 	sess.mu.Unlock()
 
 	inner := NewSender(sess, SenderOptions{Timeout: time.Second})
@@ -290,7 +290,7 @@ func TestAnaSender_ContextDoneBeforeSend_ReturnsClassifiedError(t *testing.T) {
 		ClientID:   "ana-send-ctx-done",
 	}, domain.SessionEphemeral, nil)
 	sess.mu.Lock()
-	sess.cm = fakeCM
+	sess.cm = &pahoConn{cm: fakeCM}
 	sess.mu.Unlock()
 
 	s := NewSender(sess, SenderOptions{Timeout: time.Second, DefaultTopic: "t"})

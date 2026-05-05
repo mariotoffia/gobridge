@@ -4,9 +4,6 @@ import (
 	"context"
 	"maps"
 
-	"github.com/eclipse/paho.golang/autopaho"
-	pahov5 "github.com/eclipse/paho.golang/paho"
-
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/logging"
 )
@@ -37,7 +34,7 @@ func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error 
 	return s.reconcile(ctx, cm, plan)
 }
 
-func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager, plan domain.SessionPlan) error {
+func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan domain.SessionPlan) error {
 	reconcileStart := s.clock().Now()
 	s.reconcileMu.Lock()
 	defer s.reconcileMu.Unlock()
@@ -75,7 +72,7 @@ func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager,
 			s.logger.Log(ctx, logging.LevelTrace, "mqtt: unsubscribing",
 				"client_id", s.opts.ClientID, "topics", toUnsub)
 		}
-		if _, err := cm.Unsubscribe(ctx, &pahov5.Unsubscribe{Topics: toUnsub}); err != nil {
+		if err := cm.Unsubscribe(ctx, toUnsub); err != nil {
 			return MapError(err)
 		}
 		s.mu.Lock()
@@ -86,11 +83,11 @@ func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager,
 	}
 
 	// Subscribe to new or changed topics
-	var toSub []pahov5.SubscribeOptions
+	var toSub []subscribeSpec
 	for topic, qos := range desired {
 		curQoS, exists := current[topic]
 		if !exists || curQoS != qos {
-			toSub = append(toSub, pahov5.SubscribeOptions{Topic: topic, QoS: qos})
+			toSub = append(toSub, subscribeSpec{Topic: topic, QoS: qos})
 		}
 	}
 
@@ -103,7 +100,7 @@ func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager,
 			s.logger.Log(ctx, logging.LevelTrace, "mqtt: subscribing",
 				"client_id", s.opts.ClientID, "topics", topics)
 		}
-		sa, err := cm.Subscribe(ctx, &pahov5.Subscribe{Subscriptions: toSub})
+		reasons, err := cm.Subscribe(ctx, toSub)
 		if err != nil {
 			return MapError(err)
 		}
@@ -113,7 +110,7 @@ func (s *Session) reconcile(ctx context.Context, cm *autopaho.ConnectionManager,
 		// broker holding subscriptions our local activeSubs map does
 		// not know about (BUG-RPS) — the next reconcile delta would
 		// then re-subscribe and the delta accounting would be wrong.
-		succeeded, firstErr, errTopic := classifySubackReasons(toSub, sa.Reasons)
+		succeeded, firstErr, errTopic := classifySubackReasons(toSub, reasons)
 		if len(succeeded) > 0 {
 			s.mu.Lock()
 			for _, opt := range succeeded {
