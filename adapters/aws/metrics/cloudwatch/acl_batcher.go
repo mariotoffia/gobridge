@@ -1,9 +1,13 @@
 package cloudwatch
 
 import (
+	"context"
+	"fmt"
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -172,4 +176,81 @@ func metricNameFromKey(key string) string {
 		}
 	}
 	return key
+}
+
+// addCounter buffers a counter sample. Returns true when the non-histogram
+// buffer has reached its configured capacity (caller should trigger a flush).
+func (b *batcher) addCounter(name string, value int64, tags []domain.Tag) bool {
+	return b.add(metricData{
+		name:       name,
+		value:      float64(value),
+		unit:       cwtypes.StandardUnitCount,
+		tags:       tags,
+		metricType: metricTypeCounter,
+	})
+}
+
+// addGauge buffers a gauge sample.
+func (b *batcher) addGauge(name string, value float64, tags []domain.Tag) bool {
+	return b.add(metricData{
+		name:       name,
+		value:      value,
+		unit:       cwtypes.StandardUnitNone,
+		tags:       tags,
+		metricType: metricTypeGauge,
+	})
+}
+
+// addHistogram buffers a histogram sample. Histogram samples aggregate into
+// CloudWatch StatisticSets on drain.
+func (b *batcher) addHistogram(name string, value float64, tags []domain.Tag) bool {
+	return b.add(metricData{
+		name:       name,
+		value:      value,
+		unit:       cwtypes.StandardUnitNone,
+		tags:       tags,
+		metricType: metricTypeHistogram,
+	})
+}
+
+// addTimer buffers a duration sample (treated as a histogram in milliseconds).
+func (b *batcher) addTimer(name string, duration time.Duration, tags []domain.Tag) bool {
+	ms := float64(duration.Nanoseconds()) / float64(time.Millisecond)
+	return b.add(metricData{
+		name:       name,
+		value:      ms,
+		unit:       cwtypes.StandardUnitMilliseconds,
+		tags:       tags,
+		metricType: metricTypeHistogram,
+	})
+}
+
+// flush drains buffered samples and sends them to CloudWatch via the supplied
+// client. Sends are chunked into batches of at most maxBatchSize datums, the
+// CloudWatch PutMetricData hard limit. A no-op when the batcher is empty.
+func (b *batcher) flush(ctx context.Context, client cloudWatchAPI, namespace string, maxBatchSize int) error {
+	if b.isEmpty() {
+		return nil
+	}
+	data := b.drain()
+	if len(data) == 0 {
+		return nil
+	}
+	if maxBatchSize <= 0 {
+		maxBatchSize = len(data)
+	}
+	for i := 0; i < len(data); i += maxBatchSize {
+		end := i + maxBatchSize
+		if end > len(data) {
+			end = len(data)
+		}
+		_, err := client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
+			Namespace:  aws.String(namespace),
+			MetricData: data[i:end],
+		})
+		if err != nil {
+			return fmt.Errorf("cloudwatch: put metric data: %w", err)
+		}
+	}
+	return nil
 }

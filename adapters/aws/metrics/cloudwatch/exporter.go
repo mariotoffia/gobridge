@@ -6,10 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
-	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -41,11 +37,11 @@ func New(ctx context.Context, namespace string, opts ...Option) (*Exporter, erro
 	applyDefaults(&e.config)
 
 	if e.client == nil {
-		cfg, err := loadAWSConfig(ctx, e.config)
+		client, err := newCloudWatchClient(ctx, e.config)
 		if err != nil {
-			return nil, fmt.Errorf("cloudwatch: load AWS config: %w", err)
+			return nil, fmt.Errorf("cloudwatch: %w", err)
 		}
-		e.client = cloudwatch.NewFromConfig(cfg)
+		e.client = client
 	}
 
 	e.batcher = newBatcher(e.config.Namespace, e.config.DefaultTags, e.config.BufferSize, e.config.Clock)
@@ -57,50 +53,25 @@ func New(ctx context.Context, namespace string, opts ...Option) (*Exporter, erro
 }
 
 func (e *Exporter) Counter(name string, value int64, tags ...domain.Tag) {
-	if e.batcher.add(metricData{
-		name:       name,
-		value:      float64(value),
-		unit:       cwtypes.StandardUnitCount,
-		tags:       tags,
-		metricType: metricTypeCounter,
-	}) {
+	if e.batcher.addCounter(name, value, tags) {
 		go e.asyncFlush()
 	}
 }
 
 func (e *Exporter) Gauge(name string, value float64, tags ...domain.Tag) {
-	if e.batcher.add(metricData{
-		name:       name,
-		value:      value,
-		unit:       cwtypes.StandardUnitNone,
-		tags:       tags,
-		metricType: metricTypeGauge,
-	}) {
+	if e.batcher.addGauge(name, value, tags) {
 		go e.asyncFlush()
 	}
 }
 
 func (e *Exporter) Histogram(name string, value float64, tags ...domain.Tag) {
-	if e.batcher.add(metricData{
-		name:       name,
-		value:      value,
-		unit:       cwtypes.StandardUnitNone,
-		tags:       tags,
-		metricType: metricTypeHistogram,
-	}) {
+	if e.batcher.addHistogram(name, value, tags) {
 		go e.asyncFlush()
 	}
 }
 
 func (e *Exporter) Timer(name string, duration time.Duration, tags ...domain.Tag) {
-	ms := float64(duration.Nanoseconds()) / float64(time.Millisecond)
-	if e.batcher.add(metricData{
-		name:       name,
-		value:      ms,
-		unit:       cwtypes.StandardUnitMilliseconds,
-		tags:       tags,
-		metricType: metricTypeHistogram,
-	}) {
+	if e.batcher.addTimer(name, duration, tags) {
 		go e.asyncFlush()
 	}
 }
@@ -109,11 +80,7 @@ func (e *Exporter) Timer(name string, duration time.Duration, tags ...domain.Tag
 func (e *Exporter) Flush(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
-	if e.batcher.isEmpty() {
-		return nil
-	}
-	return e.sendBatched(ctx, e.batcher.drain())
+	return e.batcher.flush(ctx, e.client, e.config.Namespace, e.config.MaxBatchSize)
 }
 
 // Close stops the background flush loop and performs a final flush.
@@ -126,24 +93,6 @@ func (e *Exporter) Close(ctx context.Context) error {
 		err = e.Flush(ctx)
 	})
 	return err
-}
-
-func (e *Exporter) sendBatched(ctx context.Context, data []cwtypes.MetricDatum) error {
-	batch := e.config.MaxBatchSize
-	for i := 0; i < len(data); i += batch {
-		end := i + batch
-		if end > len(data) {
-			end = len(data)
-		}
-		_, err := e.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
-			Namespace:  aws.String(e.config.Namespace),
-			MetricData: data[i:end],
-		})
-		if err != nil {
-			return fmt.Errorf("cloudwatch: put metric data: %w", err)
-		}
-	}
-	return nil
 }
 
 func (e *Exporter) flushLoop() {
@@ -167,19 +116,4 @@ func (e *Exporter) asyncFlush() {
 	ctx, cancel := context.WithTimeout(context.Background(), e.config.FlushRPCTimeout)
 	defer cancel()
 	_ = e.Flush(ctx)
-}
-
-func loadAWSConfig(ctx context.Context, cfg Config) (aws.Config, error) {
-	var opts []func(*awsconfig.LoadOptions) error
-	if cfg.Region != "" {
-		opts = append(opts, awsconfig.WithRegion(cfg.Region))
-	}
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
-	if err != nil {
-		return aws.Config{}, fmt.Errorf("cloudwatch: load default aws config: %w", err)
-	}
-	if cfg.Endpoint != "" {
-		awsCfg.BaseEndpoint = aws.String(cfg.Endpoint)
-	}
-	return awsCfg, nil
 }

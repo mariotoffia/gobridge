@@ -1,8 +1,8 @@
 {
   "$schema": "v2",
   "source": "FIX-006.md",
-  "source_sha": "584ad9d1b4966a82ebb8dd2509ff0270a64e7521c3bebf7aafbfd92058a9883f",
-  "indexed_at": "2026-05-05T00:00:00Z",
+  "source_sha": "a000fe09ada5eaf67e7dde3602f338b69b9a9bfe2412b87a2e3df03035ccd6a1",
+  "indexed_at": "2026-05-05T10:15:40Z",
   "status_convention": "Per-task bullets appended under '## Progress' with ' \u2014 DONE' suffix on completion",
   "tasks": [
     {
@@ -63,7 +63,7 @@
     {
       "id": "FIX-006-A6",
       "title": "Refactor adapters/aws/metrics/cloudwatch into ACL files",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "Go-level reorganization of SDK boundary into acl_*.go files in the CloudWatch metrics adapter.",
