@@ -10,7 +10,7 @@
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
 .PHONY: arch-graph dupl-report goconst-report arch-quality
-.PHONY: build-aclcheck lint-acl build-aggcheck lint-aggregate
+.PHONY: build-aclcheck lint-acl build-aggcheck lint-aggregate build-cfgshape lint-cfgshape
 
 GOBRIDGE_GO_CACHE ?= /tmp/gobridge-go-build-cache
 export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
@@ -123,7 +123,7 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 # Lint targets
 # ============================================================================
 
-lint: lint-arch-check lint-gofmt lint-go-vet lint-go lint-aggregate lint-acl ## Run all static checks across the workspace
+lint: lint-arch-check lint-gofmt lint-go-vet lint-go lint-aggregate lint-acl lint-cfgshape ## Run all static checks across the workspace
 
 lint-go: ## Run golangci-lint across all workspace modules (uses .golangci.yml at the repo root)
 	@echo "Running golangci-lint across all modules..."
@@ -221,6 +221,27 @@ build-aggcheck: ## Build the aggcheck custom analyzer
 lint-aggregate: build-aggcheck ## Enforce aggregate-root naming convention in domain/
 	@echo "Checking domain aggregate conventions..."
 	@go vet -vettool=$(PWD)/bin/aggcheck ./domain/...
+
+build-cfgshape: ## Build the cfgshape custom analyzer
+	@mkdir -p bin
+	@cd scripts/cfgshape && go build -o $(PWD)/bin/cfgshape ./...
+
+# lint-cfgshape is enforcing: it runs cfgshape across the root module
+# and every adapter module to enforce typed pluggable config shapes
+# (see FIX-003). The aggregated log under reports/cfgshape.log is
+# preserved as a post-mortem aid; the per-module `go vet` invocation
+# is the gate. Script and test-only modules (scripts/, tests/,
+# testutil/) are excluded to avoid false positives — the rule targets
+# inner-ring + adapter packages only.
+lint-cfgshape: build-cfgshape ## Enforce typed pluggable config shapes
+	@mkdir -p reports
+	@echo "Running cfgshape..."
+	@bash -c 'set -eo pipefail; : > reports/cfgshape.log; for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "./scripts/*" -not -path "./tests/*" -not -path "./testutil/*" | sort); do \
+		dir=$$(dirname "$$modfile"); \
+		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then continue; fi; \
+		echo "--- cfgshape $$dir ---" | tee -a reports/cfgshape.log; \
+		(cd "$$dir" && go vet -vettool=$(PWD)/bin/cfgshape ./... 2>&1) | tee -a $(PWD)/reports/cfgshape.log; \
+	done'
 
 # ============================================================================
 # Maintenance targets
