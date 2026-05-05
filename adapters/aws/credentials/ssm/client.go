@@ -2,10 +2,13 @@ package ssm
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+
+	"github.com/mariotoffia/gobridge/domain"
 )
 
 // ssmAPI is the subset of the SSM SDK client used by Repository.
@@ -31,7 +34,7 @@ func buildAWSConfig(ctx context.Context, region, endpoint, profile string) (aws.
 
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
-		return cfg, err
+		return cfg, domain.ErrUnavailable.Wrap(fmt.Errorf("ssm: load AWS config: %w", err))
 	}
 
 	if endpoint != "" {

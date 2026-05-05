@@ -73,7 +73,7 @@ func newConditionEval(c MatchCondition) (*conditionEval, error) {
 func (e *conditionEval) evaluate(env *domain.Envelope, ctx *evalContext) (bool, error) {
 	value, exists, err := e.extractField(env, ctx)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("runtime: condition: extract field: %w", err)
 	}
 
 	if e.cond.Operator == OpExists {
@@ -176,11 +176,11 @@ func (e *conditionEval) regexMatch(value any) bool {
 func (e *conditionEval) numericCompare(value any) (int, error) {
 	v1, err := condToFloat64(value)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("runtime: condition: convert lhs: %w", err)
 	}
 	v2, err := condToFloat64(e.cond.Value)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("runtime: condition: convert rhs: %w", err)
 	}
 
 	if v1 < v2 {

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -16,7 +17,7 @@ func (m *SessionManager) runExclusiveDeferred(ctx context.Context) error {
 	for {
 		token, err := m.acquireLeaseWithRetry(ctx)
 		if err != nil {
-			return err
+			return fmt.Errorf("runtime: session-manager: acquire lease: %w", err)
 		}
 		m.setToken(token)
 
@@ -80,7 +81,7 @@ func (m *SessionManager) runExclusive(ctx context.Context) error {
 	for {
 		token, err := m.acquireLeaseWithRetry(ctx)
 		if err != nil {
-			return err
+			return fmt.Errorf("runtime: session-manager: acquire lease: %w", err)
 		}
 		m.setToken(token)
 
@@ -158,7 +159,7 @@ func (m *SessionManager) renewLoop(ctx context.Context) error {
 				return nil
 			}
 			if err := m.handleSessionEvent(ctx, ev); err != nil {
-				return err
+				return fmt.Errorf("runtime: session-manager: handle session event: %w", err)
 			}
 
 		case <-timer.C():

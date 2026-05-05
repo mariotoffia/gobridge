@@ -125,7 +125,7 @@ func (r *Receiver) isEmitError(err error) bool {
 func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
 	ch, err := r.openChannel()
 	if err != nil {
-		return MapError(err)
+		return err
 	}
 	defer func() { _ = ch.Close() }()
 
@@ -229,7 +229,7 @@ func (r *Receiver) openChannel() (*amqp.Channel, error) {
 	}
 	ch, err := conn.Channel()
 	if err != nil {
-		return nil, err
+		return nil, MapError(err)
 	}
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(context.Background(), logging.LevelTrace,

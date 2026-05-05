@@ -140,7 +140,7 @@ func (e *Exporter) sendBatched(ctx context.Context, data []cwtypes.MetricDatum) 
 			MetricData: data[i:end],
 		})
 		if err != nil {
-			return fmt.Errorf("cloudwatch: PutMetricData: %w", err)
+			return fmt.Errorf("cloudwatch: put metric data: %w", err)
 		}
 	}
 	return nil
@@ -176,7 +176,7 @@ func loadAWSConfig(ctx context.Context, cfg Config) (aws.Config, error) {
 	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
-		return aws.Config{}, err
+		return aws.Config{}, fmt.Errorf("cloudwatch: load default aws config: %w", err)
 	}
 	if cfg.Endpoint != "" {
 		awsCfg.BaseEndpoint = aws.String(cfg.Endpoint)

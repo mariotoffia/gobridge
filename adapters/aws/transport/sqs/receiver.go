@@ -3,7 +3,6 @@ package sqs
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
@@ -291,7 +290,7 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 
 	cfg, err := buildAWSConfig(ctx, r.cfg.Region, r.cfg.Endpoint, r.cfg.Profile)
 	if err != nil {
-		return domain.ErrUnavailable.Wrap(fmt.Errorf("sqs receiver: build AWS config: %w", err))
+		return err
 	}
 	r.client = awssqs.NewFromConfig(cfg)
 

@@ -2,6 +2,7 @@ package dynamodb
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodbstreams"
@@ -116,7 +117,7 @@ func (l *Loader) acquireLatestIterator(ctx context.Context, streamArn string) (s
 		StreamArn: aws.String(streamArn),
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("dynamodb config streams: describe stream: %w", err)
 	}
 	if desc.StreamDescription == nil {
 		return "", nil
@@ -139,7 +140,7 @@ func (l *Loader) acquireLatestIterator(ctx context.Context, streamArn string) (s
 		ShardIteratorType: dstreamtypes.ShardIteratorTypeLatest,
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("dynamodb config streams: get shard iterator: %w", err)
 	}
 	if iter.ShardIterator == nil {
 		return "", nil

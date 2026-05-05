@@ -2,6 +2,7 @@ package servicebus
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/logging"
@@ -110,15 +111,16 @@ func (s *Sender) ApplyCredentials(ctx context.Context, set *domain.CredentialSet
 		return nil
 	}
 
-	asbClient, err := buildClient(newConn)
+	asbClient, err := rawNewAzClient(newConn)
 	if err != nil {
-		return err
+		return domain.ErrTemporaryAuthFailure.Wrap(err)
 	}
 
 	newSender, err := asbClient.NewSender(s.entityName(), nil)
 	if err != nil {
 		_ = asbClient.Close(ctx)
-		return err
+		return domain.ErrTemporaryAuthFailure.Wrap(
+			fmt.Errorf("servicebus: rotate sender for %q: %w", s.entityName(), err))
 	}
 
 	s.initMu.Lock()

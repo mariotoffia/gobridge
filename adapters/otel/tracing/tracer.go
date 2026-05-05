@@ -2,6 +2,7 @@ package oteltracing
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -50,7 +51,7 @@ func New(ctx context.Context, opts ...Option) (*Tracer, error) {
 
 	exporter, err := otlptracehttp.New(ctx, exporterOpts...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("otel-tracing: create otlp exporter: %w", err)
 	}
 
 	resAttrs := []attribute.KeyValue{
@@ -68,7 +69,7 @@ func New(ctx context.Context, opts ...Option) (*Tracer, error) {
 		resource.NewWithAttributes(semconv.SchemaURL, resAttrs...),
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("otel-tracing: create resource: %w", err)
 	}
 
 	t.provider = sdktrace.NewTracerProvider(
@@ -99,7 +100,10 @@ func (t *Tracer) StartSpan(
 
 // Close shuts down the TracerProvider, flushing any pending spans.
 func (t *Tracer) Close(ctx context.Context) error {
-	return t.provider.Shutdown(ctx)
+	if err := t.provider.Shutdown(ctx); err != nil {
+		return fmt.Errorf("otel-tracing: shutdown: %w", err)
+	}
+	return nil
 }
 
 // otelSpan wraps an OTel trace.Span and implements ports.Span.

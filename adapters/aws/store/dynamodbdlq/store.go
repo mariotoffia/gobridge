@@ -122,13 +122,16 @@ func (s *Store) EnsureTable(ctx context.Context) error {
 		if isResourceInUse(err) {
 			return nil
 		}
-		return fmt.Errorf("dynamodbdlq: create table: %w", err)
+		return wrapErr(err, "create dlq table failed", "table", s.tableName)
 	}
 
 	waiter := dynamodb.NewTableExistsWaiter(s.client)
-	return waiter.Wait(ctx, &dynamodb.DescribeTableInput{
+	if err := waiter.Wait(ctx, &dynamodb.DescribeTableInput{
 		TableName: aws.String(s.tableName),
-	}, 2*time.Minute)
+	}, 2*time.Minute); err != nil {
+		return wrapErr(err, "wait for dlq table to exist failed", "table", s.tableName)
+	}
+	return nil
 }
 
 // Write stores a DLQ entry. The write is idempotent: if an entry with the
@@ -178,7 +181,7 @@ func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
 				WithMessage("duplicate DLQ entry").
 				With("entryID", entry.ID)
 		}
-		return fmt.Errorf("dynamodbdlq: write: %w", err)
+		return wrapErr(err, "dlq write failed", "entryID", entry.ID, "routeID", entry.RouteID)
 	}
 	return nil
 }
@@ -275,7 +278,7 @@ func (s *Store) listByIndex(
 
 		out, err := s.client.Query(ctx, input)
 		if err != nil {
-			return nil, fmt.Errorf("dynamodbdlq: list query (%s): %w", indexName, err)
+			return nil, wrapErr(err, "dlq list query failed", "index", indexName, "pkAttr", pkAttr)
 		}
 
 		for _, item := range out.Items {
@@ -349,7 +352,7 @@ func (s *Store) listByScan(ctx context.Context, filter domain.DLQFilter) ([]doma
 
 		out, err := s.client.Scan(ctx, input)
 		if err != nil {
-			return nil, fmt.Errorf("dynamodbdlq: list scan: %w", err)
+			return nil, wrapErr(err, "dlq list scan failed", "table", s.tableName)
 		}
 
 		for _, item := range out.Items {
@@ -391,7 +394,7 @@ func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
 		},
 	})
 	if err != nil {
-		return domain.DLQEntry{}, fmt.Errorf("dynamodbdlq: get: %w", err)
+		return domain.DLQEntry{}, wrapErr(err, "dlq get failed", "entryID", id)
 	}
 	if out.Item == nil {
 		return domain.DLQEntry{}, domain.ErrNotFound.
@@ -425,7 +428,7 @@ func (s *Store) Delete(ctx context.Context, ids []string) (int, error) {
 			if isConditionFailed(err) {
 				continue // entry doesn't exist — skip
 			}
-			return count, fmt.Errorf("dynamodbdlq: delete: %w", err)
+			return count, wrapErr(err, "dlq delete failed", "entryID", id)
 		}
 		count++
 	}
@@ -443,7 +446,7 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (in
 
 	entries, err := s.List(ctx, filter)
 	if err != nil {
-		return 0, fmt.Errorf("dynamodbdlq: delete_by_filter list: %w", err)
+		return 0, err
 	}
 
 	var count int
@@ -455,7 +458,7 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (in
 			},
 		})
 		if err != nil {
-			return count, fmt.Errorf("dynamodbdlq: delete_by_filter delete: %w", err)
+			return count, wrapErr(err, "dlq delete_by_filter delete failed", "entryID", e.ID)
 		}
 		count++
 	}
@@ -492,7 +495,7 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
 
 		out, err := s.client.Scan(ctx, input)
 		if err != nil {
-			return count, fmt.Errorf("dynamodbdlq: purge scan: %w", err)
+			return count, wrapErr(err, "dlq purge scan failed", "table", s.tableName)
 		}
 
 		for _, item := range out.Items {
@@ -505,7 +508,7 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
 				},
 			})
 			if err != nil {
-				return count, fmt.Errorf("dynamodbdlq: purge delete: %w", err)
+				return count, wrapErr(err, "dlq purge delete failed", "pk", pk)
 			}
 			count++
 		}

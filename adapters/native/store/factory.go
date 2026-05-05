@@ -61,7 +61,7 @@ func (f *SQLiteStoreFactory) NewOutboxStore(_ context.Context, spec ports.StoreS
 		return nil, err
 	}
 
-	return sqliteoutbox.NewStore(path)
+	return sqliteoutbox.NewStore(path) //nolint:wrapcheck // Rule 2/Q3 decorator pass-through; inner sqliteoutbox.NewStore already classifies via mapError.
 }
 
 // NewDLQStore creates a SQLite DLQ store from the spec options.
@@ -71,7 +71,7 @@ func (f *SQLiteStoreFactory) NewDLQStore(_ context.Context, spec ports.StoreSpec
 		return nil, err
 	}
 
-	return sqlitedlq.NewStore(path)
+	return sqlitedlq.NewStore(path) //nolint:wrapcheck // Rule 2/Q3 decorator pass-through; inner sqlitedlq.NewStore already classifies via mapError.
 }
 
 func requiredPath(spec ports.StoreSpec) (string, error) {

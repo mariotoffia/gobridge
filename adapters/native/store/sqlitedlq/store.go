@@ -52,17 +52,17 @@ func (s *Store) SetLogger(l *slog.Logger) { s.logger = l }
 func NewStore(dbPath string) (*Store, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("sqlitedlq: open: %w", err)
+		return nil, wrapErr(err, "sqlitedlq: open", "path", dbPath)
 	}
 
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("sqlitedlq: pragma: %w", err)
+		return nil, wrapErr(err, "sqlitedlq: pragma", "path", dbPath)
 	}
 
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("sqlitedlq: migrate: %w", err)
+		return nil, wrapErr(err, "sqlitedlq: migrate", "path", dbPath)
 	}
 
 	return &Store{db: db}, nil
@@ -70,7 +70,10 @@ func NewStore(dbPath string) (*Store, error) {
 
 // Close closes the underlying database connection.
 func (s *Store) Close() error {
-	return s.db.Close()
+	if err := s.db.Close(); err != nil {
+		return wrapErr(err, "sqlitedlq: close")
+	}
+	return nil
 }
 
 func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
@@ -96,7 +99,8 @@ func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
 		if isUniqueViolation(err) {
 			return domain.ErrDuplicateRecord.With("entryID", entry.ID)
 		}
-		return fmt.Errorf("sqlitedlq: insert: %w", err)
+		return wrapErr(err, "sqlitedlq: write",
+			"entryID", entry.ID, "routeID", entry.RouteID)
 	}
 
 	return nil
@@ -140,7 +144,8 @@ func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQ
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("sqlitedlq: list: %w", err)
+		return nil, wrapErr(err, "sqlitedlq: list",
+			"routeID", filter.RouteID, "category", filter.Category)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -157,7 +162,7 @@ func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
 		 reason, category, error_code, last_error, envelope_json, failed_at, attempts
 		 FROM dlq WHERE id = ?`, id)
 	if err != nil {
-		return domain.DLQEntry{}, fmt.Errorf("sqlitedlq: get: %w", err)
+		return domain.DLQEntry{}, wrapErr(err, "sqlitedlq: get", "entryID", id)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -196,7 +201,7 @@ func (s *Store) Delete(ctx context.Context, ids []string) (int, error) {
 		args...,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("sqlitedlq: delete: %w", err)
+		return 0, wrapErr(err, "sqlitedlq: delete", "recordCount", len(ids))
 	}
 
 	n, _ := res.RowsAffected()
@@ -240,7 +245,8 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (in
 		query := "DELETE FROM dlq WHERE id IN (" + subquery + ")"
 		res, err := s.db.ExecContext(ctx, query, args...)
 		if err != nil {
-			return 0, fmt.Errorf("sqlitedlq: delete_by_filter: %w", err)
+			return 0, wrapErr(err, "sqlitedlq: delete by filter",
+				"routeID", filter.RouteID, "category", filter.Category)
 		}
 		n, _ := res.RowsAffected()
 		return int(n), nil
@@ -253,7 +259,8 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (in
 
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
-		return 0, fmt.Errorf("sqlitedlq: delete_by_filter: %w", err)
+		return 0, wrapErr(err, "sqlitedlq: delete by filter",
+			"routeID", filter.RouteID, "category", filter.Category)
 	}
 
 	n, _ := res.RowsAffected()
@@ -270,7 +277,7 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
 		before.UnixMilli(),
 	)
 	if err != nil {
-		return 0, fmt.Errorf("sqlitedlq: purge: %w", err)
+		return 0, wrapErr(err, "sqlitedlq: purge")
 	}
 
 	n, _ := res.RowsAffected()
@@ -293,7 +300,7 @@ func scanEntries(rows *sql.Rows) ([]domain.DLQEntry, error) {
 			&envJSON, &failedAtMs, &e.Attempts,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("sqlitedlq: scan: %w", err)
+			return nil, wrapErr(err, "sqlitedlq: scan entry")
 		}
 
 		e.FailedAt = time.UnixMilli(failedAtMs)
@@ -305,9 +312,8 @@ func scanEntries(rows *sql.Rows) ([]domain.DLQEntry, error) {
 		result = append(result, e)
 	}
 
-	return result, rows.Err()
-}
-
-func isUniqueViolation(err error) bool {
-	return strings.Contains(err.Error(), "UNIQUE constraint failed")
+	if err := rows.Err(); err != nil {
+		return nil, wrapErr(err, "sqlitedlq: rows err scan")
+	}
+	return result, nil
 }

@@ -10,6 +10,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
+
+	"github.com/mariotoffia/gobridge/domain"
 )
 
 // asbAPI is the subset of the Azure Service Bus Receiver SDK used by
@@ -46,6 +48,11 @@ var (
 // sessionReceiverAdapter wraps *azservicebus.SessionReceiver to
 // satisfy asbAPI. Session receivers use session-level locking
 // (RenewSessionLock) rather than per-message locking.
+//
+// Rule 2 (decorator pass-through): these methods forward to the inner
+// SDK verbatim. Classification happens at the asbAPI call sites in
+// delivery.go/receiver.go via MapError; wrapping here would
+// double-classify and break errors.Is sentinel matching.
 type sessionReceiverAdapter struct {
 	inner *azservicebus.SessionReceiver
 }
@@ -53,23 +60,23 @@ type sessionReceiverAdapter struct {
 var _ asbAPI = (*sessionReceiverAdapter)(nil)
 
 func (a *sessionReceiverAdapter) ReceiveMessages(ctx context.Context, count int, options *azservicebus.ReceiveMessagesOptions) ([]*azservicebus.ReceivedMessage, error) {
-	return a.inner.ReceiveMessages(ctx, count, options)
+	return a.inner.ReceiveMessages(ctx, count, options) //nolint:wrapcheck // Rule 2 decorator pass-through; classified at caller via MapError
 }
 
 func (a *sessionReceiverAdapter) CompleteMessage(ctx context.Context, message *azservicebus.ReceivedMessage, options *azservicebus.CompleteMessageOptions) error {
-	return a.inner.CompleteMessage(ctx, message, options)
+	return a.inner.CompleteMessage(ctx, message, options) //nolint:wrapcheck // Rule 2 decorator pass-through
 }
 
 func (a *sessionReceiverAdapter) AbandonMessage(ctx context.Context, message *azservicebus.ReceivedMessage, options *azservicebus.AbandonMessageOptions) error {
-	return a.inner.AbandonMessage(ctx, message, options)
+	return a.inner.AbandonMessage(ctx, message, options) //nolint:wrapcheck // Rule 2 decorator pass-through
 }
 
 func (a *sessionReceiverAdapter) RenewMessageLock(ctx context.Context, _ *azservicebus.ReceivedMessage, _ *azservicebus.RenewMessageLockOptions) error {
-	return a.inner.RenewSessionLock(ctx, nil)
+	return a.inner.RenewSessionLock(ctx, nil) //nolint:wrapcheck // Rule 2 decorator pass-through
 }
 
 func (a *sessionReceiverAdapter) Close(ctx context.Context) error {
-	return a.inner.Close(ctx)
+	return a.inner.Close(ctx) //nolint:wrapcheck // Rule 2 decorator pass-through
 }
 
 // ConnectionConfig holds the credentials and TLS settings shared by
@@ -101,14 +108,20 @@ type ConnectionConfig struct {
 // buildClient creates an azservicebus.Client from the given connection
 // configuration. It supports connection-string auth, managed identity,
 // client-secret credentials, and the default Azure credential chain.
-func buildClient(cfg ConnectionConfig) (*azservicebus.Client, error) {
+// rawNewAzClient constructs an *azservicebus.Client from the connection
+// configuration without any domain-error classification. Callers wrap
+// the returned error with the sentinel that matches their lifecycle
+// phase (cold-init: ErrUnavailable; credential rotation:
+// ErrTemporaryAuthFailure) — keeping the chain free of double
+// classification so errors.Is matches exactly one domain sentinel.
+func rawNewAzClient(cfg ConnectionConfig) (*azservicebus.Client, error) {
 	opts, err := buildClientOptions(cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	if cfg.ConnectionString != "" {
-		return azservicebus.NewClientFromConnectionString(cfg.ConnectionString, opts)
+		return azservicebus.NewClientFromConnectionString(cfg.ConnectionString, opts) //nolint:wrapcheck // raw helper; caller classifies
 	}
 
 	var cred azcore.TokenCredential
@@ -128,7 +141,23 @@ func buildClient(cfg ConnectionConfig) (*azservicebus.Client, error) {
 		return nil, fmt.Errorf("servicebus: credential: %w", err)
 	}
 
-	return azservicebus.NewClient(cfg.Namespace, cred, opts)
+	return azservicebus.NewClient(cfg.Namespace, cred, opts) //nolint:wrapcheck // raw helper; caller classifies
+}
+
+// buildClient constructs a Service Bus client for the cold-init code
+// path (Receiver.ensureClient / Sender.ensureClient). It classifies
+// any failure with domain.ErrUnavailable so the runtime treats the
+// pipeline as transiently unavailable and retries.
+//
+// For the credential-rotation path (ApplyCredentials), use
+// rawNewAzClient directly and classify with
+// domain.ErrTemporaryAuthFailure.
+func buildClient(cfg ConnectionConfig) (*azservicebus.Client, error) {
+	client, err := rawNewAzClient(cfg)
+	if err != nil {
+		return nil, domain.ErrUnavailable.Wrap(err)
+	}
+	return client, nil
 }
 
 // buildClientOptions returns ClientOptions with a custom TLS

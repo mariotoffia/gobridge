@@ -80,7 +80,11 @@ func toInt(v any) (int64, error) {
 	case float32:
 		return int64(val), nil
 	case string:
-		return strconv.ParseInt(val, 10, 64)
+		i, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse int %q: %w", val, err)
+		}
+		return i, nil
 	case bool:
 		if val {
 			return 1, nil
@@ -105,7 +109,11 @@ func toFloat(v any) (float64, error) {
 	case int32:
 		return float64(val), nil
 	case string:
-		return strconv.ParseFloat(val, 64)
+		f, err := strconv.ParseFloat(val, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse float %q: %w", val, err)
+		}
+		return f, nil
 	default:
 		return 0, fmt.Errorf("cannot convert %T to float", v)
 	}
@@ -127,7 +135,11 @@ func toBool(v any) (bool, error) {
 	case float32:
 		return val != 0, nil
 	case string:
-		return strconv.ParseBool(val)
+		b, err := strconv.ParseBool(val)
+		if err != nil {
+			return false, fmt.Errorf("parse bool %q: %w", val, err)
+		}
+		return b, nil
 	default:
 		return false, fmt.Errorf("cannot convert %T to bool", v)
 	}

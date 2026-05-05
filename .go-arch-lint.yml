@@ -214,7 +214,7 @@ vendors:
     }
   aws:
     { in: ["github.com/aws/aws-sdk-go-v2/**", "github.com/aws/smithy-go/**"] }
-  sqlite: { in: modernc.org/sqlite }
+  sqlite: { in: ["modernc.org/sqlite", "modernc.org/sqlite/lib"] }
   otel:
     {
       in:

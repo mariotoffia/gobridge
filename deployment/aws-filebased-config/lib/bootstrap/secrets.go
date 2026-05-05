@@ -110,7 +110,7 @@ func buildDevModeSSMClient(ctx context.Context, region, endpoint string) (*awsss
 	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, cfgOpts...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("bootstrap: load default aws config: %w", err)
 	}
 	return awsssm.NewFromConfig(awsCfg, func(o *awsssm.Options) {
 		o.BaseEndpoint = aws.String(endpoint)

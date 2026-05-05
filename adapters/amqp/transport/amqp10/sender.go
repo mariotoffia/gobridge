@@ -324,7 +324,9 @@ func (s *Sender) Close(ctx context.Context) error {
 	s.mu.Unlock()
 
 	if link != nil {
-		return link.Close(ctx)
+		if err := link.Close(ctx); err != nil {
+			return MapError(err)
+		}
 	}
 	return nil
 }

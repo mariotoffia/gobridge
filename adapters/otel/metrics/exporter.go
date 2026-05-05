@@ -61,7 +61,7 @@ func New(ctx context.Context, opts ...Option) (*Exporter, error) {
 
 	exporter, err := otlpmetrichttp.New(ctx, exporterOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create OTLP exporter: %w", err)
+		return nil, fmt.Errorf("otel-metrics: create otlp exporter: %w", err)
 	}
 
 	res, err := resource.Merge(
@@ -74,7 +74,7 @@ func New(ctx context.Context, opts ...Option) (*Exporter, error) {
 		),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create resource: %w", err)
+		return nil, fmt.Errorf("otel-metrics: create resource: %w", err)
 	}
 
 	e.provider = sdkmetric.NewMeterProvider(
@@ -96,6 +96,9 @@ func New(ctx context.Context, opts ...Option) (*Exporter, error) {
 func (e *Exporter) Counter(name string, value int64, tags ...domain.Tag) {
 	counter, err := e.getOrCreateCounter(name)
 	if err != nil {
+		// Emit failure is intentionally dropped: ports.MetricsExporter.Counter
+		// has no error return, and observability emit failures are
+		// non-classified per _design/error-wrapping-policy.adoc §"Observability".
 		return
 	}
 
@@ -107,6 +110,7 @@ func (e *Exporter) Counter(name string, value int64, tags ...domain.Tag) {
 func (e *Exporter) Gauge(name string, value float64, tags ...domain.Tag) {
 	gauge, err := e.getOrCreateGauge(name)
 	if err != nil {
+		// See Counter: emit failure dropped per policy.
 		return
 	}
 
@@ -118,6 +122,7 @@ func (e *Exporter) Gauge(name string, value float64, tags ...domain.Tag) {
 func (e *Exporter) Histogram(name string, value float64, tags ...domain.Tag) {
 	histogram, err := e.getOrCreateHistogram(name)
 	if err != nil {
+		// See Counter: emit failure dropped per policy.
 		return
 	}
 
@@ -133,12 +138,18 @@ func (e *Exporter) Timer(name string, duration time.Duration, tags ...domain.Tag
 
 // Flush forces a metric export.
 func (e *Exporter) Flush(ctx context.Context) error {
-	return e.provider.ForceFlush(ctx)
+	if err := e.provider.ForceFlush(ctx); err != nil {
+		return fmt.Errorf("otel-metrics: flush: %w", err)
+	}
+	return nil
 }
 
 // Close shuts down the exporter.
 func (e *Exporter) Close(ctx context.Context) error {
-	return e.provider.Shutdown(ctx)
+	if err := e.provider.Shutdown(ctx); err != nil {
+		return fmt.Errorf("otel-metrics: shutdown: %w", err)
+	}
+	return nil
 }
 
 func (e *Exporter) getOrCreateCounter(name string) (metric.Int64Counter, error) {
@@ -158,7 +169,7 @@ func (e *Exporter) getOrCreateCounter(name string) (metric.Int64Counter, error) 
 
 	counter, err := e.meter.Int64Counter(name)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("otel-metrics: create int64 counter: %w", err)
 	}
 
 	e.counters[name] = counter
@@ -182,7 +193,7 @@ func (e *Exporter) getOrCreateGauge(name string) (metric.Float64Gauge, error) {
 
 	gauge, err := e.meter.Float64Gauge(name)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("otel-metrics: create float64 gauge: %w", err)
 	}
 
 	e.gauges[name] = gauge
@@ -206,7 +217,7 @@ func (e *Exporter) getOrCreateHistogram(name string) (metric.Float64Histogram, e
 
 	histogram, err := e.meter.Float64Histogram(name)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("otel-metrics: create float64 histogram: %w", err)
 	}
 
 	e.histograms[name] = histogram

@@ -7,6 +7,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+
+	"github.com/mariotoffia/gobridge/domain"
 )
 
 // sqsAPI is the subset of the SQS SDK client used by Receiver and Sender.
@@ -35,7 +37,7 @@ func buildAWSConfig(ctx context.Context, region, endpoint, profile string) (aws.
 
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
-		return cfg, err
+		return cfg, domain.ErrUnavailable.Wrap(fmt.Errorf("sqs: load AWS config: %w", err))
 	}
 
 	if endpoint != "" {
@@ -55,7 +57,7 @@ func resolveQueueURL(ctx context.Context, client sqsAPI, queueURL, queueName str
 		return "", MapError(err)
 	}
 	if out.QueueUrl == nil {
-		return "", fmt.Errorf("GetQueueUrl returned nil QueueUrl for queue %q", queueName)
+		return "", fmt.Errorf("sqs: get queue URL: nil QueueUrl for queue %q", queueName)
 	}
 	return *out.QueueUrl, nil
 }

@@ -32,7 +32,7 @@ package; many adapters return SDK errors directly with no wrapper.
 
 ## Approach
 
-### Phase 1 — Inventory the violation surface
+### Phase 1 — Inventory the violation surface - DONE
 
 Run `wrapcheck` once with custom config to count current violations
 per package:
@@ -50,7 +50,200 @@ Expected hot spots:
 - `adapters/*/credentials/*` — secret-fetch errors.
 - `runtime/*` — internal boundaries between sub-systems.
 
-### Phase 2 — Decide per-call wrap vs classify
+#### Phase 1 — Findings (2026-05-04)
+
+**Method:** Temporarily uncommented `- wrapcheck` in `.golangci.yml`
+(line 41), kept all other settings unchanged. Ran the `Makefile`
+`lint-go` per-module loop with golangci-lint v2.11.4. Filtered output
+for `(wrapcheck)`, grouped by package directory. Reverted
+`.golangci.yml` from a local backup; worktree clean.
+
+**Total violations: 162** across 39 packages (152 production, 10 in
+`_test.go`). Two categories reported by wrapcheck:
+
+- `error returned from external package is unwrapped` — 82
+- `error returned from interface method should be wrapped` — 80
+
+##### Per-package counts (sorted desc)
+
+| # | Package | Count |
+|---|---|---|
+| 1 | `runtime` | 36 |
+| 2 | `deployment/aws-filebased-config/lib/bootstrap` | 17 |
+| 3 | `adapters/azure/transport/servicebus` | 12 |
+| 4 | `adapters/aws/store/dynamodblease` | 8 |
+| 5 | `adapters/amqp/transport/amqp091` | 7 |
+| 6 | `adapters/amqp/transport/amqp10` | 6 |
+| 7 | `adapters/otel/metrics` | 5 |
+| 8 | `adapters/aws/config/dynamodb` | 5 |
+| 9 | `httpapi` | 4 |
+| 10 | `adapters/aws/transport/sqs` | 4 |
+| 11 | `processors/transform` | 3 |
+| 12 | `config` | 3 |
+| 13 | `adapters/otel/tracing` | 3 |
+| 14 | `adapters/native/store/sqliteoutbox` | 3 |
+| 15 | `adapters/native/config/file` | 3 |
+| 16 | `adapters/http/transport` | 3 |
+| 17–24 | `testutil/{sqslocal,s3local,rabbitmqlocal,mqttlocal,localstack,ddblocal,asblocal,artemislocal}` | 2 each (16) |
+| 25 | `tests/integration` | 2 |
+| 26 | `processors/filter` | 2 |
+| 27 | `deployment/aws-filebased-config/lib/cmd/gobridge-filebased` | 2 |
+| 28 | `bridge` | 2 |
+| 29 | `adapters/native/store/sqlitedlq` | 2 |
+| 30 | `adapters/native/store` | 2 |
+| 31 | `adapters/mqtt/transport/paho` | 2 |
+| 32 | `adapters/aws/store/dynamodboutbox` | 2 |
+| 33–39 | `processors/circuitbreaker`, `observability`, `deployment/aws-filebased-config/lib/infra`, `adapters/native/credentials/file`, `adapters/native/cluster`, `adapters/aws/store/dynamodbdlq`, `adapters/aws/metrics/cloudwatch`, `adapters/aws/credentials/ssm` | 1 each (8) |
+
+##### Hot-spot summary
+
+- **`runtime` (36)** dominates — overwhelmingly forwards `ports.*Store` /
+  `ports.CredentialRepository` errors verbatim.
+- **`deployment/aws-filebased-config/lib/bootstrap` (17)** — pure
+  composition-root forwarding of `bridge.Builder.Prepare`,
+  `config.Manager.Load`, infra `Validate()`.
+- **`azure/transport/servicebus` (12)** + **`aws/store/dynamodblease`
+  (8)** — direct cloud SDK error returns.
+- Top external-pkg sources: `ports.*` (46), `context.Context.Err` (20),
+  `aws-sdk-go-v2/service/dynamodb` (11), `net.Listen` (9),
+  `azservicebus` (6), `net.DialTimeout` (4),
+  `aws-sdk-go-v2/config` (4), `bridge`/`config` own pkgs treated as
+  external by wrapcheck (4 each).
+
+##### Representative samples (one per category)
+
+- **Interface-method (`ports`):** `runtime/dlq_router.go:235:9` —
+  `ports.DLQStore.Write` returned bare.
+- **Interface-method (context):**
+  `adapters/amqp/transport/amqp091/receiver.go:93:11` — `ctx.Err()`
+  returned bare.
+- **Interface-method (vendor SDK):**
+  `adapters/aws/config/dynamodb/loader.go:343:13` — `ddbAPI.GetItem`
+  returned bare.
+- **External-pkg (cloud SDK):**
+  `adapters/aws/store/dynamodblease/store.go:130:31` —
+  `dynamodb.Client.PutItem`.
+- **External-pkg (stdlib):**
+  `adapters/aws/config/dynamodb/loader.go:353:9` — `strconv.ParseInt`.
+- **External-pkg (net):** `testutil/*` — `net.Listen`,
+  `net.DialTimeout` bare in test harnesses.
+- **External-pkg (intra-repo):**
+  `deployment/.../bootstrap/app.go:118:10` — `config.Manager.Load`
+  returned bare from composition root.
+- **Test file:**
+  `adapters/amqp/transport/amqp091/integration_consumer_test.go:89:12`
+  — `ports.Delivery.Ack` bare.
+
+##### Cross-cutting patterns
+
+1. **Pass-through of internal `ports.*` errors (~46 sites).** Runtime
+   and instrumented decorators forward store errors without wrapping.
+   Wrapcheck flags because it considers any other module path external.
+2. **`ctx.Err()` returned bare (~20 sites).** Idiomatic Go cancellation
+   propagation; cheap to wrap (`fmt.Errorf("...: %w", ctx.Err())`) but
+   arguably noise.
+3. **Cloud SDK calls (AWS DynamoDB, Azure ServiceBus, AMQP).** Bare
+   `return err` from adapter methods that already provide context via
+   the function name.
+4. **Composition root (bootstrap, cmd).** Forwards domain-internal
+   errors (`bridge.*`, `config.*`); wrapcheck treats sister modules in
+   the workspace as external because of the multi-module layout.
+5. **Stdlib leaks.** `strconv.Parse*`, `net.Listen`, `net.DialTimeout`
+   (mostly testutil + 1 dynamodb loader).
+6. **Test files (10).** Integration tests reuse production helpers and
+   trip wrapcheck on `ports.Delivery.Ack` etc.
+
+##### Phase 3 sub-task scope check (mapping inventory → sub-tasks)
+
+- **T012 / `runtime` (36):** likely largely absorbed by allow-list
+  decisions in Phase 4 (ports glob + ctx.Err) → reduces to a handful.
+- **T003 AWS SQS (4)**, **T008 DynamoDB stores (lease 8 + outbox 2 +
+  dlq 1 = 11)** — distinct sweeps; SDK wrap pattern.
+- **T004 Azure ServiceBus (12)** — distinct sweep.
+- **T005 AMQP 0.9.1 (7)** + **T006 AMQP 1.0 (6)** — distinct sweeps,
+  similar shape.
+- **T007 MQTT Paho (2)** — small.
+- **T009 Native SQLite stores (sqliteoutbox 3 + sqlitedlq 2 + native
+  store 2 = 7)** — bundle.
+- **T010 Credentials adapters (ssm 1 + native/credentials/file 1 = 2)**
+  — small.
+- **T011 Metrics/Tracing adapters (otel/metrics 5 + otel/tracing 3 +
+  cloudwatch 1 = 9)** — distinct sweep.
+- **Out-of-scope-of-current-Phase-3 packages** (~30 hits):
+  `deployment/.../bootstrap` (17), `httpapi` (4), `processors/*` (6),
+  `config` (3), `bridge` (2), `observability` (1), `tests/integration`
+  (2), `testutil/*` (16), `adapters/http/transport` (3),
+  `adapters/native/{config/file,cluster}` (4),
+  `adapters/aws/config/dynamodb` (5),
+  `deployment/.../{cmd/gobridge-filebased,infra}` (3). Phase 4
+  allow-list + Phase 3.10 (T012 runtime) likely catches the bulk; the
+  bootstrap/cmd composition root may need a deliberate decision in
+  Phase 2 (wrap or allow-list internal modules).
+
+Scope appears tractable: ~6–8 real sweep sub-tasks; nothing exceeds
+~25 wraps after the Phase-4 allow-list lands.
+
+##### Open questions for Phase 2 (T002)
+
+1. **`ports.*` policy — wrap or allow-list?** Decorators
+   (`runtime/instrumented.go`) currently rely on transparent
+   passthrough so observability can `errors.Is` against domain
+   sentinels. Wrapping with a fresh `fmt.Errorf("…: %w", err)` may
+   break sentinel-matching downstream consumers if any rely on the
+   exact error type.
+2. **`ctx.Err()` (~20 sites).** Allow-list (recommended) vs wrap.
+   Affects sample counts above.
+3. **Cross-module workspace boundaries.** Wrapcheck flags `bridge`,
+   `config`, `deployment/.../infra` as external because of the
+   `go.work` multi-module layout. Phase 2 should decide whether to
+   widen the internal-module glob or to actually wrap at composition
+   roots.
+4. **Test files (10).** Project convention not stated here; an
+   `_test.go` exclude-rule is the obvious low-cost answer but worth
+   confirming in Phase 2.
+
+##### Suggested wrapcheck allow-list seed (for Phase 4 — T013)
+
+```yaml
+settings:
+  wrapcheck:
+    ignoreSigs:
+      - .Err()                     # context.Context.Err — idiomatic propagation
+    ignoreSigRegexps:
+      - \.Err\(\) error$
+    ignorePackageGlobs:
+      - github.com/mariotoffia/gobridge/ports          # internal port contracts (decorator forwarding)
+      - github.com/mariotoffia/gobridge/domain
+    ignoreInterfaceRegexps:
+      - ^(?i)ports\.                                   # already-wrapped at outer adapter boundary
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters: [wrapcheck]
+    - path: testutil/
+      linters: [wrapcheck]
+```
+
+This seed alone would drop ~70+ of the 162 violations (ports
+forwarding + `ctx.Err` + tests + testutil), narrowing the genuine
+SDK-boundary fix surface to ~80–90 wraps. Phase 2 (T002) should
+confirm or adjust this seed before Phase 3 sweeps begin.
+
+### Phase 2 — Decide per-call wrap vs classify - DONE
+
+**Status:** Resolved 2026-05-04. Authoritative policy authored at
+[`_design/error-wrapping-policy.adoc`](_design/error-wrapping-policy.adoc)
+(703 lines). Codifies the decision tree, `domain.ErrXxx` sentinel
+mapping per adapter family, the four open-question resolutions
+(allow-list `ports.*` decorator forwarding; allow-list `ctx.Err()`;
+single repo-wide `github.com/mariotoffia/gobridge/...` glob per
+the no-backcompat constraint; exempt `_test.go` and `testutil/`,
+keep `tests/integration` and `tests/longrunning` enforced),
+the binding wrapcheck allow-list seed for T013 (golangci-lint
+v2 schema), and a deterministic 11-item sweep checklist for
+T003–T012 reviewers. `make lint` passes. Reviewed by `code-reviewer`
+across two rounds (initial v1→v2 YAML schema correction landed in
+round 1).
 
 For each violation, choose:
 
@@ -69,21 +262,38 @@ For each violation, choose:
 
 Recommended order:
 
-1. AWS SQS transport (most error paths)
-2. Azure Service Bus transport
-3. AMQP 0.9.1 transport
-4. AMQP 1.0 transport
-5. MQTT Paho transport
-6. AWS DynamoDB stores (lease/outbox/dlq)
-7. Native SQLite stores
-8. Credentials adapters
-9. Metrics / tracing adapters
-10. Runtime internal boundaries
+1. AWS SQS transport (most error paths) - DONE
+2. Azure Service Bus transport - DONE
+3. AMQP 0.9.1 transport - DONE
+4. AMQP 1.0 transport - DONE
+5. MQTT Paho transport - DONE
+6. AWS DynamoDB stores (lease/outbox/dlq) - DONE
+7. Native SQLite stores - DONE
+8. Credentials adapters - DONE
+9. Metrics / tracing adapters - DONE
+10. Runtime internal boundaries - DONE
 
 Per package: every error return wrapped or classified, build + test
 green, commit.
 
-### Phase 4 — Configure `wrapcheck` in `.golangci.yml`
+### Phase 4 — Configure `wrapcheck` in `.golangci.yml` - DONE
+
+**Status:** APPROVED 2026-05-04. Added `linters.settings.wrapcheck` block
+to `.golangci.yml` carrying the binding allow-list seed from
+`_design/error-wrapping-policy.adoc` §"Confirmed wrapcheck allow-list seed
+(binding for T013)" — `ignore-sigs: [.Err()]`, `ignore-sig-regexps:
+[\.Err\(\) error$]`, `ignore-package-globs:
+[github.com/mariotoffia/gobridge/...]`, `ignore-interface-regexps:
+[^github\.com/mariotoffia/gobridge/ports\.]`. Translated the upstream
+camelCase keys in the design-doc snippet to the kebab-case keys required
+by the golangci-lint v2 schema (semantics unchanged). Appended two
+`wrapcheck` exclusions under `linters.exclusions.rules` scoped to
+`_test\.go$` and `testutil/` per Q4 of the design doc; integration and
+longrunning tests remain subject to the rule. The `# - wrapcheck` enable
+line stays commented — T014 flips it after the Phase 5 sweep — and the
+TODO comment around it was refreshed to describe the residual work.
+`golangci-lint config verify` is clean and `make lint` reports `0 issues.`
+across every module. Diff confined to `.golangci.yml` (44 ins / 2 del).
 
 Tune the linter's allow list for known-OK pass-throughs:
 
@@ -104,7 +314,41 @@ settings:
 The exact allow list emerges as you sweep — start permissive,
 tighten as patterns settle.
 
-### Phase 5 — Enable `wrapcheck`
+### Phase 5 — Enable `wrapcheck` - DONE
+
+**Status:** APPROVED 2026-05-04. Uncommented `- wrapcheck` under
+`linters.enable` in `.golangci.yml` and removed the obsolete T014
+TODO block; the file-level header now lists only `ireturn` as
+deferred. Enabling the linter exposed three structural defects in
+the T013 allow-list seed (none of which had been observed because
+wrapcheck was off): (a) `ignore-sigs: [.Err()]` silently overrode
+wrapcheck's built-in defaults, so the standard wrapping primitives
+(`fmt.Errorf`, `errors.New/Unwrap/Join`, `pkg/errors` helpers) are
+now listed explicitly; (b) `ignore-package-globs` used Go-style
+`github.com/mariotoffia/gobridge/...` triple-dot which gobwas/glob
+treats as three literal dots (matched zero packages), replaced with
+`github.com/mariotoffia/gobridge/**`; (c) `ignore-interface-regexps`
+used `^github\.com/mariotoffia/gobridge/ports\.` but wrapcheck
+builds the interface name with `types.TypeString(..., p.Name())`
+producing `ports.CircuitBreaker`, so the regex is now `^ports\.`.
+
+The corrected allow-list surfaced eight Phase 3 sweep gaps that
+were also wrapped in this commit:
+`adapters/amqp/transport/amqp10/client.go` (Phase 3.4 missed
+`amqp.Dial`), `adapters/aws/config/dynamodb/{loader,streams}.go`
+(out-of-scope for Phase 3.6 which only covered store packages),
+`adapters/native/cluster/resolver.go` (`net.InterfaceAddrs`),
+`adapters/native/config/file/watcher.go` (`fsnotify.NewWatcher`,
+`fsw.Add`), `deployment/aws-filebased-config/lib/bootstrap/`
+(unswept deployment example — `os.Stat`/`os.ReadFile`,
+`awsconfig.LoadDefaultConfig`, `net.Listen`, `http.Server.Shutdown`),
+`observability/sloghandler.go` (`slog.Handler.Handle` decorator),
+and `processors/{filter/condition,transform/mapping}.go`
+(`strconv.Parse{Int,Float,Bool}`, `json.Number.Float64`).
+
+`make lint` is clean across every module and `make test` passes.
+A trial unwrapped error at any adapter boundary now fails the
+gate. Diff: 12 files, 99 ins / 40 del.
 
 ```yaml
 linters:

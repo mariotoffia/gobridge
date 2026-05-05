@@ -201,7 +201,7 @@ func (m *SessionManager) handleEvents(ctx context.Context) error {
 				return nil
 			}
 			if err := m.handleSessionEvent(ctx, ev); err != nil {
-				return err
+				return fmt.Errorf("runtime: session-manager: handle session event: %w", err)
 			}
 		}
 	}
@@ -224,7 +224,7 @@ func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.Sessio
 		if err := m.session.Reconcile(ctx, m.plan); err != nil {
 			m.log(ctx, slog.LevelError, "reconcile failed on reconnect", "error", err)
 			m.metrics.Counter(domain.MetricReconcileFailures, 1, sessionTag)
-			return fmt.Errorf("reconcile on reconnect: %w", err)
+			return fmt.Errorf("runtime: session-manager: reconcile on reconnect: %w", err)
 		}
 
 	case ports.SessionDisconnected:

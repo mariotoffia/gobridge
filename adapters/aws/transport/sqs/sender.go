@@ -294,7 +294,7 @@ func (s *Sender) ensureClient(ctx context.Context) error {
 		} else {
 			cfg, err := buildAWSConfig(initCtx, s.cfg.Region, s.cfg.Endpoint, s.cfg.Profile)
 			if err != nil {
-				return domain.ErrUnavailable.Wrap(fmt.Errorf("sqs sender: build AWS config: %w", err))
+				return err
 			}
 			s.client = awssqs.NewFromConfig(cfg)
 		}
