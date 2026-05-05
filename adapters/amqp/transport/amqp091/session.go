@@ -9,8 +9,6 @@ import (
 	"sync"
 	"time"
 
-	amqp "github.com/rabbitmq/amqp091-go"
-
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
@@ -343,12 +341,12 @@ func (s *Session) declareSubscription(conn amqpConnection, sub domain.Subscripti
 	defer func() { _ = ch.Close() }()
 
 	if exchangeName != "" {
-		if err := ch.ExchangeDeclare(exchangeName, exchangeType, durable, autoDelete, false, false, nil); err != nil {
+		if err := ch.ExchangeDeclare(exchangeName, exchangeType, durable, autoDelete); err != nil {
 			return MapError(err)
 		}
 	}
 
-	if _, err := ch.QueueDeclare(queueName, durable, autoDelete, false, false, nil); err != nil {
+	if err := ch.QueueDeclare(queueName, durable, autoDelete); err != nil {
 		return MapError(err)
 	}
 
@@ -356,7 +354,7 @@ func (s *Session) declareSubscription(conn amqpConnection, sub domain.Subscripti
 		if routingKey == "" {
 			routingKey = queueName
 		}
-		if err := ch.QueueBind(queueName, routingKey, exchangeName, false, nil); err != nil {
+		if err := ch.QueueBind(queueName, routingKey, exchangeName); err != nil {
 			return MapError(err)
 		}
 	}
@@ -387,7 +385,7 @@ func (s *Session) declarePublisher(conn amqpConnection, pub domain.PublisherPlan
 	}
 	defer func() { _ = ch.Close() }()
 
-	if err := ch.ExchangeDeclare(exchangeName, exchangeType, durable, autoDelete, false, false, nil); err != nil {
+	if err := ch.ExchangeDeclare(exchangeName, exchangeType, durable, autoDelete); err != nil {
 		return MapError(err)
 	}
 	return nil
@@ -609,12 +607,12 @@ func (s *Session) reconnectLoop(ctx context.Context) {
 			continue
 		}
 
-		notifyCh := conn.NotifyClose(make(chan *amqp.Error, 1))
+		notifyCh := conn.NotifyClose()
 
 		select {
 		case <-ctx.Done():
 			return
-		case amqpErr, ok := <-notifyCh:
+		case connErr, ok := <-notifyCh:
 			s.mu.Lock()
 			if s.closed {
 				s.mu.Unlock()
@@ -625,9 +623,8 @@ func (s *Session) reconnectLoop(ctx context.Context) {
 			s.activeSubs = make(map[string]bool)
 			s.mu.Unlock()
 
-			var connErr error
-			if ok && amqpErr != nil {
-				connErr = amqpErr
+			if !ok {
+				connErr = nil
 			}
 
 			var evErr error

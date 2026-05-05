@@ -13,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	amqp "github.com/rabbitmq/amqp091-go"
-
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -29,13 +27,14 @@ func newResilienceSession(dial dialFunc) *Session {
 	}
 	opts.applyDefaults()
 	return &Session{
-		opts:       opts,
-		mode:       domain.SessionMode("consumer"),
-		logger:     slog.Default(),
-		metrics:    &ports.NoopExporter{},
-		dial:       dial,
-		events:     make(chan ports.SessionEvent, 16),
-		activeSubs: make(map[string]bool),
+		opts:        opts,
+		mode:        domain.SessionMode("consumer"),
+		logger:      slog.Default(),
+		metrics:     &ports.NoopExporter{},
+		dial:        dial,
+		events:      make(chan ports.SessionEvent, 16),
+		activeSubs:  make(map[string]bool),
+		reconnected: make(chan struct{}, 1),
 	}
 }
 
@@ -60,9 +59,6 @@ func TestSession_Start_AlreadyClosed(t *testing.T) {
 func TestSession_Start_IdempotentSecondCall(t *testing.T) {
 	dialCount := 0
 	mc := newMockConnection()
-	mc.NotifyCloseFn = func(ch chan *amqp.Error) chan *amqp.Error {
-		return ch
-	}
 
 	s := newResilienceSession(func(url string) (amqpConnection, error) {
 		dialCount++
@@ -87,9 +83,6 @@ func TestSession_Start_IdempotentSecondCall(t *testing.T) {
 // times without panic or error.
 func TestSession_Close_MultipleCallsSafe(t *testing.T) {
 	mc := newMockConnection()
-	mc.NotifyCloseFn = func(ch chan *amqp.Error) chan *amqp.Error {
-		return ch
-	}
 
 	s := newResilienceSession(func(url string) (amqpConnection, error) {
 		return mc, nil
@@ -132,9 +125,6 @@ func TestSession_PushEvent_FullChannel(t *testing.T) {
 // obtained after dial timeout is properly closed.
 func TestSession_DialTimeout_LeakCleanup(t *testing.T) {
 	mc := newMockConnection()
-	mc.NotifyCloseFn = func(ch chan *amqp.Error) chan *amqp.Error {
-		return ch
-	}
 
 	s := newResilienceSession(func(url string) (amqpConnection, error) {
 		// OTHER: simulates slow dial to test timeout + leaked connection cleanup

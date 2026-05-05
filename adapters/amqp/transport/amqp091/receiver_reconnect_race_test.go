@@ -14,8 +14,6 @@ import (
 	"testing"
 	"time"
 
-	amqp "github.com/rabbitmq/amqp091-go"
-
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -40,7 +38,7 @@ import (
 // state via Health() and return true immediately.
 func TestReceiver_WaitForReconnect_AlreadyConnected_DoesNotHang(t *testing.T) {
 	mc := newMockConnection()
-	mc.NotifyCloseFn = func(ch chan *amqp.Error) chan *amqp.Error { return ch }
+	_ = mc // NotifyClose mock auto-allocates
 
 	sess := newResilienceSession(func(string) (amqpConnection, error) { return mc, nil })
 	if err := sess.Start(context.Background()); err != nil {
@@ -94,7 +92,7 @@ func TestReceiver_WaitForReconnect_AlreadyConnected_DoesNotHang(t *testing.T) {
 // must still observe the connected state and proceed.
 func TestReceiver_WaitForReconnect_FastReconnect_DoesNotMissEvent(t *testing.T) {
 	mc := newMockConnection()
-	mc.NotifyCloseFn = func(ch chan *amqp.Error) chan *amqp.Error { return ch }
+	_ = mc // NotifyClose mock auto-allocates
 
 	sess := newResilienceSession(func(string) (amqpConnection, error) { return mc, nil })
 	if err := sess.Start(context.Background()); err != nil {

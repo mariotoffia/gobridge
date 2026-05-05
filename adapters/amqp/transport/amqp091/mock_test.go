@@ -2,18 +2,19 @@ package amqp091
 
 import (
 	"sync"
-
-	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// mockConnection implements amqpConnection for unit tests.
+// mockConnection implements amqpConnection for unit tests. Tests are
+// exempt from the ACL gate, so this file may import the SDK directly
+// in order to construct *amqpChannel wrappers around real or nil
+// SDK channels for negative-path tests.
 type mockConnection struct {
 	mu sync.Mutex
 
-	ChannelFn     func() (*amqp.Channel, error)
-	CloseFn       func() error
-	NotifyCloseFn func(chan *amqp.Error) chan *amqp.Error
-	IsClosedFn    func() bool
+	ChannelFn       func() (*amqpChannel, error)
+	CloseFn         func() error
+	NotifyCloseChan chan error
+	IsClosedFn      func() bool
 
 	ChannelCalls int
 	CloseCalls   int
@@ -26,7 +27,7 @@ func newMockConnection() *mockConnection {
 	return &mockConnection{}
 }
 
-func (m *mockConnection) Channel() (*amqp.Channel, error) {
+func (m *mockConnection) Channel() (*amqpChannel, error) {
 	m.mu.Lock()
 	m.ChannelCalls++
 	m.mu.Unlock()
@@ -41,7 +42,16 @@ func (m *mockConnection) Close() error {
 	m.mu.Lock()
 	m.CloseCalls++
 	m.closed = true
+	ch := m.NotifyCloseChan
 	m.mu.Unlock()
+
+	// When the test wired a NotifyClose listener, simulate the SDK's
+	// behaviour of closing the listener channel on connection close.
+	if ch != nil {
+		// Best-effort: the test may have already closed the channel.
+		defer func() { _ = recover() }()
+		close(ch)
+	}
 
 	if m.CloseFn != nil {
 		return m.CloseFn()
@@ -49,11 +59,17 @@ func (m *mockConnection) Close() error {
 	return nil
 }
 
-func (m *mockConnection) NotifyClose(receiver chan *amqp.Error) chan *amqp.Error {
-	if m.NotifyCloseFn != nil {
-		return m.NotifyCloseFn(receiver)
+// NotifyClose returns the test-supplied channel as the lifecycle
+// notification stream. If none was provided, returns a closed channel
+// (i.e., "no notification will arrive") to keep the reconnect loop
+// blocked until the test cancels it.
+func (m *mockConnection) NotifyClose() <-chan error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.NotifyCloseChan == nil {
+		m.NotifyCloseChan = make(chan error, 1)
 	}
-	return receiver
+	return m.NotifyCloseChan
 }
 
 func (m *mockConnection) IsClosed() bool {

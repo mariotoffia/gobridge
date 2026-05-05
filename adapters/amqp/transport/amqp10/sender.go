@@ -6,8 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Azure/go-amqp"
-
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
@@ -19,14 +17,19 @@ var (
 	_ ports.BatchSender = (*Sender)(nil)
 )
 
+// senderLinkAPI is the link-level operation surface the Sender depends
+// on. It is satisfied by *senderLink (the production wrapper around
+// *amqp.Sender) and may also be satisfied by test doubles.
+type senderLinkAPI interface {
+	SendEnvelope(ctx context.Context, env *domain.Envelope) error
+	Close(ctx context.Context) error
+}
+
 // Sender implements ports.Sender and ports.BatchSender for AMQP 1.0 links.
 //
 // The mutex protects link CREATION and detach only; it is released
-// before the network-blocking link.Send so concurrent callers achieve
-// real parallelism. *amqp.Sender.Send is documented as safe for
-// concurrent use, and we coalesce concurrent failure handling so the
-// link is detached and asynchronously closed exactly once per failure
-// cycle.
+// before the network-blocking link.SendEnvelope so concurrent callers
+// achieve real parallelism.
 type Sender struct {
 	cfg     SenderConfig
 	session *Session
@@ -34,15 +37,8 @@ type Sender struct {
 	metrics ports.MetricsExporter
 	clk     clock.Clock
 
-	mu sync.Mutex
-	// link is the active publish link; nil when no link has been created
-	// yet or after a failure has detached it.
-	link amqpSenderLink
-	// linkConn captures WHICH session connection the current link was
-	// created on. handleSendFailure passes this (not the session's
-	// CURRENT connection) to notifyDisconnect so a stale link error
-	// surfacing AFTER the session has already reconnected to a new
-	// connection cannot incorrectly tear down the new connection.
+	mu       sync.Mutex
+	link     senderLinkAPI
 	linkConn amqpConn
 }
 
@@ -84,22 +80,7 @@ func (s *Sender) clock() clock.Clock {
 }
 
 // Send publishes a single envelope to the AMQP 1.0 broker.
-//
-// Concurrency model:
-//   - Link creation is serialised under s.mu so concurrent first-time
-//     callers cannot race two NewSender calls.
-//   - The mutex is RELEASED before invoking link.Send. *amqp.Sender.Send
-//     is safe for concurrent use, so many goroutines may publish on the
-//     same link at the same time and achieve genuine parallelism.
-//   - On error, only the goroutine that observes s.link still pointing
-//     at the failed link performs the detach+async-close; losers of the
-//     race simply return the mapped error, so the link is closed at
-//     most once per failure cycle.
-//   - The async close (5 s timeout) runs in a goroutine so a slow
-//     broker shutdown never blocks subsequent Send/Close calls.
 func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
-	msg := s.buildMessage(env)
-
 	sendCtx, cancel := s.applyTimeout(ctx)
 	defer cancel()
 
@@ -113,8 +94,6 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 
 	s.mu.Lock()
 	if s.link == nil {
-		// Link creation honours the per-send timeout so a hung broker
-		// during NewSender cannot block longer than s.cfg.Timeout.
 		if err := s.createLink(sendCtx); err != nil {
 			s.mu.Unlock()
 			return err
@@ -126,7 +105,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 
 	start := s.clock().Now()
 
-	err := link.Send(sendCtx, msg, nil)
+	err := link.SendEnvelope(sendCtx, env)
 	if err != nil {
 		s.handleSendFailure(ctx, link, linkConn, err)
 		return MapError(err)
@@ -147,18 +126,9 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	return nil
 }
 
-// handleSendFailure coalesces concurrent failure handling. Only the
-// goroutine that observes s.link still pointing at the failed link
-// performs the detach+close+session-notify; concurrent Send failures
-// against the same link produce a single close.
-//
-// failedConn is the connection the failed link was created on. It is
-// passed verbatim to notifyDisconnect so the session can ignore stale
-// notifications: if the session has already reconnected to a new
-// connection, failedConn != s.session.Conn() and notifyDisconnect is
-// a no-op — preventing destruction of the freshly-reconnected
-// connection by an in-flight Send error from a previous lifecycle.
-func (s *Sender) handleSendFailure(ctx context.Context, failed amqpSenderLink, failedConn amqpConn, err error) {
+// handleSendFailure coalesces concurrent failure handling so the link is
+// detached and asynchronously closed at most once per failure cycle.
+func (s *Sender) handleSendFailure(ctx context.Context, failed senderLinkAPI, failedConn amqpConn, err error) {
 	s.mu.Lock()
 	weDetach := s.link == failed
 	if weDetach {
@@ -185,7 +155,6 @@ func (s *Sender) handleSendFailure(ctx context.Context, failed amqpSenderLink, f
 }
 
 // SendBatch sends multiple envelopes individually over the AMQP 1.0 link.
-// Returns the count of successfully sent messages.
 func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, error) {
 	if err := s.ensureLink(ctx); err != nil {
 		return 0, err
@@ -220,19 +189,14 @@ func (s *Sender) createLink(ctx context.Context) error {
 	if sess == nil {
 		return domain.ErrUnavailable.WithMessage("amqp10: session not connected")
 	}
-	// Capture the connection THIS link is being created on so a later
-	// failure carries the right identity to notifyDisconnect, even if
-	// the session has reconnected in the meantime.
 	conn := s.session.Conn()
 
-	opts := &amqp.SenderOptions{
-		TargetCapabilities: []string{s.cfg.Routing.capability()},
-	}
-	if s.cfg.DurabilityMode > 0 {
-		opts.Durability = amqp.Durability(s.cfg.DurabilityMode)
-	}
-
-	sender, err := sess.NewSender(ctx, s.cfg.Address, opts)
+	sender, err := sess.NewSenderLink(
+		ctx,
+		s.cfg.Address,
+		s.cfg.DurabilityMode,
+		s.cfg.Routing.capability(),
+	)
 	if err != nil {
 		return MapError(err)
 	}
@@ -255,36 +219,9 @@ func (s *Sender) applyTimeout(ctx context.Context) (context.Context, context.Can
 	return ctx, func() {}
 }
 
-func (s *Sender) buildMessage(env *domain.Envelope) *amqp.Message {
-	msg := headersToMessage(env.Headers)
-
-	msg.Data = [][]byte{env.Payload}
-
-	if msg.Properties == nil {
-		msg.Properties = &amqp.MessageProperties{}
-	}
-
-	if env.ID != "" {
-		msg.Properties.MessageID = env.ID
-	}
-	if env.Subject != "" {
-		msg.Properties.Subject = &env.Subject
-	}
-	if env.HasExpiry() {
-		expiry := env.ExpiresAt
-		msg.Properties.AbsoluteExpiryTime = &expiry
-	}
-
-	if !env.CreatedAt.IsZero() {
-		msg.Properties.CreationTime = &env.CreatedAt
-	}
-
-	return msg
-}
-
 // closeLinkAsync closes a detached AMQP sender link off the hot path so
 // that a slow broker shutdown does not block other senders or callers.
-func closeLinkAsync(link amqpSenderLink, timeout time.Duration) {
+func closeLinkAsync(link senderLinkAPI, timeout time.Duration) {
 	if link == nil {
 		return
 	}
@@ -296,14 +233,7 @@ func closeLinkAsync(link amqpSenderLink, timeout time.Duration) {
 }
 
 // notifySessionIfConnectionLost signals the session for connection-level
-// errors (connection lost or unclassified unavailable). Business-logic
-// errors like ErrCodeInvalidPayload are NOT escalated.
-//
-// failedConn is the connection the failed link belonged to (captured at
-// link creation). Passing it — instead of s.session.Conn() — lets the
-// session ignore this notification when it has already reconnected to
-// a different connection, which protects the new connection from being
-// torn down by a stale Send error from the previous lifecycle.
+// errors (connection lost or unclassified unavailable).
 func (s *Sender) notifySessionIfConnectionLost(failedConn amqpConn, err error) {
 	if s.session == nil {
 		return

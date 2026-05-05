@@ -26,8 +26,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Azure/go-amqp"
-
 	"github.com/mariotoffia/gobridge/domain"
 )
 
@@ -49,7 +47,7 @@ func TestSession_Start_ConcurrentRace(t *testing.T) {
 	s := newTestSession()
 	defer func() { _ = s.Close(context.Background()) }()
 	var dialCount atomic.Int32
-	s.dial = func(_ context.Context, _ string, _ *amqp.ConnOptions) (amqpConn, error) {
+	s.dial = func(_ context.Context, _ SessionOptions, _ amqp10Credentials) (amqpConn, error) {
 		dialCount.Add(1)
 		time.Sleep(50 * time.Millisecond) // OTHER: simulates dial latency in mock.
 		return &mockConn{}, nil
@@ -198,7 +196,7 @@ func TestSession_Close_DuringConnect(t *testing.T) {
 	s := newTestSession()
 
 	connectStarted := make(chan struct{})
-	s.dial = func(ctx context.Context, _ string, _ *amqp.ConnOptions) (amqpConn, error) {
+	s.dial = func(ctx context.Context, _ SessionOptions, _ amqp10Credentials) (amqpConn, error) {
 		close(connectStarted)
 		<-ctx.Done()
 		return nil, ctx.Err()

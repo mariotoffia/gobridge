@@ -61,10 +61,9 @@ func TestReceiver_ConvertMessage(t *testing.T) {
 	}
 
 	settler := newMockSettler()
-	del := r.convertMessage(context.Background(), msg, nil)
+	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
 	_ = settler
 
-	env := del.Envelope()
 	if env.ID != "msg-convert-1" {
 		t.Fatalf("ID = %q, want %q", env.ID, "msg-convert-1")
 	}
@@ -93,9 +92,9 @@ func TestReceiver_ConvertMessage_NoSubject(t *testing.T) {
 		Data: [][]byte{[]byte("data")},
 	}
 
-	del := r.convertMessage(context.Background(), msg, nil)
-	if del.Envelope().Subject != "queue/fallback" {
-		t.Fatalf("Subject = %q, want address fallback %q", del.Envelope().Subject, "queue/fallback")
+	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
+	if env.Subject != "queue/fallback" {
+		t.Fatalf("Subject = %q, want address fallback %q", env.Subject, "queue/fallback")
 	}
 }
 
@@ -110,9 +109,9 @@ func TestReceiver_ConvertMessage_ValueBody(t *testing.T) {
 		Value: []byte("value-body"),
 	}
 
-	del := r.convertMessage(context.Background(), msg, nil)
-	if string(del.Envelope().Payload) != "value-body" {
-		t.Fatalf("Payload = %q, want %q", del.Envelope().Payload, "value-body")
+	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
+	if string(env.Payload) != "value-body" {
+		t.Fatalf("Payload = %q, want %q", env.Payload, "value-body")
 	}
 }
 
@@ -125,9 +124,9 @@ func TestReceiver_ConvertMessage_EmptyBody(t *testing.T) {
 
 	msg := &amqp.Message{}
 
-	del := r.convertMessage(context.Background(), msg, nil)
-	if len(del.Envelope().Payload) != 0 {
-		t.Fatalf("Payload should be empty, got %d bytes", len(del.Envelope().Payload))
+	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
+	if len(env.Payload) != 0 {
+		t.Fatalf("Payload should be empty, got %d bytes", len(env.Payload))
 	}
 }
 
@@ -145,8 +144,8 @@ func TestReceiver_ConvertMessage_NonStringMessageID(t *testing.T) {
 		Data: [][]byte{[]byte("data")},
 	}
 
-	del := r.convertMessage(context.Background(), msg, nil)
-	if del.Envelope().ID == "" {
+	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
+	if env.ID == "" {
 		t.Fatal("ID should be auto-generated for non-string MessageID")
 	}
 }

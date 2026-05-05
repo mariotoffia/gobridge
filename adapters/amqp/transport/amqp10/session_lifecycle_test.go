@@ -8,8 +8,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/Azure/go-amqp"
 )
 
 // TestSession_Start_ConcurrentBlocksUntilReady validates that a second
@@ -23,7 +21,7 @@ func TestSession_Start_ConcurrentBlocksUntilReady(t *testing.T) {
 
 	dialStart := make(chan struct{}, 1)
 	releaseDial := make(chan struct{})
-	s.dial = func(_ context.Context, _ string, _ *amqp.ConnOptions) (amqpConn, error) {
+	s.dial = func(_ context.Context, _ SessionOptions, _ amqp10Credentials) (amqpConn, error) {
 		select {
 		case dialStart <- struct{}{}:
 		default:
