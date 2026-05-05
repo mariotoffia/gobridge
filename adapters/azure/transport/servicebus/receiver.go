@@ -2,13 +2,10 @@ package servicebus
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
 	"time"
-
-	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -18,11 +15,15 @@ import (
 
 var _ ports.Receiver = (*Receiver)(nil)
 
+// Receiver is the Service Bus inbound port adapter. All SDK access is
+// concentrated in acl_*.go: this file references only the unexported
+// seam interfaces (asbAPI, retryScheduler) and the *asbClientHandle
+// wrapper, which makes the package's SDK boundary visible by file name.
 type Receiver struct {
 	cfg         ReceiverConfig
 	client      asbAPI
 	scheduler   retryScheduler
-	asbClient   *azservicebus.Client
+	asbClient   *asbClientHandle
 	logger      *slog.Logger
 	metrics     ports.MetricsExporter
 	clk         clock.Clock
@@ -127,53 +128,43 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 		return err
 	}
 
-	opts := &azservicebus.ReceiverOptions{}
-
-	if r.cfg.ReceiveMode == "ReceiveAndDelete" {
-		opts.ReceiveMode = azservicebus.ReceiveModeReceiveAndDelete
+	recvOpts := asbReceiverOptions{
+		ReceiveAndDelete: r.cfg.ReceiveMode == "ReceiveAndDelete",
+		SubQueue:         r.cfg.SubQueue,
 	}
-
-	switch r.cfg.SubQueue {
-	case "deadletter":
-		opts.SubQueue = azservicebus.SubQueueDeadLetter
-	case "transferdeadletter":
-		opts.SubQueue = azservicebus.SubQueueTransfer
-	}
-
 	entityName := r.entityName()
 
 	if r.cfg.SessionID != "" {
-		sessOpts := &azservicebus.SessionReceiverOptions{}
-		if r.cfg.ReceiveMode == "ReceiveAndDelete" {
-			sessOpts.ReceiveMode = azservicebus.ReceiveModeReceiveAndDelete
+		sessOpts := asbSessionOptions{
+			ReceiveAndDelete: r.cfg.ReceiveMode == "ReceiveAndDelete",
 		}
 
-		var sessRecv *azservicebus.SessionReceiver
+		var seam asbAPI
 		if r.cfg.QueueName != "" {
-			sessRecv, err = asbClient.AcceptSessionForQueue(ctx, r.cfg.QueueName, r.cfg.SessionID, sessOpts)
+			seam, err = asbClient.AcceptSessionForQueue(ctx, r.cfg.QueueName, r.cfg.SessionID, sessOpts)
 		} else {
-			sessRecv, err = asbClient.AcceptSessionForSubscription(ctx, r.cfg.TopicName, r.cfg.SubscriptionName, r.cfg.SessionID, sessOpts)
+			seam, err = asbClient.AcceptSessionForSubscription(ctx, r.cfg.TopicName, r.cfg.SubscriptionName, r.cfg.SessionID, sessOpts)
 		}
 		if err != nil {
 			_ = asbClient.Close(context.Background())
-			return domain.ErrUnavailable.Wrap(fmt.Errorf("servicebus receiver: accept session %q: %w", r.cfg.SessionID, err))
+			return domain.ErrUnavailable.Wrap(err)
 		}
-		r.client = &sessionReceiverAdapter{inner: sessRecv}
+		r.client = seam
 	} else {
-		var recv *azservicebus.Receiver
+		var seam asbAPI
 		if r.cfg.QueueName != "" {
-			recv, err = asbClient.NewReceiverForQueue(r.cfg.QueueName, opts)
+			seam, err = asbClient.NewReceiverForQueue(r.cfg.QueueName, recvOpts)
 		} else {
-			recv, err = asbClient.NewReceiverForSubscription(r.cfg.TopicName, r.cfg.SubscriptionName, opts)
+			seam, err = asbClient.NewReceiverForSubscription(r.cfg.TopicName, r.cfg.SubscriptionName, recvOpts)
 		}
 		if err != nil {
 			_ = asbClient.Close(context.Background())
-			return domain.ErrUnavailable.Wrap(fmt.Errorf("servicebus receiver: create receiver: %w", err))
+			return domain.ErrUnavailable.Wrap(err)
 		}
-		r.client = recv
+		r.client = seam
 	}
 
-	sender, err := asbClient.NewSender(entityName, nil)
+	sender, err := asbClient.NewSender(entityName)
 	if err != nil {
 		if r.logger != nil {
 			r.logger.Warn("servicebus: could not create retry scheduler sender",
@@ -206,7 +197,7 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 		}
 
 		pollStart := r.clock().Now()
-		msgs, err := r.client.ReceiveMessages(ctx, r.cfg.MaxMessages, nil)
+		deliveries, err := r.receiveAndConvert(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -230,16 +221,7 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			domain.Tag{Key: domain.TagKeyEntity, Value: r.entityName()})
 		backoff.reset()
 
-		if logging.TraceEnabled(r.logger) {
-			r.logger.Log(ctx, logging.LevelTrace, "servicebus: received",
-				"entity", r.entityName(),
-				"count", len(msgs),
-			)
-		}
-
-		for _, msg := range msgs {
-			del := r.convertMessage(ctx, msg)
-
+		for _, del := range deliveries {
 			if err := emit(ctx, del); err != nil {
 				return err
 			}
@@ -278,50 +260,4 @@ func (b *pollBackoff) next() time.Duration {
 
 func (b *pollBackoff) reset() {
 	b.current = pollBackoffInitial
-}
-
-func (r *Receiver) convertMessage(ctx context.Context, msg *azservicebus.ReceivedMessage) *asbDelivery {
-	subject := r.cfg.QueueName
-	if subject == "" {
-		subject = r.cfg.TopicName
-	}
-	if msg.Subject != nil {
-		subject = *msg.Subject
-	}
-
-	headers := messageToHeaders(msg)
-
-	env := &domain.Envelope{
-		ID:        msg.MessageID,
-		Subject:   subject,
-		Payload:   msg.Body,
-		Headers:   headers,
-		CreatedAt: r.clock().Now(),
-	}
-
-	if msg.ExpiresAt != nil {
-		env.ExpiresAt = *msg.ExpiresAt
-	}
-
-	if logging.TraceEnabled(r.logger) {
-		r.logger.Log(ctx, logging.LevelTrace, "servicebus: converting",
-			"entity", r.entityName(),
-			"message_id", msg.MessageID,
-			"body_len", len(msg.Body),
-		)
-	}
-
-	return newDelivery(
-		ctx,
-		env,
-		r.client,
-		r.scheduler,
-		msg,
-		r.cfg.LockDuration,
-		r.cfg.autoExtendEnabled(),
-		r.logger,
-		r.metrics,
-		r.clock(),
-		r.cfg.MinAutoExtendInterval,
-	)
 }

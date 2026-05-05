@@ -2,13 +2,8 @@ package servicebus
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
-
-	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -21,20 +16,14 @@ var (
 	_ ports.BatchSender = (*Sender)(nil)
 )
 
-const (
-	asbHeaderPrefix  = "asb."
-	asbSessionID     = "asb.session-id"
-	asbCorrelationID = "asb.correlation-id"
-	asbContentType   = "asb.content-type"
-	asbReplyTo       = "asb.reply-to"
-	asbTo            = "asb.to"
-)
-
-// Sender implements ports.Sender and ports.BatchSender for Azure Service Bus.
+// Sender implements ports.Sender and ports.BatchSender for Azure
+// Service Bus. SDK access is concentrated in acl_*.go: this file
+// references only the unexported asbSenderAPI seam and the
+// *asbClientHandle wrapper.
 type Sender struct {
 	cfg       SenderConfig
 	client    asbSenderAPI
-	asbClient *azservicebus.Client
+	asbClient *asbClientHandle
 	initMu    sync.Mutex
 	logger    *slog.Logger
 	metrics   ports.MetricsExporter
@@ -91,14 +80,13 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	sendCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
 
-	msg := s.buildMessage(env)
 	start := s.clock().Now()
-	if err := s.client.SendMessage(sendCtx, msg, nil); err != nil {
+	if err := sendOne(sendCtx, s.client, env, s.cfg.DefaultSessionID, s.clock()); err != nil {
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(ctx, logging.LevelDebug, "servicebus: send failed",
 				"entity", s.entityName(), "error", err)
 		}
-		return MapError(err)
+		return err
 	}
 
 	s.metrics.Timer(domain.MetricASBSendLatency, s.clock().Since(start),
@@ -136,54 +124,10 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 		}
 
 		start := s.clock().Now()
-		msgBatch, err := s.client.NewMessageBatch(sendCtx, nil)
+		chunkSent, err := sendChunk(sendCtx, s.client, chunk, s.cfg.DefaultSessionID, s.clock(), s.logger, s.entityName())
+		sent += chunkSent
 		if err != nil {
-			return sent, MapError(err)
-		}
-		if msgBatch == nil {
-			return sent, MapError(fmt.Errorf("servicebus sender: NewMessageBatch returned nil batch"))
-		}
-
-		for _, env := range chunk {
-			sbMsg := s.buildMessage(env)
-
-			addErr := msgBatch.AddMessage(sbMsg, nil)
-			if addErr == nil {
-				continue
-			}
-			if !errors.Is(addErr, azservicebus.ErrMessageTooLarge) {
-				return sent, MapError(addErr)
-			}
-
-			if logging.DebugEnabled(s.logger) {
-				s.logger.Log(ctx, logging.LevelDebug, "servicebus: message overflow, sending individually",
-					"entity", s.entityName())
-			}
-
-			if msgBatch.NumMessages() > 0 {
-				if err := s.client.SendMessageBatch(sendCtx, msgBatch, nil); err != nil {
-					return sent, MapError(err)
-				}
-				sent += int(msgBatch.NumMessages())
-			}
-
-			if err := s.sendSingle(sendCtx, env); err != nil {
-				return sent, err
-			}
-			sent++
-
-			// Start a fresh batch for remaining messages in this chunk.
-			msgBatch, err = s.client.NewMessageBatch(sendCtx, nil)
-			if err != nil {
-				return sent, MapError(err)
-			}
-		}
-
-		if msgBatch.NumMessages() > 0 {
-			if err := s.client.SendMessageBatch(sendCtx, msgBatch, nil); err != nil {
-				return sent, MapError(err)
-			}
-			sent += int(msgBatch.NumMessages())
+			return sent, err
 		}
 
 		s.metrics.Timer(domain.MetricASBSendBatchLatency, s.clock().Since(start),
@@ -227,10 +171,10 @@ func (s *Sender) ensureClient(ctx context.Context) error {
 
 	entityName := s.entityName()
 
-	sender, err := asbClient.NewSender(entityName, nil)
+	sender, err := asbClient.NewSender(entityName)
 	if err != nil {
 		_ = asbClient.Close(ctx)
-		return MapError(fmt.Errorf("servicebus sender: create sender for %q: %w", entityName, err))
+		return MapError(err)
 	}
 
 	s.client = sender
@@ -242,75 +186,4 @@ func (s *Sender) ensureClient(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-func (s *Sender) sendSingle(ctx context.Context, env *domain.Envelope) error {
-	msg := s.buildMessage(env)
-	if err := s.client.SendMessage(ctx, msg, nil); err != nil {
-		return MapError(err)
-	}
-	return nil
-}
-
-func (s *Sender) buildMessage(env *domain.Envelope) *azservicebus.Message {
-	msg := &azservicebus.Message{
-		Body: env.Payload,
-	}
-
-	if env.Subject != "" {
-		msg.Subject = &env.Subject
-	}
-	if env.ID != "" {
-		msg.MessageID = &env.ID
-	}
-	if env.HasExpiry() {
-		if ttl := env.RemainingTTL(s.clock()); ttl > 0 {
-			msg.TimeToLive = &ttl
-		}
-	}
-
-	sessionID := s.cfg.DefaultSessionID
-	var appProps map[string]any
-
-	for k, v := range env.Headers {
-		switch k {
-		case asbSessionID:
-			if sv, ok := v.(string); ok {
-				sessionID = sv
-			}
-		case asbCorrelationID:
-			if sv, ok := v.(string); ok {
-				msg.CorrelationID = &sv
-			}
-		case asbContentType:
-			if sv, ok := v.(string); ok {
-				msg.ContentType = &sv
-			}
-		case asbReplyTo:
-			if sv, ok := v.(string); ok {
-				msg.ReplyTo = &sv
-			}
-		case asbTo:
-			if sv, ok := v.(string); ok {
-				msg.To = &sv
-			}
-		default:
-			if strings.HasPrefix(k, asbHeaderPrefix) {
-				continue
-			}
-			if appProps == nil {
-				appProps = make(map[string]any, len(env.Headers))
-			}
-			appProps[k] = v
-		}
-	}
-
-	if sessionID != "" {
-		msg.SessionID = &sessionID
-	}
-	if len(appProps) > 0 {
-		msg.ApplicationProperties = appProps
-	}
-
-	return msg
 }
