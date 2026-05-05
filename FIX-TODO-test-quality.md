@@ -215,7 +215,22 @@ fails the gate.
   changes were required for this task; only this progress note.
   Phase 3 (T009) will drop the `_test.go` exclusion globally and
   re-confirm across the consuming test suites.
-- T006 — Clean up runtime/ test-quality (~5 errcheck) — pending
+- **T006 — Clean up runtime/ test-quality (~5 errcheck) — DONE (2026-05-05)**
+  Verified clean: temporarily removed the `_test.go` exclusion for the
+  default linter set (`errcheck`, `staticcheck`, `ineffassign`, `unused`)
+  from `.golangci.yml`, then ran `golangci-lint run ./runtime/...` and
+  `golangci-lint run --default=none
+  --enable=errcheck,staticcheck,ineffassign,unused,govet ./runtime/...`
+  (golangci-lint v2 flag form, also covering `govet` per the plan's
+  "default linter set" prose) — 0 issues across all 76 `_test.go` files
+  in the package. `go vet ./runtime/...` and `go build ./runtime/...`
+  green; `.golangci.yml` reverted to its committed form (no production
+  change). The ~5-issue snapshot in "Current state" was taken before
+  subsequent FIX-* sweeps (wrapcheck / ireturn / err-naming / Close-handler
+  cleanups) incidentally cleared the violations. No code changes were
+  required for this task; only this progress note. Phase 3 (T009) will
+  drop the `_test.go` exclusion globally and re-confirm across the
+  workspace.
 - T007 — Clean up config/ test-quality (~3 issues) — pending
 - T008 — Clean up httpapi/ test-quality (~5 issues) — pending
 - T009 — Phase 3: drop the _test.go exclusion from .golangci.yml and verify make lint green — pending
