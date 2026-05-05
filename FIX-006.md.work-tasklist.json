@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "FIX-006.md",
-  "source_sha": "c480873365373dcedd5e0e598115c18c8d1807a445c866a38f9b292274f9d98a",
+  "source_sha": "4f2b2004f39bfad0a96b0a93c235953fed1cf9a06b1a2d35914bc59e9442043f",
   "indexed_at": "2026-05-05T10:15:40Z",
   "status_convention": "Per-task bullets appended under '## Progress' with ' \u2014 DONE' suffix on completion",
   "tasks": [
@@ -107,7 +107,7 @@
     {
       "id": "FIX-006-P2",
       "title": "Promote lint-acl to enforcing in Makefile and update docs",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "Makefile + analyzer wiring change to add lint-acl to the lint gate and update CLAUDE.md once all adapters are refactored.",
