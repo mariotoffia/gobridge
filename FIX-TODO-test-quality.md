@@ -182,7 +182,23 @@ fails the gate.
   ./...` green. No code changes were required for this task; only
   this progress note. Phase 3 (T009) will drop the exclusion globally
   and re-confirm.
-- T004 — Clean up adapters/native/store/sqlite* test-quality (~3 issues) — pending
+- **T004 — Clean up adapters/native/store/sqlite* test-quality (~3 issues) — DONE (2026-05-05)**
+  Cleaned up errcheck violations in
+  `adapters/native/store/sqliteoutbox/store_test.go` and
+  `adapters/native/store/sqlitedlq/store_test.go`. Targeted
+  `golangci-lint run --no-config
+  --enable=errcheck,staticcheck,ineffassign,unused --tests` against
+  both packages reports 0 issues — the actual count was 10 unchecked
+  `Close()`/`Write()` calls (vs the ~3 snapshot in "Current state",
+  taken before later test additions). Used `_ = s.Close()` for
+  housekeeping `t.Cleanup`/`defer` paths, explicit `t.Fatalf` on
+  semantically meaningful close points (close-before-reopen,
+  close-then-stat) where a silent close failure could mask flush /
+  persistence bugs, and a small `mustWrite(t, s, ctx, entry)` helper
+  in the dlq test file for the seed-data sites. No production code
+  touched, `.golangci.yml` unchanged, no new tests.
+  `go test -race -count=1 ./...` green for both packages.
+  Phase 3 (T009) will drop the exclusion globally and re-confirm.
 - T005 — Clean up testutil/{asblocal,localstack,rabbitmqlocal,s3local} test-quality (~10 issues) — pending
 - T006 — Clean up runtime/ test-quality (~5 errcheck) — pending
 - T007 — Clean up config/ test-quality (~3 issues) — pending
