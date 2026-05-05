@@ -165,7 +165,6 @@ func TestCredentialRefresher_RoutesRotationToSession(t *testing.T) {
 	push := &inlinePushStore{out: make(chan *domain.CredentialSet, 1)}
 	r := NewCredentialRefresher(push, nil)
 	defer r.Close()
-
 	sess := &credAwareFakeSession{
 		fakeSession: &fakeSession{},
 		applied:     make(chan *domain.CredentialSet, 2),

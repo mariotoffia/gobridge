@@ -42,7 +42,7 @@ func TestConfigAPI_Auth_NoKey_Returns401(t *testing.T) {
 			if err != nil {
 				t.Fatalf("request failed: %v", err)
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 
 			if resp.StatusCode != http.StatusUnauthorized {
 				t.Errorf("got %d, want 401", resp.StatusCode)
@@ -79,7 +79,7 @@ func TestConfigAPI_Auth_WrongKey_Returns401(t *testing.T) {
 			if err != nil {
 				t.Fatalf("request failed: %v", err)
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 
 			if resp.StatusCode != http.StatusUnauthorized {
 				t.Errorf("got %d, want 401", resp.StatusCode)
@@ -103,7 +103,7 @@ func TestConfigAPI_Auth_ValidXAPIKey_Succeeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("X-API-Key auth: got %d, want 200", resp.StatusCode)
@@ -125,7 +125,7 @@ func TestConfigAPI_Auth_ValidBearerToken_Succeeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Bearer auth: got %d, want 200", resp.StatusCode)
@@ -147,7 +147,7 @@ func TestConfigAPI_Auth_CorrelationHeaders_Returned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.Header.Get("X-Correlation-Id") == "" {
 		t.Error("missing X-Correlation-Id header")
@@ -170,7 +170,7 @@ func TestConfigAPI_Auth_CustomCorrelationID_Echoed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	got := resp.Header.Get("X-Correlation-Id")
 	if got != "my-custom-corr-id" {

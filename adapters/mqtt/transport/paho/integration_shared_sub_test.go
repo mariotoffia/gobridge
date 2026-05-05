@@ -71,7 +71,7 @@ func TestIntegration_SharedSubscription_CompetingConsumers(t *testing.T) {
 	defer subB.stop()
 
 	publisher := newPublisherSession(t, ctx, brokerURL, "pub")
-	t.Cleanup(func() { publisher.Close(context.Background()) })
+	t.Cleanup(func() { _ = publisher.Close(context.Background()) })
 	sender := paho.NewSender(publisher, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
 	for i := 0; i < msgCount; i++ {
@@ -135,7 +135,7 @@ func TestIntegration_PlainSubscription_FanOut(t *testing.T) {
 	defer subB.stop()
 
 	publisher := newPublisherSession(t, ctx, brokerURL, "fanout-pub")
-	t.Cleanup(func() { publisher.Close(context.Background()) })
+	t.Cleanup(func() { _ = publisher.Close(context.Background()) })
 	sender := paho.NewSender(publisher, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
 	for i := 0; i < msgCount; i++ {
@@ -179,7 +179,7 @@ func TestIntegration_SharedSubscription_PayloadIntegrity(t *testing.T) {
 	)
 
 	sess := newSessionWithEvents(t, ctx, brokerURL, "payload-sub")
-	t.Cleanup(func() { sess.Close(context.Background()) })
+	t.Cleanup(func() { _ = sess.Close(context.Background()) })
 
 	if err := sess.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: shareTopic, QoS: 1}},
@@ -208,7 +208,7 @@ func TestIntegration_SharedSubscription_PayloadIntegrity(t *testing.T) {
 	t.Cleanup(func() { recvCancel(); wg.Wait() })
 
 	publisher := newPublisherSession(t, ctx, brokerURL, "payload-pub")
-	t.Cleanup(func() { publisher.Close(context.Background()) })
+	t.Cleanup(func() { _ = publisher.Close(context.Background()) })
 	sender := paho.NewSender(publisher, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
 	env := &domain.Envelope{
@@ -283,7 +283,7 @@ func startSubscriber(t *testing.T, ctx context.Context, brokerURL, prefix, topic
 	if err := sess.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}); err != nil {
-		sess.Close(context.Background())
+		_ = sess.Close(context.Background())
 		t.Fatalf("Reconcile (%s): %v", prefix, err)
 	}
 	waitSubActive(t, sess, 5*time.Second)
@@ -293,7 +293,7 @@ func startSubscriber(t *testing.T, ctx context.Context, brokerURL, prefix, topic
 	recvCtx, recvCancel := context.WithCancel(ctx)
 	sub.cancel = func() {
 		recvCancel()
-		sess.Close(context.Background())
+		_ = sess.Close(context.Background())
 	}
 
 	sub.wg.Add(1)
@@ -325,7 +325,7 @@ func newSessionWithEvents(t *testing.T, ctx context.Context, brokerURL, prefix s
 	select {
 	case <-sess.Events():
 	case <-time.After(3 * time.Second):
-		sess.Close(context.Background())
+		_ = sess.Close(context.Background())
 		t.Fatalf("timed out waiting for connect event (%s)", prefix)
 	}
 

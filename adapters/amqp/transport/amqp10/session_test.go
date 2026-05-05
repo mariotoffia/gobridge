@@ -49,8 +49,7 @@ func TestSession_Start_Idempotent(t *testing.T) {
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatalf("first Start() error: %v", err)
 	}
-	defer s.Close(context.Background())
-
+	defer func() { _ = s.Close(context.Background()) }()
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatalf("second Start() should be no-op, got error: %v", err)
 	}
@@ -125,8 +124,7 @@ func TestSession_Health_Connected_NoPlan(t *testing.T) {
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
-	defer s.Close(context.Background())
-
+	defer func() { _ = s.Close(context.Background()) }()
 	h := s.Health(context.Background())
 	if !h.Connected {
 		t.Fatal("expected Connected=true after Start")
@@ -144,8 +142,7 @@ func TestSession_Health_Connected_WithPlan(t *testing.T) {
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
-	defer s.Close(context.Background())
-
+	defer func() { _ = s.Close(context.Background()) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: "test/topic"}},
 	}
@@ -168,8 +165,7 @@ func TestSession_Health_Connected_WithPlan(t *testing.T) {
 func TestSession_Events_Returns_Channel(t *testing.T) {
 	// verifies Events() returns a non-nil channel
 	s := newTestSession()
-	defer s.Close(context.Background())
-
+	defer func() { _ = s.Close(context.Background()) }()
 	ch := s.Events()
 	if ch == nil {
 		t.Fatal("Events() returned nil channel")
@@ -200,8 +196,7 @@ func TestSession_Reconcile_NotStarted(t *testing.T) {
 func TestSession_PushEvent_Overflow(t *testing.T) {
 	// verifies that pushEvent to a full channel evicts the oldest event
 	s := newTestSession()
-	defer s.Close(context.Background())
-
+	defer func() { _ = s.Close(context.Background()) }()
 	// Fill the events channel to capacity.
 	for i := 0; i < eventChannelSize; i++ {
 		s.pushEvent(ports.SessionReconnecting, nil)

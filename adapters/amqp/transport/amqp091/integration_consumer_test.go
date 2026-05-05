@@ -31,8 +31,7 @@ func TestIntegration_CompetingConsumers(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
-
+	defer func() { _ = sess.Close(ctx) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
 			{
@@ -148,8 +147,7 @@ func TestIntegration_AutoAck(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
-
+	defer func() { _ = sess.Close(ctx) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
 			{
@@ -262,8 +260,7 @@ func TestIntegration_PrefetchCount(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
-
+	defer func() { _ = sess.Close(ctx) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
 			{

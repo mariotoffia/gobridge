@@ -220,7 +220,7 @@ func TestBugA_Integration_ReconcileBeforeStart(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
+	defer func() { _ = sess.Close(ctx) }()
 
 	// Drain events until SessionReconciled (which OnConnectionUp emits
 	// AFTER the deferred reconcile runs). Without the fix, the callback

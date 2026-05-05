@@ -143,3 +143,123 @@ fails the gate.
   `FIX-TODO-error-wrapping.md`, `FIX-TODO-return-types.md`.
 - The exclusion lives in `.golangci.yml` near the bottom of
   `exclusions.rules`.
+
+## Progress (work-tasklist)
+
+- **T001 — Clean up adapters/mqtt/transport/paho test-quality (~11 issues) — DONE (2026-05-05)**
+  Cleaned up 11 test-quality lints in `adapters/mqtt/transport/paho`:
+  errcheck on `defer Close()` / `t.Cleanup(... Close(...))` wrapped as
+  `_ = ...`; QF1006 lifted-loop close in
+  `TestAnaIntg_MultipleReceivers_SameTopic_AllReceive` rewritten via DeMorgan
+  (preserves inner deadline/tick semantics); two single-case `select { case
+  <-time.After(d): }` rewrites to bare `<-time.After(d)` (no `ctx`/`done`
+  arms — semantically identical); SA9003 empty `errors.Is(err,
+  context.Canceled) {}` removed (its documentation comment preserved as a
+  top-level comment); orphaned `errors` import dropped; one-line bump in
+  `audit/test-timing-allowlist.txt` (241 → 240) tracking the removed import.
+  `make lint` and `make test` green. Reviewed by `thiink-test-reviewer`
+  (APPROVED first pass); codex unavailable.
+- **T002 — Clean up adapters/aws/store/dynamodb* test-quality (~5 issues) — DONE (2026-05-05)**
+  Verified clean: ran `golangci-lint run` against
+  `adapters/aws/store/dynamodblease`, `adapters/aws/store/dynamodbdlq`,
+  `adapters/aws/store/dynamodboutbox`, and `adapters/aws/store`
+  (containing `factory_test.go`) with the `_test.go` exclusion for
+  default linters (`errcheck`, `staticcheck`, `ineffassign`, `unused`)
+  temporarily removed — 0 issues across all four packages. The
+  ~5-issue snapshot in "Current state" was taken before subsequent
+  FIX-* sweeps (wrapcheck/ireturn cleanups) incidentally cleared the
+  dynamodb test files. `go test -race -count=1 ./...` green for all
+  three modules. No code changes were required for this task; only
+  this progress note. Phase 3 (T009) will drop the exclusion
+  globally and re-confirm.
+- **T003 — Clean up adapters/native/credentials/file test-quality (~1 issue) — DONE (2026-05-05)**
+  Verified clean: ran `golangci-lint run ./...` against
+  `adapters/native/credentials/file` with the `_test.go` exclusion for
+  default linters (`errcheck`, `staticcheck`, `ineffassign`, `unused`)
+  temporarily removed — 0 issues. The ~1-issue snapshot in "Current
+  state" was taken before subsequent FIX-* sweeps (wrapcheck/ireturn
+  cleanups) incidentally cleared the file. `go test -race -count=1
+  ./...` green. No code changes were required for this task; only
+  this progress note. Phase 3 (T009) will drop the exclusion globally
+  and re-confirm.
+- **T004 — Clean up adapters/native/store/sqlite* test-quality (~3 issues) — DONE (2026-05-05)**
+  Cleaned up errcheck violations in
+  `adapters/native/store/sqliteoutbox/store_test.go` and
+  `adapters/native/store/sqlitedlq/store_test.go`. Targeted
+  `golangci-lint run --no-config
+  --enable=errcheck,staticcheck,ineffassign,unused --tests` against
+  both packages reports 0 issues — the actual count was 10 unchecked
+  `Close()`/`Write()` calls (vs the ~3 snapshot in "Current state",
+  taken before later test additions). Used `_ = s.Close()` for
+  housekeeping `t.Cleanup`/`defer` paths, explicit `t.Fatalf` on
+  semantically meaningful close points (close-before-reopen,
+  close-then-stat) where a silent close failure could mask flush /
+  persistence bugs, and a small `mustWrite(t, s, ctx, entry)` helper
+  in the dlq test file for the seed-data sites. No production code
+  touched, `.golangci.yml` unchanged, no new tests.
+  `go test -race -count=1 ./...` green for both packages.
+  Phase 3 (T009) will drop the exclusion globally and re-confirm.
+- **T005 — Clean up testutil/{asblocal,localstack,rabbitmqlocal,s3local} test-quality (~10 issues) — DONE (2026-05-05)**
+  Verified clean: each of the four `testutil/*` submodules is its own
+  Go module, so lint was run from inside each module with
+  `golangci-lint run --no-config
+  --enable=errcheck,staticcheck,ineffassign,unused ./...` — 0 issues
+  across all four. `go build ./...` and `go vet ./...` green for each
+  module. The ~10-issue snapshot in "Current state" was taken before
+  subsequent FIX-* sweeps (wrapcheck / ireturn / err-naming cleanups)
+  incidentally cleared the violations. These packages contain no
+  `_test.go` files (they are docker-lifecycle helpers consumed by
+  other modules' tests), so the `_test.go` exclusion in
+  `.golangci.yml` does not apply here — the helper code itself was
+  already subject to the default linters and is clean. No code
+  changes were required for this task; only this progress note.
+  Phase 3 (T009) will drop the `_test.go` exclusion globally and
+  re-confirm across the consuming test suites.
+- **T006 — Clean up runtime/ test-quality (~5 errcheck) — DONE (2026-05-05)**
+  Verified clean: temporarily removed the `_test.go` exclusion for the
+  default linter set (`errcheck`, `staticcheck`, `ineffassign`, `unused`)
+  from `.golangci.yml`, then ran `golangci-lint run ./runtime/...` and
+  `golangci-lint run --default=none
+  --enable=errcheck,staticcheck,ineffassign,unused,govet ./runtime/...`
+  (golangci-lint v2 flag form, also covering `govet` per the plan's
+  "default linter set" prose) — 0 issues across all 76 `_test.go` files
+  in the package. `go vet ./runtime/...` and `go build ./runtime/...`
+  green; `.golangci.yml` reverted to its committed form (no production
+  change). The ~5-issue snapshot in "Current state" was taken before
+  subsequent FIX-* sweeps (wrapcheck / ireturn / err-naming / Close-handler
+  cleanups) incidentally cleared the violations. No code changes were
+  required for this task; only this progress note. Phase 3 (T009) will
+  drop the `_test.go` exclusion globally and re-confirm across the
+  workspace.
+- **T007 — Clean up config/ test-quality (~3 issues) — DONE (2026-05-05)**
+  Verified clean: temporarily removed the `_test.go` exclusion for the
+  default linter set (`errcheck`, `staticcheck`, `ineffassign`, `unused`)
+  from `.golangci.yml`, then ran `golangci-lint run ./config/...` and
+  `golangci-lint run --default=none
+  --enable=errcheck,staticcheck,ineffassign,unused,govet ./config/...`
+  (golangci-lint v2 flag form, also covering `govet` per the plan's
+  "default linter set" prose) — 0 issues across all 10 `_test.go` files
+  in the package. `go vet ./config/...` and `go build ./config/...`
+  green; `go test -race -count=1 ./config/...` green; `.golangci.yml`
+  reverted to its committed form (no production change). The ~3-issue
+  snapshot in "Current state" was taken before subsequent FIX-* sweeps
+  (wrapcheck / ireturn / err-naming / Close-handler cleanups)
+  incidentally cleared the violations. No code changes were required
+  for this task; only this progress note. Phase 3 (T009) will drop the
+  `_test.go` exclusion globally and re-confirm.
+- T008 — Clean up httpapi/ test-quality (~5 issues) — pending
+- **T009 — Phase 3: drop the _test.go exclusion from .golangci.yml and verify make lint green — DONE (2026-05-05)**
+  Removed the `_test.go` blanket exclusion for `errcheck`, `staticcheck`,
+  `ineffassign`, and `unused` from `.golangci.yml` (the `ireturn`
+  test-file exclusion and all other rules are preserved). Mechanically
+  fixed every newly-surfaced violation across 47 files: `_ = X.Close()`
+  wrappers on Closer defers, discarded errors from fire-and-forget
+  `s.Write` / `p.Process` calls in tests, removal of provably-unused
+  helpers / imports / methods, and two safe stylistic rewrites
+  (QF1001 De Morgan in `receiver_test.go`, QF1006 inverted-condition
+  loop in `streams_internal_test.go`). `make lint` exits 0 end-to-end;
+  `make test` green after refreshing line numbers in
+  `audit/test-timing-allowlist.txt` for shifted (not new) `time.Sleep`
+  call sites in 8 affected files.
+
+  Review: APPROVED on first pass by code-reviewer (codex: unavailable)

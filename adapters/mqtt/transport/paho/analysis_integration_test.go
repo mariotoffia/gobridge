@@ -99,7 +99,7 @@ func TestAnaIntg_ReconcileEmptyPlan_DoesNotUnsubscribe(t *testing.T) {
 	topic := fmt.Sprintf("ana/intg/empty/%d", time.Now().UnixNano())
 
 	sess := makeSession(t, ctx, url, "ana-empty-recon")
-	defer sess.Close(context.Background())
+	defer func() { _ = sess.Close(context.Background()) }()
 
 	if err := sess.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
@@ -155,7 +155,7 @@ func TestAnaIntg_LargePayload_RoundTrip(t *testing.T) {
 
 	topic := fmt.Sprintf("ana/intg/large/%d", time.Now().UnixNano())
 	sess := makeSession(t, ctx, url, "ana-large")
-	defer sess.Close(context.Background())
+	defer func() { _ = sess.Close(context.Background()) }()
 
 	if err := sess.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
@@ -221,7 +221,7 @@ func TestAnaIntg_MultipleReceivers_SameTopic_AllReceive(t *testing.T) {
 
 	topic := fmt.Sprintf("ana/intg/fanout/%d", time.Now().UnixNano())
 	sess := makeSession(t, ctx, url, "ana-fanout")
-	defer sess.Close(context.Background())
+	defer func() { _ = sess.Close(context.Background()) }()
 
 	if err := sess.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
@@ -258,10 +258,7 @@ func TestAnaIntg_MultipleReceivers_SameTopic_AllReceive(t *testing.T) {
 	}
 
 	deadline := time.After(10 * time.Second)
-	for {
-		if got1.Load() >= n && got2.Load() >= n {
-			break
-		}
+	for got1.Load() < int32(n) || got2.Load() < int32(n) {
 		select {
 		case <-deadline:
 			t.Fatalf("router fan-out incomplete: got1=%d got2=%d, want both ≥ %d",
@@ -281,7 +278,7 @@ func TestAnaIntg_HighConcurrencyPublish_NoLoss(t *testing.T) {
 
 	topic := fmt.Sprintf("ana/intg/conc/%d", time.Now().UnixNano())
 	sess := makeSession(t, ctx, url, "ana-conc-pub")
-	defer sess.Close(context.Background())
+	defer func() { _ = sess.Close(context.Background()) }()
 
 	if err := sess.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
@@ -347,7 +344,7 @@ func TestAnaIntg_ReconcileSameTopicTwice_Idempotent(t *testing.T) {
 
 	topic := fmt.Sprintf("ana/intg/idemp/%d", time.Now().UnixNano())
 	sess := makeSession(t, ctx, url, "ana-idemp")
-	defer sess.Close(context.Background())
+	defer func() { _ = sess.Close(context.Background()) }()
 
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
@@ -386,9 +383,7 @@ func TestAnaIntg_ReconcileSameTopicTwice_Idempotent(t *testing.T) {
 	}
 
 	// NEGATIVE: assert no duplicate arrives from a (hypothetical) double-subscribe.
-	select {
-	case <-time.After(300 * time.Millisecond):
-	}
+	<-time.After(300 * time.Millisecond)
 	if n := got.Load(); n != 1 {
 		t.Fatalf("got %d messages, want exactly 1 (idempotent reconcile)", n)
 	}
@@ -404,7 +399,7 @@ func TestAnaIntg_HealthDuringTraffic_RemainsStable(t *testing.T) {
 
 	topic := fmt.Sprintf("ana/intg/health/%d", time.Now().UnixNano())
 	sess := makeSession(t, ctx, url, "ana-health-traffic")
-	defer sess.Close(context.Background())
+	defer func() { _ = sess.Close(context.Background()) }()
 
 	if err := sess.Reconcile(ctx, domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},

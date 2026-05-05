@@ -30,8 +30,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
-
+	defer func() { _ = sess.Close(ctx) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
 			{
@@ -139,8 +138,7 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
-
+	defer func() { _ = sess.Close(ctx) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
 			{
@@ -230,8 +228,7 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
-
+	defer func() { _ = sess.Close(ctx) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
 			{

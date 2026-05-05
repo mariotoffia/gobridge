@@ -46,8 +46,7 @@ func TestReceiver_WaitForReconnect_AlreadyConnected_DoesNotHang(t *testing.T) {
 	if err := sess.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(context.Background())
-
+	defer func() { _ = sess.Close(context.Background()) }()
 	// Drain the initial SessionConnected event from the legacy channel
 	// to mimic a normal observer that has already processed it. The
 	// fan-out subscribers list is empty at this point.
@@ -101,8 +100,7 @@ func TestReceiver_WaitForReconnect_FastReconnect_DoesNotMissEvent(t *testing.T) 
 	if err := sess.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(context.Background())
-
+	defer func() { _ = sess.Close(context.Background()) }()
 	// Drain the initial event so the fan-out and legacy queues are clean.
 	select {
 	case <-sess.Events():

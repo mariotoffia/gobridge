@@ -35,8 +35,7 @@ func TestIntegration_Reconcile_FirstFailureDoesNotPoisonSubsequentReconciles(t *
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
-
+	defer func() { _ = sess.Close(ctx) }()
 	// First reconcile: ask for a queue that exists with default
 	// parameters but with durable=true (mismatch -> broker returns
 	// PRECONDITION_FAILED and closes the channel).
@@ -69,8 +68,7 @@ func TestIntegration_Reconcile_FirstFailureDoesNotPoisonSubsequentReconciles(t *
 		Exchange: freshExch, RoutingKey: freshQueue,
 		Session: sess, Timeout: 5 * time.Second,
 	})
-	defer sender.Close(ctx)
-
+	defer func() { _ = sender.Close(ctx) }()
 	if err := sender.Send(ctx, &domain.Envelope{
 		ID: "post-recon", Subject: freshQueue, Payload: []byte("ok"),
 	}); err != nil {
@@ -119,8 +117,7 @@ func TestIntegration_Reconcile_PartialFailure_ReportsErrorWithoutChannelLeak(t *
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
-
+	defer func() { _ = sess.Close(ctx) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
 			{Topic: bad, Options: map[string]any{"durable": true}},

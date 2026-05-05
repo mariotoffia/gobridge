@@ -56,7 +56,7 @@ func httpGet(url, apiKey string) (int, map[string]any, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	var data map[string]any
 	_ = json.Unmarshal(body, &data)
@@ -84,7 +84,7 @@ func httpPost(url, apiKey string, payload any) (int, map[string]any, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(resp.Body)
 	var data map[string]any
 	_ = json.Unmarshal(respBody, &data)

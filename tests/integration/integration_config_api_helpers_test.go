@@ -234,7 +234,7 @@ func apiDelete(t *testing.T, url, apiKey string) (*http.Response, map[string]any
 
 func decodeJSON(t *testing.T, resp *http.Response) map[string]any {
 	t.Helper()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var body map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)

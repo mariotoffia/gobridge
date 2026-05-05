@@ -92,7 +92,7 @@ func TestIntegration_SessionEvents(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
+	defer func() { _ = sess.Close(ctx) }()
 
 	select {
 	case ev := <-sess.Events():
@@ -120,7 +120,7 @@ func TestIntegration_SessionReconcile(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
+	defer func() { _ = sess.Close(ctx) }()
 
 	// Drain the connected event
 	select {
@@ -171,7 +171,7 @@ func TestIntegration_PubSubRoundTrip(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
+	defer func() { _ = sess.Close(ctx) }()
 
 	// Drain connected event
 	select {
@@ -279,7 +279,7 @@ func TestIntegration_BackpressureNoDrops(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
+	defer func() { _ = sess.Close(ctx) }()
 
 	select {
 	case <-sess.Events():
@@ -383,7 +383,7 @@ func TestIntegration_QoS1Completion(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
+	defer func() { _ = sess.Close(ctx) }()
 
 	select {
 	case <-sess.Events():
@@ -431,7 +431,7 @@ func TestIntegration_Factory(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
+	defer func() { _ = sess.Close(ctx) }()
 
 	recv, err := factory.NewReceiver(ctx, ports.ReceiverSpec{
 		ID:        "factory-rx",

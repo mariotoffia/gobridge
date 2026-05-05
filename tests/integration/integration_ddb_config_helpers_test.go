@@ -74,10 +74,10 @@ routes:
 		t.Fatalf("create temp file: %v", err)
 	}
 	if _, err := f.WriteString(content); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatalf("write temp file: %v", err)
 	}
-	f.Close()
+	_ = f.Close()
 	return f.Name()
 }
 
@@ -116,10 +116,10 @@ routes:
 		t.Fatalf("create temp file: %v", err)
 	}
 	if _, err := f.WriteString(content); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatalf("write temp file: %v", err)
 	}
-	f.Close()
+	_ = f.Close()
 	return f.Name()
 }
 
@@ -136,10 +136,10 @@ func writeBridgeConfigYAML(t *testing.T, cfg *ports.BridgeConfig) string {
 		t.Fatalf("create temp file: %v", err)
 	}
 	if _, err := f.Write(data); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatalf("write temp file: %v", err)
 	}
-	f.Close()
+	_ = f.Close()
 	return f.Name()
 }
 
@@ -308,12 +308,6 @@ func (f *cfgFakeTransportFactory) NewSender(_ context.Context, _ ports.SenderSpe
 
 func (f *cfgFakeTransportFactory) Capabilities() []ports.Capability {
 	return []ports.Capability{ports.CapSourceRedelivery, ports.CapVisibilityExtension}
-}
-
-func (f *cfgFakeTransportFactory) counts() (sessions, receivers, senders int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.sessionCalls, f.receiverCalls, f.senderCalls
 }
 
 // cfgBrokenTransportFactory returns errors on NewSession for testing

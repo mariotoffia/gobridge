@@ -35,8 +35,7 @@ func TestIntegration_SessionHealth(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
-
+	defer func() { _ = sess.Close(ctx) }()
 	h = sess.Health(ctx)
 	if !h.Connected {
 		t.Fatal("expected connected after Start")
@@ -105,8 +104,7 @@ func TestIntegration_SessionEvents(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
-
+	defer func() { _ = sess.Close(ctx) }()
 	events := sess.Events()
 
 	drainCtx, drainCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -202,8 +200,7 @@ func TestIntegration_SessionReconcile_MultipleQueues(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
-
+	defer func() { _ = sess.Close(ctx) }()
 	directQueue := rabbitmqlocal.UniqueQueue("multi-direct")
 	directExchange := rabbitmqlocal.UniqueExchange("multi-direct-ex")
 	fanoutQueue := rabbitmqlocal.UniqueQueue("multi-fanout")
@@ -373,8 +370,7 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 	if err := sess2.Start(ctx); err != nil {
 		t.Fatalf("session2 Start: %v", err)
 	}
-	defer sess2.Close(ctx)
-
+	defer func() { _ = sess2.Close(ctx) }()
 	if err := sess2.Reconcile(ctx, plan); err != nil {
 		t.Fatalf("session2 Reconcile: %v", err)
 	}

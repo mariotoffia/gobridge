@@ -2,7 +2,6 @@ package paho
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -303,9 +302,7 @@ func TestAnaSender_ContextDoneBeforeSend_ReturnsClassifiedError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Send with cancelled ctx")
 	}
-	if errors.Is(err, context.Canceled) {
-		// Acceptable as long as it's wrapped in a BridgeError.
-	}
+	// errors.Is(err, context.Canceled) is acceptable as long as it's wrapped in a BridgeError.
 	if _, ok := err.(*domain.BridgeError); !ok {
 		t.Fatalf("err type = %T, want *domain.BridgeError", err)
 	}

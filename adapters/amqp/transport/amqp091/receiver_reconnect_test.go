@@ -85,7 +85,7 @@ func TestReceiver_WaitForReconnect_ContextCancel(t *testing.T) {
 		t.Fatal("waitForReconnect should return false when context is cancelled")
 	}
 
-	sess.Close(context.Background())
+	_ = sess.Close(context.Background())
 }
 
 // TestReceiver_WaitForReconnect_EventReceived validates that
@@ -118,7 +118,7 @@ func TestReceiver_WaitForReconnect_EventReceived(t *testing.T) {
 		t.Fatal("waitForReconnect should return true when SessionConnected event received")
 	}
 
-	sess.Close(context.Background())
+	_ = sess.Close(context.Background())
 }
 
 // TestReceiver_WaitForReconnect_ChannelClosed validates that
@@ -140,7 +140,7 @@ func TestReceiver_WaitForReconnect_ChannelClosed(t *testing.T) {
 		wait.Until(t, 2*time.Second, "receiver subscribed", func() bool {
 			return sess.subscriberCount() >= 1
 		})
-		sess.Close(context.Background())
+		_ = sess.Close(context.Background())
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

@@ -82,7 +82,6 @@ func TestIntegration_Cluster_ForwardToBridge(t *testing.T) {
 
 	serverB := httptest.NewServer(factoryB.Handler())
 	defer serverB.Close()
-
 	// Bridge A — locator points to Bridge B, uses HTTPForwarder.
 	locA := &stubLocator{
 		peer:  &domain.PeerInfo{InstanceID: "bridge-b", Endpoints: map[string]string{"http": serverB.URL}},
@@ -112,7 +111,6 @@ func TestIntegration_Cluster_ForwardToBridge(t *testing.T) {
 
 	serverA := httptest.NewServer(factoryA.Handler())
 	defer serverA.Close()
-
 	resp := httpPostJSON(t, serverA.URL+"/transport/http/receivers/route-cluster/messages", map[string]any{
 		"subject": "orders.created",
 		"payload": json.RawMessage(`{"order":"123"}`),
@@ -171,7 +169,6 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 	}
 	serverB := httptest.NewServer(factoryB.Handler())
 	defer serverB.Close()
-
 	// Bridge A — locator says remote → redirect.
 	locA := &stubLocator{
 		peer:  &domain.PeerInfo{InstanceID: "bridge-b", Endpoints: map[string]string{"http": serverB.URL}},
@@ -187,7 +184,6 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 	setRouteID(t, senderA, "route-sse")
 	serverA := httptest.NewServer(factoryA.Handler())
 	defer serverA.Close()
-
 	t.Run("redirect_307", func(t *testing.T) {
 		noFollow := &http.Client{
 			CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -315,7 +311,6 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 
 	serverB := httptest.NewServer(factoryB.Handler())
 	defer serverB.Close()
-
 	// Bridge A — locator says remote(B), forwards via HTTPForwarder.
 	locA := &stubLocator{peer: peerB, local: false}
 	fwdA := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
@@ -342,7 +337,6 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 
 	serverA := httptest.NewServer(factoryA.Handler())
 	defer serverA.Close()
-
 	// Wire peer URLs now that both servers are up.
 	peerA.Endpoints["http"] = serverA.URL
 	peerB.Endpoints["http"] = serverB.URL
@@ -421,7 +415,6 @@ func TestIntegration_Cluster_ForwardToDeadPeer(t *testing.T) {
 
 	server := httptest.NewServer(factory.Handler())
 	defer server.Close()
-
 	resp := httpPostJSON(t, server.URL+"/transport/http/receivers/route-dead/messages", map[string]any{
 		"subject": "dead.test",
 		"payload": json.RawMessage(`{}`),
@@ -468,7 +461,6 @@ func TestIntegration_Cluster_ForwardPreservesEnvelope(t *testing.T) {
 
 	serverB := httptest.NewServer(factoryB.Handler())
 	defer serverB.Close()
-
 	// Bridge A — forwards to Bridge B.
 	locA := &stubLocator{
 		peer:  &domain.PeerInfo{InstanceID: "bridge-b", Endpoints: map[string]string{"http": serverB.URL}},
@@ -498,7 +490,6 @@ func TestIntegration_Cluster_ForwardPreservesEnvelope(t *testing.T) {
 
 	serverA := httptest.NewServer(factoryA.Handler())
 	defer serverA.Close()
-
 	resp := httpPostJSON(t, serverA.URL+"/transport/http/receivers/route-preserve/messages", map[string]any{
 		"id":      "env-rich-001",
 		"subject": "billing.invoice.created",
@@ -585,7 +576,6 @@ func TestIntegration_Cluster_ForwardDivergentReceiverID(t *testing.T) {
 
 	serverB := httptest.NewServer(factoryB.Handler())
 	defer serverB.Close()
-
 	// Bridge A — locator says remote(B), forwards via HTTPForwarder.
 	locA := &stubLocator{
 		peer:  &domain.PeerInfo{InstanceID: "bridge-b", Endpoints: map[string]string{"http": serverB.URL}},
@@ -615,7 +605,6 @@ func TestIntegration_Cluster_ForwardDivergentReceiverID(t *testing.T) {
 
 	serverA := httptest.NewServer(factoryA.Handler())
 	defer serverA.Close()
-
 	resp := httpPostJSON(t, serverA.URL+"/transport/http/receivers/"+receiverID+"/messages", map[string]any{
 		"subject": "orders.created",
 		"payload": json.RawMessage(`{"order":"divergent-1"}`),

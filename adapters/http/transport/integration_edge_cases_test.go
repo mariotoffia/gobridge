@@ -181,7 +181,6 @@ func TestEdge_ForwarderPreservesExpiresAt(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
 	}))
 	defer remote.Close()
-
 	fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
 	peer := &domain.PeerInfo{
 		InstanceID: "remote-exp",
@@ -256,7 +255,6 @@ func TestEdge_ForwarderRemoteReturns500(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer remote.Close()
-
 	fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
 	peer := &domain.PeerInfo{
 		InstanceID: "error-node",
@@ -295,7 +293,6 @@ func TestEdge_SSEFieldSanitization(t *testing.T) {
 
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
-
 	resp, err := http.Get(ts.URL + "/transport/http/senders/sse-sanitize/events")
 	if err != nil {
 		t.Fatalf("GET SSE: %v", err)

@@ -253,10 +253,7 @@ func TestStreamLoopIgnoresUnrelatedRecords(t *testing.T) {
 	// and then armed the inter-poll timer (TimerCount>=1) — at that
 	// point the unrelated record has been evaluated and discarded.
 	deadline := time.Now().Add(1 * time.Second)
-	for {
-		if streams.getRecordsCalls.Load() >= 1 && fc.TimerCount() >= 1 {
-			break
-		}
+	for streams.getRecordsCalls.Load() < 1 || fc.TimerCount() < 1 {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for streamLoop to consume batch (GetRecords=%d, timers=%d)",
 				streams.getRecordsCalls.Load(), fc.TimerCount())

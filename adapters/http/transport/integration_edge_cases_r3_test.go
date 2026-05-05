@@ -192,7 +192,6 @@ func TestEdgeR3_SSEHeartbeatDelivered(t *testing.T) {
 
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
-
 	resp, err := http.Get(ts.URL + "/transport/http/senders/sse-hb/events")
 	if err != nil {
 		t.Fatalf("GET SSE: %v", err)
@@ -252,7 +251,6 @@ func TestEdgeR3_ConcurrentPOSTProcessing(t *testing.T) {
 
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
-
 	const n = 20
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
@@ -358,7 +356,6 @@ func TestEdgeR3_ForwarderContextCancelled(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer remote.Close()
-
 	fwd := transport.NewHTTPForwarder("/transport/http", 10*time.Second)
 
 	peer := &domain.PeerInfo{
@@ -509,7 +506,6 @@ func TestEdgeR3_SSEResponseHeaders(t *testing.T) {
 
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
-
 	resp, err := http.Get(ts.URL + "/transport/http/senders/sse-headers/events")
 	if err != nil {
 		t.Fatalf("GET SSE: %v", err)

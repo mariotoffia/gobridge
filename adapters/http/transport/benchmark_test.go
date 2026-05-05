@@ -77,7 +77,6 @@ func BenchmarkSSE_Broadcast(b *testing.B) {
 
 			ts := httptest.NewServer(factory.Handler())
 			defer ts.Close()
-
 			path := fmt.Sprintf("/transport/http/senders/bench-sse-%d/events", numClients)
 
 			// Connect N SSE clients.
@@ -132,7 +131,6 @@ func BenchmarkForwarder_Forward(b *testing.B) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
 	}))
 	defer remote.Close()
-
 	fwd := transport.NewHTTPForwarder("/transport/http", 30*time.Second)
 	peer := &domain.PeerInfo{
 		InstanceID: "bench-remote",

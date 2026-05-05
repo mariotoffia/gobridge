@@ -55,8 +55,7 @@ func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(context.Background())
-
+	defer func() { _ = sess.Close(context.Background()) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
 			{Topic: queueA, Options: map[string]any{"exchange": exchange, "routing_key": queueA}},
@@ -168,8 +167,7 @@ func TestIntegration_Sender_MandatoryUnroutable_ReturnsError(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
-
+	defer func() { _ = sess.Close(ctx) }()
 	plan := domain.SessionPlan{
 		Publishers: []domain.PublisherPlan{{Topic: exchange}},
 	}
@@ -184,8 +182,7 @@ func TestIntegration_Sender_MandatoryUnroutable_ReturnsError(t *testing.T) {
 		Timeout:    5 * time.Second,
 		Session:    sess,
 	})
-	defer sender.Close(ctx)
-
+	defer func() { _ = sender.Close(ctx) }()
 	err := sender.Send(ctx, &domain.Envelope{
 		ID:      "unrouted-1",
 		Subject: "unused",
@@ -213,8 +210,7 @@ func TestIntegration_Sender_MandatoryRouted_Succeeds(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
-
+	defer func() { _ = sess.Close(ctx) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
 			{Topic: queue, Options: map[string]any{"exchange": exchange, "routing_key": queue}},
@@ -232,8 +228,7 @@ func TestIntegration_Sender_MandatoryRouted_Succeeds(t *testing.T) {
 		Timeout:    5 * time.Second,
 		Session:    sess,
 	})
-	defer sender.Close(ctx)
-
+	defer func() { _ = sender.Close(ctx) }()
 	if err := sender.Send(ctx, &domain.Envelope{
 		ID:      "routed-1",
 		Subject: queue,
@@ -265,8 +260,7 @@ func TestIntegration_ConsumerTag_ReuseAfterReconnect(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(context.Background())
-
+	defer func() { _ = sess.Close(context.Background()) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
 			{Topic: queue, Options: map[string]any{"exchange": exchange, "routing_key": queue}},

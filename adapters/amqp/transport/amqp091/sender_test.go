@@ -47,8 +47,7 @@ func TestSender_Send_NoConnection(t *testing.T) {
 		domain.SessionEphemeral,
 		slog.Default(),
 	)
-	defer sess.Close(context.Background())
-
+	defer func() { _ = sess.Close(context.Background()) }()
 	s := NewSender(SenderConfig{Session: sess})
 
 	env := &domain.Envelope{
@@ -109,8 +108,7 @@ func TestNewSender_InheritsSessionLogger(t *testing.T) {
 		domain.SessionEphemeral,
 		logger,
 	)
-	defer sess.Close(context.Background())
-
+	defer func() { _ = sess.Close(context.Background()) }()
 	s := NewSender(SenderConfig{Session: sess})
 	if s.logger != logger {
 		t.Error("expected sender to inherit session logger")

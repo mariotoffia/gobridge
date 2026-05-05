@@ -27,8 +27,15 @@ func newTempStore(t *testing.T) *sqlitedlq.Store {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s
+}
+
+func mustWrite(t *testing.T, s *sqlitedlq.Store, ctx context.Context, entry domain.DLQEntry) {
+	t.Helper()
+	if err := s.Write(ctx, entry); err != nil {
+		t.Fatalf("Write %s: %v", entry.ID, err)
+	}
 }
 
 func makeEntry(id, routeID, category string, failedAt time.Time) domain.DLQEntry {
@@ -131,9 +138,15 @@ func TestListFilterByRouteID(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().Truncate(time.Millisecond)
-	s.Write(ctx, makeEntry("r1", "route-A", "cat", now))
-	s.Write(ctx, makeEntry("r2", "route-B", "cat", now))
-	s.Write(ctx, makeEntry("r3", "route-A", "cat", now))
+	if err := s.Write(ctx, makeEntry("r1", "route-A", "cat", now)); err != nil {
+		t.Fatalf("Write r1: %v", err)
+	}
+	if err := s.Write(ctx, makeEntry("r2", "route-B", "cat", now)); err != nil {
+		t.Fatalf("Write r2: %v", err)
+	}
+	if err := s.Write(ctx, makeEntry("r3", "route-A", "cat", now)); err != nil {
+		t.Fatalf("Write r3: %v", err)
+	}
 
 	got, err := s.List(ctx, domain.DLQFilter{RouteID: "route-A"})
 	if err != nil {
@@ -155,9 +168,15 @@ func TestListFilterByCategory(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().Truncate(time.Millisecond)
-	s.Write(ctx, makeEntry("c1", "route-A", "timeout", now))
-	s.Write(ctx, makeEntry("c2", "route-A", "rejected", now))
-	s.Write(ctx, makeEntry("c3", "route-A", "timeout", now))
+	if err := s.Write(ctx, makeEntry("c1", "route-A", "timeout", now)); err != nil {
+		t.Fatalf("Write c1: %v", err)
+	}
+	if err := s.Write(ctx, makeEntry("c2", "route-A", "rejected", now)); err != nil {
+		t.Fatalf("Write c2: %v", err)
+	}
+	if err := s.Write(ctx, makeEntry("c3", "route-A", "timeout", now)); err != nil {
+		t.Fatalf("Write c3: %v", err)
+	}
 
 	got, err := s.List(ctx, domain.DLQFilter{Category: "timeout"})
 	if err != nil {
@@ -182,9 +201,9 @@ func TestListFilterBySince(t *testing.T) {
 	t1h := now.Add(-1 * time.Hour)
 	t30m := now.Add(-30 * time.Minute)
 
-	s.Write(ctx, makeEntry("s1", "route-A", "cat", t1h))
-	s.Write(ctx, makeEntry("s2", "route-A", "cat", t30m))
-	s.Write(ctx, makeEntry("s3", "route-A", "cat", now))
+	mustWrite(t, s, ctx, makeEntry("s1", "route-A", "cat", t1h))
+	mustWrite(t, s, ctx, makeEntry("s2", "route-A", "cat", t30m))
+	mustWrite(t, s, ctx, makeEntry("s3", "route-A", "cat", now))
 
 	since := now.Add(-45 * time.Minute)
 	got, err := s.List(ctx, domain.DLQFilter{Since: since})
@@ -210,9 +229,9 @@ func TestListFilterByBefore(t *testing.T) {
 	t1h := now.Add(-1 * time.Hour)
 	t30m := now.Add(-30 * time.Minute)
 
-	s.Write(ctx, makeEntry("b1", "route-A", "cat", t1h))
-	s.Write(ctx, makeEntry("b2", "route-A", "cat", t30m))
-	s.Write(ctx, makeEntry("b3", "route-A", "cat", now))
+	mustWrite(t, s, ctx, makeEntry("b1", "route-A", "cat", t1h))
+	mustWrite(t, s, ctx, makeEntry("b2", "route-A", "cat", t30m))
+	mustWrite(t, s, ctx, makeEntry("b3", "route-A", "cat", now))
 
 	before := now.Add(-20 * time.Minute)
 	got, err := s.List(ctx, domain.DLQFilter{Before: before})
@@ -237,7 +256,7 @@ func TestListRespectsLimit(t *testing.T) {
 	now := time.Now().Truncate(time.Millisecond)
 	for i := 0; i < 5; i++ {
 		id := "lim-" + string(rune('a'+i))
-		s.Write(ctx, makeEntry(id, "route-A", "cat", now.Add(time.Duration(i)*time.Second)))
+		mustWrite(t, s, ctx, makeEntry(id, "route-A", "cat", now.Add(time.Duration(i)*time.Second)))
 	}
 
 	got, err := s.List(ctx, domain.DLQFilter{Limit: 2})
@@ -284,8 +303,8 @@ func TestDeleteRemovesEntries(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().Truncate(time.Millisecond)
-	s.Write(ctx, makeEntry("rp1", "route-A", "cat", now))
-	s.Write(ctx, makeEntry("rp2", "route-A", "cat", now))
+	mustWrite(t, s, ctx, makeEntry("rp1", "route-A", "cat", now))
+	mustWrite(t, s, ctx, makeEntry("rp2", "route-A", "cat", now))
 
 	count, err := s.Delete(ctx, []string{"rp1"})
 	if err != nil {
@@ -325,9 +344,9 @@ func TestPurgeRemovesOld(t *testing.T) {
 	t2h := now.Add(-2 * time.Hour)
 	t1h := now.Add(-1 * time.Hour)
 
-	s.Write(ctx, makeEntry("p1", "route-A", "cat", t2h))
-	s.Write(ctx, makeEntry("p2", "route-A", "cat", t1h))
-	s.Write(ctx, makeEntry("p3", "route-A", "cat", now))
+	mustWrite(t, s, ctx, makeEntry("p1", "route-A", "cat", t2h))
+	mustWrite(t, s, ctx, makeEntry("p2", "route-A", "cat", t1h))
+	mustWrite(t, s, ctx, makeEntry("p3", "route-A", "cat", now))
 
 	cutoff := now.Add(-30 * time.Minute)
 	count, err := s.Purge(ctx, cutoff)
@@ -356,7 +375,7 @@ func TestPurgeSkipsRecent(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().Truncate(time.Millisecond)
-	s.Write(ctx, makeEntry("recent-1", "route-A", "cat", now))
+	mustWrite(t, s, ctx, makeEntry("recent-1", "route-A", "cat", now))
 
 	cutoff := now.Add(-1 * time.Hour)
 	count, err := s.Purge(ctx, cutoff)
@@ -382,8 +401,8 @@ func TestFullLifecycle(t *testing.T) {
 	ctx := context.Background()
 
 	past := time.Now().Add(-2 * time.Hour).Truncate(time.Millisecond)
-	s.Write(ctx, makeEntry("lc1", "route-A", "timeout", past))
-	s.Write(ctx, makeEntry("lc2", "route-A", "timeout", past))
+	mustWrite(t, s, ctx, makeEntry("lc1", "route-A", "timeout", past))
+	mustWrite(t, s, ctx, makeEntry("lc2", "route-A", "timeout", past))
 
 	got, err := s.List(ctx, domain.DLQFilter{})
 	if err != nil {
@@ -434,7 +453,7 @@ func TestInMemoryMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore(:memory:): %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	ctx := context.Background()
 	now := time.Now().Truncate(time.Millisecond)
@@ -472,13 +491,15 @@ func TestDurability_CloseAndReopen(t *testing.T) {
 	if err := s1.Write(ctx, entry); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	s1.Close()
+	if err := s1.Close(); err != nil {
+		t.Fatalf("close 1: %v", err)
+	}
 
 	s2, err := sqlitedlq.NewStore(dbPath)
 	if err != nil {
 		t.Fatalf("open 2: %v", err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 
 	got, err := s2.List(ctx, domain.DLQFilter{})
 	if err != nil {
@@ -513,7 +534,9 @@ func TestFileExistsAfterClose(t *testing.T) {
 	if err := s.Write(ctx, makeEntry("fe-1", "route-A", "cat", now)); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	s.Close()
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		t.Fatal("db file should exist after close")
@@ -530,9 +553,9 @@ func TestListOrderByFailedAtDesc(t *testing.T) {
 	t2 := now.Add(-1 * time.Hour)
 	t3 := now
 
-	s.Write(ctx, makeEntry("ord-1", "route-A", "cat", t1))
-	s.Write(ctx, makeEntry("ord-2", "route-A", "cat", t2))
-	s.Write(ctx, makeEntry("ord-3", "route-A", "cat", t3))
+	mustWrite(t, s, ctx, makeEntry("ord-1", "route-A", "cat", t1))
+	mustWrite(t, s, ctx, makeEntry("ord-2", "route-A", "cat", t2))
+	mustWrite(t, s, ctx, makeEntry("ord-3", "route-A", "cat", t3))
 
 	got, err := s.List(ctx, domain.DLQFilter{})
 	if err != nil {

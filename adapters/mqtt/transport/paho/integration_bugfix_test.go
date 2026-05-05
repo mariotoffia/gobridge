@@ -104,7 +104,7 @@ func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
 	if err := sess2.Start(ctx); err != nil {
 		t.Fatalf("Start sess2: %v", err)
 	}
-	defer sess2.Close(ctx)
+	defer func() { _ = sess2.Close(ctx) }()
 
 	drainEvent(t, sess2)
 
@@ -174,7 +174,7 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
+	defer func() { _ = sess.Close(ctx) }()
 
 	drainEvent(t, sess)
 
@@ -232,9 +232,7 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 	})
 
 	// NEGATIVE: assert topicA does NOT arrive.
-	select {
-	case <-time.After(500 * time.Millisecond):
-	}
+	<-time.After(500 * time.Millisecond)
 
 	recvCancel()
 	wg.Wait()
@@ -273,7 +271,7 @@ func TestIntegration_CancelContext_ReconcileDoesNotHang(t *testing.T) {
 	if err := sess.Start(parentCtx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(context.Background())
+	defer func() { _ = sess.Close(context.Background()) }()
 
 	drainEvent(t, sess)
 
@@ -329,7 +327,7 @@ func TestIntegration_SessionStartStoresContext(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
+	defer func() { _ = sess.Close(ctx) }()
 
 	drainEvent(t, sess)
 
@@ -363,7 +361,7 @@ func TestIntegration_ConcurrentReconcile_ActiveSubsIntegrity(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(ctx)
+	defer func() { _ = sess.Close(ctx) }()
 
 	drainEvent(t, sess)
 

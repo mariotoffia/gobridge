@@ -74,8 +74,7 @@ func TestSession_Start_Closed(t *testing.T) {
 func TestSession_Start_Idempotent(t *testing.T) {
 	s := testSession()
 	mc := connectSession(t, s)
-	defer s.Close(context.Background())
-
+	defer func() { _ = s.Close(context.Background()) }()
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatalf("second Start: %v", err)
 	}
@@ -256,8 +255,7 @@ func TestSession_Health_ConnectedZeroActiveSubs(t *testing.T) {
 // verifies Events returns the session event channel.
 func TestSession_Events(t *testing.T) {
 	s := testSession()
-	defer s.Close(context.Background())
-
+	defer func() { _ = s.Close(context.Background()) }()
 	ch := s.Events()
 	if ch == nil {
 		t.Fatal("Events() returned nil")
@@ -269,8 +267,7 @@ func TestSession_Events(t *testing.T) {
 // verifies pushEvent evicts the oldest event when the channel is full.
 func TestSession_PushEvent_EvictsOldest(t *testing.T) {
 	s := testSession()
-	defer s.Close(context.Background())
-
+	defer func() { _ = s.Close(context.Background()) }()
 	// Fill the 16-slot event buffer.
 	for i := 0; i < 16; i++ {
 		s.pushEvent(ports.SessionReconnecting, nil)

@@ -21,7 +21,7 @@ func newTempStore(t *testing.T) *sqliteoutbox.Store {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
@@ -37,7 +37,7 @@ func TestInMemoryMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore(:memory:): %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	storetest.RunOutboxStoreTests(t, s)
 }
 
@@ -68,13 +68,15 @@ func TestDurability_CloseAndReopen(t *testing.T) {
 	if err := s1.Persist(ctx, []domain.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
-	s1.Close()
+	if err := s1.Close(); err != nil {
+		t.Fatalf("close 1: %v", err)
+	}
 
 	s2, err := sqliteoutbox.NewStore(dbPath)
 	if err != nil {
 		t.Fatalf("open 2: %v", err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 
 	pending, err := s2.QueryPending(ctx, "SESSION#sess-dur", 10)
 	if err != nil {
@@ -113,7 +115,9 @@ func TestTempFileCleanup(t *testing.T) {
 	if err := s.Persist(ctx, []domain.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
-	s.Close()
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		t.Fatal("db file should exist after close")
@@ -160,7 +164,7 @@ func TestWithClockControlsCreatedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore(:memory:): %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	ctx := context.Background()
 	r := domain.OutboxRecord{

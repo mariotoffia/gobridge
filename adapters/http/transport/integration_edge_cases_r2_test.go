@@ -114,7 +114,6 @@ func TestEdgeR2_SSEAuthRequired(t *testing.T) {
 
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
-
 	sseURL := ts.URL + "/transport/http/senders/sse-auth-r2/events"
 
 	resp, err := http.Get(sseURL)
@@ -154,7 +153,6 @@ func TestEdgeR2_SSEMaxClients(t *testing.T) {
 
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
-
 	sseURL := ts.URL + "/transport/http/senders/sse-maxcli-r2/events"
 
 	resp1, err := http.Get(sseURL)
@@ -210,7 +208,6 @@ func TestEdgeR2_ForwarderClusterKey(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
 	}))
 	defer remote.Close()
-
 	fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second, "cluster-secret")
 
 	peer := &domain.PeerInfo{
@@ -328,7 +325,6 @@ func TestEdgeR2_SSENoConnectionHeader(t *testing.T) {
 
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
-
 	resp, err := http.Get(ts.URL + "/transport/http/senders/sse-conn-r2/events")
 	if err != nil {
 		t.Fatalf("GET SSE: %v", err)
