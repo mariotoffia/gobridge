@@ -199,7 +199,22 @@ fails the gate.
   touched, `.golangci.yml` unchanged, no new tests.
   `go test -race -count=1 ./...` green for both packages.
   Phase 3 (T009) will drop the exclusion globally and re-confirm.
-- T005 — Clean up testutil/{asblocal,localstack,rabbitmqlocal,s3local} test-quality (~10 issues) — pending
+- **T005 — Clean up testutil/{asblocal,localstack,rabbitmqlocal,s3local} test-quality (~10 issues) — DONE (2026-05-05)**
+  Verified clean: each of the four `testutil/*` submodules is its own
+  Go module, so lint was run from inside each module with
+  `golangci-lint run --no-config
+  --enable=errcheck,staticcheck,ineffassign,unused ./...` — 0 issues
+  across all four. `go build ./...` and `go vet ./...` green for each
+  module. The ~10-issue snapshot in "Current state" was taken before
+  subsequent FIX-* sweeps (wrapcheck / ireturn / err-naming cleanups)
+  incidentally cleared the violations. These packages contain no
+  `_test.go` files (they are docker-lifecycle helpers consumed by
+  other modules' tests), so the `_test.go` exclusion in
+  `.golangci.yml` does not apply here — the helper code itself was
+  already subject to the default linters and is clean. No code
+  changes were required for this task; only this progress note.
+  Phase 3 (T009) will drop the `_test.go` exclusion globally and
+  re-confirm across the consuming test suites.
 - T006 — Clean up runtime/ test-quality (~5 errcheck) — pending
 - T007 — Clean up config/ test-quality (~3 issues) — pending
 - T008 — Clean up httpapi/ test-quality (~5 issues) — pending
