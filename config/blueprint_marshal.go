@@ -92,12 +92,12 @@ type codec interface {
 
 type jsonCodec struct{}
 
-func (jsonCodec) marshal(v any) ([]byte, error)   { return json.Marshal(v) }   //nolint:wrapcheck // wrapped by caller
+func (jsonCodec) marshal(v any) ([]byte, error)   { return json.Marshal(v) }      //nolint:wrapcheck // wrapped by caller
 func (jsonCodec) unmarshal(b []byte, v any) error { return json.Unmarshal(b, v) } //nolint:wrapcheck // wrapped by caller
 
 type yamlCodec struct{}
 
-func (yamlCodec) marshal(v any) ([]byte, error)   { return yaml.Marshal(v) }   //nolint:wrapcheck // wrapped by caller
+func (yamlCodec) marshal(v any) ([]byte, error)   { return yaml.Marshal(v) }      //nolint:wrapcheck // wrapped by caller
 func (yamlCodec) unmarshal(b []byte, v any) error { return yaml.Unmarshal(b, v) } //nolint:wrapcheck // wrapped by caller
 
 // bridgeConfigToWireMap performs the round-trip: marshal cfg with

@@ -1,8 +1,8 @@
 {
   "$schema": "v2",
   "source": "FIX-003.md",
-  "source_sha": "a5dd0808cd2a5df5fcc87abef746a7cbab7b6f5bf749dcdeb3a891d34a596219",
-  "indexed_at": "2026-05-05T15:30:00Z",
+  "source_sha": "38acc6b9022da319e49c6eea25c3af12581d02deb7924409e7a70d9d7a98591a",
+  "indexed_at": "2026-05-05T16:00:00Z",
   "status_convention": "H3 ### Phase N \u2014 Title (no status suffixes; all phases pending until orchestrator appends ' - DONE')",
   "tasks": [
     {
@@ -74,7 +74,7 @@
     {
       "id": "PHASE6",
       "title": "Mapping regression sentinels",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "test-automator",
       "agent_rationale": "This phase extends regression sentinel checks in a lint test script, fitting test automation and CI validation work.",
