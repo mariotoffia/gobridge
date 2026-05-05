@@ -5,11 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"sync"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsssm "github.com/aws/aws-sdk-go-v2/service/ssm"
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -31,11 +26,15 @@ type config struct {
 
 // Repository implements ports.CredentialRepository and ports.CredentialAdmin
 // for AWS Systems Manager Parameter Store.
+//
+// All AWS SDK interactions are funnelled through the unexported
+// *session (see acl_session.go); this file is intentionally free of
+// aws-sdk-go-v2 imports so the domain-side logic stays reviewable in
+// isolation.
 type Repository struct {
-	cfg        config
-	client     ssmAPI
-	clientOnce sync.Once
-	clientErr  error
+	cfg     config
+	session *session
+	preset  ssmAPI
 }
 
 // Option configures a Repository.
@@ -43,7 +42,7 @@ type Option func(*Repository)
 
 // WithClient sets a pre-configured SSM client (or mock for testing).
 func WithClient(client ssmAPI) Option {
-	return func(r *Repository) { r.client = client }
+	return func(r *Repository) { r.preset = client }
 }
 
 // WithRegion sets the AWS region for client construction.
@@ -73,6 +72,7 @@ func New(opts ...Option) *Repository {
 	for _, o := range opts {
 		o(r)
 	}
+	r.session = newSession(r.cfg.Region, r.cfg.Endpoint, r.cfg.Profile, r.preset)
 	return r
 }
 
@@ -86,25 +86,12 @@ func (r *Repository) Get(ctx context.Context, uri string) (*domain.CredentialSet
 		return nil, err
 	}
 
-	if err := r.ensureClient(ctx); err != nil {
+	pv, err := r.session.getParameter(ctx, paramPath, true)
+	if err != nil {
 		return nil, err
 	}
 
-	result, err := r.client.GetParameter(ctx, &awsssm.GetParameterInput{
-		Name:           aws.String(paramPath),
-		WithDecryption: aws.Bool(true),
-	})
-	if err != nil {
-		return nil, mapAWSError(err)
-	}
-
-	if result.Parameter == nil || result.Parameter.Value == nil {
-		return nil, domain.ErrNotFound.WithMessage(
-			fmt.Sprintf("SSM parameter %s has no value", paramPath),
-		)
-	}
-
-	creds, err := parseCredentials(*result.Parameter.Value)
+	creds, err := parseCredentials(pv.value)
 	if err != nil {
 		return nil, fmt.Errorf("ssm: failed to parse credentials from %s: %w", paramPath, err)
 	}
@@ -123,26 +110,12 @@ func (r *Repository) Create(ctx context.Context, uri string, creds *domain.Crede
 		return err
 	}
 
-	if err := r.ensureClient(ctx); err != nil {
-		return err
-	}
-
 	value, err := serializeCredentialSet(creds)
 	if err != nil {
 		return err
 	}
 
-	_, err = r.client.PutParameter(ctx, &awsssm.PutParameterInput{
-		Name:      aws.String(paramPath),
-		Value:     aws.String(value),
-		Type:      ssmtypes.ParameterTypeSecureString,
-		Overwrite: aws.Bool(false),
-	})
-	if err != nil {
-		return mapAWSError(err)
-	}
-
-	return nil
+	return r.session.putParameter(ctx, paramPath, value, false)
 }
 
 // Update updates existing credentials in AWS Parameter Store.
@@ -157,10 +130,6 @@ func (r *Repository) Update(ctx context.Context, uri string, creds *domain.Crede
 		return err
 	}
 
-	if err := r.ensureClient(ctx); err != nil {
-		return err
-	}
-
 	if version > 0 {
 		if err := r.checkVersion(ctx, paramPath, version); err != nil {
 			return err
@@ -172,17 +141,7 @@ func (r *Repository) Update(ctx context.Context, uri string, creds *domain.Crede
 		return err
 	}
 
-	_, err = r.client.PutParameter(ctx, &awsssm.PutParameterInput{
-		Name:      aws.String(paramPath),
-		Value:     aws.String(value),
-		Type:      ssmtypes.ParameterTypeSecureString,
-		Overwrite: aws.Bool(true),
-	})
-	if err != nil {
-		return mapAWSError(err)
-	}
-
-	return nil
+	return r.session.putParameter(ctx, paramPath, value, true)
 }
 
 // Delete removes credentials from AWS Parameter Store.
@@ -193,32 +152,17 @@ func (r *Repository) Delete(ctx context.Context, uri string, version int64) erro
 		return err
 	}
 
-	if err := r.ensureClient(ctx); err != nil {
-		return err
-	}
-
 	if version > 0 {
 		if err := r.checkVersion(ctx, paramPath, version); err != nil {
 			return err
 		}
 	}
 
-	_, err = r.client.DeleteParameter(ctx, &awsssm.DeleteParameterInput{
-		Name: aws.String(paramPath),
-	})
-	if err != nil {
-		return mapAWSError(err)
-	}
-
-	return nil
+	return r.session.deleteParameter(ctx, paramPath)
 }
 
 // List lists all credential URIs under the given prefix.
 func (r *Repository) List(ctx context.Context, prefix string) ([]string, error) {
-	if err := r.ensureClient(ctx); err != nil {
-		return nil, err
-	}
-
 	pathPrefix := "/" + r.cfg.Namespace
 	if prefix != "" {
 		pathPrefix = pathPrefix + "/" + prefix
@@ -228,66 +172,29 @@ func (r *Repository) List(ctx context.Context, prefix string) ([]string, error) 
 		pathPrefix = "/" + pathPrefix
 	}
 
-	var uris []string
-	var nextToken *string
-
-	for {
-		input := &awsssm.GetParametersByPathInput{
-			Path:      aws.String(pathPrefix),
-			Recursive: aws.Bool(true),
-			NextToken: nextToken,
-		}
-
-		page, err := r.client.GetParametersByPath(ctx, input)
-		if err != nil {
-			return nil, mapAWSError(err)
-		}
-
-		for _, param := range page.Parameters {
-			if param.Name != nil {
-				uris = append(uris, pathToURI(*param.Name))
-			}
-		}
-
-		if page.NextToken == nil {
-			break
-		}
-		nextToken = page.NextToken
+	names, err := r.session.listParameterNames(ctx, pathPrefix)
+	if err != nil {
+		return nil, err
 	}
 
+	uris := make([]string, 0, len(names))
+	for _, name := range names {
+		uris = append(uris, pathToURI(name))
+	}
 	return uris, nil
-}
-
-func (r *Repository) ensureClient(ctx context.Context) error {
-	if r.client != nil {
-		return nil
-	}
-
-	r.clientOnce.Do(func() {
-		cfg, err := buildAWSConfig(ctx, r.cfg.Region, r.cfg.Endpoint, r.cfg.Profile)
-		if err != nil {
-			r.clientErr = err
-			return
-		}
-		r.client = awsssm.NewFromConfig(cfg)
-	})
-	return r.clientErr
 }
 
 // checkVersion performs best-effort optimistic concurrency. SSM does not
 // support conditional PutParameter, so there is a TOCTOU window between
 // this check and the subsequent write.
 func (r *Repository) checkVersion(ctx context.Context, paramPath string, version int64) error {
-	result, err := r.client.GetParameter(ctx, &awsssm.GetParameterInput{
-		Name:           aws.String(paramPath),
-		WithDecryption: aws.Bool(false),
-	})
+	got, err := r.session.getParameterVersion(ctx, paramPath)
 	if err != nil {
-		return mapAWSError(err)
+		return err
 	}
-	if result.Parameter != nil && result.Parameter.Version != version {
+	if got != version {
 		return domain.ErrVersionMismatch.WithMessage(
-			fmt.Sprintf("expected version %d, got %d", version, result.Parameter.Version),
+			fmt.Sprintf("expected version %d, got %d", version, got),
 		)
 	}
 	return nil

@@ -101,6 +101,7 @@ linters:
         #    cannot be imported.
         - github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091.amqpConnection
         - github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10.amqpConn
+        - github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm.ssmAPI
         - github.com/mariotoffia/gobridge/adapters/aws/transport/sqs.sqsAPI
         - github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/bootstrap.parameterResolver
 
