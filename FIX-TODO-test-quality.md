@@ -159,7 +159,19 @@ fails the gate.
   `audit/test-timing-allowlist.txt` (241 → 240) tracking the removed import.
   `make lint` and `make test` green. Reviewed by `thiink-test-reviewer`
   (APPROVED first pass); codex unavailable.
-- T002 — Clean up adapters/aws/store/dynamodb* test-quality (~5 issues) — pending
+- **T002 — Clean up adapters/aws/store/dynamodb* test-quality (~5 issues) — DONE (2026-05-05)**
+  Verified clean: ran `golangci-lint run` against
+  `adapters/aws/store/dynamodblease`, `adapters/aws/store/dynamodbdlq`,
+  `adapters/aws/store/dynamodboutbox`, and `adapters/aws/store`
+  (containing `factory_test.go`) with the `_test.go` exclusion for
+  default linters (`errcheck`, `staticcheck`, `ineffassign`, `unused`)
+  temporarily removed — 0 issues across all four packages. The
+  ~5-issue snapshot in "Current state" was taken before subsequent
+  FIX-* sweeps (wrapcheck/ireturn cleanups) incidentally cleared the
+  dynamodb test files. `go test -race -count=1 ./...` green for all
+  three modules. No code changes were required for this task; only
+  this progress note. Phase 3 (T009) will drop the exclusion
+  globally and re-confirm.
 - T003 — Clean up adapters/native/credentials/file test-quality (~1 issue) — pending
 - T004 — Clean up adapters/native/store/sqlite* test-quality (~3 issues) — pending
 - T005 — Clean up testutil/{asblocal,localstack,rabbitmqlocal,s3local} test-quality (~10 issues) — pending
