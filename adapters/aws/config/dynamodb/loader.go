@@ -4,17 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"sync"
 	"time"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodbstreams"
 
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
@@ -54,27 +47,6 @@ const (
 	ModePoll
 )
 
-// streamsAPI is the minimal slice of the dynamodbstreams.Client API the
-// loader consumes. It is declared as an interface so that unit tests can
-// substitute a fake client without standing up a real DynamoDB Streams
-// backend. *dynamodbstreams.Client satisfies this interface structurally.
-type streamsAPI interface {
-	DescribeStream(ctx context.Context, params *dynamodbstreams.DescribeStreamInput, optFns ...func(*dynamodbstreams.Options)) (*dynamodbstreams.DescribeStreamOutput, error)
-	GetShardIterator(ctx context.Context, params *dynamodbstreams.GetShardIteratorInput, optFns ...func(*dynamodbstreams.Options)) (*dynamodbstreams.GetShardIteratorOutput, error)
-	GetRecords(ctx context.Context, params *dynamodbstreams.GetRecordsInput, optFns ...func(*dynamodbstreams.Options)) (*dynamodbstreams.GetRecordsOutput, error)
-}
-
-// ddbAPI is the minimal slice of the dynamodb.Client API the loader
-// consumes. It exists so that internal tests can substitute an in-memory
-// fake for the whole Load/Save/probe path without requiring DynamoDB
-// Local. *dynamodb.Client satisfies it structurally.
-type ddbAPI interface {
-	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
-	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
-	CreateTable(ctx context.Context, params *dynamodb.CreateTableInput, optFns ...func(*dynamodb.Options)) (*dynamodb.CreateTableOutput, error)
-	DescribeTable(ctx context.Context, params *dynamodb.DescribeTableInput, optFns ...func(*dynamodb.Options)) (*dynamodb.DescribeTableOutput, error)
-}
-
 var (
 	_ ports.Loader   = (*Loader)(nil)
 	_ ports.Reloader = (*Loader)(nil)
@@ -84,6 +56,11 @@ var (
 // table. The full BridgeConfig is stored as a single JSON item with an
 // accompanying numeric version attribute.
 //
+// All AWS SDK interactions are funnelled through the unexported
+// *session (see acl_session.go); this file is intentionally free of
+// aws-sdk-go-v2 imports so the domain-side logic stays reviewable in
+// isolation.
+//
 // Two change-detection modes are supported, selectable via WithWatchMode:
 //
 //   - ModeStreams (default): consume DynamoDB Streams records on the
@@ -91,10 +68,7 @@ var (
 //     are not enabled or no streams client is configured.
 //   - ModePoll: periodically compare the stored version attribute.
 type Loader struct {
-	client             ddbAPI
-	clientConcrete     *dynamodb.Client
-	streams            streamsAPI
-	tableName          string
+	session            *session
 	bridgeID           string
 	pollInterval       time.Duration
 	streamPollInterval time.Duration
@@ -111,7 +85,7 @@ type Option func(*Loader)
 
 // WithTableName overrides the DynamoDB table name (default: "gobridge-config").
 func WithTableName(name string) Option {
-	return func(l *Loader) { l.tableName = name }
+	return func(l *Loader) { l.session.tableName = name }
 }
 
 // WithBridgeID sets the bridge identifier used as the partition key
@@ -131,16 +105,6 @@ func WithPollInterval(d time.Duration) Option {
 // are not available on the table.
 func WithWatchMode(m WatchMode) Option {
 	return func(l *Loader) { l.mode = m }
-}
-
-// WithStreamsClient configures the DynamoDB Streams client used by
-// ModeStreams. If not set, Watch falls back to ModePoll with a warning.
-func WithStreamsClient(c *dynamodbstreams.Client) Option {
-	return func(l *Loader) {
-		if c != nil {
-			l.streams = c
-		}
-	}
 }
 
 // WithStreamPollInterval sets the cadence at which the streams consumer
@@ -173,58 +137,27 @@ func WithClock(c clock.Clock) Option {
 	}
 }
 
-// NewLoader creates a DynamoDB-backed ports.Reloader.
-func NewLoader(client *dynamodb.Client, opts ...Option) *Loader {
-	l := &Loader{
-		client:             client,
-		clientConcrete:     client,
-		tableName:          defaultTableName,
-		bridgeID:           defaultBridgeID,
-		pollInterval:       defaultPollInterval,
-		streamPollInterval: defaultStreamPollInterval,
-		mode:               ModeStreams,
-		clk:                clock.System,
-	}
-	for _, o := range opts {
-		o(l)
-	}
-	return l
-}
-
 func (l *Loader) pk() string { return "config#" + l.bridgeID }
 
 // Load retrieves the current BridgeConfig from DynamoDB.
 func (l *Loader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
-	out, err := l.client.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: &l.tableName,
-		Key: map[string]ddbtypes.AttributeValue{
-			attrPK: &ddbtypes.AttributeValueMemberS{Value: l.pk()},
-			attrSK: &ddbtypes.AttributeValueMemberS{Value: skCurrent},
-		},
-	})
+	rawData, version, found, err := l.session.getConfigItem(ctx, l.pk())
 	if err != nil {
-		return nil, fmt.Errorf("dynamodb config load: %w", err)
+		return nil, err
 	}
-	if out.Item == nil {
+	if !found {
 		return nil, domain.ErrNotFound.WithMessage("config not found for bridge " + l.bridgeID)
 	}
 
-	dataAttr, ok := out.Item[attrData].(*ddbtypes.AttributeValueMemberS)
-	if !ok {
-		return nil, fmt.Errorf("dynamodb config load: missing or invalid %q attribute", attrData)
-	}
-
-	cfg, err := config.Parse(bytes.NewReader([]byte(dataAttr.Value)), config.FormatJSON)
+	cfg, err := config.Parse(bytes.NewReader([]byte(rawData)), config.FormatJSON)
 	if err != nil {
 		return nil, fmt.Errorf("dynamodb config load: parse: %w", err)
 	}
 
-	if vAttr, ok := out.Item[attrVersion].(*ddbtypes.AttributeValueMemberN); ok {
-		if v, err := strconv.ParseInt(vAttr.Value, 10, 64); err == nil {
-			l.mu.Lock()
-			l.lastVersion = v
-			l.mu.Unlock()
-		}
+	if version > 0 {
+		l.mu.Lock()
+		l.lastVersion = version
+		l.mu.Unlock()
 	}
 
 	return cfg, nil
@@ -250,7 +183,7 @@ func (l *Loader) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error) 
 			if l.logger != nil {
 				l.logger.Warn("dynamodb config loader: falling back to poll mode",
 					"reason", reason,
-					"table", l.tableName,
+					"table", l.session.tableName,
 				)
 			}
 		} else {
@@ -269,26 +202,11 @@ func (l *Loader) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error) 
 // human-readable reason when streams cannot be used; when empty, the
 // arn is valid.
 func (l *Loader) resolveStreamArn(ctx context.Context) (string, string) {
-	if l.streams == nil {
-		return "", "streams client not configured (use WithStreamsClient)"
-	}
-	out, err := l.client.DescribeTable(ctx, &dynamodb.DescribeTableInput{
-		TableName: &l.tableName,
-	})
+	arn, reason, err := l.session.describeStreamArn(ctx)
 	if err != nil {
-		return "", fmt.Sprintf("describe table: %v", err)
+		return "", err.Error()
 	}
-	if out.Table == nil {
-		return "", "describe table returned no table"
-	}
-	spec := out.Table.StreamSpecification
-	if spec == nil || spec.StreamEnabled == nil || !*spec.StreamEnabled {
-		return "", "stream not enabled on table"
-	}
-	if out.Table.LatestStreamArn == nil || *out.Table.LatestStreamArn == "" {
-		return "", "table has no LatestStreamArn"
-	}
-	return *out.Table.LatestStreamArn, ""
+	return arn, reason
 }
 
 func (l *Loader) pollLoop(ctx context.Context, ch chan<- *ports.BridgeConfig, ticker clock.Ticker) {
@@ -328,33 +246,7 @@ func (l *Loader) pollLoop(ctx context.Context, ch chan<- *ports.BridgeConfig, ti
 }
 
 func (l *Loader) currentVersion(ctx context.Context) (int64, error) {
-	out, err := l.client.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: &l.tableName,
-		Key: map[string]ddbtypes.AttributeValue{
-			attrPK: &ddbtypes.AttributeValueMemberS{Value: l.pk()},
-			attrSK: &ddbtypes.AttributeValueMemberS{Value: skCurrent},
-		},
-		ProjectionExpression: aws.String("#v"),
-		ExpressionAttributeNames: map[string]string{
-			"#v": attrVersion,
-		},
-	})
-	if err != nil {
-		return 0, fmt.Errorf("dynamodb config current version: %w", err)
-	}
-	if out.Item == nil {
-		return 0, nil
-	}
-
-	vAttr, ok := out.Item[attrVersion].(*ddbtypes.AttributeValueMemberN)
-	if !ok {
-		return 0, nil
-	}
-	v, err := strconv.ParseInt(vAttr.Value, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("dynamodb config current version: parse %q: %w", vAttr.Value, err)
-	}
-	return v, nil
+	return l.session.getCurrentVersion(ctx, l.pk())
 }
 
 // Save writes a BridgeConfig to DynamoDB, auto-incrementing the version.
@@ -369,17 +261,8 @@ func (l *Loader) Save(ctx context.Context, cfg *ports.BridgeConfig) error {
 	newVersion := l.lastVersion + 1
 	l.mu.Unlock()
 
-	_, err = l.client.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: &l.tableName,
-		Item: map[string]ddbtypes.AttributeValue{
-			attrPK:      &ddbtypes.AttributeValueMemberS{Value: l.pk()},
-			attrSK:      &ddbtypes.AttributeValueMemberS{Value: skCurrent},
-			attrData:    &ddbtypes.AttributeValueMemberS{Value: string(data)},
-			attrVersion: &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(newVersion, 10)},
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("dynamodb config save: %w", err)
+	if err := l.session.putConfigItem(ctx, l.pk(), data, newVersion); err != nil {
+		return err
 	}
 
 	l.mu.Lock()
@@ -392,35 +275,8 @@ func (l *Loader) Save(ctx context.Context, cfg *ports.BridgeConfig) error {
 // EnsureTable creates the DynamoDB table if it does not already exist.
 // Intended for test setup and local development.
 func (l *Loader) EnsureTable(ctx context.Context) error {
-	_, err := l.client.CreateTable(ctx, &dynamodb.CreateTableInput{
-		TableName: &l.tableName,
-		KeySchema: []ddbtypes.KeySchemaElement{
-			{AttributeName: aws.String(attrPK), KeyType: ddbtypes.KeyTypeHash},
-			{AttributeName: aws.String(attrSK), KeyType: ddbtypes.KeyTypeRange},
-		},
-		AttributeDefinitions: []ddbtypes.AttributeDefinition{
-			{AttributeName: aws.String(attrPK), AttributeType: ddbtypes.ScalarAttributeTypeS},
-			{AttributeName: aws.String(attrSK), AttributeType: ddbtypes.ScalarAttributeTypeS},
-		},
-		BillingMode: ddbtypes.BillingModePayPerRequest,
-	})
-	if err != nil {
-		var inUse *ddbtypes.ResourceInUseException
-		if errors.As(err, &inUse) {
-			return nil
-		}
-		return fmt.Errorf("dynamodb config ensure table: %w", err)
+	if err := l.session.ensureTable(ctx); err != nil {
+		return err
 	}
-
-	waiterClient := dynamodb.DescribeTableAPIClient(l.client)
-	if l.clientConcrete != nil {
-		waiterClient = l.clientConcrete
-	}
-	waiter := dynamodb.NewTableExistsWaiter(waiterClient)
-	if err := waiter.Wait(ctx, &dynamodb.DescribeTableInput{
-		TableName: &l.tableName,
-	}, 30*time.Second); err != nil {
-		return fmt.Errorf("dynamodb config ensure table: wait: %w", err)
-	}
-	return nil
+	return l.session.waitTableExists(ctx, 30*time.Second)
 }
