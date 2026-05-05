@@ -294,23 +294,21 @@ on narrow command/config ports or small DTOs specific to the use case.
 
 ### Finding F-007: Domain May Need Bounded-Context Subcomponents
 
-**Status:** Open, only do this where the boundaries are real.
+**Status:** Open. Tracked in detail by [FIX-004.md](FIX-004.md).
 
 **Problem:** A single `domain` component is acceptable for adoption, but it can
 hide accidental coupling between unrelated domain subdomains if the domain
 grows.
 
-**Target:** Split `domain` into subcomponents only where the ubiquitous
-language and dependency direction are clear.
+**Target:** Split `domain` into `shared` / `messaging` / `persistence` /
+`routing` / `connectivity` sub-packages with explicit cross-context dependency
+rules.
 
-**How to solve:**
-
-1. Map domain packages to bounded contexts.
-2. Identify any domain package that should be innermost and dependency-free.
-3. Split go-arch-lint components first, then move packages only when needed.
-4. If moving packages, use `git mv` and scripted import rewrites.
-5. Add sentinel mapping checks for each new domain subcomponent.
-6. Run `make lint && make test`.
+**How to solve:** See [FIX-004.md](FIX-004.md) for the executable runbook
+(target structure, phased sed plan, lint-policy YAML, depguard rules,
+acceptance criteria). The lint-policy implications live in that runbook so
+this plan does not duplicate them; this finding exists only to record that
+the split is an explicit architectural goal, not an accidental omission.
 
 ### Finding F-008: Vendor Admission Control Must Stay Explicit
 
@@ -377,7 +375,7 @@ commands, contributors will miss at least one of them.
 | ARCH-004 | Remove adapter dependency on concrete `circuitbreaker` | Go expert + Architecture expert | `skill-create-test`, `skill-asiidoc-documentation` | No expected move | Introduce a resilience port, make concrete breaker satisfy it, wire in composition root, remove adapter `mayDependOn: circuitbreaker`. | `make lint && make test` |
 | ARCH-005 | Remove infrastructure types from `ports` | API expert + Go expert + Architecture expert | `skill-create-test`, `skill-asiidoc-documentation` | Possibly | Replace HTTP-specific port shapes with transport-neutral ports. Keep `net/http` in HTTP adapters. No backwards-compatible `HTTPMountable` shim. | `make lint && make test` |
 | ARCH-006 | Narrow `bridge`/`httpapi` config coupling | API expert + Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | Possibly | Split broad parsed config access into narrow use-case DTOs or ports. Keep parsing out of runtime. | `make lint && make test` |
-| ARCH-007 | Split domain into bounded-context components only where justified | Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | Yes, if physical package layout changes | First model components in lint policy. If directories move, use `git mv`; update imports with a script and `gofmt`. | `make lint && make test` |
+| ARCH-007 | Split domain into bounded-context components — see [FIX-004.md](FIX-004.md) | Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | Yes | Runbook in FIX-004.md. Do not duplicate the phased plan here. | `make lint && make test` |
 | ARCH-008 | Keep vendor admission explicit | Go expert + AWS expert + API expert | `skill-create-test`, `skill-asiidoc-documentation` | No | Add vendor entries only with matching component `canUse`. AWS SDK stays in AWS adapters/deployment. HTTP dependencies stay in HTTP adapters. | `make lint && make test` |
 | ARCH-009 | Add optional architecture linting for tests | Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | No expected move | Add as advisory first, then promote only when signal is high. Do not weaken production lint. | `make lint && make test` |
 | ARCH-010 | Keep `make lint` as the single static-health gate | Go expert | `skill-create-test`, `skill-asiidoc-documentation` | No | Include architecture lint, mapping regression, gofmt, and multi-module `go vet`. Add future static checks here, not as hidden side commands. | `make lint && make test` |
