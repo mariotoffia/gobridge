@@ -5,7 +5,9 @@ import (
 )
 
 // NewForTest creates a Tracer with options applied and defaults set,
-// without establishing a network connection to a collector.
+// without establishing a network connection to a collector. The
+// returned Tracer has no tracerClient — callers that exercise StartSpan
+// should use NewFromProvider instead.
 func NewForTest(opts ...Option) *Tracer {
 	t := &Tracer{}
 	for _, o := range opts {
@@ -18,10 +20,10 @@ func NewForTest(opts ...Option) *Tracer {
 // NewFromProvider creates a Tracer backed by the given TracerProvider.
 // This is intended for unit tests that use an in-memory span exporter.
 func NewFromProvider(tp *sdktrace.TracerProvider) *Tracer {
-	return &Tracer{
-		provider: tp,
-		tracer:   tp.Tracer("test"),
-	}
+	t := &Tracer{}
+	applyDefaults(&t.config)
+	t.client = newTracerClientFromProvider(tp)
+	return t
 }
 
 // ExportConfigForTest returns the tracer's configuration for test

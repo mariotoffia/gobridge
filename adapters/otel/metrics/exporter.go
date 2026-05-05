@@ -2,243 +2,85 @@ package otelmetrics
 
 import (
 	"context"
-	"fmt"
-	"sync"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
-	"go.opentelemetry.io/otel/metric"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
 var _ ports.MetricsExporter = (*Exporter)(nil)
 
-// Exporter implements ports.MetricsExporter for OpenTelemetry.
+// Exporter implements [ports.MetricsExporter] for OpenTelemetry. The
+// SDK boundary is encapsulated in the unexported meterClient seam
+// declared in acl_client.go; this file is SDK-import-free.
 type Exporter struct {
-	config       Config
-	provider     *sdkmetric.MeterProvider
-	meter        metric.Meter
-	counters     map[string]metric.Int64Counter
-	gauges       map[string]metric.Float64Gauge
-	histograms   map[string]metric.Float64Histogram
-	defaultAttrs []attribute.KeyValue
-	mu           sync.RWMutex
+	config Config
+	client meterClient
 }
 
 // New creates a new OTEL metrics exporter backed by an OTLP HTTP
 // exporter. The returned Exporter is safe for concurrent use.
 func New(ctx context.Context, opts ...Option) (*Exporter, error) {
-	e := &Exporter{
-		counters:   make(map[string]metric.Int64Counter),
-		gauges:     make(map[string]metric.Float64Gauge),
-		histograms: make(map[string]metric.Float64Histogram),
-	}
+	e := &Exporter{}
 
 	for _, opt := range opts {
 		opt(e)
 	}
-
 	applyDefaults(&e.config)
 
-	e.defaultAttrs = buildDefaultAttrs(e.config.DefaultTags)
-
-	exporterOpts := []otlpmetrichttp.Option{
-		otlpmetrichttp.WithEndpointURL(e.config.Endpoint),
-	}
-
-	if e.config.Insecure {
-		exporterOpts = append(exporterOpts, otlpmetrichttp.WithInsecure())
-	}
-
-	if len(e.config.Headers) > 0 {
-		exporterOpts = append(exporterOpts, otlpmetrichttp.WithHeaders(e.config.Headers))
-	}
-
-	exporter, err := otlpmetrichttp.New(ctx, exporterOpts...)
+	client, err := newMeterClient(ctx, e.config)
 	if err != nil {
-		return nil, fmt.Errorf("otel-metrics: create otlp exporter: %w", err)
+		return nil, err
 	}
-
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName(e.config.ServiceName),
-			semconv.ServiceVersion(e.config.ServiceVersion),
-			semconv.DeploymentEnvironment(e.config.Environment),
-		),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("otel-metrics: create resource: %w", err)
-	}
-
-	e.provider = sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(
-			sdkmetric.NewPeriodicReader(
-				exporter,
-				sdkmetric.WithInterval(e.config.FlushInterval),
-			),
-		),
-		sdkmetric.WithResource(res),
-	)
-
-	e.meter = e.provider.Meter("github.com/mariotoffia/gobridge")
+	e.client = client
 
 	return e, nil
 }
 
 // Counter increments a counter metric.
 func (e *Exporter) Counter(name string, value int64, tags ...domain.Tag) {
-	counter, err := e.getOrCreateCounter(name)
-	if err != nil {
-		// Emit failure is intentionally dropped: ports.MetricsExporter.Counter
-		// has no error return, and observability emit failures are
-		// non-classified per _design/error-wrapping-policy.adoc §"Observability".
+	if e.client == nil {
 		return
 	}
-
-	attrs := e.buildAttributes(tags)
-	counter.Add(context.Background(), value, metric.WithAttributes(attrs...))
+	e.client.Counter(name, value, tags)
 }
 
 // Gauge sets a gauge metric value.
 func (e *Exporter) Gauge(name string, value float64, tags ...domain.Tag) {
-	gauge, err := e.getOrCreateGauge(name)
-	if err != nil {
-		// See Counter: emit failure dropped per policy.
+	if e.client == nil {
 		return
 	}
-
-	attrs := e.buildAttributes(tags)
-	gauge.Record(context.Background(), value, metric.WithAttributes(attrs...))
+	e.client.Gauge(name, value, tags)
 }
 
 // Histogram records a histogram value.
 func (e *Exporter) Histogram(name string, value float64, tags ...domain.Tag) {
-	histogram, err := e.getOrCreateHistogram(name)
-	if err != nil {
-		// See Counter: emit failure dropped per policy.
+	if e.client == nil {
 		return
 	}
-
-	attrs := e.buildAttributes(tags)
-	histogram.Record(context.Background(), value, metric.WithAttributes(attrs...))
+	e.client.Histogram(name, value, tags)
 }
 
 // Timer records a duration as milliseconds into a histogram.
 func (e *Exporter) Timer(name string, duration time.Duration, tags ...domain.Tag) {
-	ms := float64(duration.Nanoseconds()) / float64(time.Millisecond)
-	e.Histogram(name, ms, tags...)
+	if e.client == nil {
+		return
+	}
+	e.client.Timer(name, duration, tags)
 }
 
 // Flush forces a metric export.
 func (e *Exporter) Flush(ctx context.Context) error {
-	if err := e.provider.ForceFlush(ctx); err != nil {
-		return fmt.Errorf("otel-metrics: flush: %w", err)
+	if e.client == nil {
+		return nil
 	}
-	return nil
+	return e.client.Flush(ctx)
 }
 
 // Close shuts down the exporter.
 func (e *Exporter) Close(ctx context.Context) error {
-	if err := e.provider.Shutdown(ctx); err != nil {
-		return fmt.Errorf("otel-metrics: shutdown: %w", err)
+	if e.client == nil {
+		return nil
 	}
-	return nil
-}
-
-func (e *Exporter) getOrCreateCounter(name string) (metric.Int64Counter, error) {
-	e.mu.RLock()
-	if counter, ok := e.counters[name]; ok {
-		e.mu.RUnlock()
-		return counter, nil
-	}
-	e.mu.RUnlock()
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if counter, ok := e.counters[name]; ok {
-		return counter, nil
-	}
-
-	counter, err := e.meter.Int64Counter(name)
-	if err != nil {
-		return nil, fmt.Errorf("otel-metrics: create int64 counter: %w", err)
-	}
-
-	e.counters[name] = counter
-	return counter, nil
-}
-
-func (e *Exporter) getOrCreateGauge(name string) (metric.Float64Gauge, error) {
-	e.mu.RLock()
-	if gauge, ok := e.gauges[name]; ok {
-		e.mu.RUnlock()
-		return gauge, nil
-	}
-	e.mu.RUnlock()
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if gauge, ok := e.gauges[name]; ok {
-		return gauge, nil
-	}
-
-	gauge, err := e.meter.Float64Gauge(name)
-	if err != nil {
-		return nil, fmt.Errorf("otel-metrics: create float64 gauge: %w", err)
-	}
-
-	e.gauges[name] = gauge
-	return gauge, nil
-}
-
-func (e *Exporter) getOrCreateHistogram(name string) (metric.Float64Histogram, error) {
-	e.mu.RLock()
-	if histogram, ok := e.histograms[name]; ok {
-		e.mu.RUnlock()
-		return histogram, nil
-	}
-	e.mu.RUnlock()
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if histogram, ok := e.histograms[name]; ok {
-		return histogram, nil
-	}
-
-	histogram, err := e.meter.Float64Histogram(name)
-	if err != nil {
-		return nil, fmt.Errorf("otel-metrics: create float64 histogram: %w", err)
-	}
-
-	e.histograms[name] = histogram
-	return histogram, nil
-}
-
-func (e *Exporter) buildAttributes(tags []domain.Tag) []attribute.KeyValue {
-	attrs := make([]attribute.KeyValue, 0, len(e.defaultAttrs)+len(tags))
-	attrs = append(attrs, e.defaultAttrs...)
-
-	for _, tag := range tags {
-		attrs = append(attrs, attribute.String(tag.Key, tag.Value))
-	}
-
-	return attrs
-}
-
-func buildDefaultAttrs(tags []domain.Tag) []attribute.KeyValue {
-	attrs := make([]attribute.KeyValue, len(tags))
-	for i, tag := range tags {
-		attrs[i] = attribute.String(tag.Key, tag.Value)
-	}
-	return attrs
+	return e.client.Close(ctx)
 }

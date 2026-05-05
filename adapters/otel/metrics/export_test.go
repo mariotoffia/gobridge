@@ -1,43 +1,31 @@
 package otelmetrics
 
 import (
-	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
 // NewForTest creates an Exporter with options applied and defaults set,
-// without establishing a network connection to a collector.
+// without establishing a network connection to a collector. The
+// returned Exporter has no meterClient — callers that exercise the
+// emit methods should use NewFromProvider instead.
 func NewForTest(opts ...Option) *Exporter {
-	e := &Exporter{
-		counters:   make(map[string]metric.Int64Counter),
-		gauges:     make(map[string]metric.Float64Gauge),
-		histograms: make(map[string]metric.Float64Histogram),
-	}
+	e := &Exporter{}
 	for _, o := range opts {
 		o(e)
 	}
 	applyDefaults(&e.config)
-
-	e.defaultAttrs = buildDefaultAttrs(e.config.DefaultTags)
 	return e
 }
 
 // NewFromProvider creates an Exporter backed by the given MeterProvider.
 // This is intended for unit tests that use a manual reader.
 func NewFromProvider(mp *sdkmetric.MeterProvider, opts ...Option) *Exporter {
-	e := &Exporter{
-		provider:   mp,
-		meter:      mp.Meter("test"),
-		counters:   make(map[string]metric.Int64Counter),
-		gauges:     make(map[string]metric.Float64Gauge),
-		histograms: make(map[string]metric.Float64Histogram),
-	}
+	e := &Exporter{}
 	for _, o := range opts {
 		o(e)
 	}
 	applyDefaults(&e.config)
-
-	e.defaultAttrs = buildDefaultAttrs(e.config.DefaultTags)
+	e.client = newMeterClientFromProvider(mp, e.config)
 	return e
 }
 

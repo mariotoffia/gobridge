@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "FIX-006.md",
-  "source_sha": "437f2bf1ae0737e09f88c76c075e3ac7fb1e2762f0a735c15445eb57150d9061",
+  "source_sha": "c480873365373dcedd5e0e598115c18c8d1807a445c866a38f9b292274f9d98a",
   "indexed_at": "2026-05-05T10:15:40Z",
   "status_convention": "Per-task bullets appended under '## Progress' with ' \u2014 DONE' suffix on completion",
   "tasks": [
@@ -96,7 +96,7 @@
     {
       "id": "FIX-006-A9",
       "title": "Refactor adapters/otel/{metrics,tracing} into ACL files",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "Go-level reorganization of SDK boundary into acl_*.go files in the OpenTelemetry metrics and tracing adapters.",
