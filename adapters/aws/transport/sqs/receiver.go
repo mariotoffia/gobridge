@@ -2,17 +2,11 @@ package sqs
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
-	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
-
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -112,18 +106,7 @@ func (r *Receiver) pollLoop(
 			return ctx.Err()
 		}
 
-		pollStart := r.clock().Now()
-		pollCtx, pollCancel := context.WithTimeout(ctx, pollTimeout)
-		output, err := r.client.ReceiveMessage(pollCtx, &awssqs.ReceiveMessageInput{
-			QueueUrl:              aws.String(queueURL),
-			MaxNumberOfMessages:   r.cfg.MaxMessages,
-			WaitTimeSeconds:       r.cfg.WaitTimeSeconds,
-			VisibilityTimeout:     r.cfg.VisibilityTimeout,
-			MessageAttributeNames: []string{"All"},
-			AttributeNames:        []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameAll},
-		})
-		pollCancel()
-
+		results, err := r.pollAndConvert(ctx, queueURL, pollTimeout)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -144,29 +127,27 @@ func (r *Receiver) pollLoop(
 			continue
 		}
 
-		r.metrics.Timer(domain.MetricSQSPollLatency, r.clock().Since(pollStart),
-			domain.Tag{Key: domain.TagKeyQueueURL, Value: queueURL})
-		if len(output.Messages) > 0 {
-			perMsg := r.clock().Since(pollStart) / time.Duration(len(output.Messages))
-			r.metrics.Timer(domain.MetricSQSReceiveLatency, perMsg,
-				domain.Tag{Key: domain.TagKeyQueueURL, Value: queueURL})
-		}
 		backoff.reset()
 
-		if logging.TraceEnabled(r.logger) {
-			r.logger.Log(ctx, logging.LevelTrace, "sqs: received",
-				"queue_url", queueURL,
-				"count", len(output.Messages),
-			)
-		}
-
-		for _, msg := range output.Messages {
-			// Create a per-delivery context so that auto-extend failure
-			// can cancel processing without affecting other deliveries.
-			// The cancel func is passed into convertMessage/newDelivery
-			// so it is set BEFORE any auto-extend goroutine starts.
+		for _, raw := range results {
+			// Per-delivery context so that auto-extend failure can
+			// cancel processing without affecting other deliveries.
+			// The cancel func is passed into newDelivery so it is set
+			// BEFORE any auto-extend goroutine starts.
 			deliveryCtx, deliveryCancel := context.WithCancel(ctx)
-			del := r.convertMessage(deliveryCtx, queueURL, msg, deliveryCancel)
+			del := newDelivery(
+				deliveryCtx,
+				raw.env,
+				r.client,
+				queueURL,
+				raw.receiptHandle,
+				r.cfg.VisibilityTimeout,
+				r.cfg.autoExtendEnabled(),
+				deliveryCancel,
+				r.logger,
+				r.metrics,
+				r.clock(),
+			)
 
 			if err := emit(deliveryCtx, del); err != nil {
 				deliveryCancel()
@@ -209,123 +190,4 @@ func (b *pollBackoff) next() time.Duration {
 
 func (b *pollBackoff) reset() {
 	b.current = b.initial
-}
-
-func (r *Receiver) convertMessage(
-	ctx context.Context,
-	queueURL string,
-	msg sqstypes.Message,
-	processingCancel context.CancelFunc,
-) *sqsDelivery {
-	receiptHandle := aws.ToString(msg.ReceiptHandle)
-	body := aws.ToString(msg.Body)
-
-	headers := attributesToHeaders(msg.MessageAttributes, msg.Attributes)
-
-	subject := r.cfg.QueueName
-	if subject == "" {
-		subject = r.cfg.QueueURL
-	}
-	if v, ok := headers["Subject"].(string); ok && v != "" {
-		subject = v
-	}
-
-	env := &domain.Envelope{
-		ID:        aws.ToString(msg.MessageId),
-		Subject:   subject,
-		Payload:   []byte(body),
-		CreatedAt: r.clock().Now(),
-	}
-
-	if r.cfg.SNSUnwrap {
-		if unwrapped, ok := trySNSUnwrap(body, headers); ok {
-			if logging.TraceEnabled(r.logger) {
-				r.logger.Log(ctx, logging.LevelTrace, "sqs: SNS unwrap",
-					"queue_url", queueURL,
-					"message_id", env.ID,
-					"new_subject", unwrapped.subject,
-				)
-			}
-			env.Subject = unwrapped.subject
-			env.Payload = []byte(unwrapped.message)
-		}
-	}
-
-	env.Headers = headers
-
-	if logging.TraceEnabled(r.logger) {
-		r.logger.Log(ctx, logging.LevelTrace, "sqs: converting",
-			"queue_url", queueURL,
-			"message_id", env.ID,
-			"body_len", len(body),
-		)
-	}
-
-	return newDelivery(
-		ctx,
-		env,
-		r.client,
-		queueURL,
-		receiptHandle,
-		r.cfg.VisibilityTimeout,
-		r.cfg.autoExtendEnabled(),
-		processingCancel,
-		r.logger,
-		r.metrics,
-		r.clock(),
-	)
-}
-
-func (r *Receiver) ensureClient(ctx context.Context) error {
-	r.initMu.Lock()
-	defer r.initMu.Unlock()
-
-	if r.client != nil {
-		return nil
-	}
-	if r.cfg.Client != nil {
-		r.client = r.cfg.Client
-		return nil
-	}
-
-	cfg, err := buildAWSConfig(ctx, r.cfg.Region, r.cfg.Endpoint, r.cfg.Profile)
-	if err != nil {
-		return err
-	}
-	r.client = awssqs.NewFromConfig(cfg)
-
-	if logging.DebugEnabled(r.logger) {
-		r.logger.Log(ctx, logging.LevelDebug, "sqs: receiver initialized",
-			"region", r.cfg.Region,
-			"endpoint", r.cfg.Endpoint,
-		)
-	}
-
-	return nil
-}
-
-// snsPayload is the subset of an SNS notification relevant for unwrapping.
-type snsPayload struct {
-	subject string
-	message string
-}
-
-func trySNSUnwrap(body string, headers map[string]any) (snsPayload, bool) {
-	var raw struct {
-		TopicArn string `json:"TopicArn"`
-		Subject  string `json:"Subject"`
-		Message  string `json:"Message"`
-	}
-	if err := json.Unmarshal([]byte(body), &raw); err != nil || raw.TopicArn == "" {
-		return snsPayload{}, false
-	}
-
-	subject := raw.TopicArn
-	if raw.Subject != "" {
-		subject = raw.Subject
-		headers["sns.subject"] = raw.Subject
-	}
-	headers["sns.topic_arn"] = raw.TopicArn
-
-	return snsPayload{subject: subject, message: raw.Message}, true
 }

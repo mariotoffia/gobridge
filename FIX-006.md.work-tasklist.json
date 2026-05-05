@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "FIX-006.md",
-  "source_sha": "a000fe09ada5eaf67e7dde3602f338b69b9a9bfe2412b87a2e3df03035ccd6a1",
+  "source_sha": "437f2bf1ae0737e09f88c76c075e3ac7fb1e2762f0a735c15445eb57150d9061",
   "indexed_at": "2026-05-05T10:15:40Z",
   "status_convention": "Per-task bullets appended under '## Progress' with ' \u2014 DONE' suffix on completion",
   "tasks": [
@@ -85,7 +85,7 @@
     {
       "id": "FIX-006-A8",
       "title": "Refactor adapters/aws/transport/sqs into ACL files",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "Largest adapter (18 violations); Go-level reorganization into acl_*.go files for the SQS transport adapter.",
