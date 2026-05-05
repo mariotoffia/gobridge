@@ -1,0 +1,97 @@
+{
+  "$schema": "v2",
+  "source": "FIX-003.md",
+  "source_sha": "da7ec5ffafadc7862012f6cae6e3682d2a4315c2b2654fa7db526ec018f15d11",
+  "indexed_at": "2026-05-05T14:31:23Z",
+  "status_convention": "H3 ### Phase N \u2014 Title (no status suffixes; all phases pending until orchestrator appends ' - DONE')",
+  "tasks": [
+    {
+      "id": "PHASE0",
+      "title": "Land the interface and registry",
+      "status": "done",
+      "category_hint": "no adapter changes",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "This phase adds Go interfaces and registry types plus tests without broader adapter migration, which fits generic Go implementation expertise.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "PHASE1",
+      "title": "Migrate `ports/blueprint.go` plugin attachment points",
+      "status": "done",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "This phase changes Go port structs and parser decoding logic with unit tests, making golang-pro the best implementation fit.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "PHASE2",
+      "title": "Migrate adapters one family at a time",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "This phase performs broad Go adapter migrations, typed config structs, registrations, and factory signature updates across packages.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "PHASE3",
+      "title": "Migrate `domain/route.go` runtime carriers",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "This phase updates Go runtime/domain carrier types and store factory interfaces while preserving typed config flow.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "PHASE4",
+      "title": "Land `cfgshape` analyzer",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "This phase builds and wires a Go vet analyzer, requiring Go AST/types implementation experience.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "PHASE5",
+      "title": "Tighten arch lint vendor admission",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "thiink-clean-arch-reviewer",
+      "agent_rationale": "This phase adjusts architecture lint boundaries for inner-ring dependencies, matching Clean Architecture review expertise.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "PHASE6",
+      "title": "Mapping regression sentinels",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "test-automator",
+      "agent_rationale": "This phase extends regression sentinel checks in a lint test script, fitting test automation and CI validation work.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "PHASE7",
+      "title": "Documentation",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "technical-writer",
+      "agent_rationale": "This phase writes and updates architecture documentation and status notes, which is best suited to technical-writing expertise.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    }
+  ]
+}

@@ -45,7 +45,7 @@ func s12ValidConfig() *ports.BridgeConfig {
 func TestValidateStaleClaimDuration_NoWarning_WithinBounds(t *testing.T) {
 	cfg := s12ValidConfig()
 	cfg.Routes[0].Session.StepDownGrace = "15s"
-	cfg.Stores.Outbox.Options = map[string]any{"stale_claim_duration": "25s"}
+	cfg.Stores.Outbox.SetDecoded(nil, NewRawConfig(map[string]any{"stale_claim_duration": "25s"}))
 
 	warnings, err := ValidateWithWarnings(cfg)
 	if err != nil {
@@ -64,7 +64,7 @@ func TestValidateStaleClaimDuration_NoWarning_WithinBounds(t *testing.T) {
 func TestValidateStaleClaimDuration_Warning_ExceedsTwiceGrace(t *testing.T) {
 	cfg := s12ValidConfig()
 	cfg.Routes[0].Session.StepDownGrace = "15s"
-	cfg.Stores.Outbox.Options = map[string]any{"stale_claim_duration": "120s"}
+	cfg.Stores.Outbox.SetDecoded(nil, NewRawConfig(map[string]any{"stale_claim_duration": "120s"}))
 
 	warnings, err := ValidateWithWarnings(cfg)
 	if err != nil {
@@ -119,9 +119,9 @@ func TestValidateStaleClaimDuration_NoWarning_NoOutboxStore(t *testing.T) {
 func TestValidateStaleClaimDuration_TimeDurationType(t *testing.T) {
 	cfg := s12ValidConfig()
 	cfg.Routes[0].Session.StepDownGrace = "15s"
-	cfg.Stores.Outbox.Options = map[string]any{
+	cfg.Stores.Outbox.SetDecoded(nil, NewRawConfig(map[string]any{
 		"stale_claim_duration": 120 * time.Second,
-	}
+	}))
 
 	warnings, err := ValidateWithWarnings(cfg)
 	if err != nil {
@@ -142,9 +142,9 @@ func TestValidateStaleClaimDuration_TimeDurationType(t *testing.T) {
 // an unparseable duration string produces a validation error.
 func TestValidateStaleClaimDuration_InvalidDurationString(t *testing.T) {
 	cfg := s12ValidConfig()
-	cfg.Stores.Outbox.Options = map[string]any{
+	cfg.Stores.Outbox.SetDecoded(nil, NewRawConfig(map[string]any{
 		"stale_claim_duration": "not-a-duration",
-	}
+	}))
 
 	_, err := ValidateWithWarnings(cfg)
 	if err == nil {
@@ -166,9 +166,9 @@ func TestValidateStaleClaimDuration_InvalidDurationString(t *testing.T) {
 // type (e.g. int) produces a validation error.
 func TestValidateStaleClaimDuration_UnknownType(t *testing.T) {
 	cfg := s12ValidConfig()
-	cfg.Stores.Outbox.Options = map[string]any{
+	cfg.Stores.Outbox.SetDecoded(nil, NewRawConfig(map[string]any{
 		"stale_claim_duration": 30,
-	}
+	}))
 
 	_, err := ValidateWithWarnings(cfg)
 	if err == nil {
@@ -191,9 +191,9 @@ func TestValidateStaleClaimDuration_UnknownType(t *testing.T) {
 // no routes explicitly set step_down_grace.
 func TestValidateStaleClaimDuration_DefaultGrace_WhenNoRoutesHaveGrace(t *testing.T) {
 	cfg := s12ValidConfig()
-	cfg.Stores.Outbox.Options = map[string]any{
+	cfg.Stores.Outbox.SetDecoded(nil, NewRawConfig(map[string]any{
 		"stale_claim_duration": "120s",
-	}
+	}))
 
 	warnings, err := ValidateWithWarnings(cfg)
 	if err != nil {

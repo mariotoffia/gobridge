@@ -163,64 +163,64 @@ func TestRawConfig_Decode_JSONTaggedStruct_UnknownKey(t *testing.T) {
 // (bare float -> time.Duration), while still allowing exact integral
 // floats and string-form durations through.
 func TestRawConfig_DecodeRejectsFractionalAndBareFloatDuration(t *testing.T) {
-type decodeHookCfg struct {
-MaxMessages   int           `json:"maxMessages"`
-Count32       int32         `json:"count32"`
-CountU64      uint64        `json:"countU64"`
-FlushInterval time.Duration `json:"flushInterval"`
-}
-type row struct {
-name      string
-data      map[string]any
-wantErr   bool
-errSubstr string
-check     func(t *testing.T, got decodeHookCfg)
-}
-rows := []row{
-{name: "float_with_fraction_into_int_rejected", data: map[string]any{"maxMessages": 5.9}, wantErr: true, errSubstr: "fractional"},
-{name: "integral_float_into_int_accepted", data: map[string]any{"maxMessages": 5.0}, wantErr: false, check: func(t *testing.T, g decodeHookCfg) {
-if g.MaxMessages != 5 {
-t.Fatalf("got %d", g.MaxMessages)
-}
-}},
-{name: "plain_int_into_int_regression", data: map[string]any{"maxMessages": 5}, wantErr: false, check: func(t *testing.T, g decodeHookCfg) {
-if g.MaxMessages != 5 {
-t.Fatalf("got %d", g.MaxMessages)
-}
-}},
-{name: "float_with_fraction_into_int32_rejected", data: map[string]any{"count32": 5.9}, wantErr: true, errSubstr: "fractional"},
-{name: "float_with_fraction_into_uint64_rejected", data: map[string]any{"countU64": 5.9}, wantErr: true, errSubstr: "fractional"},
-{name: "fractional_float_into_duration_rejected", data: map[string]any{"flushInterval": 1.5}, wantErr: true, errSubstr: "bare number"},
-{name: "bare_int_float_into_duration_rejected_unconditionally", data: map[string]any{"flushInterval": float64(30)}, wantErr: true, errSubstr: "bare number"},
-{name: "string_30s_into_duration_regression", data: map[string]any{"flushInterval": "30s"}, wantErr: false, check: func(t *testing.T, g decodeHookCfg) {
-if g.FlushInterval != 30*time.Second {
-t.Fatalf("got %v", g.FlushInterval)
-}
-}},
-{name: "string_0s_into_duration_edge", data: map[string]any{"flushInterval": "0s"}, wantErr: false, check: func(t *testing.T, g decodeHookCfg) {
-if g.FlushInterval != 0 {
-t.Fatalf("got %v", g.FlushInterval)
-}
-}},
-}
-for _, tc := range rows {
-tc := tc
-t.Run(tc.name, func(t *testing.T) {
-var got decodeHookCfg
-err := config.NewRawConfig(tc.data).Decode(&got)
-if tc.wantErr {
-if err == nil {
-t.Fatalf("expected error, got nil; decoded=%+v", got)
-}
-if !strings.Contains(strings.ToLower(err.Error()), tc.errSubstr) {
-t.Fatalf("error %q does not contain %q", err.Error(), tc.errSubstr)
-}
-return
-}
-if err != nil {
-t.Fatalf("unexpected error: %v", err)
-}
-tc.check(t, got)
-})
-}
+	type decodeHookCfg struct {
+		MaxMessages   int           `json:"maxMessages"`
+		Count32       int32         `json:"count32"`
+		CountU64      uint64        `json:"countU64"`
+		FlushInterval time.Duration `json:"flushInterval"`
+	}
+	type row struct {
+		name      string
+		data      map[string]any
+		wantErr   bool
+		errSubstr string
+		check     func(t *testing.T, got decodeHookCfg)
+	}
+	rows := []row{
+		{name: "float_with_fraction_into_int_rejected", data: map[string]any{"maxMessages": 5.9}, wantErr: true, errSubstr: "fractional"},
+		{name: "integral_float_into_int_accepted", data: map[string]any{"maxMessages": 5.0}, wantErr: false, check: func(t *testing.T, g decodeHookCfg) {
+			if g.MaxMessages != 5 {
+				t.Fatalf("got %d", g.MaxMessages)
+			}
+		}},
+		{name: "plain_int_into_int_regression", data: map[string]any{"maxMessages": 5}, wantErr: false, check: func(t *testing.T, g decodeHookCfg) {
+			if g.MaxMessages != 5 {
+				t.Fatalf("got %d", g.MaxMessages)
+			}
+		}},
+		{name: "float_with_fraction_into_int32_rejected", data: map[string]any{"count32": 5.9}, wantErr: true, errSubstr: "fractional"},
+		{name: "float_with_fraction_into_uint64_rejected", data: map[string]any{"countU64": 5.9}, wantErr: true, errSubstr: "fractional"},
+		{name: "fractional_float_into_duration_rejected", data: map[string]any{"flushInterval": 1.5}, wantErr: true, errSubstr: "bare number"},
+		{name: "bare_int_float_into_duration_rejected_unconditionally", data: map[string]any{"flushInterval": float64(30)}, wantErr: true, errSubstr: "bare number"},
+		{name: "string_30s_into_duration_regression", data: map[string]any{"flushInterval": "30s"}, wantErr: false, check: func(t *testing.T, g decodeHookCfg) {
+			if g.FlushInterval != 30*time.Second {
+				t.Fatalf("got %v", g.FlushInterval)
+			}
+		}},
+		{name: "string_0s_into_duration_edge", data: map[string]any{"flushInterval": "0s"}, wantErr: false, check: func(t *testing.T, g decodeHookCfg) {
+			if g.FlushInterval != 0 {
+				t.Fatalf("got %v", g.FlushInterval)
+			}
+		}},
+	}
+	for _, tc := range rows {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var got decodeHookCfg
+			err := config.NewRawConfig(tc.data).Decode(&got)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil; decoded=%+v", got)
+				}
+				if !strings.Contains(strings.ToLower(err.Error()), tc.errSubstr) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tc.errSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			tc.check(t, got)
+		})
+	}
 }

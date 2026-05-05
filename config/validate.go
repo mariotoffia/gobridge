@@ -361,10 +361,14 @@ func validateEnum(ve *ValidationError, field, value string, allowed ...string) {
 // maximum StepDownGrace delays failover recovery without preventing
 // duplicate sends.
 func validateStaleClaimDuration(ve *ValidationError, cfg *ports.BridgeConfig) {
-	if cfg.Stores.Outbox == nil || cfg.Stores.Outbox.Options == nil {
+	if cfg.Stores.Outbox == nil {
 		return
 	}
-	raw, ok := cfg.Stores.Outbox.Options["stale_claim_duration"]
+	opts := rawMap(cfg.Stores.Outbox.Raw())
+	if opts == nil {
+		return
+	}
+	raw, ok := opts["stale_claim_duration"]
 	if !ok {
 		return
 	}

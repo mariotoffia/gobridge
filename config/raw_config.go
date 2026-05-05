@@ -86,6 +86,20 @@ func (r *rawMapConfig) Decode(target any) error {
 	return nil
 }
 
+// rawMap returns the underlying map[string]any if r is the concrete
+// rawMapConfig produced by NewRawConfig. It is used by config-package
+// diagnostics (e.g. cross-cutting outbox store warnings in
+// validate.go) that need to peek at a single option without
+// committing to the strict, all-or-nothing typed Decode contract.
+// Returns nil for nil receivers or any other RawConfig
+// implementation.
+func rawMap(r ports.RawConfig) map[string]any {
+	if rmc, ok := r.(*rawMapConfig); ok && rmc != nil {
+		return rmc.data
+	}
+	return nil
+}
+
 // floatToIntegerOrDurationHook rejects YAML/JSON float inputs that
 // would silently lose information when coerced into an integer or a
 // time.Duration. JSON unmarshalling produces float64 for any numeric
@@ -100,37 +114,37 @@ func (r *rawMapConfig) Decode(target any) error {
 //     nanoseconds-vs-seconds ambiguity.
 //   - any other (from, to) pair: pass through unchanged.
 func floatToIntegerOrDurationHook(from reflect.Type, to reflect.Type, data any) (any, error) {
-if from == nil || to == nil {
-return data, nil
-}
-switch from.Kind() {
-case reflect.Float32, reflect.Float64:
-default:
-return data, nil
-}
+	if from == nil || to == nil {
+		return data, nil
+	}
+	switch from.Kind() {
+	case reflect.Float32, reflect.Float64:
+	default:
+		return data, nil
+	}
 
-var f float64
-switch v := data.(type) {
-case float32:
-f = float64(v)
-case float64:
-f = v
-default:
-return data, nil
-}
+	var f float64
+	switch v := data.(type) {
+	case float32:
+		f = float64(v)
+	case float64:
+		f = v
+	default:
+		return data, nil
+	}
 
-if to == reflect.TypeOf(time.Duration(0)) {
-return nil, fmt.Errorf("cannot decode bare number %v into time.Duration; use a string like \"30s\"", data)
-}
+	if to == reflect.TypeOf(time.Duration(0)) {
+		return nil, fmt.Errorf("cannot decode bare number %v into time.Duration; use a string like \"30s\"", data)
+	}
 
-switch to.Kind() {
-case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-if math.Trunc(f) != f {
-return nil, fmt.Errorf("cannot decode fractional float %v into %s field", data, to.Kind())
-}
-return data, nil
-}
+	switch to.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if math.Trunc(f) != f {
+			return nil, fmt.Errorf("cannot decode fractional float %v into %s field", data, to.Kind())
+		}
+		return data, nil
+	}
 
-return data, nil
+	return data, nil
 }
