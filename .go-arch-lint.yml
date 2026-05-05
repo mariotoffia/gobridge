@@ -198,6 +198,11 @@ vendors:
 
   # Inner-ring concession: the config shared kernel parses YAML/JSON.
   yaml: { in: gopkg.in/yaml.v3 }
+  # Inner-ring concession: typed plugin option decoding for the
+  # two-stage parser (FIX-003). mapstructure honours `json:"..."` tags
+  # (the repo-wide adapter Config convention) which yaml.v3 alone does
+  # not. Restricted to the config component just like yaml.
+  mapstructure: { in: github.com/go-viper/mapstructure/v2 }
 
   # Adapter SDKs.
   fsnotify: { in: github.com/fsnotify/fsnotify }
@@ -268,6 +273,7 @@ deps:
       - ports
     canUse:
       - yaml
+      - mapstructure
 
   # Cross-cutting utilities. None of them carry external dependencies.
   logging:
