@@ -219,15 +219,54 @@ typed shape:
 
 **How to solve:**
 
-1. Inventory current config structs and raw extension points.
-2. For each plugin category, define the required typed config object.
-3. Keep parser/decoder details inside config-source adapters or the config
-   shared kernel, not in runtime.
-4. Use discriminated config blocks or explicit registration instead of raw
-   maps where possible.
-5. Add validation tests for each plugin config shape.
-6. Document each plugin config shape in the public docs.
-7. Run `make lint && make test`.
+This is enforced as a static lint pass, not a code-review judgement
+call. The same skeleton used by `aclcheck` and `aggcheck` (custom
+`go/analysis` analyzer wired into `make lint`) applies. Four phases,
+sequenced cheapest-first:
+
+**Phase 1 — Vendor bans on dynamic decoders (config-only, no new tool).**
+Tighten `.go-arch-lint.yml` to declare `encoding/json`, `gopkg.in/yaml.v3`,
+and `github.com/go-viper/mapstructure/v2` as named vendors and remove
+them from the `canUse` list of every inner-layer component (`runtime`,
+`bridge`, `httpapi`, `domain`, `ports`). Only `config/` (the parser
+adapter) and adapter `acl/` directories may import them. This catches
+the most common F-003 regression — `bridge` calling `json.Unmarshal` on
+an adapter blob — with zero new code.
+
+**Phase 2 — `cfgshape` analyzer: banned-type pass.**
+Build `scripts/cfgshape/` mirroring `scripts/aclcheck/`. The analyzer
+walks AST fields in inner-layer packages and reports any exported
+struct field, function parameter, or return type matching:
+`map[string]any`, `map[string]interface{}`, `json.RawMessage`,
+`*structpb.Struct`, or unbounded `[]byte` named `Config`/`Options`/
+`Settings`/`Extra`/`Raw`. Exempt `*_test.go` and adapter `acl/`
+directories. Wired into `make lint` exactly like `lint-acl`.
+
+**Phase 3 — Plugin-config interface pass.**
+Define `ports.PluginConfig { Kind() string; Validate() error }`. Make
+plugin registration generic over a type implementing it
+(`Factory[C ports.PluginConfig, P any]`). Extend `cfgshape` Phase 3 to
+walk every package under `adapters/<vendor>/<category>/<impl>/` and
+fail if (a) no exported type satisfies `ports.PluginConfig`, or (b)
+the type's `Validate()` body is empty and no `*_test.go` exercises it.
+Both checks are pure `types.Implements` queries.
+
+**Phase 4 — Mapping regression sentinels.**
+Extend `scripts/lint-arch-mapping-test.sh` with one
+`assert_pkg_in_component "adapters/<vendor>/<category>/<impl>/config"
+adapter_<impl>_config` assertion per plugin category. A new adapter
+added without a typed `config` sub-package fails the regression with a
+precise message.
+
+**Order of operations:** Phase 1 first (immediate, zero new code).
+Phase 2 next (the banned-type pass — catches the leak path). Phase 4
+in parallel with Phase 2 (one-line additions per adapter). Phase 3
+last, because it touches every adapter and requires team agreement on
+the `PluginConfig` interface shape. Each phase ends with
+`make lint && make test` green before commit. Documentation
+completeness (step 6 of the original plan) stays a PR-review concern
+backed by `revive`/`godot` rules in `.golangci.yml`, not a separate
+analyzer.
 
 ### Finding F-004: `circuitbreaker` Is A Concrete Dependency From An Adapter
 
@@ -353,7 +392,7 @@ commands, contributors will miss at least one of them.
 |---|---|---|---|---|---|---|
 | ARCH-001 | Preserve precise adapter/plugin component split | Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | No | Keep every adapter implementation mapped separately. No blanket `adapters/**` component. | `make lint && make test` |
 | ARCH-002 | Maintain factory-to-implementation exceptions only | Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | No, unless adding a new package | Factories may import their own implementations. Implementations may not import factories or sibling implementations. | `make lint && make test` |
-| ARCH-003 | Define typed pluggable config shapes for every plugin category | API expert + Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | Possibly | Replace raw unbounded extension maps with typed DTOs or explicit registration. No compatibility aliases. Use `git mv` and scripted import rewrites if packages move. | `make lint && make test` |
+| ARCH-003 | Enforce typed pluggable config shapes via static lint (4 phases) | API expert + Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | No (Phase 3 may add `adapters/**/config/`) | **Phase 1**: tighten `.go-arch-lint.yml` to ban `encoding/json`, `gopkg.in/yaml.v3`, `mapstructure` from inner layers (config-only, no new tool). **Phase 2**: build `scripts/cfgshape/` analyzer (mirror `scripts/aclcheck/`) flagging `map[string]any` / `json.RawMessage` / `*structpb.Struct` in inner-layer fields and function signatures; wire into `make lint` like `lint-acl`. **Phase 3**: introduce `ports.PluginConfig{Kind() string; Validate() error}`, generic `Factory[C ports.PluginConfig, P any]`; extend `cfgshape` to require every adapter package to export a `PluginConfig` impl with a non-empty `Validate()` exercised by tests. **Phase 4**: add per-adapter `assert_pkg_in_component` lines to `scripts/lint-arch-mapping-test.sh`. No compatibility aliases. | `make lint && make test` |
 | ARCH-004 | Remove adapter dependency on concrete `circuitbreaker` | Go expert + Architecture expert | `skill-create-test`, `skill-asiidoc-documentation` | No expected move | Introduce a resilience port, make concrete breaker satisfy it, wire in composition root, remove adapter `mayDependOn: circuitbreaker`. | `make lint && make test` |
 | ARCH-005 | Remove infrastructure types from `ports` | API expert + Go expert + Architecture expert | `skill-create-test`, `skill-asiidoc-documentation` | Possibly | Replace HTTP-specific port shapes with transport-neutral ports. Keep `net/http` in HTTP adapters. No backwards-compatible `HTTPMountable` shim. | `make lint && make test` |
 | ARCH-006 | Narrow `bridge`/`httpapi` config coupling | API expert + Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | Possibly | Split broad parsed config access into narrow use-case DTOs or ports. Keep parsing out of runtime. | `make lint && make test` |
