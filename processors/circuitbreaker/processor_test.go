@@ -76,7 +76,7 @@ func TestHalfOpen_FailureReopens(t *testing.T) {
 	fail := nextErr(errors.New("boom"))
 
 	for i := 0; i < 2; i++ {
-		p.Process(ctx, env, fail)
+		_ = p.Process(ctx, env, fail)
 	}
 
 	err := p.Process(ctx, env, nextOK)
@@ -105,7 +105,7 @@ func TestPerKeyIsolation(t *testing.T) {
 
 	orders := envelope("orders", nil)
 	for i := 0; i < 2; i++ {
-		p.Process(ctx, orders, fail)
+		_ = p.Process(ctx, orders, fail)
 	}
 
 	err := p.Process(ctx, orders, nextOK)
@@ -137,7 +137,7 @@ func TestRetryAfterPropagation(t *testing.T) {
 	ctx := context.Background()
 	env := envelope("test", nil)
 
-	p.Process(ctx, env, nextErr(errors.New("boom")))
+	_ = p.Process(ctx, env, nextErr(errors.New("boom")))
 
 	err := p.Process(ctx, env, nextOK)
 	if !errors.Is(err, domain.ErrUnavailable) {
@@ -236,7 +236,7 @@ func TestConfigDefaults(t *testing.T) {
 
 	// Default FailureThreshold is 5; 4 failures should keep circuit closed.
 	for i := 0; i < 4; i++ {
-		p.Process(ctx, env, fail)
+		_ = p.Process(ctx, env, fail)
 	}
 	if err := p.Process(ctx, env, nextOK); err != nil {
 		t.Fatalf("expected circuit still closed after 4 failures (default threshold 5), got %v", err)
@@ -244,7 +244,7 @@ func TestConfigDefaults(t *testing.T) {
 
 	// 5 consecutive failures (reset by the success above) to trip.
 	for i := 0; i < 5; i++ {
-		p.Process(ctx, env, fail)
+		_ = p.Process(ctx, env, fail)
 	}
 	err := p.Process(ctx, env, nextOK)
 	if !errors.Is(err, domain.ErrUnavailable) {
@@ -278,10 +278,10 @@ func TestMetrics(t *testing.T) {
 	fail := nextErr(errors.New("boom"))
 
 	for i := 0; i < 2; i++ {
-		p.Process(ctx, env, nextOK)
+		_ = p.Process(ctx, env, nextOK)
 	}
 	for i := 0; i < 3; i++ {
-		p.Process(ctx, env, fail)
+		_ = p.Process(ctx, env, fail)
 	}
 
 	m, ok := p.Metrics()["global"]
@@ -327,7 +327,7 @@ func TestOnStateChangeCallback(t *testing.T) {
 	fail := nextErr(errors.New("boom"))
 
 	for i := 0; i < 2; i++ {
-		p.Process(ctx, env, fail)
+		_ = p.Process(ctx, env, fail)
 	}
 
 	mu.Lock()
@@ -339,7 +339,7 @@ func TestOnStateChangeCallback(t *testing.T) {
 	time.Sleep(60 * time.Millisecond) // OTHER: circuit breaker reset timeout transition
 
 	// Triggers half-open transition inside beforeRequest.
-	p.Process(ctx, env, nextOK)
+	_ = p.Process(ctx, env, nextOK)
 
 	mu.Lock()
 	if len(transitions) < 2 {

@@ -88,9 +88,9 @@ func TestListFilterByRouteID(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	s.Write(ctx, makeEntry("e1", "route-A", "timeout", now))
-	s.Write(ctx, makeEntry("e2", "route-B", "timeout", now))
-	s.Write(ctx, makeEntry("e3", "route-A", "timeout", now))
+	_ = s.Write(ctx, makeEntry("e1", "route-A", "timeout", now))
+	_ = s.Write(ctx, makeEntry("e2", "route-B", "timeout", now))
+	_ = s.Write(ctx, makeEntry("e3", "route-A", "timeout", now))
 
 	entries, err := s.List(ctx, domain.DLQFilter{RouteID: "route-A"})
 	if err != nil {
@@ -112,9 +112,9 @@ func TestListFilterByCategory(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	s.Write(ctx, makeEntry("e1", "route-A", "timeout", now))
-	s.Write(ctx, makeEntry("e2", "route-A", "schema", now))
-	s.Write(ctx, makeEntry("e3", "route-A", "timeout", now))
+	_ = s.Write(ctx, makeEntry("e1", "route-A", "timeout", now))
+	_ = s.Write(ctx, makeEntry("e2", "route-A", "schema", now))
+	_ = s.Write(ctx, makeEntry("e3", "route-A", "timeout", now))
 
 	entries, err := s.List(ctx, domain.DLQFilter{Category: "schema"})
 	if err != nil {
@@ -138,9 +138,9 @@ func TestListFilterBySince(t *testing.T) {
 	t2 := now.Add(1 * time.Hour)
 	t3 := now.Add(2 * time.Hour)
 
-	s.Write(ctx, makeEntry("e1", "route-A", "timeout", t1))
-	s.Write(ctx, makeEntry("e2", "route-A", "timeout", t2))
-	s.Write(ctx, makeEntry("e3", "route-A", "timeout", t3))
+	_ = s.Write(ctx, makeEntry("e1", "route-A", "timeout", t1))
+	_ = s.Write(ctx, makeEntry("e2", "route-A", "timeout", t2))
+	_ = s.Write(ctx, makeEntry("e3", "route-A", "timeout", t3))
 
 	entries, err := s.List(ctx, domain.DLQFilter{Since: t2})
 	if err != nil {
@@ -166,9 +166,9 @@ func TestListFilterByBefore(t *testing.T) {
 	t2 := now.Add(1 * time.Hour)
 	t3 := now.Add(2 * time.Hour)
 
-	s.Write(ctx, makeEntry("e1", "route-A", "timeout", t1))
-	s.Write(ctx, makeEntry("e2", "route-A", "timeout", t2))
-	s.Write(ctx, makeEntry("e3", "route-A", "timeout", t3))
+	_ = s.Write(ctx, makeEntry("e1", "route-A", "timeout", t1))
+	_ = s.Write(ctx, makeEntry("e2", "route-A", "timeout", t2))
+	_ = s.Write(ctx, makeEntry("e3", "route-A", "timeout", t3))
 
 	entries, err := s.List(ctx, domain.DLQFilter{Before: t2})
 	if err != nil {
@@ -189,7 +189,7 @@ func TestListRespectsLimit(t *testing.T) {
 	now := time.Now()
 
 	for i := 0; i < 5; i++ {
-		s.Write(ctx, makeEntry(fmt.Sprintf("e%d", i), "route-A", "timeout", now.Add(time.Duration(i)*time.Minute)))
+		_ = s.Write(ctx, makeEntry(fmt.Sprintf("e%d", i), "route-A", "timeout", now.Add(time.Duration(i)*time.Minute)))
 	}
 
 	entries, err := s.List(ctx, domain.DLQFilter{Limit: 2})
@@ -207,9 +207,9 @@ func TestListSortedByFailedAtDescending(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	s.Write(ctx, makeEntry("e-old", "route-A", "timeout", now))
-	s.Write(ctx, makeEntry("e-mid", "route-A", "timeout", now.Add(1*time.Hour)))
-	s.Write(ctx, makeEntry("e-new", "route-A", "timeout", now.Add(2*time.Hour)))
+	_ = s.Write(ctx, makeEntry("e-old", "route-A", "timeout", now))
+	_ = s.Write(ctx, makeEntry("e-mid", "route-A", "timeout", now.Add(1*time.Hour)))
+	_ = s.Write(ctx, makeEntry("e-new", "route-A", "timeout", now.Add(2*time.Hour)))
 
 	entries, err := s.List(ctx, domain.DLQFilter{})
 	if err != nil {
@@ -253,8 +253,8 @@ func TestDeleteRemovesEntries(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	s.Write(ctx, makeEntry("e1", "route-A", "timeout", now))
-	s.Write(ctx, makeEntry("e2", "route-A", "timeout", now))
+	_ = s.Write(ctx, makeEntry("e1", "route-A", "timeout", now))
+	_ = s.Write(ctx, makeEntry("e2", "route-A", "timeout", now))
 
 	n, err := s.Delete(ctx, []string{"e1", "e2"})
 	if err != nil {
@@ -293,7 +293,7 @@ func TestDeletePartialReturnsCount(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	s.Write(ctx, makeEntry("e1", "route-A", "timeout", now))
+	_ = s.Write(ctx, makeEntry("e1", "route-A", "timeout", now))
 
 	n, err := s.Delete(ctx, []string{"e1", "nonexistent"})
 	if err != nil {
@@ -318,9 +318,9 @@ func TestPurgeRemovesOld(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	s.Write(ctx, makeEntry("e-old", "route-A", "timeout", now.Add(-2*time.Hour)))
-	s.Write(ctx, makeEntry("e-mid", "route-A", "timeout", now.Add(-1*time.Hour)))
-	s.Write(ctx, makeEntry("e-new", "route-A", "timeout", now))
+	_ = s.Write(ctx, makeEntry("e-old", "route-A", "timeout", now.Add(-2*time.Hour)))
+	_ = s.Write(ctx, makeEntry("e-mid", "route-A", "timeout", now.Add(-1*time.Hour)))
+	_ = s.Write(ctx, makeEntry("e-new", "route-A", "timeout", now))
 
 	cutoff := now.Add(-30 * time.Minute)
 	n, err := s.Purge(ctx, cutoff)
@@ -349,9 +349,9 @@ func TestPurgeSkipsRecent(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	s.Write(ctx, makeEntry("e1", "route-A", "timeout", now.Add(-1*time.Hour)))
-	s.Write(ctx, makeEntry("e2", "route-A", "timeout", now))
-	s.Write(ctx, makeEntry("e3", "route-A", "timeout", now.Add(1*time.Hour)))
+	_ = s.Write(ctx, makeEntry("e1", "route-A", "timeout", now.Add(-1*time.Hour)))
+	_ = s.Write(ctx, makeEntry("e2", "route-A", "timeout", now))
+	_ = s.Write(ctx, makeEntry("e3", "route-A", "timeout", now.Add(1*time.Hour)))
 
 	cutoff := now.Add(-30 * time.Minute)
 	n, err := s.Purge(ctx, cutoff)
@@ -391,10 +391,10 @@ func TestFullLifecycle(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
 
-	s.Write(ctx, makeEntry("e1", "route-A", "timeout", now.Add(-3*time.Hour)))
-	s.Write(ctx, makeEntry("e2", "route-A", "schema", now.Add(-2*time.Hour)))
-	s.Write(ctx, makeEntry("e3", "route-B", "timeout", now.Add(-1*time.Hour)))
-	s.Write(ctx, makeEntry("e4", "route-B", "auth", now))
+	_ = s.Write(ctx, makeEntry("e1", "route-A", "timeout", now.Add(-3*time.Hour)))
+	_ = s.Write(ctx, makeEntry("e2", "route-A", "schema", now.Add(-2*time.Hour)))
+	_ = s.Write(ctx, makeEntry("e3", "route-B", "timeout", now.Add(-1*time.Hour)))
+	_ = s.Write(ctx, makeEntry("e4", "route-B", "auth", now))
 
 	entries, err := s.List(ctx, domain.DLQFilter{})
 	if err != nil {
@@ -474,7 +474,7 @@ func TestListEmptyStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if entries != nil && len(entries) != 0 {
+	if len(entries) != 0 {
 		t.Fatalf("expected empty slice, got %d entries", len(entries))
 	}
 }

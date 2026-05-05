@@ -37,8 +37,7 @@ func TestIntegration_SendReceive(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("session start: %v", err)
 	}
-	defer sess.Close(ctx)
-
+	defer func() { _ = sess.Close(ctx) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
 			{
@@ -138,8 +137,7 @@ func TestIntegration_SendBatch(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("session start: %v", err)
 	}
-	defer sess.Close(ctx)
-
+	defer func() { _ = sess.Close(ctx) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
 			{
@@ -238,8 +236,7 @@ func TestIntegration_RetryRedelivers(t *testing.T) {
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("session start: %v", err)
 	}
-	defer sess.Close(ctx)
-
+	defer func() { _ = sess.Close(ctx) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
 			{

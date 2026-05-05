@@ -235,8 +235,7 @@ func getJSON(t *testing.T, url, apiKey string) (*http.Response, map[string]any) 
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
-
+	defer func() { _ = resp.Body.Close() }()
 	var body map[string]any
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	return resp, body

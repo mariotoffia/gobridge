@@ -89,8 +89,7 @@ func TestReceiver_Run_ContextCancel(t *testing.T) {
 		domain.SessionEphemeral,
 		slog.Default(),
 	)
-	defer sess.Close(context.Background())
-
+	defer func() { _ = sess.Close(context.Background()) }()
 	r := NewReceiver(ReceiverConfig{
 		QueueName: "test-queue",
 		Session:   sess,
@@ -125,8 +124,7 @@ func TestNewReceiver_InheritsSessionLogger(t *testing.T) {
 		domain.SessionEphemeral,
 		logger,
 	)
-	defer sess.Close(context.Background())
-
+	defer func() { _ = sess.Close(context.Background()) }()
 	r := NewReceiver(ReceiverConfig{Session: sess})
 	if r.logger != logger {
 		t.Error("expected receiver to inherit session logger")
@@ -159,7 +157,7 @@ func TestGenerateEnvelopeID(t *testing.T) {
 		t.Errorf("len(id) = %d, want 32", len(id))
 	}
 	for _, c := range id {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Fatalf("non-hex character %c in ID %q", c, id)
 		}
 	}

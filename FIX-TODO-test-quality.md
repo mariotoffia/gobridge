@@ -248,4 +248,18 @@ fails the gate.
   for this task; only this progress note. Phase 3 (T009) will drop the
   `_test.go` exclusion globally and re-confirm.
 - T008 — Clean up httpapi/ test-quality (~5 issues) — pending
-- T009 — Phase 3: drop the _test.go exclusion from .golangci.yml and verify make lint green — pending
+- **T009 — Phase 3: drop the _test.go exclusion from .golangci.yml and verify make lint green — DONE (2026-05-05)**
+  Removed the `_test.go` blanket exclusion for `errcheck`, `staticcheck`,
+  `ineffassign`, and `unused` from `.golangci.yml` (the `ireturn`
+  test-file exclusion and all other rules are preserved). Mechanically
+  fixed every newly-surfaced violation across 47 files: `_ = X.Close()`
+  wrappers on Closer defers, discarded errors from fire-and-forget
+  `s.Write` / `p.Process` calls in tests, removal of provably-unused
+  helpers / imports / methods, and two safe stylistic rewrites
+  (QF1001 De Morgan in `receiver_test.go`, QF1006 inverted-condition
+  loop in `streams_internal_test.go`). `make lint` exits 0 end-to-end;
+  `make test` green after refreshing line numbers in
+  `audit/test-timing-allowlist.txt` for shifted (not new) `time.Sleep`
+  call sites in 8 affected files.
+
+  Review: APPROVED on first pass by code-reviewer (codex: unavailable)

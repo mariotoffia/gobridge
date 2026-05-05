@@ -26,7 +26,6 @@ func TestBugForwarder_5xxReturnsTransientError(t *testing.T) {
 				w.WriteHeader(code)
 			}))
 			defer remote.Close()
-
 			fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
 			peer := &domain.PeerInfo{
 				InstanceID: "remote-5xx",
@@ -65,7 +64,6 @@ func TestBugForwarder_4xxReturnsPermanentError(t *testing.T) {
 				w.WriteHeader(code)
 			}))
 			defer remote.Close()
-
 			fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
 			peer := &domain.PeerInfo{
 				InstanceID: "remote-4xx",
@@ -105,7 +103,6 @@ func TestBugForwarder_2xxReturnsNoError(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "accepted"}) //nolint:errcheck
 	}))
 	defer remote.Close()
-
 	fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
 	peer := &domain.PeerInfo{
 		InstanceID: "remote-ok",

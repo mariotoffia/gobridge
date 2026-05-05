@@ -114,7 +114,7 @@ func TestConfigAPI_Patch_InvalidJSON_Returns400(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("got %d, want 400", resp.StatusCode)

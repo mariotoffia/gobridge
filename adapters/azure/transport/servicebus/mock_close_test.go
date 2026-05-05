@@ -2,7 +2,6 @@ package servicebus
 
 import (
 	"context"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,28 +15,17 @@ type closeableASBClient struct {
 
 	closeFn    func(ctx context.Context) error
 	closeCalls atomic.Int32
-	closeCtxMu sync.Mutex
-	closeCtx   context.Context
 }
 
 var _ asbAPI = (*closeableASBClient)(nil)
 
 func (m *closeableASBClient) Close(ctx context.Context) error {
 	m.closeCalls.Add(1)
-	m.closeCtxMu.Lock()
-	m.closeCtx = ctx
-	m.closeCtxMu.Unlock()
 
 	if m.closeFn != nil {
 		return m.closeFn(ctx)
 	}
 	return nil
-}
-
-func (m *closeableASBClient) lastCloseCtx() context.Context {
-	m.closeCtxMu.Lock()
-	defer m.closeCtxMu.Unlock()
-	return m.closeCtx
 }
 
 // closeableScheduler implements retryScheduler with a Close method that
@@ -48,8 +36,6 @@ type closeableScheduler struct {
 	closeFn                  func(ctx context.Context) error
 
 	closeCalls atomic.Int32
-	closeCtxMu sync.Mutex
-	closeCtx   context.Context
 }
 
 func (m *closeableScheduler) ScheduleMessages(ctx context.Context, messages []*azservicebus.Message, scheduledEnqueueTime time.Time, options *azservicebus.ScheduleMessagesOptions) ([]int64, error) {
@@ -68,18 +54,9 @@ func (m *closeableScheduler) CancelScheduledMessages(ctx context.Context, sequen
 
 func (m *closeableScheduler) Close(ctx context.Context) error {
 	m.closeCalls.Add(1)
-	m.closeCtxMu.Lock()
-	m.closeCtx = ctx
-	m.closeCtxMu.Unlock()
 
 	if m.closeFn != nil {
 		return m.closeFn(ctx)
 	}
 	return nil
-}
-
-func (m *closeableScheduler) lastCloseCtx() context.Context {
-	m.closeCtxMu.Lock()
-	defer m.closeCtxMu.Unlock()
-	return m.closeCtx
 }

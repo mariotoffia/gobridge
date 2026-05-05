@@ -557,7 +557,7 @@ func awaitBridgeReady(t *testing.T, monitorURL string, timeout time.Duration) {
 		if err != nil || resp.StatusCode != 200 {
 			return false
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		var dh struct {
 			ReadyForTraffic bool   `json:"ready_for_traffic"`
 			ServiceLevel    string `json:"service_level"`

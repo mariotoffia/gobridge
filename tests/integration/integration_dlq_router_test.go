@@ -117,7 +117,6 @@ func TestIntegration_DLQRouter_AsyncBufferDrains(t *testing.T) {
 	ctx := context.Background()
 	router.Start(ctx)
 	defer router.Close()
-
 	const entryCount = 5
 	for i := 0; i < entryCount; i++ {
 		env := &domain.Envelope{

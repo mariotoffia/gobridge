@@ -21,7 +21,6 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
-	"github.com/mariotoffia/gobridge/testutil/testcontent"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
@@ -337,35 +336,6 @@ func e2eWaitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool
 	wait.Until(t, timeout, desc, fn)
 }
 
-// gobridgesync waits until all runtimes report ReadyForTraffic and
-// ServiceLevel Full via DeepHealth. On timeout, logs detailed health
-// for each bridge and fails the test.
-func gobridgesync(t *testing.T, timeout time.Duration, runtimes ...*goruntime.Runtime) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		allReady := true
-		for _, rt := range runtimes {
-			dh := rt.DeepHealth(context.Background())
-			if !dh.ReadyForTraffic || dh.ServiceLevel != ports.ServiceLevelFull {
-				allReady = false
-				break
-			}
-		}
-		if allReady {
-			return
-		}
-		time.Sleep(50 * time.Millisecond) // SYNC: poll for bridge readiness
-	}
-	// Dump health for debugging on failure
-	for _, rt := range runtimes {
-		dh := rt.DeepHealth(context.Background())
-		t.Logf("gobridgesync: instance=%s running=%v healthy=%v ready=%v service_level=%s sessions=%+v",
-			dh.InstanceID, dh.Running, dh.Healthy, dh.ReadyForTraffic, dh.ServiceLevel, dh.Sessions)
-	}
-	t.Fatalf("gobridgesync: timed out waiting for %d bridges to be ready", len(runtimes))
-}
-
 // ---------------------------------------------------------------------------
 // DLQ store for E2E tests
 // ---------------------------------------------------------------------------
@@ -409,14 +379,6 @@ func (s *e2eDLQStore) count() int {
 	return len(s.entries)
 }
 
-func (s *e2eDLQStore) getEntries() []domain.DLQEntry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cp := make([]domain.DLQEntry, len(s.entries))
-	copy(cp, s.entries)
-	return cp
-}
-
 // ---------------------------------------------------------------------------
 // Route config helpers
 // ---------------------------------------------------------------------------
@@ -441,98 +403,4 @@ func uniqueID(prefix string) string {
 	n := idCounter
 	idMu.Unlock()
 	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), n)
-}
-
-// ---------------------------------------------------------------------------
-// Content-verification helpers (thin wrappers around testcontent)
-// ---------------------------------------------------------------------------
-
-// assertReceivedSet asserts that the set of TIDs in received envelopes
-// equals the set in sent. Reports missing and extra TIDs.
-func assertReceivedSet(t *testing.T, sent []testcontent.Expected, rx []*domain.Envelope) {
-	t.Helper()
-	testcontent.AssertReceivedSet(t, sent, testcontent.ReceivedFromEnvelopes(rx))
-}
-
-// assertContentMatches asserts set equality on TIDs and per-TID content
-// equality for envelopes.
-func assertContentMatches(t *testing.T, sent []testcontent.Expected, rx []*domain.Envelope, opts ...testcontent.MatchOpt) {
-	t.Helper()
-	testcontent.AssertContentMatches(t, sent, testcontent.ReceivedFromEnvelopes(rx), opts...)
-}
-
-// assertReceivedSetBodies is like assertReceivedSet but for raw SQS body
-// strings where TIDs are extracted from the JSON _tid field.
-func assertReceivedSetBodies(t *testing.T, sent []testcontent.Expected, bodies []string) {
-	t.Helper()
-	testcontent.AssertReceivedSet(t, sent, testcontent.ReceivedFromBodies(bodies))
-}
-
-// assertNoDuplicates asserts each TID appears at most once in envelopes.
-func assertNoDuplicates(t *testing.T, rx []*domain.Envelope) {
-	t.Helper()
-	testcontent.AssertNoDuplicates(t, testcontent.ReceivedFromEnvelopes(rx))
-}
-
-// assertNoDuplicateBodies is like assertNoDuplicates but for raw body strings.
-func assertNoDuplicateBodies(t *testing.T, bodies []string) {
-	t.Helper()
-	testcontent.AssertNoDuplicates(t, testcontent.ReceivedFromBodies(bodies))
-}
-
-// ---------------------------------------------------------------------------
-// Warmup helpers — publish a probe and wait for the receiver to see it
-// ---------------------------------------------------------------------------
-
-// warmupMQTT publishes a probe envelope on topic and blocks until the
-// collector receives it. The probe is removed from the collector before
-// returning so it doesn't interfere with test assertions.
-func warmupMQTT(t *testing.T, sender ports.Sender, collector *mqttCollector, topic string, timeout time.Duration) {
-	t.Helper()
-	probe := &domain.Envelope{
-		Subject: topic,
-		Payload: []byte(`{"_warmup":true}`),
-	}
-	probeTID, _ := testcontent.Tag(probe)
-
-	if err := sender.Send(context.Background(), probe); err != nil {
-		t.Fatalf("warmupMQTT: send probe: %v", err)
-	}
-
-	wait.Until(t, timeout, "warmup probe received on "+topic, func() bool {
-		for _, msg := range collector.getMessages() {
-			if testcontent.ExtractTID(msg) == probeTID {
-				return true
-			}
-		}
-		return false
-	})
-
-	collector.removeByTID(probeTID)
-}
-
-// warmupSQS sends a probe to SQS and polls until it arrives, then
-// discards it. This ensures the queue is reachable before the test sends
-// real messages.
-func warmupSQS(t *testing.T, client *awssqs.Client, queueURL string, timeout time.Duration) {
-	t.Helper()
-	probeBody := fmt.Sprintf(`{"_warmup":true,"_tid":"%s"}`, uniqueID("warmup"))
-	sendToSQS(t, client, queueURL, probeBody, nil)
-	bodies := pollSQS(t, client, queueURL, 1, timeout)
-	if len(bodies) == 0 {
-		t.Fatalf("warmupSQS: probe not received within %s", timeout)
-	}
-}
-
-// removeByTID removes all messages with the given TID from the collector.
-func (c *mqttCollector) removeByTID(tid string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	filtered := c.messages[:0]
-	for _, msg := range c.messages {
-		if testcontent.ExtractTID(msg) != tid {
-			filtered = append(filtered, msg)
-		}
-	}
-	c.messages = filtered
 }

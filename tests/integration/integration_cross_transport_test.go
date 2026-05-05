@@ -73,12 +73,11 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 	// --- HTTP test server for SSE ---
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
-
 	sseResp, err := http.Get(ts.URL + "/transport/http/senders/sse-cross/events")
 	if err != nil {
 		t.Fatalf("SSE connect: %v", err)
 	}
-	defer sseResp.Body.Close()
+	defer func() { _ = sseResp.Body.Close() }()
 	if sseResp.StatusCode != http.StatusOK {
 		t.Fatalf("SSE status: got %d, want 200", sseResp.StatusCode)
 	}
@@ -186,7 +185,6 @@ func TestIntegration_HTTP_To_MQTT_CrossTransport(t *testing.T) {
 	// --- HTTP test server ---
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
-
 	// --- Subscribe a separate MQTT client to the output topic ---
 	collector := newMQTTCollector(t, mqttTopic, "cross-http-coll")
 
@@ -203,8 +201,7 @@ func TestIntegration_HTTP_To_MQTT_CrossTransport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HTTP POST: %v", err)
 	}
-	defer resp.Body.Close()
-
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("HTTP POST status: got %d, want 200", resp.StatusCode)
 	}

@@ -47,8 +47,7 @@ import (
 //   - no connection leak
 func TestSession_Start_ConcurrentRace(t *testing.T) {
 	s := newTestSession()
-	defer s.Close(context.Background())
-
+	defer func() { _ = s.Close(context.Background()) }()
 	var dialCount atomic.Int32
 	s.dial = func(_ context.Context, _ string, _ *amqp.ConnOptions) (amqpConn, error) {
 		dialCount.Add(1)

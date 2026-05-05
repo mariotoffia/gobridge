@@ -82,7 +82,7 @@ func TestProcessor_PanicInNext_RecoversProperly(t *testing.T) {
 				t.Fatal("expected panic from next")
 			}
 		}()
-		p.Process(ctx, env, func(_ context.Context, _ *domain.Envelope) error {
+		_ = p.Process(ctx, env, func(_ context.Context, _ *domain.Envelope) error {
 			panic("simulated downstream panic")
 		})
 	}()

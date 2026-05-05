@@ -25,8 +25,7 @@ func TestReceiver_WaitAndReconnect_AlreadyConnected_ProceedsImmediately(t *testi
 	if err := sess.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(context.Background())
-
+	defer func() { _ = sess.Close(context.Background()) }()
 	r, err := NewReceiver(ReceiverConfig{Address: "queue/x"}, sess)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
@@ -60,8 +59,7 @@ func TestReceiver_WaitAndReconnect_FastReconnect_DoesNotMissEvent(t *testing.T) 
 	if err := sess.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close(context.Background())
-
+	defer func() { _ = sess.Close(context.Background()) }()
 	r, err := NewReceiver(ReceiverConfig{Address: "queue/x"}, sess)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)

@@ -145,8 +145,7 @@ func TestSession_Reconcile_OverwritePlan_ReplacesSubscriptions(t *testing.T) {
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer s.Close(context.Background())
-
+	defer func() { _ = s.Close(context.Background()) }()
 	first := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{Topic: "queue-A"}},
 	}
@@ -197,8 +196,7 @@ func TestSession_Reconcile_PublisherOnlyPlan_StoresAndRuns(t *testing.T) {
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer s.Close(context.Background())
-
+	defer func() { _ = s.Close(context.Background()) }()
 	prior := domain.SessionPlan{Subscriptions: []domain.SubscriptionPlan{{Topic: "q"}}}
 	_ = s.Reconcile(context.Background(), prior)
 	beforePub := channelCalls.Load()

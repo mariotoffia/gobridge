@@ -104,7 +104,6 @@ func TestDLQRouter_RetryBackoff_FakeClock(t *testing.T) {
 	ctx := context.Background()
 	router.Start(ctx)
 	defer router.Close()
-
 	env := &domain.Envelope{
 		ID:      "backoff-test-1",
 		Subject: "test/backoff",

@@ -27,8 +27,7 @@ func TestTransportServer_StartAndStop(t *testing.T) {
 
 	resp, err := http.Get(srv.URL() + "/test")
 	require.NoError(t, err)
-	defer resp.Body.Close()
-
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, "ok", string(body))
@@ -50,7 +49,7 @@ func TestTransportServer_HandlerHotSwap(t *testing.T) {
 	resp, err := http.Get(srv.URL() + "/")
 	require.NoError(t, err)
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	assert.Equal(t, "v1", string(body))
 
 	// Hot-swap handler
@@ -64,7 +63,7 @@ func TestTransportServer_HandlerHotSwap(t *testing.T) {
 	resp, err = http.Get(srv.URL() + "/")
 	require.NoError(t, err)
 	body, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	assert.Equal(t, "v2", string(body))
 }
 

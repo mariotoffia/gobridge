@@ -7,7 +7,6 @@ import (
 	"time"
 
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
-	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/domain"
@@ -353,41 +352,4 @@ func pollSQSNoDelete(t *testing.T, client *awssqs.Client, queueURL string, timeo
 		}
 	}
 	return bodies
-}
-
-// pollSQSWithAttrs receives messages and returns both body and attributes.
-func pollSQSWithAttrs(
-	t *testing.T,
-	client *awssqs.Client,
-	queueURL string,
-	timeout time.Duration,
-) ([]string, []map[string]sqstypes.MessageAttributeValue) {
-	t.Helper()
-	var bodies []string
-	var attrs []map[string]sqstypes.MessageAttributeValue
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		out, err := client.ReceiveMessage(context.Background(), &awssqs.ReceiveMessageInput{
-			QueueUrl:              &queueURL,
-			MaxNumberOfMessages:   10,
-			WaitTimeSeconds:       1,
-			MessageAttributeNames: []string{"All"},
-		})
-		if err != nil {
-			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
-			continue
-		}
-		for _, msg := range out.Messages {
-			bodies = append(bodies, *msg.Body)
-			attrs = append(attrs, msg.MessageAttributes)
-			_, _ = client.DeleteMessage(context.Background(), &awssqs.DeleteMessageInput{
-				QueueUrl:      &queueURL,
-				ReceiptHandle: msg.ReceiptHandle,
-			})
-		}
-		if len(bodies) > 0 {
-			return bodies, attrs
-		}
-	}
-	return bodies, attrs
 }

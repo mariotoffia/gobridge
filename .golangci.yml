@@ -267,13 +267,6 @@ linters:
       - "ports/storetest/.*"
 
     rules:
-      # The default linter set (errcheck, staticcheck, ineffassign,
-      # unused, govet) finds pre-existing issues across test code
-      # (uncaught Close errors, single-case selects, empty branches).
-      # TODO(FIX-TODO-test-quality.md): drop this exclusion after
-      # the test-quality sweep.
-      - linters: [errcheck, staticcheck, ineffassign, unused]
-        path: "_test\\.go$"
       # ireturn: test files (_test.go) routinely declare local fakes
       # that satisfy ports.* interfaces; the fakes are inherently
       # interface-returning by construction. ireturn is a production

@@ -478,7 +478,6 @@ func TestSSESender_BroadcastToClients(t *testing.T) {
 
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
-
 	// Connect an SSE client.
 	resp, err := http.Get(ts.URL + "/transport/http/senders/sse-broadcast/events")
 	if err != nil {
@@ -574,7 +573,6 @@ func TestSSESender_RedirectWhenRemote(t *testing.T) {
 	// but disable redirect following to capture the 307.
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
-
 	client := &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -615,7 +613,6 @@ func TestHTTPForwarder_ForwardSuccess(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
 	}))
 	defer remote.Close()
-
 	fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
 
 	peer := &domain.PeerInfo{

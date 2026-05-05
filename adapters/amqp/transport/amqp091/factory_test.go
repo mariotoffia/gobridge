@@ -101,8 +101,7 @@ func TestReceiverFactory_NewReceiver_QueueFromSubscription(t *testing.T) {
 	rf := NewReceiverFactory(slog.Default())
 
 	sess := NewSession(SessionOptions{BrokerURL: "amqp://localhost/"}, domain.SessionEphemeral, slog.Default())
-	defer sess.Close(context.Background())
-
+	defer func() { _ = sess.Close(context.Background()) }()
 	r, err := rf.NewReceiver(context.Background(), ports.ReceiverSpec{
 		ID: "r3",
 		Subscriptions: []domain.SubscriptionPlan{
@@ -150,8 +149,7 @@ func TestSenderFactory_NewSender_Valid(t *testing.T) {
 	sf := NewSenderFactory(slog.Default())
 
 	sess := NewSession(SessionOptions{BrokerURL: "amqp://localhost/"}, domain.SessionEphemeral, slog.Default())
-	defer sess.Close(context.Background())
-
+	defer func() { _ = sess.Close(context.Background()) }()
 	s, err := sf.NewSender(context.Background(), ports.SenderSpec{
 		ID: "s3",
 		Options: map[string]any{

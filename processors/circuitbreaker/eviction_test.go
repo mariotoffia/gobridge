@@ -58,10 +58,10 @@ func TestProcessor_EvictsClosedBreakerPreferentially(t *testing.T) {
 	next := func(_ context.Context, _ *domain.Envelope) error { return nil }
 	failNext := func(_ context.Context, _ *domain.Envelope) error { return errors.New("fail") }
 
-	p.Process(context.Background(), &domain.Envelope{Subject: "closed-key"}, next)
+	_ = p.Process(context.Background(), &domain.Envelope{Subject: "closed-key"}, next)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
-		p.Process(context.Background(), &domain.Envelope{Subject: "open-key"}, failNext)
+		_ = p.Process(context.Background(), &domain.Envelope{Subject: "open-key"}, failNext)
 	}
 
 	m := p.Metrics()
@@ -81,7 +81,7 @@ func TestProcessor_EvictsClosedBreakerPreferentially(t *testing.T) {
 	}
 	p.mu.Unlock()
 
-	p.Process(context.Background(), &domain.Envelope{Subject: "trigger-evict"}, next)
+	_ = p.Process(context.Background(), &domain.Envelope{Subject: "trigger-evict"}, next)
 
 	m = p.Metrics()
 	if _, ok := m["open-key"]; !ok {

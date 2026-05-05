@@ -205,7 +205,7 @@ func waitForRabbitMQManagement(t *testing.T, timeout time.Duration) {
 		if err != nil {
 			return false
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return resp.StatusCode == 200
 	})
 }
