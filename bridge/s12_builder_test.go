@@ -33,7 +33,7 @@ func TestInjectStaleClaimDuration_DefaultDerivation(t *testing.T) {
 		}},
 	})
 
-	sc := &ports.StoreConfig{Type: "memory"}
+	sc := &ports.StoreSpec{Type: "memory"}
 	if err := b.injectStaleClaimDuration(sc); err != nil {
 		t.Fatalf("injectStaleClaimDuration: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestInjectStaleClaimDuration_MaxAcrossRoutes(t *testing.T) {
 		},
 	})
 
-	sc := &ports.StoreConfig{Type: "memory"}
+	sc := &ports.StoreSpec{Type: "memory"}
 	if err := b.injectStaleClaimDuration(sc); err != nil {
 		t.Fatalf("injectStaleClaimDuration: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestInjectStaleClaimDuration_ExplicitSkipped(t *testing.T) {
 		}},
 	})
 
-	sc := &ports.StoreConfig{
+	sc := &ports.StoreSpec{
 		Type:    "memory",
 		Options: map[string]any{"stale_claim_duration": "2m"},
 	}
@@ -125,7 +125,7 @@ func TestInjectStaleClaimDuration_NoRouteSession(t *testing.T) {
 		},
 	})
 
-	sc := &ports.StoreConfig{Type: "memory"}
+	sc := &ports.StoreSpec{Type: "memory"}
 	if err := b.injectStaleClaimDuration(sc); err != nil {
 		t.Fatalf("injectStaleClaimDuration: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestInjectStaleClaimDuration_NoRouteSession(t *testing.T) {
 // safe re-derivation on subsequent Build() calls.
 func TestInjectStaleClaimDuration_DoesNotMutateOriginalOptions(t *testing.T) {
 	original := map[string]any{"table_name": "my-outbox"}
-	sc := &ports.StoreConfig{
+	sc := &ports.StoreSpec{
 		Type:    "memory",
 		Options: original,
 	}

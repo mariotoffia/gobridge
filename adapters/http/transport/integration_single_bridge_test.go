@@ -222,7 +222,7 @@ func TestIntegration_HTTPPost_FilterDrop_NoSend(t *testing.T) {
 func TestIntegration_SSEClient_ReceivesMultipleEvents(t *testing.T) {
 	factory := transport.NewFactory()
 	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
-		ID: "sse-multi", Options: map[string]any{"mode": "sse"},
+		ID: "sse-multi", Config: transport.Config{Mode: "sse"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
@@ -319,7 +319,7 @@ func TestIntegration_HTTPPost_APIKeyAuth(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			factory := transport.NewFactory()
 			recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{
-				ID: "auth-" + tc.name, Options: map[string]any{"api_key": "secret-123"},
+				ID: "auth-" + tc.name, Config: transport.Config{APIKey: "secret-123"},
 			}, nil)
 			if err != nil {
 				t.Fatalf("NewReceiver: %v", err)
@@ -352,7 +352,7 @@ func TestIntegration_HTTPPost_APIKeyAuth(t *testing.T) {
 func TestIntegration_HTTPPost_BodyTooLarge(t *testing.T) {
 	factory := transport.NewFactory()
 	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{
-		ID: "big", Options: map[string]any{"max_body_size": 256},
+		ID: "big", Config: transport.Config{MaxBodySize: 256},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)

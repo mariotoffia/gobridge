@@ -68,8 +68,8 @@ func BenchmarkSSE_Broadcast(b *testing.B) {
 		b.Run(fmt.Sprintf("clients_%d", numClients), func(b *testing.B) {
 			factory := transport.NewFactory()
 			sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
-				ID:      fmt.Sprintf("bench-sse-%d", numClients),
-				Options: map[string]any{"mode": "sse"},
+				ID:     fmt.Sprintf("bench-sse-%d", numClients),
+				Config: transport.Config{Mode: "sse"},
 			}, nil)
 			if err != nil {
 				b.Fatalf("NewSender: %v", err)

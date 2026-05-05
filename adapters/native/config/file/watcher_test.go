@@ -12,6 +12,23 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+type stubPluginConfig struct{ kind string }
+
+func (s stubPluginConfig) Kind() string    { return s.kind }
+func (s stubPluginConfig) Validate() error { return nil }
+
+func init() {
+	for _, k := range []string{"mqtt", "sqs", "http"} {
+		kind := k
+		func() {
+			defer func() { _ = recover() }()
+			ports.DefaultRegistry.Register(kind, func(raw ports.RawConfig) (ports.PluginConfig, error) {
+				return stubPluginConfig{kind: kind}, nil
+			})
+		}()
+	}
+}
+
 func writeYAML(t *testing.T, path string, bridgeID string) {
 	t.Helper()
 	content := "bridge:\n  id: " + bridgeID + "\n" +

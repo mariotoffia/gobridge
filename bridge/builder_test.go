@@ -109,6 +109,32 @@ func (c *capturingTransportFactory) NewSession(_ context.Context, spec ports.Ses
 	return &fakeSession{}, nil
 }
 
+// testCredConfig is a minimal typed PluginConfig used by builder
+// credential tests. It implements CredentialedConfig so the builder's
+// resolveConfigCredentials path can mutate Username/Password from the
+// resolved CredentialSet.
+type testCredConfig struct {
+	URI      string
+	Username string
+	Password string
+}
+
+func (c *testCredConfig) Kind() string           { return "test.cred" }
+func (c *testCredConfig) Validate() error        { return nil }
+func (c *testCredConfig) CredentialsURI() string { return c.URI }
+func (c *testCredConfig) ApplyCredentials(creds *domain.CredentialSet) error {
+	if creds != nil && creds.Password != nil {
+		if c.Username == "" {
+			c.Username = creds.Password.Username
+		}
+		if c.Password == "" {
+			c.Password = creds.Password.Password
+		}
+	}
+	c.URI = ""
+	return nil
+}
+
 // --- tests ---
 
 func testConfig() *ports.BridgeConfig {
@@ -237,12 +263,12 @@ func TestBuilder_DirectHoldRoute(t *testing.T) {
 	assert.Equal(t, domain.DeliveryDirectHold, routes[0].DeliveryMode)
 }
 
-// Verifies WithCredentialStore resolves credentials_uri into session options before creating the transport session.
+// Verifies WithCredentialStore resolves credentials_uri into the typed
+// session config before creating the transport session.
 func TestBuilder_WithCredentialStore(t *testing.T) {
 	cfg := testConfig()
-	cfg.Sessions[0].Options = map[string]any{
-		"credentials_uri": "file://test/creds",
-	}
+	sessCfg := &testCredConfig{URI: "file://test/creds"}
+	cfg.Sessions[0].Config = sessCfg
 
 	cs := &fakeCredentialStore{
 		creds: map[string]*domain.CredentialSet{
@@ -266,19 +292,18 @@ func TestBuilder_WithCredentialStore(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, rt)
 
-	assert.Equal(t, "resolved-user", mqttFactory.capturedSessionSpec.Options["username"])
-	assert.Equal(t, "resolved-pass", mqttFactory.capturedSessionSpec.Options["password"])
-	_, hasURI := mqttFactory.capturedSessionSpec.Options["credentials_uri"]
-	assert.False(t, hasURI, "credentials_uri should be removed after resolution")
+	captured, ok := mqttFactory.capturedSessionSpec.Config.(*testCredConfig)
+	require.True(t, ok, "captured session config should be *testCredConfig")
+	assert.Equal(t, "resolved-user", captured.Username)
+	assert.Equal(t, "resolved-pass", captured.Password)
+	assert.Equal(t, "", captured.URI, "credentials_uri should be cleared after resolution")
 }
 
 // Verifies inline session option keys override resolved credential fields while still filling missing values from the store.
 func TestBuilder_CredentialInlineOverride(t *testing.T) {
 	cfg := testConfig()
-	cfg.Sessions[0].Options = map[string]any{
-		"credentials_uri": "file://test/creds",
-		"username":        "inline-user",
-	}
+	sessCfg := &testCredConfig{URI: "file://test/creds", Username: "inline-user"}
+	cfg.Sessions[0].Config = sessCfg
 
 	cs := &fakeCredentialStore{
 		creds: map[string]*domain.CredentialSet{
@@ -302,9 +327,11 @@ func TestBuilder_CredentialInlineOverride(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, rt)
 
-	assert.Equal(t, "inline-user", mqttFactory.capturedSessionSpec.Options["username"],
+	captured, ok := mqttFactory.capturedSessionSpec.Config.(*testCredConfig)
+	require.True(t, ok, "captured session config should be *testCredConfig")
+	assert.Equal(t, "inline-user", captured.Username,
 		"inline value should take precedence over resolved credential")
-	assert.Equal(t, "resolved-pass", mqttFactory.capturedSessionSpec.Options["password"],
+	assert.Equal(t, "resolved-pass", captured.Password,
 		"password should be resolved from credential store")
 }
 
@@ -393,12 +420,10 @@ func TestBuilder_ClusteredMode_NilLeaseStore_RejectsStartup(t *testing.T) {
 	assert.Contains(t, err.Error(), "lease")
 }
 
-// Verifies Build fails when session options reference credentials_uri but no credential store was provided.
+// Verifies Build fails when session config requests credentials_uri but no credential store was provided.
 func TestBuilder_CredentialsURIWithoutStore(t *testing.T) {
 	cfg := testConfig()
-	cfg.Sessions[0].Options = map[string]any{
-		"credentials_uri": "file://test/creds",
-	}
+	cfg.Sessions[0].Config = &testCredConfig{URI: "file://test/creds"}
 
 	_, err := NewBuilder(cfg).
 		RegisterTransport("mqtt", &fakeTransportFactory{}).

@@ -325,14 +325,7 @@ func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan domai
 // AMQP closes the channel on any soft error.
 func (s *Session) declareSubscription(conn amqpConnection, sub domain.SubscriptionPlan) error {
 	queueName := sub.Topic
-	exchangeName, _ := optString(sub.Options, "exchange")
-	routingKey, _ := optString(sub.Options, "routing_key")
-	exchangeType := "direct"
-	if et, ok := optString(sub.Options, "exchange_type"); ok {
-		exchangeType = et
-	}
-	durable, _ := optBool(sub.Options, "durable")
-	autoDelete, _ := optBool(sub.Options, "auto_delete")
+	exchangeName, routingKey, exchangeType, durable, autoDelete := subscriptionParams(sub)
 
 	ch, err := conn.Channel()
 	if err != nil {
@@ -372,12 +365,7 @@ func (s *Session) declarePublisher(conn amqpConnection, pub domain.PublisherPlan
 	if exchangeName == "" {
 		return nil
 	}
-	exchangeType := "direct"
-	if et, ok := optString(pub.Options, "exchange_type"); ok {
-		exchangeType = et
-	}
-	durable, _ := optBool(pub.Options, "durable")
-	autoDelete, _ := optBool(pub.Options, "auto_delete")
+	exchangeType, durable, autoDelete := publisherParams(pub)
 
 	ch, err := conn.Channel()
 	if err != nil {

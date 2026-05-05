@@ -401,22 +401,20 @@ func TestQoS_Factory_NewSender_InvalidQoS(t *testing.T) {
 
 	tests := []struct {
 		name string
-		qos  any
+		qos  byte
 	}{
-		{"out_of_range", 5},
-		{"string_type", "1"},
-		{"negative", -1},
-		{"float_out_of_range", 5.0},
+		{"out_of_range_5", 5},
+		{"out_of_range_3", 3},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := f.NewSender(context.Background(), ports.SenderSpec{
 				ID:        "s-invalid-qos",
 				SessionID: "test-session",
-				Options:   map[string]any{"qos": tc.qos},
+				Config:    Config{Sender: SenderOptions{QoS: tc.qos}},
 			}, sess)
 			if err == nil {
-				t.Errorf("expected error for QoS=%v (%T), got nil", tc.qos, tc.qos)
+				t.Errorf("expected error for QoS=%v, got nil", tc.qos)
 			}
 		})
 	}
@@ -428,12 +426,12 @@ func TestQoS_Factory_NewSender_ValidQoS(t *testing.T) {
 	f := &Factory{}
 	sess := validSession()
 
-	for _, qos := range []int{0, 1, 2} {
+	for _, qos := range []byte{0, 1, 2} {
 		t.Run(fmt.Sprintf("qos_%d", qos), func(t *testing.T) {
 			sender, err := f.NewSender(context.Background(), ports.SenderSpec{
 				ID:        "s-valid-qos",
 				SessionID: "test-session",
-				Options:   map[string]any{"qos": qos},
+				Config:    Config{Sender: SenderOptions{QoS: qos}},
 			}, sess)
 			if err != nil {
 				t.Fatalf("QoS=%d should be valid, got error: %v", qos, err)

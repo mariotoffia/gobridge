@@ -2,11 +2,14 @@ package sqs
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+var errInvalidConfig = errors.New("sqs: spec.Config must be of type sqs.Config")
 
 // Compile-time checks.
 var (
@@ -77,7 +80,11 @@ func NewReceiverFactory(logger *slog.Logger) *ReceiverFactory {
 // NewReceiver creates a Receiver from a ReceiverSpec. SQS is stateless
 // so the session parameter is ignored.
 func (f *ReceiverFactory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, _ ports.Session) (ports.Receiver, error) {
-	cfg := ReceiverConfigFromOptions(spec.Options)
+	pc, err := configFromSpec(spec.Config)
+	if err != nil {
+		return nil, err
+	}
+	cfg := pc.toReceiverConfig()
 	return NewReceiver(cfg, f.logger)
 }
 
@@ -94,7 +101,28 @@ func NewSenderFactory(logger *slog.Logger) *SenderFactory {
 // NewSender creates a Sender from a SenderSpec. SQS is stateless so
 // the session parameter is ignored.
 func (f *SenderFactory) NewSender(_ context.Context, spec ports.SenderSpec, _ ports.Session) (ports.Sender, error) {
-	cfg := SenderConfigFromOptions(spec.Options)
+	pc, err := configFromSpec(spec.Config)
+	if err != nil {
+		return nil, err
+	}
+	cfg := pc.toSenderConfig()
 	cfg.Logger = f.logger
 	return NewSender(cfg)
+}
+
+// configFromSpec accepts both *Config (the canonical decoder return)
+// and Config (legacy hand-built test fixtures) and returns a value
+// the projection helpers can use.
+func configFromSpec(pc ports.PluginConfig) (Config, error) {
+	switch v := pc.(type) {
+	case *Config:
+		if v == nil {
+			return Config{}, errInvalidConfig
+		}
+		return *v, nil
+	case Config:
+		return v, nil
+	default:
+		return Config{}, errInvalidConfig
+	}
 }

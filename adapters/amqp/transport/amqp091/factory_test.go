@@ -40,8 +40,8 @@ func TestFactory_NewSession_MissingBrokerURL(t *testing.T) {
 	f := &Factory{Logger: slog.Default()}
 
 	_, err := f.NewSession(context.Background(), ports.SessionSpec{
-		ID:      "sess-1",
-		Options: map[string]any{},
+		ID:     "sess-1",
+		Config: Config{},
 	})
 	if err == nil {
 		t.Fatal("expected error for missing broker_url")
@@ -60,8 +60,8 @@ func TestFactory_NewSession_Invalid(t *testing.T) {
 	f := NewFactory(slog.Default())
 
 	_, err := f.NewSession(context.Background(), ports.SessionSpec{
-		ID:      "s1",
-		Options: map[string]any{},
+		ID:     "s1",
+		Config: Config{},
 	})
 	if err == nil {
 		t.Fatal("expected error for missing broker_url")
@@ -152,9 +152,11 @@ func TestSenderFactory_NewSender_Valid(t *testing.T) {
 	defer func() { _ = sess.Close(context.Background()) }()
 	s, err := sf.NewSender(context.Background(), ports.SenderSpec{
 		ID: "s3",
-		Options: map[string]any{
-			"exchange":    "my-exchange",
-			"routing_key": "my.key",
+		Config: Config{
+			Sender: SenderParams{
+				Exchange:   "my-exchange",
+				RoutingKey: "my.key",
+			},
 		},
 	}, sess)
 	if err != nil {

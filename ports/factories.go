@@ -8,29 +8,49 @@ import (
 )
 
 // SessionSpec holds transport connection identity and remote session
-// behavior configuration. Transport-specific settings go in Options.
+// behavior configuration. Transport-specific settings live on Config,
+// the typed PluginConfig produced by the two-stage parser.
 type SessionSpec struct {
 	ID          string
 	Transport   string
 	SessionMode domain.SessionMode
-	Options     map[string]any
+	Config      PluginConfig
 }
 
 // ReceiverSpec holds ingress behavior configuration.
-// Transport-specific settings go in Options.
+// Transport-specific settings live on Config.
 type ReceiverSpec struct {
 	ID            string
 	SessionID     string
 	Subscriptions []domain.SubscriptionPlan
-	Options       map[string]any
+	Config        PluginConfig
 }
 
 // SenderSpec holds egress behavior configuration.
-// Transport-specific settings go in Options.
+// Transport-specific settings live on Config.
 type SenderSpec struct {
 	ID        string
 	SessionID string
-	Options   map[string]any
+	Config    PluginConfig
+}
+
+// CredentialedConfig is implemented by adapter PluginConfig values
+// that participate in the bridge's credential-resolution flow. The
+// bridge reads CredentialsURI() before constructing the adapter, calls
+// the configured CredentialStore, and then mutates the config in
+// place via ApplyCredentials before passing it to the factory.
+//
+// Implementations must use pointer receivers for ApplyCredentials so
+// the mutation is observable on the originally-stored value.
+type CredentialedConfig interface {
+	// CredentialsURI returns the URI to resolve credentials from, or
+	// "" when this attachment point should not consult a credential
+	// store.
+	CredentialsURI() string
+	// ApplyCredentials merges the resolved credential set into the
+	// concrete config. Pre-existing inline values must take
+	// precedence over resolved material.
+	ApplyCredentials(creds *domain.CredentialSet) error
 }
 
 // SessionFactory creates Session instances for stateful transports.

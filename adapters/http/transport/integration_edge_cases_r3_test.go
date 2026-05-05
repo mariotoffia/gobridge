@@ -49,14 +49,14 @@ func TestEdgeR3_DuplicateSenderID_ReturnsError(t *testing.T) {
 	factory := transport.NewFactory()
 
 	_, err := factory.NewSender(context.Background(), ports.SenderSpec{
-		ID: "dup-sse", Options: map[string]any{"mode": "sse"},
+		ID: "dup-sse", Config: transport.Config{Mode: "sse"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("first NewSender: %v", err)
 	}
 
 	_, err = factory.NewSender(context.Background(), ports.SenderSpec{
-		ID: "dup-sse", Options: map[string]any{"mode": "sse"},
+		ID: "dup-sse", Config: transport.Config{Mode: "sse"},
 	}, nil)
 	if err == nil {
 		t.Fatal("expected error for duplicate sender ID, got nil")
@@ -181,9 +181,9 @@ func TestEdgeR3_SSEHeartbeatDelivered(t *testing.T) {
 	factory := transport.NewFactory()
 	_, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID: "sse-hb",
-		Options: map[string]any{
-			"mode":               "sse",
-			"heartbeat_interval": "200ms",
+		Config: transport.Config{
+			Mode:              "sse",
+			HeartbeatInterval: 200 * time.Millisecond,
 		},
 	}, nil)
 	if err != nil {
@@ -498,7 +498,7 @@ func TestEdgeR3_RemoteRouteNoForwarderReturns502(t *testing.T) {
 func TestEdgeR3_SSEResponseHeaders(t *testing.T) {
 	factory := transport.NewFactory()
 	_, err := factory.NewSender(context.Background(), ports.SenderSpec{
-		ID: "sse-headers", Options: map[string]any{"mode": "sse"},
+		ID: "sse-headers", Config: transport.Config{Mode: "sse"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
@@ -539,7 +539,7 @@ func TestEdgeR3_SSEResponseHeaders(t *testing.T) {
 func TestEdgeR3_SSESendContextCancelled(t *testing.T) {
 	factory := transport.NewFactory()
 	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
-		ID: "sse-ctx", Options: map[string]any{"mode": "sse"},
+		ID: "sse-ctx", Config: transport.Config{Mode: "sse"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)

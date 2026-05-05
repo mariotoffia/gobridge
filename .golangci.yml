@@ -332,6 +332,16 @@ linters:
       # pattern as domain/clock/clock.go's `var System`.
       - linters: [gochecknoglobals]
         path: "^ports/plugin_config\\.go$"
+      # FIX-003: adapter `register.go` files self-register their typed
+      # PluginConfig decoder with ports.DefaultRegistry from init() so
+      # blank-importing the adapter is sufficient to make its kind
+      # available to the two-stage config parser. Same pattern as the
+      # database/sql driver registry. Restricted to register.go in
+      # adapters/ and processors/ so the exemption can't drift.
+      - linters: [gochecknoinits]
+        path: "^adapters/.*register\\.go$"
+      - linters: [gochecknoinits]
+        path: "^processors/.*register\\.go$"
       - linters: [gochecknoglobals]
         path: "^config/validate_resolver\\.go$"
       # Adapter `headers.go` files declare well-known-header lookup

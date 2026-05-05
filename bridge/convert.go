@@ -202,7 +202,7 @@ func toBindings(cfg *ports.BridgeConfig, bindingIDs []string) []domain.Destinati
 			SessionID: bd.SessionID,
 			SenderID:  bd.SenderID,
 			Address:   bd.Address,
-			Options:   bd.Options,
+			Config:    bd.Config,
 		})
 	}
 	return out

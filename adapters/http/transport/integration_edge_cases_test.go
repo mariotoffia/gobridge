@@ -285,7 +285,7 @@ func TestEdge_ForwarderRemoteReturns500(t *testing.T) {
 func TestEdge_SSEFieldSanitization(t *testing.T) {
 	factory := transport.NewFactory()
 	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
-		ID: "sse-sanitize", Options: map[string]any{"mode": "sse"},
+		ID: "sse-sanitize", Config: transport.Config{Mode: "sse"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
@@ -396,7 +396,7 @@ func TestEdge_LocatorErrorReturns502(t *testing.T) {
 func TestEdge_SendWithNoClients(t *testing.T) {
 	factory := transport.NewFactory()
 	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
-		ID: "sse-empty", Options: map[string]any{"mode": "sse"},
+		ID: "sse-empty", Config: transport.Config{Mode: "sse"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)

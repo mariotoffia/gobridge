@@ -30,7 +30,7 @@
     {
       "id": "PHASE2",
       "title": "Migrate adapters one family at a time",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "This phase performs broad Go adapter migrations, typed config structs, registrations, and factory signature updates across packages.",

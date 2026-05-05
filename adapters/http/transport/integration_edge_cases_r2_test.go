@@ -105,8 +105,8 @@ func TestEdgeR2_RequestTimeout504(t *testing.T) {
 func TestEdgeR2_SSEAuthRequired(t *testing.T) {
 	factory := transport.NewFactory()
 	_, err := factory.NewSender(context.Background(), ports.SenderSpec{
-		ID:      "sse-auth-r2",
-		Options: map[string]any{"mode": "sse", "api_key": "sse-secret"},
+		ID:     "sse-auth-r2",
+		Config: transport.Config{Mode: "sse", APIKey: "sse-secret"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
@@ -144,8 +144,8 @@ func TestEdgeR2_SSEAuthRequired(t *testing.T) {
 func TestEdgeR2_SSEMaxClients(t *testing.T) {
 	factory := transport.NewFactory()
 	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
-		ID:      "sse-maxcli-r2",
-		Options: map[string]any{"mode": "sse", "max_clients": 2},
+		ID:     "sse-maxcli-r2",
+		Config: transport.Config{Mode: "sse", MaxClients: 2},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
@@ -236,8 +236,8 @@ func TestEdgeR2_ForwarderClusterKey(t *testing.T) {
 func TestEdgeR2_UnsupportedSenderMode(t *testing.T) {
 	factory := transport.NewFactory()
 	_, err := factory.NewSender(context.Background(), ports.SenderSpec{
-		ID:      "ws-sender-r2",
-		Options: map[string]any{"mode": "websocket"},
+		ID:     "ws-sender-r2",
+		Config: transport.Config{Mode: "websocket"},
 	}, nil)
 	if err == nil {
 		t.Fatal("expected error for unsupported sender mode, got nil")
@@ -316,8 +316,8 @@ func TestEdgeR2_CaseInsensitiveHeaderStripping(t *testing.T) {
 func TestEdgeR2_SSENoConnectionHeader(t *testing.T) {
 	factory := transport.NewFactory()
 	_, err := factory.NewSender(context.Background(), ports.SenderSpec{
-		ID:      "sse-conn-r2",
-		Options: map[string]any{"mode": "sse"},
+		ID:     "sse-conn-r2",
+		Config: transport.Config{Mode: "sse"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)

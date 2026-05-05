@@ -12,6 +12,7 @@ import (
 	awsssm "github.com/aws/aws-sdk-go-v2/service/ssm"
 
 	ssmrepo "github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm"
+	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -152,7 +153,8 @@ func resolveInputs(
 		if recv.Transport != "http" {
 			continue
 		}
-		if optString(recv.Options, "api_key") != "" {
+		current, _ := recv.Config.(httptransport.Config)
+		if current.APIKey != "" {
 			continue
 		}
 		ref, ok := bootstrapCfg.HTTPReceiverAPIKeyParams[recv.ID]
@@ -163,10 +165,8 @@ func resolveInputs(
 		if err != nil {
 			return nil, err
 		}
-		if recv.Options == nil {
-			recv.Options = map[string]any{}
-		}
-		recv.Options["api_key"] = value
+		current.APIKey = value
+		recv.Config = current
 	}
 
 	for i := range resolvedCfg.Senders {
@@ -174,7 +174,8 @@ func resolveInputs(
 		if sender.Transport != "http" {
 			continue
 		}
-		if optString(sender.Options, "api_key") != "" {
+		current, _ := sender.Config.(httptransport.Config)
+		if current.APIKey != "" {
 			continue
 		}
 		ref, ok := bootstrapCfg.HTTPSenderAPIKeyParams[sender.ID]
@@ -185,10 +186,8 @@ func resolveInputs(
 		if err != nil {
 			return nil, err
 		}
-		if sender.Options == nil {
-			sender.Options = map[string]any{}
-		}
-		sender.Options["api_key"] = value
+		current.APIKey = value
+		sender.Config = current
 	}
 
 	return &resolvedInputs{
@@ -225,18 +224,4 @@ func normalizeParameterRef(ref string) (string, error) {
 		return "", fmt.Errorf("bootstrap: invalid empty parameter path in %q", ref)
 	}
 	return path, nil
-}
-
-func optString(options map[string]any, key string) string {
-	if len(options) == 0 {
-		return ""
-	}
-	value, ok := options[key]
-	if !ok {
-		return ""
-	}
-	if str, ok := value.(string); ok {
-		return str
-	}
-	return ""
 }

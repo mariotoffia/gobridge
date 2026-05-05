@@ -162,7 +162,7 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 	// Bridge B — local SSE sender.
 	factoryB := transport.NewFactory()
 	senderB, err := factoryB.NewSender(ctx, ports.SenderSpec{
-		ID: "sse-cluster", Options: map[string]any{"mode": "sse"},
+		ID: "sse-cluster", Config: transport.Config{Mode: "sse"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender B: %v", err)
@@ -176,7 +176,7 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 	}
 	factoryA := transport.NewFactory(transport.WithRouteLocator(locA))
 	senderA, err := factoryA.NewSender(ctx, ports.SenderSpec{
-		ID: "sse-cluster", Options: map[string]any{"mode": "sse"},
+		ID: "sse-cluster", Config: transport.Config{Mode: "sse"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender A: %v", err)

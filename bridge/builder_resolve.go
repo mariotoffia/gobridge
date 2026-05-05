@@ -3,7 +3,6 @@ package bridge
 import (
 	"context"
 	"fmt"
-	"maps"
 
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -23,52 +22,29 @@ func (b *Builder) resolveProcessors(names []string) ([]ports.Processor, error) {
 	return out, nil
 }
 
-func (b *Builder) resolveCredentials(ctx context.Context, opts map[string]any, label string) (map[string]any, error) {
-	uriVal, hasURI := opts["credentials_uri"]
-	if !hasURI {
-		return opts, nil
-	}
-
-	uri, ok := uriVal.(string)
+// resolveConfigCredentials inspects cfg for the optional
+// CredentialedConfig contract, resolves the URI through the configured
+// credential store, and applies the resolved material in place. It
+// returns the URI (so callers can register credential-refresh
+// watchers) and any error from store lookup or apply.
+func (b *Builder) resolveConfigCredentials(ctx context.Context, cfg ports.PluginConfig, label string) (string, error) {
+	cc, ok := cfg.(ports.CredentialedConfig)
 	if !ok {
-		return nil, fmt.Errorf("bridge: %s: credentials_uri must be a string", label)
+		return "", nil
 	}
-
+	uri := cc.CredentialsURI()
+	if uri == "" {
+		return "", nil
+	}
 	if b.credStore == nil {
-		return nil, fmt.Errorf("bridge: %s: credentials_uri specified but no credential store registered", label)
+		return "", fmt.Errorf("bridge: %s: credentials_uri specified but no credential store registered", label)
 	}
-
 	creds, err := b.credStore.Resolve(ctx, uri)
 	if err != nil {
-		return nil, fmt.Errorf("bridge: %s: resolve credentials: %w", label, err)
+		return "", fmt.Errorf("bridge: %s: resolve credentials: %w", label, err)
 	}
-
-	resolved := make(map[string]any, len(opts))
-	maps.Copy(resolved, opts)
-	delete(resolved, "credentials_uri")
-
-	if creds.Password != nil {
-		if _, exists := resolved["username"]; !exists {
-			resolved["username"] = creds.Password.Username
-		}
-		if _, exists := resolved["password"]; !exists {
-			resolved["password"] = creds.Password.Password
-		}
+	if err := cc.ApplyCredentials(creds); err != nil {
+		return "", fmt.Errorf("bridge: %s: apply credentials: %w", label, err)
 	}
-	if creds.TLS != nil {
-		if _, exists := resolved["tls_cert"]; !exists {
-			resolved["tls_cert"] = creds.TLS.CertPEM
-		}
-		if _, exists := resolved["tls_key"]; !exists {
-			resolved["tls_key"] = creds.TLS.KeyPEM
-		}
-		if _, exists := resolved["tls_ca"]; !exists && len(creds.TLS.CAPEMs) > 0 {
-			resolved["tls_ca"] = creds.TLS.CAPEMs
-		}
-		if _, exists := resolved["tls_insecure"]; !exists && creds.TLS.InsecureSkipVerify {
-			resolved["tls_insecure"] = true
-		}
-	}
-
-	return resolved, nil
+	return uri, nil
 }

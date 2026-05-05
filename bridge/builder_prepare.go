@@ -119,10 +119,11 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		if !ok {
 			return nil, fmt.Errorf("bridge: no store factory registered for outbox type %q", sc.Type)
 		}
-		if err := b.injectStaleClaimDuration(sc); err != nil {
+		spec := storeSpecFrom(*sc)
+		if err := b.injectStaleClaimDuration(&spec); err != nil {
 			return nil, err
 		}
-		s, err := sf.NewOutboxStore(ctx, storeSpecFrom(*sc))
+		s, err := sf.NewOutboxStore(ctx, spec)
 		if err != nil {
 			return nil, fmt.Errorf("bridge: create outbox store: %w", err)
 		}
@@ -188,17 +189,15 @@ func (b *Builder) resolveClusterEndpoints(ctx context.Context) map[string]string
 
 // injectStaleClaimDuration derives stale_claim_duration from the
 // session StepDownGrace values across all routes and injects it into
-// the outbox store config options. This keeps the outbox reclaim
+// the outbox StoreSpec.Options carrier. This keeps the outbox reclaim
 // timeout aligned with the lease lifecycle rather than being an
 // independent hardcoded value. The derivation is skipped when the
-// user has explicitly set stale_claim_duration in YAML.
-//
-// The method works on a shallow copy of sc.Options so that the
-// original config is not mutated, allowing safe re-derivation on
-// subsequent Build() calls with the same config.
-func (b *Builder) injectStaleClaimDuration(sc *ports.StoreConfig) error {
-	if sc.Options != nil {
-		if _, explicit := sc.Options["stale_claim_duration"]; explicit {
+// user has explicitly set stale_claim_duration in YAML (carried
+// through StoreSpec.Options for now; PHASE3 will move this onto the
+// typed outbox config).
+func (b *Builder) injectStaleClaimDuration(spec *ports.StoreSpec) error {
+	if spec.Options != nil {
+		if _, explicit := spec.Options["stale_claim_duration"]; explicit {
 			return nil
 		}
 	}
@@ -219,9 +218,9 @@ func (b *Builder) injectStaleClaimDuration(sc *ports.StoreConfig) error {
 
 	staleClaimBuffer := max(2*maxStepDownGrace, 15*time.Second)
 
-	opts := make(map[string]any, len(sc.Options)+1)
-	maps.Copy(opts, sc.Options)
+	opts := make(map[string]any, len(spec.Options)+1)
+	maps.Copy(opts, spec.Options)
 	opts["stale_claim_duration"] = maxStepDownGrace + staleClaimBuffer
-	sc.Options = opts
+	spec.Options = opts
 	return nil
 }

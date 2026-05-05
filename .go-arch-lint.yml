@@ -259,6 +259,8 @@ deps:
   ports:
     mayDependOn:
       - domain
+    canUse:
+      - yaml
 
   # The config package is the YAML/JSON parser, validator, merger,
   # and on-disk manager that produces *ports.BridgeConfig values.

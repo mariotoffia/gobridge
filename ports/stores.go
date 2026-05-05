@@ -46,11 +46,12 @@ type DLQStore interface {
 }
 
 // StoreSpec carries the generic shape of a store configuration as
-// produced by the bridge from ports.StoreConfig. Plugin-specific
-// option shapes are kept opaque inside Options and parsed by the
-// store-factory plugin at the boundary.
+// produced by the bridge from ports.StoreConfig. The typed plugin
+// config (post-stage-2 decoding) is in Config; PHASE3 will remove the
+// legacy Options carrier entirely.
 type StoreSpec struct {
 	Type    string
+	Config  PluginConfig
 	Options map[string]any
 }
 

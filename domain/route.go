@@ -168,7 +168,12 @@ type DestinationBinding struct {
 	SessionID string
 	SenderID  string
 	Address   string
-	Options   map[string]any
+	// Config is the typed plugin config carried from BindingDef.
+	// PHASE3 will replace the legacy Options carrier entirely; until
+	// then the runtime continues to derive per-message header
+	// overrides from Options when set by tests.
+	Config  any
+	Options map[string]any
 }
 
 // DispatchPlan is the result of destination resolution for one envelope dispatch.
@@ -180,15 +185,21 @@ type DispatchPlan struct {
 
 // SubscriptionPlan describes a desired subscription in a session.
 type SubscriptionPlan struct {
-	Topic   string
-	QoS     int
+	Topic string
+	QoS   int
+	// Config is the typed plugin config attached to the subscription.
+	// Adapters type-assert to their own concrete config (e.g.
+	// amqp091.SubscriptionConfig).
+	Config  any
 	Options map[string]any
 }
 
 // PublisherPlan describes a desired publisher in a session.
 type PublisherPlan struct {
-	Topic   string
-	QoS     int
+	Topic string
+	QoS   int
+	// Config is the typed plugin config attached to the publisher.
+	Config  any
 	Options map[string]any
 }
 

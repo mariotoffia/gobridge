@@ -1,14 +1,9 @@
 package paho
 
 import (
-	"context"
-	"errors"
 	"math"
 	"strings"
 	"testing"
-
-	"github.com/mariotoffia/gobridge/domain"
-	"github.com/mariotoffia/gobridge/ports"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -137,29 +132,5 @@ func TestBugSEV_BoundaryValuesAccepted(t *testing.T) {
 				t.Fatalf("SessionExpiryInterval = %d, want %d", opts.SessionExpiryInterval, tc.want)
 			}
 		})
-	}
-}
-
-// TestBugSEV_FactoryPropagatesValidationError verifies that the Factory
-// surfaces SessionOptionsFromMap errors as ErrInvalidPayload (so
-// callers see a typed bridge error, not an opaque Go error).
-func TestBugSEV_FactoryPropagatesValidationError(t *testing.T) {
-	f := &Factory{}
-	_, err := f.NewSession(context.Background(), ports.SessionSpec{
-		ID: "bad-expiry",
-		Options: map[string]any{
-			"client_id":               "x",
-			"broker_urls":             []string{"tcp://broker:1883"},
-			"session_expiry_interval": -1,
-		},
-	})
-	if err == nil {
-		t.Fatal("BUG-SEV: Factory.NewSession must surface the validation error")
-	}
-	if !errors.Is(err, domain.ErrInvalidPayload) {
-		t.Fatalf("BUG-SEV: err must be ErrInvalidPayload, got %v", err)
-	}
-	if !strings.Contains(strings.ToLower(err.Error()), "session_expiry_interval") {
-		t.Fatalf("BUG-SEV: error must mention session_expiry_interval, got %v", err)
 	}
 }
