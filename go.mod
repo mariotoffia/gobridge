@@ -3,6 +3,7 @@ module github.com/mariotoffia/gobridge
 go 1.25.0
 
 require (
+	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/mariotoffia/gobridge/testutil/wait v0.0.0-20260424080041-92c57d17e957
 	github.com/stretchr/testify v1.11.1
 	gopkg.in/yaml.v3 v3.0.1
@@ -10,7 +11,6 @@ require (
 
 require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
