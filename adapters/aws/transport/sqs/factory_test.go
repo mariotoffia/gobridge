@@ -7,18 +7,16 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestReceiverFactory_NewReceiver_OptionsPassthrough validates that
-// ReceiverSpec.Options flow through the factory to ReceiverConfig fields.
 func TestReceiverFactory_NewReceiver_OptionsPassthrough(t *testing.T) {
 	f := NewReceiverFactory(nil)
 
 	spec := ports.ReceiverSpec{
 		ID: "r1",
-		Options: map[string]any{
-			"queue_url":          "https://sqs.us-west-1.amazonaws.com/123/test",
-			"max_messages":       5,
-			"wait_time_seconds":  10,
-			"visibility_timeout": 45,
+		Config: Config{
+			QueueURL:          "https://sqs.us-west-1.amazonaws.com/123/test",
+			MaxMessages:       5,
+			WaitTimeSeconds:   10,
+			VisibilityTimeout: 45,
 		},
 	}
 
@@ -42,19 +40,17 @@ func TestReceiverFactory_NewReceiver_OptionsPassthrough(t *testing.T) {
 	}
 }
 
-// TestSenderFactory_NewSender_OptionsPassthrough validates that
-// SenderSpec.Options flow through the factory to SenderConfig fields.
 func TestSenderFactory_NewSender_OptionsPassthrough(t *testing.T) {
 	f := NewSenderFactory(nil)
 
 	spec := ports.SenderSpec{
 		ID: "s1",
-		Options: map[string]any{
-			"queue_url":        "https://sqs.us-west-1.amazonaws.com/123/test.fifo",
-			"batch_size":       3,
-			"delay_seconds":    10,
-			"message_group_id": "grp-a",
-			"fifo":             true,
+		Config: Config{
+			QueueURL:       "https://sqs.us-west-1.amazonaws.com/123/test.fifo",
+			BatchSize:      3,
+			DelaySeconds:   10,
+			MessageGroupID: "grp-a",
+			FIFO:           true,
 		},
 	}
 

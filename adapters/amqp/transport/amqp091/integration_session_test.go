@@ -51,15 +51,15 @@ func TestIntegration_SessionHealth(t *testing.T) {
 		Subscriptions: []domain.SubscriptionPlan{
 			{
 				Topic: queueName,
-				Options: map[string]any{
-					"exchange":    exchangeName,
-					"routing_key": queueName,
-					"durable":     false,
-				},
+				Config: &Config{Subscription: SubscriptionParams{
+					Exchange:   exchangeName,
+					RoutingKey: queueName,
+					Durable:    false,
+				}},
 			},
 		},
 		Publishers: []domain.PublisherPlan{
-			{Topic: exchangeName, Options: map[string]any{"durable": false}},
+			{Topic: exchangeName, Config: &Config{Publisher: PublisherParams{Durable: false}}},
 		},
 	}
 	if err := sess.Reconcile(ctx, plan); err != nil {
@@ -144,10 +144,10 @@ checkConnected:
 		Subscriptions: []domain.SubscriptionPlan{
 			{
 				Topic: queueName,
-				Options: map[string]any{
-					"exchange":    exchangeName,
-					"routing_key": queueName,
-				},
+				Config: &Config{Subscription: SubscriptionParams{
+					Exchange:   exchangeName,
+					RoutingKey: queueName,
+				}},
 			},
 		},
 		Publishers: []domain.PublisherPlan{
@@ -210,23 +210,23 @@ func TestIntegration_SessionReconcile_MultipleQueues(t *testing.T) {
 		Subscriptions: []domain.SubscriptionPlan{
 			{
 				Topic: directQueue,
-				Options: map[string]any{
-					"exchange":    directExchange,
-					"routing_key": directQueue,
-				},
+				Config: &Config{Subscription: SubscriptionParams{
+					Exchange:   directExchange,
+					RoutingKey: directQueue,
+				}},
 			},
 			{
 				Topic: fanoutQueue,
-				Options: map[string]any{
-					"exchange":      fanoutExchange,
-					"exchange_type": "fanout",
-					"routing_key":   "",
-				},
+				Config: &Config{Subscription: SubscriptionParams{
+					Exchange:     fanoutExchange,
+					ExchangeType: "fanout",
+					RoutingKey:   "",
+				}},
 			},
 		},
 		Publishers: []domain.PublisherPlan{
 			{Topic: directExchange},
-			{Topic: fanoutExchange, Options: map[string]any{"exchange_type": "fanout"}},
+			{Topic: fanoutExchange, Config: &Config{Publisher: PublisherParams{ExchangeType: "fanout"}}},
 		},
 	}
 	if err := sess.Reconcile(ctx, plan); err != nil {
@@ -323,10 +323,10 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 		Subscriptions: []domain.SubscriptionPlan{
 			{
 				Topic: queueName,
-				Options: map[string]any{
-					"exchange":    exchangeName,
-					"routing_key": queueName,
-				},
+				Config: &Config{Subscription: SubscriptionParams{
+					Exchange:   exchangeName,
+					RoutingKey: queueName,
+				}},
 			},
 		},
 		Publishers: []domain.PublisherPlan{

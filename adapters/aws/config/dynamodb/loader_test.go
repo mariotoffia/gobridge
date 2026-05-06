@@ -47,9 +47,6 @@ func sampleConfig() *ports.BridgeConfig {
 			{
 				ID:        "mqtt-1",
 				Transport: "mqtt",
-				Options: map[string]any{
-					"broker": "tcp://localhost:1883",
-				},
 			},
 		},
 		Receivers: []ports.ReceiverDef{

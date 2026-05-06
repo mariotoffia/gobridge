@@ -219,54 +219,16 @@ func sanitizeConfig(cfg *ports.BridgeConfig) *ports.BridgeConfig {
 		}
 		out.HTTP = &h
 	}
-	out.Receivers = cloneReceiversWithRedactedAPIKeys(cfg.Receivers)
-	out.Senders = cloneSendersWithRedactedAPIKeys(cfg.Senders)
+	// Receiver/Sender plugin configs live in the typed Config field
+	// (json:"-"), so secrets in adapter-specific config never reach
+	// the JSON response and need no extra redaction here.
+	if len(cfg.Receivers) > 0 {
+		out.Receivers = append([]ports.ReceiverDef(nil), cfg.Receivers...)
+	}
+	if len(cfg.Senders) > 0 {
+		out.Senders = append([]ports.SenderDef(nil), cfg.Senders...)
+	}
 	return &out
-}
-
-func cloneReceiversWithRedactedAPIKeys(in []ports.ReceiverDef) []ports.ReceiverDef {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]ports.ReceiverDef, len(in))
-	for i, recv := range in {
-		out[i] = recv
-		if redacted, changed := redactAPIKeyOption(recv.Options); changed {
-			out[i].Options = redacted
-		}
-	}
-	return out
-}
-
-func cloneSendersWithRedactedAPIKeys(in []ports.SenderDef) []ports.SenderDef {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]ports.SenderDef, len(in))
-	for i, sender := range in {
-		out[i] = sender
-		if redacted, changed := redactAPIKeyOption(sender.Options); changed {
-			out[i].Options = redacted
-		}
-	}
-	return out
-}
-
-func redactAPIKeyOption(options map[string]any) (map[string]any, bool) {
-	if len(options) == 0 {
-		return nil, false
-	}
-	value, ok := options["api_key"]
-	secret, okString := value.(string)
-	if !ok || !okString || secret == "" {
-		return nil, false
-	}
-	out := make(map[string]any, len(options))
-	for k, v := range options {
-		out[k] = v
-	}
-	out["api_key"] = "***"
-	return out, true
 }
 
 // isValidationError checks whether the error is a blueprint

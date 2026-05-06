@@ -42,19 +42,19 @@ func TestIntegration_SendReceive(t *testing.T) {
 		Subscriptions: []domain.SubscriptionPlan{
 			{
 				Topic: queueName,
-				Options: map[string]any{
-					"exchange":    exchangeName,
-					"routing_key": queueName,
-					"durable":     false,
-				},
+				Config: &Config{Subscription: SubscriptionParams{
+					Exchange:   exchangeName,
+					RoutingKey: queueName,
+					Durable:    false,
+				}},
 			},
 		},
 		Publishers: []domain.PublisherPlan{
 			{
 				Topic: exchangeName,
-				Options: map[string]any{
-					"durable": false,
-				},
+				Config: &Config{Publisher: PublisherParams{
+					Durable: false,
+				}},
 			},
 		},
 	}
@@ -142,10 +142,10 @@ func TestIntegration_SendBatch(t *testing.T) {
 		Subscriptions: []domain.SubscriptionPlan{
 			{
 				Topic: queueName,
-				Options: map[string]any{
-					"exchange":    exchangeName,
-					"routing_key": queueName,
-				},
+				Config: &Config{Subscription: SubscriptionParams{
+					Exchange:   exchangeName,
+					RoutingKey: queueName,
+				}},
 			},
 		},
 		Publishers: []domain.PublisherPlan{
@@ -241,10 +241,10 @@ func TestIntegration_RetryRedelivers(t *testing.T) {
 		Subscriptions: []domain.SubscriptionPlan{
 			{
 				Topic: queueName,
-				Options: map[string]any{
-					"exchange":    exchangeName,
-					"routing_key": queueName,
-				},
+				Config: &Config{Subscription: SubscriptionParams{
+					Exchange:   exchangeName,
+					RoutingKey: queueName,
+				}},
 			},
 		},
 		Publishers: []domain.PublisherPlan{

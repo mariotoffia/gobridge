@@ -22,7 +22,6 @@ func testConfig() *ports.BridgeConfig {
 			{
 				ID:        "mqtt-sess",
 				Transport: "mqtt",
-				Options:   map[string]any{"client_id": "factory-a"},
 			},
 		},
 		Receivers: []ports.ReceiverDef{
@@ -63,7 +62,7 @@ func TestMarshalYAML_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, data)
 
-	parsed, err := Parse(strings.NewReader(string(data)), FormatYAML)
+	parsed, err := ParseWithRegistry(strings.NewReader(string(data)), FormatYAML, passthroughRegistry("mqtt", "sqs"))
 	require.NoError(t, err)
 
 	assert.Equal(t, original.Bridge.ID, parsed.Bridge.ID)
@@ -103,7 +102,7 @@ func TestWriteFile_AtomicWrite(t *testing.T) {
 	require.NoError(t, err)
 
 	// Read back and parse.
-	parsed, err := ParseFile(path, FormatYAML)
+	parsed, err := ParseFileWithRegistry(path, FormatYAML, passthroughRegistry("mqtt", "sqs"))
 	require.NoError(t, err)
 	assert.Equal(t, cfg.Bridge.ID, parsed.Bridge.ID)
 	assert.Len(t, parsed.Routes, 1)

@@ -202,7 +202,15 @@ components only.
 
 ### Finding F-003: Pluggable Config Must Still Be Strongly Shaped
 
-**Status:** Open. Tracked in detail by [FIX-003.md](FIX-003.md).
+**Status:** Closed via FIX-003 (PHASE0–PHASE6, branch
+`fix-003-typed-plugin-config`). The `cfgshape` analyzer at
+`scripts/cfgshape/analyzer.go` enforces the typed-pluggable-config
+rules in `make lint`; the typed `PluginConfig` interface and process-wide
+`DefaultRegistry` live in `ports/plugin_config.go`; the two-stage
+parser lives in `config/` (with the round-trip projection in
+`config/blueprint_marshal.go`); and `scripts/lint-arch-mapping-test.sh`
+keeps every adapter pinned to its lint component. The human-readable
+contract lives in `docs/typed-plugin-config.adoc`.
 
 **Problem:** Plugin-style config currently surfaces as `Options
 map[string]any` blobs at every plugin attachment point in
@@ -350,7 +358,7 @@ commands, contributors will miss at least one of them.
 |---|---|---|---|---|---|---|
 | ARCH-001 | Preserve precise adapter/plugin component split | Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | No | Keep every adapter implementation mapped separately. No blanket `adapters/**` component. | `make lint && make test` |
 | ARCH-002 | Maintain factory-to-implementation exceptions only | Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | No, unless adding a new package | Factories may import their own implementations. Implementations may not import factories or sibling implementations. | `make lint && make test` |
-| ARCH-003 | Enforce typed pluggable config shapes — see [FIX-003.md](FIX-003.md) | API expert + Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | Yes (adapters gain `Config` types and `register.go`) | Runbook in FIX-003.md. Do not duplicate the phased plan, parser two-stage design, or `cfgshape` rules here. | `make lint && make test` |
+| ARCH-003 | Enforce typed pluggable config shapes — see [FIX-003.md](FIX-003.md) — **Closed via FIX-003 (PHASE0–PHASE6)** | API expert + Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | Yes (adapters gain `Config` types and `register.go`) | Closed: `cfgshape` analyzer enforces shape rules in `make lint`; contract documented in `docs/typed-plugin-config.adoc`. Runbook in FIX-003.md. Do not duplicate the phased plan, parser two-stage design, or `cfgshape` rules here. | `make lint && make test` |
 | ARCH-004 | Remove adapter dependency on concrete `circuitbreaker` | Go expert + Architecture expert | `skill-create-test`, `skill-asiidoc-documentation` | No expected move | Introduce a resilience port, make concrete breaker satisfy it, wire in composition root, remove adapter `mayDependOn: circuitbreaker`. | `make lint && make test` |
 | ARCH-005 | Remove infrastructure types from `ports` | API expert + Go expert + Architecture expert | `skill-create-test`, `skill-asiidoc-documentation` | Possibly | Replace HTTP-specific port shapes with transport-neutral ports. Keep `net/http` in HTTP adapters. No backwards-compatible `HTTPMountable` shim. | `make lint && make test` |
 | ARCH-006 | Narrow `bridge`/`httpapi` config coupling | API expert + Architecture expert + Go expert | `skill-create-test`, `skill-asiidoc-documentation` | Possibly | Split broad parsed config access into narrow use-case DTOs or ports. Keep parsing out of runtime. | `make lint && make test` |

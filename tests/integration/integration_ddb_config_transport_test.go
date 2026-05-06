@@ -35,24 +35,24 @@ func setTestAWSCredentials(t *testing.T) {
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 }
 
-// sqsReceiverOpts creates config options for an SQS receiver.
-func sqsReceiverOpts(queueURL, endpoint string) map[string]any {
-	return map[string]any{
-		"queue_url":          queueURL,
-		"endpoint":           endpoint,
-		"region":             "us-west-1",
-		"max_messages":       int32(10),
-		"wait_time_seconds":  int32(1),
-		"visibility_timeout": int32(5),
+// sqsReceiverOpts creates a typed PluginConfig for an SQS receiver.
+func sqsReceiverOpts(queueURL, endpoint string) sqsadapter.Config {
+	return sqsadapter.Config{
+		QueueURL:          queueURL,
+		Endpoint:          endpoint,
+		Region:            "us-west-1",
+		MaxMessages:       10,
+		WaitTimeSeconds:   1,
+		VisibilityTimeout: 5,
 	}
 }
 
-// sqsSenderOpts creates config options for an SQS sender.
-func sqsSenderOpts(queueURL, endpoint string) map[string]any {
-	return map[string]any{
-		"queue_url": queueURL,
-		"endpoint":  endpoint,
-		"region":    "us-west-1",
+// sqsSenderOpts creates a typed PluginConfig for an SQS sender.
+func sqsSenderOpts(queueURL, endpoint string) sqsadapter.Config {
+	return sqsadapter.Config{
+		QueueURL: queueURL,
+		Endpoint: endpoint,
+		Region:   "us-west-1",
 	}
 }
 
@@ -87,13 +87,13 @@ func TestDDBTransport_SQS_ConfigChangeSwapsQueue(t *testing.T) {
 			DrainTimeout: "1s",
 		},
 		Receivers: []ports.ReceiverDef{
-			{ID: "rx-in", Transport: "sqs", Options: sqsReceiverOpts(queueA, sqsEP)},
+			{ID: "rx-in", Transport: "sqs", Config: sqsReceiverOpts(queueA, sqsEP)},
 		},
 		Senders: []ports.SenderDef{
-			{ID: "tx-out", Transport: "sqs", Options: sqsSenderOpts(queueB, sqsEP)},
+			{ID: "tx-out", Transport: "sqs", Config: sqsSenderOpts(queueB, sqsEP)},
 		},
 		Bindings: []ports.BindingDef{
-			{ID: "bind-1", SenderID: "tx-out", Address: queueB},
+			{ID: "bind-1", SenderID: "tx-out", Address: queueB, Config: sqsSenderOpts(queueB, sqsEP)},
 		},
 		Routes: []ports.RouteDef{
 			{ID: "r1", ReceiverID: "rx-in", DeliveryMode: "direct_hold",
@@ -175,7 +175,7 @@ func TestDDBTransport_SQS_ConfigChangeSwapsQueue(t *testing.T) {
 	overlay2 := &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "test-bridge"},
 		Receivers: []ports.ReceiverDef{
-			{ID: "rx-in", Transport: "sqs", Options: sqsReceiverOpts(queueC, sqsEP)},
+			{ID: "rx-in", Transport: "sqs", Config: sqsReceiverOpts(queueC, sqsEP)},
 		},
 	}
 	if err := loader.Save(ctx, overlay2); err != nil {
@@ -238,13 +238,13 @@ func TestDDBTransport_SQS_NewRouteAdded(t *testing.T) {
 			DrainTimeout: "1s",
 		},
 		Receivers: []ports.ReceiverDef{
-			{ID: "rx-1", Transport: "sqs", Options: sqsReceiverOpts(queueA, sqsEP)},
+			{ID: "rx-1", Transport: "sqs", Config: sqsReceiverOpts(queueA, sqsEP)},
 		},
 		Senders: []ports.SenderDef{
-			{ID: "tx-1", Transport: "sqs", Options: sqsSenderOpts(queueB, sqsEP)},
+			{ID: "tx-1", Transport: "sqs", Config: sqsSenderOpts(queueB, sqsEP)},
 		},
 		Bindings: []ports.BindingDef{
-			{ID: "bind-1", SenderID: "tx-1", Address: queueB},
+			{ID: "bind-1", SenderID: "tx-1", Address: queueB, Config: sqsSenderOpts(queueB, sqsEP)},
 		},
 		Routes: []ports.RouteDef{
 			{ID: "r1", ReceiverID: "rx-1", DeliveryMode: "direct_hold",
@@ -298,13 +298,13 @@ func TestDDBTransport_SQS_NewRouteAdded(t *testing.T) {
 	overlay2 := &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "test-bridge"},
 		Receivers: []ports.ReceiverDef{
-			{ID: "rx-2", Transport: "sqs", Options: sqsReceiverOpts(queueC, sqsEP)},
+			{ID: "rx-2", Transport: "sqs", Config: sqsReceiverOpts(queueC, sqsEP)},
 		},
 		Senders: []ports.SenderDef{
-			{ID: "tx-2", Transport: "sqs", Options: sqsSenderOpts(queueD, sqsEP)},
+			{ID: "tx-2", Transport: "sqs", Config: sqsSenderOpts(queueD, sqsEP)},
 		},
 		Bindings: []ports.BindingDef{
-			{ID: "bind-2", SenderID: "tx-2", Address: queueD},
+			{ID: "bind-2", SenderID: "tx-2", Address: queueD, Config: sqsSenderOpts(queueD, sqsEP)},
 		},
 		Routes: []ports.RouteDef{
 			{ID: "r2", ReceiverID: "rx-2", DeliveryMode: "direct_hold",
@@ -383,16 +383,16 @@ func TestDDBTransport_ConfigRemovesRoute(t *testing.T) {
 	overlayV1 := &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "test-bridge"},
 		Receivers: []ports.ReceiverDef{
-			{ID: "rx-1", Transport: "sqs", Options: sqsReceiverOpts(queueA, sqsEP)},
-			{ID: "rx-2", Transport: "sqs", Options: sqsReceiverOpts(queueC, sqsEP)},
+			{ID: "rx-1", Transport: "sqs", Config: sqsReceiverOpts(queueA, sqsEP)},
+			{ID: "rx-2", Transport: "sqs", Config: sqsReceiverOpts(queueC, sqsEP)},
 		},
 		Senders: []ports.SenderDef{
-			{ID: "tx-1", Transport: "sqs", Options: sqsSenderOpts(queueB, sqsEP)},
-			{ID: "tx-2", Transport: "sqs", Options: sqsSenderOpts(queueD, sqsEP)},
+			{ID: "tx-1", Transport: "sqs", Config: sqsSenderOpts(queueB, sqsEP)},
+			{ID: "tx-2", Transport: "sqs", Config: sqsSenderOpts(queueD, sqsEP)},
 		},
 		Bindings: []ports.BindingDef{
-			{ID: "bind-1", SenderID: "tx-1", Address: queueB},
-			{ID: "bind-2", SenderID: "tx-2", Address: queueD},
+			{ID: "bind-1", SenderID: "tx-1", Address: queueB, Config: sqsSenderOpts(queueB, sqsEP)},
+			{ID: "bind-2", SenderID: "tx-2", Address: queueD, Config: sqsSenderOpts(queueD, sqsEP)},
 		},
 		Routes: []ports.RouteDef{
 			{ID: "r1", ReceiverID: "rx-1", DeliveryMode: "direct_hold",
@@ -454,13 +454,13 @@ func TestDDBTransport_ConfigRemovesRoute(t *testing.T) {
 	overlayV2 := &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "test-bridge"},
 		Receivers: []ports.ReceiverDef{
-			{ID: "rx-1", Transport: "sqs", Options: sqsReceiverOpts(queueA, sqsEP)},
+			{ID: "rx-1", Transport: "sqs", Config: sqsReceiverOpts(queueA, sqsEP)},
 		},
 		Senders: []ports.SenderDef{
-			{ID: "tx-1", Transport: "sqs", Options: sqsSenderOpts(queueB, sqsEP)},
+			{ID: "tx-1", Transport: "sqs", Config: sqsSenderOpts(queueB, sqsEP)},
 		},
 		Bindings: []ports.BindingDef{
-			{ID: "bind-1", SenderID: "tx-1", Address: queueB},
+			{ID: "bind-1", SenderID: "tx-1", Address: queueB, Config: sqsSenderOpts(queueB, sqsEP)},
 		},
 		Routes: []ports.RouteDef{
 			{ID: "r1", ReceiverID: "rx-1", DeliveryMode: "direct_hold",

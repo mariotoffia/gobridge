@@ -376,13 +376,13 @@ func (s *cfgFakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([
 
 type cfgFakeStoreFactory struct{}
 
-func (f *cfgFakeStoreFactory) NewLeaseStore(_ context.Context, _ ports.StoreSpec) (ports.LeaseStore, error) {
+func (f *cfgFakeStoreFactory) NewLeaseStore(_ context.Context, _ ports.PluginConfig) (ports.LeaseStore, error) {
 	return &cfgFakeLeaseStore{}, nil
 }
-func (f *cfgFakeStoreFactory) NewOutboxStore(_ context.Context, _ ports.StoreSpec) (ports.OutboxStore, error) {
+func (f *cfgFakeStoreFactory) NewOutboxStore(_ context.Context, _ ports.PluginConfig, _ ports.OutboxRuntimeOptions) (ports.OutboxStore, error) {
 	return &cfgFakeOutboxStore{}, nil
 }
-func (f *cfgFakeStoreFactory) NewDLQStore(_ context.Context, _ ports.StoreSpec) (ports.DLQStore, error) {
+func (f *cfgFakeStoreFactory) NewDLQStore(_ context.Context, _ ports.PluginConfig) (ports.DLQStore, error) {
 	return nil, nil
 }
 

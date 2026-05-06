@@ -20,6 +20,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// stubPluginConfig is the trivial PluginConfig returned by the test
+// stub decoders; it has no fields and never fails validation.
+type stubPluginConfig struct{ kind string }
+
+func (s stubPluginConfig) Kind() string    { return s.kind }
+func (s stubPluginConfig) Validate() error { return nil }
+
+// init registers stub decoders for the transport kinds used by the
+// test fixtures so the two-stage config parser can decode them
+// without requiring real adapter packages to be linked into the test
+// binary. Each kind is registered at most once via
+// DefaultRegistry.RegisterIfAbsent semantics (best-effort: panics from
+// duplicate registration are recovered).
+func init() {
+	for _, k := range []string{"mqtt", "sqs", "http"} {
+		kind := k
+		func() {
+			defer func() { _ = recover() }()
+			ports.DefaultRegistry.Register(kind, func(raw ports.RawConfig) (ports.PluginConfig, error) {
+				return stubPluginConfig{kind: kind}, nil
+			})
+		}()
+	}
+}
+
 // sampleBridgeConfig returns a minimal valid BridgeConfig for testing.
 func sampleBridgeConfig() *ports.BridgeConfig {
 	return &ports.BridgeConfig{

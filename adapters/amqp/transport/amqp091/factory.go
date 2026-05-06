@@ -2,6 +2,7 @@ package amqp091
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -15,9 +16,9 @@ var (
 	_ ports.SenderFactory    = (*SenderFactory)(nil)
 )
 
+var errInvalidConfig = errors.New("amqp091: spec.Config must be of type amqp091.Config")
+
 // Factory implements ports.TransportFactory for AMQP 0-9-1 (RabbitMQ).
-// RabbitMQ supports stateful sessions and source-level redelivery via
-// nack+requeue.
 type Factory struct {
 	Logger  *slog.Logger
 	Metrics ports.MetricsExporter
@@ -66,11 +67,13 @@ func (f *Factory) Capabilities() []ports.Capability {
 
 // NewSession creates an AMQP 0-9-1 Session from the given spec.
 func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.Session, error) {
-	opts, err := SessionOptionsFromMap(spec.Options)
+	cfg, err := configFromSpec(spec.Config)
 	if err != nil {
 		return nil, domain.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("amqp091 session %q: %s", spec.ID, err))
 	}
+	opts := cfg.Session
+	opts.applyDefaults()
 	if err := opts.validate(); err != nil {
 		return nil, domain.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("amqp091 session %q: %s", spec.ID, err))
@@ -95,16 +98,29 @@ func (f *ReceiverFactory) NewReceiver(_ context.Context, spec ports.ReceiverSpec
 		return nil, domain.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("amqp091 receiver %q: session must be a non-nil AMQP 0-9-1 session", spec.ID))
 	}
-
-	cfg := ReceiverConfigFromOptions(spec.Options)
-	cfg.Session = amqpSession
-	cfg.Logger = f.logger
-
-	if cfg.QueueName == "" && len(spec.Subscriptions) > 0 {
-		cfg.QueueName = spec.Subscriptions[0].Topic
+	var cfg Config
+	if spec.Config != nil {
+		c, err := configFromSpec(spec.Config)
+		if err != nil {
+			return nil, domain.ErrInvalidPayload.WithMessage(
+				fmt.Sprintf("amqp091 receiver %q: %s", spec.ID, err))
+		}
+		cfg = c
 	}
-
-	return NewReceiver(cfg), nil
+	rc := ReceiverConfig{
+		QueueName:     cfg.Receiver.QueueName,
+		ConsumerTag:   cfg.Receiver.ConsumerTag,
+		AutoAck:       cfg.Receiver.AutoAck,
+		Exclusive:     cfg.Receiver.Exclusive,
+		PrefetchCount: cfg.Receiver.PrefetchCount,
+		PrefetchSize:  cfg.Receiver.PrefetchSize,
+		Session:       amqpSession,
+		Logger:        f.logger,
+	}
+	if rc.QueueName == "" && len(spec.Subscriptions) > 0 {
+		rc.QueueName = spec.Subscriptions[0].Topic
+	}
+	return NewReceiver(rc), nil
 }
 
 // SenderFactory implements ports.SenderFactory for AMQP 0-9-1.
@@ -124,10 +140,37 @@ func (f *SenderFactory) NewSender(_ context.Context, spec ports.SenderSpec, sess
 		return nil, domain.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("amqp091 sender %q: session must be a non-nil AMQP 0-9-1 session", spec.ID))
 	}
+	cfg, err := configFromSpec(spec.Config)
+	if err != nil {
+		return nil, domain.ErrInvalidPayload.WithMessage(
+			fmt.Sprintf("amqp091 sender %q: %s", spec.ID, err))
+	}
+	sc := SenderConfig{
+		Exchange:   cfg.Sender.Exchange,
+		RoutingKey: cfg.Sender.RoutingKey,
+		Mandatory:  cfg.Sender.Mandatory,
+		Immediate:  cfg.Sender.Immediate,
+		Timeout:    cfg.Sender.Timeout,
+		Session:    amqpSession,
+		Logger:     f.logger,
+	}
+	return NewSender(sc), nil
+}
 
-	cfg := SenderConfigFromOptions(spec.Options)
-	cfg.Session = amqpSession
-	cfg.Logger = f.logger
-
-	return NewSender(cfg), nil
+// configFromSpec accepts both *Config and Config.
+func configFromSpec(pc ports.PluginConfig) (Config, error) {
+	if pc == nil {
+		return Config{}, errInvalidConfig
+	}
+	switch v := pc.(type) {
+	case *Config:
+		if v == nil {
+			return Config{}, errInvalidConfig
+		}
+		return *v, nil
+	case Config:
+		return v, nil
+	default:
+		return Config{}, errInvalidConfig
+	}
 }

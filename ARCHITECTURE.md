@@ -107,6 +107,25 @@ components (one per transport technology, one per store backend, etc.)
 so cross-adapter coupling — for example MQTT importing AWS SDK — fails
 lint immediately. There is no blanket `adapters → adapters` rule.
 
+### Typed Plugin Config
+
+Every plugin attachment point on the blueprint (transport sessions,
+receivers, senders, subscriptions, bindings, and stores) carries a
+typed `ports.PluginConfig` rather than an opaque `map[string]any`.
+Adapters export a concrete `Config` struct that implements
+`Kind() string` and `Validate() error`, and self-register a decoder on
+`ports.DefaultRegistry` from an `init()` in their `register.go`. The
+`config/` parser performs a two-stage decode (frame → registry-dispatched
+typed config); `config/blueprint_marshal.go` round-trips the typed
+`Config` back into the canonical `options:` wire form. The
+`cfgshape` analyzer (`scripts/cfgshape/analyzer.go`) enforces the
+shape across `ports/`, `domain/`, and `adapters/**` in `make lint`.
+
+See `docs/typed-plugin-config.adoc` for the contract, the registry
+API, the per-step checklist for adding a new plugin, and the
+anti-patterns the analyzer rejects. The architectural framing lives in
+`ARCH_LINT_PLAN.md` § F-003 / ARCH-003 (Closed via FIX-003).
+
 ---
 
 ## 3. Core Concepts

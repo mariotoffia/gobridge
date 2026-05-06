@@ -469,8 +469,8 @@ func TestReceiver_ForwardedRequestNotReforwarded(t *testing.T) {
 func TestSSESender_BroadcastToClients(t *testing.T) {
 	factory := transport.NewFactory()
 	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
-		ID:      "sse-broadcast",
-		Options: map[string]any{"mode": "sse"},
+		ID:     "sse-broadcast",
+		Config: transport.Config{Mode: "sse"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
@@ -558,8 +558,8 @@ func TestSSESender_RedirectWhenRemote(t *testing.T) {
 	)
 
 	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
-		ID:      "sse-redirect",
-		Options: map[string]any{"mode": "sse"},
+		ID:     "sse-redirect",
+		Config: transport.Config{Mode: "sse"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
@@ -653,8 +653,8 @@ func TestFactory_CreatesReceiversAndSenders(t *testing.T) {
 	factory := transport.NewFactory()
 
 	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{
-		ID:      "recv-1",
-		Options: map[string]any{},
+		ID:     "recv-1",
+		Config: transport.Config{},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
@@ -664,8 +664,8 @@ func TestFactory_CreatesReceiversAndSenders(t *testing.T) {
 	}
 
 	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
-		ID:      "sender-1",
-		Options: map[string]any{"mode": "sse"},
+		ID:     "sender-1",
+		Config: transport.Config{Mode: "sse"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)

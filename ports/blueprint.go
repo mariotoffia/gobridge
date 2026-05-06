@@ -115,17 +115,48 @@ type StoresConfig struct {
 }
 
 // StoreConfig describes a single store backend.
+//
+// The discriminator is Type. After the two-stage parser in `config/`
+// has resolved the registered decoder, the typed plugin config is
+// stored in Config and the originating raw payload is retained in the
+// unexported `raw` field for diagnostics and round-trip.
 type StoreConfig struct {
-	Type    string         `yaml:"type" json:"type"`
-	Options map[string]any `yaml:"options,omitempty" json:"options,omitempty"`
+	Type   string       `yaml:"type" json:"type"`
+	Config PluginConfig `yaml:"-" json:"-"`
+	raw    RawConfig
+}
+
+// Raw returns the stage-1 raw options payload that produced Config.
+// It is nil when no stage-2 decode has run (e.g. for hand-built
+// configs in tests). Intended for diagnostics and round-trip; not
+// part of the typed contract callers should depend on.
+func (s *StoreConfig) Raw() RawConfig { return s.raw }
+
+// SetDecoded attaches the stage-2 decoded PluginConfig and the
+// originating RawConfig in a single shot. It is the only way the
+// `config/` parser (or hand-written tests) can populate the
+// unexported raw field across the package boundary.
+func (s *StoreConfig) SetDecoded(cfg PluginConfig, raw RawConfig) {
+	s.Config = cfg
+	s.raw = raw
 }
 
 // SessionDef describes a transport session (e.g. an MQTT connection).
 type SessionDef struct {
-	ID          string         `yaml:"id" json:"id"`
-	Transport   string         `yaml:"transport" json:"transport"`
-	SessionMode string         `yaml:"session_mode,omitempty" json:"session_mode,omitempty"`
-	Options     map[string]any `yaml:"options,omitempty" json:"options,omitempty"`
+	ID          string       `yaml:"id" json:"id"`
+	Transport   string       `yaml:"transport" json:"transport"`
+	SessionMode string       `yaml:"session_mode,omitempty" json:"session_mode,omitempty"`
+	Config      PluginConfig `yaml:"-" json:"-"`
+	raw         RawConfig
+}
+
+// Raw returns the stage-1 raw options payload. See StoreConfig.Raw.
+func (s *SessionDef) Raw() RawConfig { return s.raw }
+
+// SetDecoded attaches the stage-2 decoded PluginConfig and raw payload.
+func (s *SessionDef) SetDecoded(cfg PluginConfig, raw RawConfig) {
+	s.Config = cfg
+	s.raw = raw
 }
 
 // ReceiverDef describes a message ingress endpoint.
@@ -134,31 +165,79 @@ type ReceiverDef struct {
 	Transport string            `yaml:"transport" json:"transport"`
 	SessionID string            `yaml:"session_id,omitempty" json:"session_id,omitempty"`
 	Topics    []SubscriptionDef `yaml:"topics,omitempty" json:"topics,omitempty"`
-	Options   map[string]any    `yaml:"options,omitempty" json:"options,omitempty"`
+	Config    PluginConfig      `yaml:"-" json:"-"`
+	raw       RawConfig
+}
+
+// Raw returns the stage-1 raw options payload. See StoreConfig.Raw.
+func (r *ReceiverDef) Raw() RawConfig { return r.raw }
+
+// SetDecoded attaches the stage-2 decoded PluginConfig and raw payload.
+func (r *ReceiverDef) SetDecoded(cfg PluginConfig, raw RawConfig) {
+	r.Config = cfg
+	r.raw = raw
 }
 
 // SubscriptionDef describes a topic subscription for a receiver.
+//
+// SubscriptionDef has no own discriminator: its plugin kind is
+// inherited from the parent ReceiverDef.Transport at parse time.
 type SubscriptionDef struct {
-	Topic   string         `yaml:"topic" json:"topic"`
-	QoS     int            `yaml:"qos,omitempty" json:"qos,omitempty"`
-	Options map[string]any `yaml:"options,omitempty" json:"options,omitempty"`
+	Topic  string       `yaml:"topic" json:"topic"`
+	QoS    int          `yaml:"qos,omitempty" json:"qos,omitempty"`
+	Config PluginConfig `yaml:"-" json:"-"`
+	raw    RawConfig
+}
+
+// Raw returns the stage-1 raw options payload. See StoreConfig.Raw.
+func (s *SubscriptionDef) Raw() RawConfig { return s.raw }
+
+// SetDecoded attaches the stage-2 decoded PluginConfig and raw payload.
+func (s *SubscriptionDef) SetDecoded(cfg PluginConfig, raw RawConfig) {
+	s.Config = cfg
+	s.raw = raw
 }
 
 // SenderDef describes a message egress endpoint.
 type SenderDef struct {
-	ID        string         `yaml:"id" json:"id"`
-	Transport string         `yaml:"transport" json:"transport"`
-	SessionID string         `yaml:"session_id,omitempty" json:"session_id,omitempty"`
-	Options   map[string]any `yaml:"options,omitempty" json:"options,omitempty"`
+	ID        string       `yaml:"id" json:"id"`
+	Transport string       `yaml:"transport" json:"transport"`
+	SessionID string       `yaml:"session_id,omitempty" json:"session_id,omitempty"`
+	Config    PluginConfig `yaml:"-" json:"-"`
+	raw       RawConfig
+}
+
+// Raw returns the stage-1 raw options payload. See StoreConfig.Raw.
+func (s *SenderDef) Raw() RawConfig { return s.raw }
+
+// SetDecoded attaches the stage-2 decoded PluginConfig and raw payload.
+func (s *SenderDef) SetDecoded(cfg PluginConfig, raw RawConfig) {
+	s.Config = cfg
+	s.raw = raw
 }
 
 // BindingDef describes a concrete destination that a route may send to.
+//
+// BindingDef has no own discriminator: its plugin kind is inherited
+// from the referenced SenderDef.Transport at parse time. If the
+// sender does not exist the parser surfaces an error rather than
+// silently skipping the binding.
 type BindingDef struct {
-	ID        string         `yaml:"id" json:"id"`
-	SenderID  string         `yaml:"sender_id" json:"sender_id"`
-	SessionID string         `yaml:"session_id,omitempty" json:"session_id,omitempty"`
-	Address   string         `yaml:"address" json:"address"`
-	Options   map[string]any `yaml:"options,omitempty" json:"options,omitempty"`
+	ID        string       `yaml:"id" json:"id"`
+	SenderID  string       `yaml:"sender_id" json:"sender_id"`
+	SessionID string       `yaml:"session_id,omitempty" json:"session_id,omitempty"`
+	Address   string       `yaml:"address" json:"address"`
+	Config    PluginConfig `yaml:"-" json:"-"`
+	raw       RawConfig
+}
+
+// Raw returns the stage-1 raw options payload. See StoreConfig.Raw.
+func (b *BindingDef) Raw() RawConfig { return b.raw }
+
+// SetDecoded attaches the stage-2 decoded PluginConfig and raw payload.
+func (b *BindingDef) SetDecoded(cfg PluginConfig, raw RawConfig) {
+	b.Config = cfg
+	b.raw = raw
 }
 
 // RouteDef describes a message route from a receiver through an optional

@@ -95,6 +95,12 @@ linters:
         - github.com/mariotoffia/gobridge/ports.Watcher
         - github.com/mariotoffia/gobridge/ports.Span
         - github.com/mariotoffia/gobridge/ports.Tracer
+        # FIX-003: PluginConfig is the typed plugin-options seam returned
+        # by Registry.Decode; RawConfig is the stage-1 carrier the
+        # config parser hands to adapter decoders. Both are polymorphic
+        # by construction — that is the entire point of the registry.
+        - github.com/mariotoffia/gobridge/ports.PluginConfig
+        - github.com/mariotoffia/gobridge/ports.RawConfig
 
         # 5. Adapter-internal mock seams (package-private; injected
         #    in tests). All begin with a lower-cased letter so they
@@ -320,6 +326,22 @@ linters:
         path: "^domain/clock/clock\\.go$"
       - linters: [gochecknoglobals]
         path: "^domain/route\\.go$"
+      # FIX-003: ports/plugin_config.go declares `var DefaultRegistry`,
+      # the process-wide plugin-decoder registry adapters self-register
+      # into from init(). Documented architectural exemption — same
+      # pattern as domain/clock/clock.go's `var System`.
+      - linters: [gochecknoglobals]
+        path: "^ports/plugin_config\\.go$"
+      # FIX-003: adapter `register.go` files self-register their typed
+      # PluginConfig decoder with ports.DefaultRegistry from init() so
+      # blank-importing the adapter is sufficient to make its kind
+      # available to the two-stage config parser. Same pattern as the
+      # database/sql driver registry. Restricted to register.go in
+      # adapters/ and processors/ so the exemption can't drift.
+      - linters: [gochecknoinits]
+        path: "^adapters/.*register\\.go$"
+      - linters: [gochecknoinits]
+        path: "^processors/.*register\\.go$"
       - linters: [gochecknoglobals]
         path: "^config/validate_resolver\\.go$"
       # Adapter `headers.go` files declare well-known-header lookup

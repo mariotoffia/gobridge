@@ -7,6 +7,10 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+// fakeOverlayConfig is defined in zz_register_fakes_test.go and
+// registered as the kind "fake" decoder so options round-trip through
+// DDB save/load and ParseFile.
+
 // ===============================================================
 // Group 1: DynamoDB Overlay on File Config
 //
@@ -23,7 +27,7 @@ func TestDDBOverlay_MergesSessionsFromDDB(t *testing.T) {
 
 	overlay := minimalOverlay("test-bridge")
 	overlay.Sessions = []ports.SessionDef{
-		{ID: "mqtt-1", Transport: "fake", Options: map[string]any{"broker": "tcp://localhost:1883"}},
+		{ID: "mqtt-1", Transport: "fake", Config: fakeOverlayConfig{Broker: "tcp://localhost:1883"}},
 	}
 	if err := loader.Save(ctx, overlay); err != nil {
 		t.Fatalf("save overlay: %v", err)
@@ -52,7 +56,7 @@ func TestDDBOverlay_ReplacesSessionByID(t *testing.T) {
 
 	overlay := minimalOverlay("test-bridge")
 	overlay.Sessions = []ports.SessionDef{
-		{ID: "s1", Transport: "fake", Options: map[string]any{"broker": "tcp://new-host:1883"}},
+		{ID: "s1", Transport: "fake", Config: fakeOverlayConfig{Broker: "tcp://new-host:1883"}},
 	}
 	if err := loader.Save(ctx, overlay); err != nil {
 		t.Fatalf("save overlay: %v", err)
@@ -67,12 +71,12 @@ func TestDDBOverlay_ReplacesSessionByID(t *testing.T) {
 	if len(cfg.Sessions) != 1 {
 		t.Fatalf("Sessions: got %d, want 1", len(cfg.Sessions))
 	}
-	broker, ok := cfg.Sessions[0].Options["broker"]
+	merged, ok := cfg.Sessions[0].Config.(fakeOverlayConfig)
 	if !ok {
-		t.Fatal("missing broker option")
+		t.Fatalf("expected fakeOverlayConfig, got %T", cfg.Sessions[0].Config)
 	}
-	if broker != "tcp://new-host:1883" {
-		t.Errorf("broker: got %v, want tcp://new-host:1883", broker)
+	if merged.Broker != "tcp://new-host:1883" {
+		t.Errorf("broker: got %v, want tcp://new-host:1883", merged.Broker)
 	}
 }
 

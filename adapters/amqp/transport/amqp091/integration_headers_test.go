@@ -35,10 +35,10 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 		Subscriptions: []domain.SubscriptionPlan{
 			{
 				Topic: queueName,
-				Options: map[string]any{
-					"exchange":    exchangeName,
-					"routing_key": queueName,
-				},
+				Config: &Config{Subscription: SubscriptionParams{
+					Exchange:   exchangeName,
+					RoutingKey: queueName,
+				}},
 			},
 		},
 		Publishers: []domain.PublisherPlan{
@@ -143,10 +143,10 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 		Subscriptions: []domain.SubscriptionPlan{
 			{
 				Topic: queueName,
-				Options: map[string]any{
-					"exchange":    exchangeName,
-					"routing_key": queueName,
-				},
+				Config: &Config{Subscription: SubscriptionParams{
+					Exchange:   exchangeName,
+					RoutingKey: queueName,
+				}},
 			},
 		},
 		Publishers: []domain.PublisherPlan{
@@ -233,10 +233,10 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 		Subscriptions: []domain.SubscriptionPlan{
 			{
 				Topic: queueName,
-				Options: map[string]any{
-					"exchange":    exchangeName,
-					"routing_key": queueName,
-				},
+				Config: &Config{Subscription: SubscriptionParams{
+					Exchange:   exchangeName,
+					RoutingKey: queueName,
+				}},
 			},
 		},
 		Publishers: []domain.PublisherPlan{

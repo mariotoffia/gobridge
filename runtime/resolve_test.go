@@ -374,13 +374,13 @@ func TestBindingResolver_AddressTemplateError(t *testing.T) {
 // BindingResolver -- Options propagated as dispatch headers
 // ---------------------------------------------------------------------------
 
-// Verifies binding Options are copied into dispatch plan headers with correct values.
-func TestBindingResolver_OptionsAsDispatchHeaders(t *testing.T) {
+// Verifies binding Headers are copied into dispatch plan headers with correct values.
+func TestBindingResolver_HeadersAsDispatchHeaders(t *testing.T) {
 	bindings := []domain.DestinationBinding{
 		{
 			ID:      "bind-opts",
 			Address: "topic/a",
-			Options: map[string]any{"qos": 1, "retain": true},
+			Headers: map[string]any{"qos": 1, "retain": true},
 		},
 	}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchAll())
@@ -392,7 +392,7 @@ func TestBindingResolver_OptionsAsDispatchHeaders(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if plans[0].Headers == nil {
-		t.Fatal("expected dispatch headers from binding options")
+		t.Fatal("expected dispatch headers from binding headers")
 	}
 	if plans[0].Headers["qos"] != 1 {
 		t.Fatalf("expected qos=1, got %v", plans[0].Headers["qos"])
@@ -402,11 +402,11 @@ func TestBindingResolver_OptionsAsDispatchHeaders(t *testing.T) {
 	}
 }
 
-// Verifies mutating returned dispatch headers does not alter the original binding Options map.
-func TestBindingResolver_OptionsNotShared(t *testing.T) {
+// Verifies mutating returned dispatch headers does not alter the original binding Headers map.
+func TestBindingResolver_HeadersNotShared(t *testing.T) {
 	opts := map[string]any{"qos": 1}
 	bindings := []domain.DestinationBinding{
-		{ID: "bind-shared", Address: "topic/a", Options: opts},
+		{ID: "bind-shared", Address: "topic/a", Headers: opts},
 	}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchAll())
 
@@ -414,7 +414,7 @@ func TestBindingResolver_OptionsNotShared(t *testing.T) {
 	plans[0].Headers["qos"] = 2
 
 	if opts["qos"] != 1 {
-		t.Fatal("modifying dispatch headers should not affect original binding options")
+		t.Fatal("modifying dispatch headers should not affect original binding headers")
 	}
 }
 

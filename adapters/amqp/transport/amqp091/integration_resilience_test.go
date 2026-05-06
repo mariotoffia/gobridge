@@ -56,8 +56,8 @@ func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 	defer func() { _ = sess.Close(context.Background()) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
-			{Topic: queueA, Options: map[string]any{"exchange": exchange, "routing_key": queueA}},
-			{Topic: queueB, Options: map[string]any{"exchange": exchange, "routing_key": queueB}},
+			{Topic: queueA, Config: &Config{Subscription: SubscriptionParams{Exchange: exchange, RoutingKey: queueA}}},
+			{Topic: queueB, Config: &Config{Subscription: SubscriptionParams{Exchange: exchange, RoutingKey: queueB}}},
 		},
 		Publishers: []domain.PublisherPlan{{Topic: exchange}},
 	}
@@ -211,7 +211,7 @@ func TestIntegration_Sender_MandatoryRouted_Succeeds(t *testing.T) {
 	defer func() { _ = sess.Close(ctx) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
-			{Topic: queue, Options: map[string]any{"exchange": exchange, "routing_key": queue}},
+			{Topic: queue, Config: &Config{Subscription: SubscriptionParams{Exchange: exchange, RoutingKey: queue}}},
 		},
 		Publishers: []domain.PublisherPlan{{Topic: exchange}},
 	}
@@ -261,7 +261,7 @@ func TestIntegration_ConsumerTag_ReuseAfterReconnect(t *testing.T) {
 	defer func() { _ = sess.Close(context.Background()) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
-			{Topic: queue, Options: map[string]any{"exchange": exchange, "routing_key": queue}},
+			{Topic: queue, Config: &Config{Subscription: SubscriptionParams{Exchange: exchange, RoutingKey: queue}}},
 		},
 		Publishers: []domain.PublisherPlan{{Topic: exchange}},
 	}

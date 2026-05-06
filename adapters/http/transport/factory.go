@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
@@ -80,20 +78,39 @@ func (f *Factory) NewSession(_ context.Context, _ ports.SessionSpec) (ports.Sess
 	return nil, nil
 }
 
+func httpConfig(c ports.PluginConfig) (Config, error) {
+	if c == nil {
+		return Config{}, nil
+	}
+	switch v := c.(type) {
+	case *Config:
+		if v == nil {
+			return Config{}, nil
+		}
+		return *v, nil
+	case Config:
+		return v, nil
+	default:
+		return Config{}, fmt.Errorf("http transport: expected Config, got %T", c)
+	}
+}
+
 // NewReceiver creates an HTTP POST handler that converts requests to deliveries.
 func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, _ ports.Session) (ports.Receiver, error) {
-	path := optStr(spec.Options, "path", "")
+	cfg, err := httpConfig(spec.Config)
+	if err != nil {
+		return nil, err
+	}
+	path := cfg.Path
 	if path == "" {
 		path = f.pathPrefix + "/receivers/" + spec.ID + "/messages"
 	}
-	apiKey := optStr(spec.Options, "api_key", "")
-	maxBody := optInt64(spec.Options, "max_body_size", 1<<20)
 
 	recv := newReceiver(receiverConfig{
 		id:          spec.ID,
 		path:        path,
-		maxBodySize: maxBody,
-		apiKey:      apiKey,
+		maxBodySize: cfg.effectiveMaxBody(),
+		apiKey:      cfg.APIKey,
 		locator:     f.locator,
 		forwarder:   f.forwarder,
 		metrics:     f.metrics,
@@ -116,27 +133,25 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, _ port
 
 // NewSender creates an SSE sender that streams events to connected clients.
 func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, _ ports.Session) (ports.Sender, error) {
-	mode := optStr(spec.Options, "mode", "sse")
-	if mode != "sse" {
+	cfg, err := httpConfig(spec.Config)
+	if err != nil {
+		return nil, err
+	}
+	if mode := cfg.effectiveMode(); mode != "sse" {
 		return nil, fmt.Errorf("http transport: unsupported sender mode %q (only \"sse\" supported)", mode)
 	}
 
-	path := optStr(spec.Options, "path", "")
+	path := cfg.Path
 	if path == "" {
 		path = f.pathPrefix + "/senders/" + spec.ID + "/events"
 	}
 
-	heartbeat := optDuration(spec.Options, "heartbeat_interval", 30*time.Second)
-
-	apiKey := optStr(spec.Options, "api_key", "")
-	maxClients := int(optInt64(spec.Options, "max_clients", 0))
-
 	sender := newSSESender(sseSenderConfig{
 		id:                spec.ID,
 		path:              path,
-		heartbeatInterval: heartbeat,
-		maxClients:        maxClients,
-		apiKey:            apiKey,
+		heartbeatInterval: cfg.effectiveHeartbeat(),
+		maxClients:        cfg.MaxClients,
+		apiKey:            cfg.APIKey,
 		locator:           f.locator,
 		metrics:           f.metrics,
 		logger:            f.logger,
@@ -169,76 +184,4 @@ func (f *Factory) Handler() http.Handler {
 // PathPrefix returns the URL prefix for this transport.
 func (f *Factory) PathPrefix() string {
 	return f.pathPrefix
-}
-
-func optStr(opts map[string]any, key, fallback string) string {
-	if opts == nil {
-		return fallback
-	}
-	if v, ok := opts[key]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return fallback
-}
-
-func optInt64(opts map[string]any, key string, fallback int64) int64 {
-	if opts == nil {
-		return fallback
-	}
-	v, ok := opts[key]
-	if !ok {
-		return fallback
-	}
-	switch n := v.(type) {
-	case int:
-		return int64(n)
-	case int64:
-		return n
-	case float64:
-		return int64(n)
-	default:
-		return fallback
-	}
-}
-
-func optDuration(opts map[string]any, key string, fallback time.Duration) time.Duration {
-	if opts == nil {
-		return fallback
-	}
-	v, ok := opts[key]
-	if !ok {
-		return fallback
-	}
-	switch d := v.(type) {
-	case time.Duration:
-		if d < 0 {
-			return fallback
-		}
-		return d
-	case string:
-		parsed, err := time.ParseDuration(d)
-		if err != nil || parsed < 0 {
-			return fallback
-		}
-		return parsed
-	case int:
-		if d < 0 {
-			return fallback
-		}
-		return time.Duration(d) * time.Second
-	case int64:
-		if d < 0 {
-			return fallback
-		}
-		return time.Duration(d) * time.Second
-	case float64:
-		if d < 0 || math.IsNaN(d) || math.IsInf(d, 0) {
-			return fallback
-		}
-		return time.Duration(d * float64(time.Second))
-	default:
-		return fallback
-	}
 }

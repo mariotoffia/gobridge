@@ -15,8 +15,8 @@ func TestFactory_NewSession_MissingClientID(t *testing.T) {
 	f := &Factory{}
 	spec := ports.SessionSpec{
 		ID: "s1",
-		Options: map[string]any{
-			"broker_urls": []string{"tcp://broker:1883"},
+		Config: Config{
+			Session: SessionOptions{BrokerURLs: []string{"tcp://broker:1883"}},
 		},
 	}
 
@@ -35,8 +35,8 @@ func TestFactory_NewSession_MissingBrokerURLs(t *testing.T) {
 	f := &Factory{}
 	spec := ports.SessionSpec{
 		ID: "s1",
-		Options: map[string]any{
-			"client_id": "test-client",
+		Config: Config{
+			Session: SessionOptions{ClientID: "test-client"},
 		},
 	}
 
@@ -55,9 +55,11 @@ func TestFactory_NewSession_ValidOptions(t *testing.T) {
 	f := &Factory{}
 	spec := ports.SessionSpec{
 		ID: "s1",
-		Options: map[string]any{
-			"client_id":   "test-client",
-			"broker_urls": []string{"tcp://broker:1883"},
+		Config: Config{
+			Session: SessionOptions{
+				ClientID:   "test-client",
+				BrokerURLs: []string{"tcp://broker:1883"},
+			},
 		},
 		SessionMode: domain.SessionEphemeral,
 	}
@@ -114,8 +116,8 @@ func TestFactory_NewSender_WrongSessionType(t *testing.T) {
 func TestFactory_NewSession_NilOptions(t *testing.T) {
 	f := &Factory{}
 	spec := ports.SessionSpec{
-		ID:      "s-nil",
-		Options: nil,
+		ID:     "s-nil",
+		Config: nil,
 	}
 
 	_, err := f.NewSession(context.Background(), spec)
@@ -133,9 +135,11 @@ func TestFactory_NewSession_EmptyBrokerURLs(t *testing.T) {
 	f := &Factory{}
 	spec := ports.SessionSpec{
 		ID: "s-empty-urls",
-		Options: map[string]any{
-			"client_id":   "test-client",
-			"broker_urls": []string{},
+		Config: Config{
+			Session: SessionOptions{
+				ClientID:   "test-client",
+				BrokerURLs: []string{},
+			},
 		},
 	}
 
@@ -154,9 +158,11 @@ func TestFactory_NewSession_BrokerURLSingular(t *testing.T) {
 	f := &Factory{}
 	spec := ports.SessionSpec{
 		ID: "s-singular",
-		Options: map[string]any{
-			"client_id":  "test-client",
-			"broker_url": "tcp://broker:1883",
+		Config: Config{
+			Session: SessionOptions{
+				ClientID:   "test-client",
+				BrokerURLs: []string{"tcp://broker:1883"},
+			},
 		},
 		SessionMode: domain.SessionEphemeral,
 	}

@@ -38,7 +38,7 @@ func (r *RouteRunner) sendDirectHoldForBinding(ctx context.Context, del ports.De
 			return r.sendDirectHold(ctx, del, env, domain.DispatchPlan{
 				BindingID: b.ID,
 				Address:   addr,
-				Headers:   copyHeaders(b.Options),
+				Headers:   copyHeaders(b.Headers),
 			})
 		}
 	}
@@ -375,7 +375,7 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 						}
 					}
 					plans = []domain.DispatchPlan{{
-						BindingID: b.ID, Address: addr, Headers: copyHeaders(b.Options),
+						BindingID: b.ID, Address: addr, Headers: copyHeaders(b.Headers),
 					}}
 					break
 				}

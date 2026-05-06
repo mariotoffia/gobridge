@@ -44,8 +44,8 @@
 ./adapters/mqtt/transport/paho/session_router_test.go:187:		time.Sleep(5 * time.Second) // OTHER: simulated blocking handler for Close deadline test
 ./adapters/mqtt/transport/paho/session_router_test.go:234:		time.Sleep(50 * time.Millisecond) // OTHER: simulated slow handler work alongside panicking sibling
 ./adapters/mqtt/transport/paho/session_router_test.go:61:			time.Sleep(100 * time.Millisecond) // OTHER: simulated slow handler work
-./adapters/native/config/file/watcher_test.go:202:		time.Sleep(20 * time.Millisecond)
-./adapters/native/config/file/watcher_test.go:314:		time.Sleep(1 * time.Millisecond)
+./adapters/native/config/file/watcher_test.go:219:		time.Sleep(20 * time.Millisecond)
+./adapters/native/config/file/watcher_test.go:331:		time.Sleep(1 * time.Millisecond)
 ./adapters/native/credentials/file/repository_test.go:589:	time.Sleep(10 * time.Millisecond)
 ./bridge/reconfig_strategy_test.go:149:	time.Sleep(1 * time.Millisecond) // let goroutine reach select
 ./bridge/reconfig_strategy_test.go:155:	time.Sleep(1 * time.Millisecond) // let goroutine reach select
@@ -58,7 +58,7 @@
 ./config/manager_test.go:293:	time.Sleep(50 * time.Millisecond) // SYNC: let watcher goroutine process cfg1 before pushing cfg2
 ./config/manager_test.go:295:	time.Sleep(50 * time.Millisecond) // SYNC: let watcher goroutine process cfg2 before pushing cfg3
 ./config/manager_test.go:297:	time.Sleep(50 * time.Millisecond) // SYNC: let watcher goroutine process cfg3 before reading output
-./deployment/aws-filebased-config/lib/bootstrap/app_test.go:106:	time.Sleep(2 * time.Second) // SYNC: wait for file watcher to detect and reject invalid config
+./deployment/aws-filebased-config/lib/bootstrap/app_test.go:107:	time.Sleep(2 * time.Second) // SYNC: wait for file watcher to detect and reject invalid config
 ./deployment/aws-filebased-config/lib/bootstrap/transport_server_test.go:60:	time.Sleep(10 * time.Millisecond) // SYNC: ensure atomic handler swap is visible to next request
 ./domain/clock/clocktest/fake_test.go:318:	time.Sleep(200 * time.Millisecond) // OTHER: real-time component of clocktest.Fake tests
 ./domain/clock/clocktest/fake_test.go:372:	time.Sleep(200 * time.Millisecond) // OTHER: real-time component of clocktest.Fake tests

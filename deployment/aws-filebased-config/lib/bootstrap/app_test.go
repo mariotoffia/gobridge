@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
 	"github.com/mariotoffia/gobridge/config"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
@@ -116,10 +117,10 @@ func TestResolveInputs_InjectsHTTPSecretsWithoutMutatingLogicalConfig(t *testing
 			DeploymentMode: "standalone",
 		},
 		Receivers: []ports.ReceiverDef{
-			{ID: "rx", Transport: "http", Options: map[string]any{"path": "/rx"}},
+			{ID: "rx", Transport: "http", Config: httptransport.Config{Path: "/rx"}},
 		},
 		Senders: []ports.SenderDef{
-			{ID: "tx", Transport: "http", Options: map[string]any{"path": "/tx"}},
+			{ID: "tx", Transport: "http", Config: httptransport.Config{Path: "/tx"}},
 		},
 	}
 
@@ -141,10 +142,16 @@ func TestResolveInputs_InjectsHTTPSecretsWithoutMutatingLogicalConfig(t *testing
 
 	assert.Equal(t, "admin-secret-key-123456", inputs.AdminAPIKey)
 	assert.Equal(t, "monitor-secret-key-123", inputs.MonitorAPIKey)
-	assert.Equal(t, "receiver-secret", inputs.RuntimeConfig.Receivers[0].Options["api_key"])
-	assert.Equal(t, "sender-secret", inputs.RuntimeConfig.Senders[0].Options["api_key"])
-	assert.Nil(t, logical.Receivers[0].Options["api_key"])
-	assert.Nil(t, logical.Senders[0].Options["api_key"])
+	rxCfg, ok := inputs.RuntimeConfig.Receivers[0].Config.(httptransport.Config)
+	require.True(t, ok)
+	assert.Equal(t, "receiver-secret", rxCfg.APIKey)
+	txCfg, ok := inputs.RuntimeConfig.Senders[0].Config.(httptransport.Config)
+	require.True(t, ok)
+	assert.Equal(t, "sender-secret", txCfg.APIKey)
+	logicalRx, _ := logical.Receivers[0].Config.(httptransport.Config)
+	assert.Equal(t, "", logicalRx.APIKey, "logical config must not be mutated")
+	logicalTx, _ := logical.Senders[0].Config.(httptransport.Config)
+	assert.Equal(t, "", logicalTx.APIKey, "logical config must not be mutated")
 }
 
 func TestResolveInputs_ErrorOnMissingAdminKey(t *testing.T) {
@@ -176,7 +183,7 @@ func TestResolveInputs_ErrorOnMissingReceiverKey(t *testing.T) {
 			DeploymentMode: "standalone",
 		},
 		Receivers: []ports.ReceiverDef{
-			{ID: "rx", Transport: "http", Options: map[string]any{"path": "/rx"}},
+			{ID: "rx", Transport: "http", Config: httptransport.Config{Path: "/rx"}},
 		},
 	}
 

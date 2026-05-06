@@ -50,8 +50,8 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 	// --- HTTP/SSE sender ---
 	factory := httptransport.NewFactory()
 	sseSender, err := factory.NewSender(ctx, ports.SenderSpec{
-		ID:      "sse-cross",
-		Options: map[string]any{"mode": "sse", "heartbeat_interval": "60s"},
+		ID:     "sse-cross",
+		Config: httptransport.Config{Mode: "sse", HeartbeatInterval: 60 * time.Second},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender (SSE): %v", err)

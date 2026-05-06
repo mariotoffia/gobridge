@@ -44,8 +44,8 @@ func TestFactory_NewSession(t *testing.T) {
 		ID:          "sess-1",
 		Transport:   "amqp10",
 		SessionMode: domain.SessionEphemeral,
-		Options: map[string]any{
-			"address": "amqp://localhost:5672",
+		Config: Config{
+			Session: SessionOptions{Address: "amqp://localhost:5672"},
 		},
 	}
 
@@ -69,8 +69,8 @@ func TestFactory_NewSession(t *testing.T) {
 func TestFactory_NewSession_MissingAddress(t *testing.T) {
 	f := &Factory{Logger: slog.Default()}
 	spec := ports.SessionSpec{
-		ID:      "sess-bad",
-		Options: map[string]any{},
+		ID:     "sess-bad",
+		Config: Config{},
 	}
 
 	_, err := f.NewSession(context.Background(), spec)
@@ -82,8 +82,8 @@ func TestFactory_NewSession_MissingAddress(t *testing.T) {
 func TestFactory_NewReceiver_InvalidSession(t *testing.T) {
 	f := &Factory{Logger: slog.Default()}
 	spec := ports.ReceiverSpec{
-		ID:      "recv-1",
-		Options: map[string]any{"address": "queue/in"},
+		ID:     "recv-1",
+		Config: Config{Receiver: ReceiverParams{Address: "queue/in"}},
 	}
 
 	_, err := f.NewReceiver(context.Background(), spec, nil)
@@ -95,8 +95,8 @@ func TestFactory_NewReceiver_InvalidSession(t *testing.T) {
 func TestFactory_NewSender_InvalidSession(t *testing.T) {
 	f := &Factory{Logger: slog.Default()}
 	spec := ports.SenderSpec{
-		ID:      "send-1",
-		Options: map[string]any{"address": "queue/out"},
+		ID:     "send-1",
+		Config: Config{Sender: SenderParams{Address: "queue/out"}},
 	}
 
 	_, err := f.NewSender(context.Background(), spec, nil)
@@ -110,8 +110,8 @@ func TestFactory_NewReceiver_ValidSession(t *testing.T) {
 	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
 
 	spec := ports.ReceiverSpec{
-		ID:      "recv-1",
-		Options: map[string]any{"address": "queue/in"},
+		ID:     "recv-1",
+		Config: Config{Receiver: ReceiverParams{Address: "queue/in"}},
 	}
 
 	recv, err := f.NewReceiver(context.Background(), spec, sess)
@@ -128,8 +128,8 @@ func TestFactory_NewSender_ValidSession(t *testing.T) {
 	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
 
 	spec := ports.SenderSpec{
-		ID:      "send-1",
-		Options: map[string]any{"address": "queue/out"},
+		ID:     "send-1",
+		Config: Config{Sender: SenderParams{Address: "queue/out"}},
 	}
 
 	sender, err := f.NewSender(context.Background(), spec, sess)

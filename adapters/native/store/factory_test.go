@@ -11,7 +11,7 @@ import (
 // Verifies the memory store factory returns a non-nil lease store.
 func TestMemoryStoreFactory_NewLeaseStore(t *testing.T) {
 	f := nativestore.NewMemoryStoreFactory()
-	s, err := f.NewLeaseStore(context.Background(), ports.StoreSpec{})
+	s, err := f.NewLeaseStore(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -23,7 +23,7 @@ func TestMemoryStoreFactory_NewLeaseStore(t *testing.T) {
 // Verifies the memory store factory returns a non-nil outbox store.
 func TestMemoryStoreFactory_NewOutboxStore(t *testing.T) {
 	f := nativestore.NewMemoryStoreFactory()
-	s, err := f.NewOutboxStore(context.Background(), ports.StoreSpec{})
+	s, err := f.NewOutboxStore(context.Background(), nil, ports.OutboxRuntimeOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestMemoryStoreFactory_NewOutboxStore(t *testing.T) {
 // Verifies the memory store factory returns a non-nil DLQ store.
 func TestMemoryStoreFactory_NewDLQStore(t *testing.T) {
 	f := nativestore.NewMemoryStoreFactory()
-	s, err := f.NewDLQStore(context.Background(), ports.StoreSpec{})
+	s, err := f.NewDLQStore(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -44,10 +44,10 @@ func TestMemoryStoreFactory_NewDLQStore(t *testing.T) {
 	}
 }
 
-// Verifies the SQLite store factory returns a nil lease store.
+// Verifies the SQLite store factory returns an error for the unsupported lease role.
 func TestSQLiteStoreFactory_NewLeaseStore_ReturnsError(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
-	s, err := f.NewLeaseStore(context.Background(), ports.StoreSpec{})
+	s, err := f.NewLeaseStore(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error for unimplemented SQLite lease store")
 	}
@@ -56,14 +56,12 @@ func TestSQLiteStoreFactory_NewLeaseStore_ReturnsError(t *testing.T) {
 	}
 }
 
-// Verifies the SQLite factory builds an outbox store when a database path is configured.
+// Verifies the SQLite factory builds an outbox store from a typed config.
 func TestSQLiteStoreFactory_NewOutboxStore(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
-	spec := ports.StoreSpec{
-		Options: map[string]any{"path": ":memory:"},
-	}
+	cfg := &nativestore.SQLiteConfig{Path: ":memory:"}
 
-	s, err := f.NewOutboxStore(context.Background(), spec)
+	s, err := f.NewOutboxStore(context.Background(), cfg, ports.OutboxRuntimeOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -72,14 +70,12 @@ func TestSQLiteStoreFactory_NewOutboxStore(t *testing.T) {
 	}
 }
 
-// Verifies the SQLite factory builds a DLQ store when a database path is configured.
+// Verifies the SQLite factory builds a DLQ store from a typed config.
 func TestSQLiteStoreFactory_NewDLQStore(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
-	spec := ports.StoreSpec{
-		Options: map[string]any{"path": ":memory:"},
-	}
+	cfg := &nativestore.SQLiteConfig{Path: ":memory:"}
 
-	s, err := f.NewDLQStore(context.Background(), spec)
+	s, err := f.NewDLQStore(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,19 +84,17 @@ func TestSQLiteStoreFactory_NewDLQStore(t *testing.T) {
 	}
 }
 
-// Verifies SQLite outbox and DLQ construction fail when the path option is missing.
+// Verifies SQLite outbox and DLQ construction fail when the typed config is missing.
 func TestSQLiteStoreFactory_MissingPath(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
 
-	_, err := f.NewOutboxStore(context.Background(), ports.StoreSpec{})
+	_, err := f.NewOutboxStore(context.Background(), nil, ports.OutboxRuntimeOptions{})
 	if err == nil {
-		t.Fatal("expected error for missing path option")
+		t.Fatal("expected error for missing typed config")
 	}
 
-	_, err = f.NewDLQStore(context.Background(), ports.StoreSpec{
-		Options: map[string]any{"other": "value"},
-	})
+	_, err = f.NewDLQStore(context.Background(), &nativestore.SQLiteConfig{})
 	if err == nil {
-		t.Fatal("expected error for missing path option")
+		t.Fatal("expected error for empty Path in typed config")
 	}
 }

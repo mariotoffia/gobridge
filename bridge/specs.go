@@ -6,14 +6,14 @@ import (
 )
 
 // sessionSpecFrom converts a ports.SessionDef to a ports.SessionSpec.
-// The conversion is purely structural: plugin-specific shape inside
-// Options is left as a generic map and parsed by the adapter.
+// The typed Config produced by the two-stage parser is forwarded
+// verbatim; the bridge does no further decoding.
 func sessionSpecFrom(def ports.SessionDef) ports.SessionSpec {
 	return ports.SessionSpec{
 		ID:          def.ID,
 		Transport:   def.Transport,
 		SessionMode: domain.SessionMode(def.SessionMode),
-		Options:     def.Options,
+		Config:      def.Config,
 	}
 }
 
@@ -25,9 +25,9 @@ func receiverSpecFrom(def ports.ReceiverDef) ports.ReceiverSpec {
 		subs = make([]domain.SubscriptionPlan, len(def.Topics))
 		for i, t := range def.Topics {
 			subs[i] = domain.SubscriptionPlan{
-				Topic:   t.Topic,
-				QoS:     t.QoS,
-				Options: t.Options,
+				Topic:  t.Topic,
+				QoS:    t.QoS,
+				Config: t.Config,
 			}
 		}
 	}
@@ -35,7 +35,7 @@ func receiverSpecFrom(def ports.ReceiverDef) ports.ReceiverSpec {
 		ID:            def.ID,
 		SessionID:     def.SessionID,
 		Subscriptions: subs,
-		Options:       def.Options,
+		Config:        def.Config,
 	}
 }
 
@@ -44,13 +44,11 @@ func senderSpecFrom(def ports.SenderDef) ports.SenderSpec {
 	return ports.SenderSpec{
 		ID:        def.ID,
 		SessionID: def.SessionID,
-		Options:   def.Options,
+		Config:    def.Config,
 	}
 }
 
-// storeSpecFrom converts a ports.StoreConfig to a ports.StoreSpec.
-// The two types have identical shape (Type + Options); the explicit
-// conversion makes the boundary visible in code.
-func storeSpecFrom(cfg ports.StoreConfig) ports.StoreSpec {
-	return ports.StoreSpec(cfg)
-}
+// Package bridge specs.go intentionally omits a StoreSpec converter:
+// post-PHASE3 the bridge passes the typed PluginConfig from
+// ports.StoreConfig directly to the StoreFactory and threads outbox
+// runtime tuning (stale claim duration) through ports.OutboxRuntimeOptions.

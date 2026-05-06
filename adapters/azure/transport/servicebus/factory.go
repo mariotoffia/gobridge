@@ -2,6 +2,7 @@ package servicebus
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/mariotoffia/gobridge/ports"
@@ -12,6 +13,8 @@ var (
 	_ ports.SenderFactory    = (*SenderFactory)(nil)
 	_ ports.TransportFactory = (*Factory)(nil)
 )
+
+var errInvalidConfig = errors.New("servicebus: spec.Config must be of type servicebus.Config")
 
 // ReceiverFactory creates Service Bus receivers from ports.ReceiverSpec.
 type ReceiverFactory struct {
@@ -25,7 +28,11 @@ func NewReceiverFactory(logger *slog.Logger) *ReceiverFactory {
 
 // NewReceiver creates a Service Bus Receiver from a ReceiverSpec.
 func (f *ReceiverFactory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, _ ports.Session) (ports.Receiver, error) {
-	cfg := ReceiverConfigFromOptions(spec.Options)
+	pc, err := configFromSpec(spec.Config)
+	if err != nil {
+		return nil, err
+	}
+	cfg := pc.toReceiverConfig()
 	return NewReceiver(cfg, f.logger)
 }
 
@@ -41,9 +48,29 @@ func NewSenderFactory(logger *slog.Logger) *SenderFactory {
 
 // NewSender creates a Service Bus Sender from a SenderSpec.
 func (f *SenderFactory) NewSender(_ context.Context, spec ports.SenderSpec, _ ports.Session) (ports.Sender, error) {
-	cfg := SenderConfigFromOptions(spec.Options)
+	pc, err := configFromSpec(spec.Config)
+	if err != nil {
+		return nil, err
+	}
+	cfg := pc.toSenderConfig()
 	cfg.Logger = f.logger
 	return NewSender(cfg)
+}
+
+// configFromSpec accepts both *Config and Config so registry-decoded
+// pointers and hand-built test value fixtures both work.
+func configFromSpec(pc ports.PluginConfig) (Config, error) {
+	switch v := pc.(type) {
+	case *Config:
+		if v == nil {
+			return Config{}, errInvalidConfig
+		}
+		return *v, nil
+	case Config:
+		return v, nil
+	default:
+		return Config{}, errInvalidConfig
+	}
 }
 
 // Factory is the Azure Service Bus transport factory. Service Bus is

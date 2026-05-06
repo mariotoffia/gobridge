@@ -41,7 +41,7 @@ func TestIntegration_Reconcile_FirstFailureDoesNotPoisonSubsequentReconciles(t *
 	// PRECONDITION_FAILED and closes the channel).
 	badPlan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
-			{Topic: conflicting, Options: map[string]any{"durable": true}},
+			{Topic: conflicting, Config: &Config{Subscription: SubscriptionParams{Durable: true}}},
 		},
 	}
 	if err := sess.Reconcile(ctx, badPlan); err == nil {
@@ -54,9 +54,9 @@ func TestIntegration_Reconcile_FirstFailureDoesNotPoisonSubsequentReconciles(t *
 	freshExch := rabbitmqlocal.UniqueExchange("recon-fresh-ex")
 	goodPlan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
-			{Topic: freshQueue, Options: map[string]any{
-				"exchange": freshExch, "routing_key": freshQueue,
-			}},
+			{Topic: freshQueue, Config: &Config{Subscription: SubscriptionParams{
+				Exchange: freshExch, RoutingKey: freshQueue,
+			}}},
 		},
 		Publishers: []domain.PublisherPlan{{Topic: freshExch}},
 	}
@@ -120,7 +120,7 @@ func TestIntegration_Reconcile_PartialFailure_ReportsErrorWithoutChannelLeak(t *
 	defer func() { _ = sess.Close(ctx) }()
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{
-			{Topic: bad, Options: map[string]any{"durable": true}},
+			{Topic: bad, Config: &Config{Subscription: SubscriptionParams{Durable: true}}},
 		},
 	}
 

@@ -72,7 +72,7 @@ routes:
       lease_ttl: 30s
       drain_interval: 1s
 `
-	cfg, err := Parse(strings.NewReader(input), FormatYAML)
+	cfg, err := ParseWithRegistry(strings.NewReader(input), FormatYAML, passthroughRegistry("dynamodb", "mqtt", "sqs"))
 	require.NoError(t, err)
 
 	assert.Equal(t, "bridge-1", cfg.Bridge.ID)
@@ -122,7 +122,7 @@ func TestParse_JSON(t *testing.T) {
   "bindings": [{"id": "b1", "sender_id": "tx1", "address": "queue://test"}],
   "routes": [{"id": "r1", "receiver_id": "rx1", "bindings": ["b1"]}]
 }`
-	cfg, err := Parse(strings.NewReader(input), FormatJSON)
+	cfg, err := ParseWithRegistry(strings.NewReader(input), FormatJSON, passthroughRegistry("sqs"))
 	require.NoError(t, err)
 	assert.Equal(t, "bridge-json", cfg.Bridge.ID)
 	require.Len(t, cfg.Routes, 1)
@@ -179,7 +179,7 @@ routes:
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, content, 0o644))
 
-	cfg, err := ParseFile(path, FormatAuto)
+	cfg, err := ParseFileWithRegistry(path, FormatAuto, passthroughRegistry("sqs"))
 	require.NoError(t, err)
 	assert.Equal(t, "file-test", cfg.Bridge.ID)
 	require.Len(t, cfg.Receivers, 1)
@@ -197,7 +197,7 @@ func TestParseFile_ValidJSON(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	require.NoError(t, os.WriteFile(path, content, 0o644))
 
-	cfg, err := ParseFile(path, FormatAuto)
+	cfg, err := ParseFileWithRegistry(path, FormatAuto, passthroughRegistry("sqs"))
 	require.NoError(t, err)
 	assert.Equal(t, "json-file", cfg.Bridge.ID)
 	require.Len(t, cfg.Receivers, 1)

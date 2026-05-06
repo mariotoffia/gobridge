@@ -418,10 +418,12 @@ func TestIntegration_Factory(t *testing.T) {
 		ID:          "factory-sess",
 		Transport:   "mqtt",
 		SessionMode: domain.SessionEphemeral,
-		Options: map[string]any{
-			"broker_urls": []string{url},
-			"client_id":   mqttlocal.UniqueClientID("factory"),
-			"clean_start": true,
+		Config: paho.Config{
+			Session: paho.SessionOptions{
+				BrokerURLs: []string{url},
+				ClientID:   mqttlocal.UniqueClientID("factory"),
+				CleanStart: true,
+			},
 		},
 	})
 	if err != nil {
@@ -445,9 +447,11 @@ func TestIntegration_Factory(t *testing.T) {
 	send, err := factory.NewSender(ctx, ports.SenderSpec{
 		ID:        "factory-tx",
 		SessionID: "factory-sess",
-		Options: map[string]any{
-			"qos":           1,
-			"default_topic": "factory/test",
+		Config: paho.Config{
+			Sender: paho.SenderOptions{
+				QoS:          1,
+				DefaultTopic: "factory/test",
+			},
 		},
 	}, sess)
 	if err != nil {

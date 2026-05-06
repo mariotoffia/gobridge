@@ -12,7 +12,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.21.0
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
 	github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus v1.10.0
-	github.com/mariotoffia/gobridge v0.0.0-20260323112336-b482fe636793
+	github.com/mariotoffia/gobridge v0.0.0
 	github.com/mariotoffia/gobridge/testutil/asblocal v0.0.0-00010101000000-000000000000
 	github.com/stretchr/testify v1.11.1
 )

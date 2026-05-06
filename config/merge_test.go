@@ -57,7 +57,11 @@ func TestDefaultMerge_Stores_OverlayReplacesPerRole(t *testing.T) {
 	}
 	overlay := &ports.BridgeConfig{
 		Stores: ports.StoresConfig{
-			Lease: &ports.StoreConfig{Type: "dynamodb", Options: map[string]any{"table": "leases"}},
+			Lease: func() *ports.StoreConfig {
+				sc := &ports.StoreConfig{Type: "dynamodb"}
+				sc.SetDecoded(nil, NewRawConfig(map[string]any{"table": "leases"}))
+				return sc
+			}(),
 		},
 	}
 
@@ -65,7 +69,9 @@ func TestDefaultMerge_Stores_OverlayReplacesPerRole(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "dynamodb", merged.Stores.Lease.Type, "lease should be replaced")
-	assert.Equal(t, "leases", merged.Stores.Lease.Options["table"])
+	if opts := rawMap(merged.Stores.Lease.Raw()); assert.NotNil(t, opts, "lease overlay raw options preserved through merge") {
+		assert.Equal(t, "leases", opts["table"])
+	}
 	assert.Equal(t, "memory", merged.Stores.Outbox.Type, "outbox should be preserved")
 }
 

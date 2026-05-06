@@ -133,21 +133,21 @@ type failingStoreFactory struct {
 	dlqErr    error
 }
 
-func (f *failingStoreFactory) NewLeaseStore(_ context.Context, _ ports.StoreSpec) (ports.LeaseStore, error) {
+func (f *failingStoreFactory) NewLeaseStore(_ context.Context, _ ports.PluginConfig) (ports.LeaseStore, error) {
 	if f.leaseErr != nil {
 		return nil, f.leaseErr
 	}
 	return &fakeLeaseStore{}, nil
 }
 
-func (f *failingStoreFactory) NewOutboxStore(_ context.Context, _ ports.StoreSpec) (ports.OutboxStore, error) {
+func (f *failingStoreFactory) NewOutboxStore(_ context.Context, _ ports.PluginConfig, _ ports.OutboxRuntimeOptions) (ports.OutboxStore, error) {
 	if f.outboxErr != nil {
 		return nil, f.outboxErr
 	}
 	return &fakeOutboxStore{}, nil
 }
 
-func (f *failingStoreFactory) NewDLQStore(_ context.Context, _ ports.StoreSpec) (ports.DLQStore, error) {
+func (f *failingStoreFactory) NewDLQStore(_ context.Context, _ ports.PluginConfig) (ports.DLQStore, error) {
 	if f.dlqErr != nil {
 		return nil, f.dlqErr
 	}

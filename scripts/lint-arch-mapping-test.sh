@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # Regression test for the .go-arch-lint.yml component map.
 #
-# This script asserts that every key adapter package falls into the
+# This script asserts that every adapter package falls into the
 # component the architecture intends. If a future edit accidentally
 # broadens a component's `in:` glob (for example by reintroducing a
 # blanket `adapters/**` pattern), the affected packages will get
-# absorbed into the wrong component and this test will fail.
+# absorbed into the wrong component and this test will fail. A new
+# adapter added without a typed config and a registration call also
+# fails this regression because there is no component to receive it.
 #
 # It runs `go-arch-lint mapping` and greps the grouped output for
-# specific (component, package) pairs. The script intentionally lists
-# only a few sentinel packages per component category — enough to
-# catch broad mistakes without becoming a copy of the YAML itself.
+# specific (component, package) pairs. The script lists every adapter
+# package plus the inner-ring sentinels (domain, ports, config) so
+# the YAML and the package layout cannot drift silently.
 
 set -euo pipefail
 
@@ -44,8 +46,13 @@ expect adapter_transport_http          /adapters/http/transport
 
 # Store implementation adapters.
 expect adapter_store_native_memorylease   /adapters/native/store/memorylease
+expect adapter_store_native_memoryoutbox  /adapters/native/store/memoryoutbox
+expect adapter_store_native_memorydlq     /adapters/native/store/memorydlq
 expect adapter_store_native_sqliteoutbox  /adapters/native/store/sqliteoutbox
+expect adapter_store_native_sqlitedlq     /adapters/native/store/sqlitedlq
+expect adapter_store_aws_dynamodblease    /adapters/aws/store/dynamodblease
 expect adapter_store_aws_dynamodboutbox   /adapters/aws/store/dynamodboutbox
+expect adapter_store_aws_dynamodbdlq      /adapters/aws/store/dynamodbdlq
 
 # Store factory aggregators.
 expect adapter_store_native_factory  /adapters/native/store
@@ -57,9 +64,12 @@ expect adapter_config_native_file    /adapters/native/config/file
 expect adapter_config_aws_dynamodb   /adapters/aws/config/dynamodb
 
 # Credential, observability, cluster.
+expect adapter_credentials_native_file /adapters/native/credentials/file
 expect adapter_credentials_aws_ssm   /adapters/aws/credentials/ssm
+expect adapter_metrics_cloudwatch    /adapters/aws/metrics/cloudwatch
 expect adapter_metrics_otel          /adapters/otel/metrics
 expect adapter_tracing_otel          /adapters/otel/tracing
+expect adapter_cluster_native        /adapters/native/cluster
 expect adapter_cluster_aws           /adapters/aws/cluster/ecs
 
 # Inner ring sanity.

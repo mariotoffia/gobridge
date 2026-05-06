@@ -62,15 +62,15 @@ func edge091Setup(t *testing.T, logger *slog.Logger, prefix string) edge091Env {
 	plan := domain.SessionPlan{
 		Subscriptions: []domain.SubscriptionPlan{{
 			Topic: queue,
-			Options: map[string]any{
-				"exchange":    exchange,
-				"routing_key": queue,
-				"durable":     false,
-			},
+			Config: &Config{Subscription: SubscriptionParams{
+				Exchange:   exchange,
+				RoutingKey: queue,
+				Durable:    false,
+			}},
 		}},
 		Publishers: []domain.PublisherPlan{{
-			Topic:   exchange,
-			Options: map[string]any{"durable": false},
+			Topic:  exchange,
+			Config: &Config{Publisher: PublisherParams{Durable: false}},
 		}},
 	}
 	if err := sess.Reconcile(ctx, plan); err != nil {

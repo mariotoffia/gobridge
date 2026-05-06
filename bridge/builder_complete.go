@@ -240,16 +240,13 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context) (map[string]ports.S
 			cleanup("")
 			return nil, nil, fmt.Errorf("bridge: no transport factory registered for %q (session %q)", sd.Transport, sd.ID)
 		}
-		if sd.Options != nil {
-			if u, ok := sd.Options["credentials_uri"].(string); ok && u != "" {
-				uris[sd.ID] = u
-			}
-			opts, err := b.resolveCredentials(ctx, sd.Options, fmt.Sprintf("session %q", sd.ID))
-			if err != nil {
-				cleanup("")
-				return nil, nil, err
-			}
-			sd.Options = opts
+		uri, err := b.resolveConfigCredentials(ctx, sd.Config, fmt.Sprintf("session %q", sd.ID))
+		if err != nil {
+			cleanup("")
+			return nil, nil, err
+		}
+		if uri != "" {
+			uris[sd.ID] = uri
 		}
 		sess, err := tf.NewSession(ctx, sessionSpecFrom(sd))
 		if err != nil {
@@ -287,15 +284,12 @@ func (b *Builder) buildReceiversWithURIs(ctx context.Context, sessions map[strin
 				return nil, nil, fmt.Errorf("bridge: receiver %q references unknown session %q", rd.ID, rd.SessionID)
 			}
 		}
-		if rd.Options != nil {
-			if u, ok := rd.Options["credentials_uri"].(string); ok && u != "" {
-				uris[rd.ID] = u
-			}
-			opts, err := b.resolveCredentials(ctx, rd.Options, fmt.Sprintf("receiver %q", rd.ID))
-			if err != nil {
-				return nil, nil, err
-			}
-			rd.Options = opts
+		uri, err := b.resolveConfigCredentials(ctx, rd.Config, fmt.Sprintf("receiver %q", rd.ID))
+		if err != nil {
+			return nil, nil, err
+		}
+		if uri != "" {
+			uris[rd.ID] = uri
 		}
 		recv, err := tf.NewReceiver(ctx, receiverSpecFrom(rd), sess)
 		if err != nil {
@@ -328,15 +322,12 @@ func (b *Builder) buildSendersWithURIs(ctx context.Context, sessions map[string]
 				return nil, nil, fmt.Errorf("bridge: sender %q references unknown session %q", sd.ID, sd.SessionID)
 			}
 		}
-		if sd.Options != nil {
-			if u, ok := sd.Options["credentials_uri"].(string); ok && u != "" {
-				uris[sd.ID] = u
-			}
-			opts, err := b.resolveCredentials(ctx, sd.Options, fmt.Sprintf("sender %q", sd.ID))
-			if err != nil {
-				return nil, nil, err
-			}
-			sd.Options = opts
+		uri, err := b.resolveConfigCredentials(ctx, sd.Config, fmt.Sprintf("sender %q", sd.ID))
+		if err != nil {
+			return nil, nil, err
+		}
+		if uri != "" {
+			uris[sd.ID] = uri
 		}
 		snd, err := tf.NewSender(ctx, senderSpecFrom(sd), sess)
 		if err != nil {
