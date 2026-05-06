@@ -29,7 +29,7 @@ func TestSender_Send_NoSession(t *testing.T) {
 		ID:      "e1",
 		Payload: []byte("hello"),
 	}
-	err := s.Send(context.Background(), ports.OutboundMessage{Envelope: env})
+	err := s.Send(context.Background(), ports.OutboundMessage{Envelope: env, Address: "rk"})
 	if err == nil {
 		t.Fatal("expected error for nil session")
 	}
@@ -56,7 +56,7 @@ func TestSender_Send_NoConnection(t *testing.T) {
 		ID:      "e2",
 		Payload: []byte("hello"),
 	}
-	err := s.Send(context.Background(), ports.OutboundMessage{Envelope: env})
+	err := s.Send(context.Background(), ports.OutboundMessage{Envelope: env, Address: "rk"})
 	if err == nil {
 		t.Fatal("expected error for disconnected session")
 	}
@@ -77,7 +77,7 @@ func TestSender_SendBatch_FirstFails(t *testing.T) {
 	sent, err := s.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
-			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e, Address: "rk"}
 		}
 		return _msgs
 	}())
@@ -128,5 +128,41 @@ func TestNewSender_NilMetrics(t *testing.T) {
 	s := NewSender(SenderConfig{})
 	if s.metrics == nil {
 		t.Fatal("metrics should be non-nil (NoopExporter)")
+	}
+}
+
+// verifies Send returns shared.ErrInvalidTopic when neither cfg.RoutingKey
+// nor msg.Address is set. Mirrors the MQTT sender's missing-topic guard.
+func TestSender_Send_MissingRoutingTarget(t *testing.T) {
+	s := NewSender(SenderConfig{})
+
+	env := &messaging.Envelope{ID: "x", Subject: "logical.subject", Payload: []byte("hi")}
+	err := s.Send(context.Background(), ports.OutboundMessage{Envelope: env})
+	if err == nil {
+		t.Fatal("expected error when neither cfg.RoutingKey nor msg.Address is set")
+	}
+	var be *shared.BridgeError
+	if !errors.As(err, &be) {
+		t.Fatalf("expected BridgeError, got %T", err)
+	}
+	if !errors.Is(be, shared.ErrInvalidTopic) {
+		t.Errorf("expected ErrInvalidTopic, got code %s", be.Code)
+	}
+}
+
+// verifies Send returns shared.ErrInvalidPayload when the envelope is nil.
+func TestSender_Send_NilEnvelope(t *testing.T) {
+	s := NewSender(SenderConfig{RoutingKey: "rk"})
+
+	err := s.Send(context.Background(), ports.OutboundMessage{Address: "rk"})
+	if err == nil {
+		t.Fatal("expected error for nil envelope")
+	}
+	var be *shared.BridgeError
+	if !errors.As(err, &be) {
+		t.Fatalf("expected BridgeError, got %T", err)
+	}
+	if !errors.Is(be, shared.ErrInvalidPayload) {
+		t.Errorf("expected ErrInvalidPayload, got code %s", be.Code)
 	}
 }

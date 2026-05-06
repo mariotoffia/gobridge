@@ -251,9 +251,12 @@ func TestIntegration_SessionReconcile_MultipleQueues(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("send direct: %v", err)
 	}
-	if err := fanoutSender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
-		ID: "fanout-1", Subject: fanoutQueue, Payload: []byte("fanout-payload"),
-	}}); err != nil {
+	if err := fanoutSender.Send(ctx, ports.OutboundMessage{
+		Address: fanoutQueue,
+		Envelope: &messaging.Envelope{
+			ID: "fanout-1", Subject: fanoutQueue, Payload: []byte("fanout-payload"),
+		},
+	}); err != nil {
 		t.Fatalf("send fanout: %v", err)
 	}
 

@@ -218,7 +218,7 @@ Blast radius: low.
 - Update MQTT header conversion tests.
 - Acceptance: MQTT round-trip preserves logical subject and records the publish topic separately.
 
-### 6. Update AMQP 0-9-1 adapter
+### 6. Update AMQP 0-9-1 adapter - DONE
 
 - Change sender to use configured `RoutingKey` or `OutboundMessage.Address`.
 - Remove `env.Subject` routing key fallback.

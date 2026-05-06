@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "ARCHITECTURE_PLAN.md",
-  "source_sha": "28d1b2d9cb2b223b42239118f7fa162bcab53ed38d27aa96ad63716e5e58936e",
+  "source_sha": "425d803ca135f814ac0f5a3e94cc643d5238d54f9796c03aafe3e05019120aa4",
   "indexed_at": "2026-05-06T00:00:00Z",
   "status_convention": "per-task markers only; absent any marker \u2192 pending. File-level ## Status: Planned is not propagated.",
   "tasks": [
@@ -63,7 +63,7 @@
     {
       "id": "T06",
       "title": "Update AMQP 0-9-1 adapter",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "AMQP 0-9-1 Go adapter sender/receiver refactor and test updates.",
