@@ -12,8 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
@@ -94,7 +94,7 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 // with attribute_not_exists. If the item already exists, it attempts an expired
 // takeover via UpdateItem with an expires_at < :now condition, atomically
 // incrementing the version.
-func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodblease: acquire", "lease_id", leaseID, "owner_id", ownerID)
 	}
@@ -125,10 +125,10 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 		},
 	})
 	if err == nil {
-		return domain.LeaseToken{Version: 1, Owner: ownerID}, nil
+		return persistence.LeaseToken{Version: 1, Owner: ownerID}, nil
 	}
 	if !isConditionFailed(err) {
-		return domain.LeaseToken{}, wrapErr(err, "", "leaseID", leaseID, "ownerID", ownerID)
+		return persistence.LeaseToken{}, wrapErr(err, "", "leaseID", leaseID, "ownerID", ownerID)
 	}
 
 	// Item exists -- attempt expired takeover with atomic version increment.
@@ -169,23 +169,23 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 	})
 	if err != nil {
 		if isConditionFailed(err) {
-			return domain.LeaseToken{}, shared.ErrAlreadyExists.
+			return persistence.LeaseToken{}, shared.ErrAlreadyExists.
 				WithMessage("lease already held").
 				With("leaseID", leaseID)
 		}
-		return domain.LeaseToken{}, wrapErr(err, "lease takeover update failed", "leaseID", leaseID, "ownerID", ownerID)
+		return persistence.LeaseToken{}, wrapErr(err, "lease takeover update failed", "leaseID", leaseID, "ownerID", ownerID)
 	}
 
 	ver, err := numAttr(result.Attributes, attrVersion)
 	if err != nil {
-		return domain.LeaseToken{}, fmt.Errorf("dynamodblease: parse version from takeover result: %w", err)
+		return persistence.LeaseToken{}, fmt.Errorf("dynamodblease: parse version from takeover result: %w", err)
 	}
-	return domain.LeaseToken{Version: ver, Owner: ownerID}, nil
+	return persistence.LeaseToken{Version: ver, Owner: ownerID}, nil
 }
 
 // Renew extends the lease TTL. The caller's token must match the stored
 // owner and version. The returned token keeps the same version.
-func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *Store) Renew(ctx context.Context, leaseID string, token persistence.LeaseToken, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodblease: renew", "lease_id", leaseID, "owner_id", token.Owner)
 	}
@@ -227,9 +227,9 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseTok
 	})
 	if err != nil {
 		if isConditionFailed(err) {
-			return domain.LeaseToken{}, s.classifyConditionFailure(ctx, leaseID)
+			return persistence.LeaseToken{}, s.classifyConditionFailure(ctx, leaseID)
 		}
-		return domain.LeaseToken{}, wrapErr(err, "lease renew update failed", "leaseID", leaseID, "ownerID", token.Owner)
+		return persistence.LeaseToken{}, wrapErr(err, "lease renew update failed", "leaseID", leaseID, "ownerID", token.Owner)
 	}
 	return token, nil
 }
@@ -238,7 +238,7 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseTok
 // expires_at to zero. The item is preserved so that the version counter
 // remains available for monotonic increments on subsequent acquires.
 // DynamoDB TTL will eventually remove the item after the grace period.
-func (s *Store) Release(ctx context.Context, leaseID string, token domain.LeaseToken) error {
+func (s *Store) Release(ctx context.Context, leaseID string, token persistence.LeaseToken) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodblease: release", "lease_id", leaseID)
 	}
@@ -278,7 +278,7 @@ func (s *Store) Release(ctx context.Context, leaseID string, token domain.LeaseT
 }
 
 // Current reads the lease state with a strongly consistent read.
-func (s *Store) Current(ctx context.Context, leaseID string) (domain.LeaseInfo, error) {
+func (s *Store) Current(ctx context.Context, leaseID string) (persistence.LeaseInfo, error) {
 	pk := leaseKey(leaseID)
 
 	result, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
@@ -289,11 +289,11 @@ func (s *Store) Current(ctx context.Context, leaseID string) (domain.LeaseInfo, 
 		ConsistentRead: aws.Bool(true),
 	})
 	if err != nil {
-		return domain.LeaseInfo{}, wrapErr(err, "lease get failed", "leaseID", leaseID)
+		return persistence.LeaseInfo{}, wrapErr(err, "lease get failed", "leaseID", leaseID)
 	}
 	owner := strAttr(result.Item, attrOwner)
 	if len(result.Item) == 0 || owner == "" {
-		return domain.LeaseInfo{}, shared.ErrNotFound.
+		return persistence.LeaseInfo{}, shared.ErrNotFound.
 			WithMessage("lease not found").
 			With("leaseID", leaseID)
 	}
@@ -301,7 +301,7 @@ func (s *Store) Current(ctx context.Context, leaseID string) (domain.LeaseInfo, 
 	version, _ := numAttr(result.Item, attrVersion)
 	expiresAtMillis, _ := numAttr(result.Item, attrExpiresAt)
 
-	return domain.LeaseInfo{
+	return persistence.LeaseInfo{
 		LeaseID:   leaseID,
 		Owner:     owner,
 		Version:   version,

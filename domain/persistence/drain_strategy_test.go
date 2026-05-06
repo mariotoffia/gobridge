@@ -1,10 +1,10 @@
-package domain_test
+package persistence_test
 
 import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 )
 
 // withinJitter checks that got is within ±25% of want.
@@ -48,7 +48,7 @@ func TestFixedPoll_NextInterval(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fp := domain.NewFixedPoll(tt.interval)
+			fp := persistence.NewFixedPoll(tt.interval)
 			got := fp.NextInterval(tt.recordsFound)
 			if !withinJitter(got, tt.want) {
 				t.Errorf("NextInterval(%d) = %v, want %v ±25%%", tt.recordsFound, got, tt.want)
@@ -70,10 +70,10 @@ func TestFixedPoll_DefaultInterval(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fp := domain.NewFixedPoll(tt.interval)
+			fp := persistence.NewFixedPoll(tt.interval)
 			got := fp.NextInterval(0)
-			if !withinJitter(got, domain.DefaultFixedPollInterval) {
-				t.Errorf("NextInterval(0) = %v, want default %v ±25%%", got, domain.DefaultFixedPollInterval)
+			if !withinJitter(got, persistence.DefaultFixedPollInterval) {
+				t.Errorf("NextInterval(0) = %v, want default %v ±25%%", got, persistence.DefaultFixedPollInterval)
 			}
 		})
 	}
@@ -82,7 +82,7 @@ func TestFixedPoll_DefaultInterval(t *testing.T) {
 // TestFixedPoll_Stable validates that FixedPoll returns the configured
 // interval (±25% jitter) across many consecutive calls with varying arguments.
 func TestFixedPoll_Stable(t *testing.T) {
-	fp := domain.NewFixedPoll(250 * time.Millisecond)
+	fp := persistence.NewFixedPoll(250 * time.Millisecond)
 	args := []int{0, 0, 5, 0, 100, 0, 0, 1}
 
 	for i, n := range args {
@@ -130,7 +130,7 @@ func TestFixedPoll_Stable(t *testing.T) {
 // TestAdaptiveBackoff_ResetOnRecords validates that NextInterval returns
 // MinInterval (±25% jitter) whenever recordsFound > 0, regardless of prior backoff state.
 func TestAdaptiveBackoff_ResetOnRecords(t *testing.T) {
-	ab := domain.NewAdaptiveBackoff(100*time.Millisecond, 10*time.Second, 2.0)
+	ab := persistence.NewAdaptiveBackoff(100*time.Millisecond, 10*time.Second, 2.0)
 
 	// Back off several times to increase current interval.
 	ab.NextInterval(0) // ~200ms
@@ -146,7 +146,7 @@ func TestAdaptiveBackoff_ResetOnRecords(t *testing.T) {
 // TestAdaptiveBackoff_BackoffOnEmpty validates that NextInterval multiplies
 // the current interval by Multiplier when no records are found (±25% jitter).
 func TestAdaptiveBackoff_BackoffOnEmpty(t *testing.T) {
-	ab := domain.NewAdaptiveBackoff(100*time.Millisecond, 10*time.Second, 2.0)
+	ab := persistence.NewAdaptiveBackoff(100*time.Millisecond, 10*time.Second, 2.0)
 
 	// Each base value doubles: 200, 400, 800, 1600.
 	// With jitter, the returned value varies but the internal state
@@ -169,7 +169,7 @@ func TestAdaptiveBackoff_BackoffOnEmpty(t *testing.T) {
 // TestAdaptiveBackoff_CapsAtMax validates that the backoff interval never
 // exceeds MaxInterval + 25% jitter.
 func TestAdaptiveBackoff_CapsAtMax(t *testing.T) {
-	ab := domain.NewAdaptiveBackoff(100*time.Millisecond, 500*time.Millisecond, 2.0)
+	ab := persistence.NewAdaptiveBackoff(100*time.Millisecond, 500*time.Millisecond, 2.0)
 
 	maxWithJitter := time.Duration(float64(500*time.Millisecond) * 1.25)
 
@@ -203,7 +203,7 @@ func TestAdaptiveBackoff_CapsAtMax(t *testing.T) {
 //	6     3             100ms (reset)
 //	7     0             200ms (backs off again)
 func TestAdaptiveBackoff_FullRamp(t *testing.T) {
-	ab := domain.NewAdaptiveBackoff(100*time.Millisecond, 1*time.Second, 2.0)
+	ab := persistence.NewAdaptiveBackoff(100*time.Millisecond, 1*time.Second, 2.0)
 
 	expected := []struct {
 		records int
@@ -229,23 +229,23 @@ func TestAdaptiveBackoff_FullRamp(t *testing.T) {
 // TestAdaptiveBackoff_ConstructorDefaults validates that NewAdaptiveBackoff
 // applies default values for zero-valued parameters.
 func TestAdaptiveBackoff_ConstructorDefaults(t *testing.T) {
-	ab := domain.NewAdaptiveBackoff(0, 0, 0)
+	ab := persistence.NewAdaptiveBackoff(0, 0, 0)
 
-	if ab.MinInterval != domain.DefaultAdaptiveMinInterval {
-		t.Errorf("MinInterval = %v, want %v", ab.MinInterval, domain.DefaultAdaptiveMinInterval)
+	if ab.MinInterval != persistence.DefaultAdaptiveMinInterval {
+		t.Errorf("MinInterval = %v, want %v", ab.MinInterval, persistence.DefaultAdaptiveMinInterval)
 	}
-	if ab.MaxInterval != domain.DefaultAdaptiveMaxInterval {
-		t.Errorf("MaxInterval = %v, want %v", ab.MaxInterval, domain.DefaultAdaptiveMaxInterval)
+	if ab.MaxInterval != persistence.DefaultAdaptiveMaxInterval {
+		t.Errorf("MaxInterval = %v, want %v", ab.MaxInterval, persistence.DefaultAdaptiveMaxInterval)
 	}
-	if ab.Multiplier != domain.DefaultAdaptiveBackoffMultiplier {
-		t.Errorf("Multiplier = %v, want %v", ab.Multiplier, domain.DefaultAdaptiveBackoffMultiplier)
+	if ab.Multiplier != persistence.DefaultAdaptiveBackoffMultiplier {
+		t.Errorf("Multiplier = %v, want %v", ab.Multiplier, persistence.DefaultAdaptiveBackoffMultiplier)
 	}
 }
 
 // TestAdaptiveBackoff_MaxClamped validates that when maxInterval < minInterval,
 // the constructor clamps maxInterval to minInterval.
 func TestAdaptiveBackoff_MaxClamped(t *testing.T) {
-	ab := domain.NewAdaptiveBackoff(5*time.Second, 1*time.Second, 2.0)
+	ab := persistence.NewAdaptiveBackoff(5*time.Second, 1*time.Second, 2.0)
 
 	if ab.MaxInterval != 5*time.Second {
 		t.Errorf("MaxInterval = %v, want 5s (clamped to MinInterval)", ab.MaxInterval)
@@ -273,9 +273,9 @@ func TestAdaptiveBackoff_MultiplierFloor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ab := domain.NewAdaptiveBackoff(100*time.Millisecond, 10*time.Second, tt.multiplier)
-			if ab.Multiplier != domain.DefaultAdaptiveBackoffMultiplier {
-				t.Errorf("Multiplier = %v, want default %v", ab.Multiplier, domain.DefaultAdaptiveBackoffMultiplier)
+			ab := persistence.NewAdaptiveBackoff(100*time.Millisecond, 10*time.Second, tt.multiplier)
+			if ab.Multiplier != persistence.DefaultAdaptiveBackoffMultiplier {
+				t.Errorf("Multiplier = %v, want default %v", ab.Multiplier, persistence.DefaultAdaptiveBackoffMultiplier)
 			}
 		})
 	}
@@ -284,7 +284,7 @@ func TestAdaptiveBackoff_MultiplierFloor(t *testing.T) {
 // TestAdaptiveBackoff_Reset validates that the Reset method restores
 // the internal state to MinInterval.
 func TestAdaptiveBackoff_Reset(t *testing.T) {
-	ab := domain.NewAdaptiveBackoff(100*time.Millisecond, 10*time.Second, 2.0)
+	ab := persistence.NewAdaptiveBackoff(100*time.Millisecond, 10*time.Second, 2.0)
 
 	ab.NextInterval(0) // ~200ms
 	ab.NextInterval(0) // ~400ms

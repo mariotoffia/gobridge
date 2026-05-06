@@ -36,7 +36,7 @@
     {
       "id": "phase-3",
       "title": "Move domain/persistence (Outbox, Lease, DrainStrategy)",
-      "status": "pending",
+      "status": "done",
       "category_hint": "clean-arch refactor",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "Split envelope.go for outbox types; move lease.go and drain_strategy.go.",

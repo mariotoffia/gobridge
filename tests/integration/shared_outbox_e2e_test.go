@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -220,7 +221,7 @@ func fastSessionConfig(sessionID string) goruntime.SessionConfig {
 	cfg.RenewInterval = 80 * time.Millisecond
 	cfg.RenewJitter = 10 * time.Millisecond
 	cfg.StepDownGrace = 100 * time.Millisecond
-	cfg.DrainStrategy = domain.NewFixedPoll(50 * time.Millisecond)
+	cfg.DrainStrategy = persistence.NewFixedPoll(50 * time.Millisecond)
 	cfg.DrainBatchSize = 50
 	return cfg
 }
@@ -392,7 +393,7 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 	sessCfgA := fastSessionConfig(sessionID)
 	sessCfgA.LeaseTTL = 400 * time.Millisecond
 	sessCfgA.RenewInterval = 80 * time.Millisecond
-	sessCfgA.DrainStrategy = domain.NewFixedPoll(10 * time.Second) // Long interval so A doesn't drain.
+	sessCfgA.DrainStrategy = persistence.NewFixedPoll(10 * time.Second) // Long interval so A doesn't drain.
 
 	cfgA := goruntime.RouteConfig{
 		ID: "transfer-route",
@@ -583,7 +584,7 @@ func TestE2E_DynamoDB_CrashRecovery(t *testing.T) {
 	sessCfgA := fastSessionConfig(sessionID)
 	sessCfgA.LeaseTTL = 400 * time.Millisecond
 	sessCfgA.RenewInterval = 80 * time.Millisecond
-	sessCfgA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
+	sessCfgA.DrainStrategy = persistence.NewFixedPoll(30 * time.Second)
 
 	cfgA := goruntime.RouteConfig{
 		ID: "crash-recovery-route",
@@ -701,21 +702,21 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 	}
 
 	// Persist a record and claim it with A's token.
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         "fencing-rec-1",
 		RouteID:    "fencing-route",
 		EnvelopeID: "fencing-env-1",
 		BindingID:  "bind-1",
 		SessionID:  leaseID,
 		Address:    "topic/fencing",
-		Status:     domain.OutboxPending,
+		Status:     persistence.OutboxPending,
 		Envelope:   messaging.Envelope{ID: "fencing-env-1", Payload: []byte("data")},
 	}
-	if err := outboxStore.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
+	if err := outboxStore.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
-	pk := domain.OutboxPartitionKey(leaseID, "bind-1")
+	pk := persistence.OutboxPartitionKey(leaseID, "bind-1")
 	claimed, err := outboxStore.Claim(ctx, pk, "owner-A", tokenA, 10)
 	if err != nil {
 		t.Fatalf("claim with A: %v", err)
@@ -809,7 +810,7 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 
 	session := newFakeSession()
 	sessCfg := fastSessionConfig(sessionID)
-	sessCfg.DrainStrategy = domain.NewFixedPoll(50 * time.Millisecond)
+	sessCfg.DrainStrategy = persistence.NewFixedPoll(50 * time.Millisecond)
 
 	cfg := goruntime.RouteConfig{
 		ID: "poison-route",

@@ -9,6 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -219,7 +220,7 @@ func TestE2E_MQTTToSQS_RoundTripWithFailover(t *testing.T) {
 	sqsRxA := newSQSReceiver(t, queueA)
 
 	sessCfgA := e2eFastSessionConfig(sessionID)
-	sessCfgA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
+	sessCfgA.DrainStrategy = persistence.NewFixedPoll(30 * time.Second)
 
 	rtA := goruntime.New(
 		goruntime.WithInstanceID("m4-bridge-A"),

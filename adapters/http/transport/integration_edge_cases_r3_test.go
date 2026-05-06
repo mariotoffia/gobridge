@@ -16,9 +16,9 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -360,7 +360,7 @@ func TestEdgeR3_ForwarderContextCancelled(t *testing.T) {
 	defer remote.Close()
 	fwd := transport.NewHTTPForwarder("/transport/http", 10*time.Second)
 
-	peer := &domain.PeerInfo{
+	peer := &persistence.PeerInfo{
 		InstanceID: "slow-peer",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
@@ -452,7 +452,7 @@ func TestEdgeR3_NilPayload(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeR3_RemoteRouteNoForwarderReturns502(t *testing.T) {
-	remotePeer := &domain.PeerInfo{
+	remotePeer := &persistence.PeerInfo{
 		InstanceID: "remote-nofwd",
 		Endpoints:  map[string]string{"http": "http://remote:9090"},
 	}

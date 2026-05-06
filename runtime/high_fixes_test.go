@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -64,12 +65,12 @@ func TestRoutePolicy_WithDefaults_PreservesExplicitSendTimeout(t *testing.T) {
 func TestOutboxDrainer_SendTimeout(t *testing.T) {
 	blockingSender := &BlockingSender{}
 
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox := NewFakeOutboxStore()
 	dlqStore := NewFakeDLQStore()
 	leaseStore := NewFakeLeaseStore()
 
-	pk := domain.OutboxPartitionKey("sess-1", "")
+	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	cfg := goruntime.OutboxDrainerConfig{
@@ -84,24 +85,24 @@ func TestOutboxDrainer_SendTimeout(t *testing.T) {
 		Policy: domain.RoutePolicy{
 			SendTimeout: 100 * time.Millisecond,
 		}.WithDefaults(),
-		Strategy: domain.NewFixedPoll(50 * time.Millisecond),
-		TokenFn: func() (domain.LeaseToken, bool) {
+		Strategy: persistence.NewFixedPoll(50 * time.Millisecond),
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			return token, true
 		},
 	}
 	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
 
 	ctx := context.Background()
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         "rec-timeout",
 		RouteID:    "route-1",
 		EnvelopeID: "env-timeout",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
 		Envelope:   messaging.Envelope{ID: "env-timeout", Payload: []byte("data")},
-		Status:     domain.OutboxPending,
+		Status:     persistence.OutboxPending,
 	}
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
 	defer cancel()
@@ -197,7 +198,7 @@ func TestRouteRunner_SendTimeout(t *testing.T) {
 //   - rec-slow sender sees context cancellation
 //   - rec-slow is NOT completed
 func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	var slowSendCancelled atomic.Int32
 
 	ctxSender := &ContextAwareSender{
@@ -215,10 +216,10 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 	dlqStore := NewFakeDLQStore()
 	leaseStore := NewFakeLeaseStore()
 
-	pk := domain.OutboxPartitionKey("sess-1", "")
+	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
-	outbox.CompleteFn = func(ids []string, _ domain.LeaseToken) error {
+	outbox.CompleteFn = func(ids []string, _ persistence.LeaseToken) error {
 		for _, id := range ids {
 			if id == "rec-first" {
 				return shared.ErrStaleFencingToken
@@ -242,34 +243,34 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 		LeaseID:             "sess-1",
 		OwnerID:             token.Owner,
 		Policy:              domain.RoutePolicy{}.WithDefaults(),
-		Strategy:            domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:            persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainMaxConcurrency: 2,
-		TokenFn: func() (domain.LeaseToken, bool) {
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			if tokenCalls.Add(1) <= 3 {
 				return token, true
 			}
-			return domain.LeaseToken{}, false
+			return persistence.LeaseToken{}, false
 		},
 	}
 	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
 
 	ctx := context.Background()
-	records := []domain.OutboxRecord{
+	records := []persistence.OutboxRecord{
 		{
 			ID: "rec-first", RouteID: "route-1", EnvelopeID: "env-first",
 			BindingID: "bind-1", SessionID: "sess-1",
 			Envelope: messaging.Envelope{ID: "env-first", Payload: []byte("data")},
-			Status:   domain.OutboxPending,
+			Status:   persistence.OutboxPending,
 		},
 		{
 			ID: "rec-slow", RouteID: "route-1", EnvelopeID: "env-slow",
 			BindingID: "bind-1", SessionID: "sess-1",
 			Envelope: messaging.Envelope{ID: "env-slow", Payload: []byte("data")},
-			Status:   domain.OutboxPending,
+			Status:   persistence.OutboxPending,
 		},
 	}
 	for _, r := range records {
-		_ = outbox.Persist(ctx, []domain.OutboxRecord{r})
+		_ = outbox.Persist(ctx, []persistence.OutboxRecord{r})
 	}
 
 	drainCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
@@ -302,16 +303,16 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 //   - Drainer does not crash
 //   - Sender is invoked (send succeeds, Complete fails)
 func TestOutboxDrainer_StaleFencingToken_PropagatedToRunLoop(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	sender := NewFakeSender()
 	outbox := NewFakeOutboxStore()
 	dlqStore := NewFakeDLQStore()
 	leaseStore := NewFakeLeaseStore()
 
-	pk := domain.OutboxPartitionKey("sess-1", "")
+	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
-	outbox.CompleteFn = func(_ []string, _ domain.LeaseToken) error {
+	outbox.CompleteFn = func(_ []string, _ persistence.LeaseToken) error {
 		return shared.ErrStaleFencingToken
 	}
 
@@ -327,24 +328,24 @@ func TestOutboxDrainer_StaleFencingToken_PropagatedToRunLoop(t *testing.T) {
 		LeaseID:      "sess-1",
 		OwnerID:      token.Owner,
 		Policy:       domain.RoutePolicy{}.WithDefaults(),
-		Strategy:     domain.NewFixedPoll(50 * time.Millisecond),
-		TokenFn: func() (domain.LeaseToken, bool) {
+		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			if tokenCalls.Add(1) <= 2 {
 				return token, true
 			}
-			return domain.LeaseToken{}, false
+			return persistence.LeaseToken{}, false
 		},
 	}
 	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
 
 	ctx := context.Background()
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID: "rec-stale", RouteID: "route-1", EnvelopeID: "env-stale",
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: messaging.Envelope{ID: "env-stale", Payload: []byte("data")},
-		Status:   domain.OutboxPending,
+		Status:   persistence.OutboxPending,
 	}
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()

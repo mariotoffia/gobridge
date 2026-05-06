@@ -22,6 +22,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -362,7 +363,7 @@ func lrSessionConfig(sessionID string) goruntime.SessionConfig {
 	cfg.RenewInterval = 400 * time.Millisecond
 	cfg.RenewJitter = 50 * time.Millisecond
 	cfg.StepDownGrace = 500 * time.Millisecond
-	cfg.DrainStrategy = domain.NewFixedPoll(200 * time.Millisecond)
+	cfg.DrainStrategy = persistence.NewFixedPoll(200 * time.Millisecond)
 	cfg.DrainBatchSize = 100
 	return cfg
 }

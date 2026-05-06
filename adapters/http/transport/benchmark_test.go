@@ -12,8 +12,8 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -133,7 +133,7 @@ func BenchmarkForwarder_Forward(b *testing.B) {
 	}))
 	defer remote.Close()
 	fwd := transport.NewHTTPForwarder("/transport/http", 30*time.Second)
-	peer := &domain.PeerInfo{
+	peer := &persistence.PeerInfo{
 		InstanceID: "bench-remote",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -15,7 +16,7 @@ func (r *RouteRunner) outboxPartitionKey(plans []domain.DispatchPlan) string {
 		return ""
 	}
 	sessionID := r.sessionIDForBinding(plans[0].BindingID)
-	return domain.OutboxPartitionKey(sessionID, plans[0].BindingID)
+	return persistence.OutboxPartitionKey(sessionID, plans[0].BindingID)
 }
 
 func (r *RouteRunner) resolvePlans(ctx context.Context, env *messaging.Envelope) ([]domain.DispatchPlan, error) {
@@ -47,13 +48,13 @@ func (r *RouteRunner) resolvePlans(ctx context.Context, env *messaging.Envelope)
 	return []domain.DispatchPlan{{BindingID: r.routeID}}, nil
 }
 
-func (r *RouteRunner) buildOutboxRecords(env *messaging.Envelope, plans []domain.DispatchPlan) []domain.OutboxRecord {
+func (r *RouteRunner) buildOutboxRecords(env *messaging.Envelope, plans []domain.DispatchPlan) []persistence.OutboxRecord {
 	now := r.clk.Now()
-	records := make([]domain.OutboxRecord, len(plans))
+	records := make([]persistence.OutboxRecord, len(plans))
 
 	for i, plan := range plans {
 		sessionID := r.sessionIDForBinding(plan.BindingID)
-		records[i] = domain.OutboxRecord{
+		records[i] = persistence.OutboxRecord{
 			ID:              generateID(),
 			RouteID:         r.routeID,
 			EnvelopeID:      env.ID,
@@ -62,7 +63,7 @@ func (r *RouteRunner) buildOutboxRecords(env *messaging.Envelope, plans []domain
 			Address:         plan.Address,
 			Envelope:        *env,
 			DispatchHeaders: plan.Headers,
-			Status:          domain.OutboxPending,
+			Status:          persistence.OutboxPending,
 			CreatedAt:       now,
 			ExpiresAt:       env.ExpiresAt,
 		}

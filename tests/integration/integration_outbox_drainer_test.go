@@ -10,6 +10,7 @@ import (
 	dboutbox "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
@@ -54,9 +55,9 @@ func TestIntegration_OutboxDrainer_FullLifecycle(t *testing.T) {
 
 	store := newDDBOutboxStore(t, "od1")
 	sender := &collectingSender{}
-	tok := domain.LeaseToken{Version: 1, Owner: "drainer-od1"}
+	tok := persistence.LeaseToken{Version: 1, Owner: "drainer-od1"}
 
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         uniqueID("od1-rec"),
 		EnvelopeID: "env-od1",
 		BindingID:  "bind-od1",
@@ -71,7 +72,7 @@ func TestIntegration_OutboxDrainer_FullLifecycle(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := store.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
+	if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -79,12 +80,12 @@ func TestIntegration_OutboxDrainer_FullLifecycle(t *testing.T) {
 		OutboxStore:    store,
 		Sender:         sender,
 		RouteID:        "route-od1",
-		PartitionKey:   domain.OutboxPartitionKey("sess-od1", ""),
+		PartitionKey:   persistence.OutboxPartitionKey("sess-od1", ""),
 		OwnerID:        "drainer-od1",
 		Policy:         domain.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 3},
-		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
-		TokenFn:        func() (domain.LeaseToken, bool) { return tok, true },
+		TokenFn:        func() (persistence.LeaseToken, bool) { return tok, true },
 	})
 
 	drainCtx, drainCancel := context.WithTimeout(ctx, 3*time.Second)
@@ -95,7 +96,7 @@ func TestIntegration_OutboxDrainer_FullLifecycle(t *testing.T) {
 		t.Fatalf("expected 1 sent message, got %d", sender.count())
 	}
 
-	pending, err := store.QueryPending(ctx, domain.OutboxPartitionKey("sess-od1", ""), 10)
+	pending, err := store.QueryPending(ctx, persistence.OutboxPartitionKey("sess-od1", ""), 10)
 	if err != nil {
 		t.Fatalf("query pending: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestIntegration_OutboxDrainer_StaleFencingToken(t *testing.T) {
 	store := newDDBOutboxStore(t, "od2")
 	ctx := context.Background()
 
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         uniqueID("od2-rec"),
 		EnvelopeID: "env-od2",
 		BindingID:  "bind-od2",
@@ -134,13 +135,13 @@ func TestIntegration_OutboxDrainer_StaleFencingToken(t *testing.T) {
 		},
 	}
 
-	if err := store.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
+	if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
-	pk := domain.OutboxPartitionKey("sess-od2", "")
-	tok1 := domain.LeaseToken{Version: 1, Owner: "owner-A"}
-	tok2 := domain.LeaseToken{Version: 2, Owner: "owner-B"}
+	pk := persistence.OutboxPartitionKey("sess-od2", "")
+	tok1 := persistence.LeaseToken{Version: 1, Owner: "owner-A"}
+	tok2 := persistence.LeaseToken{Version: 2, Owner: "owner-B"}
 
 	claimed, err := store.Claim(ctx, pk, "owner-A", tok1, 10)
 	if err != nil {
@@ -171,10 +172,10 @@ func TestIntegration_OutboxDrainer_ExpiredRecordRoutesDLQ(t *testing.T) {
 	store := newDDBOutboxStore(t, "od3")
 	dlqStore := &e2eDLQStore{}
 	sender := &collectingSender{}
-	tok := domain.LeaseToken{Version: 1, Owner: "drainer-od3"}
+	tok := persistence.LeaseToken{Version: 1, Owner: "drainer-od3"}
 
 	past := time.Now().Add(-1 * time.Hour)
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         uniqueID("od3-rec"),
 		EnvelopeID: "env-od3",
 		BindingID:  "bind-od3",
@@ -190,7 +191,7 @@ func TestIntegration_OutboxDrainer_ExpiredRecordRoutesDLQ(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := store.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
+	if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -203,12 +204,12 @@ func TestIntegration_OutboxDrainer_ExpiredRecordRoutesDLQ(t *testing.T) {
 		Sender:         sender,
 		DLQ:            dlqRouter,
 		RouteID:        "route-od3",
-		PartitionKey:   domain.OutboxPartitionKey("sess-od3", ""),
+		PartitionKey:   persistence.OutboxPartitionKey("sess-od3", ""),
 		OwnerID:        "drainer-od3",
 		Policy:         domain.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 3, OnExpired: domain.ExpiredDLQ},
-		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
-		TokenFn:        func() (domain.LeaseToken, bool) { return tok, true },
+		TokenFn:        func() (persistence.LeaseToken, bool) { return tok, true },
 	})
 
 	drainCtx, drainCancel := context.WithTimeout(ctx, 3*time.Second)
@@ -223,7 +224,7 @@ func TestIntegration_OutboxDrainer_ExpiredRecordRoutesDLQ(t *testing.T) {
 		t.Fatalf("expected 1 DLQ entry for expired record, got %d", dlqStore.count())
 	}
 
-	pending, _ := store.QueryPending(ctx, domain.OutboxPartitionKey("sess-od3", ""), 10)
+	pending, _ := store.QueryPending(ctx, persistence.OutboxPartitionKey("sess-od3", ""), 10)
 	if len(pending) != 0 {
 		t.Fatalf("expected 0 pending after expired drain, got %d", len(pending))
 	}
@@ -241,9 +242,9 @@ func TestIntegration_OutboxDrainer_PoisonMessageRoutesDLQ(t *testing.T) {
 	sender := &collectingSender{}
 
 	ctx := context.Background()
-	pk := domain.OutboxPartitionKey("sess-od4", "")
+	pk := persistence.OutboxPartitionKey("sess-od4", "")
 
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         uniqueID("od4-rec"),
 		EnvelopeID: "env-od4",
 		BindingID:  "bind-od4",
@@ -256,20 +257,20 @@ func TestIntegration_OutboxDrainer_PoisonMessageRoutesDLQ(t *testing.T) {
 		},
 	}
 
-	if err := store.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
+	if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
 	// Claim and release multiple times to drive up ReplayCount beyond max (2).
 	for i := 1; i <= 3; i++ {
-		tok := domain.LeaseToken{Version: uint64(i), Owner: "pumper"}
+		tok := persistence.LeaseToken{Version: uint64(i), Owner: "pumper"}
 		_, err := store.Claim(ctx, pk, "pumper", tok, 10)
 		if err != nil {
 			t.Fatalf("claim cycle %d: %v", i, err)
 		}
 	}
 
-	finalTok := domain.LeaseToken{Version: 4, Owner: "drainer-od4"}
+	finalTok := persistence.LeaseToken{Version: 4, Owner: "drainer-od4"}
 	dlqRouter := goruntime.NewDLQRouterFromConfig(goruntime.DLQRouterConfig{
 		Store: dlqStore,
 	})
@@ -282,9 +283,9 @@ func TestIntegration_OutboxDrainer_PoisonMessageRoutesDLQ(t *testing.T) {
 		PartitionKey:   pk,
 		OwnerID:        "drainer-od4",
 		Policy:         domain.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 2},
-		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
-		TokenFn:        func() (domain.LeaseToken, bool) { return finalTok, true },
+		TokenFn:        func() (persistence.LeaseToken, bool) { return finalTok, true },
 	})
 
 	drainCtx, drainCancel := context.WithTimeout(ctx, 3*time.Second)
@@ -328,11 +329,11 @@ func TestIntegration_OutboxDrainer_ConcurrentDrainers(t *testing.T) {
 	// production, this is derived from StepDownGrace + 15s.
 	store := newDDBOutboxStoreWithStaleDuration(t, "od5", 5*time.Second)
 	ctx := context.Background()
-	pk := domain.OutboxPartitionKey("sess-od5", "")
+	pk := persistence.OutboxPartitionKey("sess-od5", "")
 
 	const recordCount = 10
 	for i := 0; i < recordCount; i++ {
-		rec := domain.OutboxRecord{
+		rec := persistence.OutboxRecord{
 			ID:         uniqueID("od5-rec"),
 			EnvelopeID: uniqueID("env-od5"),
 			BindingID:  uniqueID("bind-od5"),
@@ -344,7 +345,7 @@ func TestIntegration_OutboxDrainer_ConcurrentDrainers(t *testing.T) {
 				Payload: []byte(`{"concurrent":"test"}`),
 			},
 		}
-		if err := store.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
+		if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist %d: %v", i, err)
 		}
 	}
@@ -352,10 +353,10 @@ func TestIntegration_OutboxDrainer_ConcurrentDrainers(t *testing.T) {
 	senderA := &collectingSender{}
 	senderB := &collectingSender{}
 
-	tokA := domain.LeaseToken{Version: 1, Owner: "drainer-A"}
-	tokB := domain.LeaseToken{Version: 2, Owner: "drainer-B"}
+	tokA := persistence.LeaseToken{Version: 1, Owner: "drainer-A"}
+	tokB := persistence.LeaseToken{Version: 2, Owner: "drainer-B"}
 
-	makeDrainer := func(sender *collectingSender, tok domain.LeaseToken, owner string) *goruntime.OutboxDrainer {
+	makeDrainer := func(sender *collectingSender, tok persistence.LeaseToken, owner string) *goruntime.OutboxDrainer {
 		return goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
 			OutboxStore:    store,
 			Sender:         sender,
@@ -363,9 +364,9 @@ func TestIntegration_OutboxDrainer_ConcurrentDrainers(t *testing.T) {
 			PartitionKey:   pk,
 			OwnerID:        owner,
 			Policy:         domain.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 5},
-			Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+			Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 			DrainBatchSize: 5,
-			TokenFn:        func() (domain.LeaseToken, bool) { return tok, true },
+			TokenFn:        func() (persistence.LeaseToken, bool) { return tok, true },
 		})
 	}
 
@@ -402,12 +403,12 @@ func TestIntegration_OutboxDrainer_AdaptiveBatchSize(t *testing.T) {
 	store := newDDBOutboxStore(t, "od6")
 	sender := &collectingSender{}
 	ctx := context.Background()
-	pk := domain.OutboxPartitionKey("sess-od6", "")
-	tok := domain.LeaseToken{Version: 1, Owner: "drainer-od6"}
+	pk := persistence.OutboxPartitionKey("sess-od6", "")
+	tok := persistence.LeaseToken{Version: 1, Owner: "drainer-od6"}
 
 	const batchSize = 5
 	for i := 0; i < batchSize*3; i++ {
-		rec := domain.OutboxRecord{
+		rec := persistence.OutboxRecord{
 			ID:         uniqueID("od6-rec"),
 			EnvelopeID: uniqueID("env-od6"),
 			BindingID:  uniqueID("bind-od6"),
@@ -419,7 +420,7 @@ func TestIntegration_OutboxDrainer_AdaptiveBatchSize(t *testing.T) {
 				Payload: []byte(`{"adaptive":"test"}`),
 			},
 		}
-		if err := store.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
+		if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist %d: %v", i, err)
 		}
 	}
@@ -431,10 +432,10 @@ func TestIntegration_OutboxDrainer_AdaptiveBatchSize(t *testing.T) {
 		PartitionKey:      pk,
 		OwnerID:           "drainer-od6",
 		Policy:            domain.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 5},
-		Strategy:          domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:          persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:    batchSize,
 		DrainMaxBatchSize: batchSize * 4,
-		TokenFn:           func() (domain.LeaseToken, bool) { return tok, true },
+		TokenFn:           func() (persistence.LeaseToken, bool) { return tok, true },
 	})
 
 	drainCtx, drainCancel := context.WithTimeout(ctx, 5*time.Second)

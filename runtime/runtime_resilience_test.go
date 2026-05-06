@@ -8,6 +8,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -95,22 +96,22 @@ func TestF2_StopReleasesLeaseWithValidContext(t *testing.T) {
 // pending records during its lifecycle. A fast poll interval ensures
 // at least one drain cycle runs before cancellation.
 func TestF3_DrainOnShutdown(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
-		cfg.Strategy = domain.NewFixedPoll(10 * time.Millisecond)
+		cfg.Strategy = persistence.NewFixedPoll(10 * time.Millisecond)
 	})
 
 	ctx := context.Background()
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         "rec-f3",
 		RouteID:    "route-1",
 		EnvelopeID: "env-f3",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
 		Envelope:   messaging.Envelope{ID: "env-f3", Payload: []byte("shutdown-drain")},
-		Status:     domain.OutboxPending,
+		Status:     persistence.OutboxPending,
 	}
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithCancel(ctx)
 
@@ -137,11 +138,11 @@ func TestF3_DrainOnShutdown(t *testing.T) {
 // TestF3_DrainOnShutdown_NoLease validates that the final drain sweep
 // is skipped when the drainer does not hold a lease.
 func TestF3_DrainOnShutdown_NoLease(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	_, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
-		cfg.Strategy = domain.NewFixedPoll(10 * time.Second)
-		cfg.TokenFn = func() (domain.LeaseToken, bool) {
-			return domain.LeaseToken{}, false
+		cfg.Strategy = persistence.NewFixedPoll(10 * time.Second)
+		cfg.TokenFn = func() (persistence.LeaseToken, bool) {
+			return persistence.LeaseToken{}, false
 		}
 	})
 
@@ -231,7 +232,7 @@ func TestF4_DirectHoldAllowUnfenced(t *testing.T) {
 // provides sufficient fencing.
 func TestF5_DrainBatchSkipsTOCTOUCheck(t *testing.T) {
 	countLease := NewCountingLeaseStore()
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	_, _ = countLease.inner.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	outbox := NewFakeOutboxStore()
@@ -243,22 +244,22 @@ func TestF5_DrainBatchSkipsTOCTOUCheck(t *testing.T) {
 		Sender:       sender,
 		DLQ:          goruntime.NewDLQRouter(nil),
 		RouteID:      "route-1",
-		PartitionKey: domain.OutboxPartitionKey("sess-1", ""),
+		PartitionKey: persistence.OutboxPartitionKey("sess-1", ""),
 		LeaseID:      "sess-1",
 		OwnerID:      token.Owner,
 		Policy:       domain.RoutePolicy{}.WithDefaults(),
-		Strategy:     domain.NewFixedPoll(50 * time.Millisecond),
-		TokenFn:      func() (domain.LeaseToken, bool) { return token, true },
+		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
+		TokenFn:      func() (persistence.LeaseToken, bool) { return token, true },
 	}
 	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
 
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID: "rec-f5", RouteID: "route-1", EnvelopeID: "env-f5",
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: messaging.Envelope{ID: "env-f5", Payload: []byte("data")},
-		Status:   domain.OutboxPending,
+		Status:   persistence.OutboxPending,
 	}
-	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{rec})
+	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()

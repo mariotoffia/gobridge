@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -35,25 +36,25 @@ type faultyLeaseStore struct {
 	fail  atomic.Bool // when true, Renew AND Acquire fail
 }
 
-func (f *faultyLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (f *faultyLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	if f.fail.Load() {
-		return domain.LeaseToken{}, shared.ErrUnavailable.WithMessage("faultyLeaseStore: simulated DDB outage on Acquire")
+		return persistence.LeaseToken{}, shared.ErrUnavailable.WithMessage("faultyLeaseStore: simulated DDB outage on Acquire")
 	}
 	return f.inner.Acquire(ctx, leaseID, ownerID, ttl, endpoints)
 }
 
-func (f *faultyLeaseStore) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (f *faultyLeaseStore) Renew(ctx context.Context, leaseID string, token persistence.LeaseToken, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	if f.fail.Load() {
-		return domain.LeaseToken{}, shared.ErrUnavailable.WithMessage("faultyLeaseStore: simulated DDB outage on Renew")
+		return persistence.LeaseToken{}, shared.ErrUnavailable.WithMessage("faultyLeaseStore: simulated DDB outage on Renew")
 	}
 	return f.inner.Renew(ctx, leaseID, token, ttl, endpoints)
 }
 
-func (f *faultyLeaseStore) Release(ctx context.Context, leaseID string, token domain.LeaseToken) error {
+func (f *faultyLeaseStore) Release(ctx context.Context, leaseID string, token persistence.LeaseToken) error {
 	return f.inner.Release(ctx, leaseID, token)
 }
 
-func (f *faultyLeaseStore) Current(ctx context.Context, leaseID string) (domain.LeaseInfo, error) {
+func (f *faultyLeaseStore) Current(ctx context.Context, leaseID string) (persistence.LeaseInfo, error) {
 	return f.inner.Current(ctx, leaseID)
 }
 

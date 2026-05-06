@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 )
 
@@ -53,7 +53,7 @@ func TestDurability_CloseAndReopen(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	r := domain.OutboxRecord{
+	r := persistence.OutboxRecord{
 		ID:         "dur-1",
 		RouteID:    "route-1",
 		EnvelopeID: "env-dur-1",
@@ -66,7 +66,7 @@ func TestDurability_CloseAndReopen(t *testing.T) {
 			Payload: []byte("durable payload"),
 		},
 	}
-	if err := s1.Persist(ctx, []domain.OutboxRecord{r}); err != nil {
+	if err := s1.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 	if err := s1.Close(); err != nil {
@@ -105,7 +105,7 @@ func TestTempFileCleanup(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	r := domain.OutboxRecord{
+	r := persistence.OutboxRecord{
 		ID:         "tmp-1",
 		RouteID:    "route-1",
 		EnvelopeID: "env-tmp-1",
@@ -113,7 +113,7 @@ func TestTempFileCleanup(t *testing.T) {
 		SessionID:  "sess-tmp",
 		Envelope:   messaging.Envelope{ID: "env-tmp-1", Subject: "test"},
 	}
-	if err := s.Persist(ctx, []domain.OutboxRecord{r}); err != nil {
+	if err := s.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 	if err := s.Close(); err != nil {
@@ -130,7 +130,7 @@ func TestDispatchHeadersRoundTrip(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
 
-	r := domain.OutboxRecord{
+	r := persistence.OutboxRecord{
 		ID:         "hdr-1",
 		RouteID:    "route-1",
 		EnvelopeID: "env-hdr-1",
@@ -142,7 +142,7 @@ func TestDispatchHeadersRoundTrip(t *testing.T) {
 			"x-numeric": float64(42),
 		},
 	}
-	if err := s.Persist(ctx, []domain.OutboxRecord{r}); err != nil {
+	if err := s.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -168,7 +168,7 @@ func TestWithClockControlsCreatedAt(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	ctx := context.Background()
-	r := domain.OutboxRecord{
+	r := persistence.OutboxRecord{
 		ID:         "clk-1",
 		RouteID:    "route-1",
 		EnvelopeID: "env-clk-1",
@@ -176,7 +176,7 @@ func TestWithClockControlsCreatedAt(t *testing.T) {
 		SessionID:  "sess-clk",
 		Envelope:   messaging.Envelope{ID: "env-clk-1", Subject: "test"},
 	}
-	if err := s.Persist(ctx, []domain.OutboxRecord{r}); err != nil {
+	if err := s.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -198,7 +198,7 @@ func TestExpiresAtRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	expiry := time.Now().Add(2 * time.Hour).Truncate(time.Millisecond)
-	r := domain.OutboxRecord{
+	r := persistence.OutboxRecord{
 		ID:         "exprt-1",
 		RouteID:    "route-1",
 		EnvelopeID: "env-exprt-1",
@@ -207,7 +207,7 @@ func TestExpiresAtRoundTrip(t *testing.T) {
 		Envelope:   messaging.Envelope{ID: "env-exprt-1", Subject: "test"},
 		ExpiresAt:  expiry,
 	}
-	if err := s.Persist(ctx, []domain.OutboxRecord{r}); err != nil {
+	if err := s.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 

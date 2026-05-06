@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
@@ -17,8 +17,8 @@ import (
 // It is not safe for production deployments.
 type Store struct {
 	mu            sync.Mutex
-	records       map[string]*domain.OutboxRecord // keyed by record ID
-	dedup         map[string]bool                 // keyed by "EnvelopeID\x00BindingID"
+	records       map[string]*persistence.OutboxRecord // keyed by record ID
+	dedup         map[string]bool                      // keyed by "EnvelopeID\x00BindingID"
 	clk           clock.Clock
 	logger        *slog.Logger
 	latestVersion map[string]uint64 // per-partition fencing token version
@@ -45,7 +45,7 @@ func WithLogger(l *slog.Logger) Option {
 // NewStore creates a new in-memory OutboxStore.
 func NewStore(opts ...Option) *Store {
 	s := &Store{
-		records:       make(map[string]*domain.OutboxRecord),
+		records:       make(map[string]*persistence.OutboxRecord),
 		dedup:         make(map[string]bool),
 		clk:           clock.System,
 		latestVersion: make(map[string]uint64),
@@ -60,11 +60,11 @@ func dedupKey(envelopeID, bindingID string) string {
 	return envelopeID + "\x00" + bindingID
 }
 
-func partitionKey(r *domain.OutboxRecord) string {
-	return domain.OutboxPartitionKey(r.SessionID, r.BindingID)
+func partitionKey(r *persistence.OutboxRecord) string {
+	return persistence.OutboxPartitionKey(r.SessionID, r.BindingID)
 }
 
-func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) error {
+func (s *Store) Persist(ctx context.Context, records []persistence.OutboxRecord) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: persist",
 			"count", len(records))
@@ -85,7 +85,7 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 	now := s.clk.Now()
 	for i := range records {
 		r := records[i] // copy
-		r.Status = domain.OutboxPending
+		r.Status = persistence.OutboxPending
 		if r.CreatedAt.IsZero() {
 			r.CreatedAt = now
 		}
@@ -95,7 +95,7 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 	return nil
 }
 
-func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error) {
+func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: claim",
 			"partition_key", pk, "owner_id", ownerID, "limit", limit)
@@ -111,15 +111,15 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 	}
 	s.latestVersion[pk] = token.Version
 
-	var candidates []*domain.OutboxRecord
+	var candidates []*persistence.OutboxRecord
 	for _, r := range s.records {
 		if partitionKey(r) != pk {
 			continue
 		}
 		switch {
-		case r.Status == domain.OutboxPending:
+		case r.Status == persistence.OutboxPending:
 			candidates = append(candidates, r)
-		case r.Status == domain.OutboxClaimed && r.ClaimVersion < token.Version:
+		case r.Status == persistence.OutboxClaimed && r.ClaimVersion < token.Version:
 			candidates = append(candidates, r)
 		}
 	}
@@ -133,9 +133,9 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 	}
 
 	now := s.clk.Now()
-	result := make([]domain.OutboxRecord, 0, len(candidates))
+	result := make([]persistence.OutboxRecord, 0, len(candidates))
 	for _, r := range candidates {
-		r.Status = domain.OutboxClaimed
+		r.Status = persistence.OutboxClaimed
 		r.ClaimedBy = ownerID
 		r.ClaimedAt = now
 		r.ClaimVersion = token.Version
@@ -146,7 +146,7 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 	return result, nil
 }
 
-func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.LeaseToken) error {
+func (s *Store) Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: complete",
 			"count", len(recordIDs))
@@ -166,7 +166,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.L
 				With("storedClaimVersion", r.ClaimVersion).
 				With("givenVersion", token.Version)
 		}
-		r.Status = domain.OutboxCompleted
+		r.Status = persistence.OutboxCompleted
 		r.CompletedAt = s.clk.Now()
 	}
 	return nil
@@ -181,15 +181,15 @@ func (s *Store) Expire(_ context.Context, before time.Time) (int, error) {
 		if r.ExpiresAt.IsZero() || !r.ExpiresAt.Before(before) {
 			continue
 		}
-		if r.Status == domain.OutboxPending || r.Status == domain.OutboxClaimed {
-			r.Status = domain.OutboxExpired
+		if r.Status == persistence.OutboxPending || r.Status == persistence.OutboxClaimed {
+			r.Status = persistence.OutboxExpired
 			count++
 		}
 	}
 	return count, nil
 }
 
-func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]domain.OutboxRecord, error) {
+func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]persistence.OutboxRecord, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: query_pending",
 			"partition_key", pk, "limit", limit)
@@ -197,9 +197,9 @@ func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]domai
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var result []domain.OutboxRecord
+	var result []persistence.OutboxRecord
 	for _, r := range s.records {
-		if partitionKey(r) != pk || r.Status != domain.OutboxPending {
+		if partitionKey(r) != pk || r.Status != persistence.OutboxPending {
 			continue
 		}
 		result = append(result, *r)

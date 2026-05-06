@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -138,12 +139,12 @@ func applyBridgeDrainDefaults(sc *runtime.SessionConfig, bs ports.BridgeSettings
 	}
 }
 
-func toDrainStrategy(rs *ports.RouteSessionDef) domain.DrainStrategy {
+func toDrainStrategy(rs *ports.RouteSessionDef) persistence.DrainStrategy {
 	ds, _ := toDrainStrategyE(rs)
 	return ds
 }
 
-func toDrainStrategyE(rs *ports.RouteSessionDef) (domain.DrainStrategy, error) {
+func toDrainStrategyE(rs *ports.RouteSessionDef) (persistence.DrainStrategy, error) {
 	if rs.DrainStrategy != nil {
 		return buildDrainStrategyE(rs.DrainStrategy)
 	}
@@ -152,12 +153,12 @@ func toDrainStrategyE(rs *ports.RouteSessionDef) (domain.DrainStrategy, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid drain_interval %q: %w", rs.DrainInterval, err)
 		}
-		return domain.NewFixedPoll(d), nil
+		return persistence.NewFixedPoll(d), nil
 	}
-	return domain.NewFixedPoll(domain.DefaultFixedPollInterval), nil
+	return persistence.NewFixedPoll(persistence.DefaultFixedPollInterval), nil
 }
 
-func buildDrainStrategyE(ds *ports.DrainStrategyDef) (domain.DrainStrategy, error) {
+func buildDrainStrategyE(ds *ports.DrainStrategyDef) (persistence.DrainStrategy, error) {
 	switch ds.Type {
 	case "adaptive_backoff":
 		var minD, maxD time.Duration
@@ -175,7 +176,7 @@ func buildDrainStrategyE(ds *ports.DrainStrategyDef) (domain.DrainStrategy, erro
 			}
 			maxD = d
 		}
-		return domain.NewAdaptiveBackoff(minD, maxD, ds.Multiplier), nil
+		return persistence.NewAdaptiveBackoff(minD, maxD, ds.Multiplier), nil
 
 	default:
 		var interval time.Duration
@@ -186,7 +187,7 @@ func buildDrainStrategyE(ds *ports.DrainStrategyDef) (domain.DrainStrategy, erro
 			}
 			interval = d
 		}
-		return domain.NewFixedPoll(interval), nil
+		return persistence.NewFixedPoll(interval), nil
 	}
 }
 

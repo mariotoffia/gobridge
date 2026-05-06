@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -62,7 +63,7 @@ type SessionConfig struct {
 	// the lease. This is I/O-bound, not lease-bound. Default: 15s.
 	StepDownGrace time.Duration
 
-	DrainStrategy       domain.DrainStrategy
+	DrainStrategy       persistence.DrainStrategy
 	DrainBatchSize      int
 	DrainMaxBatchSize   int
 	DrainMaxConcurrency int
@@ -98,7 +99,7 @@ func DefaultSessionConfig(sessionID string, exclusive bool) SessionConfig {
 		RenewJitter:         5 * time.Second,
 		MaxRenewFails:       3,
 		StepDownGrace:       domain.DefaultStepDownGrace,
-		DrainStrategy:       domain.NewFixedPoll(domain.DefaultFixedPollInterval),
+		DrainStrategy:       persistence.NewFixedPoll(persistence.DefaultFixedPollInterval),
 		DrainBatchSize:      100,
 		DrainMaxBatchSize:   500,
 		DrainMaxConcurrency: 10,

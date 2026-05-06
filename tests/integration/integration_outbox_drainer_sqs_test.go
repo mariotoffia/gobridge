@@ -12,6 +12,7 @@ import (
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
@@ -67,12 +68,12 @@ func TestIntegration_OutboxDrainer_RealSQSSender_FullCycle(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	tok := domain.LeaseToken{Version: 1, Owner: "drainer-sq1"}
-	pk := domain.OutboxPartitionKey("sess-sq1", "")
+	tok := persistence.LeaseToken{Version: 1, Owner: "drainer-sq1"}
+	pk := persistence.OutboxPartitionKey("sess-sq1", "")
 
 	const recordCount = 5
 	for i := 0; i < recordCount; i++ {
-		rec := domain.OutboxRecord{
+		rec := persistence.OutboxRecord{
 			ID:         uniqueID("sq1-rec"),
 			EnvelopeID: fmt.Sprintf("env-sq1-%d", i),
 			BindingID:  "bind-sq1",
@@ -85,7 +86,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_FullCycle(t *testing.T) {
 				Payload: []byte(fmt.Sprintf(`{"index":%d}`, i)),
 			},
 		}
-		if err := store.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
+		if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist record %d: %v", i, err)
 		}
 	}
@@ -97,9 +98,9 @@ func TestIntegration_OutboxDrainer_RealSQSSender_FullCycle(t *testing.T) {
 		PartitionKey:   pk,
 		OwnerID:        "drainer-sq1",
 		Policy:         domain.RoutePolicy{SendTimeout: 10 * time.Second, MaxReplayAttempts: 3},
-		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
-		TokenFn:        func() (domain.LeaseToken, bool) { return tok, true },
+		TokenFn:        func() (persistence.LeaseToken, bool) { return tok, true },
 	})
 
 	drainCtx, drainCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -170,12 +171,12 @@ func TestIntegration_OutboxDrainer_RealSQSSender_ExpiredToDLQ(t *testing.T) {
 	}
 
 	dlqStore := &e2eDLQStore{}
-	tok := domain.LeaseToken{Version: 1, Owner: "drainer-sq2"}
-	pk := domain.OutboxPartitionKey("sess-sq2", "")
+	tok := persistence.LeaseToken{Version: 1, Owner: "drainer-sq2"}
+	pk := persistence.OutboxPartitionKey("sess-sq2", "")
 	ctx := context.Background()
 
 	past := time.Now().Add(-1 * time.Hour)
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         uniqueID("sq2-rec"),
 		EnvelopeID: "env-sq2",
 		BindingID:  "bind-sq2",
@@ -190,7 +191,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_ExpiredToDLQ(t *testing.T) {
 			ExpiresAt: past,
 		},
 	}
-	if err := store.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
+	if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -206,9 +207,9 @@ func TestIntegration_OutboxDrainer_RealSQSSender_ExpiredToDLQ(t *testing.T) {
 		PartitionKey:   pk,
 		OwnerID:        "drainer-sq2",
 		Policy:         domain.RoutePolicy{SendTimeout: 10 * time.Second, MaxReplayAttempts: 3, OnExpired: domain.ExpiredDLQ},
-		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
-		TokenFn:        func() (domain.LeaseToken, bool) { return tok, true },
+		TokenFn:        func() (persistence.LeaseToken, bool) { return tok, true },
 	})
 
 	drainCtx, drainCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -266,8 +267,8 @@ func TestIntegration_OutboxDrainer_RealSQSSender_HeaderPreservation(t *testing.T
 		t.Fatalf("create SQS sender: %v", err)
 	}
 
-	tok := domain.LeaseToken{Version: 1, Owner: "drainer-sq3"}
-	pk := domain.OutboxPartitionKey("sess-sq3", "")
+	tok := persistence.LeaseToken{Version: 1, Owner: "drainer-sq3"}
+	pk := persistence.OutboxPartitionKey("sess-sq3", "")
 	ctx := context.Background()
 
 	customHeaders := map[string]any{
@@ -276,7 +277,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_HeaderPreservation(t *testing.T
 		"X-Priority": "high",
 	}
 
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:              uniqueID("sq3-rec"),
 		EnvelopeID:      "env-sq3",
 		BindingID:       "bind-sq3",
@@ -290,7 +291,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_HeaderPreservation(t *testing.T
 			Payload: []byte(`{"headers":"preservation-test"}`),
 		},
 	}
-	if err := store.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
+	if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -301,9 +302,9 @@ func TestIntegration_OutboxDrainer_RealSQSSender_HeaderPreservation(t *testing.T
 		PartitionKey:   pk,
 		OwnerID:        "drainer-sq3",
 		Policy:         domain.RoutePolicy{SendTimeout: 10 * time.Second, MaxReplayAttempts: 3},
-		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
-		TokenFn:        func() (domain.LeaseToken, bool) { return tok, true },
+		TokenFn:        func() (persistence.LeaseToken, bool) { return tok, true },
 	})
 
 	drainCtx, drainCancel := context.WithTimeout(ctx, 10*time.Second)

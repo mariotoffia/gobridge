@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -22,15 +23,15 @@ func NewContextTrackingLeaseStore() *ContextTrackingLeaseStore {
 	return &ContextTrackingLeaseStore{inner: NewFakeLeaseStore()}
 }
 
-func (s *ContextTrackingLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *ContextTrackingLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	return s.inner.Acquire(ctx, leaseID, ownerID, ttl, endpoints)
 }
 
-func (s *ContextTrackingLeaseStore) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *ContextTrackingLeaseStore) Renew(ctx context.Context, leaseID string, token persistence.LeaseToken, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	return s.inner.Renew(ctx, leaseID, token, ttl, endpoints)
 }
 
-func (s *ContextTrackingLeaseStore) Release(ctx context.Context, leaseID string, token domain.LeaseToken) error {
+func (s *ContextTrackingLeaseStore) Release(ctx context.Context, leaseID string, token persistence.LeaseToken) error {
 	s.trackMu.Lock()
 	s.ReleaseCalled = true
 	s.ReleaseCtxValid = ctx.Err() == nil
@@ -38,7 +39,7 @@ func (s *ContextTrackingLeaseStore) Release(ctx context.Context, leaseID string,
 	return s.inner.Release(ctx, leaseID, token)
 }
 
-func (s *ContextTrackingLeaseStore) Current(ctx context.Context, leaseID string) (domain.LeaseInfo, error) {
+func (s *ContextTrackingLeaseStore) Current(ctx context.Context, leaseID string) (persistence.LeaseInfo, error) {
 	return s.inner.Current(ctx, leaseID)
 }
 
@@ -65,19 +66,19 @@ func NewCountingLeaseStore() *CountingLeaseStore {
 	return &CountingLeaseStore{inner: NewFakeLeaseStore()}
 }
 
-func (s *CountingLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *CountingLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	return s.inner.Acquire(ctx, leaseID, ownerID, ttl, endpoints)
 }
 
-func (s *CountingLeaseStore) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *CountingLeaseStore) Renew(ctx context.Context, leaseID string, token persistence.LeaseToken, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	return s.inner.Renew(ctx, leaseID, token, ttl, endpoints)
 }
 
-func (s *CountingLeaseStore) Release(ctx context.Context, leaseID string, token domain.LeaseToken) error {
+func (s *CountingLeaseStore) Release(ctx context.Context, leaseID string, token persistence.LeaseToken) error {
 	return s.inner.Release(ctx, leaseID, token)
 }
 
-func (s *CountingLeaseStore) Current(ctx context.Context, leaseID string) (domain.LeaseInfo, error) {
+func (s *CountingLeaseStore) Current(ctx context.Context, leaseID string) (persistence.LeaseInfo, error) {
 	s.countMu.Lock()
 	s.CurrentN++
 	s.countMu.Unlock()

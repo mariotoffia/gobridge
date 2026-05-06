@@ -14,9 +14,9 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
@@ -184,7 +184,7 @@ func TestEdge_ForwarderPreservesExpiresAt(t *testing.T) {
 	}))
 	defer remote.Close()
 	fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
-	peer := &domain.PeerInfo{
+	peer := &persistence.PeerInfo{
 		InstanceID: "remote-exp",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
@@ -229,7 +229,7 @@ func TestEdge_ForwarderPreservesExpiresAt(t *testing.T) {
 
 func TestEdge_ForwarderMissingHTTPEndpoint(t *testing.T) {
 	fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
-	peer := &domain.PeerInfo{
+	peer := &persistence.PeerInfo{
 		InstanceID: "grpc-only",
 		Endpoints:  map[string]string{"grpc": "grpc://remote:50051"},
 	}
@@ -258,7 +258,7 @@ func TestEdge_ForwarderRemoteReturns500(t *testing.T) {
 	}))
 	defer remote.Close()
 	fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
-	peer := &domain.PeerInfo{
+	peer := &persistence.PeerInfo{
 		InstanceID: "error-node",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}

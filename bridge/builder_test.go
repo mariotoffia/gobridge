@@ -8,6 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 
@@ -53,28 +54,30 @@ func (f *fakeTransportFactory) Capabilities() []ports.Capability {
 
 type fakeLeaseStore struct{}
 
-func (f *fakeLeaseStore) Acquire(_ context.Context, _ string, _ string, _ time.Duration, _ map[string]string) (domain.LeaseToken, error) {
-	return domain.LeaseToken{}, nil
+func (f *fakeLeaseStore) Acquire(_ context.Context, _ string, _ string, _ time.Duration, _ map[string]string) (persistence.LeaseToken, error) {
+	return persistence.LeaseToken{}, nil
 }
-func (f *fakeLeaseStore) Renew(_ context.Context, _ string, _ domain.LeaseToken, _ time.Duration, _ map[string]string) (domain.LeaseToken, error) {
-	return domain.LeaseToken{}, nil
+func (f *fakeLeaseStore) Renew(_ context.Context, _ string, _ persistence.LeaseToken, _ time.Duration, _ map[string]string) (persistence.LeaseToken, error) {
+	return persistence.LeaseToken{}, nil
 }
-func (f *fakeLeaseStore) Release(_ context.Context, _ string, _ domain.LeaseToken) error { return nil }
-func (f *fakeLeaseStore) Current(_ context.Context, _ string) (domain.LeaseInfo, error) {
-	return domain.LeaseInfo{}, nil
+func (f *fakeLeaseStore) Release(_ context.Context, _ string, _ persistence.LeaseToken) error {
+	return nil
+}
+func (f *fakeLeaseStore) Current(_ context.Context, _ string) (persistence.LeaseInfo, error) {
+	return persistence.LeaseInfo{}, nil
 }
 
 type fakeOutboxStore struct{}
 
-func (f *fakeOutboxStore) Persist(_ context.Context, _ []domain.OutboxRecord) error { return nil }
-func (f *fakeOutboxStore) Claim(_ context.Context, _ string, _ string, _ domain.LeaseToken, _ int) ([]domain.OutboxRecord, error) {
+func (f *fakeOutboxStore) Persist(_ context.Context, _ []persistence.OutboxRecord) error { return nil }
+func (f *fakeOutboxStore) Claim(_ context.Context, _ string, _ string, _ persistence.LeaseToken, _ int) ([]persistence.OutboxRecord, error) {
 	return nil, nil
 }
-func (f *fakeOutboxStore) Complete(_ context.Context, _ []string, _ domain.LeaseToken) error {
+func (f *fakeOutboxStore) Complete(_ context.Context, _ []string, _ persistence.LeaseToken) error {
 	return nil
 }
 func (f *fakeOutboxStore) Expire(_ context.Context, _ time.Time) (int, error) { return 0, nil }
-func (f *fakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]domain.OutboxRecord, error) {
+func (f *fakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]persistence.OutboxRecord, error) {
 	return nil, nil
 }
 

@@ -6,20 +6,20 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 )
 
-// Row-scanning ACL: translate *sql.Rows into domain.OutboxRecord
+// Row-scanning ACL: translate *sql.Rows into persistence.OutboxRecord
 // values. Lives here (not in acl_session.go) so the SDK→domain
 // mapping is reviewable in isolation.
 
 // scanOutboxRecords drains rows into a slice of OutboxRecord. The
 // caller is responsible for closing rows.
-func scanOutboxRecords(rows *sql.Rows) ([]domain.OutboxRecord, error) {
-	var result []domain.OutboxRecord
+func scanOutboxRecords(rows *sql.Rows) ([]persistence.OutboxRecord, error) {
+	var result []persistence.OutboxRecord
 	for rows.Next() {
 		var (
-			r           domain.OutboxRecord
+			r           persistence.OutboxRecord
 			pk          string
 			envJSON     string
 			headersJSON sql.NullString
@@ -37,7 +37,7 @@ func scanOutboxRecords(rows *sql.Rows) ([]domain.OutboxRecord, error) {
 			return nil, wrapErr(err, "sqliteoutbox: scan record")
 		}
 
-		r.Status = domain.OutboxStatus(status)
+		r.Status = persistence.OutboxStatus(status)
 		r.CreatedAt = time.UnixMilli(createdAtMs)
 		if expiresAtMs > 0 {
 			r.ExpiresAt = time.UnixMilli(expiresAtMs)

@@ -85,7 +85,7 @@ linters:
         - github.com/mariotoffia/gobridge/ports.RouteLocator
 
         # 4. Domain / port polymorphic seams.
-        - github.com/mariotoffia/gobridge/domain.DrainStrategy
+        - github.com/mariotoffia/gobridge/domain/persistence.DrainStrategy
         - github.com/mariotoffia/gobridge/domain/clock.Clock
         - github.com/mariotoffia/gobridge/domain/clock.Timer
         - github.com/mariotoffia/gobridge/domain/clock.Ticker

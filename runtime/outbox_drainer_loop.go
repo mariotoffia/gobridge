@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
@@ -98,7 +98,7 @@ func (d *OutboxDrainer) finalDrain(parent context.Context) error {
 	return nil
 }
 
-func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken) (int, error) {
+func (d *OutboxDrainer) drainBatch(ctx context.Context, token persistence.LeaseToken) (int, error) {
 	start := d.clk.Now()
 	sessionTag := shared.Tag{Key: shared.TagKeySessionID, Value: d.partitionKey}
 	routeTag := shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 )
 
 // Delivery is a source-owned unit of work. Transport adapters create
@@ -118,9 +119,9 @@ type Session interface {
 
 // Lease manages cluster ownership for single-active scenarios.
 type Lease interface {
-	Acquire(ctx context.Context) (domain.LeaseToken, error)
-	Renew(ctx context.Context, token domain.LeaseToken) (domain.LeaseToken, error)
-	Release(ctx context.Context, token domain.LeaseToken) error
+	Acquire(ctx context.Context) (persistence.LeaseToken, error)
+	Renew(ctx context.Context, token persistence.LeaseToken) (persistence.LeaseToken, error)
+	Release(ctx context.Context, token persistence.LeaseToken) error
 	Owner() string
 }
 

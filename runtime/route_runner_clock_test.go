@@ -9,6 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -58,10 +59,10 @@ func TestRouteRunner_SharedOutboxCreatedAtUsesInjectedClock(t *testing.T) {
 	fake := clocktest.NewAt(createdAt)
 	var (
 		persistMu sync.Mutex
-		persisted []domain.OutboxRecord
+		persisted []persistence.OutboxRecord
 	)
 	outbox := NewFakeOutboxStore()
-	outbox.PersistFn = func(records []domain.OutboxRecord) error {
+	outbox.PersistFn = func(records []persistence.OutboxRecord) error {
 		persistMu.Lock()
 		defer persistMu.Unlock()
 		persisted = append(persisted, records...)

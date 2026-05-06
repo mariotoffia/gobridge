@@ -7,6 +7,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -97,9 +98,9 @@ func TestOutboxDrainer_EmitsDrainLatency(t *testing.T) {
 
 	token, _ := lease.Acquire(context.Background(), "session-1", "owner-1", 30*time.Second, nil)
 
-	records := []domain.OutboxRecord{{
+	records := []persistence.OutboxRecord{{
 		ID: "r1", RouteID: "route-drain", EnvelopeID: "e1", BindingID: "b1",
-		SessionID: "session-1", Status: domain.OutboxPending,
+		SessionID: "session-1", Status: persistence.OutboxPending,
 		Envelope: messaging.Envelope{ID: "e1", Payload: []byte("data")},
 	}}
 	_ = outbox.Persist(context.Background(), records)
@@ -109,14 +110,14 @@ func TestOutboxDrainer_EmitsDrainLatency(t *testing.T) {
 		LeaseStore:     lease,
 		Sender:         sender,
 		RouteID:        "route-drain",
-		PartitionKey:   domain.OutboxPartitionKey("session-1", "b1"),
+		PartitionKey:   persistence.OutboxPartitionKey("session-1", "b1"),
 		LeaseID:        "session-1",
 		OwnerID:        "owner-1",
 		Policy:         domain.RoutePolicy{}.WithDefaults(),
-		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		Metrics:        rec,
-		TokenFn:        func() (domain.LeaseToken, bool) { return token, true },
+		TokenFn:        func() (persistence.LeaseToken, bool) { return token, true },
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -143,9 +144,9 @@ func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 
 	token, _ := lease.Acquire(context.Background(), "s1", "owner-1", 30*time.Second, nil)
 
-	records := []domain.OutboxRecord{{
+	records := []persistence.OutboxRecord{{
 		ID: "r-exp", RouteID: "route-exp", EnvelopeID: "e-exp", BindingID: "b1",
-		SessionID: "s1", Status: domain.OutboxPending,
+		SessionID: "s1", Status: persistence.OutboxPending,
 		Envelope: messaging.Envelope{
 			ID:        "e-exp",
 			Payload:   []byte("data"),
@@ -160,14 +161,14 @@ func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 		LeaseStore:     lease,
 		Sender:         sender,
 		RouteID:        "route-exp",
-		PartitionKey:   domain.OutboxPartitionKey("s1", "b1"),
+		PartitionKey:   persistence.OutboxPartitionKey("s1", "b1"),
 		LeaseID:        "s1",
 		OwnerID:        "owner-1",
 		Policy:         domain.RoutePolicy{OnExpired: domain.ExpiredDLQ}.WithDefaults(),
-		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		Metrics:        rec,
-		TokenFn:        func() (domain.LeaseToken, bool) { return token, true },
+		TokenFn:        func() (persistence.LeaseToken, bool) { return token, true },
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)

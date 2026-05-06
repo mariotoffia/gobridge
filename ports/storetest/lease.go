@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -175,7 +175,7 @@ func leaseRenewStaleToken(t *testing.T, store ports.LeaseStore) {
 		t.Fatalf("acquire: %v", err)
 	}
 
-	stale := domain.LeaseToken{Version: tok.Version + 999, Owner: "owner-A"}
+	stale := persistence.LeaseToken{Version: tok.Version + 999, Owner: "owner-A"}
 	_, err = store.Renew(ctx, "lt-rst-1", stale, 30*time.Second, nil)
 	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
@@ -189,7 +189,7 @@ func leaseRenewWrongOwner(t *testing.T, store ports.LeaseStore) {
 		t.Fatalf("acquire: %v", err)
 	}
 
-	wrong := domain.LeaseToken{Version: tok.Version, Owner: "owner-B"}
+	wrong := persistence.LeaseToken{Version: tok.Version, Owner: "owner-B"}
 	_, err = store.Renew(ctx, "lt-rwo-1", wrong, 30*time.Second, nil)
 	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
@@ -198,7 +198,7 @@ func leaseRenewWrongOwner(t *testing.T, store ports.LeaseStore) {
 
 func leaseRenewNonExistent(t *testing.T, store ports.LeaseStore) {
 	ctx := context.Background()
-	_, err := store.Renew(ctx, "lt-rne-no-such-lease", domain.LeaseToken{Version: 1, Owner: "x"}, 30*time.Second, nil)
+	_, err := store.Renew(ctx, "lt-rne-no-such-lease", persistence.LeaseToken{Version: 1, Owner: "x"}, 30*time.Second, nil)
 	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
@@ -245,7 +245,7 @@ func leaseReleaseStaleToken(t *testing.T, store ports.LeaseStore) {
 		t.Fatalf("acquire: %v", err)
 	}
 
-	stale := domain.LeaseToken{Version: tok.Version + 1, Owner: "owner-A"}
+	stale := persistence.LeaseToken{Version: tok.Version + 1, Owner: "owner-A"}
 	err = store.Release(ctx, "lt-relst-1", stale)
 	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
@@ -254,7 +254,7 @@ func leaseReleaseStaleToken(t *testing.T, store ports.LeaseStore) {
 
 func leaseReleaseNonExistent(t *testing.T, store ports.LeaseStore) {
 	ctx := context.Background()
-	err := store.Release(ctx, "lt-relne-no-such-lease", domain.LeaseToken{Version: 1, Owner: "x"})
+	err := store.Release(ctx, "lt-relne-no-such-lease", persistence.LeaseToken{Version: 1, Owner: "x"})
 	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}

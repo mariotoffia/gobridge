@@ -9,6 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -220,7 +221,7 @@ func TestE2E_S4_SQSToMQTT_BridgeCrashAndRestart(t *testing.T) {
 	sqsReceiverA := newSQSReceiver(t, queueURL)
 
 	sessCfgA := e2eFastSessionConfig(sessionID)
-	sessCfgA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
+	sessCfgA.DrainStrategy = persistence.NewFixedPoll(30 * time.Second)
 
 	rtA := goruntime.New(
 		goruntime.WithInstanceID("s4-bridge-A"),

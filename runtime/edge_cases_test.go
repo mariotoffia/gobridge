@@ -7,6 +7,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -116,21 +117,21 @@ func TestEdge_StaleFencingTokenRejected(t *testing.T) {
 	}
 
 	// Attempt to complete with A's stale token should fail.
-	staleToken := domain.LeaseToken{Version: 1, Owner: "bridge-A-fenced"}
+	staleToken := persistence.LeaseToken{Version: 1, Owner: "bridge-A-fenced"}
 	_ = outbox.Complete(context.Background(), []string{"nonexistent"}, staleToken)
 	// For existing records with mismatched claim version, this returns ErrStaleFencingToken.
 	// For nonexistent records, it's a no-op in the fake store.
 
 	// Persist a new record and try to claim with stale token.
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         "stale-test-rec",
 		EnvelopeID: "stale-test-env",
 		BindingID:  "b1",
 		SessionID:  sessionID,
-		Status:     domain.OutboxPending,
+		Status:     persistence.OutboxPending,
 		Envelope:   messaging.Envelope{ID: "stale-test-env", Payload: []byte("x")},
 	}
-	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{rec})
+	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{rec})
 
 	// B should be able to claim and complete it with the correct token.
 	waitFor(t, 3*time.Second, "B claims new record", func() bool {
@@ -516,7 +517,7 @@ func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 	sessCfgA := fastSessionConfig(sessionID)
 	sessCfgA.LeaseTTL = 300 * time.Millisecond
 	sessCfgA.RenewInterval = 60 * time.Millisecond
-	sessCfgA.DrainStrategy = domain.NewFixedPoll(10 * time.Second)
+	sessCfgA.DrainStrategy = persistence.NewFixedPoll(10 * time.Second)
 
 	cfgA := goruntime.RouteConfig{
 		ID: "crash-ack-route",
@@ -660,7 +661,7 @@ func TestEdge_CrashAfterSendBeforeCompletion(t *testing.T) {
 	ctxA, cancelA := context.WithCancel(context.Background())
 
 	completeCallCount := 0
-	outbox.CompleteFn = func(_ []string, _ domain.LeaseToken) error {
+	outbox.CompleteFn = func(_ []string, _ persistence.LeaseToken) error {
 		completeCallCount++
 		return shared.NewBridgeError("DDB_TIMEOUT", shared.ErrorTransient, "completion timeout")
 	}

@@ -18,6 +18,7 @@ import (
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -248,7 +249,7 @@ func TestUC40_AdaptiveDrain_Backoff(t *testing.T) {
 	mqttSnd := setupMQTTSender(t, mqttSess)
 	sqsRx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessionID)
-	sc.DrainStrategy = domain.NewAdaptiveBackoff(
+	sc.DrainStrategy = persistence.NewAdaptiveBackoff(
 		100*time.Millisecond, 5*time.Second, 2.0)
 
 	rt := goruntime.New(

@@ -10,6 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -34,7 +35,7 @@ type DLQRouter struct {
 	stopped           bool
 	done              chan struct{}  // closed by Close() to signal Route() to exit select
 	sendWg            sync.WaitGroup // tracks goroutines in the Route select
-	tokenFn           func() (domain.LeaseToken, bool)
+	tokenFn           func() (persistence.LeaseToken, bool)
 	writeMaxAttempts  int
 	writeRetryBackoff domain.BackoffPolicy
 }
@@ -121,7 +122,7 @@ func (r *DLQRouter) HasStore() bool {
 }
 
 // SetTokenFn sets the function used to check lease validity before DLQ writes.
-func (r *DLQRouter) SetTokenFn(fn func() (domain.LeaseToken, bool)) {
+func (r *DLQRouter) SetTokenFn(fn func() (persistence.LeaseToken, bool)) {
 	r.mu.Lock()
 	r.tokenFn = fn
 	r.mu.Unlock()

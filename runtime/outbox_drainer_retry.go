@@ -7,6 +7,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -19,7 +20,7 @@ func (d *OutboxDrainer) completeCtx(parent context.Context) (context.Context, co
 	return context.WithTimeout(context.WithoutCancel(parent), timeout)
 }
 
-func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRecord, token domain.LeaseToken) error {
+func (d *OutboxDrainer) processRecord(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
 	env := &rec.Envelope
 	routeTag := shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID}
 	attempt := rec.ReplayCount + 1
@@ -117,7 +118,7 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRec
 	return nil
 }
 
-func (d *OutboxDrainer) handleExpired(ctx context.Context, rec *domain.OutboxRecord, token domain.LeaseToken) error {
+func (d *OutboxDrainer) handleExpired(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
 	env := &rec.Envelope
 	if d.policy.OnExpired == domain.ExpiredDLQ {
 		if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID, rec.SessionID, "", shared.ErrMessageExpired, rec.ReplayCount); dlqErr != nil {
@@ -140,7 +141,7 @@ func (d *OutboxDrainer) handleExpired(ctx context.Context, rec *domain.OutboxRec
 	return completeErr
 }
 
-func (d *OutboxDrainer) handlePoison(ctx context.Context, rec *domain.OutboxRecord, token domain.LeaseToken) error {
+func (d *OutboxDrainer) handlePoison(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
 	env := &rec.Envelope
 	poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent, "replay count exceeded")
 	if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID, rec.SessionID, "", poisonErr, rec.ReplayCount); dlqErr != nil {

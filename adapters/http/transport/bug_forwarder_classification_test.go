@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -29,7 +29,7 @@ func TestBugForwarder_5xxReturnsTransientError(t *testing.T) {
 			}))
 			defer remote.Close()
 			fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
-			peer := &domain.PeerInfo{
+			peer := &persistence.PeerInfo{
 				InstanceID: "remote-5xx",
 				Endpoints:  map[string]string{"http": remote.URL},
 			}
@@ -67,7 +67,7 @@ func TestBugForwarder_4xxReturnsPermanentError(t *testing.T) {
 			}))
 			defer remote.Close()
 			fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
-			peer := &domain.PeerInfo{
+			peer := &persistence.PeerInfo{
 				InstanceID: "remote-4xx",
 				Endpoints:  map[string]string{"http": remote.URL},
 			}
@@ -106,7 +106,7 @@ func TestBugForwarder_2xxReturnsNoError(t *testing.T) {
 	}))
 	defer remote.Close()
 	fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
-	peer := &domain.PeerInfo{
+	peer := &persistence.PeerInfo{
 		InstanceID: "remote-ok",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}

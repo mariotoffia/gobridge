@@ -8,6 +8,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -24,7 +25,7 @@ type OutboxDrainer struct {
 	leaseID        string
 	ownerID        string
 	policy         domain.RoutePolicy
-	strategy       domain.DrainStrategy
+	strategy       persistence.DrainStrategy
 	batchSize      int
 	maxBatchSize   int
 	maxConcurrency int
@@ -59,7 +60,7 @@ type OutboxDrainer struct {
 	// tokenFn returns the current lease token and whether the caller
 	// still holds the lease. The OutboxDrainer only processes when
 	// the second return value is true.
-	tokenFn func() (domain.LeaseToken, bool)
+	tokenFn func() (persistence.LeaseToken, bool)
 
 	// readyFn returns true when the egress transport is connected and
 	// ready to send. When set and returning false, the drainer skips the
@@ -79,7 +80,7 @@ type OutboxDrainerConfig struct {
 	LeaseID             string
 	OwnerID             string
 	Policy              domain.RoutePolicy
-	Strategy            domain.DrainStrategy
+	Strategy            persistence.DrainStrategy
 	DrainBatchSize      int
 	DrainMaxBatchSize   int
 	DrainMaxConcurrency int
@@ -106,7 +107,7 @@ type OutboxDrainerConfig struct {
 	Hook              ports.DeliveryHook
 	Logger            *slog.Logger
 	Clock             clock.Clock
-	TokenFn           func() (domain.LeaseToken, bool)
+	TokenFn           func() (persistence.LeaseToken, bool)
 
 	// ReadyFn optionally gates drain cycles on egress transport
 	// readiness. When the MQTT session is disconnected, skipping
@@ -147,7 +148,7 @@ const (
 
 func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 	if cfg.Strategy == nil {
-		cfg.Strategy = domain.NewAdaptiveBackoff(0, 0, 0)
+		cfg.Strategy = persistence.NewAdaptiveBackoff(0, 0, 0)
 	}
 	if cfg.DrainBatchSize <= 0 {
 		cfg.DrainBatchSize = 100
@@ -176,7 +177,7 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 		cfg.BatchTimeoutFloor = 2 * time.Second
 	}
 	if cfg.TokenFn == nil {
-		cfg.TokenFn = func() (domain.LeaseToken, bool) { return domain.LeaseToken{}, false }
+		cfg.TokenFn = func() (persistence.LeaseToken, bool) { return persistence.LeaseToken{}, false }
 	}
 	leaseID := cfg.LeaseID
 	if leaseID == "" {

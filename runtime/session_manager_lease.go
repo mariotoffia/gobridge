@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
@@ -123,7 +123,7 @@ func (m *SessionManager) runExclusive(ctx context.Context) error {
 	}
 }
 
-func (m *SessionManager) acquireLeaseWithRetry(ctx context.Context) (domain.LeaseToken, error) {
+func (m *SessionManager) acquireLeaseWithRetry(ctx context.Context) (persistence.LeaseToken, error) {
 	leaseTag := shared.Tag{Key: shared.TagKeyLeaseID, Value: m.sessionID}
 	for {
 		start := m.clk.Now()
@@ -137,7 +137,7 @@ func (m *SessionManager) acquireLeaseWithRetry(ctx context.Context) (domain.Leas
 
 		select {
 		case <-ctx.Done():
-			return domain.LeaseToken{}, ctx.Err()
+			return persistence.LeaseToken{}, ctx.Err()
 		case <-m.clk.After(m.clampedInterval()):
 		}
 	}

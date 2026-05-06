@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 )
 
 // stubLeaseStore is a minimal LeaseStore used for routeLocator clock tests.
@@ -17,13 +17,13 @@ import (
 // immediately.
 type stubLeaseStore struct {
 	mu       sync.Mutex
-	info     domain.LeaseInfo
+	info     persistence.LeaseInfo
 	calls    int32
 	err      error
 	errUntil int // first N Current calls return err; 0 disables
 }
 
-func (s *stubLeaseStore) setInfo(info domain.LeaseInfo) {
+func (s *stubLeaseStore) setInfo(info persistence.LeaseInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.info = info
@@ -36,26 +36,26 @@ func (s *stubLeaseStore) setErrForNCalls(err error, n int) {
 	s.errUntil = n
 }
 
-func (s *stubLeaseStore) Current(_ context.Context, leaseID string) (domain.LeaseInfo, error) {
+func (s *stubLeaseStore) Current(_ context.Context, leaseID string) (persistence.LeaseInfo, error) {
 	atomic.AddInt32(&s.calls, 1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.errUntil > 0 {
 		s.errUntil--
-		return domain.LeaseInfo{}, s.err
+		return persistence.LeaseInfo{}, s.err
 	}
 	info := s.info
 	info.LeaseID = leaseID
 	return info, nil
 }
 
-func (s *stubLeaseStore) Acquire(context.Context, string, string, time.Duration, map[string]string) (domain.LeaseToken, error) {
+func (s *stubLeaseStore) Acquire(context.Context, string, string, time.Duration, map[string]string) (persistence.LeaseToken, error) {
 	panic("stubLeaseStore.Acquire not implemented")
 }
-func (s *stubLeaseStore) Renew(context.Context, string, domain.LeaseToken, time.Duration, map[string]string) (domain.LeaseToken, error) {
+func (s *stubLeaseStore) Renew(context.Context, string, persistence.LeaseToken, time.Duration, map[string]string) (persistence.LeaseToken, error) {
 	panic("stubLeaseStore.Renew not implemented")
 }
-func (s *stubLeaseStore) Release(context.Context, string, domain.LeaseToken) error {
+func (s *stubLeaseStore) Release(context.Context, string, persistence.LeaseToken) error {
 	panic("stubLeaseStore.Release not implemented")
 }
 
@@ -69,7 +69,7 @@ func TestRouteLocator_CacheTTL_FakeClock(t *testing.T) {
 	fake := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 
 	store := &stubLeaseStore{}
-	store.setInfo(domain.LeaseInfo{
+	store.setInfo(persistence.LeaseInfo{
 		Owner:     "instance-remote",
 		Version:   1,
 		Endpoints: map[string]string{"http": "http://remote:8080"},
@@ -176,7 +176,7 @@ func TestRouteLocator_CircuitCooldown_FakeClock(t *testing.T) {
 	}
 
 	store.setErrForNCalls(nil, 0)
-	store.setInfo(domain.LeaseInfo{Owner: "instance-local"})
+	store.setInfo(persistence.LeaseInfo{Owner: "instance-local"})
 
 	fake.Advance(2 * time.Millisecond)
 	_, local, err = rl.Locate(ctx, "route-1")

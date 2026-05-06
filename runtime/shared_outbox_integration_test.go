@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -41,7 +42,7 @@ func fastSessionConfig(sessionID string) goruntime.SessionConfig {
 	cfg.RenewInterval = 80 * time.Millisecond
 	cfg.RenewJitter = 10 * time.Millisecond
 	cfg.StepDownGrace = 100 * time.Millisecond
-	cfg.DrainStrategy = domain.NewFixedPoll(30 * time.Millisecond)
+	cfg.DrainStrategy = persistence.NewFixedPoll(30 * time.Millisecond)
 	cfg.DrainBatchSize = 50
 	return cfg
 }

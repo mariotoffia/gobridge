@@ -8,6 +8,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -37,7 +38,7 @@ func NewQueryCountingOutboxStore() *QueryCountingOutboxStore {
 	return &QueryCountingOutboxStore{FakeOutboxStore: NewFakeOutboxStore()}
 }
 
-func (s *QueryCountingOutboxStore) QueryPending(ctx context.Context, partitionKey string, limit int) ([]domain.OutboxRecord, error) {
+func (s *QueryCountingOutboxStore) QueryPending(ctx context.Context, partitionKey string, limit int) ([]persistence.OutboxRecord, error) {
 	atomic.AddInt64(&s.queryCount, 1)
 	return s.FakeOutboxStore.QueryPending(ctx, partitionKey, limit)
 }
@@ -195,16 +196,16 @@ func TestDepthCache_AtCapacityCachedImmediately(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		rec := domain.OutboxRecord{
+		rec := persistence.OutboxRecord{
 			ID:         "prefill-" + string(rune('a'+i)),
 			RouteID:    "cap-route",
 			EnvelopeID: "prefill-env-" + string(rune('a'+i)),
 			BindingID:  "b1",
 			SessionID:  "mqtt-cap",
 			Envelope:   messaging.Envelope{ID: "prefill-env-" + string(rune('a'+i)), Payload: []byte("x")},
-			Status:     domain.OutboxPending,
+			Status:     persistence.OutboxPending,
 		}
-		_ = countingOutbox.Persist(ctx, []domain.OutboxRecord{rec})
+		_ = countingOutbox.Persist(ctx, []persistence.OutboxRecord{rec})
 	}
 
 	receiver := NewFakeReceiver()

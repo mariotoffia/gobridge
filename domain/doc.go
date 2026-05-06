@@ -5,13 +5,18 @@
 // Hexagonal Architecture: bridge/ports imports domain, adapters import ports,
 // and nothing imports inward from domain.
 //
-// Key types:
-//   - Envelope: the normalized message being moved through the bridge
-//   - LeaseToken / LeaseInfo: fencing tokens for cluster lease ownership
-//   - RoutePolicy: per-route delivery, retry, and backpressure configuration
-//   - DestinationBinding / DispatchPlan: egress resolution model
-//   - OutboxRecord / OutboxStatus: durable outbox state machine
-//   - DLQEntry: dead-letter queue record
-//   - Header constants: well-known x-bridge.* header keys
-//   - Error classification: Transient, Permanent, Expired, Rejected
+// The domain layer is being decomposed into bounded-context sub-packages
+// (FIX-004). Types that previously lived directly in this package have been
+// moved as follows:
+//   - Envelope, headers, TraceContext      -> domain/messaging
+//   - BridgeError, ErrorClass, ErrorCode,
+//     Tag, metric constants                -> domain/shared
+//   - OutboxRecord, OutboxStatus,
+//     OutboxPartitionKey, LeaseToken,
+//     LeaseInfo, PeerInfo, DrainStrategy,
+//     FixedPoll, AdaptiveBackoff           -> domain/persistence
+//
+// The remaining transitional residents of this package are RoutePolicy,
+// DestinationBinding, DispatchPlan, Credentials, and a few related helpers,
+// which will be relocated in subsequent FIX-004 phases.
 package domain

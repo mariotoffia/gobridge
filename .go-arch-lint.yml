@@ -109,6 +109,7 @@ components:
   domain: { in: [domain, domain/**] }
   domain_shared: { in: [domain/shared, domain/shared/**] }
   domain_messaging: { in: [domain/messaging, domain/messaging/**] }
+  domain_persistence: { in: [domain/persistence, domain/persistence/**] }
 
   # ---- Layer 2: Ports + Application Services + Shared Kernel ----
   ports: { in: [ports, ports/**] }
@@ -264,10 +265,16 @@ deps:
     canUse: [_no_external_deps_]
   domain_messaging:
     canUse: [_no_external_deps_]
+  domain_persistence:
+    mayDependOn:
+      - domain_shared
+      - domain_messaging
+    canUse: [_no_external_deps_]
   domain:
     mayDependOn:
       - domain_shared
       - domain_messaging
+      - domain_persistence
     canUse: [_no_external_deps_]
 
   # ---- Layer 2: Ports + Application Services + Shared Kernel ----
@@ -282,6 +289,7 @@ deps:
       - domain
       - domain_shared
       - domain_messaging
+      - domain_persistence
     canUse:
       - _no_external_deps_
 
@@ -297,6 +305,7 @@ deps:
       - domain
       - domain_shared
       - domain_messaging
+      - domain_persistence
       - ports
     canUse:
       - yaml
@@ -315,6 +324,7 @@ deps:
       - domain
       - domain_shared
       - domain_messaging
+      - domain_persistence
       - ports
 
   # validate hosts invariants over ports + domain. It MUST NOT depend on
@@ -325,6 +335,7 @@ deps:
       - domain
       - domain_shared
       - domain_messaging
+      - domain_persistence
       - ports
 
   # runtime is the use-case engine. Per the Dependency Rule it depends
@@ -335,6 +346,7 @@ deps:
       - domain
       - domain_shared
       - domain_messaging
+      - domain_persistence
       - ports
       - logging
       - observability
@@ -348,6 +360,7 @@ deps:
       - domain
       - domain_shared
       - domain_messaging
+      - domain_persistence
       - logging
       - ports
       - runtime
@@ -366,6 +379,7 @@ deps:
       - domain
       - domain_shared
       - domain_messaging
+      - domain_persistence
       - logging
       - observability
       - ports
@@ -382,6 +396,7 @@ deps:
       - domain
       - domain_shared
       - domain_messaging
+      - domain_persistence
       - ports
     canUse:
       - ojg
@@ -401,28 +416,28 @@ deps:
   # consumes the ports.CircuitBreaker contract only — the implementation
   # is supplied by the composition root.
   adapter_transport_mqtt_paho:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [paho]
 
   adapter_transport_sqs:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [aws]
 
   adapter_transport_servicebus:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [asb]
 
   adapter_transport_amqp091:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [amqp091]
 
   adapter_transport_amqp10:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [amqp10]
 
   # HTTP transport is stdlib-only.
   adapter_transport_http:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
 
   # ---- Layer 3: Driven adapters -- store implementations ----
   #
@@ -431,25 +446,25 @@ deps:
   # the aggregator imports them, never the reverse.
 
   adapter_store_native_memorylease:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
   adapter_store_native_memoryoutbox:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
   adapter_store_native_memorydlq:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
   adapter_store_native_sqliteoutbox:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [sqlite]
   adapter_store_native_sqlitedlq:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [sqlite]
   adapter_store_aws_dynamodblease:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [aws]
   adapter_store_aws_dynamodboutbox:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [aws]
   adapter_store_aws_dynamodbdlq:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [aws]
 
   # ---- Layer 3: Store factory aggregators ----
@@ -464,6 +479,7 @@ deps:
       - domain
       - domain_shared
       - domain_messaging
+      - domain_persistence
       - logging
       - ports
       - adapter_store_native_memorylease
@@ -477,6 +493,7 @@ deps:
       - domain
       - domain_shared
       - domain_messaging
+      - domain_persistence
       - logging
       - ports
       - adapter_store_aws_dynamodblease
@@ -493,35 +510,35 @@ deps:
   # shape (BridgeConfig + Loader/Watcher/Reloader contracts) and on
   # config for the parsing/serialization behavior.
   adapter_config_native_file:
-    mayDependOn: [config, domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [config, domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [fsnotify]
   adapter_config_aws_dynamodb:
-    mayDependOn: [config, domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [config, domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [aws]
 
   # ---- Layer 3: Credential adapters ----
   adapter_credentials_native_file:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
   adapter_credentials_aws_ssm:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [aws]
 
   # ---- Layer 3: Observability adapters ----
   adapter_metrics_cloudwatch:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [aws]
   adapter_metrics_otel:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [otel]
   adapter_tracing_otel:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [otel]
 
   # ---- Layer 3: Cluster resolver adapters ----
   adapter_cluster_native:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
   adapter_cluster_aws:
-    mayDependOn: [domain, domain_shared, domain_messaging, logging, ports]
+    mayDependOn: [domain, domain_shared, domain_messaging, domain_persistence, logging, ports]
     canUse: [aws]
 
   # ---- Layer 4: Composition root ----

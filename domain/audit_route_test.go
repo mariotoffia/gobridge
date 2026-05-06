@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -44,7 +45,7 @@ func TestDefaultBackoffPolicy_MutableGlobalDoesNotAffectWithDefaults(t *testing.
 // TestOutboxPartitionKey_BothEmpty validates the edge case where both
 // sessionID and bindingID are empty strings, producing "BINDING#".
 func TestOutboxPartitionKey_BothEmpty(t *testing.T) {
-	key := domain.OutboxPartitionKey("", "")
+	key := persistence.OutboxPartitionKey("", "")
 	if key != "BINDING#" {
 		t.Fatalf("expected BINDING#, got %q", key)
 	}
@@ -53,7 +54,7 @@ func TestOutboxPartitionKey_BothEmpty(t *testing.T) {
 // TestOutboxPartitionKey_SessionTakesPrecedence validates that when
 // both are non-empty, sessionID takes precedence.
 func TestOutboxPartitionKey_SessionTakesPrecedence(t *testing.T) {
-	key := domain.OutboxPartitionKey("sess-1", "bind-1")
+	key := persistence.OutboxPartitionKey("sess-1", "bind-1")
 	if key != "SESSION#sess-1" {
 		t.Fatalf("expected SESSION#sess-1, got %q", key)
 	}

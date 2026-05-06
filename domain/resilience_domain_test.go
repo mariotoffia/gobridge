@@ -17,7 +17,7 @@ package domain_test
 // │ T005 │ BridgeError.Is matches by code             │ PASS     │
 // │ T006 │ IsRecoverableError treats unknown as true  │ PASS     │
 // │ T007 │ BridgeError.With clones context map        │ PASS     │
-// │ T008 │ domain.OutboxPartitionKey deterministic           │ PASS     │
+// │ T008 │ persistence.OutboxPartitionKey deterministic           │ PASS     │
 // └──────┴────────────────────────────────────────────┴──────────┘
 // ═══════════════════════════════════════════════
 
@@ -26,8 +26,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -214,14 +214,14 @@ func TestOutboxPartitionKey_DeterministicTable(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := domain.OutboxPartitionKey(tc.sessionID, tc.bindingID)
+		got := persistence.OutboxPartitionKey(tc.sessionID, tc.bindingID)
 		if got != tc.expected {
-			t.Fatalf("domain.OutboxPartitionKey(%q, %q) = %q, want %q",
+			t.Fatalf("persistence.OutboxPartitionKey(%q, %q) = %q, want %q",
 				tc.sessionID, tc.bindingID, got, tc.expected)
 		}
-		got2 := domain.OutboxPartitionKey(tc.sessionID, tc.bindingID)
+		got2 := persistence.OutboxPartitionKey(tc.sessionID, tc.bindingID)
 		if got != got2 {
-			t.Fatal("domain.OutboxPartitionKey should be deterministic")
+			t.Fatal("persistence.OutboxPartitionKey should be deterministic")
 		}
 	}
 }

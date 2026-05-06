@@ -8,6 +8,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -18,31 +19,31 @@ func (f senderFunc) Send(ctx context.Context, env *messaging.Envelope) error {
 }
 
 func TestOutboxDrainer_CompleteSurvivesNearBatchDeadline(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox := NewFakeOutboxStore()
 	leaseStore := NewFakeLeaseStore()
 	dlqStore := NewFakeDLQStore()
 
-	pk := domain.OutboxPartitionKey("sess-complete-deadline", "")
+	pk := persistence.OutboxPartitionKey("sess-complete-deadline", "")
 	if _, err := leaseStore.Acquire(context.Background(), "sess-complete-deadline", token.Owner, 30*time.Second, nil); err != nil {
 		t.Fatalf("acquire lease: %v", err)
 	}
 
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         "rec-complete-deadline",
 		RouteID:    "route-1",
 		EnvelopeID: "env-complete-deadline",
 		BindingID:  "bind-1",
 		SessionID:  "sess-complete-deadline",
 		Envelope:   messaging.Envelope{ID: "env-complete-deadline", Payload: []byte("payload")},
-		Status:     domain.OutboxPending,
+		Status:     persistence.OutboxPending,
 	}
-	if err := outbox.Persist(context.Background(), []domain.OutboxRecord{rec}); err != nil {
+	if err := outbox.Persist(context.Background(), []persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
 	deadlineCh := make(chan time.Time, 1)
-	outbox.CompleteCtxFn = func(ctx context.Context, _ []string, _ domain.LeaseToken) error {
+	outbox.CompleteCtxFn = func(ctx context.Context, _ []string, _ persistence.LeaseToken) error {
 		deadline, ok := ctx.Deadline()
 		if !ok {
 			return errors.New("complete context has no deadline")
@@ -67,14 +68,14 @@ func TestOutboxDrainer_CompleteSurvivesNearBatchDeadline(t *testing.T) {
 		LeaseID:               "sess-complete-deadline",
 		OwnerID:               token.Owner,
 		Policy:                policy,
-		Strategy:              domain.NewFixedPoll(10 * time.Millisecond),
+		Strategy:              persistence.NewFixedPoll(10 * time.Millisecond),
 		DrainBatchSize:        1,
 		DrainMaxBatchSize:     1,
 		DrainMaxConcurrency:   1,
 		PerRecordDrainTimeout: 120 * time.Millisecond,
 		MaxDrainTimeout:       120 * time.Millisecond,
 		BatchTimeoutFloor:     10 * time.Millisecond,
-		TokenFn: func() (domain.LeaseToken, bool) {
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			return token, true
 		},
 		OnBatchComplete: func(n int) { batchCh <- n },
@@ -113,32 +114,32 @@ func TestOutboxDrainer_CompleteSurvivesNearBatchDeadline(t *testing.T) {
 }
 
 func TestOutboxDrainer_CompleteRespectsRuntimeShutdown(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox := NewFakeOutboxStore()
 	leaseStore := NewFakeLeaseStore()
 	dlqStore := NewFakeDLQStore()
 
-	pk := domain.OutboxPartitionKey("sess-complete-shutdown", "")
+	pk := persistence.OutboxPartitionKey("sess-complete-shutdown", "")
 	if _, err := leaseStore.Acquire(context.Background(), "sess-complete-shutdown", token.Owner, 30*time.Second, nil); err != nil {
 		t.Fatalf("acquire lease: %v", err)
 	}
 
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         "rec-complete-shutdown",
 		RouteID:    "route-1",
 		EnvelopeID: "env-complete-shutdown",
 		BindingID:  "bind-1",
 		SessionID:  "sess-complete-shutdown",
 		Envelope:   messaging.Envelope{ID: "env-complete-shutdown", Payload: []byte("payload")},
-		Status:     domain.OutboxPending,
+		Status:     persistence.OutboxPending,
 	}
-	if err := outbox.Persist(context.Background(), []domain.OutboxRecord{rec}); err != nil {
+	if err := outbox.Persist(context.Background(), []persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
 	completeStarted := make(chan struct{}, 1)
 	completeReturned := make(chan time.Duration, 1)
-	outbox.CompleteCtxFn = func(ctx context.Context, _ []string, _ domain.LeaseToken) error {
+	outbox.CompleteCtxFn = func(ctx context.Context, _ []string, _ persistence.LeaseToken) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -167,12 +168,12 @@ func TestOutboxDrainer_CompleteRespectsRuntimeShutdown(t *testing.T) {
 		LeaseID:             "sess-complete-shutdown",
 		OwnerID:             token.Owner,
 		Policy:              policy,
-		Strategy:            domain.NewFixedPoll(10 * time.Millisecond),
+		Strategy:            persistence.NewFixedPoll(10 * time.Millisecond),
 		DrainBatchSize:      1,
 		DrainMaxBatchSize:   1,
 		DrainMaxConcurrency: 1,
 		BatchTimeoutFloor:   100 * time.Millisecond,
-		TokenFn: func() (domain.LeaseToken, bool) {
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			return token, true
 		},
 	})

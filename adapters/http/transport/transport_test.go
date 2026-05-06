@@ -16,9 +16,9 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
@@ -28,12 +28,12 @@ import (
 // ---------------------------------------------------------------------------
 
 type stubLocator struct {
-	peer  *domain.PeerInfo
+	peer  *persistence.PeerInfo
 	local bool
 	err   error
 }
 
-func (s *stubLocator) Locate(_ context.Context, _ string) (*domain.PeerInfo, bool, error) {
+func (s *stubLocator) Locate(_ context.Context, _ string) (*persistence.PeerInfo, bool, error) {
 	return s.peer, s.local, s.err
 }
 
@@ -44,12 +44,12 @@ type recordingForwarder struct {
 }
 
 type forwardCall struct {
-	Peer       *domain.PeerInfo
+	Peer       *persistence.PeerInfo
 	ReceiverID string
 	Env        *messaging.Envelope
 }
 
-func (f *recordingForwarder) Forward(_ context.Context, peer *domain.PeerInfo, receiverID string, env *messaging.Envelope) error {
+func (f *recordingForwarder) Forward(_ context.Context, peer *persistence.PeerInfo, receiverID string, env *messaging.Envelope) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, forwardCall{Peer: peer, ReceiverID: receiverID, Env: env})
 	f.mu.Unlock()
@@ -329,7 +329,7 @@ func TestReceiver_LocalProcessing(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReceiver_ClusterForward(t *testing.T) {
-	remotePeer := &domain.PeerInfo{
+	remotePeer := &persistence.PeerInfo{
 		InstanceID: "remote-1",
 		Endpoints:  map[string]string{"http": "http://remote:9090"},
 	}
@@ -394,7 +394,7 @@ func TestReceiver_ClusterForward(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReceiver_ForwardedRequestNotReforwarded(t *testing.T) {
-	remotePeer := &domain.PeerInfo{
+	remotePeer := &persistence.PeerInfo{
 		InstanceID: "remote-1",
 		Endpoints:  map[string]string{"http": "http://remote:9090"},
 	}
@@ -549,7 +549,7 @@ func TestSSESender_BroadcastToClients(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSSESender_RedirectWhenRemote(t *testing.T) {
-	remotePeer := &domain.PeerInfo{
+	remotePeer := &persistence.PeerInfo{
 		InstanceID: "remote-sse",
 		Endpoints:  map[string]string{"http": "http://remote:8080"},
 	}
@@ -617,7 +617,7 @@ func TestHTTPForwarder_ForwardSuccess(t *testing.T) {
 	defer remote.Close()
 	fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
 
-	peer := &domain.PeerInfo{
+	peer := &persistence.PeerInfo{
 		InstanceID: "remote-node",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}

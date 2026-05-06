@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -164,7 +165,7 @@ func TestDrainerNameGeneration(t *testing.T) {
 // runs a single drain cycle; the outbox is empty so no records are
 // sent, but the drainer must accept the config without error.
 func TestOutboxDrainerConfig_DrainBatchSize_Default(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
 		cfg.DrainBatchSize = 0
 	})
@@ -172,7 +173,7 @@ func TestOutboxDrainerConfig_DrainBatchSize_Default(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = drainer.Run(ctx) }()
 
-	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{
+	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{
 		{ID: "rec-def", RouteID: "route-1", EnvelopeID: "env-def", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-def", Payload: []byte("x")}},
 	})
 
@@ -186,13 +187,13 @@ func TestOutboxDrainerConfig_DrainBatchSize_Default(t *testing.T) {
 // explicit DrainBatchSize value is respected by verifying the Claim
 // limit parameter matches the configured value.
 func TestOutboxDrainerConfig_DrainBatchSize_Custom(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	var observedLimit int64
 	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
 		cfg.DrainBatchSize = 42
 	})
 
-	outbox.ClaimFn = func(_ string, _ string, _ domain.LeaseToken, limit int) ([]domain.OutboxRecord, error) {
+	outbox.ClaimFn = func(_ string, _ string, _ persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error) {
 		atomic.StoreInt64(&observedLimit, int64(limit))
 		return nil, nil
 	}
@@ -227,11 +228,11 @@ func TestOutboxDrainerConfig_DrainBatchSize_Custom(t *testing.T) {
 //
 //	──[persist records]──[first drain cycle]──[cancel ctx]──[finalDrain]──
 func TestOutboxDrainer_FinalDrain_CompletesAfterCancel(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	pollEntered := make(chan struct{}, 1)
 	strategy := &signalingStrategy{
-		inner:    domain.NewFixedPoll(10 * time.Millisecond),
+		inner:    persistence.NewFixedPoll(10 * time.Millisecond),
 		onSignal: pollEntered,
 	}
 
@@ -241,7 +242,7 @@ func TestOutboxDrainer_FinalDrain_CompletesAfterCancel(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{
 		{ID: "final-1", RouteID: "route-1", EnvelopeID: "env-f1", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-f1", Payload: []byte("final")}},
 	})
 
@@ -334,7 +335,7 @@ func TestWithGlobalMaxInFlight_Positive_Accepted(t *testing.T) {
 // (non-blocking) on the first NextInterval call, allowing tests to
 // detect when the drainer has entered its poll loop.
 type signalingStrategy struct {
-	inner    domain.DrainStrategy
+	inner    persistence.DrainStrategy
 	onSignal chan<- struct{}
 	once     sync.Once
 }
@@ -365,7 +366,7 @@ func (s *signalingStrategy) NextInterval(n int) time.Duration {
 //
 // ═══════════════════════════════════════════════════════════════════════
 func TestOutboxDrainerConfig_DrainBatchSize_NegativeClamped(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
 		cfg.DrainBatchSize = -1
 	})
@@ -373,7 +374,7 @@ func TestOutboxDrainerConfig_DrainBatchSize_NegativeClamped(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = drainer.Run(ctx) }()
 
-	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{
+	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{
 		{ID: "rec-neg", RouteID: "route-1", EnvelopeID: "env-neg", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-neg", Payload: []byte("neg")}},
 	})
 
@@ -392,7 +393,7 @@ func TestOutboxDrainerConfig_DrainBatchSize_NegativeClamped(t *testing.T) {
 //
 // ═══════════════════════════════════════════════════════════════════════
 func TestOutboxDrainerConfig_DrainMaxBatchSize_FloorsToBatchSize(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
 		cfg.DrainBatchSize = 200
 		cfg.DrainMaxBatchSize = 50
@@ -401,7 +402,7 @@ func TestOutboxDrainerConfig_DrainMaxBatchSize_FloorsToBatchSize(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = drainer.Run(ctx) }()
 
-	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{
+	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{
 		{ID: "rec-floor", RouteID: "route-1", EnvelopeID: "env-floor", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-floor", Payload: []byte("f")}},
 	})
 

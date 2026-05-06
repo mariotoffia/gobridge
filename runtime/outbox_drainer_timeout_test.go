@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -152,7 +153,7 @@ func TestComputeBatchDeadline_ZeroBatchReturnsFloor(t *testing.T) {
 //   - All 5 records reach Completed status
 //   - No duplicate completion (no stale-claim re-pickup)
 func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	const recordCount = 5
 	const sendLatency = 250 * time.Millisecond
@@ -161,7 +162,7 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 	leaseStore := NewFakeLeaseStore()
 	dlqStore := NewFakeDLQStore()
 
-	pk := domain.OutboxPartitionKey("sess-slow", "")
+	pk := persistence.OutboxPartitionKey("sess-slow", "")
 	if _, err := leaseStore.Acquire(context.Background(), "sess-slow",
 		token.Owner, 30*time.Second, nil); err != nil {
 		t.Fatalf("acquire lease: %v", err)
@@ -169,7 +170,7 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 
 	ctx := context.Background()
 	for i := range recordCount {
-		rec := domain.OutboxRecord{
+		rec := persistence.OutboxRecord{
 			ID:         fmt.Sprintf("rec-%d", i),
 			RouteID:    "route-1",
 			EnvelopeID: fmt.Sprintf("env-%d", i),
@@ -179,9 +180,9 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 				ID:      fmt.Sprintf("env-%d", i),
 				Payload: []byte("payload"),
 			},
-			Status: domain.OutboxPending,
+			Status: persistence.OutboxPending,
 		}
-		if err := outbox.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
+		if err := outbox.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist: %v", err)
 		}
 	}
@@ -199,7 +200,7 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 		LeaseID:             "sess-slow",
 		OwnerID:             token.Owner,
 		Policy:              domain.RoutePolicy{}.WithDefaults(),
-		Strategy:            domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:            persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:      recordCount,
 		DrainMaxBatchSize:   recordCount,
 		DrainMaxConcurrency: 1,
@@ -209,7 +210,7 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 		PerRecordDrainTimeout: 500 * time.Millisecond,
 		MaxDrainTimeout:       5 * time.Second,
 		BatchTimeoutFloor:     2 * time.Second,
-		TokenFn: func() (domain.LeaseToken, bool) {
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			return token, true
 		},
 		OnBatchComplete: func(n int) { batchCh <- n },
@@ -260,7 +261,7 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 //   - Fewer than recordCount records complete within the fixed
 //     DrainTimeout window (context cancels mid-batch).
 func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	const recordCount = 5
 	const sendLatency = 250 * time.Millisecond
@@ -269,7 +270,7 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 	leaseStore := NewFakeLeaseStore()
 	dlqStore := NewFakeDLQStore()
 
-	pk := domain.OutboxPartitionKey("sess-legacy", "")
+	pk := persistence.OutboxPartitionKey("sess-legacy", "")
 	if _, err := leaseStore.Acquire(context.Background(), "sess-legacy",
 		token.Owner, 30*time.Second, nil); err != nil {
 		t.Fatalf("acquire lease: %v", err)
@@ -277,7 +278,7 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 
 	ctx := context.Background()
 	for i := range recordCount {
-		rec := domain.OutboxRecord{
+		rec := persistence.OutboxRecord{
 			ID:         fmt.Sprintf("rec-legacy-%d", i),
 			RouteID:    "route-1",
 			EnvelopeID: fmt.Sprintf("env-legacy-%d", i),
@@ -287,9 +288,9 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 				ID:      fmt.Sprintf("env-legacy-%d", i),
 				Payload: []byte("payload"),
 			},
-			Status: domain.OutboxPending,
+			Status: persistence.OutboxPending,
 		}
-		if err := outbox.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
+		if err := outbox.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist: %v", err)
 		}
 	}
@@ -307,7 +308,7 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 		LeaseID:             "sess-legacy",
 		OwnerID:             token.Owner,
 		Policy:              domain.RoutePolicy{}.WithDefaults(),
-		Strategy:            domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:            persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:      recordCount,
 		DrainMaxBatchSize:   recordCount,
 		DrainMaxConcurrency: 1,
@@ -318,7 +319,7 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 		// batch's success count rather than the cumulative total.
 		DrainTimeout:      500 * time.Millisecond,
 		BatchTimeoutFloor: 500 * time.Millisecond,
-		TokenFn: func() (domain.LeaseToken, bool) {
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			return token, true
 		},
 		OnBatchComplete: func(n int) {

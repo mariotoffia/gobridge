@@ -12,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -41,7 +42,7 @@ import (
 //
 // ───────────────────────────────────────────────────────────────────────
 func TestAdaptBatchSize_HalvesOnConsecutiveZeroSuccess(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	var sendCount int32
 	failAfter := int32(3)
@@ -57,19 +58,19 @@ func TestAdaptBatchSize_HalvesOnConsecutiveZeroSuccess(t *testing.T) {
 	}
 
 	lease := NewFakeLeaseStore()
-	pk := domain.OutboxPartitionKey("sess-1", "")
+	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	ctx := context.Background()
 	for i := 0; i < 20; i++ {
-		rec := domain.OutboxRecord{
+		rec := persistence.OutboxRecord{
 			ID: fmt.Sprintf("adapt-%d", i), RouteID: "adapt-route",
 			EnvelopeID: fmt.Sprintf("env-adapt-%d", i), BindingID: "bind-1",
 			SessionID: "sess-1",
 			Envelope:  messaging.Envelope{ID: fmt.Sprintf("env-adapt-%d", i), Payload: []byte("data")},
-			Status:    domain.OutboxPending,
+			Status:    persistence.OutboxPending,
 		}
-		_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+		_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 	}
 
 	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
@@ -82,11 +83,11 @@ func TestAdaptBatchSize_HalvesOnConsecutiveZeroSuccess(t *testing.T) {
 		LeaseID:             "sess-1",
 		OwnerID:             token.Owner,
 		Policy:              domain.RoutePolicy{}.WithDefaults(),
-		Strategy:            domain.NewFixedPoll(30 * time.Millisecond),
+		Strategy:            persistence.NewFixedPoll(30 * time.Millisecond),
 		DrainBatchSize:      5,
 		DrainMaxBatchSize:   50,
 		DrainMaxConcurrency: 2,
-		TokenFn: func() (domain.LeaseToken, bool) {
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			return token, true
 		},
 	})
@@ -289,23 +290,23 @@ func TestQueryPendingSuccess_PersistsNormally(t *testing.T) {
 // TestNormalMaxBatchSize_NotClamped validates that a reasonable
 // MaxBatchSize value (below 10000) is preserved without clamping.
 func TestNormalMaxBatchSize_NotClamped(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox := NewFakeOutboxStore()
 	sender := NewFakeSender()
 	lease := NewFakeLeaseStore()
-	pk := domain.OutboxPartitionKey("sess-1", "")
+	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		rec := domain.OutboxRecord{
+		rec := persistence.OutboxRecord{
 			ID: fmt.Sprintf("normal-%d", i), RouteID: "normal-route",
 			EnvelopeID: fmt.Sprintf("env-normal-%d", i), BindingID: "bind-1",
 			SessionID: "sess-1",
 			Envelope:  messaging.Envelope{ID: fmt.Sprintf("env-normal-%d", i), Payload: []byte("data")},
-			Status:    domain.OutboxPending,
+			Status:    persistence.OutboxPending,
 		}
-		_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+		_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 	}
 
 	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
@@ -318,10 +319,10 @@ func TestNormalMaxBatchSize_NotClamped(t *testing.T) {
 		LeaseID:           "sess-1",
 		OwnerID:           token.Owner,
 		Policy:            domain.RoutePolicy{}.WithDefaults(),
-		Strategy:          domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:          persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:    100,
 		DrainMaxBatchSize: 500,
-		TokenFn: func() (domain.LeaseToken, bool) {
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			return token, true
 		},
 	})
@@ -343,13 +344,13 @@ func TestNormalMaxBatchSize_NotClamped(t *testing.T) {
 // record processing emits MetricOutboxCompletions but not
 // MetricOutboxRecordFailures.
 func TestOutboxDrainer_SuccessEmitsCompletion(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	rec := &ports.RecordingExporter{}
 
 	outbox := NewFakeOutboxStore()
 	sender := NewFakeSender()
 	lease := NewFakeLeaseStore()
-	pk := domain.OutboxPartitionKey("sess-1", "")
+	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
@@ -362,23 +363,23 @@ func TestOutboxDrainer_SuccessEmitsCompletion(t *testing.T) {
 		LeaseID:        "sess-1",
 		OwnerID:        token.Owner,
 		Policy:         domain.RoutePolicy{}.WithDefaults(),
-		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		Metrics:        rec,
-		TokenFn: func() (domain.LeaseToken, bool) {
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			return token, true
 		},
 	})
 
 	ctx := context.Background()
-	outboxRec := domain.OutboxRecord{
+	outboxRec := persistence.OutboxRecord{
 		ID: "rec-ok", RouteID: "success-route",
 		EnvelopeID: "env-ok", BindingID: "bind-1",
 		SessionID: "sess-1",
 		Envelope:  messaging.Envelope{ID: "env-ok", Payload: []byte("data")},
-		Status:    domain.OutboxPending,
+		Status:    persistence.OutboxPending,
 	}
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{outboxRec})
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{outboxRec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
@@ -403,23 +404,23 @@ func TestOutboxDrainer_SuccessEmitsCompletion(t *testing.T) {
 // DrainBatchSize exceeds absoluteMaxBatchSize (10000), it is clamped before
 // DrainMaxBatchSize adjustments.
 func TestBatchSizeClamped_PreventsAbsoluteMaxBypass(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox := NewFakeOutboxStore()
 	sender := NewFakeSender()
 	lease := NewFakeLeaseStore()
-	pk := domain.OutboxPartitionKey("sess-1", "")
+	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		rec := domain.OutboxRecord{
+		rec := persistence.OutboxRecord{
 			ID: fmt.Sprintf("bsclamp-%d", i), RouteID: "bsclamp-route",
 			EnvelopeID: fmt.Sprintf("env-bsclamp-%d", i), BindingID: "bind-1",
 			SessionID: "sess-1",
 			Envelope:  messaging.Envelope{ID: fmt.Sprintf("env-bsclamp-%d", i), Payload: []byte("data")},
-			Status:    domain.OutboxPending,
+			Status:    persistence.OutboxPending,
 		}
-		_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+		_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 	}
 
 	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
@@ -432,10 +433,10 @@ func TestBatchSizeClamped_PreventsAbsoluteMaxBypass(t *testing.T) {
 		LeaseID:           "sess-1",
 		OwnerID:           token.Owner,
 		Policy:            domain.RoutePolicy{}.WithDefaults(),
-		Strategy:          domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:          persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:    50000,
 		DrainMaxBatchSize: 500,
-		TokenFn: func() (domain.LeaseToken, bool) {
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			return token, true
 		},
 	})
@@ -456,17 +457,17 @@ func TestBatchSizeClamped_PreventsAbsoluteMaxBypass(t *testing.T) {
 // TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric validates that
 // ErrStaleFencingToken does not emit MetricOutboxRecordFailures.
 func TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	rec := &ports.RecordingExporter{}
 
 	outbox := NewFakeOutboxStore()
-	outbox.CompleteFn = func(_ []string, _ domain.LeaseToken) error {
+	outbox.CompleteFn = func(_ []string, _ persistence.LeaseToken) error {
 		return shared.ErrStaleFencingToken
 	}
 	sender := NewFakeSender()
 
 	lease := NewFakeLeaseStore()
-	pk := domain.OutboxPartitionKey("sess-1", "")
+	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
@@ -479,23 +480,23 @@ func TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric(t *testing.T) {
 		LeaseID:        "sess-1",
 		OwnerID:        token.Owner,
 		Policy:         domain.RoutePolicy{}.WithDefaults(),
-		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		Metrics:        rec,
-		TokenFn: func() (domain.LeaseToken, bool) {
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			return token, true
 		},
 	})
 
 	ctx := context.Background()
-	outboxRec := domain.OutboxRecord{
+	outboxRec := persistence.OutboxRecord{
 		ID: "rec-stale-metric", RouteID: "stale-metric-route",
 		EnvelopeID: "env-stale-metric", BindingID: "bind-1",
 		SessionID: "sess-1",
 		Envelope:  messaging.Envelope{ID: "env-stale-metric", Payload: []byte("data")},
-		Status:    domain.OutboxPending,
+		Status:    persistence.OutboxPending,
 	}
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{outboxRec})
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{outboxRec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()

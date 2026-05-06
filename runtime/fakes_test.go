@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -289,17 +290,17 @@ func (s *FakeLeaseStore) SetReleaseErr(err error) {
 	s.releaseErr = err
 }
 
-func (s *FakeLeaseStore) Acquire(_ context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *FakeLeaseStore) Acquire(_ context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.acquireErr != nil {
-		return domain.LeaseToken{}, s.acquireErr
+		return persistence.LeaseToken{}, s.acquireErr
 	}
 
 	entry, exists := s.leases[leaseID]
 	if exists && time.Now().Before(entry.expires) && entry.owner != ownerID {
-		return domain.LeaseToken{}, shared.ErrAlreadyExists
+		return persistence.LeaseToken{}, shared.ErrAlreadyExists
 	}
 
 	version := s.maxVersions[leaseID] + 1
@@ -312,20 +313,20 @@ func (s *FakeLeaseStore) Acquire(_ context.Context, leaseID, ownerID string, ttl
 		endpoints: endpoints,
 	}
 
-	return domain.LeaseToken{Version: version, Owner: ownerID}, nil
+	return persistence.LeaseToken{Version: version, Owner: ownerID}, nil
 }
 
-func (s *FakeLeaseStore) Renew(_ context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *FakeLeaseStore) Renew(_ context.Context, leaseID string, token persistence.LeaseToken, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.renewErr != nil {
-		return domain.LeaseToken{}, s.renewErr
+		return persistence.LeaseToken{}, s.renewErr
 	}
 
 	entry, exists := s.leases[leaseID]
 	if !exists || entry.version != token.Version || entry.owner != token.Owner {
-		return domain.LeaseToken{}, shared.ErrVersionMismatch
+		return persistence.LeaseToken{}, shared.ErrVersionMismatch
 	}
 
 	entry.expires = time.Now().Add(ttl)
@@ -335,7 +336,7 @@ func (s *FakeLeaseStore) Renew(_ context.Context, leaseID string, token domain.L
 	return token, nil
 }
 
-func (s *FakeLeaseStore) Release(_ context.Context, leaseID string, token domain.LeaseToken) error {
+func (s *FakeLeaseStore) Release(_ context.Context, leaseID string, token persistence.LeaseToken) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -352,16 +353,16 @@ func (s *FakeLeaseStore) Release(_ context.Context, leaseID string, token domain
 	return nil
 }
 
-func (s *FakeLeaseStore) Current(_ context.Context, leaseID string) (domain.LeaseInfo, error) {
+func (s *FakeLeaseStore) Current(_ context.Context, leaseID string) (persistence.LeaseInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	entry, exists := s.leases[leaseID]
 	if !exists {
-		return domain.LeaseInfo{}, shared.ErrNotFound
+		return persistence.LeaseInfo{}, shared.ErrNotFound
 	}
 
-	return domain.LeaseInfo{
+	return persistence.LeaseInfo{
 		LeaseID:   leaseID,
 		Owner:     entry.owner,
 		Version:   entry.version,
@@ -376,22 +377,22 @@ func (s *FakeLeaseStore) Current(_ context.Context, leaseID string) (domain.Leas
 
 type FakeOutboxStore struct {
 	mu            sync.Mutex
-	records       map[string]*domain.OutboxRecord
+	records       map[string]*persistence.OutboxRecord
 	PersistErr    error
-	PersistFn     func([]domain.OutboxRecord) error
+	PersistFn     func([]persistence.OutboxRecord) error
 	ClaimErr      error
-	ClaimFn       func(partitionKey, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error)
+	ClaimFn       func(partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error)
 	CompleteErr   error
-	CompleteFn    func([]string, domain.LeaseToken) error
-	CompleteCtxFn func(context.Context, []string, domain.LeaseToken) error
+	CompleteFn    func([]string, persistence.LeaseToken) error
+	CompleteCtxFn func(context.Context, []string, persistence.LeaseToken) error
 	StaleClaimAge time.Duration
 }
 
 func NewFakeOutboxStore() *FakeOutboxStore {
-	return &FakeOutboxStore{records: make(map[string]*domain.OutboxRecord)}
+	return &FakeOutboxStore{records: make(map[string]*persistence.OutboxRecord)}
 }
 
-func (s *FakeOutboxStore) Persist(_ context.Context, records []domain.OutboxRecord) error {
+func (s *FakeOutboxStore) Persist(_ context.Context, records []persistence.OutboxRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -412,14 +413,14 @@ func (s *FakeOutboxStore) Persist(_ context.Context, records []domain.OutboxReco
 				return shared.ErrDuplicateRecord
 			}
 		}
-		rec.Status = domain.OutboxPending
+		rec.Status = persistence.OutboxPending
 		clone := rec
 		s.records[rec.ID] = &clone
 	}
 	return nil
 }
 
-func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error) {
+func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -436,21 +437,21 @@ func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string,
 	}
 	staleThreshold := time.Now().Add(-staleAge)
 
-	var claimed []domain.OutboxRecord
+	var claimed []persistence.OutboxRecord
 	for _, rec := range s.records {
 		if len(claimed) >= limit {
 			break
 		}
-		recPK := domain.OutboxPartitionKey(rec.SessionID, rec.BindingID)
+		recPK := persistence.OutboxPartitionKey(rec.SessionID, rec.BindingID)
 		if recPK != partitionKey {
 			continue
 		}
-		claimable := rec.Status == domain.OutboxPending ||
-			(rec.Status == domain.OutboxClaimed && rec.ClaimedAt.Before(staleThreshold))
+		claimable := rec.Status == persistence.OutboxPending ||
+			(rec.Status == persistence.OutboxClaimed && rec.ClaimedAt.Before(staleThreshold))
 		if !claimable {
 			continue
 		}
-		rec.Status = domain.OutboxClaimed
+		rec.Status = persistence.OutboxClaimed
 		rec.ClaimedBy = ownerID
 		rec.ClaimedAt = time.Now()
 		rec.ClaimVersion = token.Version
@@ -460,7 +461,7 @@ func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string,
 	return claimed, nil
 }
 
-func (s *FakeOutboxStore) Complete(ctx context.Context, recordIDs []string, token domain.LeaseToken) error {
+func (s *FakeOutboxStore) Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -484,7 +485,7 @@ func (s *FakeOutboxStore) Complete(ctx context.Context, recordIDs []string, toke
 		if rec.ClaimVersion != token.Version {
 			return shared.ErrStaleFencingToken
 		}
-		rec.Status = domain.OutboxCompleted
+		rec.Status = persistence.OutboxCompleted
 		rec.CompletedAt = time.Now()
 	}
 	return nil
@@ -496,8 +497,8 @@ func (s *FakeOutboxStore) Expire(_ context.Context, before time.Time) (int, erro
 
 	count := 0
 	for _, rec := range s.records {
-		if rec.Status == domain.OutboxPending && !rec.ExpiresAt.IsZero() && rec.ExpiresAt.Before(before) {
-			rec.Status = domain.OutboxExpired
+		if rec.Status == persistence.OutboxPending && !rec.ExpiresAt.IsZero() && rec.ExpiresAt.Before(before) {
+			rec.Status = persistence.OutboxExpired
 			count++
 		}
 	}
@@ -510,20 +511,20 @@ func (s *FakeOutboxStore) SetClaimErr(err error) {
 	s.ClaimErr = err
 }
 
-func (s *FakeOutboxStore) QueryPending(_ context.Context, partitionKey string, limit int) ([]domain.OutboxRecord, error) {
+func (s *FakeOutboxStore) QueryPending(_ context.Context, partitionKey string, limit int) ([]persistence.OutboxRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var result []domain.OutboxRecord
+	var result []persistence.OutboxRecord
 	for _, rec := range s.records {
 		if len(result) >= limit {
 			break
 		}
-		recPK := domain.OutboxPartitionKey(rec.SessionID, rec.BindingID)
+		recPK := persistence.OutboxPartitionKey(rec.SessionID, rec.BindingID)
 		if recPK != partitionKey {
 			continue
 		}
-		if rec.Status == domain.OutboxPending {
+		if rec.Status == persistence.OutboxPending {
 			result = append(result, *rec)
 		}
 	}
@@ -541,7 +542,7 @@ func (s *FakeOutboxStore) CompletedCount() int {
 	defer s.mu.Unlock()
 	n := 0
 	for _, rec := range s.records {
-		if rec.Status == domain.OutboxCompleted {
+		if rec.Status == persistence.OutboxCompleted {
 			n++
 		}
 	}

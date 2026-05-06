@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -70,7 +71,7 @@ func TestE2E_F1_Failover_SingleInstance_CrashBeforeDrain(t *testing.T) {
 
 	sessA := setupMQTTSession(t, sessionID+"-a", domain.SessionEphemeral)
 	scA := e2eFastSessionConfig(sessionID)
-	scA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
+	scA.DrainStrategy = persistence.NewFixedPoll(30 * time.Second)
 	rtA := goruntime.New(goruntime.WithInstanceID("f1-A"),
 		goruntime.WithLeaseStore(leaseStore), goruntime.WithOutboxStore(outboxStore), goruntime.WithDLQStore(dlq))
 	_ = rtA.AddRoute(cfg, newSQSReceiver(t, queueURL), setupMQTTSender(t, sessA), sessA, &scA)
@@ -113,7 +114,7 @@ func TestE2E_F2_Failover_TwoInstances_LeaseTransfer(t *testing.T) {
 	rxA := newFakeReceiver()
 	sessA := newFakeSession()
 	scA := e2eFastSessionConfig(sessionID)
-	scA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
+	scA.DrainStrategy = persistence.NewFixedPoll(30 * time.Second)
 	if err := rtA.AddRoute(cfg, rxA, newFakeSender(), sessA, &scA); err != nil {
 		t.Fatalf("AddRoute A: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestE2E_F3_Failover_ThreeInstances_CascadingFailure(t *testing.T) {
 	rxA := newFakeReceiver()
 	sessA := newFakeSession()
 	scA := e2eFastSessionConfig(sessionID)
-	scA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
+	scA.DrainStrategy = persistence.NewFixedPoll(30 * time.Second)
 	if err := rtA.AddRoute(cfg, rxA, newFakeSender(), sessA, &scA); err != nil {
 		t.Fatalf("AddRoute A: %v", err)
 	}
@@ -233,15 +234,15 @@ func TestE2E_F4_Failover_ThreeInstances_StaleFencingToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("A acquire: %v", err)
 	}
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID: "f4-rec-1", RouteID: "f4-route", EnvelopeID: "f4-env",
 		BindingID: "b1", SessionID: leaseID, Address: "t/f4",
-		Status: domain.OutboxPending, Envelope: messaging.Envelope{ID: "f4-env", Payload: []byte("fencing")},
+		Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "f4-env", Payload: []byte("fencing")},
 	}
-	if err := outboxStore.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
+	if err := outboxStore.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
-	pk := domain.OutboxPartitionKey(leaseID, "b1")
+	pk := persistence.OutboxPartitionKey(leaseID, "b1")
 	claimed, err := outboxStore.Claim(ctx, pk, "owner-A", tokenA, 10)
 	if err != nil {
 		t.Fatalf("A claim: %v", err)
@@ -409,7 +410,7 @@ func TestE2E_F7_Failover_FanOutSessionOwnerCrash(t *testing.T) {
 	ctxB, cancelB := context.WithCancel(context.Background())
 	sessB := setupMQTTSession(t, sessionIDs[1]+"-b", domain.SessionEphemeral)
 	scB := e2eFastSessionConfig(sessionIDs[1])
-	scB.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
+	scB.DrainStrategy = persistence.NewFixedPoll(30 * time.Second)
 	rtB := mkRT("f7-B")
 	_ = rtB.AddRoute(routeCfg, newFakeReceiver(), setupMQTTSender(t, sessB), sessB, &scB)
 	_ = rtB.Start(ctxB)
@@ -479,7 +480,7 @@ func TestE2E_F9_Failover_MultiMessage_ThreeInstances(t *testing.T) {
 	rxA := newFakeReceiver()
 	sessA := newFakeSession()
 	scA := e2eFastSessionConfig(sessionID)
-	scA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
+	scA.DrainStrategy = persistence.NewFixedPoll(30 * time.Second)
 	if err := rtA.AddRoute(cfg, rxA, newFakeSender(), sessA, &scA); err != nil {
 		t.Fatalf("AddRoute A: %v", err)
 	}

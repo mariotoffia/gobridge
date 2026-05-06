@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -112,7 +113,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					Sender:                entry.sender,
 					DLQ:                   dlq,
 					RouteID:               entry.config.ID,
-					PartitionKey:          domain.OutboxPartitionKey(sid, ""),
+					PartitionKey:          persistence.OutboxPartitionKey(sid, ""),
 					LeaseID:               sid,
 					OwnerID:               rt.instanceID,
 					Policy:                entry.config.Policy.WithDefaults(),
@@ -167,7 +168,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					Sender:                sse.sender,
 					DLQ:                   dlq,
 					RouteID:               entry.config.ID,
-					PartitionKey:          domain.OutboxPartitionKey(sid, ""),
+					PartitionKey:          persistence.OutboxPartitionKey(sid, ""),
 					LeaseID:               sid,
 					OwnerID:               rt.instanceID,
 					Policy:                entry.config.Policy.WithDefaults(),
@@ -194,13 +195,13 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 	if len(rt.sessionMgrs) > 0 {
 		mgrs := rt.sessionMgrs
-		dlq.SetTokenFn(func() (domain.LeaseToken, bool) {
+		dlq.SetTokenFn(func() (persistence.LeaseToken, bool) {
 			for _, mgr := range mgrs {
 				if tok, held := mgr.Token(); held {
 					return tok, true
 				}
 			}
-			return domain.LeaseToken{}, false
+			return persistence.LeaseToken{}, false
 		})
 	}
 

@@ -7,6 +7,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -97,7 +98,7 @@ func TestMetrics_FullPipeline_SharedOutbox(t *testing.T) {
 	err := rt.AddRoute(cfg, receiver, sender, session, &runtime.SessionConfig{
 		SessionID:      "s1",
 		Exclusive:      true,
-		DrainStrategy:  domain.NewFixedPoll(50 * time.Millisecond),
+		DrainStrategy:  persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		LeaseTTL:       30 * time.Second,
 		RenewInterval:  100 * time.Millisecond,

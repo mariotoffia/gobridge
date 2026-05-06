@@ -17,6 +17,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -328,7 +329,7 @@ func e2eFastSessionConfig(sessionID string) goruntime.SessionConfig {
 	cfg.RenewInterval = 150 * time.Millisecond
 	cfg.RenewJitter = 20 * time.Millisecond
 	cfg.StepDownGrace = 200 * time.Millisecond
-	cfg.DrainStrategy = domain.NewFixedPoll(100 * time.Millisecond)
+	cfg.DrainStrategy = persistence.NewFixedPoll(100 * time.Millisecond)
 	cfg.DrainBatchSize = 50
 	return cfg
 }

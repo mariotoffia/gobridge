@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -82,9 +82,9 @@ func TestInstrumentedOutboxStore_PersistRecordsLatency(t *testing.T) {
 	inner := NewFakeOutboxStore()
 	store := runtime.NewInstrumentedOutboxStore(inner, rec, clock.System)
 
-	records := []domain.OutboxRecord{{
+	records := []persistence.OutboxRecord{{
 		ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1",
-		Status: domain.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"},
+		Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"},
 	}}
 
 	err := store.Persist(context.Background(), records)
@@ -107,14 +107,14 @@ func TestInstrumentedOutboxStore_CompleteDelegates(t *testing.T) {
 	inner := NewFakeOutboxStore()
 	store := runtime.NewInstrumentedOutboxStore(inner, rec, clock.System)
 
-	records := []domain.OutboxRecord{
+	records := []persistence.OutboxRecord{
 		{ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", SessionID: "s1",
-			Status: domain.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"}},
+			Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"}},
 	}
 	_ = store.Persist(context.Background(), records)
 
-	token := domain.LeaseToken{Version: 1, Owner: "me"}
-	claimed, _ := store.Claim(context.Background(), domain.OutboxPartitionKey("s1", "b1"), "me", token, 10)
+	token := persistence.LeaseToken{Version: 1, Owner: "me"}
+	claimed, _ := store.Claim(context.Background(), persistence.OutboxPartitionKey("s1", "b1"), "me", token, 10)
 	if len(claimed) == 0 {
 		t.Fatal("expected to claim at least 1 record")
 	}
@@ -143,16 +143,16 @@ func TestInstrumentedOutboxStore_QueryPendingRecordsDepth(t *testing.T) {
 	inner := NewFakeOutboxStore()
 	store := runtime.NewInstrumentedOutboxStore(inner, rec, clock.System)
 
-	pk := domain.OutboxPartitionKey("s1", "b1")
+	pk := persistence.OutboxPartitionKey("s1", "b1")
 
 	for i := 0; i < 3; i++ {
-		records := []domain.OutboxRecord{{
+		records := []persistence.OutboxRecord{{
 			ID:         "r" + string(rune('0'+i)),
 			RouteID:    "route-1",
 			EnvelopeID: "env-" + string(rune('0'+i)),
 			BindingID:  "b1",
 			SessionID:  "s1",
-			Status:     domain.OutboxPending,
+			Status:     persistence.OutboxPending,
 			Envelope:   messaging.Envelope{ID: "env-" + string(rune('0'+i))},
 		}}
 		_ = store.Persist(context.Background(), records)
@@ -226,9 +226,9 @@ func TestInstrumentedOutboxStore_ExpireDelegates(t *testing.T) {
 	inner := NewFakeOutboxStore()
 	store := runtime.NewInstrumentedOutboxStore(inner, rec, clock.System)
 
-	records := []domain.OutboxRecord{
+	records := []persistence.OutboxRecord{
 		{ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", SessionID: "s1",
-			Status: domain.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"}},
+			Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"}},
 	}
 	_ = store.Persist(context.Background(), records)
 	rec.Reset()
@@ -317,7 +317,7 @@ func TestInstrumentedOutboxStore_PersistLatencyUsesInjectedClock(t *testing.T) {
 	inner := &advancingOutboxStore{OutboxStore: NewFakeOutboxStore(), clk: clk, advance: 90 * time.Millisecond}
 	store := runtime.NewInstrumentedOutboxStore(inner, rec, clk)
 
-	err := store.Persist(context.Background(), []domain.OutboxRecord{{
+	err := store.Persist(context.Background(), []persistence.OutboxRecord{{
 		ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", Envelope: messaging.Envelope{ID: "env-1"},
 	}})
 	if err != nil {
@@ -391,12 +391,12 @@ type advancingLeaseStore struct {
 	advance time.Duration
 }
 
-func (s *advancingLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *advancingLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	s.clk.Advance(s.advance)
 	return s.LeaseStore.Acquire(ctx, leaseID, ownerID, ttl, endpoints)
 }
 
-func (s *advancingLeaseStore) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *advancingLeaseStore) Renew(ctx context.Context, leaseID string, token persistence.LeaseToken, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	s.clk.Advance(s.advance)
 	return s.LeaseStore.Renew(ctx, leaseID, token, ttl, endpoints)
 }
@@ -407,7 +407,7 @@ type advancingOutboxStore struct {
 	advance time.Duration
 }
 
-func (s *advancingOutboxStore) Persist(ctx context.Context, records []domain.OutboxRecord) error {
+func (s *advancingOutboxStore) Persist(ctx context.Context, records []persistence.OutboxRecord) error {
 	s.clk.Advance(s.advance)
 	return s.OutboxStore.Persist(ctx, records)
 }

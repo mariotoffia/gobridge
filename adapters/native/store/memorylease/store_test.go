@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 )
@@ -151,7 +151,7 @@ func TestRenewStaleToken(t *testing.T) {
 		t.Fatalf("acquire: %v", err)
 	}
 
-	stale := domain.LeaseToken{Version: tok.Version + 999, Owner: "owner-A"}
+	stale := persistence.LeaseToken{Version: tok.Version + 999, Owner: "owner-A"}
 	_, err = s.Renew(ctx, "lease-1", stale, 30*time.Second, nil)
 	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
@@ -168,7 +168,7 @@ func TestRenewWrongOwner(t *testing.T) {
 		t.Fatalf("acquire: %v", err)
 	}
 
-	wrong := domain.LeaseToken{Version: tok.Version, Owner: "owner-B"}
+	wrong := persistence.LeaseToken{Version: tok.Version, Owner: "owner-B"}
 	_, err = s.Renew(ctx, "lease-1", wrong, 30*time.Second, nil)
 	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
@@ -180,7 +180,7 @@ func TestRenewNonExistent(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
 
-	_, err := s.Renew(ctx, "no-such-lease", domain.LeaseToken{Version: 1, Owner: "x"}, 30*time.Second, nil)
+	_, err := s.Renew(ctx, "no-such-lease", persistence.LeaseToken{Version: 1, Owner: "x"}, 30*time.Second, nil)
 	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
@@ -216,7 +216,7 @@ func TestReleaseStaleToken(t *testing.T) {
 		t.Fatalf("acquire: %v", err)
 	}
 
-	stale := domain.LeaseToken{Version: tok.Version + 1, Owner: "owner-A"}
+	stale := persistence.LeaseToken{Version: tok.Version + 1, Owner: "owner-A"}
 	err = s.Release(ctx, "lease-1", stale)
 	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
@@ -228,7 +228,7 @@ func TestReleaseNonExistent(t *testing.T) {
 	s := memorylease.NewStore()
 	ctx := context.Background()
 
-	err := s.Release(ctx, "no-such-lease", domain.LeaseToken{Version: 1, Owner: "x"})
+	err := s.Release(ctx, "no-such-lease", persistence.LeaseToken{Version: 1, Owner: "x"})
 	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
