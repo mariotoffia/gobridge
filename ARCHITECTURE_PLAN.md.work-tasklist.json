@@ -96,7 +96,7 @@
     {
       "id": "T09",
       "title": "Update Azure Service Bus adapter",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "Azure Service Bus Go adapter sender/batch/receiver refactor and tests.",

@@ -245,7 +245,7 @@ Blast radius: low.
 - Update SQS sender, batch sender, receiver, and SNS unwrap tests.
 - Acceptance: SQS messages without `Subject` attribute produce empty `Envelope.Subject`.
 
-### 9. Update Azure Service Bus adapter
+### 9. Update Azure Service Bus adapter - DONE
 
 - Change sender and batch sender signatures.
 - Keep logical subject mapped to `Message.Subject`.

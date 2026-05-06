@@ -76,8 +76,8 @@ func TestReceiver_RunEmitsDeliveries(t *testing.T) {
 	if string(env.Payload) != `{"key":"value"}` {
 		t.Fatalf("unexpected payload: %s", string(env.Payload))
 	}
-	if env.Subject != "test-queue" {
-		t.Fatalf("expected Subject test-queue, got %s", env.Subject)
+	if env.Subject != "" {
+		t.Fatalf("expected empty Subject (no fallback to queue name), got %s", env.Subject)
 	}
 }
 
@@ -220,7 +220,7 @@ func TestReceiver_Validate_RequiresQueue(t *testing.T) {
 	}
 }
 
-// verifies envelope Subject defaults to the configured topic name for topic receivers.
+// verifies Run does not promote the configured topic name into Envelope.Subject.
 func TestReceiver_SubjectFromTopic(t *testing.T) {
 	callCount := 0
 	mock := &mockASBClient{
@@ -259,8 +259,8 @@ func TestReceiver_SubjectFromTopic(t *testing.T) {
 		return nil
 	})
 
-	if env.Subject != "my-topic" {
-		t.Fatalf("expected Subject my-topic, got %s", env.Subject)
+	if env.Subject != "" {
+		t.Fatalf("expected empty Subject (no fallback to topic name), got %s", env.Subject)
 	}
 }
 

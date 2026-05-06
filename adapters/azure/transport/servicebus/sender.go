@@ -2,6 +2,8 @@ package servicebus
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -65,11 +67,29 @@ func (s *Sender) entityName() string {
 }
 
 // Send submits a single envelope to Service Bus.
+//
+// Address validation: a Service Bus Sender is bound to a single
+// queue or topic (resolved via cfg.QueueName / cfg.TopicName). When
+// msg.Address is empty, the configured entity is used. A non-empty
+// msg.Address must match s.entityName() exactly; any other value is
+// rejected with shared.ErrInvalidTopic without contacting the SDK or
+// emitting metrics. Per-message dynamic addressing for Service Bus is
+// explicitly out of scope. The logical Envelope.Subject is mapped to
+// the native Service Bus Subject by envelopeToMessage and never
+// selects the entity.
 func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
-	// TODO(T03/T05): consume msg.Address as the Service Bus entity override.
 	env := msg.Envelope
+	if env == nil {
+		return shared.ErrInvalidPayload.WithMessage("servicebus: nil envelope")
+	}
 	if err := s.ensureClient(ctx); err != nil {
 		return err
+	}
+	entity := s.entityName()
+	if msg.Address != "" && msg.Address != entity {
+		return shared.ErrInvalidTopic.WithMessage(fmt.Sprintf(
+			"servicebus: address %q does not match configured entity %q",
+			msg.Address, entity))
 	}
 
 	if logging.TraceEnabled(s.logger) {
@@ -102,14 +122,38 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 // ASB batches are size-limited; when a message overflows the batch, the
 // current batch is flushed and the oversized message is sent individually.
 // Returns the number of successfully sent messages.
+//
+// The entire slice is pre-validated before any SDK dispatch: a nil
+// envelope yields shared.ErrInvalidPayload and a non-empty address
+// that does not match the configured entity yields
+// shared.ErrInvalidTopic. Either failure aborts the whole batch with
+// (0, joined-errs) — fail-fast, no chunk is dispatched.
 func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (int, error) {
-	// TODO(T03/T05): per-message msg.Address handling for Service Bus.
+	if err := s.ensureClient(ctx); err != nil {
+		return 0, err
+	}
+	entity := s.entityName()
+
+	var preErrs []error
+	for i, m := range msgs {
+		if m.Envelope == nil {
+			preErrs = append(preErrs, shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
+				"servicebus: nil envelope at index %d", i)))
+			continue
+		}
+		if m.Address != "" && m.Address != entity {
+			preErrs = append(preErrs, shared.ErrInvalidTopic.WithMessage(fmt.Sprintf(
+				"servicebus: address %q at index %d does not match configured entity %q",
+				m.Address, i, entity)))
+		}
+	}
+	if len(preErrs) > 0 {
+		return 0, errors.Join(preErrs...)
+	}
+
 	envs := make([]*messaging.Envelope, len(msgs))
 	for i, m := range msgs {
 		envs[i] = m.Envelope
-	}
-	if err := s.ensureClient(ctx); err != nil {
-		return 0, err
 	}
 
 	sendCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
@@ -126,20 +170,20 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (i
 
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(ctx, logging.LevelDebug, "servicebus: sending batch",
-				"entity", s.entityName(),
+				"entity", entity,
 				"chunk_size", len(chunk),
 			)
 		}
 
 		start := s.clock().Now()
-		chunkSent, err := sendChunk(sendCtx, s.client, chunk, s.cfg.DefaultSessionID, s.clock(), s.logger, s.entityName())
+		chunkSent, err := sendChunk(sendCtx, s.client, chunk, s.cfg.DefaultSessionID, s.clock(), s.logger, entity)
 		sent += chunkSent
 		if err != nil {
 			return sent, err
 		}
 
 		s.metrics.Timer(shared.MetricASBSendBatchLatency, s.clock().Since(start),
-			shared.Tag{Key: shared.TagKeyEntity, Value: s.entityName()})
+			shared.Tag{Key: shared.TagKeyEntity, Value: entity})
 	}
 
 	return sent, nil
