@@ -75,7 +75,7 @@ func (r *rawMapConfig) Decode(target any) error {
 	if err := dec.Decode(r.data); err != nil {
 		// Strict decode is all-or-nothing: discard any partial
 		// population of target before surfacing the error.
-		if v := reflect.ValueOf(target); v.Kind() == reflect.Ptr && !v.IsNil() {
+		if v := reflect.ValueOf(target); v.Kind() == reflect.Pointer && !v.IsNil() {
 			elem := v.Elem()
 			if elem.CanSet() {
 				elem.Set(reflect.Zero(elem.Type()))
