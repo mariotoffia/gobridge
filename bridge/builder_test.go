@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,11 +34,35 @@ func (f *fakeReceiver) Run(ctx context.Context, emit func(context.Context, ports
 	return ctx.Err()
 }
 
-type fakeSender struct{}
+// fakeSender records every OutboundMessage handed to Send so tests can
+// assert on both the envelope and the destination Address, proving that
+// the bridge builder wires the configured BindingDef.Address through to
+// ports.OutboundMessage.Address without touching Envelope.Subject.
+type fakeSender struct {
+	mu       sync.Mutex
+	captured []ports.OutboundMessage
+	done     chan struct{}
+}
 
-func (f *fakeSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
-	_ = msg.Envelope
+func (f *fakeSender) Send(_ context.Context, msg ports.OutboundMessage) error {
+	f.mu.Lock()
+	f.captured = append(f.captured, msg)
+	f.mu.Unlock()
+	if f.done != nil {
+		select {
+		case f.done <- struct{}{}:
+		default:
+		}
+	}
 	return nil
+}
+
+func (f *fakeSender) snapshot() []ports.OutboundMessage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]ports.OutboundMessage, len(f.captured))
+	copy(out, f.captured)
+	return out
 }
 
 type fakeTransportFactory struct{}

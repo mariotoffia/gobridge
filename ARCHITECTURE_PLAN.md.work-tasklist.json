@@ -118,7 +118,7 @@
     {
       "id": "T11",
       "title": "Update bridge builder and runtime wiring",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "Bridge builder/runtime Go wiring update to align with new sender signatures and address abstraction.",

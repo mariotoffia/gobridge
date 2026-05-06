@@ -262,7 +262,7 @@ Blast radius: low.
 
 **Status:** Resolved 2026-05-06. SSESender.Send validates OutboundMessage.Address against the configured logical identity (SetRouteID override > cfg.id): nil envelope short-circuits to shared.ErrInvalidPayload; non-empty Address that does not equal the identity returns shared.ErrInvalidTopic with both addresses in the diagnostic message before any marshal, fan-out, metric, or trace emission. Stale TODO(T03/T09) marker removed; dynamic per-message SSE channel routing documented as Non-Goal. HTTP POST ingress is intentionally untouched (still requires body.Subject) and Envelope.Subject flows through to the SSE payload's `subject` field unchanged. New subject_address_test.go covers nil envelope, mismatched Address (with diagnostic content + no metric emission), empty Address, matching Address, SetRouteID identity override, and HTTP→SSE round-trip subject preservation.
 
-### 11. Update bridge builder and runtime wiring
+### 11. Update bridge builder and runtime wiring - DONE
 
 - Update sender registries and route construction to use new sender signatures.
 - Keep `DestinationBinding.Address` and `DispatchPlan.Address` as the single destination abstraction.
