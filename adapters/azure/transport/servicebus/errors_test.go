@@ -7,8 +7,7 @@ import (
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
-
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // verifies MapError returns nil for a nil input error.
@@ -21,7 +20,7 @@ func TestMapError_Nil(t *testing.T) {
 // verifies MapError maps context deadline exceeded to ErrTimeout.
 func TestMapError_ContextDeadline(t *testing.T) {
 	err := MapError(context.DeadlineExceeded)
-	if !errors.Is(err, domain.ErrTimeout) {
+	if !errors.Is(err, shared.ErrTimeout) {
 		t.Fatalf("expected ErrTimeout, got %v", err)
 	}
 }
@@ -29,7 +28,7 @@ func TestMapError_ContextDeadline(t *testing.T) {
 // verifies MapError maps context canceled to ErrUnavailable.
 func TestMapError_ContextCanceled(t *testing.T) {
 	err := MapError(context.Canceled)
-	if !errors.Is(err, domain.ErrUnavailable) {
+	if !errors.Is(err, shared.ErrUnavailable) {
 		t.Fatalf("expected ErrUnavailable, got %v", err)
 	}
 }
@@ -37,7 +36,7 @@ func TestMapError_ContextCanceled(t *testing.T) {
 // verifies MapError maps ErrMessageTooLarge to ErrPayloadTooLarge with the expected message.
 func TestMapError_MessageTooLarge(t *testing.T) {
 	err := MapError(azservicebus.ErrMessageTooLarge)
-	if !errors.Is(err, domain.ErrPayloadTooLarge) {
+	if !errors.Is(err, shared.ErrPayloadTooLarge) {
 		t.Fatalf("expected ErrPayloadTooLarge, got %v", err)
 	}
 	if err.Message != "message too large" {
@@ -48,7 +47,7 @@ func TestMapError_MessageTooLarge(t *testing.T) {
 // verifies MapError maps Service Bus CodeTimeout to ErrTimeout.
 func TestMapError_ServiceBusCodeTimeout(t *testing.T) {
 	err := MapError(&azservicebus.Error{Code: azservicebus.CodeTimeout})
-	if !errors.Is(err, domain.ErrTimeout) {
+	if !errors.Is(err, shared.ErrTimeout) {
 		t.Fatalf("expected ErrTimeout, got %v", err)
 	}
 	if err.Message != "operation timed out" {
@@ -59,7 +58,7 @@ func TestMapError_ServiceBusCodeTimeout(t *testing.T) {
 // verifies MapError maps CodeConnectionLost to ErrConnectionLost.
 func TestMapError_ServiceBusCodeConnectionLost(t *testing.T) {
 	err := MapError(&azservicebus.Error{Code: azservicebus.CodeConnectionLost})
-	if !errors.Is(err, domain.ErrConnectionLost) {
+	if !errors.Is(err, shared.ErrConnectionLost) {
 		t.Fatalf("expected ErrConnectionLost, got %v", err)
 	}
 }
@@ -67,7 +66,7 @@ func TestMapError_ServiceBusCodeConnectionLost(t *testing.T) {
 // verifies MapError maps CodeLockLost to ErrUnavailable with a lock-lost message.
 func TestMapError_ServiceBusCodeLockLost(t *testing.T) {
 	err := MapError(&azservicebus.Error{Code: azservicebus.CodeLockLost})
-	if !errors.Is(err, domain.ErrUnavailable) {
+	if !errors.Is(err, shared.ErrUnavailable) {
 		t.Fatalf("expected ErrUnavailable, got %v", err)
 	}
 	if err.Message != "message lock lost - message may be redelivered" {
@@ -78,7 +77,7 @@ func TestMapError_ServiceBusCodeLockLost(t *testing.T) {
 // verifies MapError maps CodeUnauthorizedAccess to ErrNotAuthorized.
 func TestMapError_ServiceBusCodeUnauthorizedAccess(t *testing.T) {
 	err := MapError(&azservicebus.Error{Code: azservicebus.CodeUnauthorizedAccess})
-	if !errors.Is(err, domain.ErrNotAuthorized) {
+	if !errors.Is(err, shared.ErrNotAuthorized) {
 		t.Fatalf("expected ErrNotAuthorized, got %v", err)
 	}
 }
@@ -88,15 +87,15 @@ func TestMapError_StringPatterns(t *testing.T) {
 	tests := []struct {
 		name   string
 		errMsg string
-		want   *domain.BridgeError
+		want   *shared.BridgeError
 	}{
-		{"connection_refused", "connection refused", domain.ErrConnectionLost},
-		{"throttled", "throttled", domain.ErrThrottled},
-		{"server_busy", "server busy", domain.ErrThrottled},
-		{"unauthorized", "unauthorized", domain.ErrNotAuthorized},
-		{"not_found", "not found", domain.ErrNotFound},
-		{"invalid_message", "invalid message", domain.ErrInvalidPayload},
-		{"unknown", "something weird", domain.ErrUnavailable},
+		{"connection_refused", "connection refused", shared.ErrConnectionLost},
+		{"throttled", "throttled", shared.ErrThrottled},
+		{"server_busy", "server busy", shared.ErrThrottled},
+		{"unauthorized", "unauthorized", shared.ErrNotAuthorized},
+		{"not_found", "not found", shared.ErrNotFound},
+		{"invalid_message", "invalid message", shared.ErrInvalidPayload},
+		{"unknown", "something weird", shared.ErrUnavailable},
 	}
 
 	for _, tt := range tests {
@@ -109,7 +108,7 @@ func TestMapError_StringPatterns(t *testing.T) {
 	}
 }
 
-// verifies domain.IsRecoverableError for errors produced by MapError.
+// verifies shared.IsRecoverableError for errors produced by MapError.
 func TestMapError_IsRecoverable(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -126,7 +125,7 @@ func TestMapError_IsRecoverable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := domain.IsRecoverableError(tt.err); got != tt.recoverable {
+			if got := shared.IsRecoverableError(tt.err); got != tt.recoverable {
 				t.Fatalf("IsRecoverableError = %v, want %v", got, tt.recoverable)
 			}
 		})

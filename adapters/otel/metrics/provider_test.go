@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 
 	otelmetrics "github.com/mariotoffia/gobridge/adapters/otel/metrics"
@@ -153,8 +153,8 @@ func TestExporter_Counter_WithTags(t *testing.T) {
 	defer func() { _ = mp.Shutdown(context.Background()) }()
 
 	e := otelmetrics.NewFromProvider(mp)
-	e.Counter("test.tagged", 1, domain.Tag{Key: "route", Value: "orders"})
-	e.Counter("test.tagged", 1, domain.Tag{Key: "route", Value: "payments"})
+	e.Counter("test.tagged", 1, shared.Tag{Key: "route", Value: "orders"})
+	e.Counter("test.tagged", 1, shared.Tag{Key: "route", Value: "payments"})
 
 	rm := collectMetrics(t, reader)
 	dp := findMetric(t, rm, "test.tagged")
@@ -173,7 +173,7 @@ func TestExporter_DefaultTags(t *testing.T) {
 	defer func() { _ = mp.Shutdown(context.Background()) }()
 
 	e := otelmetrics.NewFromProvider(mp,
-		otelmetrics.WithDefaultTags(domain.Tag{Key: "env", Value: "test"}),
+		otelmetrics.WithDefaultTags(shared.Tag{Key: "env", Value: "test"}),
 	)
 	e.Counter("test.m", 1)
 

@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -28,7 +29,7 @@ func (p *poisonProcessor) Process(
 ) error {
 	v, ok := domain.GetHeaderString(env.Headers, "poison")
 	if ok && v == "true" {
-		return domain.ErrInvalidPayload.WithMessage("poison message rejected")
+		return shared.ErrInvalidPayload.WithMessage("poison message rejected")
 	}
 	return next(ctx, env)
 }

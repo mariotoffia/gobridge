@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 func TestCredentialsToConnection_ConnectionString(t *testing.T) {
@@ -51,9 +52,9 @@ func TestApplyCredentials_Sender_NilSet_Rejected(t *testing.T) {
 
 	err = s.ApplyCredentials(t.Context(), nil)
 	require.Error(t, err)
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	require.True(t, ok)
-	require.Equal(t, domain.ErrCodeInvalidPayload, be.Code)
+	require.Equal(t, shared.ErrCodeInvalidPayload, be.Code)
 }
 
 // TestApplyCredentials_Receiver_NilSet_Rejected mirrors the Sender
@@ -67,9 +68,9 @@ func TestApplyCredentials_Receiver_NilSet_Rejected(t *testing.T) {
 
 	err = r.ApplyCredentials(t.Context(), nil)
 	require.Error(t, err)
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	require.True(t, ok)
-	require.Equal(t, domain.ErrCodeInvalidPayload, be.Code)
+	require.Equal(t, shared.ErrCodeInvalidPayload, be.Code)
 }
 
 // TestApplyCredentials_NoChange_ReturnsNil verifies that a matching

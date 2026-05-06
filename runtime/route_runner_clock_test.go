@@ -8,6 +8,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -42,10 +43,10 @@ func TestRouteRunner_E2ELatencyUsesInjectedClock(t *testing.T) {
 	_ = receiver.Emit(ctx, del)
 
 	waitFor(t, time.Second, "clocked latency timer", func() bool {
-		return del.IsAcked() && len(rec.FindEntries(domain.MetricDeliveryE2ELatency)) == 1
+		return del.IsAcked() && len(rec.FindEntries(shared.MetricDeliveryE2ELatency)) == 1
 	})
 
-	entries := rec.FindEntries(domain.MetricDeliveryE2ELatency)
+	entries := rec.FindEntries(shared.MetricDeliveryE2ELatency)
 	if got := entries[0].Duration; got != 42*time.Millisecond {
 		t.Fatalf("expected E2E latency from injected clock, got %s", got)
 	}

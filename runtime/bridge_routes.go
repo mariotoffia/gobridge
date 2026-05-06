@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -131,7 +132,7 @@ func (rt *Runtime) Inject(ctx context.Context, routeID string, env *domain.Envel
 	rt.mu.Unlock()
 
 	if entry == nil {
-		return domain.ErrNotFound
+		return shared.ErrNotFound
 	}
 
 	env = env.Clone()
@@ -151,6 +152,6 @@ type syntheticDelivery struct {
 func (d *syntheticDelivery) Envelope() *domain.Envelope  { return d.env }
 func (d *syntheticDelivery) Ack(_ context.Context) error { return nil }
 func (d *syntheticDelivery) Retry(_ context.Context, _ time.Duration, _ error) error {
-	return domain.ErrNotSupported
+	return shared.ErrNotSupported
 }
 func (d *syntheticDelivery) Extend(_ context.Context, _ time.Time) error { return nil }

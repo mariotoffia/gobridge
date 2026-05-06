@@ -8,6 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -34,15 +35,15 @@ func TestInstrumentedDelivery_Ack_EmitsGenericMetric(t *testing.T) {
 	entries := rec.Entries()
 
 	for _, e := range entries {
-		if e.Name == domain.MetricSQSDeleteLatency {
+		if e.Name == shared.MetricSQSDeleteLatency {
 			t.Fatalf("instrumented delivery emitted SQS-specific metric %q for non-SQS transport; "+
-				"expected a generic metric name like MetricAckLatency", domain.MetricSQSDeleteLatency)
+				"expected a generic metric name like MetricAckLatency", shared.MetricSQSDeleteLatency)
 		}
 	}
 
 	found := false
 	for _, e := range entries {
-		if e.Name == domain.MetricAckLatency {
+		if e.Name == shared.MetricAckLatency {
 			found = true
 			break
 		}
@@ -73,10 +74,10 @@ func TestInstrumentedDelivery_Extend_EmitsGenericMetric(t *testing.T) {
 	})
 
 	for _, e := range rec.Entries() {
-		if e.Name == domain.MetricSQSVisibilityExtensions {
+		if e.Name == shared.MetricSQSVisibilityExtensions {
 			t.Fatalf("instrumented delivery emitted SQS-specific metric %q for non-SQS transport; "+
 				"expected a generic metric name like MetricVisibilityExtensions",
-				domain.MetricSQSVisibilityExtensions)
+				shared.MetricSQSVisibilityExtensions)
 		}
 	}
 }
@@ -101,7 +102,7 @@ func TestInstrumentedDelivery_AckLatencyUsesInjectedClock(t *testing.T) {
 		return del.Ack(ctx)
 	})
 
-	timers := rec.FindEntries(domain.MetricAckLatency)
+	timers := rec.FindEntries(shared.MetricAckLatency)
 	if len(timers) != 1 {
 		t.Fatalf("expected 1 ack timer, got %d", len(timers))
 	}

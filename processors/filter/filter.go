@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -67,7 +68,7 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 	case ActionPass:
 		return next(ctx, env)
 	case ActionDrop:
-		return domain.ErrMessageFiltered
+		return shared.ErrMessageFiltered
 	case ActionRoute:
 		if env.Headers == nil {
 			env.Headers = make(map[string]any, 1)

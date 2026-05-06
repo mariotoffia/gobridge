@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -37,12 +38,12 @@ func TestAnaSender_NoSession_NoCM_ReturnsErrUnavailable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Send when CM is nil")
 	}
-	be, ok := err.(*domain.BridgeError)
+	be, ok := err.(*shared.BridgeError)
 	if !ok {
-		t.Fatalf("err type = %T, want *domain.BridgeError", err)
+		t.Fatalf("err type = %T, want *shared.BridgeError", err)
 	}
-	if be.Code != domain.ErrUnavailable.Code {
-		t.Fatalf("err code = %s, want %s", be.Code, domain.ErrUnavailable.Code)
+	if be.Code != shared.ErrUnavailable.Code {
+		t.Fatalf("err code = %s, want %s", be.Code, shared.ErrUnavailable.Code)
 	}
 }
 
@@ -66,12 +67,12 @@ func TestAnaSender_EmptyTopicAndNoDefault_ReturnsErrInvalidTopic(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty topic / no default")
 	}
-	be, ok := err.(*domain.BridgeError)
+	be, ok := err.(*shared.BridgeError)
 	if !ok {
-		t.Fatalf("err type = %T, want *domain.BridgeError", err)
+		t.Fatalf("err type = %T, want *shared.BridgeError", err)
 	}
-	if be.Code != domain.ErrInvalidTopic.Code {
-		t.Fatalf("err code = %s, want %s", be.Code, domain.ErrInvalidTopic.Code)
+	if be.Code != shared.ErrInvalidTopic.Code {
+		t.Fatalf("err code = %s, want %s", be.Code, shared.ErrInvalidTopic.Code)
 	}
 }
 
@@ -164,7 +165,7 @@ func TestAnaCBSender_NewCircuitBreakerSender_NilSession_NoPanic(t *testing.T) {
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
 		ResetTimeout:     30 * time.Second,
-		CountError:       domain.IsRecoverableError,
+		CountError:       shared.IsRecoverableError,
 	}, nil)
 	cbs := NewCircuitBreakerSender(&Sender{metrics: &noopTestExporter{}}, br)
 	if cbs == nil {
@@ -197,7 +198,7 @@ func TestAnaCBSender_NonRecoverableError_DoesNotTripCircuit(t *testing.T) {
 		FailureThreshold: 1, // very low: any countable failure trips
 		SuccessThreshold: 1,
 		ResetTimeout:     10 * time.Minute,
-		CountError:       domain.IsRecoverableError,
+		CountError:       shared.IsRecoverableError,
 	}, nil)
 	cbs := NewCircuitBreakerSender(inner, br)
 
@@ -205,7 +206,7 @@ func TestAnaCBSender_NonRecoverableError_DoesNotTripCircuit(t *testing.T) {
 	_ = cbs.Send(context.Background(), &domain.Envelope{Payload: []byte("p")})
 
 	// Inject a non-recoverable error directly to verify CountError result.
-	if domain.IsRecoverableError(domain.ErrInvalidTopic) {
+	if shared.IsRecoverableError(shared.ErrInvalidTopic) {
 		t.Fatal("test invariant: ErrInvalidTopic must be non-recoverable")
 	}
 
@@ -229,7 +230,7 @@ func TestAnaCBSender_RecoversAfterResetTimeout(t *testing.T) {
 
 	// Trip the breaker.
 	_ = br.BeforeRequest()
-	br.AfterRequest(domain.ErrUnavailable)
+	br.AfterRequest(shared.ErrUnavailable)
 
 	// Immediate request rejected.
 	if err := br.BeforeRequest(); err == nil {
@@ -251,7 +252,7 @@ func TestAnaCBSender_RecoversAfterResetTimeout(t *testing.T) {
 }
 
 // TestAnaCBSender_ErrUnavailableWithRetryAfter verifies that the error
-// returned by an open breaker is a *domain.BridgeError with a
+// returned by an open breaker is a *shared.BridgeError with a
 // RetryAfter hint, so callers (route runners, DLQ routers) can throttle.
 func TestAnaCBSender_ErrUnavailableWithRetryAfter(t *testing.T) {
 	cfg := circuitbreaker.Config{
@@ -263,18 +264,18 @@ func TestAnaCBSender_ErrUnavailableWithRetryAfter(t *testing.T) {
 	br := circuitbreaker.NewBreaker("ana-cb-retry", cfg, nil)
 
 	_ = br.BeforeRequest()
-	br.AfterRequest(domain.ErrUnavailable)
+	br.AfterRequest(shared.ErrUnavailable)
 
 	err := br.BeforeRequest()
 	if err == nil {
 		t.Fatal("breaker should reject after trip")
 	}
-	be, ok := err.(*domain.BridgeError)
+	be, ok := err.(*shared.BridgeError)
 	if !ok {
-		t.Fatalf("err type = %T, want *domain.BridgeError", err)
+		t.Fatalf("err type = %T, want *shared.BridgeError", err)
 	}
-	if be.Code != domain.ErrUnavailable.Code {
-		t.Fatalf("err code = %s, want %s", be.Code, domain.ErrUnavailable.Code)
+	if be.Code != shared.ErrUnavailable.Code {
+		t.Fatalf("err code = %s, want %s", be.Code, shared.ErrUnavailable.Code)
 	}
 	if be.RetryAfter == 0 {
 		t.Fatal("expected RetryAfter > 0 from open breaker")
@@ -303,7 +304,7 @@ func TestAnaSender_ContextDoneBeforeSend_ReturnsClassifiedError(t *testing.T) {
 		t.Fatal("expected error from Send with cancelled ctx")
 	}
 	// errors.Is(err, context.Canceled) is acceptable as long as it's wrapped in a BridgeError.
-	if _, ok := err.(*domain.BridgeError); !ok {
-		t.Fatalf("err type = %T, want *domain.BridgeError", err)
+	if _, ok := err.(*shared.BridgeError); !ok {
+		t.Fatalf("err type = %T, want *shared.BridgeError", err)
 	}
 }

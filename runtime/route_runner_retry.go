@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // retryDelay returns the next retry delay for a recoverable send
@@ -11,7 +12,7 @@ import (
 // exponentially-backed-off interval derived from policy.Backoff,
 // capped by Backoff.MaxInterval.
 func retryDelay(policy domain.RoutePolicy, attempt int, sendErr error) time.Duration {
-	if d := domain.GetRetryAfter(sendErr); d > 0 {
+	if d := shared.GetRetryAfter(sendErr); d > 0 {
 		return d
 	}
 	bp := policy.Backoff

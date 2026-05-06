@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -110,7 +111,7 @@ func TestDirectHold_RetryUnsupported_FallsToDLQ(t *testing.T) {
 		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
 		cfg.Metrics = rec
 	})
-	sender.SendErr = domain.ErrUnavailable
+	sender.SendErr = shared.ErrUnavailable
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -122,7 +123,7 @@ func TestDirectHold_RetryUnsupported_FallsToDLQ(t *testing.T) {
 		Payload:   []byte("data"),
 		ExpiresAt: time.Now().Add(time.Hour),
 	})
-	del.RetryFnErr = domain.ErrNotSupported
+	del.RetryFnErr = shared.ErrNotSupported
 
 	_ = receiver.Emit(ctx, del)
 
@@ -132,11 +133,11 @@ func TestDirectHold_RetryUnsupported_FallsToDLQ(t *testing.T) {
 		t.Fatalf("expected 1 DLQ entry (retry_unsupported fallback), got %d", dlqStore.Count())
 	}
 
-	dlqCounters := rec.FindEntries(domain.MetricDLQEntries)
+	dlqCounters := rec.FindEntries(shared.MetricDLQEntries)
 	found := false
 	for _, entry := range dlqCounters {
 		for _, tag := range entry.Tags {
-			if tag.Key == domain.TagKeyCategory && tag.Value == "retry_unsupported" {
+			if tag.Key == shared.TagKeyCategory && tag.Value == "retry_unsupported" {
 				found = true
 			}
 		}
@@ -166,7 +167,7 @@ func TestDirectHold_RetryUnsupported_DLQAlsoFails_ReturnsError(t *testing.T) {
 	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
 	})
-	sender.SendErr = domain.ErrUnavailable
+	sender.SendErr = shared.ErrUnavailable
 	dlqStore.WriteErr = errors.New("store down")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -179,7 +180,7 @@ func TestDirectHold_RetryUnsupported_DLQAlsoFails_ReturnsError(t *testing.T) {
 		Payload:   []byte("data"),
 		ExpiresAt: time.Now().Add(time.Hour),
 	})
-	del.RetryFnErr = domain.ErrNotSupported
+	del.RetryFnErr = shared.ErrNotSupported
 
 	_ = receiver.Emit(ctx, del)
 
@@ -216,7 +217,7 @@ func TestHandleProcessorError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 		cfg.Processors = []ports.Processor{
 			&FakeProcessor{
 				NameVal:    "throttle-sim",
-				ProcessErr: domain.ErrThrottled,
+				ProcessErr: shared.ErrThrottled,
 			},
 		}
 	})
@@ -231,7 +232,7 @@ func TestHandleProcessorError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 		Payload:   []byte("data"),
 		ExpiresAt: time.Now().Add(time.Hour),
 	})
-	del.RetryFnErr = domain.ErrNotSupported
+	del.RetryFnErr = shared.ErrNotSupported
 
 	_ = receiver.Emit(ctx, del)
 
@@ -274,7 +275,7 @@ func TestSharedOutbox_RetryUnsupported_FallsToDLQ(t *testing.T) {
 		Payload:   []byte("data"),
 		ExpiresAt: time.Now().Add(time.Hour),
 	})
-	del.RetryFnErr = domain.ErrNotSupported
+	del.RetryFnErr = shared.ErrNotSupported
 
 	_ = receiver.Emit(ctx, del)
 
@@ -327,7 +328,7 @@ func TestHandleExpired_RetryUnsupported_FallsToDLQ(t *testing.T) {
 		Payload:   []byte("data"),
 		ExpiresAt: time.Now().Add(-time.Hour),
 	})
-	del.RetryFnErr = domain.ErrNotSupported
+	del.RetryFnErr = shared.ErrNotSupported
 
 	_ = receiver.Emit(ctx, del)
 
@@ -358,7 +359,7 @@ func TestHandleExpired_RetryUnsupported_FallsToDLQ(t *testing.T) {
 func TestHandleResolveError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
-		cfg.Resolver = &FakeResolver{ResolveErr: domain.ErrUnavailable}
+		cfg.Resolver = &FakeResolver{ResolveErr: shared.ErrUnavailable}
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -371,7 +372,7 @@ func TestHandleResolveError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 		Payload:   []byte("data"),
 		ExpiresAt: time.Now().Add(time.Hour),
 	})
-	del.RetryFnErr = domain.ErrNotSupported
+	del.RetryFnErr = shared.ErrNotSupported
 
 	_ = receiver.Emit(ctx, del)
 
@@ -402,7 +403,7 @@ func TestDirectHold_RetrySupported_NoFallback(t *testing.T) {
 	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
 	})
-	sender.SendErr = domain.ErrUnavailable
+	sender.SendErr = shared.ErrUnavailable
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

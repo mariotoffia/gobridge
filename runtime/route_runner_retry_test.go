@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -16,7 +17,7 @@ func TestRetryDelay_HonoursRetryAfter(t *testing.T) {
 		MaxInterval:     30 * time.Second,
 		Multiplier:      2.0,
 	}}
-	sendErr := domain.ErrThrottled.WithRetryAfter(5 * time.Second)
+	sendErr := shared.ErrThrottled.WithRetryAfter(5 * time.Second)
 
 	for _, attempt := range []int{1, 2, 5} {
 		if got := runtime.RetryDelay(policy, attempt, sendErr); got != 5*time.Second {
@@ -64,7 +65,7 @@ func TestRouteRunner_DirectHoldTransientSendUsesBackoff(t *testing.T) {
 		}
 		cfg.Policy.MaxReplayAttempts = 5
 	})
-	sender.SendErr = domain.ErrUnavailable
+	sender.SendErr = shared.ErrUnavailable
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -74,7 +75,7 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 	for i := range records {
 		dk := dedupKey(records[i].EnvelopeID, records[i].BindingID)
 		if s.dedup[dk] {
-			return domain.ErrDuplicateRecord.
+			return shared.ErrDuplicateRecord.
 				WithMessage("duplicate outbox record").
 				With("envelopeID", records[i].EnvelopeID).
 				With("bindingID", records[i].BindingID)
@@ -103,7 +104,7 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 	defer s.mu.Unlock()
 
 	if token.Version < s.latestVersion[pk] {
-		return nil, domain.ErrStaleFencingToken.
+		return nil, shared.ErrStaleFencingToken.
 			WithMessage("claim rejected: token version is stale").
 			With("givenVersion", token.Version).
 			With("latestVersion", s.latestVersion[pk])
@@ -159,7 +160,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.L
 			continue
 		}
 		if r.ClaimVersion != token.Version {
-			return domain.ErrStaleFencingToken.
+			return shared.ErrStaleFencingToken.
 				WithMessage("claim version mismatch on complete").
 				With("recordID", id).
 				With("storedClaimVersion", r.ClaimVersion).

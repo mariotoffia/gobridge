@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -148,7 +149,7 @@ func (r *CredentialResolver) resolveRepo(uri string) (ports.CredentialRepository
 	}
 
 	if best == nil {
-		return nil, domain.ErrNotFound.WithMessage(
+		return nil, shared.ErrNotFound.WithMessage(
 			fmt.Sprintf("no credential repository for URI %q", uri),
 		)
 	}

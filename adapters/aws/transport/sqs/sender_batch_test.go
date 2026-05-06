@@ -12,6 +12,7 @@ import (
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ---------------------------------------------------------------------------
@@ -146,7 +147,7 @@ func TestSendBatch_MiddleBatchAPIError_OtherBatchesExecute(t *testing.T) {
 	if callNum != 3 {
 		t.Fatalf("expected all 3 batch calls to execute, got %d", callNum)
 	}
-	if !domain.IsRecoverableError(sendErr) {
+	if !shared.IsRecoverableError(sendErr) {
 		t.Fatal("ServiceUnavailable should be recoverable")
 	}
 }

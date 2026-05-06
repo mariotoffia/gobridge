@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -75,7 +76,7 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 func TestGet_Missing_ReturnsErrNotFound(t *testing.T) {
 	s := newMemDB(t)
 	_, err := s.Get(context.Background(), "no-such")
-	if !errors.Is(err, domain.ErrNotFound) {
+	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }

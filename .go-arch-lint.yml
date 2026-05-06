@@ -107,6 +107,7 @@ excludeFiles:
 components:
   # ---- Layer 1: Domain ----
   domain: { in: [domain, domain/**] }
+  domain_shared: { in: [domain/shared, domain/shared/**] }
 
   # ---- Layer 2: Ports + Application Services + Shared Kernel ----
   ports: { in: [ports, ports/**] }
@@ -258,7 +259,11 @@ deps:
   # Domain is the innermost layer. It has no project dependencies and no
   # external dependencies. The sentinel vendor entry makes the
   # zero-dependency claim machine-checked.
+  domain_shared:
+    canUse: [_no_external_deps_]
   domain:
+    mayDependOn:
+      - domain_shared
     canUse: [_no_external_deps_]
 
   # ---- Layer 2: Ports + Application Services + Shared Kernel ----
@@ -271,6 +276,7 @@ deps:
   ports:
     mayDependOn:
       - domain
+      - domain_shared
     canUse:
       - _no_external_deps_
 
@@ -284,6 +290,7 @@ deps:
   config:
     mayDependOn:
       - domain
+      - domain_shared
       - ports
     canUse:
       - yaml
@@ -300,6 +307,7 @@ deps:
   circuitbreaker:
     mayDependOn:
       - domain
+      - domain_shared
       - ports
 
   # validate hosts invariants over ports + domain. It MUST NOT depend on
@@ -308,6 +316,7 @@ deps:
   validate:
     mayDependOn:
       - domain
+      - domain_shared
       - ports
 
   # runtime is the use-case engine. Per the Dependency Rule it depends
@@ -316,6 +325,7 @@ deps:
   runtime:
     mayDependOn:
       - domain
+      - domain_shared
       - ports
       - logging
       - observability
@@ -327,6 +337,7 @@ deps:
   bridge:
     mayDependOn:
       - domain
+      - domain_shared
       - logging
       - ports
       - runtime
@@ -343,6 +354,7 @@ deps:
   httpapi:
     mayDependOn:
       - domain
+      - domain_shared
       - logging
       - observability
       - ports
@@ -357,6 +369,7 @@ deps:
     mayDependOn:
       - circuitbreaker
       - domain
+      - domain_shared
       - ports
     canUse:
       - ojg
@@ -376,28 +389,28 @@ deps:
   # consumes the ports.CircuitBreaker contract only — the implementation
   # is supplied by the composition root.
   adapter_transport_mqtt_paho:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
     canUse: [paho]
 
   adapter_transport_sqs:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
     canUse: [aws]
 
   adapter_transport_servicebus:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
     canUse: [asb]
 
   adapter_transport_amqp091:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
     canUse: [amqp091]
 
   adapter_transport_amqp10:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
     canUse: [amqp10]
 
   # HTTP transport is stdlib-only.
   adapter_transport_http:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
 
   # ---- Layer 3: Driven adapters -- store implementations ----
   #
@@ -406,25 +419,25 @@ deps:
   # the aggregator imports them, never the reverse.
 
   adapter_store_native_memorylease:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
   adapter_store_native_memoryoutbox:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
   adapter_store_native_memorydlq:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
   adapter_store_native_sqliteoutbox:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
     canUse: [sqlite]
   adapter_store_native_sqlitedlq:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
     canUse: [sqlite]
   adapter_store_aws_dynamodblease:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
     canUse: [aws]
   adapter_store_aws_dynamodboutbox:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
     canUse: [aws]
   adapter_store_aws_dynamodbdlq:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
     canUse: [aws]
 
   # ---- Layer 3: Store factory aggregators ----
@@ -437,6 +450,7 @@ deps:
   adapter_store_native_factory:
     mayDependOn:
       - domain
+      - domain_shared
       - logging
       - ports
       - adapter_store_native_memorylease
@@ -448,6 +462,7 @@ deps:
   adapter_store_aws_factory:
     mayDependOn:
       - domain
+      - domain_shared
       - logging
       - ports
       - adapter_store_aws_dynamodblease
@@ -464,35 +479,35 @@ deps:
   # shape (BridgeConfig + Loader/Watcher/Reloader contracts) and on
   # config for the parsing/serialization behavior.
   adapter_config_native_file:
-    mayDependOn: [config, domain, logging, ports]
+    mayDependOn: [config, domain, domain_shared, logging, ports]
     canUse: [fsnotify]
   adapter_config_aws_dynamodb:
-    mayDependOn: [config, domain, logging, ports]
+    mayDependOn: [config, domain, domain_shared, logging, ports]
     canUse: [aws]
 
   # ---- Layer 3: Credential adapters ----
   adapter_credentials_native_file:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
   adapter_credentials_aws_ssm:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
     canUse: [aws]
 
   # ---- Layer 3: Observability adapters ----
   adapter_metrics_cloudwatch:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
     canUse: [aws]
   adapter_metrics_otel:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
     canUse: [otel]
   adapter_tracing_otel:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
     canUse: [otel]
 
   # ---- Layer 3: Cluster resolver adapters ----
   adapter_cluster_native:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
   adapter_cluster_aws:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain, domain_shared, logging, ports]
     canUse: [aws]
 
   # ---- Layer 4: Composition root ----

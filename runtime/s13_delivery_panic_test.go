@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -242,7 +243,7 @@ func TestRouteRunner_ProcessorPanic_EmitsMetric(t *testing.T) {
 
 	waitFor(t, 2*time.Second, "delivery acked after panic", del.IsAcked)
 
-	counters := rec.FindEntries(domain.MetricProcessorPanics)
+	counters := rec.FindEntries(shared.MetricProcessorPanics)
 	if len(counters) < 1 {
 		t.Fatalf("expected at least 1 ProcessorPanics counter, got %d", len(counters))
 	}
@@ -252,7 +253,7 @@ func TestRouteRunner_ProcessorPanic_EmitsMetric(t *testing.T) {
 
 	foundRouteTag := false
 	for _, tag := range counters[0].Tags {
-		if tag.Key == domain.TagKeyRouteID && tag.Value == "panic-metric-route" {
+		if tag.Key == shared.TagKeyRouteID && tag.Value == "panic-metric-route" {
 			foundRouteTag = true
 		}
 	}

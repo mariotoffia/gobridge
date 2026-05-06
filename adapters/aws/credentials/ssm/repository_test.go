@@ -10,6 +10,7 @@ import (
 	awsssm "github.com/aws/aws-sdk-go-v2/service/ssm"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -333,7 +334,7 @@ func TestRepository_Get_NotFound(t *testing.T) {
 	r := New(WithClient(mock))
 	_, err := r.Get(context.Background(), "pms://prod/missing")
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrNotFound))
+	assert.True(t, errors.Is(err, shared.ErrNotFound))
 }
 
 // Verifies Get treats a nil parameter value as ErrNotFound.
@@ -349,7 +350,7 @@ func TestRepository_Get_NilValue(t *testing.T) {
 	r := New(WithClient(mock))
 	_, err := r.Get(context.Background(), "pms://x")
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrNotFound))
+	assert.True(t, errors.Is(err, shared.ErrNotFound))
 }
 
 // Verifies Create writes a SecureString parameter without overwrite.
@@ -386,7 +387,7 @@ func TestRepository_Create_AlreadyExists(t *testing.T) {
 		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
 	})
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrAlreadyExists))
+	assert.True(t, errors.Is(err, shared.ErrAlreadyExists))
 }
 
 // Verifies Update overwrites the parameter with serialized credentials.
@@ -424,7 +425,7 @@ func TestRepository_Update_VersionMismatch(t *testing.T) {
 		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
 	}, 3)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrVersionMismatch))
+	assert.True(t, errors.Is(err, shared.ErrVersionMismatch))
 }
 
 // Verifies Delete removes the parameter at the resolved path.
@@ -463,7 +464,7 @@ func TestRepository_Delete_VersionCheck(t *testing.T) {
 
 	err = r.Delete(context.Background(), "pms://ns/path", 99)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrVersionMismatch))
+	assert.True(t, errors.Is(err, shared.ErrVersionMismatch))
 }
 
 // Verifies List returns pms:// URIs for parameters under the namespace.
@@ -544,19 +545,19 @@ func TestMapAWSError_Nil(t *testing.T) {
 // Verifies ParameterNotFound maps to ErrNotFound.
 func TestMapAWSError_ParameterNotFound(t *testing.T) {
 	err := mapAWSError(&ssmtypes.ParameterNotFound{})
-	assert.True(t, errors.Is(err, domain.ErrNotFound))
+	assert.True(t, errors.Is(err, shared.ErrNotFound))
 }
 
 // Verifies ParameterAlreadyExists maps to ErrAlreadyExists.
 func TestMapAWSError_ParameterAlreadyExists(t *testing.T) {
 	err := mapAWSError(&ssmtypes.ParameterAlreadyExists{})
-	assert.True(t, errors.Is(err, domain.ErrAlreadyExists))
+	assert.True(t, errors.Is(err, shared.ErrAlreadyExists))
 }
 
 // Verifies unknown AWS errors map to ErrUnavailable.
 func TestMapAWSError_GenericError(t *testing.T) {
 	err := mapAWSError(fmt.Errorf("some AWS error"))
-	assert.True(t, errors.Is(err, domain.ErrUnavailable))
+	assert.True(t, errors.Is(err, shared.ErrUnavailable))
 }
 
 // ---------------------------------------------------------------------------

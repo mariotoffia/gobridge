@@ -6,23 +6,22 @@ import (
 	"net"
 	"strings"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	amqp "github.com/rabbitmq/amqp091-go"
-
-	"github.com/mariotoffia/gobridge/domain"
 )
 
 // MapError converts AMQP 0-9-1 / network errors into classified
-// domain.BridgeError values for the bridge pipeline.
-func MapError(err error) *domain.BridgeError {
+// shared.BridgeError values for the bridge pipeline.
+func MapError(err error) *shared.BridgeError {
 	if err == nil {
 		return nil
 	}
 
 	if errors.Is(err, context.DeadlineExceeded) {
-		return domain.ErrTimeout.Wrap(err)
+		return shared.ErrTimeout.Wrap(err)
 	}
 	if errors.Is(err, context.Canceled) {
-		return domain.ErrUnavailable.Wrap(err)
+		return shared.ErrUnavailable.Wrap(err)
 	}
 
 	var amqpErr *amqp.Error
@@ -33,42 +32,42 @@ func MapError(err error) *domain.BridgeError {
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		if netErr.Timeout() {
-			return domain.ErrTimeout.Wrap(err)
+			return shared.ErrTimeout.Wrap(err)
 		}
-		return domain.ErrConnectionLost.Wrap(err)
+		return shared.ErrConnectionLost.Wrap(err)
 	}
 
 	s := strings.ToLower(err.Error())
 	if containsAny(s, "connection refused", "no route to host", "network unreachable", "connection reset") {
-		return domain.ErrConnectionLost.Wrap(err)
+		return shared.ErrConnectionLost.Wrap(err)
 	}
 	if containsAny(s, "timeout", "timed out") {
-		return domain.ErrTimeout.Wrap(err)
+		return shared.ErrTimeout.Wrap(err)
 	}
 
-	return domain.ErrUnavailable.Wrap(err)
+	return shared.ErrUnavailable.Wrap(err)
 }
 
-func mapAMQPCode(e *amqp.Error) *domain.BridgeError {
+func mapAMQPCode(e *amqp.Error) *shared.BridgeError {
 	switch e.Code {
 	case 320: // connection-forced
-		return domain.ErrConnectionLost.Wrap(e)
+		return shared.ErrConnectionLost.Wrap(e)
 	case 501, 502, 503, 505: // frame-error, syntax-error, command-invalid, unexpected-frame
-		return domain.ErrProtocolError.Wrap(e)
+		return shared.ErrProtocolError.Wrap(e)
 	case 403: // access-refused
-		return domain.ErrNotAuthorized.Wrap(e)
+		return shared.ErrNotAuthorized.Wrap(e)
 	case 404: // not-found
-		return domain.ErrNotFound.Wrap(e)
+		return shared.ErrNotFound.Wrap(e)
 	case 405, 530: // not-allowed
-		return domain.ErrForbidden.Wrap(e)
+		return shared.ErrForbidden.Wrap(e)
 	case 406, 540: // not-implemented
-		return domain.ErrNotSupported.Wrap(e)
+		return shared.ErrNotSupported.Wrap(e)
 	case 504: // channel-error
-		return domain.ErrUnavailable.Wrap(e)
+		return shared.ErrUnavailable.Wrap(e)
 	case 541: // internal-error
-		return domain.ErrUnavailable.Wrap(e)
+		return shared.ErrUnavailable.Wrap(e)
 	default:
-		return domain.ErrUnavailable.Wrap(e)
+		return shared.ErrUnavailable.Wrap(e)
 	}
 }
 

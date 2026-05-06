@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -46,11 +47,11 @@ func TestFactory_NewSession_MissingBrokerURL(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing broker_url")
 	}
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected BridgeError, got %T: %v", err, err)
 	}
-	if !errors.Is(be, domain.ErrInvalidPayload) {
+	if !errors.Is(be, shared.ErrInvalidPayload) {
 		t.Errorf("expected ErrInvalidPayload, got code %s", be.Code)
 	}
 }
@@ -78,7 +79,7 @@ func TestReceiverFactory_NewReceiver_NilSession(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nil session")
 	}
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}

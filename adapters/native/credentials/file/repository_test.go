@@ -15,6 +15,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -264,7 +265,7 @@ func TestCreate_DuplicateRejectsWithAlreadyExists(t *testing.T) {
 
 	err = repo.Create(ctx, uri, passwordCreds("u2", "p2"))
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrAlreadyExists))
+	assert.True(t, errors.Is(err, shared.ErrAlreadyExists))
 }
 
 // Verifies Create creates intermediate directories for nested URI paths.
@@ -307,7 +308,7 @@ func TestGet_NotFound(t *testing.T) {
 
 	_, err = repo.Get(context.Background(), "file://nonexistent")
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrNotFound))
+	assert.True(t, errors.Is(err, shared.ErrNotFound))
 }
 
 // Verifies Get surfaces parse errors for invalid JSON without mapping them to ErrNotFound.
@@ -321,7 +322,7 @@ func TestGet_CorruptedJSON(t *testing.T) {
 
 	_, err = repo.Get(context.Background(), "file://corrupt")
 	require.Error(t, err)
-	assert.False(t, errors.Is(err, domain.ErrNotFound))
+	assert.False(t, errors.Is(err, shared.ErrNotFound))
 }
 
 // --- Update ---
@@ -373,7 +374,7 @@ func TestUpdate_NotFound(t *testing.T) {
 
 	err = repo.Update(context.Background(), "file://ghost", passwordCreds("u", "p"), 1)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrNotFound))
+	assert.True(t, errors.Is(err, shared.ErrNotFound))
 }
 
 // Verifies Update returns ErrVersionMismatch when the supplied version is wrong.
@@ -387,7 +388,7 @@ func TestUpdate_VersionMismatch(t *testing.T) {
 
 	err = repo.Update(ctx, uri, passwordCreds("u2", "p2"), 99)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrVersionMismatch))
+	assert.True(t, errors.Is(err, shared.ErrVersionMismatch))
 }
 
 // Verifies Update with version zero skips optimistic locking and applies the change.
@@ -422,7 +423,7 @@ func TestDelete_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = repo.Get(ctx, uri)
-	assert.True(t, errors.Is(err, domain.ErrNotFound))
+	assert.True(t, errors.Is(err, shared.ErrNotFound))
 }
 
 // Verifies Delete returns ErrNotFound when the credential file does not exist.
@@ -432,7 +433,7 @@ func TestDelete_NotFound(t *testing.T) {
 
 	err = repo.Delete(context.Background(), "file://ghost", 1)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrNotFound))
+	assert.True(t, errors.Is(err, shared.ErrNotFound))
 }
 
 // Verifies Delete returns ErrVersionMismatch when the supplied version is wrong.
@@ -446,7 +447,7 @@ func TestDelete_VersionMismatch(t *testing.T) {
 
 	err = repo.Delete(ctx, uri, 42)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrVersionMismatch))
+	assert.True(t, errors.Is(err, shared.ErrVersionMismatch))
 }
 
 // Verifies Delete with version zero skips optimistic locking and removes the file.
@@ -462,7 +463,7 @@ func TestDelete_NoVersionCheck(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = repo.Get(ctx, uri)
-	assert.True(t, errors.Is(err, domain.ErrNotFound))
+	assert.True(t, errors.Is(err, shared.ErrNotFound))
 }
 
 // --- List ---

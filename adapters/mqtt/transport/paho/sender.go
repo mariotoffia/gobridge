@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -39,22 +40,22 @@ func NewSender(session *Session, opts SenderOptions) *Sender {
 // MQTT 5 user properties. Message expiry is derived from the session clock.
 //
 // Returns nil when the broker has accepted the message (PUBACK / PUBCOMP).
-// Returns a classified domain.BridgeError on failure.
+// Returns a classified shared.BridgeError on failure.
 func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	if env == nil {
-		return domain.ErrInvalidPayload.WithMessage("nil envelope")
+		return shared.ErrInvalidPayload.WithMessage("nil envelope")
 	}
 
 	cm := s.session.ConnectionManager()
 	if cm == nil {
-		return domain.ErrUnavailable.WithMessage("MQTT session not connected")
+		return shared.ErrUnavailable.WithMessage("MQTT session not connected")
 	}
 
 	pub := PublishFromEnvelope(env, s.opts, s.session.clock())
 
 	topic := pub.Topic
 	if topic == "" {
-		return domain.ErrInvalidTopic.WithMessage("no topic specified and no default topic configured")
+		return shared.ErrInvalidTopic.WithMessage("no topic specified and no default topic configured")
 	}
 
 	if logging.TraceEnabled(s.logger) {
@@ -71,15 +72,15 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	ctx, timeoutCancel := s.applyTimeout(ctx)
 	defer timeoutCancel()
 
-	sessionTag := domain.Tag{Key: domain.TagKeySessionID, Value: s.session.opts.ClientID}
+	sessionTag := shared.Tag{Key: shared.TagKeySessionID, Value: s.session.opts.ClientID}
 
 	start := s.session.clock().Now()
 	resp, err := cm.Publish(ctx, pub)
 	elapsed := s.session.clock().Since(start)
 
 	if err != nil {
-		s.metrics.Timer(domain.MetricMQTTPublishLatency, elapsed, sessionTag)
-		s.metrics.Counter(domain.MetricMQTTPublishFailures, 1, sessionTag)
+		s.metrics.Timer(shared.MetricMQTTPublishLatency, elapsed, sessionTag)
+		s.metrics.Counter(shared.MetricMQTTPublishFailures, 1, sessionTag)
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(ctx, logging.LevelDebug, "mqtt: publish failed",
 				"topic", topic, "error", err)
@@ -89,8 +90,8 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 
 	if resp != nil && resp.ReasonCode != 0 {
 		if berr := MapPublishReasonCode(resp.ReasonCode); berr != nil {
-			s.metrics.Timer(domain.MetricMQTTPublishLatency, elapsed, sessionTag)
-			s.metrics.Counter(domain.MetricMQTTPublishFailures, 1, sessionTag)
+			s.metrics.Timer(shared.MetricMQTTPublishLatency, elapsed, sessionTag)
+			s.metrics.Counter(shared.MetricMQTTPublishFailures, 1, sessionTag)
 			if logging.DebugEnabled(s.logger) {
 				s.logger.Log(ctx, logging.LevelDebug, "mqtt: publish rejected",
 					"topic", topic,
@@ -110,7 +111,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 		}
 	}
 
-	s.metrics.Timer(domain.MetricMQTTPublishLatency, elapsed, sessionTag)
+	s.metrics.Timer(shared.MetricMQTTPublishLatency, elapsed, sessionTag)
 
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "mqtt: published",

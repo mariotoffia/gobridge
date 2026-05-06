@@ -22,6 +22,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -69,7 +70,7 @@ func newFaultySender(inner ports.Sender, failPercent int) *faultySender {
 func (s *faultySender) Send(ctx context.Context, env *domain.Envelope) error {
 	s.calls.Add(1)
 	if rand.IntN(100) < s.failPercent {
-		return domain.ErrUnavailable.WithMessage("faulty sender injected failure")
+		return shared.ErrUnavailable.WithMessage("faulty sender injected failure")
 	}
 	return s.inner.Send(ctx, env)
 }
@@ -105,7 +106,7 @@ func (p *filterProcessor) Name() string { return "filter" }
 
 func (p *filterProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
 	if !p.keep(env) {
-		return domain.ErrMessageFiltered.WithMessage("filtered by predicate")
+		return shared.ErrMessageFiltered.WithMessage("filtered by predicate")
 	}
 	return next(ctx, env)
 }
@@ -179,14 +180,14 @@ func (s *slowSender) Send(ctx context.Context, env *domain.Envelope) error {
 type alwaysFailSender struct{}
 
 func (s *alwaysFailSender) Send(_ context.Context, _ *domain.Envelope) error {
-	return domain.ErrUnavailable.WithMessage("always-fail sender")
+	return shared.ErrUnavailable.WithMessage("always-fail sender")
 }
 
 // permanentFailSender always returns a permanent error, forcing DLQ routing.
 type permanentFailSender struct{}
 
 func (s *permanentFailSender) Send(_ context.Context, _ *domain.Envelope) error {
-	return domain.ErrInvalidPayload.WithMessage("permanent-fail sender")
+	return shared.ErrInvalidPayload.WithMessage("permanent-fail sender")
 }
 
 // chainOrderProcessor appends its stage name to a "chain_order" header
@@ -459,8 +460,8 @@ func newMQTTCollectorWithBroker(
 // returns the corresponding sentinel error. If no header is set, or the
 // value is unrecognised, it delegates to the inner sender.
 //
-//   - "transient" -> domain.ErrUnavailable
-//   - "permanent" -> domain.ErrInvalidPayload
+//   - "transient" -> shared.ErrUnavailable
+//   - "permanent" -> shared.ErrInvalidPayload
 //   - anything else -> inner.Send
 type errorClassSender struct {
 	inner ports.Sender
@@ -471,9 +472,9 @@ func (s *errorClassSender) Send(ctx context.Context, env *domain.Envelope) error
 		if et, ok := env.Headers["error_type"].(string); ok {
 			switch et {
 			case "transient":
-				return domain.ErrUnavailable.WithMessage("errorClassSender: transient")
+				return shared.ErrUnavailable.WithMessage("errorClassSender: transient")
 			case "permanent":
-				return domain.ErrInvalidPayload.WithMessage("errorClassSender: permanent")
+				return shared.ErrInvalidPayload.WithMessage("errorClassSender: permanent")
 			}
 		}
 	}

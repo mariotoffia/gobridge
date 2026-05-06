@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -51,7 +52,7 @@ func TestDirectHold_EmptyPlans_DoesNotPanic(t *testing.T) {
 		return del.IsRetried() || del.IsAcked()
 	})
 
-	panics := rec.FindEntries(domain.MetricDeliveryPanics)
+	panics := rec.FindEntries(shared.MetricDeliveryPanics)
 	if len(panics) > 0 {
 		t.Fatal("empty plans should be handled as an error, not trigger a panic recovery path")
 	}

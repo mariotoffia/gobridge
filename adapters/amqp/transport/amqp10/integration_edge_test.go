@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
@@ -447,7 +448,7 @@ func TestIntegration_Edge_WrongCredentials(t *testing.T) {
 		t.Fatal("expected auth error with wrong credentials")
 	}
 
-	if _, ok := domain.AsBridgeError(err); !ok {
+	if _, ok := shared.AsBridgeError(err); !ok {
 		t.Fatalf("expected BridgeError, got %T: %v", err, err)
 	}
 }

@@ -15,6 +15,7 @@ import (
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -135,7 +136,7 @@ func (s *Store) EnsureTable(ctx context.Context) error {
 }
 
 // Write stores a DLQ entry. The write is idempotent: if an entry with the
-// same ID already exists, domain.ErrDuplicateRecord is returned.
+// same ID already exists, shared.ErrDuplicateRecord is returned.
 func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodbdlq: write",
@@ -177,7 +178,7 @@ func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
 	})
 	if err != nil {
 		if isConditionFailed(err) {
-			return domain.ErrDuplicateRecord.
+			return shared.ErrDuplicateRecord.
 				WithMessage("duplicate DLQ entry").
 				With("entryID", entry.ID)
 		}
@@ -381,7 +382,7 @@ func (s *Store) listByScan(ctx context.Context, filter domain.DLQFilter) ([]doma
 }
 
 // Get retrieves a single DLQ entry by ID.
-// Returns domain.ErrNotFound if the entry does not exist.
+// Returns shared.ErrNotFound if the entry does not exist.
 func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodbdlq: get", "entry_id", id)
@@ -397,7 +398,7 @@ func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
 		return domain.DLQEntry{}, wrapErr(err, "dlq get failed", "entryID", id)
 	}
 	if out.Item == nil {
-		return domain.DLQEntry{}, domain.ErrNotFound.
+		return domain.DLQEntry{}, shared.ErrNotFound.
 			WithMessage("dlq entry not found").
 			With("entryID", id)
 	}

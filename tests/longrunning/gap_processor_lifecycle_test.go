@@ -16,6 +16,7 @@ import (
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/processors/circuitbreaker"
 	"github.com/mariotoffia/gobridge/processors/transform"
@@ -388,7 +389,7 @@ func (p *headerErrorProcessor) Name() string { return "header-error" }
 func (p *headerErrorProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
 	if env.Headers != nil {
 		if et, ok := env.Headers["error_type"].(string); ok && et == "transient" {
-			return domain.ErrUnavailable.WithMessage("headerErrorProcessor: transient")
+			return shared.ErrUnavailable.WithMessage("headerErrorProcessor: transient")
 		}
 	}
 	return next(ctx, env)

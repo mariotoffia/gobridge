@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -207,11 +208,11 @@ func TestBindingResolver_MatchByHeader_NoMatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for no matching binding")
 	}
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	if !ok {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}
-	if be.Class != domain.ErrorRejected {
+	if be.Class != shared.ErrorRejected {
 		t.Fatalf("expected Rejected class, got %s", be.Class)
 	}
 }
@@ -328,7 +329,7 @@ func TestBindingResolver_MQTTTopicValidation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for MQTT topic with wildcard character")
 	}
-	if !errors.Is(err, domain.ErrInvalidTopic) {
+	if !errors.Is(err, shared.ErrInvalidTopic) {
 		t.Fatalf("expected ErrInvalidTopic, got %v", err)
 	}
 }

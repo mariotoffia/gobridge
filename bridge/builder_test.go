@@ -7,6 +7,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 
 	"github.com/stretchr/testify/assert"
@@ -96,7 +97,7 @@ func (f *fakeCredentialStore) Resolve(_ context.Context, uri string) (*domain.Cr
 	if cs, ok := f.creds[uri]; ok {
 		return cs, nil
 	}
-	return nil, domain.ErrNotFound.WithMessage("not found: " + uri)
+	return nil, shared.ErrNotFound.WithMessage("not found: " + uri)
 }
 
 type capturingTransportFactory struct {

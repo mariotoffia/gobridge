@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -65,6 +66,6 @@ func BenchmarkDLQRouter_Route(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = dlq.Route(ctx, env, "route-1", "bind-1", "", "", domain.ErrNotFound, 1)
+		_ = dlq.Route(ctx, env, "route-1", "bind-1", "", "", shared.ErrNotFound, 1)
 	}
 }

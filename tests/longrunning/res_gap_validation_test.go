@@ -15,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -318,7 +319,7 @@ func TestRES001_NoCircuitBreakerOnSender(t *testing.T) {
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
 		ResetTimeout:     5 * time.Second,
-		CountError:       domain.IsRecoverableError,
+		CountError:       shared.IsRecoverableError,
 	}, nil)
 	cbSnd := paho.NewCircuitBreakerSender(baseSnd, br)
 	snd := newDegradedSender(cbSnd, 80, 5*time.Second)

@@ -11,6 +11,7 @@ import (
 	"github.com/Azure/go-amqp"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -64,9 +65,9 @@ func TestDelivery_Ack_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("Ack() should return error when AcceptMessage fails")
 	}
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(err, &be) {
-		t.Fatalf("error should be *domain.BridgeError, got %T", err)
+		t.Fatalf("error should be *shared.BridgeError, got %T", err)
 	}
 }
 
@@ -123,7 +124,7 @@ func TestDelivery_Extend(t *testing.T) {
 	if err == nil {
 		t.Fatal("Extend() should return error")
 	}
-	if !errors.Is(err, domain.ErrNotSupported) {
+	if !errors.Is(err, shared.ErrNotSupported) {
 		t.Fatalf("Extend() error = %v, want ErrNotSupported", err)
 	}
 }

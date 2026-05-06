@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -36,13 +37,13 @@ func TestRouteRunner_EmitsE2ELatency(t *testing.T) {
 
 	cancel()
 
-	timers := rec.FindEntries(domain.MetricDeliveryE2ELatency)
+	timers := rec.FindEntries(shared.MetricDeliveryE2ELatency)
 	if len(timers) == 0 {
 		t.Fatal("expected at least 1 DeliveryE2ELatency timer")
 	}
 	found := false
 	for _, tag := range timers[0].Tags {
-		if tag.Key == domain.TagKeyRouteID && tag.Value == "route-e2e" {
+		if tag.Key == shared.TagKeyRouteID && tag.Value == "route-e2e" {
 			found = true
 		}
 	}
@@ -55,7 +56,7 @@ func TestRouteRunner_EmitsE2ELatency(t *testing.T) {
 func TestRouteRunner_EmitsDLQEntries(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	sender := NewFakeSender()
-	sender.SendErr = domain.NewBridgeError("PERM", domain.ErrorPermanent, "permanent failure")
+	sender.SendErr = shared.NewBridgeError("PERM", shared.ErrorPermanent, "permanent failure")
 	receiver := NewFakeReceiver()
 	dlqStore := NewFakeDLQStore()
 
@@ -80,7 +81,7 @@ func TestRouteRunner_EmitsDLQEntries(t *testing.T) {
 
 	cancel()
 
-	dlqCounters := rec.FindEntries(domain.MetricDLQEntries)
+	dlqCounters := rec.FindEntries(shared.MetricDLQEntries)
 	if len(dlqCounters) == 0 {
 		t.Fatal("expected DLQEntries counter emission")
 	}
@@ -121,12 +122,12 @@ func TestOutboxDrainer_EmitsDrainLatency(t *testing.T) {
 	defer cancel()
 	_ = drainer.Run(ctx)
 
-	timers := rec.FindEntries(domain.MetricOutboxDrainLatency)
+	timers := rec.FindEntries(shared.MetricOutboxDrainLatency)
 	if len(timers) == 0 {
 		t.Fatal("expected OutboxDrainLatency timer emission")
 	}
 
-	completions := rec.FindEntries(domain.MetricOutboxCompletions)
+	completions := rec.FindEntries(shared.MetricOutboxCompletions)
 	if len(completions) == 0 {
 		t.Fatal("expected OutboxCompletions counter emission")
 	}
@@ -172,7 +173,7 @@ func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 	defer cancel()
 	_ = drainer.Run(ctx)
 
-	expired := rec.FindEntries(domain.MetricOutboxExpiredBeforeSend)
+	expired := rec.FindEntries(shared.MetricOutboxExpiredBeforeSend)
 	if len(expired) == 0 {
 		t.Fatal("expected OutboxExpiredBeforeSend counter emission")
 	}
@@ -208,10 +209,10 @@ func TestSessionManager_EmitsLeaseMetrics(t *testing.T) {
 	}()
 
 	waitFor(t, 2*time.Second, "LeaseAcquireLatency emitted", func() bool {
-		return len(rec.FindEntries(domain.MetricLeaseAcquireLatency)) > 0
+		return len(rec.FindEntries(shared.MetricLeaseAcquireLatency)) > 0
 	})
 	waitFor(t, 2*time.Second, "LeaseRenewLatency emitted", func() bool {
-		return len(rec.FindEntries(domain.MetricLeaseRenewLatency)) > 0
+		return len(rec.FindEntries(shared.MetricLeaseRenewLatency)) > 0
 	})
 
 	cancel()
@@ -253,7 +254,7 @@ func TestSessionManager_EmitsReconnectMetric(t *testing.T) {
 
 	_ = mgr.Run(ctx)
 
-	reconnects := rec.FindEntries(domain.MetricMQTTReconnects)
+	reconnects := rec.FindEntries(shared.MetricMQTTReconnects)
 	if len(reconnects) != 1 {
 		t.Fatalf("expected 1 MQTTReconnects counter (not counting initial connect), got %d", len(reconnects))
 	}

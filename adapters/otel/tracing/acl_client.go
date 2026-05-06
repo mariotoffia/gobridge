@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -20,7 +20,7 @@ import (
 // the tracer instance and the SDK Span construction all live behind
 // this interface.
 type tracerClient interface {
-	StartSpan(ctx context.Context, name string, tags []domain.Tag) (context.Context, ports.Span)
+	StartSpan(ctx context.Context, name string, tags []shared.Tag) (context.Context, ports.Span)
 	Close(ctx context.Context) error
 }
 
@@ -89,7 +89,7 @@ func newTracerClientFromProvider(tp *sdktrace.TracerProvider) *otelTracerClient 
 func (c *otelTracerClient) StartSpan(
 	ctx context.Context,
 	name string,
-	tags []domain.Tag,
+	tags []shared.Tag,
 ) (context.Context, ports.Span) {
 	var spanOpts []trace.SpanStartOption
 	if len(tags) > 0 {
@@ -107,7 +107,7 @@ func (c *otelTracerClient) Close(ctx context.Context) error {
 	return nil
 }
 
-func tagsToAttributes(tags []domain.Tag) []attribute.KeyValue {
+func tagsToAttributes(tags []shared.Tag) []attribute.KeyValue {
 	attrs := make([]attribute.KeyValue, len(tags))
 	for i, t := range tags {
 		attrs[i] = attribute.String(t.Key, t.Value)

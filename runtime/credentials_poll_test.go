@@ -13,6 +13,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -34,7 +35,7 @@ func (f *fakePullStore) Resolve(_ context.Context, _ string) (*domain.Credential
 		return nil, f.err
 	}
 	if len(f.queue) == 0 {
-		return nil, domain.ErrNotFound
+		return nil, shared.ErrNotFound
 	}
 	head := f.queue[0]
 	if len(f.queue) > 1 {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 
 	// Driver registration. The blank import lives in this ACL file so
 	// it never leaks into the port-side dlq.go.
@@ -53,7 +54,7 @@ func (s *sqlSession) close() error {
 }
 
 // write inserts a single DLQ entry. Duplicates surface as
-// domain.ErrDuplicateRecord.
+// shared.ErrDuplicateRecord.
 func (s *sqlSession) write(ctx context.Context, entry domain.DLQEntry) error {
 	envJSON, err := json.Marshal(entry.Envelope)
 	if err != nil {
@@ -67,7 +68,7 @@ func (s *sqlSession) write(ctx context.Context, entry domain.DLQEntry) error {
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
-			return domain.ErrDuplicateRecord.With("entryID", entry.ID)
+			return shared.ErrDuplicateRecord.With("entryID", entry.ID)
 		}
 		return wrapErr(err, "sqlitedlq: write",
 			"entryID", entry.ID, "routeID", entry.RouteID)
@@ -89,7 +90,7 @@ func (s *sqlSession) list(ctx context.Context, filter domain.DLQFilter) ([]domai
 	return scanDLQEntries(rows)
 }
 
-// get returns the entry with id or domain.ErrNotFound.
+// get returns the entry with id or shared.ErrNotFound.
 func (s *sqlSession) get(ctx context.Context, id string) (domain.DLQEntry, error) {
 	rows, err := s.db.QueryContext(ctx, selectByIDSQL, id)
 	if err != nil {
@@ -102,7 +103,7 @@ func (s *sqlSession) get(ctx context.Context, id string) (domain.DLQEntry, error
 		return domain.DLQEntry{}, err
 	}
 	if len(entries) == 0 {
-		return domain.DLQEntry{}, domain.ErrNotFound.
+		return domain.DLQEntry{}, shared.ErrNotFound.
 			WithMessage("dlq entry not found").
 			With("entryID", id)
 	}

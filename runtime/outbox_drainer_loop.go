@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -44,7 +45,7 @@ func (d *OutboxDrainer) Run(ctx context.Context) error {
 			d.hasDrained = true
 			n, err := d.drainBatch(ctx, token)
 			if err != nil {
-				if errors.Is(err, domain.ErrStaleFencingToken) {
+				if errors.Is(err, shared.ErrStaleFencingToken) {
 					d.log(ctx, slog.LevelWarn, "stale fencing token, waiting for new lease")
 					staleBackoff := max(d.strategy.NextInterval(0), 5*time.Second)
 					timer.Reset(staleBackoff)
@@ -99,8 +100,8 @@ func (d *OutboxDrainer) finalDrain(parent context.Context) error {
 
 func (d *OutboxDrainer) drainBatch(ctx context.Context, token domain.LeaseToken) (int, error) {
 	start := d.clk.Now()
-	sessionTag := domain.Tag{Key: domain.TagKeySessionID, Value: d.partitionKey}
-	routeTag := domain.Tag{Key: domain.TagKeyRouteID, Value: d.routeID}
+	sessionTag := shared.Tag{Key: shared.TagKeySessionID, Value: d.partitionKey}
+	routeTag := shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID}
 
 	if logging.DebugEnabled(d.logger) {
 		d.logger.Log(ctx, logging.LevelDebug, "drain batch starting",
@@ -174,7 +175,7 @@ loop:
 		}
 		rec := &records[i]
 		if rec.ReplayCount > 1 {
-			d.metrics.Counter(domain.MetricOutboxReplayCount, 1, routeTag)
+			d.metrics.Counter(shared.MetricOutboxReplayCount, 1, routeTag)
 		}
 		select {
 		case sem <- struct{}{}:
@@ -189,15 +190,15 @@ loop:
 				if r := recover(); r != nil {
 					d.log(batchCtx, slog.LevelError, "panic in drain goroutine",
 						"record_id", rec.ID, "panic", r)
-					d.metrics.Counter(domain.MetricOutboxRecordFailures, 1, routeTag)
+					d.metrics.Counter(shared.MetricOutboxRecordFailures, 1, routeTag)
 				}
 			}()
 			if err := d.processRecord(batchCtx, rec, token); err != nil {
-				if errors.Is(err, domain.ErrStaleFencingToken) {
+				if errors.Is(err, shared.ErrStaleFencingToken) {
 					staleDetected.Store(true)
 					batchCancel()
 				} else {
-					d.metrics.Counter(domain.MetricOutboxRecordFailures, 1, routeTag)
+					d.metrics.Counter(shared.MetricOutboxRecordFailures, 1, routeTag)
 				}
 				d.log(batchCtx, slog.LevelWarn, "record processing failed",
 					"record_id", rec.ID, "error", err)
@@ -211,7 +212,7 @@ loop:
 	workCancel()
 
 	duration := d.clk.Since(start)
-	d.metrics.Timer(domain.MetricOutboxDrainLatency, duration, sessionTag)
+	d.metrics.Timer(shared.MetricOutboxDrainLatency, duration, sessionTag)
 
 	successTotal := int(atomic.LoadInt64(&successCount))
 	d.fireBatchComplete(successTotal)
@@ -224,7 +225,7 @@ loop:
 				"owner", d.ownerID,
 			)
 		}
-		return int(atomic.LoadInt64(&successCount)), domain.ErrStaleFencingToken
+		return int(atomic.LoadInt64(&successCount)), shared.ErrStaleFencingToken
 	}
 
 	if logging.DebugEnabled(d.logger) {

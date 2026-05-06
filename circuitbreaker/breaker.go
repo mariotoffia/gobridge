@@ -5,8 +5,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // Breaker is a standalone circuit breaker that can wrap any
@@ -60,7 +60,7 @@ func NewBreaker(key string, cfg Config, onStateChange func(string, State, State)
 		cfg.HalfOpenMaxProbes = 1
 	}
 	if cfg.CountError == nil {
-		cfg.CountError = domain.IsRecoverableError
+		cfg.CountError = shared.IsRecoverableError
 	}
 	b := &Breaker{
 		key:           key,
@@ -95,7 +95,7 @@ func (b *Breaker) BeforeRequest() error {
 		}
 		remaining := b.config.ResetTimeout - elapsed
 		b.mu.Unlock()
-		return domain.ErrUnavailable.WithRetryAfter(remaining)
+		return shared.ErrUnavailable.WithRetryAfter(remaining)
 	case StateHalfOpen:
 		b.mu.Unlock()
 		return b.tryHalfOpenProbe()
@@ -108,7 +108,7 @@ func (b *Breaker) BeforeRequest() error {
 func (b *Breaker) tryHalfOpenProbe() error {
 	if b.halfOpenInFlight.Add(1) > int32(b.config.HalfOpenMaxProbes) {
 		b.halfOpenInFlight.Add(-1)
-		return domain.ErrUnavailable.WithRetryAfter(b.config.ResetTimeout / 2)
+		return shared.ErrUnavailable.WithRetryAfter(b.config.ResetTimeout / 2)
 	}
 	return nil
 }

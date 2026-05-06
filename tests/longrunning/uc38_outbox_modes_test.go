@@ -17,6 +17,7 @@ import (
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -283,7 +284,7 @@ func TestUC40_AdaptiveDrain_Backoff(t *testing.T) {
 	// Phase 2: idle -- count drain cycles via MetricOutboxDrainLatency.
 	rec.Reset()
 	time.Sleep(idleWait) // SYNC: observe drain cycles during idle period
-	idleDrainCycles := len(rec.FindEntries(domain.MetricOutboxDrainLatency))
+	idleDrainCycles := len(rec.FindEntries(shared.MetricOutboxDrainLatency))
 	t.Logf("UC40: drain cycles during %v idle: %d", idleWait, idleDrainCycles)
 
 	// Adaptive(100ms,5s,2x): 100->200->400->800->1.6s->3.2s->5s->5s...

@@ -8,6 +8,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -86,10 +87,10 @@ func NewPollBasedWrapper(pull ports.PullCredentialStore, cfg ports.PollBasedWrap
 // caller can fail fast.
 func (w *PollBasedWrapper) Watch(ctx context.Context, uri string) (<-chan *domain.CredentialSet, error) {
 	if w.pull == nil {
-		return nil, domain.ErrUnavailable.WithMessage("PollBasedWrapper: nil pull store")
+		return nil, shared.ErrUnavailable.WithMessage("PollBasedWrapper: nil pull store")
 	}
 	if uri == "" {
-		return nil, domain.ErrInvalidPayload.WithMessage("PollBasedWrapper: empty URI")
+		return nil, shared.ErrInvalidPayload.WithMessage("PollBasedWrapper: empty URI")
 	}
 
 	// Buffered: the receiver may be slow applying credentials. One slot

@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -197,7 +198,7 @@ func (r *DLQRouter) Route(
 	case <-r.done:
 		return r.writeDirect(ctx, entry)
 	case <-timer.C():
-		r.metrics.Counter(domain.MetricDLQBufferOverflow, 1)
+		r.metrics.Counter(shared.MetricDLQBufferOverflow, 1)
 		return fmt.Errorf("DLQ buffer full after %s", r.enqTimeout)
 	}
 }
@@ -246,7 +247,7 @@ func (r *DLQRouter) runWorker(_ context.Context) {
 						"route_id", entry.RouteID,
 					)
 				}
-				r.metrics.Counter(domain.MetricDLQWriteFailures, 1)
+				r.metrics.Counter(shared.MetricDLQWriteFailures, 1)
 				continue
 			}
 		}
@@ -274,7 +275,7 @@ func (r *DLQRouter) runWorker(_ context.Context) {
 			}
 		}
 		if writeErr != nil {
-			r.metrics.Counter(domain.MetricDLQWriteFailures, 1)
+			r.metrics.Counter(shared.MetricDLQWriteFailures, 1)
 			if r.logger != nil {
 				r.logger.Error("DLQ write failed after retries",
 					"entry_id", entry.ID,
@@ -289,7 +290,7 @@ func (r *DLQRouter) runWorker(_ context.Context) {
 
 // safeErrorReason returns a sanitized error reason suitable for persistence.
 func safeErrorReason(err error) string {
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	if ok {
 		return be.Message
 	}
@@ -297,7 +298,7 @@ func safeErrorReason(err error) string {
 }
 
 func classifyError(err error) (category string, code string) {
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	if !ok {
 		return "unknown", ""
 	}

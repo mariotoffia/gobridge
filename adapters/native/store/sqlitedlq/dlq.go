@@ -39,7 +39,7 @@ func (s *Store) Close() error {
 }
 
 // Write inserts a single DLQ entry. Duplicates surface as
-// domain.ErrDuplicateRecord.
+// shared.ErrDuplicateRecord.
 func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: write",
@@ -57,7 +57,7 @@ func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQ
 	return s.sess.list(ctx, filter)
 }
 
-// Get returns the entry with id or domain.ErrNotFound.
+// Get returns the entry with id or shared.ErrNotFound.
 func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: get", "entry_id", id)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/stretchr/testify/assert"
@@ -299,7 +300,7 @@ func (s *captureDLQStore) List(_ context.Context, _ domain.DLQFilter) ([]domain.
 }
 
 func (s *captureDLQStore) Get(_ context.Context, _ string) (domain.DLQEntry, error) {
-	return domain.DLQEntry{}, domain.ErrNotFound
+	return domain.DLQEntry{}, shared.ErrNotFound
 }
 
 func (s *captureDLQStore) Delete(_ context.Context, _ []string) (int, error) { return 0, nil }

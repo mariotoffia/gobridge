@@ -3,15 +3,15 @@ package cloudwatch
 import (
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // Config holds the configuration for the CloudWatch metrics exporter.
 type Config struct {
 	Region          string        `json:"region,omitempty"`
 	Namespace       string        `json:"namespace"`
-	DefaultTags     []domain.Tag  `json:"defaultTags,omitempty"`
+	DefaultTags     []shared.Tag  `json:"defaultTags,omitempty"`
 	FlushInterval   time.Duration `json:"flushInterval,omitempty"`
 	FlushRPCTimeout time.Duration `json:"flushRPCTimeout,omitempty"`
 	BufferSize      int           `json:"bufferSize,omitempty"`
@@ -34,7 +34,7 @@ func WithNamespace(namespace string) Option {
 }
 
 // WithDefaultTags sets the default tags added to all metrics as dimensions.
-func WithDefaultTags(tags ...domain.Tag) Option {
+func WithDefaultTags(tags ...shared.Tag) Option {
 	return func(e *Exporter) { e.config.DefaultTags = tags }
 }
 

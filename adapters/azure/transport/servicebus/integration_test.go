@@ -13,6 +13,7 @@ import (
 
 	servicebus "github.com/mariotoffia/gobridge/adapters/azure/transport/servicebus"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/asblocal"
 )
@@ -419,9 +420,9 @@ func TestIntegration_ErrorMapping(t *testing.T) {
 		t.Fatal("expected error when sending to non-existent queue")
 	}
 
-	var bridgeErr *domain.BridgeError
+	var bridgeErr *shared.BridgeError
 	if !errors.As(sendErr, &bridgeErr) {
-		t.Fatalf("expected *domain.BridgeError, got %T: %v", sendErr, sendErr)
+		t.Fatalf("expected *shared.BridgeError, got %T: %v", sendErr, sendErr)
 	}
 
 	t.Logf("error class = %s, code = %s, message = %s",

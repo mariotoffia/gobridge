@@ -108,8 +108,8 @@ type RoutePolicy struct {
 	DepthCacheTTL        time.Duration
 	// ProcessorTimeout bounds the execution time of a single processor in the
 	// chain. Zero means use DefaultProcessorTimeout (30s). A panicking processor
-	// returns domain.ErrProcessorPanic (Permanent). A processor that exceeds
-	// this deadline returns domain.ErrProcessorTimeout (Transient).
+	// returns shared.ErrProcessorPanic (Permanent). A processor that exceeds
+	// this deadline returns shared.ErrProcessorTimeout (Transient).
 	ProcessorTimeout time.Duration
 }
 

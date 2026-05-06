@@ -12,6 +12,7 @@ import (
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // Verifies Send maps envelope body, subject, and headers to SendMessage input.
@@ -192,7 +193,7 @@ func TestSender_Send_Error(t *testing.T) {
 	if sendErr == nil {
 		t.Fatal("expected error")
 	}
-	if !domain.IsRecoverableError(sendErr) {
+	if !shared.IsRecoverableError(sendErr) {
 		t.Fatal("ServiceUnavailable should be recoverable")
 	}
 }
@@ -421,7 +422,7 @@ func TestSender_SendBatch_APIError_ContinuesRemaining(t *testing.T) {
 	if callNum != 2 {
 		t.Fatalf("expected 2 batch API calls, got %d", callNum)
 	}
-	if !domain.IsRecoverableError(sendErr) {
+	if !shared.IsRecoverableError(sendErr) {
 		t.Fatal("ServiceUnavailable should be recoverable")
 	}
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ---------------------------------------------------------------------------
@@ -43,12 +44,12 @@ func TestBugForwarder_5xxReturnsTransientError(t *testing.T) {
 			}
 
 			// 5xx must be transient (retriable).
-			if !domain.IsRecoverableError(err) {
+			if !shared.IsRecoverableError(err) {
 				t.Fatalf("expected recoverable/transient error for %d, got non-recoverable", code)
 			}
 
 			// Should match ErrUnavailable sentinel.
-			if !errors.Is(err, domain.ErrUnavailable) {
+			if !errors.Is(err, shared.ErrUnavailable) {
 				t.Fatalf("expected ErrUnavailable for %d, got %v", code, err)
 			}
 		})
@@ -81,15 +82,15 @@ func TestBugForwarder_4xxReturnsPermanentError(t *testing.T) {
 			}
 
 			// 4xx must be permanent (not retriable).
-			if domain.IsRecoverableError(err) {
+			if shared.IsRecoverableError(err) {
 				t.Fatalf("expected permanent/non-recoverable error for %d, got recoverable", code)
 			}
 
-			be, ok := domain.AsBridgeError(err)
+			be, ok := shared.AsBridgeError(err)
 			if !ok {
 				t.Fatalf("expected BridgeError for %d, got %T", code, err)
 			}
-			if be.Class != domain.ErrorPermanent {
+			if be.Class != shared.ErrorPermanent {
 				t.Fatalf("expected ErrorPermanent class for %d, got %q", code, be.Class)
 			}
 		})

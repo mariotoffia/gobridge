@@ -8,6 +8,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -112,8 +113,8 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	}
 
 	elapsed := s.clock().Since(start)
-	s.metrics.Timer(domain.MetricAMQP10SendLatency, elapsed,
-		domain.Tag{Key: domain.TagKeyEntity, Value: s.cfg.Address})
+	s.metrics.Timer(shared.MetricAMQP10SendLatency, elapsed,
+		shared.Tag{Key: shared.TagKeyEntity, Value: s.cfg.Address})
 
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "amqp10: send complete",
@@ -187,7 +188,7 @@ func (s *Sender) ensureLink(ctx context.Context) error {
 func (s *Sender) createLink(ctx context.Context) error {
 	sess := s.session.AMQPSession()
 	if sess == nil {
-		return domain.ErrUnavailable.WithMessage("amqp10: session not connected")
+		return shared.ErrUnavailable.WithMessage("amqp10: session not connected")
 	}
 	conn := s.session.Conn()
 
@@ -239,8 +240,8 @@ func (s *Sender) notifySessionIfConnectionLost(failedConn amqpConn, err error) {
 		return
 	}
 	bridgeErr := MapError(err)
-	if bridgeErr != nil && (bridgeErr.Code == domain.ErrCodeConnectionLost ||
-		bridgeErr.Code == domain.ErrCodeUnavailable) {
+	if bridgeErr != nil && (bridgeErr.Code == shared.ErrCodeConnectionLost ||
+		bridgeErr.Code == shared.ErrCodeUnavailable) {
 		s.session.notifyDisconnect(failedConn, err)
 	}
 }

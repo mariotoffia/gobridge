@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -41,7 +42,7 @@ import (
 func TestDrainer_StaleFencingToken_UsesMinBackoff(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	outbox.ClaimFn = func(_, _ string, _ domain.LeaseToken, _ int) ([]domain.OutboxRecord, error) {
-		return nil, domain.ErrStaleFencingToken
+		return nil, shared.ErrStaleFencingToken
 	}
 
 	hasLease := true
@@ -87,7 +88,7 @@ func TestDrainer_StaleFencingToken_UsesMinBackoff(t *testing.T) {
 func TestRetryUnsupported_NilDLQ_AcksDelivery(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	sender.SendErr = domain.ErrConnectionLost
+	sender.SendErr = shared.ErrConnectionLost
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "retry-test",
@@ -110,7 +111,7 @@ func TestRetryUnsupported_NilDLQ_AcksDelivery(t *testing.T) {
 	}
 
 	del := NewFakeDelivery(env)
-	del.RetryFnErr = domain.ErrNotSupported
+	del.RetryFnErr = shared.ErrNotSupported
 
 	err := receiver.Emit(ctx, del)
 	if err != nil {
@@ -131,7 +132,7 @@ func TestRetryUnsupported_NilDLQ_AcksDelivery(t *testing.T) {
 func TestRetryUnsupported_WithDLQ_RoutesToDLQ(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	sender.SendErr = domain.ErrConnectionLost
+	sender.SendErr = shared.ErrConnectionLost
 
 	dlqStore := NewFakeDLQStore()
 
@@ -156,7 +157,7 @@ func TestRetryUnsupported_WithDLQ_RoutesToDLQ(t *testing.T) {
 	}
 
 	del := NewFakeDelivery(env)
-	del.RetryFnErr = domain.ErrNotSupported
+	del.RetryFnErr = shared.ErrNotSupported
 
 	err := receiver.Emit(ctx, del)
 	if err != nil {

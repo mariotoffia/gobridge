@@ -11,6 +11,7 @@ import (
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -48,12 +49,12 @@ func (r *Receiver) pollAndConvert(
 	}
 
 	elapsed := r.clock().Since(pollStart)
-	r.metrics.Timer(domain.MetricSQSPollLatency, elapsed,
-		domain.Tag{Key: domain.TagKeyQueueURL, Value: queueURL})
+	r.metrics.Timer(shared.MetricSQSPollLatency, elapsed,
+		shared.Tag{Key: shared.TagKeyQueueURL, Value: queueURL})
 	if len(output.Messages) > 0 {
 		perMsg := elapsed / time.Duration(len(output.Messages))
-		r.metrics.Timer(domain.MetricSQSReceiveLatency, perMsg,
-			domain.Tag{Key: domain.TagKeyQueueURL, Value: queueURL})
+		r.metrics.Timer(shared.MetricSQSReceiveLatency, perMsg,
+			shared.Tag{Key: shared.TagKeyQueueURL, Value: queueURL})
 	}
 
 	if logging.TraceEnabled(r.logger) {

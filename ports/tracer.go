@@ -3,7 +3,7 @@ package ports
 import (
 	"context"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // Span represents an active trace span. Implementations must be safe
@@ -11,14 +11,14 @@ import (
 type Span interface {
 	End()
 	SetError(err error)
-	AddEvent(name string, attrs ...domain.Tag)
-	SetAttributes(attrs ...domain.Tag)
+	AddEvent(name string, attrs ...shared.Tag)
+	SetAttributes(attrs ...shared.Tag)
 }
 
 // Tracer creates spans for distributed tracing. Implementations must
 // be safe for concurrent use from multiple goroutines.
 type Tracer interface {
-	StartSpan(ctx context.Context, name string, attrs ...domain.Tag) (context.Context, Span)
+	StartSpan(ctx context.Context, name string, attrs ...shared.Tag) (context.Context, Span)
 }
 
 // NoopTracer is a Tracer that produces no-op spans.
@@ -27,7 +27,7 @@ type NoopTracer struct{}
 
 var _ Tracer = (*NoopTracer)(nil)
 
-func (NoopTracer) StartSpan(ctx context.Context, _ string, _ ...domain.Tag) (context.Context, Span) {
+func (NoopTracer) StartSpan(ctx context.Context, _ string, _ ...shared.Tag) (context.Context, Span) {
 	return ctx, noopSpan{}
 }
 
@@ -37,5 +37,5 @@ var _ Span = noopSpan{}
 
 func (noopSpan) End()                           {}
 func (noopSpan) SetError(error)                 {}
-func (noopSpan) AddEvent(string, ...domain.Tag) {}
-func (noopSpan) SetAttributes(...domain.Tag)    {}
+func (noopSpan) AddEvent(string, ...shared.Tag) {}
+func (noopSpan) SetAttributes(...shared.Tag)    {}

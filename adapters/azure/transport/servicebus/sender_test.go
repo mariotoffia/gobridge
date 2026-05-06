@@ -11,6 +11,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // mockSenderAPI implements asbSenderAPI for unit tests.
@@ -292,9 +293,9 @@ func TestSender_Send_Error(t *testing.T) {
 		t.Fatal("expected error from Send")
 	}
 
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(sendErr, &be) {
-		t.Fatalf("expected *domain.BridgeError, got %T", sendErr)
+		t.Fatalf("expected *shared.BridgeError, got %T", sendErr)
 	}
 }
 

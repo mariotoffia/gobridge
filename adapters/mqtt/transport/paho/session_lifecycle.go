@@ -3,7 +3,7 @@ package paho
 import (
 	"context"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -30,7 +30,7 @@ func (s *Session) Reload(ctx context.Context) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return domain.ErrUnavailable.WithMessage("mqtt session is closed; Reload is not allowed after Close")
+		return shared.ErrUnavailable.WithMessage("mqtt session is closed; Reload is not allowed after Close")
 	}
 	cm := s.cm
 	s.cm = nil

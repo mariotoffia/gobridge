@@ -31,7 +31,7 @@
 // # Error Mapping
 //
 // AMQP 1.0 error conditions (amqp:not-found, amqp:unauthorized-access,
-// amqp:connection:forced, etc.) are classified into domain.BridgeError
+// amqp:connection:forced, etc.) are classified into shared.BridgeError
 // categories:
 //
 //   - amqp:not-found               -> ErrNotFound        (permanent)

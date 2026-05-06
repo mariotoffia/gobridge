@@ -12,6 +12,7 @@ import (
 	dboutbox "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
@@ -188,7 +189,7 @@ func (s *fakeDLQStore) List(_ context.Context, _ domain.DLQFilter) ([]domain.DLQ
 }
 
 func (s *fakeDLQStore) Get(_ context.Context, _ string) (domain.DLQEntry, error) {
-	return domain.DLQEntry{}, domain.ErrNotFound
+	return domain.DLQEntry{}, shared.ErrNotFound
 }
 func (s *fakeDLQStore) Delete(_ context.Context, _ []string) (int, error) { return 0, nil }
 func (s *fakeDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error) {
@@ -747,7 +748,7 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected stale fencing token error on Complete with A's token after B reclaimed")
 	}
-	if be, ok := domain.AsBridgeError(err); ok {
+	if be, ok := shared.AsBridgeError(err); ok {
 		t.Logf("correctly rejected with bridge error: %s", be.Code)
 	}
 
@@ -802,7 +803,7 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 	// Sender always fails with transient error -> drainer retries until
 	// max replay count is exceeded.
 	sender := &fakeSender{
-		sendErr: domain.NewBridgeError("CRASH", domain.ErrorTransient, "always fails"),
+		sendErr: shared.NewBridgeError("CRASH", shared.ErrorTransient, "always fails"),
 	}
 
 	session := newFakeSession()

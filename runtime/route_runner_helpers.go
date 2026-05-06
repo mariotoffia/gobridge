@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 func (r *RouteRunner) outboxPartitionKey(plans []domain.DispatchPlan) string {
@@ -25,13 +26,13 @@ func (r *RouteRunner) resolvePlans(ctx context.Context, env *domain.Envelope) ([
 
 		addr, err := RenderAddress(b.Address, env.Headers)
 		if err != nil {
-			return nil, domain.ErrInvalidTopic.
+			return nil, shared.ErrInvalidTopic.
 				WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
 		}
 
 		if strings.EqualFold(b.Transport, "mqtt") {
 			if err := ValidateMQTTTopic(addr); err != nil {
-				return nil, domain.ErrInvalidTopic.
+				return nil, shared.ErrInvalidTopic.
 					WithMessage(fmt.Sprintf("binding %q: %v", b.ID, err))
 			}
 		}

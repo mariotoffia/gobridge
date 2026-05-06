@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -131,7 +132,7 @@ func (s *Session) Start(ctx context.Context) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return domain.ErrUnavailable.WithMessage("amqp10: session already closed")
+		return shared.ErrUnavailable.WithMessage("amqp10: session already closed")
 	}
 	if s.conn != nil {
 		s.mu.Unlock()
@@ -150,7 +151,7 @@ func (s *Session) Start(ctx context.Context) error {
 			closed := s.closed
 			s.mu.Unlock()
 			if closed && err == nil {
-				return domain.ErrUnavailable.WithMessage("amqp10: session closed during start")
+				return shared.ErrUnavailable.WithMessage("amqp10: session closed during start")
 			}
 			return err
 		case <-ctx.Done():
@@ -187,8 +188,8 @@ func (s *Session) Start(ctx context.Context) error {
 	}
 
 	elapsed := s.clock().Since(connectStart)
-	s.metrics.Timer(domain.MetricAMQP10ConnectLatency, elapsed,
-		domain.Tag{Key: domain.TagKeySessionID, Value: s.opts.ContainerID})
+	s.metrics.Timer(shared.MetricAMQP10ConnectLatency, elapsed,
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ContainerID})
 
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "amqp10: session connected",
@@ -236,7 +237,7 @@ func (s *Session) connect(ctx context.Context) error {
 		s.mu.Unlock()
 		_ = sess.Close(connectCtx)
 		_ = conn.Close()
-		return domain.ErrUnavailable.WithMessage("amqp10: session closed during connect")
+		return shared.ErrUnavailable.WithMessage("amqp10: session closed during connect")
 	}
 	oldConn := s.conn
 	oldSess := s.amqpSess
@@ -270,7 +271,7 @@ func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error 
 	s.mu.Unlock()
 
 	if !connected {
-		return domain.ErrUnavailable.WithMessage("amqp10: session not connected")
+		return shared.ErrUnavailable.WithMessage("amqp10: session not connected")
 	}
 
 	if logging.DebugEnabled(s.logger) {
@@ -283,8 +284,8 @@ func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error 
 	s.pushEvent(ports.SessionReconciled, nil)
 
 	elapsed := s.clock().Since(reconcileStart)
-	s.metrics.Timer(domain.MetricAMQP10ReconcileLatency, elapsed,
-		domain.Tag{Key: domain.TagKeySessionID, Value: s.opts.ContainerID})
+	s.metrics.Timer(shared.MetricAMQP10ReconcileLatency, elapsed,
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ContainerID})
 
 	return nil
 }
@@ -450,7 +451,7 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 					"event_type", t,
 				)
 			}
-			s.metrics.Counter(domain.MetricAMQP10EventDropped, 1)
+			s.metrics.Counter(shared.MetricAMQP10EventDropped, 1)
 		}
 	}
 
@@ -458,7 +459,7 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 		select {
 		case sub <- ev:
 		default:
-			s.metrics.Counter(domain.MetricAMQP10EventDropped, 1)
+			s.metrics.Counter(shared.MetricAMQP10EventDropped, 1)
 		}
 	}
 }
@@ -552,8 +553,8 @@ func (s *Session) handleReconnect(ctx context.Context) {
 		connectCancel()
 
 		if err == nil {
-			s.metrics.Counter(domain.MetricAMQP10Reconnects, 1,
-				domain.Tag{Key: domain.TagKeySessionID, Value: s.opts.ContainerID})
+			s.metrics.Counter(shared.MetricAMQP10Reconnects, 1,
+				shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ContainerID})
 			if logging.DebugEnabled(s.logger) {
 				s.logger.Log(context.Background(), logging.LevelDebug, "amqp10: reconnected",
 					"address", redactURL(s.opts.Address))

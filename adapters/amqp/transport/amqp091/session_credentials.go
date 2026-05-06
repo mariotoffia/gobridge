@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -26,13 +27,13 @@ import (
 //     actually performs the handshake.
 func (s *Session) ApplyCredentials(ctx context.Context, set *domain.CredentialSet) error {
 	if set == nil {
-		return domain.ErrInvalidPayload.WithMessage("amqp091: nil credential set")
+		return shared.ErrInvalidPayload.WithMessage("amqp091: nil credential set")
 	}
 
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return domain.ErrUnavailable.WithMessage("amqp091: session already closed")
+		return shared.ErrUnavailable.WithMessage("amqp091: session already closed")
 	}
 
 	var credsChanged bool

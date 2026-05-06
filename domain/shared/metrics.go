@@ -1,4 +1,4 @@
-package domain
+package shared
 
 // Tag is a key-value pair used as a dimension on emitted metrics.
 type Tag struct {

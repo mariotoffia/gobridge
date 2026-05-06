@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 )
 
@@ -284,7 +285,7 @@ func TestWriteIdempotent(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on duplicate Write, got nil")
 	}
-	if !errors.Is(err, domain.ErrDuplicateRecord) {
+	if !errors.Is(err, shared.ErrDuplicateRecord) {
 		t.Fatalf("expected ErrDuplicateRecord, got %v", err)
 	}
 

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -154,7 +155,7 @@ func TestDeliveryHook_DirectHold_Success(t *testing.T) {
 // with the same error after DLQ routing.
 func TestDeliveryHook_DirectHold_PermanentFailure_DLQ(t *testing.T) {
 	hook := &recordingHook{}
-	permErr := domain.NewBridgeError("PERM", domain.ErrorPermanent, "permanent failure")
+	permErr := shared.NewBridgeError("PERM", shared.ErrorPermanent, "permanent failure")
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Hook = hook
 	})
@@ -225,7 +226,7 @@ func TestDeliveryHook_DirectHold_TransientRetry_NoSettled(t *testing.T) {
 		cfg.Hook = hook
 		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
 	})
-	sender.SendErr = domain.ErrUnavailable
+	sender.SendErr = shared.ErrUnavailable
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -337,7 +338,7 @@ func TestDeliveryHook_DirectHold_MaxAttemptFromPolicy(t *testing.T) {
 func TestDeliveryHook_DirectHold_Drop_NoDLQ_RetryUnsupported(t *testing.T) {
 	hook := &recordingHook{}
 	sender := NewFakeSender()
-	sender.SendErr = domain.ErrUnavailable
+	sender.SendErr = shared.ErrUnavailable
 	receiver := NewFakeReceiver()
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
@@ -355,7 +356,7 @@ func TestDeliveryHook_DirectHold_Drop_NoDLQ_RetryUnsupported(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 
 	del := NewFakeDelivery(&domain.Envelope{ID: "msg-drop", Payload: []byte("drop")})
-	del.RetryFnErr = domain.ErrNotSupported
+	del.RetryFnErr = shared.ErrNotSupported
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}

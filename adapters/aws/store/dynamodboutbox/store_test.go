@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
@@ -77,7 +78,7 @@ func TestIdempotentPersistAfterRedelivery(t *testing.T) {
 		Envelope:   domain.Envelope{ID: "env-redeliv", Subject: "test", Payload: []byte("redelivered")},
 	}
 	err := store.Persist(ctx, []domain.OutboxRecord{r2})
-	if !errors.Is(err, domain.ErrDuplicateRecord) {
+	if !errors.Is(err, shared.ErrDuplicateRecord) {
 		t.Fatalf("expected ErrDuplicateRecord on redelivery, got %v", err)
 	}
 
@@ -164,7 +165,7 @@ func TestFanOutDuplicateRejection(t *testing.T) {
 		},
 	}
 	err := store.Persist(ctx, second)
-	if !errors.Is(err, domain.ErrDuplicateRecord) {
+	if !errors.Is(err, shared.ErrDuplicateRecord) {
 		t.Fatalf("expected ErrDuplicateRecord on fan-out with existing binding, got %v", err)
 	}
 
@@ -278,7 +279,7 @@ func TestCompleteWithStaleTokenRejected(t *testing.T) {
 
 	staleToken := domain.LeaseToken{Version: 3, Owner: "owner-A"}
 	err := store.Complete(ctx, []string{"stale-1"}, staleToken)
-	if !errors.Is(err, domain.ErrStaleFencingToken) {
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken with stale version, got %v", err)
 	}
 }

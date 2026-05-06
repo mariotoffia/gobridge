@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -38,13 +38,13 @@ func (f *Factory) Capabilities() []ports.Capability {
 func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.Session, error) {
 	cfg, err := configFromSpec(spec.Config)
 	if err != nil {
-		return nil, domain.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("amqp10 session %q: %s", spec.ID, err))
 	}
 	opts := cfg.Session
 	opts.applyDefaults()
 	if err := opts.validate(); err != nil {
-		return nil, domain.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("amqp10 session %q: %s", spec.ID, err))
 	}
 	return NewSession(opts, spec.SessionMode, f.Logger, f.Metrics), nil
@@ -54,12 +54,12 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, session ports.Session) (ports.Receiver, error) {
 	amqpSession, ok := session.(*Session)
 	if !ok || amqpSession == nil {
-		return nil, domain.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("amqp10 receiver %q: session must be a non-nil AMQP 1.0 session", spec.ID))
 	}
 	cfg, err := configFromSpec(spec.Config)
 	if err != nil {
-		return nil, domain.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("amqp10 receiver %q: %s", spec.ID, err))
 	}
 	rc := ReceiverConfig{
@@ -78,12 +78,12 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, sessio
 func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, session ports.Session) (ports.Sender, error) {
 	amqpSession, ok := session.(*Session)
 	if !ok || amqpSession == nil {
-		return nil, domain.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("amqp10 sender %q: session must be a non-nil AMQP 1.0 session", spec.ID))
 	}
 	cfg, err := configFromSpec(spec.Config)
 	if err != nil {
-		return nil, domain.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("amqp10 sender %q: %s", spec.ID, err))
 	}
 	sc := SenderConfig{

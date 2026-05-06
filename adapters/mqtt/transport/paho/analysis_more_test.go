@@ -11,6 +11,7 @@ import (
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -92,7 +93,7 @@ func TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization(t *test
 
 // TestAnaMore_Sender_NilEnvelope_ReturnsInvalidPayload pins the
 // Sender.Send contract for a nil envelope: the adapter rejects the
-// call with a classified domain.ErrInvalidPayload rather than
+// call with a classified shared.ErrInvalidPayload rather than
 // panicking. Validating at the transport boundary keeps session
 // state intact and gives callers a recoverable error instead of
 // undefined behaviour.
@@ -111,12 +112,12 @@ func TestAnaMore_Sender_NilEnvelope_ReturnsInvalidPayload(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for nil envelope, got nil")
 	}
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	if !ok {
-		t.Fatalf("expected *domain.BridgeError, got %T: %v", err, err)
+		t.Fatalf("expected *shared.BridgeError, got %T: %v", err, err)
 	}
-	if be.Code != domain.ErrInvalidPayload.Code {
-		t.Fatalf("expected code %q, got %q", domain.ErrInvalidPayload.Code, be.Code)
+	if be.Code != shared.ErrInvalidPayload.Code {
+		t.Fatalf("expected code %q, got %q", shared.ErrInvalidPayload.Code, be.Code)
 	}
 }
 
@@ -138,7 +139,7 @@ func TestAnaMore_ReconcileMetric_NotEmittedOnNoOp(t *testing.T) {
 	if err := s.Reconcile(context.Background(), domain.SessionPlan{}); err != nil {
 		t.Fatalf("no-op Reconcile error: %v", err)
 	}
-	if entries := rec.FindEntries(domain.MetricMQTTReconcileLatency); len(entries) != 0 {
+	if entries := rec.FindEntries(shared.MetricMQTTReconcileLatency); len(entries) != 0 {
 		t.Fatalf("no-op Reconcile must NOT emit MQTTReconcileLatency, got %d entries", len(entries))
 	}
 }
@@ -239,7 +240,7 @@ func TestAnaMore_Sender_RetryAfterHintForRateLimitCodes(t *testing.T) {
 	}
 	// Direct assertion for 0x97 (the most important rate-limit code).
 	be := MapPublishReasonCode(0x97)
-	if be == nil || be.Code != domain.ErrThrottled.Code {
+	if be == nil || be.Code != shared.ErrThrottled.Code {
 		t.Fatalf("0x97 → %v, want ErrThrottled", be)
 	}
 }

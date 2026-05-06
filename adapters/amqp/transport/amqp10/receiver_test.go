@@ -11,6 +11,7 @@ import (
 	"github.com/Azure/go-amqp"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -169,10 +170,10 @@ func TestReceiver_Run_ContextCancel(t *testing.T) {
 		t.Fatal("Run() should return error on cancelled context")
 	}
 	if !errors.Is(runErr, context.Canceled) {
-		var be *domain.BridgeError
+		var be *shared.BridgeError
 		if errors.As(runErr, &be) {
-			if be.Code != domain.ErrCodeUnavailable {
-				t.Fatalf("error code = %q, want %q", be.Code, domain.ErrCodeUnavailable)
+			if be.Code != shared.ErrCodeUnavailable {
+				t.Fatalf("error code = %q, want %q", be.Code, shared.ErrCodeUnavailable)
 			}
 		}
 	}

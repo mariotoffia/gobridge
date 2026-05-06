@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -69,7 +70,7 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 
 	now := s.clk.Now()
 	if e, ok := s.leases[leaseID]; ok && now.Before(e.expiresAt) {
-		return domain.LeaseToken{}, domain.ErrAlreadyExists.
+		return domain.LeaseToken{}, shared.ErrAlreadyExists.
 			WithMessage("lease already held").
 			With("leaseID", leaseID).
 			With("owner", e.owner)
@@ -96,21 +97,21 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseTok
 
 	e, ok := s.leases[leaseID]
 	if !ok {
-		return domain.LeaseToken{}, domain.ErrNotFound.
+		return domain.LeaseToken{}, shared.ErrNotFound.
 			WithMessage("lease not found").
 			With("leaseID", leaseID)
 	}
 
 	now := s.clk.Now()
 	if !now.Before(e.expiresAt) {
-		return domain.LeaseToken{}, domain.ErrStaleFencingToken.
+		return domain.LeaseToken{}, shared.ErrStaleFencingToken.
 			WithMessage("lease expired, must re-acquire").
 			With("leaseID", leaseID).
 			With("expiredAt", e.expiresAt)
 	}
 
 	if e.version != token.Version || e.owner != token.Owner {
-		return domain.LeaseToken{}, domain.ErrStaleFencingToken.
+		return domain.LeaseToken{}, shared.ErrStaleFencingToken.
 			WithMessage("lease token mismatch on renew").
 			With("leaseID", leaseID).
 			With("storedVersion", e.version).
@@ -134,13 +135,13 @@ func (s *Store) Release(ctx context.Context, leaseID string, token domain.LeaseT
 
 	e, ok := s.leases[leaseID]
 	if !ok {
-		return domain.ErrNotFound.
+		return shared.ErrNotFound.
 			WithMessage("lease not found").
 			With("leaseID", leaseID)
 	}
 
 	if e.version != token.Version || e.owner != token.Owner {
-		return domain.ErrStaleFencingToken.
+		return shared.ErrStaleFencingToken.
 			WithMessage("lease token mismatch on release").
 			With("leaseID", leaseID).
 			With("storedVersion", e.version).
@@ -157,7 +158,7 @@ func (s *Store) Current(_ context.Context, leaseID string) (domain.LeaseInfo, er
 
 	e, ok := s.leases[leaseID]
 	if !ok {
-		return domain.LeaseInfo{}, domain.ErrNotFound.
+		return domain.LeaseInfo{}, shared.ErrNotFound.
 			WithMessage("lease not found").
 			With("leaseID", leaseID)
 	}

@@ -6,26 +6,25 @@ import (
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
-
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// MapError converts an Azure Service Bus error into a *domain.BridgeError
+// MapError converts an Azure Service Bus error into a *shared.BridgeError
 // with the appropriate ErrorClass for the runtime to decide retry vs DLQ.
-func MapError(err error) *domain.BridgeError {
+func MapError(err error) *shared.BridgeError {
 	if err == nil {
 		return nil
 	}
 
 	if errors.Is(err, context.DeadlineExceeded) {
-		return domain.ErrTimeout.Wrap(err)
+		return shared.ErrTimeout.Wrap(err)
 	}
 	if errors.Is(err, context.Canceled) {
-		return domain.ErrUnavailable.Wrap(err)
+		return shared.ErrUnavailable.Wrap(err)
 	}
 
 	if errors.Is(err, azservicebus.ErrMessageTooLarge) {
-		return domain.ErrPayloadTooLarge.Wrap(err).WithMessage("message too large")
+		return shared.ErrPayloadTooLarge.Wrap(err).WithMessage("message too large")
 	}
 
 	var sbErr *azservicebus.Error
@@ -36,36 +35,36 @@ func MapError(err error) *domain.BridgeError {
 	msg := err.Error()
 
 	if containsAny(msg, "connection", "network", "reset") {
-		return domain.ErrConnectionLost.Wrap(err)
+		return shared.ErrConnectionLost.Wrap(err)
 	}
 	if containsAny(msg, "throttl", "busy", "overload", "too many") {
-		return domain.ErrThrottled.Wrap(err)
+		return shared.ErrThrottled.Wrap(err)
 	}
 	if containsAny(msg, "unauthorized", "forbidden", "access denied", "401", "403") {
-		return domain.ErrNotAuthorized.Wrap(err)
+		return shared.ErrNotAuthorized.Wrap(err)
 	}
 	if containsAny(msg, "not found", "does not exist", "404") {
-		return domain.ErrNotFound.Wrap(err)
+		return shared.ErrNotFound.Wrap(err)
 	}
 	if containsAny(msg, "invalid", "malformed", "bad request") {
-		return domain.ErrInvalidPayload.Wrap(err)
+		return shared.ErrInvalidPayload.Wrap(err)
 	}
 
-	return domain.ErrUnavailable.Wrap(err)
+	return shared.ErrUnavailable.Wrap(err)
 }
 
-func mapServiceBusError(sbErr *azservicebus.Error) *domain.BridgeError {
+func mapServiceBusError(sbErr *azservicebus.Error) *shared.BridgeError {
 	switch sbErr.Code {
 	case azservicebus.CodeTimeout:
-		return domain.ErrTimeout.Wrap(sbErr).WithMessage("operation timed out")
+		return shared.ErrTimeout.Wrap(sbErr).WithMessage("operation timed out")
 	case azservicebus.CodeConnectionLost:
-		return domain.ErrConnectionLost.Wrap(sbErr).WithMessage("connection lost")
+		return shared.ErrConnectionLost.Wrap(sbErr).WithMessage("connection lost")
 	case azservicebus.CodeLockLost:
-		return domain.ErrUnavailable.Wrap(sbErr).WithMessage("message lock lost - message may be redelivered")
+		return shared.ErrUnavailable.Wrap(sbErr).WithMessage("message lock lost - message may be redelivered")
 	case azservicebus.CodeUnauthorizedAccess:
-		return domain.ErrNotAuthorized.Wrap(sbErr).WithMessage("unauthorized access")
+		return shared.ErrNotAuthorized.Wrap(sbErr).WithMessage("unauthorized access")
 	default:
-		return domain.ErrUnavailable.Wrap(sbErr).With("code", string(sbErr.Code))
+		return shared.ErrUnavailable.Wrap(sbErr).With("code", string(sbErr.Code))
 	}
 }
 

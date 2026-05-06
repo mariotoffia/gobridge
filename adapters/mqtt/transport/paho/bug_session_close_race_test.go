@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -35,7 +36,7 @@ func TestSession_ConcurrentPushEventAndClose(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range pushIterations {
-				sess.pushEvent(ports.SessionReconnecting, domain.ErrUnavailable)
+				sess.pushEvent(ports.SessionReconnecting, shared.ErrUnavailable)
 			}
 		}()
 	}

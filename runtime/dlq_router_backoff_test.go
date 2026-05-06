@@ -12,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -55,7 +56,7 @@ func (s *retryCountingDLQStore) storedEntries() []domain.DLQEntry {
 }
 
 func (s *retryCountingDLQStore) Get(_ context.Context, _ string) (domain.DLQEntry, error) {
-	return domain.DLQEntry{}, domain.ErrNotFound
+	return domain.DLQEntry{}, shared.ErrNotFound
 }
 func (s *retryCountingDLQStore) List(_ context.Context, _ domain.DLQFilter) ([]domain.DLQEntry, error) {
 	return nil, nil
@@ -110,7 +111,7 @@ func TestDLQRouter_RetryBackoff_FakeClock(t *testing.T) {
 		Payload: []byte("payload"),
 	}
 
-	err := router.Route(ctx, env, "route-1", "bind-1", "sess-1", "src-1", domain.ErrUnavailable, 1)
+	err := router.Route(ctx, env, "route-1", "bind-1", "sess-1", "src-1", shared.ErrUnavailable, 1)
 	require.NoError(t, err)
 
 	// ── Attempt 1 (immediate, no timer wait) ─────────────────────────────

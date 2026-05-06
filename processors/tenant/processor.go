@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -47,7 +48,7 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 
 	if tenantID == "" {
 		if p.config.RequireTenant {
-			return domain.ErrInvalidPayload.WithMessage("tenant ID required")
+			return shared.ErrInvalidPayload.WithMessage("tenant ID required")
 		}
 		return next(ctx, env)
 	}
@@ -59,13 +60,13 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 		}
 
 		if !info.Active {
-			return domain.ErrInvalidPayload.WithMessage(
+			return shared.ErrInvalidPayload.WithMessage(
 				fmt.Sprintf("tenant disabled: %s", tenantID),
 			)
 		}
 
 		if info.MaxMessageSizeBytes > 0 && int64(len(env.Payload)) > info.MaxMessageSizeBytes {
-			return domain.ErrInvalidPayload.WithMessage(
+			return shared.ErrInvalidPayload.WithMessage(
 				fmt.Sprintf("message size %d exceeds tenant limit %d",
 					len(env.Payload), info.MaxMessageSizeBytes),
 			)

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/observability"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -68,7 +69,7 @@ func TestRouteRunner_DirectHold_TransientSendError(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
 	})
-	sender.SendErr = domain.ErrUnavailable
+	sender.SendErr = shared.ErrUnavailable
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -90,7 +91,7 @@ func TestRouteRunner_DirectHold_TransientSendError(t *testing.T) {
 // TestRouteRunner_DirectHold_PermanentSendError verifies permanent send failure moves the message to DLQ and acks.
 func TestRouteRunner_DirectHold_PermanentSendError(t *testing.T) {
 	receiver, sender, dlqStore, _, runner := makeRunner(t)
-	sender.SendErr = domain.ErrNotAuthorized
+	sender.SendErr = shared.ErrNotAuthorized
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -180,7 +181,7 @@ func TestRouteRunner_HeaderInjection(t *testing.T) {
 func TestRouteRunner_ProcessorError_Permanent(t *testing.T) {
 	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Processors = []ports.Processor{
-			&FakeProcessor{NameVal: "reject", ProcessErr: domain.ErrInvalidPayload},
+			&FakeProcessor{NameVal: "reject", ProcessErr: shared.ErrInvalidPayload},
 		}
 	})
 
@@ -207,7 +208,7 @@ func TestRouteRunner_ProcessorError_Permanent(t *testing.T) {
 func TestRouteRunner_ProcessorError_Transient(t *testing.T) {
 	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Processors = []ports.Processor{
-			&FakeProcessor{NameVal: "flaky", ProcessErr: domain.ErrUnavailable},
+			&FakeProcessor{NameVal: "flaky", ProcessErr: shared.ErrUnavailable},
 		}
 	})
 
@@ -231,7 +232,7 @@ func TestRouteRunner_ProcessorError_MessageFiltered_Drop(t *testing.T) {
 	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.OnPermanentFailure = domain.FailureDrop
 		cfg.Processors = []ports.Processor{
-			&FakeProcessor{NameVal: "filter", ProcessErr: domain.ErrMessageFiltered},
+			&FakeProcessor{NameVal: "filter", ProcessErr: shared.ErrMessageFiltered},
 		}
 	})
 
@@ -264,7 +265,7 @@ func TestRouteRunner_ProcessorError_MessageFiltered_DLQ(t *testing.T) {
 	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.OnPermanentFailure = domain.FailureDLQ
 		cfg.Processors = []ports.Processor{
-			&FakeProcessor{NameVal: "filter", ProcessErr: domain.ErrMessageFiltered},
+			&FakeProcessor{NameVal: "filter", ProcessErr: shared.ErrMessageFiltered},
 		}
 	})
 
@@ -335,7 +336,7 @@ func TestRouteRunner_Tracer_SpanLifecycle(t *testing.T) {
 	hasRouteTag := false
 	hasEnvelopeTag := false
 	for _, a := range attrs {
-		if a.Key == domain.TagKeyRouteID && a.Value == "test-route" {
+		if a.Key == shared.TagKeyRouteID && a.Value == "test-route" {
 			hasRouteTag = true
 		}
 		if a.Key == "envelope_id" && a.Value == "msg-traced" {
@@ -477,7 +478,7 @@ func TestRouteRunner_Tracer_ProcessorErrorRecording(t *testing.T) {
 	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Tracer = tracer
 		cfg.Processors = []ports.Processor{
-			&FakeProcessor{NameVal: "fail", ProcessErr: domain.ErrInvalidPayload},
+			&FakeProcessor{NameVal: "fail", ProcessErr: shared.ErrInvalidPayload},
 		}
 	})
 
@@ -509,7 +510,7 @@ func TestRouteRunner_Tracer_FilteredNoError(t *testing.T) {
 	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Tracer = tracer
 		cfg.Processors = []ports.Processor{
-			&FakeProcessor{NameVal: "filter", ProcessErr: domain.ErrMessageFiltered},
+			&FakeProcessor{NameVal: "filter", ProcessErr: shared.ErrMessageFiltered},
 		}
 	})
 
@@ -645,7 +646,7 @@ func TestRouteRunner_DirectHold_ResolverError_Rejected(t *testing.T) {
 	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
 		cfg.Resolver = &FakeResolver{
-			ResolveErr: domain.NewBridgeError("NO_MATCH", domain.ErrorRejected, "no binding"),
+			ResolveErr: shared.NewBridgeError("NO_MATCH", shared.ErrorRejected, "no binding"),
 		}
 	})
 
@@ -676,7 +677,7 @@ func TestRouteRunner_DirectHold_ResolverError_Transient(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
 		cfg.Resolver = &FakeResolver{
-			ResolveErr: domain.ErrUnavailable,
+			ResolveErr: shared.ErrUnavailable,
 		}
 	})
 
@@ -779,7 +780,7 @@ func TestRouteRunner_SharedOutbox_ResolverError_Rejected(t *testing.T) {
 	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = domain.DeliverySharedOutbox
 		cfg.Resolver = &FakeResolver{
-			ResolveErr: domain.NewBridgeError("NO_MATCH", domain.ErrorRejected, "no binding"),
+			ResolveErr: shared.NewBridgeError("NO_MATCH", shared.ErrorRejected, "no binding"),
 		}
 	})
 

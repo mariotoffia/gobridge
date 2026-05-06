@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -35,7 +36,7 @@ func (s *failFirstNSender) Send(ctx context.Context, env *domain.Envelope) error
 	n := s.attempts[env.ID]
 	s.mu.Unlock()
 	if n <= s.maxFails {
-		return domain.ErrUnavailable.WithMessage(
+		return shared.ErrUnavailable.WithMessage(
 			fmt.Sprintf("failFirstN: attempt %d/%d for %s", n, s.maxFails, env.ID))
 	}
 	return s.inner.Send(ctx, env)
@@ -90,7 +91,7 @@ func (s *degradedSender) Send(ctx context.Context, env *domain.Envelope) error {
 	}
 	s.calls.Add(1)
 	if rand.IntN(100) < s.failPercent {
-		return domain.ErrUnavailable.WithMessage("degraded sender: injected failure")
+		return shared.ErrUnavailable.WithMessage("degraded sender: injected failure")
 	}
 	return s.inner.Send(ctx, env)
 }
@@ -199,7 +200,7 @@ func (p *rejectEveryNthProcessor) Process(
 ) error {
 	c := p.count.Add(1)
 	if c%int64(p.n) == 0 {
-		return domain.ErrInvalidPayload.WithMessage(
+		return shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("reject-every-%d: msg %d rejected", p.n, c))
 	}
 	return next(ctx, env)

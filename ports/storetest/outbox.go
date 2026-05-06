@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -122,7 +123,7 @@ func testPersistDuplicate(t *testing.T, store ports.OutboxStore) {
 
 	r2 := makeRecord("dup-2", "env-dup", "bind-dup", "sess-dup", "route-1", time.Time{})
 	err := store.Persist(ctx, []domain.OutboxRecord{r2})
-	if !errors.Is(err, domain.ErrDuplicateRecord) {
+	if !errors.Is(err, shared.ErrDuplicateRecord) {
 		t.Fatalf("expected ErrDuplicateRecord, got %v", err)
 	}
 }
@@ -270,7 +271,7 @@ func testCompleteWithWrongToken(t *testing.T, store ports.OutboxStore) {
 
 	wrongToken := domain.LeaseToken{Version: 999, Owner: "owner-A"}
 	err := store.Complete(ctx, []string{"compw-1"}, wrongToken)
-	if !errors.Is(err, domain.ErrStaleFencingToken) {
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
 	}
 }
@@ -417,7 +418,7 @@ func testIdempotentPersist(t *testing.T, store ports.OutboxStore) {
 
 	r2 := makeRecord("idem-2", "env-idem", "bind-idem", "sess-idem", "route-1", time.Time{})
 	err := store.Persist(ctx, []domain.OutboxRecord{r2})
-	if !errors.Is(err, domain.ErrDuplicateRecord) {
+	if !errors.Is(err, shared.ErrDuplicateRecord) {
 		t.Fatalf("expected ErrDuplicateRecord on idempotent persist, got %v", err)
 	}
 
@@ -458,7 +459,7 @@ func outboxCompleteAfterTokenChange(t *testing.T, store ports.OutboxStore) {
 	}
 
 	_, err = store.Claim(ctx, pk, "owner-B", tok2, 10)
-	if err != nil && !errors.Is(err, domain.ErrStaleFencingToken) {
+	if err != nil && !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("unexpected error on reclaim with higher token: %v", err)
 	}
 
@@ -466,7 +467,7 @@ func outboxCompleteAfterTokenChange(t *testing.T, store ports.OutboxStore) {
 	if err == nil {
 		t.Fatal("expected error when completing with old token after new claim")
 	}
-	if !errors.Is(err, domain.ErrStaleFencingToken) {
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
 	}
 }

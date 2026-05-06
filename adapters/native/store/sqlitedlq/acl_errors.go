@@ -7,10 +7,9 @@ import (
 	"io"
 	"strings"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	sqlite3 "modernc.org/sqlite"
 	sqlite3lib "modernc.org/sqlite/lib"
-
-	"github.com/mariotoffia/gobridge/domain"
 )
 
 // SQLite error classification helpers.
@@ -69,7 +68,7 @@ func isIOErr(err error) bool {
 // `context.Canceled` and `context.DeadlineExceeded` are canonical
 // sentinels and are returned UNCHANGED (identity-equal) so callers can
 // match them with `errors.Is`. They are NEVER reclassified as
-// `domain.ErrTimeout` or `domain.ErrUnavailable`.
+// `shared.ErrTimeout` or `shared.ErrUnavailable`.
 //
 // Caller-handled outcomes (UNIQUE constraint duplicate, sql.ErrNoRows
 // when the caller wants a typed not-found with attached kvs) may be
@@ -87,24 +86,24 @@ func mapError(err error) error {
 	}
 
 	if errors.Is(err, sql.ErrNoRows) {
-		return domain.ErrNotFound.Wrap(err)
+		return shared.ErrNotFound.Wrap(err)
 	}
 	if isUniqueViolation(err) {
-		return domain.ErrDuplicateRecord.Wrap(err)
+		return shared.ErrDuplicateRecord.Wrap(err)
 	}
 	if isBusy(err) {
-		return domain.ErrThrottled.Wrap(err)
+		return shared.ErrThrottled.Wrap(err)
 	}
 	if errors.Is(err, io.EOF) || isIOErr(err) {
-		return domain.ErrConnectionLost.Wrap(err)
+		return shared.ErrConnectionLost.Wrap(err)
 	}
-	return domain.ErrUnavailable.Wrap(err)
+	return shared.ErrUnavailable.Wrap(err)
 }
 
 // wrapErr is the canonical call-site helper for this package. It
 // preserves canonical context sentinels (returned identity-equal) and
 // otherwise classifies via mapError, attaching the supplied message
-// and key/value annotations to the resulting *domain.BridgeError.
+// and key/value annotations to the resulting *shared.BridgeError.
 //
 // kvs must be a sequence of (string-key, value) pairs. An odd-length
 // or non-string key is silently ignored to keep error paths panic-free.
@@ -113,7 +112,7 @@ func wrapErr(err error, msg string, kvs ...any) error {
 	if mapped == nil {
 		return nil
 	}
-	be, ok := mapped.(*domain.BridgeError)
+	be, ok := mapped.(*shared.BridgeError)
 	if !ok {
 		// ctx sentinel — return verbatim per policy Rule 1.
 		return mapped

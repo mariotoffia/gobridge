@@ -1,10 +1,10 @@
-package domain_test
+package shared_test
 
 import (
 	"errors"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -21,11 +21,11 @@ import (
 // cluster-related sentinels that were missing from the original test.
 func TestSentinelClasses_ClusterErrors(t *testing.T) {
 	tests := []struct {
-		sentinel *domain.BridgeError
-		class    domain.ErrorClass
+		sentinel *shared.BridgeError
+		class    shared.ErrorClass
 	}{
-		{domain.ErrNoRouteOwner, domain.ErrorTransient},
-		{domain.ErrForwardFailed, domain.ErrorTransient},
+		{shared.ErrNoRouteOwner, shared.ErrorTransient},
+		{shared.ErrForwardFailed, shared.ErrorTransient},
 	}
 
 	for _, tt := range tests {
@@ -40,14 +40,14 @@ func TestSentinelClasses_ClusterErrors(t *testing.T) {
 // TestBridgeError_Is_MatchesByCodeOnly validates the documented behavior
 // that BridgeError.Is() compares only by ErrorCode, not by ErrorClass.
 func TestBridgeError_Is_MatchesByCodeOnly(t *testing.T) {
-	err1 := &domain.BridgeError{
-		Code:    domain.ErrCodeTimeout,
-		Class:   domain.ErrorTransient,
+	err1 := &shared.BridgeError{
+		Code:    shared.ErrCodeTimeout,
+		Class:   shared.ErrorTransient,
 		Message: "first",
 	}
-	err2 := &domain.BridgeError{
-		Code:    domain.ErrCodeTimeout,
-		Class:   domain.ErrorPermanent,
+	err2 := &shared.BridgeError{
+		Code:    shared.ErrCodeTimeout,
+		Class:   shared.ErrorPermanent,
 		Message: "second",
 	}
 
@@ -59,22 +59,22 @@ func TestBridgeError_Is_MatchesByCodeOnly(t *testing.T) {
 // TestBridgeError_DeepWrapping validates that errors.Is works through
 // multiple layers of wrapping.
 func TestBridgeError_DeepWrapping(t *testing.T) {
-	inner := domain.ErrTimeout.Wrap(errors.New("root"))
-	middle := domain.ErrConnectionLost.Wrap(inner)
+	inner := shared.ErrTimeout.Wrap(errors.New("root"))
+	middle := shared.ErrConnectionLost.Wrap(inner)
 
-	if !errors.Is(middle, domain.ErrConnectionLost) {
+	if !errors.Is(middle, shared.ErrConnectionLost) {
 		t.Fatal("should match outer error")
 	}
 
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(middle, &be) {
 		t.Fatal("errors.As should extract BridgeError")
 	}
-	if be.Code != domain.ErrCodeConnectionLost {
+	if be.Code != shared.ErrCodeConnectionLost {
 		t.Fatalf("expected CONNECTION_LOST, got %s", be.Code)
 	}
 
-	if !errors.Is(errors.Unwrap(middle), domain.ErrTimeout) {
+	if !errors.Is(errors.Unwrap(middle), shared.ErrTimeout) {
 		t.Fatal("unwrapped error should match ErrTimeout")
 	}
 }
@@ -82,7 +82,7 @@ func TestBridgeError_DeepWrapping(t *testing.T) {
 // TestBridgeError_With_ChainingDoesNotMutatePreviousLinks validates that
 // chaining multiple .With() calls creates independent copies.
 func TestBridgeError_With_ChainingDoesNotMutatePreviousLinks(t *testing.T) {
-	a := domain.ErrTimeout.With("k1", "v1")
+	a := shared.ErrTimeout.With("k1", "v1")
 	b := a.With("k2", "v2")
 	c := a.With("k3", "v3")
 
@@ -103,31 +103,31 @@ func TestBridgeError_With_ChainingDoesNotMutatePreviousLinks(t *testing.T) {
 // TestAllSentinels_HaveNonEmptyMessage validates that every sentinel
 // error has a non-empty Message field.
 func TestAllSentinels_HaveNonEmptyMessage(t *testing.T) {
-	sentinels := []*domain.BridgeError{
-		domain.ErrTimeout,
-		domain.ErrConnectionLost,
-		domain.ErrUnavailable,
-		domain.ErrThrottled,
-		domain.ErrBrokerBusy,
-		domain.ErrTemporaryAuthFailure,
-		domain.ErrNotAuthorized,
-		domain.ErrForbidden,
-		domain.ErrNotFound,
-		domain.ErrInvalidPayload,
-		domain.ErrPayloadTooLarge,
-		domain.ErrInvalidTopic,
-		domain.ErrProtocolError,
-		domain.ErrSchemaViolation,
-		domain.ErrMessageExpired,
-		domain.ErrQoSNotSupported,
-		domain.ErrMessageFiltered,
-		domain.ErrNotSupported,
-		domain.ErrVersionMismatch,
-		domain.ErrAlreadyExists,
-		domain.ErrStaleFencingToken,
-		domain.ErrDuplicateRecord,
-		domain.ErrNoRouteOwner,
-		domain.ErrForwardFailed,
+	sentinels := []*shared.BridgeError{
+		shared.ErrTimeout,
+		shared.ErrConnectionLost,
+		shared.ErrUnavailable,
+		shared.ErrThrottled,
+		shared.ErrBrokerBusy,
+		shared.ErrTemporaryAuthFailure,
+		shared.ErrNotAuthorized,
+		shared.ErrForbidden,
+		shared.ErrNotFound,
+		shared.ErrInvalidPayload,
+		shared.ErrPayloadTooLarge,
+		shared.ErrInvalidTopic,
+		shared.ErrProtocolError,
+		shared.ErrSchemaViolation,
+		shared.ErrMessageExpired,
+		shared.ErrQoSNotSupported,
+		shared.ErrMessageFiltered,
+		shared.ErrNotSupported,
+		shared.ErrVersionMismatch,
+		shared.ErrAlreadyExists,
+		shared.ErrStaleFencingToken,
+		shared.ErrDuplicateRecord,
+		shared.ErrNoRouteOwner,
+		shared.ErrForwardFailed,
 	}
 
 	for _, s := range sentinels {
@@ -142,31 +142,31 @@ func TestAllSentinels_HaveNonEmptyMessage(t *testing.T) {
 // TestAllSentinels_HaveNonEmptyCode validates that every sentinel
 // error has a non-empty Code field.
 func TestAllSentinels_HaveNonEmptyCode(t *testing.T) {
-	sentinels := []*domain.BridgeError{
-		domain.ErrTimeout,
-		domain.ErrConnectionLost,
-		domain.ErrUnavailable,
-		domain.ErrThrottled,
-		domain.ErrBrokerBusy,
-		domain.ErrTemporaryAuthFailure,
-		domain.ErrNotAuthorized,
-		domain.ErrForbidden,
-		domain.ErrNotFound,
-		domain.ErrInvalidPayload,
-		domain.ErrPayloadTooLarge,
-		domain.ErrInvalidTopic,
-		domain.ErrProtocolError,
-		domain.ErrSchemaViolation,
-		domain.ErrMessageExpired,
-		domain.ErrQoSNotSupported,
-		domain.ErrMessageFiltered,
-		domain.ErrNotSupported,
-		domain.ErrVersionMismatch,
-		domain.ErrAlreadyExists,
-		domain.ErrStaleFencingToken,
-		domain.ErrDuplicateRecord,
-		domain.ErrNoRouteOwner,
-		domain.ErrForwardFailed,
+	sentinels := []*shared.BridgeError{
+		shared.ErrTimeout,
+		shared.ErrConnectionLost,
+		shared.ErrUnavailable,
+		shared.ErrThrottled,
+		shared.ErrBrokerBusy,
+		shared.ErrTemporaryAuthFailure,
+		shared.ErrNotAuthorized,
+		shared.ErrForbidden,
+		shared.ErrNotFound,
+		shared.ErrInvalidPayload,
+		shared.ErrPayloadTooLarge,
+		shared.ErrInvalidTopic,
+		shared.ErrProtocolError,
+		shared.ErrSchemaViolation,
+		shared.ErrMessageExpired,
+		shared.ErrQoSNotSupported,
+		shared.ErrMessageFiltered,
+		shared.ErrNotSupported,
+		shared.ErrVersionMismatch,
+		shared.ErrAlreadyExists,
+		shared.ErrStaleFencingToken,
+		shared.ErrDuplicateRecord,
+		shared.ErrNoRouteOwner,
+		shared.ErrForwardFailed,
 	}
 
 	for _, s := range sentinels {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -31,11 +32,11 @@ func TestSender_Send_NoSession(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nil session")
 	}
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}
-	if !errors.Is(be, domain.ErrUnavailable) {
+	if !errors.Is(be, shared.ErrUnavailable) {
 		t.Errorf("expected ErrUnavailable, got code %s", be.Code)
 	}
 }
@@ -58,7 +59,7 @@ func TestSender_Send_NoConnection(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for disconnected session")
 	}
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}

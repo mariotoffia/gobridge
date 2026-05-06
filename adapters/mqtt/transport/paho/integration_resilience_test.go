@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -166,13 +167,13 @@ func TestRes_SendAfterClose_ReturnsErrorNoPanic(t *testing.T) {
 	if err == nil {
 		t.Fatal("Send after Close must return an error")
 	}
-	be, ok := err.(*domain.BridgeError)
+	be, ok := err.(*shared.BridgeError)
 	if !ok {
-		t.Fatalf("Send after Close should return *domain.BridgeError, got %T: %v", err, err)
+		t.Fatalf("Send after Close should return *shared.BridgeError, got %T: %v", err, err)
 	}
-	if be.Code != domain.ErrUnavailable.Code {
+	if be.Code != shared.ErrUnavailable.Code {
 		t.Errorf("Send after Close: code=%s, want %s",
-			be.Code, domain.ErrUnavailable.Code)
+			be.Code, shared.ErrUnavailable.Code)
 	}
 }
 

@@ -8,8 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	awsssm "github.com/aws/aws-sdk-go-v2/service/ssm"
-
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ssmAPI is the unexported subset of the SSM SDK client used by the
@@ -93,7 +92,7 @@ func buildAWSConfig(ctx context.Context, region, endpoint, profile string) (aws.
 
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
-		return cfg, domain.ErrUnavailable.Wrap(fmt.Errorf("ssm: load AWS config: %w", err))
+		return cfg, shared.ErrUnavailable.Wrap(fmt.Errorf("ssm: load AWS config: %w", err))
 	}
 
 	if endpoint != "" {

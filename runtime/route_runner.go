@@ -12,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/observability"
 	"github.com/mariotoffia/gobridge/ports"
@@ -190,8 +191,8 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 		}
 		wg.Add(1)
 		mu.Unlock()
-		r.metrics.Counter(domain.MetricMessagesReceived, 1,
-			domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID})
+		r.metrics.Counter(shared.MetricMessagesReceived, 1,
+			shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
 		go func() {
 			r.inFlight.Add(1)
 			defer func() {
@@ -222,8 +223,8 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 									"route", r.routeID, "panic", r2)
 							}
 						}()
-						r.metrics.Counter(domain.MetricDeliveryPanics, 1,
-							domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID},
+						r.metrics.Counter(shared.MetricDeliveryPanics, 1,
+							shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID},
 						)
 						// Propagate caller ctx for trace/correlation values and to
 						// honour any deadline the caller already set. If the caller
@@ -341,12 +342,12 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 
 	tc, hasTrace := domain.ExtractTraceContext(env.Headers)
 
-	attrs := []domain.Tag{
-		{Key: domain.TagKeyRouteID, Value: r.routeID},
+	attrs := []shared.Tag{
+		{Key: shared.TagKeyRouteID, Value: r.routeID},
 		{Key: "envelope_id", Value: env.ID},
 	}
 	if hasTrace {
-		attrs = append(attrs, domain.Tag{Key: "trace_id", Value: tc.TraceID})
+		attrs = append(attrs, shared.Tag{Key: "trace_id", Value: tc.TraceID})
 	}
 
 	ctx, span := r.tracer.StartSpan(ctx, "bridge.handleDelivery", attrs...)
@@ -384,7 +385,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		WithChainRouteID(r.routeID),
 	); err != nil {
 		pErr := r.handleProcessorError(ctx, del, env, err)
-		if !errors.Is(err, domain.ErrMessageFiltered) {
+		if !errors.Is(err, shared.ErrMessageFiltered) {
 			span.SetError(err)
 		}
 		return pErr
@@ -416,8 +417,8 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		span.SetError(deliveryErr)
 	}
 
-	routeTag := domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID}
-	r.metrics.Timer(domain.MetricDeliveryE2ELatency, r.clk.Since(start), routeTag)
+	routeTag := shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID}
+	r.metrics.Timer(shared.MetricDeliveryE2ELatency, r.clk.Since(start), routeTag)
 
 	return deliveryErr
 }

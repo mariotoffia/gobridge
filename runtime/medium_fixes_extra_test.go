@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -382,12 +383,12 @@ func TestOutboxDrainer_SuccessEmitsCompletion(t *testing.T) {
 	defer cancel()
 	_ = drainer.Run(drainCtx)
 
-	completions := rec.FindEntries(domain.MetricOutboxCompletions)
+	completions := rec.FindEntries(shared.MetricOutboxCompletions)
 	if len(completions) == 0 {
 		t.Fatal("expected MetricOutboxCompletions to be emitted on success")
 	}
 
-	failures := rec.FindEntries(domain.MetricOutboxRecordFailures)
+	failures := rec.FindEntries(shared.MetricOutboxRecordFailures)
 	if len(failures) > 0 {
 		t.Error("did not expect MetricOutboxRecordFailures on successful processing")
 	}
@@ -459,7 +460,7 @@ func TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric(t *testing.T) {
 
 	outbox := NewFakeOutboxStore()
 	outbox.CompleteFn = func(_ []string, _ domain.LeaseToken) error {
-		return domain.ErrStaleFencingToken
+		return shared.ErrStaleFencingToken
 	}
 	sender := NewFakeSender()
 
@@ -499,7 +500,7 @@ func TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric(t *testing.T) {
 	defer cancel()
 	_ = drainer.Run(drainCtx)
 
-	failures := rec.FindEntries(domain.MetricOutboxRecordFailures)
+	failures := rec.FindEntries(shared.MetricOutboxRecordFailures)
 	if len(failures) > 0 {
 		t.Error("ErrStaleFencingToken should not emit MetricOutboxRecordFailures")
 	}

@@ -5,12 +5,13 @@ import (
 	"log/slog"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 // CircuitBreakerSender wraps a Sender with circuit breaker protection.
 // When the breaker opens, Send returns the breaker's rejection error
-// (a *domain.BridgeError carrying ErrUnavailable + RetryAfter) rather
+// (a *shared.BridgeError carrying ErrUnavailable + RetryAfter) rather
 // than attempting the broker publish.
 type CircuitBreakerSender struct {
 	inner   *Sender
@@ -59,9 +60,9 @@ func NewCircuitBreakerSender(inner *Sender, breaker ports.CircuitBreaker) *Circu
 // breaker-side) by session.
 func (s *CircuitBreakerSender) Send(ctx context.Context, env *domain.Envelope) error {
 	if err := s.breaker.BeforeRequest(); err != nil {
-		s.metrics.Counter(domain.MetricMQTTPublishFailures, 1,
-			domain.Tag{Key: "reason", Value: "circuit_open"},
-			domain.Tag{Key: domain.TagKeySessionID, Value: s.sessionID},
+		s.metrics.Counter(shared.MetricMQTTPublishFailures, 1,
+			shared.Tag{Key: "reason", Value: "circuit_open"},
+			shared.Tag{Key: shared.TagKeySessionID, Value: s.sessionID},
 		)
 		return err
 	}

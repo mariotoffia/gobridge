@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -184,7 +185,7 @@ func TestCrossInstance_LeaseTransferDrainsRemaining(t *testing.T) {
 
 	// A may have sent some of these via its drainer. Block A's sender
 	// from sending more by making it fail, then crash A.
-	senderA.SetSendErr(domain.NewBridgeError("SIMULATED_CRASH", domain.ErrorTransient, "crash"))
+	senderA.SetSendErr(shared.NewBridgeError("SIMULATED_CRASH", shared.ErrorTransient, "crash"))
 
 	// Crash instance A.
 	cancelA()

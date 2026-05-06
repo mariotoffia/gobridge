@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,7 +38,7 @@ func (m *mockDLQStore) Get(ctx context.Context, id string) (domain.DLQEntry, err
 	if m.getFunc != nil {
 		return m.getFunc(ctx, id)
 	}
-	return domain.DLQEntry{}, domain.ErrNotFound
+	return domain.DLQEntry{}, shared.ErrNotFound
 }
 func (m *mockDLQStore) List(ctx context.Context, f domain.DLQFilter) ([]domain.DLQEntry, error) {
 	if m.listFunc != nil {
@@ -157,7 +158,7 @@ func TestHandleDLQMessageByID_ReturnsEntry(t *testing.T) {
 			if id == "msg-1" {
 				return entry, nil
 			}
-			return domain.DLQEntry{}, domain.ErrNotFound
+			return domain.DLQEntry{}, shared.ErrNotFound
 		},
 	}
 	_, mux := dlqServer(store)

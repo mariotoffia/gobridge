@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -193,7 +194,7 @@ func (r *Repository) checkVersion(ctx context.Context, paramPath string, version
 		return err
 	}
 	if got != version {
-		return domain.ErrVersionMismatch.WithMessage(
+		return shared.ErrVersionMismatch.WithMessage(
 			fmt.Sprintf("expected version %d, got %d", version, got),
 		)
 	}

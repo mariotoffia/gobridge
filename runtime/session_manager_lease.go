@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -24,8 +25,8 @@ func (m *SessionManager) runExclusiveDeferred(ctx context.Context) error {
 		action := "lease.acquired"
 		if iteration > 0 {
 			action = "lease.reacquired"
-			m.metrics.Counter(domain.MetricLeaseTransfers, 1,
-				domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID})
+			m.metrics.Counter(shared.MetricLeaseTransfers, 1,
+				shared.Tag{Key: shared.TagKeyLeaseID, Value: m.sessionID})
 		}
 		iteration++
 		m.emitLeaseAudit(ctx, action, "success", token, nil)
@@ -88,8 +89,8 @@ func (m *SessionManager) runExclusive(ctx context.Context) error {
 		action := "lease.acquired"
 		if iteration > 0 {
 			action = "lease.reacquired"
-			m.metrics.Counter(domain.MetricLeaseTransfers, 1,
-				domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID})
+			m.metrics.Counter(shared.MetricLeaseTransfers, 1,
+				shared.Tag{Key: shared.TagKeyLeaseID, Value: m.sessionID})
 		}
 		iteration++
 		m.emitLeaseAudit(ctx, action, "success", token, nil)
@@ -123,15 +124,15 @@ func (m *SessionManager) runExclusive(ctx context.Context) error {
 }
 
 func (m *SessionManager) acquireLeaseWithRetry(ctx context.Context) (domain.LeaseToken, error) {
-	leaseTag := domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID}
+	leaseTag := shared.Tag{Key: shared.TagKeyLeaseID, Value: m.sessionID}
 	for {
 		start := m.clk.Now()
 		token, err := m.leaseStore.Acquire(ctx, m.sessionID, m.ownerID, m.leaseTTL, m.endpoints)
-		m.metrics.Timer(domain.MetricLeaseAcquireLatency, m.clk.Since(start), leaseTag)
+		m.metrics.Timer(shared.MetricLeaseAcquireLatency, m.clk.Since(start), leaseTag)
 		if err == nil {
 			return token, nil
 		}
-		m.metrics.Counter(domain.MetricLeaseAcquireFailures, 1, leaseTag)
+		m.metrics.Counter(shared.MetricLeaseAcquireFailures, 1, leaseTag)
 		m.log(ctx, slog.LevelDebug, "lease acquisition failed, retrying", "error", err)
 
 		select {
@@ -167,10 +168,10 @@ func (m *SessionManager) renewLoop(ctx context.Context) error {
 			token := m.token
 			m.mu.Unlock()
 
-			leaseTag := domain.Tag{Key: domain.TagKeyLeaseID, Value: m.sessionID}
+			leaseTag := shared.Tag{Key: shared.TagKeyLeaseID, Value: m.sessionID}
 			start := m.clk.Now()
 			newToken, err := m.leaseStore.Renew(ctx, m.sessionID, token, m.leaseTTL, m.endpoints)
-			m.metrics.Timer(domain.MetricLeaseRenewLatency, m.clk.Since(start), leaseTag)
+			m.metrics.Timer(shared.MetricLeaseRenewLatency, m.clk.Since(start), leaseTag)
 
 			if err != nil {
 				consecutiveFailures++
@@ -178,7 +179,7 @@ func (m *SessionManager) renewLoop(ctx context.Context) error {
 					"failures", consecutiveFailures, "error", err)
 
 				if consecutiveFailures >= m.maxRenewFails {
-					m.metrics.Counter(domain.MetricLeaseExpiries, 1, leaseTag)
+					m.metrics.Counter(shared.MetricLeaseExpiries, 1, leaseTag)
 					return m.stepDown(ctx)
 				}
 			} else {

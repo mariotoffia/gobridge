@@ -14,6 +14,7 @@ import (
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -33,8 +34,8 @@ func (s *Sender) sendOne(ctx context.Context, env *domain.Envelope) error {
 		return MapError(err)
 	}
 
-	s.metrics.Timer(domain.MetricSQSSendLatency, s.clock().Since(start),
-		domain.Tag{Key: domain.TagKeyQueueURL, Value: s.queueURL})
+	s.metrics.Timer(shared.MetricSQSSendLatency, s.clock().Since(start),
+		shared.Tag{Key: shared.TagKeyQueueURL, Value: s.queueURL})
 
 	return nil
 }
@@ -65,8 +66,8 @@ func (s *Sender) sendBatchChunk(
 		return 0, []error{MapError(err)}
 	}
 
-	s.metrics.Timer(domain.MetricSQSSendBatchLatency, s.clock().Since(start),
-		domain.Tag{Key: domain.TagKeyQueueURL, Value: s.queueURL})
+	s.metrics.Timer(shared.MetricSQSSendBatchLatency, s.clock().Since(start),
+		shared.Tag{Key: shared.TagKeyQueueURL, Value: s.queueURL})
 
 	sent := len(result.Successful)
 
@@ -84,9 +85,9 @@ func (s *Sender) sendBatchChunk(
 
 	errs := make([]error, 0, len(result.Failed))
 	for _, f := range result.Failed {
-		base := domain.ErrUnavailable
+		base := shared.ErrUnavailable
 		if f.SenderFault {
-			base = domain.ErrInvalidPayload
+			base = shared.ErrInvalidPayload
 		}
 		errs = append(errs, base.
 			Wrap(fmt.Errorf("sqs batch entry %s failed: %s",

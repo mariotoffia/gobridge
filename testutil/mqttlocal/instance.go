@@ -2,11 +2,12 @@ package mqttlocal
 
 import (
 	"fmt"
-	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 	"os"
 	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 )
 
 // BrokerInstance is an isolated Mosquitto container for a single test.

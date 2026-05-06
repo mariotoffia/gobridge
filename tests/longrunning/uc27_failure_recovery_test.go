@@ -14,6 +14,7 @@ import (
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
@@ -314,7 +315,7 @@ func TestUC29_MessageTTL_Expiry(t *testing.T) {
 	// Verify DLQ entries have expired category.
 	entries := dlqStore.getEntries()
 	for i, entry := range entries {
-		assert.Equal(t, string(domain.ErrorExpired), entry.Category,
+		assert.Equal(t, string(shared.ErrorExpired), entry.Category,
 			"DLQ entry %d should have 'expired' category, got %q", i, entry.Category)
 	}
 

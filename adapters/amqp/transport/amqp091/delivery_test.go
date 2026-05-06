@@ -10,6 +10,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -66,7 +67,7 @@ func TestDelivery_Ack_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Ack")
 	}
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}
@@ -114,7 +115,7 @@ func TestDelivery_Extend(t *testing.T) {
 	del, _ := makeTestDelivery(newMockAcknowledger(), 1)
 
 	err := del.Extend(context.Background(), time.Now().Add(time.Minute))
-	if !errors.Is(err, domain.ErrNotSupported) {
+	if !errors.Is(err, shared.ErrNotSupported) {
 		t.Fatalf("expected ErrNotSupported, got %v", err)
 	}
 }

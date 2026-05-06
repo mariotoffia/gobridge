@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -41,16 +41,16 @@ func (f *Factory) Capabilities() []ports.Capability {
 func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.Session, error) {
 	cfg, err := configFromSpec(spec.Config)
 	if err != nil {
-		return nil, domain.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt session %q: %s", spec.ID, err))
 	}
 	opts := cfg.Session
 	if opts.ClientID == "" {
-		return nil, domain.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt session %q: client_id is required", spec.ID))
 	}
 	if len(opts.BrokerURLs) == 0 {
-		return nil, domain.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt session %q: at least one broker URL is required", spec.ID))
 	}
 	return NewSession(opts, spec.SessionMode, f.Logger, f.Metrics), nil
@@ -60,7 +60,7 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, session ports.Session) (ports.Receiver, error) {
 	mqttSession, ok := session.(*Session)
 	if !ok || mqttSession == nil {
-		return nil, domain.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt receiver %q: session must be a non-nil MQTT session", spec.ID))
 	}
 	return NewReceiver(spec.ID, mqttSession), nil
@@ -70,17 +70,17 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, sessio
 func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, session ports.Session) (ports.Sender, error) {
 	mqttSession, ok := session.(*Session)
 	if !ok || mqttSession == nil {
-		return nil, domain.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt sender %q: session must be a non-nil MQTT session", spec.ID))
 	}
 	cfg, err := configFromSpec(spec.Config)
 	if err != nil {
-		return nil, domain.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt sender %q: %s", spec.ID, err))
 	}
 	opts := cfg.Sender
 	if opts.QoS > 2 {
-		return nil, domain.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt sender %q: qos must be 0, 1, or 2", spec.ID))
 	}
 	if opts.QoS == 0 {

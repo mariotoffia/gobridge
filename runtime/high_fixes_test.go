@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -219,7 +220,7 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 	outbox.CompleteFn = func(ids []string, _ domain.LeaseToken) error {
 		for _, id := range ids {
 			if id == "rec-first" {
-				return domain.ErrStaleFencingToken
+				return shared.ErrStaleFencingToken
 			}
 		}
 		return nil
@@ -310,7 +311,7 @@ func TestOutboxDrainer_StaleFencingToken_PropagatedToRunLoop(t *testing.T) {
 	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	outbox.CompleteFn = func(_ []string, _ domain.LeaseToken) error {
-		return domain.ErrStaleFencingToken
+		return shared.ErrStaleFencingToken
 	}
 
 	// Threshold: 1 (Run loop) + 1 (pre-send check for 1 record) = 2.

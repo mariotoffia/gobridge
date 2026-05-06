@@ -6,22 +6,21 @@ import (
 	"strings"
 
 	"github.com/Azure/go-amqp"
-
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// MapError converts an AMQP 1.0 error into a *domain.BridgeError with the
+// MapError converts an AMQP 1.0 error into a *shared.BridgeError with the
 // appropriate ErrorClass for the runtime to decide retry vs DLQ.
-func MapError(err error) *domain.BridgeError {
+func MapError(err error) *shared.BridgeError {
 	if err == nil {
 		return nil
 	}
 
 	if errors.Is(err, context.DeadlineExceeded) {
-		return domain.ErrTimeout.Wrap(err)
+		return shared.ErrTimeout.Wrap(err)
 	}
 	if errors.Is(err, context.Canceled) {
-		return domain.ErrUnavailable.Wrap(err)
+		return shared.ErrUnavailable.Wrap(err)
 	}
 
 	var amqpErr *amqp.Error
@@ -32,63 +31,63 @@ func MapError(err error) *domain.BridgeError {
 	msg := err.Error()
 
 	if containsAny(msg, "connection", "network", "reset", "broken pipe", "eof") {
-		return domain.ErrConnectionLost.Wrap(err)
+		return shared.ErrConnectionLost.Wrap(err)
 	}
 	if containsAny(msg, "throttl", "busy", "overload", "too many") {
-		return domain.ErrThrottled.Wrap(err)
+		return shared.ErrThrottled.Wrap(err)
 	}
 	if containsAny(msg, "unauthorized", "forbidden", "access denied") {
-		return domain.ErrNotAuthorized.Wrap(err)
+		return shared.ErrNotAuthorized.Wrap(err)
 	}
 	if containsAny(msg, "not found", "does not exist", "404") {
-		return domain.ErrNotFound.Wrap(err)
+		return shared.ErrNotFound.Wrap(err)
 	}
 	if containsAny(msg, "invalid", "malformed", "bad request") {
-		return domain.ErrInvalidPayload.Wrap(err)
+		return shared.ErrInvalidPayload.Wrap(err)
 	}
 
-	return domain.ErrUnavailable.Wrap(err)
+	return shared.ErrUnavailable.Wrap(err)
 }
 
-func mapAMQPCondition(amqpErr *amqp.Error) *domain.BridgeError {
+func mapAMQPCondition(amqpErr *amqp.Error) *shared.BridgeError {
 	cond := string(amqpErr.Condition)
 
 	switch cond {
 	case "amqp:not-found":
-		return domain.ErrNotFound.Wrap(amqpErr).WithMessage(amqpErr.Description)
+		return shared.ErrNotFound.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	case "amqp:unauthorized-access":
-		return domain.ErrNotAuthorized.Wrap(amqpErr).WithMessage(amqpErr.Description)
+		return shared.ErrNotAuthorized.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	case "amqp:not-allowed":
-		return domain.ErrForbidden.Wrap(amqpErr).WithMessage(amqpErr.Description)
+		return shared.ErrForbidden.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	case "amqp:resource-limit-exceeded":
-		return domain.ErrThrottled.Wrap(amqpErr).WithMessage(amqpErr.Description)
+		return shared.ErrThrottled.Wrap(amqpErr).WithMessage(amqpErr.Description)
 
 	case "amqp:connection:forced":
-		return domain.ErrConnectionLost.Wrap(amqpErr).WithMessage(amqpErr.Description)
+		return shared.ErrConnectionLost.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	case "amqp:connection:framing-error":
-		return domain.ErrProtocolError.Wrap(amqpErr).WithMessage(amqpErr.Description)
+		return shared.ErrProtocolError.Wrap(amqpErr).WithMessage(amqpErr.Description)
 
 	case "amqp:session:errant-link":
-		return domain.ErrUnavailable.Wrap(amqpErr).WithMessage(amqpErr.Description)
+		return shared.ErrUnavailable.Wrap(amqpErr).WithMessage(amqpErr.Description)
 
 	case "amqp:link:detach-forced":
-		return domain.ErrConnectionLost.Wrap(amqpErr).WithMessage(amqpErr.Description)
+		return shared.ErrConnectionLost.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	case "amqp:link:transfer-limit-exceeded":
-		return domain.ErrThrottled.Wrap(amqpErr).WithMessage(amqpErr.Description)
+		return shared.ErrThrottled.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	case "amqp:link:message-size-exceeded":
-		return domain.ErrPayloadTooLarge.Wrap(amqpErr).WithMessage(amqpErr.Description)
+		return shared.ErrPayloadTooLarge.Wrap(amqpErr).WithMessage(amqpErr.Description)
 
 	case "amqp:internal-error":
-		return domain.ErrUnavailable.Wrap(amqpErr).WithMessage(amqpErr.Description)
+		return shared.ErrUnavailable.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	case "amqp:not-implemented":
-		return domain.ErrNotSupported.Wrap(amqpErr).WithMessage(amqpErr.Description)
+		return shared.ErrNotSupported.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	case "amqp:invalid-field":
-		return domain.ErrInvalidPayload.Wrap(amqpErr).WithMessage(amqpErr.Description)
+		return shared.ErrInvalidPayload.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	case "amqp:decode-error":
-		return domain.ErrProtocolError.Wrap(amqpErr).WithMessage(amqpErr.Description)
+		return shared.ErrProtocolError.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	}
 
-	return domain.ErrUnavailable.Wrap(amqpErr).
+	return shared.ErrUnavailable.Wrap(amqpErr).
 		With("condition", cond).
 		WithMessage(amqpErr.Description)
 }

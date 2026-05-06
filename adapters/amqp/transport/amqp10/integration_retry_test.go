@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 )
@@ -176,7 +177,7 @@ func TestIntegration_RetryModify(t *testing.T) {
 }
 
 // TestIntegration_ExtendNotSupported validates that Extend returns
-// domain.ErrNotSupported on a real delivery.
+// shared.ErrNotSupported on a real delivery.
 func TestIntegration_ExtendNotSupported(t *testing.T) {
 	ep := artemislocal.Endpoint(t)
 	user, pass := artemislocal.Credentials()
@@ -229,7 +230,7 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 
 	runErr := recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
 		err := del.Extend(recvCtx, time.Now().Add(time.Minute))
-		if !errors.Is(err, domain.ErrNotSupported) {
+		if !errors.Is(err, shared.ErrNotSupported) {
 			t.Errorf("Extend() error = %v, want ErrNotSupported", err)
 		}
 		if ackErr := del.Ack(recvCtx); ackErr != nil {

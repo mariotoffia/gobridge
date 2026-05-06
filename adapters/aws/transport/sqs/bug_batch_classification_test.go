@@ -10,13 +10,14 @@ import (
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BUG-6: SQS Batch Error Classification
 //
-// SendBatch wraps ALL batch failures with domain.ErrUnavailable (Transient)
+// SendBatch wraps ALL batch failures with shared.ErrUnavailable (Transient)
 // regardless of the SenderFault flag. When SenderFault=true, the error
 // should be Permanent (client's request was malformed).
 // ═══════════════════════════════════════════════════════════════════════════
@@ -65,9 +66,9 @@ func TestBug6_SendBatch_SenderFaultClassifiedAsPermanent(t *testing.T) {
 	// FIX VERIFIED: SenderFault=true now uses ErrInvalidPayload (Rejected).
 	// ErrorRejected is a non-retriable, payload-level error — semantically
 	// correct for SQS sender faults (malformed requests).
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	if ok {
-		if be.Class != domain.ErrorRejected {
+		if be.Class != shared.ErrorRejected {
 			t.Errorf("expected ErrorRejected for SenderFault=true, got %s", be.Class)
 		}
 		t.Logf("BUG-6 FIX VERIFIED: SenderFault=true classified as %s", be.Class)
@@ -87,11 +88,11 @@ func TestBug6_SendBatch_AllFailuresCorrectClassification(t *testing.T) {
 		name          string
 		senderFault   bool
 		code          string
-		expectedClass domain.ErrorClass
+		expectedClass shared.ErrorClass
 	}{
-		{"server fault", false, "InternalError", domain.ErrorTransient},
-		{"sender fault", true, "InvalidParameterValue", domain.ErrorRejected},
-		{"access denied", true, "AccessDenied", domain.ErrorRejected},
+		{"server fault", false, "InternalError", shared.ErrorTransient},
+		{"sender fault", true, "InvalidParameterValue", shared.ErrorRejected},
+		{"access denied", true, "AccessDenied", shared.ErrorRejected},
 	}
 
 	for _, tc := range tests {
@@ -127,7 +128,7 @@ func TestBug6_SendBatch_AllFailuresCorrectClassification(t *testing.T) {
 				t.Fatal("expected error from batch failure")
 			}
 
-			be, ok := domain.AsBridgeError(err)
+			be, ok := shared.AsBridgeError(err)
 			if !ok {
 				t.Fatalf("expected BridgeError, got %T: %v", err, err)
 			}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -81,7 +82,7 @@ func (d *Delivery) Ack(ctx context.Context) error {
 		if ok {
 			return nil
 		}
-		return domain.ErrUnavailable.WithMessage("amqp10: delivery already settled with error")
+		return shared.ErrUnavailable.WithMessage("amqp10: delivery already settled with error")
 	}
 	d.settled = true
 	d.mu.Unlock()
@@ -94,7 +95,7 @@ func (d *Delivery) Ack(ctx context.Context) error {
 
 	start := d.clk.Now()
 	err := d.settle.AcceptMessage(ctx, d.msg)
-	d.metrics.Timer(domain.MetricAMQP10AcceptLatency, d.clk.Since(start))
+	d.metrics.Timer(shared.MetricAMQP10AcceptLatency, d.clk.Since(start))
 
 	if err != nil {
 		return MapError(err)
@@ -120,7 +121,7 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) erro
 		if ok {
 			return nil
 		}
-		return domain.ErrUnavailable.WithMessage("amqp10: delivery already settled with error")
+		return shared.ErrUnavailable.WithMessage("amqp10: delivery already settled with error")
 	}
 	d.settled = true
 	d.mu.Unlock()
@@ -159,5 +160,5 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) erro
 // Extend is not supported by AMQP 1.0. The protocol uses credit-based
 // flow control rather than visibility timeouts.
 func (d *Delivery) Extend(_ context.Context, _ time.Time) error {
-	return domain.ErrNotSupported
+	return shared.ErrNotSupported
 }

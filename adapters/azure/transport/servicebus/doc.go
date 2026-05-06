@@ -40,7 +40,7 @@
 //
 // # Error Mapping
 //
-// Azure SDK errors are classified into domain.BridgeError categories:
+// Azure SDK errors are classified into shared.BridgeError categories:
 //
 //   - CodeTimeout        -> ErrTimeout       (transient)
 //   - CodeConnectionLost -> ErrConnectionLost (transient)

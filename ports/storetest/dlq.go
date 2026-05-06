@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -330,7 +331,7 @@ func dlqWriteIdempotent(t *testing.T, store ports.DLQStore) {
 	}
 
 	err := store.Write(ctx, e)
-	if !errors.Is(err, domain.ErrDuplicateRecord) {
+	if !errors.Is(err, shared.ErrDuplicateRecord) {
 		t.Fatalf("expected ErrDuplicateRecord, got %v", err)
 	}
 

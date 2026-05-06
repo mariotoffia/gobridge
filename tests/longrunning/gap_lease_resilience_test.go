@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -36,14 +37,14 @@ type faultyLeaseStore struct {
 
 func (f *faultyLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
 	if f.fail.Load() {
-		return domain.LeaseToken{}, domain.ErrUnavailable.WithMessage("faultyLeaseStore: simulated DDB outage on Acquire")
+		return domain.LeaseToken{}, shared.ErrUnavailable.WithMessage("faultyLeaseStore: simulated DDB outage on Acquire")
 	}
 	return f.inner.Acquire(ctx, leaseID, ownerID, ttl, endpoints)
 }
 
 func (f *faultyLeaseStore) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
 	if f.fail.Load() {
-		return domain.LeaseToken{}, domain.ErrUnavailable.WithMessage("faultyLeaseStore: simulated DDB outage on Renew")
+		return domain.LeaseToken{}, shared.ErrUnavailable.WithMessage("faultyLeaseStore: simulated DDB outage on Renew")
 	}
 	return f.inner.Renew(ctx, leaseID, token, ttl, endpoints)
 }

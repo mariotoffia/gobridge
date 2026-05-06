@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -94,9 +95,9 @@ func TestSharedOutbox_TransientSenderFailure_RecoversOnRetry(t *testing.T) {
 		attempts = append(attempts, env.ID)
 		mu.Unlock()
 		if !senderUp.Load() {
-			return domain.NewBridgeError(
+			return shared.NewBridgeError(
 				"BROKER_DISCONNECTED",
-				domain.ErrorTransient,
+				shared.ErrorTransient,
 				"simulated broker disconnect",
 			)
 		}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -71,12 +72,12 @@ func TestBugSAC_StartAfterClose_ReturnsErrorAndDoesNotConnect(t *testing.T) {
 		t.Fatal("BUG-SAC: Start after Close must return an error " +
 			"(closed sessions are single-use)")
 	}
-	be, ok := err.(*domain.BridgeError)
+	be, ok := err.(*shared.BridgeError)
 	if !ok {
-		t.Fatalf("BUG-SAC: Start after Close should return *domain.BridgeError, got %T: %v", err, err)
+		t.Fatalf("BUG-SAC: Start after Close should return *shared.BridgeError, got %T: %v", err, err)
 	}
-	if be.Code != domain.ErrUnavailable.Code {
-		t.Errorf("BUG-SAC: err code = %s, want %s", be.Code, domain.ErrUnavailable.Code)
+	if be.Code != shared.ErrUnavailable.Code {
+		t.Errorf("BUG-SAC: err code = %s, want %s", be.Code, shared.ErrUnavailable.Code)
 	}
 	if elapsed > 100*time.Millisecond {
 		t.Errorf("BUG-SAC: Start took %v after Close — must return immediately, not attempt connect", elapsed)
@@ -163,11 +164,11 @@ func TestBugSAC_ReconcileAfterStartAfterClose_ReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("BUG-SAC: Reconcile after Start-on-closed must error")
 	}
-	be, ok := err.(*domain.BridgeError)
+	be, ok := err.(*shared.BridgeError)
 	if !ok {
-		t.Fatalf("BUG-SAC: err type = %T, want *domain.BridgeError", err)
+		t.Fatalf("BUG-SAC: err type = %T, want *shared.BridgeError", err)
 	}
-	if be.Code != domain.ErrUnavailable.Code {
-		t.Errorf("BUG-SAC: err code = %s, want %s", be.Code, domain.ErrUnavailable.Code)
+	if be.Code != shared.ErrUnavailable.Code {
+		t.Errorf("BUG-SAC: err code = %s, want %s", be.Code, shared.ErrUnavailable.Code)
 	}
 }

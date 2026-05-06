@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -53,16 +54,16 @@ func TestMetrics_FullPipeline_DirectHold(t *testing.T) {
 	_ = receiver.Emit(ctx, del)
 
 	waitFor(t, 2*time.Second, "delivery e2e metric recorded", func() bool {
-		return len(rec.FindEntries(domain.MetricDeliveryE2ELatency)) > 0
+		return len(rec.FindEntries(shared.MetricDeliveryE2ELatency)) > 0
 	})
 	cancel()
 	_ = rt.Stop(context.Background())
 
-	e2e := rec.FindEntries(domain.MetricDeliveryE2ELatency)
+	e2e := rec.FindEntries(shared.MetricDeliveryE2ELatency)
 	if len(e2e) == 0 {
 		t.Fatal("expected DeliveryE2ELatency metric")
 	}
-	assertTag(t, e2e[0].Tags, domain.TagKeyRouteID, "direct-route")
+	assertTag(t, e2e[0].Tags, shared.TagKeyRouteID, "direct-route")
 }
 
 // TestMetrics_FullPipeline_SharedOutbox verifies the full SharedOutbox
@@ -128,28 +129,28 @@ func TestMetrics_FullPipeline_SharedOutbox(t *testing.T) {
 
 	// Wait for at least one lease renewal to complete.
 	waitFor(t, 3*time.Second, "lease renew latency metric", func() bool {
-		return len(rec.FindEntries(domain.MetricLeaseRenewLatency)) > 0
+		return len(rec.FindEntries(shared.MetricLeaseRenewLatency)) > 0
 	})
 
 	cancel()
 	_ = rt.Stop(context.Background())
 
-	e2e := rec.FindEntries(domain.MetricDeliveryE2ELatency)
+	e2e := rec.FindEntries(shared.MetricDeliveryE2ELatency)
 	if len(e2e) == 0 {
 		t.Error("expected DeliveryE2ELatency metric")
 	}
 
-	acquireLatency := rec.FindEntries(domain.MetricLeaseAcquireLatency)
+	acquireLatency := rec.FindEntries(shared.MetricLeaseAcquireLatency)
 	if len(acquireLatency) == 0 {
 		t.Error("expected LeaseAcquireLatency metric")
 	}
 
-	drainLatency := rec.FindEntries(domain.MetricOutboxDrainLatency)
+	drainLatency := rec.FindEntries(shared.MetricOutboxDrainLatency)
 	if len(drainLatency) == 0 {
 		t.Error("expected OutboxDrainLatency metric")
 	}
 
-	completions := rec.FindEntries(domain.MetricOutboxCompletions)
+	completions := rec.FindEntries(shared.MetricOutboxCompletions)
 	if len(completions) == 0 {
 		t.Error("expected OutboxCompletions metric")
 	}
@@ -158,27 +159,27 @@ func TestMetrics_FullPipeline_SharedOutbox(t *testing.T) {
 // TestMetrics_AllMetricNamesDocumented verifies every domain metric name constant is listed for documentation coverage.
 func TestMetrics_AllMetricNamesDocumented(t *testing.T) {
 	all := []string{
-		domain.MetricLeaseAcquireLatency,
-		domain.MetricLeaseRenewLatency,
-		domain.MetricLeaseAcquireFailures,
-		domain.MetricLeaseExpiries,
-		domain.MetricLeaseTransfers,
-		domain.MetricOutboxPersistLatency,
-		domain.MetricOutboxDrainLatency,
-		domain.MetricOutboxDepth,
-		domain.MetricOutboxClaimRecoveries,
-		domain.MetricOutboxCompletions,
-		domain.MetricOutboxExpiredBeforeSend,
-		domain.MetricOutboxReplayCount,
-		domain.MetricSQSReceiveLatency,
-		domain.MetricSQSDeleteLatency,
-		domain.MetricSQSVisibilityExtensions,
-		domain.MetricAckLatency,
-		domain.MetricVisibilityExtensions,
-		domain.MetricDeliveryE2ELatency,
-		domain.MetricDLQEntries,
-		domain.MetricMQTTPublishLatency,
-		domain.MetricMQTTReconnects,
+		shared.MetricLeaseAcquireLatency,
+		shared.MetricLeaseRenewLatency,
+		shared.MetricLeaseAcquireFailures,
+		shared.MetricLeaseExpiries,
+		shared.MetricLeaseTransfers,
+		shared.MetricOutboxPersistLatency,
+		shared.MetricOutboxDrainLatency,
+		shared.MetricOutboxDepth,
+		shared.MetricOutboxClaimRecoveries,
+		shared.MetricOutboxCompletions,
+		shared.MetricOutboxExpiredBeforeSend,
+		shared.MetricOutboxReplayCount,
+		shared.MetricSQSReceiveLatency,
+		shared.MetricSQSDeleteLatency,
+		shared.MetricSQSVisibilityExtensions,
+		shared.MetricAckLatency,
+		shared.MetricVisibilityExtensions,
+		shared.MetricDeliveryE2ELatency,
+		shared.MetricDLQEntries,
+		shared.MetricMQTTPublishLatency,
+		shared.MetricMQTTReconnects,
 	}
 	for _, name := range all {
 		if name == "" {
@@ -190,7 +191,7 @@ func TestMetrics_AllMetricNamesDocumented(t *testing.T) {
 	}
 }
 
-func assertTag(t *testing.T, tags []domain.Tag, key, wantValue string) {
+func assertTag(t *testing.T, tags []shared.Tag, key, wantValue string) {
 	t.Helper()
 	for _, tag := range tags {
 		if tag.Key == key {

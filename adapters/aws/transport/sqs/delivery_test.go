@@ -12,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
@@ -61,11 +62,11 @@ func TestDelivery_Ack_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	if !ok {
 		t.Fatal("expected BridgeError")
 	}
-	if be.Code != domain.ErrCodeNotAuthorized {
+	if be.Code != shared.ErrCodeNotAuthorized {
 		t.Fatalf("expected NOT_AUTHORIZED, got %s", be.Code)
 	}
 }

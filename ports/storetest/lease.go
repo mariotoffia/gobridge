@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -120,7 +121,7 @@ func leaseAcquireAlreadyHeld(t *testing.T, store ports.LeaseStore) {
 	}
 
 	_, err = store.Acquire(ctx, "lt-ah-1", "owner-B", 30*time.Second, nil)
-	if !errors.Is(err, domain.ErrAlreadyExists) {
+	if !errors.Is(err, shared.ErrAlreadyExists) {
 		t.Fatalf("expected ErrAlreadyExists, got %v", err)
 	}
 }
@@ -176,7 +177,7 @@ func leaseRenewStaleToken(t *testing.T, store ports.LeaseStore) {
 
 	stale := domain.LeaseToken{Version: tok.Version + 999, Owner: "owner-A"}
 	_, err = store.Renew(ctx, "lt-rst-1", stale, 30*time.Second, nil)
-	if !errors.Is(err, domain.ErrStaleFencingToken) {
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
 	}
 }
@@ -190,7 +191,7 @@ func leaseRenewWrongOwner(t *testing.T, store ports.LeaseStore) {
 
 	wrong := domain.LeaseToken{Version: tok.Version, Owner: "owner-B"}
 	_, err = store.Renew(ctx, "lt-rwo-1", wrong, 30*time.Second, nil)
-	if !errors.Is(err, domain.ErrStaleFencingToken) {
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
 	}
 }
@@ -198,7 +199,7 @@ func leaseRenewWrongOwner(t *testing.T, store ports.LeaseStore) {
 func leaseRenewNonExistent(t *testing.T, store ports.LeaseStore) {
 	ctx := context.Background()
 	_, err := store.Renew(ctx, "lt-rne-no-such-lease", domain.LeaseToken{Version: 1, Owner: "x"}, 30*time.Second, nil)
-	if !errors.Is(err, domain.ErrNotFound) {
+	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -215,7 +216,7 @@ func leaseRenewExpiredLease(t *testing.T, store ports.LeaseStore, opts *LeaseTes
 	opts.waitForExpiry(ttl)
 
 	_, err = store.Renew(ctx, "lt-rel-1", tok, ttl, nil)
-	if !errors.Is(err, domain.ErrStaleFencingToken) {
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
 	}
 }
@@ -232,7 +233,7 @@ func leaseReleaseSuccess(t *testing.T, store ports.LeaseStore) {
 	}
 
 	_, err = store.Current(ctx, "lt-rels-1")
-	if !errors.Is(err, domain.ErrNotFound) {
+	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound after release, got %v", err)
 	}
 }
@@ -246,7 +247,7 @@ func leaseReleaseStaleToken(t *testing.T, store ports.LeaseStore) {
 
 	stale := domain.LeaseToken{Version: tok.Version + 1, Owner: "owner-A"}
 	err = store.Release(ctx, "lt-relst-1", stale)
-	if !errors.Is(err, domain.ErrStaleFencingToken) {
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
 	}
 }
@@ -254,7 +255,7 @@ func leaseReleaseStaleToken(t *testing.T, store ports.LeaseStore) {
 func leaseReleaseNonExistent(t *testing.T, store ports.LeaseStore) {
 	ctx := context.Background()
 	err := store.Release(ctx, "lt-relne-no-such-lease", domain.LeaseToken{Version: 1, Owner: "x"})
-	if !errors.Is(err, domain.ErrNotFound) {
+	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -287,7 +288,7 @@ func leaseCurrentReturnsInfo(t *testing.T, store ports.LeaseStore) {
 func leaseCurrentNonExistent(t *testing.T, store ports.LeaseStore) {
 	ctx := context.Background()
 	_, err := store.Current(ctx, "lt-cne-no-such-lease")
-	if !errors.Is(err, domain.ErrNotFound) {
+	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -329,7 +330,7 @@ func leaseConcurrentAcquire(t *testing.T, store ports.LeaseStore) {
 			_, err := store.Acquire(ctx, "lt-ca-contested", owner, 30*time.Second, nil)
 			if err == nil {
 				wins.Add(1)
-			} else if errors.Is(err, domain.ErrAlreadyExists) {
+			} else if errors.Is(err, shared.ErrAlreadyExists) {
 				losses.Add(1)
 			} else {
 				t.Errorf("unexpected error from goroutine %s: %v", owner, err)
@@ -404,7 +405,7 @@ func leaseFullLifecycle(t *testing.T, store ports.LeaseStore, opts *LeaseTestOpt
 	}
 
 	_, err = store.Current(ctx, "lt-fl-1")
-	if !errors.Is(err, domain.ErrNotFound) {
+	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound after release, got %v", err)
 	}
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -50,7 +51,7 @@ func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
 	defer s.mu.Unlock()
 
 	if _, ok := s.entries[entry.ID]; ok {
-		return domain.ErrDuplicateRecord.
+		return shared.ErrDuplicateRecord.
 			WithMessage("dlq entry already exists").
 			With("entryID", entry.ID)
 	}
@@ -69,7 +70,7 @@ func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
 
 	e, ok := s.entries[id]
 	if !ok {
-		return domain.DLQEntry{}, domain.ErrNotFound.
+		return domain.DLQEntry{}, shared.ErrNotFound.
 			WithMessage("dlq entry not found").
 			With("entryID", id)
 	}

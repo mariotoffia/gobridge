@@ -3,7 +3,7 @@ package oteltracing
 import (
 	"context"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -38,11 +38,11 @@ func New(ctx context.Context, opts ...Option) (*Tracer, error) {
 }
 
 // StartSpan begins a new span with the given name and optional
-// domain.Tag attributes. The returned context carries the active span.
+// shared.Tag attributes. The returned context carries the active span.
 func (t *Tracer) StartSpan(
 	ctx context.Context,
 	name string,
-	tags ...domain.Tag,
+	tags ...shared.Tag,
 ) (context.Context, ports.Span) {
 	if t.client == nil {
 		return ctx, noopSpan{}
@@ -64,5 +64,5 @@ type noopSpan struct{}
 
 func (noopSpan) End()                           {}
 func (noopSpan) SetError(error)                 {}
-func (noopSpan) AddEvent(string, ...domain.Tag) {}
-func (noopSpan) SetAttributes(...domain.Tag)    {}
+func (noopSpan) AddEvent(string, ...shared.Tag) {}
+func (noopSpan) SetAttributes(...shared.Tag)    {}

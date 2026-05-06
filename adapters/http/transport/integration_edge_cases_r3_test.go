@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
+	"github.com/mariotoffia/gobridge/domain/shared"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -375,7 +376,7 @@ func TestEdgeR3_ForwarderContextCancelled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from cancelled context, got nil")
 	}
-	if !errors.Is(err, domain.ErrForwardFailed) {
+	if !errors.Is(err, shared.ErrForwardFailed) {
 		t.Fatalf("expected ErrForwardFailed, got %v", err)
 	}
 }

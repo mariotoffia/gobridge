@@ -13,6 +13,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -87,7 +88,7 @@ func (r *Repository) Get(ctx context.Context, uri string) (*domain.CredentialSet
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, domain.ErrNotFound
+			return nil, shared.ErrNotFound
 		}
 		return nil, fmt.Errorf("failed to read credentials file: %w", err)
 	}
@@ -110,7 +111,7 @@ func (r *Repository) Create(ctx context.Context, uri string, creds *domain.Crede
 	}
 
 	if _, err := os.Stat(filePath); err == nil {
-		return domain.ErrAlreadyExists
+		return shared.ErrAlreadyExists
 	}
 
 	dir := filepath.Dir(filePath)
@@ -141,7 +142,7 @@ func (r *Repository) Update(ctx context.Context, uri string, creds *domain.Crede
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return domain.ErrNotFound
+			return shared.ErrNotFound
 		}
 		return fmt.Errorf("failed to read credentials file: %w", err)
 	}
@@ -152,7 +153,7 @@ func (r *Repository) Update(ctx context.Context, uri string, creds *domain.Crede
 	}
 
 	if version > 0 && stored.Version != version {
-		return domain.ErrVersionMismatch
+		return shared.ErrVersionMismatch
 	}
 
 	stored.Credentials = creds
@@ -172,7 +173,7 @@ func (r *Repository) Delete(ctx context.Context, uri string, version int64) erro
 	}
 
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		return domain.ErrNotFound
+		return shared.ErrNotFound
 	}
 
 	if version > 0 {
@@ -187,7 +188,7 @@ func (r *Repository) Delete(ctx context.Context, uri string, version int64) erro
 		}
 
 		if stored.Version != version {
-			return domain.ErrVersionMismatch
+			return shared.ErrVersionMismatch
 		}
 	}
 

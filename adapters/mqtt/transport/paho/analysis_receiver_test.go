@@ -11,6 +11,7 @@ import (
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
@@ -208,7 +209,7 @@ func TestAnaRecv_DeliveryAck_IsNoop(t *testing.T) {
 func TestAnaRecv_DeliveryRetry_ReturnsErrNotSupported(t *testing.T) {
 	d := NewDelivery(&domain.Envelope{ID: "x"})
 	err := d.Retry(context.Background(), time.Second, errors.New("x"))
-	if err == nil || !errors.Is(err, domain.ErrNotSupported) {
+	if err == nil || !errors.Is(err, shared.ErrNotSupported) {
 		t.Fatalf("Retry → %v, want ErrNotSupported", err)
 	}
 }
@@ -218,7 +219,7 @@ func TestAnaRecv_DeliveryRetry_ReturnsErrNotSupported(t *testing.T) {
 func TestAnaRecv_DeliveryExtend_ReturnsErrNotSupported(t *testing.T) {
 	d := NewDelivery(&domain.Envelope{ID: "x"})
 	err := d.Extend(context.Background(), time.Now())
-	if err == nil || !errors.Is(err, domain.ErrNotSupported) {
+	if err == nil || !errors.Is(err, shared.ErrNotSupported) {
 		t.Fatalf("Extend → %v, want ErrNotSupported", err)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
@@ -364,7 +365,7 @@ func (s *e2eDLQStore) Get(_ context.Context, id string) (domain.DLQEntry, error)
 			return e, nil
 		}
 	}
-	return domain.DLQEntry{}, domain.ErrNotFound
+	return domain.DLQEntry{}, shared.ErrNotFound
 }
 
 func (s *e2eDLQStore) Delete(_ context.Context, _ []string) (int, error) { return 0, nil }

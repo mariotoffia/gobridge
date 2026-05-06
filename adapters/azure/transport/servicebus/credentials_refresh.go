@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -104,7 +105,7 @@ func joinASBPEMs(pems []string) string {
 // MVP.
 func (s *Sender) ApplyCredentials(ctx context.Context, set *domain.CredentialSet) error {
 	if set == nil {
-		return domain.ErrInvalidPayload.WithMessage("servicebus: nil credential set")
+		return shared.ErrInvalidPayload.WithMessage("servicebus: nil credential set")
 	}
 	newConn, changed := credentialsToConnection(s.cfg.Connection, set)
 	if !changed {
@@ -113,13 +114,13 @@ func (s *Sender) ApplyCredentials(ctx context.Context, set *domain.CredentialSet
 
 	asbClient, err := rawNewAzClient(newConn)
 	if err != nil {
-		return domain.ErrTemporaryAuthFailure.Wrap(err)
+		return shared.ErrTemporaryAuthFailure.Wrap(err)
 	}
 
 	newSender, err := asbClient.NewSender(s.entityName())
 	if err != nil {
 		_ = asbClient.Close(ctx)
-		return domain.ErrTemporaryAuthFailure.Wrap(
+		return shared.ErrTemporaryAuthFailure.Wrap(
 			fmt.Errorf("servicebus: rotate sender for %q: %w", s.entityName(), err))
 	}
 
@@ -163,7 +164,7 @@ func (s *Sender) ApplyCredentials(ctx context.Context, set *domain.CredentialSet
 // matches how most supervisors already handle config changes.
 func (r *Receiver) ApplyCredentials(_ context.Context, set *domain.CredentialSet) error {
 	if set == nil {
-		return domain.ErrInvalidPayload.WithMessage("servicebus: nil credential set")
+		return shared.ErrInvalidPayload.WithMessage("servicebus: nil credential set")
 	}
 	newConn, changed := credentialsToConnection(r.cfg.Connection, set)
 	if !changed {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -27,11 +28,11 @@ func NewInstrumentedLeaseStore(inner ports.LeaseStore, metrics ports.MetricsExpo
 func (s *InstrumentedLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
 	start := s.clk.Now()
 	tok, err := s.inner.Acquire(ctx, leaseID, ownerID, ttl, endpoints)
-	tags := []domain.Tag{{Key: domain.TagKeyLeaseID, Value: leaseID}}
+	tags := []shared.Tag{{Key: shared.TagKeyLeaseID, Value: leaseID}}
 
-	s.metrics.Timer(domain.MetricLeaseAcquireLatency, s.clk.Since(start), tags...)
+	s.metrics.Timer(shared.MetricLeaseAcquireLatency, s.clk.Since(start), tags...)
 	if err != nil {
-		s.metrics.Counter(domain.MetricLeaseAcquireFailures, 1, tags...)
+		s.metrics.Counter(shared.MetricLeaseAcquireFailures, 1, tags...)
 	}
 	return tok, err
 }
@@ -39,8 +40,8 @@ func (s *InstrumentedLeaseStore) Acquire(ctx context.Context, leaseID, ownerID s
 func (s *InstrumentedLeaseStore) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
 	start := s.clk.Now()
 	tok, err := s.inner.Renew(ctx, leaseID, token, ttl, endpoints)
-	tags := []domain.Tag{{Key: domain.TagKeyLeaseID, Value: leaseID}}
-	s.metrics.Timer(domain.MetricLeaseRenewLatency, s.clk.Since(start), tags...)
+	tags := []shared.Tag{{Key: shared.TagKeyLeaseID, Value: leaseID}}
+	s.metrics.Timer(shared.MetricLeaseRenewLatency, s.clk.Since(start), tags...)
 	return tok, err
 }
 
@@ -70,8 +71,8 @@ func (s *InstrumentedOutboxStore) Persist(ctx context.Context, records []domain.
 	start := s.clk.Now()
 	err := s.inner.Persist(ctx, records)
 	if len(records) > 0 {
-		tags := []domain.Tag{{Key: domain.TagKeyRouteID, Value: records[0].RouteID}}
-		s.metrics.Timer(domain.MetricOutboxPersistLatency, s.clk.Since(start), tags...)
+		tags := []shared.Tag{{Key: shared.TagKeyRouteID, Value: records[0].RouteID}}
+		s.metrics.Timer(shared.MetricOutboxPersistLatency, s.clk.Since(start), tags...)
 	}
 	return err
 }
@@ -81,8 +82,8 @@ func (s *InstrumentedOutboxStore) Claim(ctx context.Context, partitionKey, owner
 	if err == nil && len(recs) > 0 {
 		for _, rec := range recs {
 			if rec.ReplayCount > 1 {
-				tags := []domain.Tag{{Key: domain.TagKeySessionID, Value: rec.SessionID}}
-				s.metrics.Counter(domain.MetricOutboxClaimRecoveries, 1, tags...)
+				tags := []shared.Tag{{Key: shared.TagKeySessionID, Value: rec.SessionID}}
+				s.metrics.Counter(shared.MetricOutboxClaimRecoveries, 1, tags...)
 			}
 		}
 	}
@@ -100,8 +101,8 @@ func (s *InstrumentedOutboxStore) Expire(ctx context.Context, before time.Time) 
 func (s *InstrumentedOutboxStore) QueryPending(ctx context.Context, partitionKey string, limit int) ([]domain.OutboxRecord, error) {
 	recs, err := s.inner.QueryPending(ctx, partitionKey, limit)
 	if err == nil {
-		tags := []domain.Tag{{Key: domain.TagKeyPartition, Value: partitionKey}}
-		s.metrics.Gauge(domain.MetricOutboxDepth, float64(len(recs)), tags...)
+		tags := []shared.Tag{{Key: shared.TagKeyPartition, Value: partitionKey}}
+		s.metrics.Gauge(shared.MetricOutboxDepth, float64(len(recs)), tags...)
 	}
 	return recs, err
 }

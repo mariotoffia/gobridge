@@ -5,8 +5,8 @@ import (
 	"time"
 
 	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // Verifies batcher add stores a counter datum with correct name, value, unit, and dimensions.
@@ -17,7 +17,7 @@ func TestBatcher_AddCounter(t *testing.T) {
 		name:       "test.counter",
 		value:      5,
 		unit:       cwtypes.StandardUnitCount,
-		tags:       []domain.Tag{{Key: "env", Value: "test"}},
+		tags:       []shared.Tag{{Key: "env", Value: "test"}},
 		metricType: metricTypeCounter,
 	})
 	if full {
@@ -48,7 +48,7 @@ func TestBatcher_AddHistogram(t *testing.T) {
 			name:       "test.latency",
 			value:      v,
 			unit:       cwtypes.StandardUnitMilliseconds,
-			tags:       []domain.Tag{{Key: "ep", Value: "/api"}},
+			tags:       []shared.Tag{{Key: "ep", Value: "/api"}},
 			metricType: metricTypeHistogram,
 		})
 	}
@@ -77,7 +77,7 @@ func TestBatcher_AddHistogram(t *testing.T) {
 
 // Verifies default tags merge with per-metric tags in CloudWatch dimensions.
 func TestBatcher_DefaultTags(t *testing.T) {
-	defaults := []domain.Tag{
+	defaults := []shared.Tag{
 		{Key: "service", Value: "bridge"},
 		{Key: "env", Value: "prod"},
 	}
@@ -87,7 +87,7 @@ func TestBatcher_DefaultTags(t *testing.T) {
 		name:       "m",
 		value:      1,
 		unit:       cwtypes.StandardUnitCount,
-		tags:       []domain.Tag{{Key: "topic", Value: "orders"}},
+		tags:       []shared.Tag{{Key: "topic", Value: "orders"}},
 		metricType: metricTypeCounter,
 	})
 
@@ -140,9 +140,9 @@ func TestBatcher_DrainClears(t *testing.T) {
 
 // Verifies dimensions are capped at CloudWatch's maximum count.
 func TestBatcher_DimensionLimit(t *testing.T) {
-	var tags []domain.Tag
+	var tags []shared.Tag
 	for i := 0; i < 35; i++ {
-		tags = append(tags, domain.Tag{Key: "k" + string(rune('A'+i)), Value: "v"})
+		tags = append(tags, shared.Tag{Key: "k" + string(rune('A'+i)), Value: "v"})
 	}
 	b := newBatcher("Test", tags, 100, clock.System)
 	b.add(metricData{name: "m", value: 1, metricType: metricTypeCounter})
@@ -157,9 +157,9 @@ func TestBatcher_DimensionLimit(t *testing.T) {
 func TestBatcher_MultipleHistogramKeys(t *testing.T) {
 	b := newBatcher("Test", nil, 100, clock.System)
 
-	b.add(metricData{name: "latency", value: 10, tags: []domain.Tag{{Key: "r", Value: "A"}}, metricType: metricTypeHistogram})
-	b.add(metricData{name: "latency", value: 20, tags: []domain.Tag{{Key: "r", Value: "B"}}, metricType: metricTypeHistogram})
-	b.add(metricData{name: "latency", value: 30, tags: []domain.Tag{{Key: "r", Value: "A"}}, metricType: metricTypeHistogram})
+	b.add(metricData{name: "latency", value: 10, tags: []shared.Tag{{Key: "r", Value: "A"}}, metricType: metricTypeHistogram})
+	b.add(metricData{name: "latency", value: 20, tags: []shared.Tag{{Key: "r", Value: "B"}}, metricType: metricTypeHistogram})
+	b.add(metricData{name: "latency", value: 30, tags: []shared.Tag{{Key: "r", Value: "A"}}, metricType: metricTypeHistogram})
 
 	data := b.drain()
 	if len(data) != 2 {
@@ -212,7 +212,7 @@ func TestOptions(t *testing.T) {
 		t.Errorf("Endpoint = %q", e.config.Endpoint)
 	}
 
-	WithDefaultTags(domain.Tag{Key: "env", Value: "test"})(e)
+	WithDefaultTags(shared.Tag{Key: "env", Value: "test"})(e)
 	if len(e.config.DefaultTags) != 1 {
 		t.Errorf("DefaultTags len = %d, want 1", len(e.config.DefaultTags))
 	}

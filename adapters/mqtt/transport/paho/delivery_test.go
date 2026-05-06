@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // verifies Delivery.Envelope returns the same envelope pointer passed to NewDelivery.
@@ -32,7 +33,7 @@ func TestDelivery_AckIsNoop(t *testing.T) {
 func TestDelivery_RetryNotSupported(t *testing.T) {
 	del := NewDelivery(&domain.Envelope{})
 	err := del.Retry(context.Background(), time.Second, errors.New("reason"))
-	if !errors.Is(err, domain.ErrNotSupported) {
+	if !errors.Is(err, shared.ErrNotSupported) {
 		t.Errorf("Retry() = %v, want ErrNotSupported", err)
 	}
 }
@@ -41,7 +42,7 @@ func TestDelivery_RetryNotSupported(t *testing.T) {
 func TestDelivery_ExtendNotSupported(t *testing.T) {
 	del := NewDelivery(&domain.Envelope{})
 	err := del.Extend(context.Background(), time.Now().Add(time.Minute))
-	if !errors.Is(err, domain.ErrNotSupported) {
+	if !errors.Is(err, shared.ErrNotSupported) {
 		t.Errorf("Extend() = %v, want ErrNotSupported", err)
 	}
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
 
@@ -87,7 +88,7 @@ func TestGet_Missing_ReturnsErrNotFound(t *testing.T) {
 	}
 	store := newTestStore(t, "dlq-getmiss")
 	_, err := store.Get(context.Background(), "no-such-id")
-	if !errors.Is(err, domain.ErrNotFound) {
+	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }

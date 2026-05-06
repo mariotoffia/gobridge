@@ -10,7 +10,7 @@ package circuitbreaker
 import (
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ErrorClassifier returns true if the error should count toward circuit
@@ -57,7 +57,7 @@ func (c Config) WithDefaults() Config {
 		c.HalfOpenMaxProbes = 1
 	}
 	if c.CountError == nil {
-		c.CountError = domain.IsRecoverableError
+		c.CountError = shared.IsRecoverableError
 	}
 	return c
 }

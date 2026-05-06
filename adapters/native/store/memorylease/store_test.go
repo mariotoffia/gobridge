@@ -12,6 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 )
 
@@ -56,7 +57,7 @@ func TestAcquireAlreadyHeldLease(t *testing.T) {
 	}
 
 	_, err = s.Acquire(ctx, "lease-1", "owner-B", 30*time.Second, nil)
-	if !errors.Is(err, domain.ErrAlreadyExists) {
+	if !errors.Is(err, shared.ErrAlreadyExists) {
 		t.Fatalf("expected ErrAlreadyExists, got %v", err)
 	}
 }
@@ -135,7 +136,7 @@ func TestRenewExpiredLease(t *testing.T) {
 	clk.Advance(11 * time.Second)
 
 	_, err = s.Renew(ctx, "lease-1", tok, 10*time.Second, nil)
-	if !errors.Is(err, domain.ErrStaleFencingToken) {
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
 	}
 }
@@ -152,7 +153,7 @@ func TestRenewStaleToken(t *testing.T) {
 
 	stale := domain.LeaseToken{Version: tok.Version + 999, Owner: "owner-A"}
 	_, err = s.Renew(ctx, "lease-1", stale, 30*time.Second, nil)
-	if !errors.Is(err, domain.ErrStaleFencingToken) {
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
 	}
 }
@@ -169,7 +170,7 @@ func TestRenewWrongOwner(t *testing.T) {
 
 	wrong := domain.LeaseToken{Version: tok.Version, Owner: "owner-B"}
 	_, err = s.Renew(ctx, "lease-1", wrong, 30*time.Second, nil)
-	if !errors.Is(err, domain.ErrStaleFencingToken) {
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
 	}
 }
@@ -180,7 +181,7 @@ func TestRenewNonExistent(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := s.Renew(ctx, "no-such-lease", domain.LeaseToken{Version: 1, Owner: "x"}, 30*time.Second, nil)
-	if !errors.Is(err, domain.ErrNotFound) {
+	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -200,7 +201,7 @@ func TestReleaseSuccess(t *testing.T) {
 	}
 
 	_, err = s.Current(ctx, "lease-1")
-	if !errors.Is(err, domain.ErrNotFound) {
+	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound after release, got %v", err)
 	}
 }
@@ -217,7 +218,7 @@ func TestReleaseStaleToken(t *testing.T) {
 
 	stale := domain.LeaseToken{Version: tok.Version + 1, Owner: "owner-A"}
 	err = s.Release(ctx, "lease-1", stale)
-	if !errors.Is(err, domain.ErrStaleFencingToken) {
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
 	}
 }
@@ -228,7 +229,7 @@ func TestReleaseNonExistent(t *testing.T) {
 	ctx := context.Background()
 
 	err := s.Release(ctx, "no-such-lease", domain.LeaseToken{Version: 1, Owner: "x"})
-	if !errors.Is(err, domain.ErrNotFound) {
+	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -267,7 +268,7 @@ func TestCurrentNonExistent(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := s.Current(ctx, "no-such-lease")
-	if !errors.Is(err, domain.ErrNotFound) {
+	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -288,7 +289,7 @@ func TestConcurrentAcquire(t *testing.T) {
 			_, err := s.Acquire(ctx, "contested-lease", owner, 30*time.Second, nil)
 			if err == nil {
 				wins.Add(1)
-			} else if errors.Is(err, domain.ErrAlreadyExists) {
+			} else if errors.Is(err, shared.ErrAlreadyExists) {
 				losses.Add(1)
 			} else {
 				t.Errorf("unexpected error from goroutine %s: %v", owner, err)

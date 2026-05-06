@@ -1,10 +1,10 @@
-package domain_test
+package shared_test
 
 import (
 	"errors"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -20,7 +20,7 @@ import (
 // TestBridgeError_ZeroValue validates that a zero-value BridgeError
 // returns an empty string from Error().
 func TestBridgeError_ZeroValue(t *testing.T) {
-	var be domain.BridgeError
+	var be shared.BridgeError
 	got := be.Error()
 	if got != "" {
 		t.Fatalf("zero-value BridgeError.Error() should be empty, got %q", got)
@@ -38,14 +38,14 @@ func TestBridgeError_ZeroValue(t *testing.T) {
 // should be aware that class is not part of the identity.
 // ═══════════════════════════════════════════════════════════════════
 func TestBridgeError_Is_IgnoresClass_Documented(t *testing.T) {
-	transient := &domain.BridgeError{
-		Code:    domain.ErrCodeTimeout,
-		Class:   domain.ErrorTransient,
+	transient := &shared.BridgeError{
+		Code:    shared.ErrCodeTimeout,
+		Class:   shared.ErrorTransient,
 		Message: "transient timeout",
 	}
-	permanent := &domain.BridgeError{
-		Code:    domain.ErrCodeTimeout,
-		Class:   domain.ErrorPermanent,
+	permanent := &shared.BridgeError{
+		Code:    shared.ErrCodeTimeout,
+		Class:   shared.ErrorPermanent,
 		Message: "permanent timeout",
 	}
 
@@ -56,12 +56,12 @@ func TestBridgeError_Is_IgnoresClass_Documented(t *testing.T) {
 
 // TestNewBridgeError_Audit validates the constructor sets all fields.
 func TestNewBridgeError_Audit(t *testing.T) {
-	be := domain.NewBridgeError(domain.ErrCodeTimeout, domain.ErrorTransient, "test msg")
-	if be.Code != domain.ErrCodeTimeout {
-		t.Fatalf("expected code %s, got %s", domain.ErrCodeTimeout, be.Code)
+	be := shared.NewBridgeError(shared.ErrCodeTimeout, shared.ErrorTransient, "test msg")
+	if be.Code != shared.ErrCodeTimeout {
+		t.Fatalf("expected code %s, got %s", shared.ErrCodeTimeout, be.Code)
 	}
-	if be.Class != domain.ErrorTransient {
-		t.Fatalf("expected class %s, got %s", domain.ErrorTransient, be.Class)
+	if be.Class != shared.ErrorTransient {
+		t.Fatalf("expected class %s, got %s", shared.ErrorTransient, be.Class)
 	}
 	if be.Message != "test msg" {
 		t.Fatalf("expected message %q, got %q", "test msg", be.Message)
@@ -70,7 +70,7 @@ func TestNewBridgeError_Audit(t *testing.T) {
 
 // TestIsRecoverableError_Nil validates that nil returns false.
 func TestIsRecoverableError_Nil(t *testing.T) {
-	if domain.IsRecoverableError(nil) {
+	if shared.IsRecoverableError(nil) {
 		t.Fatal("nil should not be recoverable")
 	}
 }
@@ -79,7 +79,7 @@ func TestIsRecoverableError_Nil(t *testing.T) {
 // is treated as recoverable (safe default).
 func TestIsRecoverableError_PlainError(t *testing.T) {
 	err := errors.New("some error")
-	if !domain.IsRecoverableError(err) {
+	if !shared.IsRecoverableError(err) {
 		t.Fatal("plain error should be treated as recoverable")
 	}
 }
@@ -87,21 +87,21 @@ func TestIsRecoverableError_PlainError(t *testing.T) {
 // TestIsRecoverableError_PermanentBridgeError validates that a
 // permanent BridgeError is not recoverable.
 func TestIsRecoverableError_PermanentBridgeError(t *testing.T) {
-	if domain.IsRecoverableError(domain.ErrNotAuthorized) {
+	if shared.IsRecoverableError(shared.ErrNotAuthorized) {
 		t.Fatal("permanent error should not be recoverable")
 	}
 }
 
 // TestGetRetryAfter_Nil validates nil returns zero.
 func TestGetRetryAfter_Nil(t *testing.T) {
-	if domain.GetRetryAfter(nil) != 0 {
+	if shared.GetRetryAfter(nil) != 0 {
 		t.Fatal("nil should return zero RetryAfter")
 	}
 }
 
 // TestGetRetryAfter_PlainError validates non-BridgeError returns zero.
 func TestGetRetryAfter_PlainError(t *testing.T) {
-	if domain.GetRetryAfter(errors.New("plain")) != 0 {
+	if shared.GetRetryAfter(errors.New("plain")) != 0 {
 		t.Fatal("plain error should return zero RetryAfter")
 	}
 }
@@ -109,7 +109,7 @@ func TestGetRetryAfter_PlainError(t *testing.T) {
 // TestBridgeError_Unwrap_NilCause validates Unwrap returns nil when
 // Cause is nil.
 func TestBridgeError_Unwrap_NilCause(t *testing.T) {
-	be := &domain.BridgeError{Code: domain.ErrCodeTimeout, Message: "test"}
+	be := &shared.BridgeError{Code: shared.ErrCodeTimeout, Message: "test"}
 	if be.Unwrap() != nil {
 		t.Fatal("Unwrap should return nil when Cause is nil")
 	}

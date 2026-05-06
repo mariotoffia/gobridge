@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -140,7 +141,7 @@ func TestOutboxDrainer_PoisonMessage(t *testing.T) {
 func TestOutboxDrainer_StaleFencingToken(t *testing.T) {
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token)
-	outbox.SetClaimErr(domain.ErrStaleFencingToken)
+	outbox.SetClaimErr(shared.ErrStaleFencingToken)
 
 	ctx := context.Background()
 	rec := domain.OutboxRecord{
@@ -265,7 +266,7 @@ func TestOutboxDrainer_EmptyAddressPreservesSubject(t *testing.T) {
 func TestOutboxDrainer_PermanentSendError(t *testing.T) {
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, dlqStore, drainer := makeDrainer(t, token)
-	sender.SendErr = domain.ErrNotAuthorized
+	sender.SendErr = shared.ErrNotAuthorized
 
 	ctx := context.Background()
 	rec := domain.OutboxRecord{

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
+	"github.com/mariotoffia/gobridge/domain/shared"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -241,7 +242,7 @@ func TestEdge_ForwarderMissingHTTPEndpoint(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !errors.Is(err, domain.ErrForwardFailed) {
+	if !errors.Is(err, shared.ErrForwardFailed) {
 		t.Fatalf("expected ErrForwardFailed, got %v", err)
 	}
 }
@@ -270,10 +271,10 @@ func TestEdge_ForwarderRemoteReturns500(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !errors.Is(err, domain.ErrUnavailable) {
+	if !errors.Is(err, shared.ErrUnavailable) {
 		t.Fatalf("expected ErrUnavailable (transient) for 500, got %v", err)
 	}
-	if !domain.IsRecoverableError(err) {
+	if !shared.IsRecoverableError(err) {
 		t.Fatal("expected recoverable error for 500")
 	}
 }

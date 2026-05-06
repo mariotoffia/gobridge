@@ -24,9 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	amqp "github.com/rabbitmq/amqp091-go"
-
-	"github.com/mariotoffia/gobridge/domain"
 )
 
 // TestSender_CheckReturned_NonBlocking_DetectsBufferedReturn validates
@@ -49,8 +48,8 @@ func TestSender_CheckReturned_NonBlocking_DetectsBufferedReturn(t *testing.T) {
 	if err == nil {
 		t.Fatal("checkReturnedLocked must return an error when a return is buffered")
 	}
-	var be *domain.BridgeError
-	if !errors.As(err, &be) || be.Code != domain.ErrCodeNotFound {
+	var be *shared.BridgeError
+	if !errors.As(err, &be) || be.Code != shared.ErrCodeNotFound {
 		t.Fatalf("got %v, want ErrNotFound for unroutable mandatory return", err)
 	}
 	// Anything > a few ms means we're sleeping where we shouldn't.
@@ -137,12 +136,12 @@ func TestSender_CheckReturned_NoTimerInHotPath(t *testing.T) {
 }
 
 // domainifyReturn maps the ACL's *unroutableError to the same
-// domain.ErrNotFound that the Sender produces in production. Tests
+// shared.ErrNotFound that the Sender produces in production. Tests
 // assert against the domain error so this helper keeps the contract
 // pinned at the Sender boundary, not the ACL boundary.
 func domainifyReturn(r *unroutableError) error {
 	if r == nil {
 		return nil
 	}
-	return domain.ErrNotFound.WithMessage("amqp091: mandatory publish unroutable: " + r.ReplyText)
+	return shared.ErrNotFound.WithMessage("amqp091: mandatory publish unroutable: " + r.ReplyText)
 }

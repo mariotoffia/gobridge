@@ -7,7 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // AlarmSeverity indicates the severity of an alarm.
@@ -37,12 +37,12 @@ type AlarmDefinition struct {
 // to the given SNS topic.
 func DefaultAlarms(namespace, snsTopicARN string) []AlarmDefinition {
 	if namespace == "" {
-		namespace = domain.MetricNamespace
+		namespace = shared.MetricNamespace
 	}
 	return []AlarmDefinition{
 		{
 			Name:        "GoBridge-OutboxDepth-Warning",
-			MetricName:  domain.MetricOutboxDepth,
+			MetricName:  shared.MetricOutboxDepth,
 			Namespace:   namespace,
 			Threshold:   1000,
 			Period:      300,
@@ -54,7 +54,7 @@ func DefaultAlarms(namespace, snsTopicARN string) []AlarmDefinition {
 		},
 		{
 			Name:        "GoBridge-OutboxDepth-Critical",
-			MetricName:  domain.MetricOutboxDepth,
+			MetricName:  shared.MetricOutboxDepth,
 			Namespace:   namespace,
 			Threshold:   10000,
 			Period:      300,
@@ -66,7 +66,7 @@ func DefaultAlarms(namespace, snsTopicARN string) []AlarmDefinition {
 		},
 		{
 			Name:        "GoBridge-LeaseExpiries-Warning",
-			MetricName:  domain.MetricLeaseExpiries,
+			MetricName:  shared.MetricLeaseExpiries,
 			Namespace:   namespace,
 			Threshold:   0,
 			Period:      300,
@@ -78,7 +78,7 @@ func DefaultAlarms(namespace, snsTopicARN string) []AlarmDefinition {
 		},
 		{
 			Name:        "GoBridge-DLQEntries-Warning",
-			MetricName:  domain.MetricDLQEntries,
+			MetricName:  shared.MetricDLQEntries,
 			Namespace:   namespace,
 			Threshold:   0,
 			Period:      300,
@@ -90,7 +90,7 @@ func DefaultAlarms(namespace, snsTopicARN string) []AlarmDefinition {
 		},
 		{
 			Name:        "GoBridge-LeaseAcquireFailures-Critical",
-			MetricName:  domain.MetricLeaseAcquireFailures,
+			MetricName:  shared.MetricLeaseAcquireFailures,
 			Namespace:   namespace,
 			Threshold:   3,
 			Period:      300,
@@ -102,7 +102,7 @@ func DefaultAlarms(namespace, snsTopicARN string) []AlarmDefinition {
 		},
 		{
 			Name:        "GoBridge-SQSVisibilityExtensions-Warning",
-			MetricName:  domain.MetricSQSVisibilityExtensions,
+			MetricName:  shared.MetricSQSVisibilityExtensions,
 			Namespace:   namespace,
 			Threshold:   100,
 			Period:      300,

@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -75,8 +76,8 @@ func TestAnaIntg_StartAfterClose_RealBroker_DoesNotReconnect(t *testing.T) {
 	if err == nil {
 		t.Fatal("BUG-SAC: second Start after Close must error")
 	}
-	be, ok := err.(*domain.BridgeError)
-	if !ok || be.Code != domain.ErrUnavailable.Code {
+	be, ok := err.(*shared.BridgeError)
+	if !ok || be.Code != shared.ErrUnavailable.Code {
 		t.Fatalf("BUG-SAC: err = %v, want ErrUnavailable", err)
 	}
 	if s.ConnectionManager() != nil {

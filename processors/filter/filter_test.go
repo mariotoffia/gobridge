@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 func nextOK(_ context.Context, _ *domain.Envelope) error { return nil }
@@ -35,7 +36,7 @@ func TestDropFilter_MatchingMessages(t *testing.T) {
 	t.Run("matching message is dropped", func(t *testing.T) {
 		env := envelope("orders.new", nil, nil)
 		err := p.Process(context.Background(), env, nextOK)
-		if !errors.Is(err, domain.ErrMessageFiltered) {
+		if !errors.Is(err, shared.ErrMessageFiltered) {
 			t.Errorf("expected ErrMessageFiltered, got %v", err)
 		}
 	})
@@ -69,7 +70,7 @@ func TestPassFilter_MatchingMessages(t *testing.T) {
 	t.Run("non-matching message is dropped", func(t *testing.T) {
 		env := envelope("orders.updated", nil, nil)
 		err := p.Process(context.Background(), env, nextOK)
-		if !errors.Is(err, domain.ErrMessageFiltered) {
+		if !errors.Is(err, shared.ErrMessageFiltered) {
 			t.Errorf("expected ErrMessageFiltered, got %v", err)
 		}
 	})
@@ -290,7 +291,7 @@ func TestCondition_AllOperators(t *testing.T) {
 			}
 			env := envelope("test", tc.headers, nil)
 			err = p.Process(context.Background(), env, nextOK)
-			dropped := errors.Is(err, domain.ErrMessageFiltered)
+			dropped := errors.Is(err, shared.ErrMessageFiltered)
 			if dropped != tc.wantDrop {
 				t.Errorf("dropped=%v, want %v (err=%v)", dropped, tc.wantDrop, err)
 			}
@@ -330,7 +331,7 @@ func TestCondition_JSONPath(t *testing.T) {
 			}
 			env := envelope("test", nil, payload)
 			err = p.Process(context.Background(), env, nextOK)
-			dropped := errors.Is(err, domain.ErrMessageFiltered)
+			dropped := errors.Is(err, shared.ErrMessageFiltered)
 			if dropped != tc.wantDrop {
 				t.Errorf("dropped=%v, want %v (err=%v)", dropped, tc.wantDrop, err)
 			}
@@ -349,7 +350,7 @@ func TestCondition_SubjectField(t *testing.T) {
 
 	env := envelope("orders.created", nil, nil)
 	err = p.Process(context.Background(), env, nextOK)
-	if !errors.Is(err, domain.ErrMessageFiltered) {
+	if !errors.Is(err, shared.ErrMessageFiltered) {
 		t.Errorf("expected ErrMessageFiltered for subject containing 'orders', got %v", err)
 	}
 
@@ -371,7 +372,7 @@ func TestCondition_HeaderField(t *testing.T) {
 
 	env := envelope("test", map[string]any{"x-custom": "secret"}, nil)
 	err = p.Process(context.Background(), env, nextOK)
-	if !errors.Is(err, domain.ErrMessageFiltered) {
+	if !errors.Is(err, shared.ErrMessageFiltered) {
 		t.Errorf("expected ErrMessageFiltered, got %v", err)
 	}
 
@@ -393,7 +394,7 @@ func TestCondition_BareFieldFallback(t *testing.T) {
 
 	env := envelope("test", map[string]any{"tenant": "acme"}, nil)
 	err = p.Process(context.Background(), env, nextOK)
-	if !errors.Is(err, domain.ErrMessageFiltered) {
+	if !errors.Is(err, shared.ErrMessageFiltered) {
 		t.Errorf("expected ErrMessageFiltered for bare field matching header, got %v", err)
 	}
 
@@ -417,7 +418,7 @@ func TestFilter_MultipleConditions(t *testing.T) {
 	t.Run("all conditions match", func(t *testing.T) {
 		env := envelope("orders.new", map[string]any{"priority": "high"}, nil)
 		err := p.Process(context.Background(), env, nextOK)
-		if !errors.Is(err, domain.ErrMessageFiltered) {
+		if !errors.Is(err, shared.ErrMessageFiltered) {
 			t.Errorf("expected ErrMessageFiltered, got %v", err)
 		}
 	})
@@ -462,7 +463,7 @@ func TestFilter_Inversion(t *testing.T) {
 	t.Run("non-matching becomes matching with invert", func(t *testing.T) {
 		env := envelope("orders.updated", nil, nil)
 		err := p.Process(context.Background(), env, nextOK)
-		if !errors.Is(err, domain.ErrMessageFiltered) {
+		if !errors.Is(err, shared.ErrMessageFiltered) {
 			t.Errorf("expected ErrMessageFiltered (inverted non-match should drop), got %v", err)
 		}
 	})
@@ -547,7 +548,7 @@ func TestFilter_NoConditionsAlwaysMatches(t *testing.T) {
 
 	env := envelope("anything", nil, nil)
 	err = p.Process(context.Background(), env, nextOK)
-	if !errors.Is(err, domain.ErrMessageFiltered) {
+	if !errors.Is(err, shared.ErrMessageFiltered) {
 		t.Errorf("expected ErrMessageFiltered (no conditions = always match + drop), got %v", err)
 	}
 }

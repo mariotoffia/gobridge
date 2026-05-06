@@ -1,14 +1,14 @@
-package domain_test
+package shared_test
 
 import (
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // TestMetricNamespace_NonEmpty validates that MetricNamespace is a non-empty string.
 func TestMetricNamespace_NonEmpty(t *testing.T) {
-	if domain.MetricNamespace == "" {
+	if shared.MetricNamespace == "" {
 		t.Fatal("MetricNamespace must not be empty")
 	}
 }
@@ -17,30 +17,30 @@ func TestMetricNamespace_NonEmpty(t *testing.T) {
 // and unique across the entire set.
 func TestMetricConstants_NonEmpty(t *testing.T) {
 	metrics := []string{
-		domain.MetricLeaseAcquireLatency,
-		domain.MetricLeaseRenewLatency,
-		domain.MetricLeaseAcquireFailures,
-		domain.MetricLeaseExpiries,
-		domain.MetricLeaseTransfers,
-		domain.MetricOutboxPersistLatency,
-		domain.MetricOutboxDrainLatency,
-		domain.MetricOutboxDepth,
-		domain.MetricOutboxClaimRecoveries,
-		domain.MetricOutboxCompletions,
-		domain.MetricOutboxExpiredBeforeSend,
-		domain.MetricOutboxReplayCount,
-		domain.MetricOutboxRecordFailures,
-		domain.MetricSQSReceiveLatency,
-		domain.MetricSQSDeleteLatency,
-		domain.MetricSQSVisibilityExtensions,
-		domain.MetricAckLatency,
-		domain.MetricVisibilityExtensions,
-		domain.MetricDeliveryE2ELatency,
-		domain.MetricDLQEntries,
-		domain.MetricDeliveryPanics,
-		domain.MetricMQTTPublishLatency,
-		domain.MetricMQTTReconnects,
-		domain.MetricReconcileFailures,
+		shared.MetricLeaseAcquireLatency,
+		shared.MetricLeaseRenewLatency,
+		shared.MetricLeaseAcquireFailures,
+		shared.MetricLeaseExpiries,
+		shared.MetricLeaseTransfers,
+		shared.MetricOutboxPersistLatency,
+		shared.MetricOutboxDrainLatency,
+		shared.MetricOutboxDepth,
+		shared.MetricOutboxClaimRecoveries,
+		shared.MetricOutboxCompletions,
+		shared.MetricOutboxExpiredBeforeSend,
+		shared.MetricOutboxReplayCount,
+		shared.MetricOutboxRecordFailures,
+		shared.MetricSQSReceiveLatency,
+		shared.MetricSQSDeleteLatency,
+		shared.MetricSQSVisibilityExtensions,
+		shared.MetricAckLatency,
+		shared.MetricVisibilityExtensions,
+		shared.MetricDeliveryE2ELatency,
+		shared.MetricDLQEntries,
+		shared.MetricDeliveryPanics,
+		shared.MetricMQTTPublishLatency,
+		shared.MetricMQTTReconnects,
+		shared.MetricReconcileFailures,
 	}
 
 	seen := make(map[string]bool, len(metrics))
@@ -58,12 +58,12 @@ func TestMetricConstants_NonEmpty(t *testing.T) {
 // TestTagKeyConstants_NonEmpty validates that all TagKey* constants are non-empty and unique.
 func TestTagKeyConstants_NonEmpty(t *testing.T) {
 	tagKeys := []string{
-		domain.TagKeyLeaseID,
-		domain.TagKeyRouteID,
-		domain.TagKeySessionID,
-		domain.TagKeyPartition,
-		domain.TagKeyQueueURL,
-		domain.TagKeyCategory,
+		shared.TagKeyLeaseID,
+		shared.TagKeyRouteID,
+		shared.TagKeySessionID,
+		shared.TagKeyPartition,
+		shared.TagKeyQueueURL,
+		shared.TagKeyCategory,
 	}
 
 	seen := make(map[string]bool, len(tagKeys))
@@ -80,7 +80,7 @@ func TestTagKeyConstants_NonEmpty(t *testing.T) {
 
 // TestTag_Construction validates Tag struct creation with Key and Value fields.
 func TestTag_Construction(t *testing.T) {
-	tag := domain.Tag{Key: "route_id", Value: "r1"}
+	tag := shared.Tag{Key: "route_id", Value: "r1"}
 	if tag.Key != "route_id" {
 		t.Fatalf("Tag.Key: got %q, want %q", tag.Key, "route_id")
 	}

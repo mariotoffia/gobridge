@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -61,11 +62,11 @@ func TestSession_Start_Closed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Start on closed session")
 	}
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}
-	if !errors.Is(be, domain.ErrUnavailable) {
+	if !errors.Is(be, shared.ErrUnavailable) {
 		t.Errorf("expected ErrUnavailable, got code %s", be.Code)
 	}
 }
@@ -311,11 +312,11 @@ func TestSession_Reconcile_NotStarted(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Reconcile on un-started session")
 	}
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}
-	if !errors.Is(be, domain.ErrUnavailable) {
+	if !errors.Is(be, shared.ErrUnavailable) {
 		t.Errorf("expected ErrUnavailable, got code %s", be.Code)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // TestFilter_UnknownAction_FallsThroughToNext validates that when Action is an
@@ -72,7 +73,7 @@ func TestFilter_ReDoS_GoRegexpSafe(t *testing.T) {
 	err = p.Process(context.Background(), env, nextOK)
 	elapsed := time.Since(start)
 
-	if errors.Is(err, domain.ErrMessageFiltered) {
+	if errors.Is(err, shared.ErrMessageFiltered) {
 		t.Fatal("pattern should not match input ending with '!'")
 	}
 	if err != nil {

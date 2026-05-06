@@ -9,6 +9,7 @@ import (
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // TestBreaker_PanicInNext_LeavesHalfOpenProbeStuck validates that when
@@ -51,7 +52,7 @@ func TestBreaker_PanicInNext_LeavesHalfOpenProbeStuck(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected rejection due to stuck half-open probe, got nil")
 	}
-	if !errors.Is(err, domain.ErrUnavailable) {
+	if !errors.Is(err, shared.ErrUnavailable) {
 		t.Fatalf("expected ErrUnavailable, got %v", err)
 	}
 }

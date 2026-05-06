@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorydlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 )
 
@@ -242,7 +243,7 @@ func TestWriteIdempotent(t *testing.T) {
 	}
 
 	err := s.Write(ctx, entry)
-	if !errors.Is(err, domain.ErrDuplicateRecord) {
+	if !errors.Is(err, shared.ErrDuplicateRecord) {
 		t.Fatalf("expected ErrDuplicateRecord, got %v", err)
 	}
 }

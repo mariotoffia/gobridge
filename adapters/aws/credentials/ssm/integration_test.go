@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/testutil/localstack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -92,7 +93,7 @@ func TestIntegration_SSM_Create_AlreadyExists(t *testing.T) {
 	require.NoError(t, repo.Create(ctx, uri, creds))
 	err := repo.Create(ctx, uri, creds)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrAlreadyExists), "expected ErrAlreadyExists, got: %v", err)
+	assert.True(t, errors.Is(err, shared.ErrAlreadyExists), "expected ErrAlreadyExists, got: %v", err)
 }
 
 // Verifies Update overwrites the parameter and Get returns the new value.
@@ -135,7 +136,7 @@ func TestIntegration_SSM_Delete(t *testing.T) {
 
 	_, err := repo.Get(ctx, uri)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrNotFound), "expected ErrNotFound, got: %v", err)
+	assert.True(t, errors.Is(err, shared.ErrNotFound), "expected ErrNotFound, got: %v", err)
 }
 
 // Verifies Get on a non-existent parameter returns ErrNotFound.
@@ -146,7 +147,7 @@ func TestIntegration_SSM_Get_NotFound(t *testing.T) {
 
 	_, err := repo.Get(ctx, uniqueURI("nonexistent"))
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrNotFound), "expected ErrNotFound, got: %v", err)
+	assert.True(t, errors.Is(err, shared.ErrNotFound), "expected ErrNotFound, got: %v", err)
 }
 
 // Verifies List returns URIs for parameters created under the namespace.
@@ -194,5 +195,5 @@ func TestIntegration_SSM_Update_VersionMismatch(t *testing.T) {
 	}
 	err := repo.Update(ctx, uri, updated, 999)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrVersionMismatch), "expected ErrVersionMismatch, got: %v", err)
+	assert.True(t, errors.Is(err, shared.ErrVersionMismatch), "expected ErrVersionMismatch, got: %v", err)
 }

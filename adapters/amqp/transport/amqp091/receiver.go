@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -153,8 +153,8 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 	if err != nil {
 		return MapError(err)
 	}
-	r.metrics.Timer(domain.MetricAMQP091ConsumeLatency, r.clock().Since(consumeStart),
-		domain.Tag{Key: domain.TagKeyEntity, Value: r.cfg.QueueName})
+	r.metrics.Timer(shared.MetricAMQP091ConsumeLatency, r.clock().Since(consumeStart),
+		shared.Tag{Key: shared.TagKeyEntity, Value: r.cfg.QueueName})
 
 	r.startedOnce.Do(func() { close(r.started) })
 
@@ -179,10 +179,10 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 			if ok && chanErr != nil {
 				return MapError(chanErr)
 			}
-			return domain.ErrConnectionLost.WithMessage("amqp091: channel closed by broker")
+			return shared.ErrConnectionLost.WithMessage("amqp091: channel closed by broker")
 		case d, ok := <-deliveries:
 			if !ok {
-				return domain.ErrConnectionLost.WithMessage("amqp091: delivery channel closed")
+				return shared.ErrConnectionLost.WithMessage("amqp091: delivery channel closed")
 			}
 			if err := r.handleDelivery(ctx, d, emit); err != nil {
 				return err
@@ -211,11 +211,11 @@ func (r *Receiver) handleDelivery(ctx context.Context, d *Delivery, emit func(co
 
 func (r *Receiver) openChannel() (*amqpChannel, error) {
 	if r.session == nil {
-		return nil, domain.ErrUnavailable.WithMessage("amqp091: no session")
+		return nil, shared.ErrUnavailable.WithMessage("amqp091: no session")
 	}
 	conn := r.session.Connection()
 	if conn == nil {
-		return nil, domain.ErrUnavailable.WithMessage("amqp091: session not connected")
+		return nil, shared.ErrUnavailable.WithMessage("amqp091: session not connected")
 	}
 	ch, err := conn.Channel()
 	if err != nil {

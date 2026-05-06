@@ -8,7 +8,7 @@ import (
 
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -142,7 +142,7 @@ func TestBugRES003_InitTimeout_ReturnsClassifiedError(t *testing.T) {
 	}
 
 	// Should be a classified bridge error or context error.
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(runErr, &be) && !errors.Is(runErr, context.DeadlineExceeded) && !errors.Is(runErr, context.Canceled) {
 		t.Fatalf("expected BridgeError or context error, got %T: %v", runErr, runErr)
 	}

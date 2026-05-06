@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -100,8 +101,8 @@ func TestAnaSession_StartCtxCancelled_ReturnsClassifiedError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Start with cancelled ctx")
 	}
-	if _, ok := err.(*domain.BridgeError); !ok {
-		t.Fatalf("err type = %T, want *domain.BridgeError", err)
+	if _, ok := err.(*shared.BridgeError); !ok {
+		t.Fatalf("err type = %T, want *shared.BridgeError", err)
 	}
 	if elapsed > 2*time.Second {
 		t.Errorf("Start took %v after cancel; expected fast return", elapsed)
@@ -159,12 +160,12 @@ func TestAnaSession_ReconcileBeforeStart_ReturnsErrUnavailable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Reconcile-before-Start")
 	}
-	be, ok := err.(*domain.BridgeError)
+	be, ok := err.(*shared.BridgeError)
 	if !ok {
-		t.Fatalf("err type = %T, want *domain.BridgeError", err)
+		t.Fatalf("err type = %T, want *shared.BridgeError", err)
 	}
-	if be.Code != domain.ErrUnavailable.Code {
-		t.Fatalf("err code = %s, want %s", be.Code, domain.ErrUnavailable.Code)
+	if be.Code != shared.ErrUnavailable.Code {
+		t.Fatalf("err code = %s, want %s", be.Code, shared.ErrUnavailable.Code)
 	}
 }
 

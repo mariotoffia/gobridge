@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -221,14 +222,14 @@ func (r *benchmarkReport) logReport(t *testing.T, exporter *ports.RecordingExpor
 
 	// Stage latency breakdown.
 	stages := []string{
-		domain.MetricSQSPollLatency,
-		domain.MetricSQSReceiveLatency,
-		domain.MetricMQTTPublishLatency,
-		domain.MetricOutboxPersistLatency,
-		domain.MetricOutboxDrainLatency,
-		domain.MetricDeliveryE2ELatency,
-		domain.MetricAckLatency,
-		domain.MetricSQSDeleteLatency,
+		shared.MetricSQSPollLatency,
+		shared.MetricSQSReceiveLatency,
+		shared.MetricMQTTPublishLatency,
+		shared.MetricOutboxPersistLatency,
+		shared.MetricOutboxDrainLatency,
+		shared.MetricDeliveryE2ELatency,
+		shared.MetricAckLatency,
+		shared.MetricSQSDeleteLatency,
 	}
 
 	type latRow struct {
@@ -274,10 +275,10 @@ func (r *benchmarkReport) logReport(t *testing.T, exporter *ports.RecordingExpor
 
 	// Counter totals.
 	counterNames := []string{
-		domain.MetricMessagesReceived,
-		domain.MetricMessagesSent,
-		domain.MetricMessagesDropped,
-		domain.MetricRouteErrors,
+		shared.MetricMessagesReceived,
+		shared.MetricMessagesSent,
+		shared.MetricMessagesDropped,
+		shared.MetricRouteErrors,
 	}
 	sb.WriteString("\nCounters:\n")
 	for _, cn := range counterNames {

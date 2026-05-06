@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 )
@@ -210,7 +211,7 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 }
 
 // TestIntegration_ExtendNotSupported validates that Extend returns
-// domain.ErrNotSupported on a real delivery.
+// shared.ErrNotSupported on a real delivery.
 func TestIntegration_ExtendNotSupported(t *testing.T) {
 	ep := rabbitmqlocal.Endpoint(t)
 
@@ -280,8 +281,8 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 	select {
 	case del := <-received:
 		err := del.Extend(ctx, time.Now().Add(5*time.Minute))
-		if !errors.Is(err, domain.ErrNotSupported) {
-			t.Fatalf("Extend returned %v, want %v", err, domain.ErrNotSupported)
+		if !errors.Is(err, shared.ErrNotSupported) {
+			t.Fatalf("Extend returned %v, want %v", err, shared.ErrNotSupported)
 		}
 		if err := del.Ack(ctx); err != nil {
 			t.Fatalf("Ack: %v", err)

@@ -15,6 +15,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -210,7 +211,7 @@ func (s *Store) persistSingle(ctx context.Context, r *domain.OutboxRecord, now t
 	})
 	if err != nil {
 		if isConditionFailed(err) {
-			return domain.ErrDuplicateRecord.
+			return shared.ErrDuplicateRecord.
 				WithMessage("duplicate outbox record").
 				With("envelopeID", r.EnvelopeID).
 				With("bindingID", r.BindingID)
@@ -245,7 +246,7 @@ func (s *Store) persistFanOut(ctx context.Context, records []domain.OutboxRecord
 	})
 	if err != nil {
 		if isTransactionCanceled(err) {
-			return domain.ErrDuplicateRecord.
+			return shared.ErrDuplicateRecord.
 				WithMessage("duplicate outbox record in fan-out batch")
 		}
 		return wrapErr(err, "outbox persist fan-out failed", "recordCount", len(records))
@@ -388,7 +389,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.L
 			return err
 		}
 		if pk == "" {
-			return domain.ErrNotFound.
+			return shared.ErrNotFound.
 				WithMessage("outbox record not found").
 				With("recordID", id)
 		}
@@ -417,7 +418,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.L
 		})
 		if err != nil {
 			if isConditionFailed(err) {
-				return domain.ErrStaleFencingToken.
+				return shared.ErrStaleFencingToken.
 					WithMessage("claim version mismatch on complete").
 					With("recordID", id).
 					With("givenVersion", token.Version)

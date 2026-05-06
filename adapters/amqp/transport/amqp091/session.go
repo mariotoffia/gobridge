@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -144,7 +145,7 @@ func (s *Session) Start(ctx context.Context) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return domain.ErrUnavailable.WithMessage("amqp091: session already closed")
+		return shared.ErrUnavailable.WithMessage("amqp091: session already closed")
 	}
 	if s.conn != nil {
 		s.mu.Unlock()
@@ -163,7 +164,7 @@ func (s *Session) Start(ctx context.Context) error {
 			closed := s.closed
 			s.mu.Unlock()
 			if closed && err == nil {
-				return domain.ErrUnavailable.WithMessage("amqp091: session closed during start")
+				return shared.ErrUnavailable.WithMessage("amqp091: session closed during start")
 			}
 			return err
 		case <-ctx.Done():
@@ -219,8 +220,8 @@ func (s *Session) Start(ctx context.Context) error {
 
 	safeBroker := s.safeBrokerURL()
 	elapsed := s.clock().Since(connectStart)
-	s.metrics.Timer(domain.MetricAMQP091ConnectLatency, elapsed,
-		domain.Tag{Key: domain.TagKeySessionID, Value: safeBroker})
+	s.metrics.Timer(shared.MetricAMQP091ConnectLatency, elapsed,
+		shared.Tag{Key: shared.TagKeySessionID, Value: safeBroker})
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "amqp091: session connected",
 			"broker", safeBroker, "connect_latency", elapsed)
@@ -268,7 +269,7 @@ func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error 
 	s.mu.Unlock()
 
 	if conn == nil {
-		return domain.ErrUnavailable.WithMessage("session not started")
+		return shared.ErrUnavailable.WithMessage("session not started")
 	}
 
 	return s.reconcile(ctx, conn, plan)
@@ -304,8 +305,8 @@ func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan domai
 	}
 
 	elapsed := s.clock().Since(reconcileStart)
-	s.metrics.Timer(domain.MetricAMQP091ReconcileLatency, elapsed,
-		domain.Tag{Key: domain.TagKeySessionID, Value: s.safeBrokerURL()})
+	s.metrics.Timer(shared.MetricAMQP091ReconcileLatency, elapsed,
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.safeBrokerURL()})
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "amqp091: reconcile done",
 			"subscriptions", len(plan.Subscriptions),
@@ -559,7 +560,7 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 					"event_type", t,
 				)
 			}
-			s.metrics.Counter(domain.MetricAMQP091EventDropped, 1)
+			s.metrics.Counter(shared.MetricAMQP091EventDropped, 1)
 		}
 	}
 
@@ -567,7 +568,7 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 		select {
 		case sub <- ev:
 		default:
-			s.metrics.Counter(domain.MetricAMQP091EventDropped, 1)
+			s.metrics.Counter(shared.MetricAMQP091EventDropped, 1)
 		}
 	}
 }
@@ -653,8 +654,8 @@ func (s *Session) doReconnect(ctx context.Context) {
 				"delay", delay,
 			)
 		}
-		s.metrics.Counter(domain.MetricAMQP091Reconnects, 1,
-			domain.Tag{Key: domain.TagKeySessionID, Value: safeBroker})
+		s.metrics.Counter(shared.MetricAMQP091Reconnects, 1,
+			shared.Tag{Key: shared.TagKeySessionID, Value: safeBroker})
 
 		jitter := time.Duration(float64(delay) * 0.25 * (2*rand.Float64() - 1))
 		sleepDur := delay + jitter

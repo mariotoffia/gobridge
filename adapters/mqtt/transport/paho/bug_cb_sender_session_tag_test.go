@@ -7,6 +7,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -17,7 +18,7 @@ import (
 // Defect:
 //
 //	Sender.Send tags MetricMQTTPublishFailures with
-//	    {Key: domain.TagKeySessionID, Value: <client_id>}
+//	    {Key: shared.TagKeySessionID, Value: <client_id>}
 //	on every failure (line 78 / 89 of sender.go). Operators rely on
 //	this tag to attribute publish failures to a specific MQTT client.
 //
@@ -54,14 +55,14 @@ func TestRes_CBSender_CircuitOpen_TagsSessionID(t *testing.T) {
 		FailureThreshold: 1,
 		SuccessThreshold: 1,
 		ResetTimeout:     10 * time.Minute,
-		CountError:       domain.IsRecoverableError,
+		CountError:       shared.IsRecoverableError,
 	}, nil)
 	cbs := NewCircuitBreakerSender(inner, br)
 
 	// Force the underlying breaker open by simulating a recoverable
 	// failure. Pre-flight a call so the breaker counts the trip.
 	_ = cbs.breaker.BeforeRequest()
-	cbs.breaker.AfterRequest(domain.ErrUnavailable.Wrap(context.Canceled))
+	cbs.breaker.AfterRequest(shared.ErrUnavailable.Wrap(context.Canceled))
 
 	if err := cbs.Send(context.Background(), &domain.Envelope{
 		ID:      "e",
@@ -71,7 +72,7 @@ func TestRes_CBSender_CircuitOpen_TagsSessionID(t *testing.T) {
 		t.Fatal("expected error from open circuit")
 	}
 
-	entries := rec.FindEntries(domain.MetricMQTTPublishFailures)
+	entries := rec.FindEntries(shared.MetricMQTTPublishFailures)
 	if len(entries) == 0 {
 		t.Fatal("expected at least one publish-failure metric")
 	}
@@ -87,7 +88,7 @@ func TestRes_CBSender_CircuitOpen_TagsSessionID(t *testing.T) {
 			if tag.Key == "reason" && tag.Value == "circuit_open" {
 				seenReason = true
 			}
-			if tag.Key == domain.TagKeySessionID {
+			if tag.Key == shared.TagKeySessionID {
 				seenSession = true
 				sessionVal = tag.Value
 			}
@@ -107,7 +108,7 @@ func TestRes_CBSender_CircuitOpen_TagsSessionID(t *testing.T) {
 		t.Fatalf("BUG-CBTAG: circuit_open publish-failure metric is missing "+
 			"a %s tag — operators cannot correlate failures with the source "+
 			"session. Add the tag in CircuitBreakerSender.Send.",
-			domain.TagKeySessionID)
+			shared.TagKeySessionID)
 	}
 	if sessionVal != clientID {
 		t.Errorf("BUG-CBTAG: session_id tag value = %q, want %q", sessionVal, clientID)
@@ -129,7 +130,7 @@ func TestRes_CBSender_CircuitOpen_NoSession_TagPresent(t *testing.T) {
 	}
 	breaker := circuitbreaker.NewBreaker("test-cb-nosession", cfg, nil)
 	_ = breaker.BeforeRequest()
-	breaker.AfterRequest(domain.ErrUnavailable)
+	breaker.AfterRequest(shared.ErrUnavailable)
 
 	cbs := &CircuitBreakerSender{
 		inner:   &Sender{metrics: rec}, // no session
@@ -139,7 +140,7 @@ func TestRes_CBSender_CircuitOpen_NoSession_TagPresent(t *testing.T) {
 
 	_ = cbs.Send(context.Background(), &domain.Envelope{ID: "e2", Subject: "t/2"})
 
-	entries := rec.FindEntries(domain.MetricMQTTPublishFailures)
+	entries := rec.FindEntries(shared.MetricMQTTPublishFailures)
 	if len(entries) == 0 {
 		t.Fatal("expected publish-failure metric")
 	}
@@ -147,14 +148,14 @@ func TestRes_CBSender_CircuitOpen_NoSession_TagPresent(t *testing.T) {
 	for _, e := range entries {
 		hasSession := false
 		for _, tag := range e.Tags {
-			if tag.Key == domain.TagKeySessionID {
+			if tag.Key == shared.TagKeySessionID {
 				hasSession = true
 			}
 		}
 		if !hasSession {
 			t.Fatalf("BUG-CBTAG: circuit_open metric must include a %s tag "+
 				"even when the session is unavailable (use empty string)",
-				domain.TagKeySessionID)
+				shared.TagKeySessionID)
 		}
 	}
 }

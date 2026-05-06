@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -43,7 +44,7 @@ func dlqGetMissing(t *testing.T, store ports.DLQStore) {
 	ctx := context.Background()
 
 	_, err := store.Get(ctx, "nonexistent-id")
-	if !errors.Is(err, domain.ErrNotFound) {
+	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }

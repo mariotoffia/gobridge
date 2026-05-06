@@ -10,6 +10,7 @@ import (
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 func nextOK(_ context.Context, _ *domain.Envelope) error { return nil }
@@ -48,7 +49,7 @@ func TestStateTransitions_ClosedToOpenToHalfOpenToClosed(t *testing.T) {
 	}
 
 	err := p.Process(ctx, env, nextOK)
-	if !errors.Is(err, domain.ErrUnavailable) {
+	if !errors.Is(err, shared.ErrUnavailable) {
 		t.Fatalf("circuit should be open: expected ErrUnavailable, got %v", err)
 	}
 
@@ -80,7 +81,7 @@ func TestHalfOpen_FailureReopens(t *testing.T) {
 	}
 
 	err := p.Process(ctx, env, nextOK)
-	if !errors.Is(err, domain.ErrUnavailable) {
+	if !errors.Is(err, shared.ErrUnavailable) {
 		t.Fatalf("expected open circuit, got %v", err)
 	}
 
@@ -91,7 +92,7 @@ func TestHalfOpen_FailureReopens(t *testing.T) {
 	}
 
 	err = p.Process(ctx, env, nextOK)
-	if !errors.Is(err, domain.ErrUnavailable) {
+	if !errors.Is(err, shared.ErrUnavailable) {
 		t.Fatalf("circuit should re-open after half-open failure, got %v", err)
 	}
 }
@@ -109,7 +110,7 @@ func TestPerKeyIsolation(t *testing.T) {
 	}
 
 	err := p.Process(ctx, orders, nextOK)
-	if !errors.Is(err, domain.ErrUnavailable) {
+	if !errors.Is(err, shared.ErrUnavailable) {
 		t.Fatalf("orders breaker should be open, got %v", err)
 	}
 
@@ -140,11 +141,11 @@ func TestRetryAfterPropagation(t *testing.T) {
 	_ = p.Process(ctx, env, nextErr(errors.New("boom")))
 
 	err := p.Process(ctx, env, nextOK)
-	if !errors.Is(err, domain.ErrUnavailable) {
+	if !errors.Is(err, shared.ErrUnavailable) {
 		t.Fatalf("expected ErrUnavailable, got %v", err)
 	}
 
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	if !ok {
 		t.Fatal("expected BridgeError")
 	}
@@ -247,7 +248,7 @@ func TestConfigDefaults(t *testing.T) {
 		_ = p.Process(ctx, env, fail)
 	}
 	err := p.Process(ctx, env, nextOK)
-	if !errors.Is(err, domain.ErrUnavailable) {
+	if !errors.Is(err, shared.ErrUnavailable) {
 		t.Fatalf("expected open circuit after 5 failures, got %v", err)
 	}
 }

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -96,9 +96,9 @@ func TestBugRES002_Sender_ExistingDeadline_NotOverridden(t *testing.T) {
 // noopTestExporter is a minimal no-op for test setup.
 type noopTestExporter struct{}
 
-func (n *noopTestExporter) Counter(string, int64, ...domain.Tag)       {}
-func (n *noopTestExporter) Gauge(string, float64, ...domain.Tag)       {}
-func (n *noopTestExporter) Histogram(string, float64, ...domain.Tag)   {}
-func (n *noopTestExporter) Timer(string, time.Duration, ...domain.Tag) {}
+func (n *noopTestExporter) Counter(string, int64, ...shared.Tag)       {}
+func (n *noopTestExporter) Gauge(string, float64, ...shared.Tag)       {}
+func (n *noopTestExporter) Histogram(string, float64, ...shared.Tag)   {}
+func (n *noopTestExporter) Timer(string, time.Duration, ...shared.Tag) {}
 func (n *noopTestExporter) Flush(context.Context) error                { return nil }
 func (n *noopTestExporter) Close(context.Context) error                { return nil }

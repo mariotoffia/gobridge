@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -138,7 +139,7 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	outbox.CompleteFn = func(_ []string, _ domain.LeaseToken) error {
-		return domain.ErrStaleFencingToken
+		return shared.ErrStaleFencingToken
 	}
 
 	var tokenCalls atomic.Int32
@@ -184,7 +185,7 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 		t.Fatal("sender should have been invoked")
 	}
 
-	completions := rec.FindEntries(domain.MetricOutboxCompletions)
+	completions := rec.FindEntries(shared.MetricOutboxCompletions)
 	if len(completions) != 0 {
 		t.Fatalf("MetricOutboxCompletions should NOT be emitted when Complete fails, got %d", len(completions))
 	}

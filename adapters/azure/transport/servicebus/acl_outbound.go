@@ -207,7 +207,7 @@ func buildRetryMessage(received *azservicebus.ReceivedMessage) *azservicebus.Mes
 
 // sendOne builds the SDK message from env and dispatches a single
 // SendMessage call against the asbSenderAPI seam. Errors are
-// classified to *domain.BridgeError before they cross the seam.
+// classified to *shared.BridgeError before they cross the seam.
 func sendOne(ctx context.Context, client asbSenderAPI, env *domain.Envelope, defaultSessionID string, clk clock.Clock) error {
 	msg := envelopeToMessage(env, defaultSessionID, clk)
 	if err := client.SendMessage(ctx, msg, nil); err != nil {

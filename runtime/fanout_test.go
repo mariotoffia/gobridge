@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -129,7 +130,7 @@ func TestFanOut_PartialSessionAvailability(t *testing.T) {
 
 	// Sender B will fail all sends (simulating offline target).
 	senderB := NewFakeSender()
-	senderB.SendErr = domain.NewBridgeError("TARGET_DOWN", domain.ErrorTransient, "offline")
+	senderB.SendErr = shared.NewBridgeError("TARGET_DOWN", shared.ErrorTransient, "offline")
 	sessionB := NewFakeSession()
 	sessCfgB := fastSessionConfig("mqtt-partial-b")
 

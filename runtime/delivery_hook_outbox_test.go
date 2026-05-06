@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -175,7 +176,7 @@ func TestDeliveryHook_SharedOutbox_Expired(t *testing.T) {
 // fires with the permanent send error after DLQ routing.
 func TestDeliveryHook_SharedOutbox_PermanentSendError(t *testing.T) {
 	hook := &recordingHook{}
-	permErr := domain.NewBridgeError("PERM", domain.ErrorPermanent, "perm fail")
+	permErr := shared.NewBridgeError("PERM", shared.ErrorPermanent, "perm fail")
 	token := domain.LeaseToken{Version: 1, Owner: "owner-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *runtime.OutboxDrainerConfig) {
 		cfg.Hook = hook
@@ -213,7 +214,7 @@ func TestDeliveryHook_SharedOutbox_PermanentSendError(t *testing.T) {
 // because the record will be retried on the next drain cycle.
 func TestDeliveryHook_SharedOutbox_TransientNoSettled(t *testing.T) {
 	hook := &recordingHook{}
-	transientErr := domain.NewBridgeError("TRANSIENT", domain.ErrorTransient, "try again")
+	transientErr := shared.NewBridgeError("TRANSIENT", shared.ErrorTransient, "try again")
 	token := domain.LeaseToken{Version: 1, Owner: "owner-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *runtime.OutboxDrainerConfig) {
 		cfg.Hook = hook

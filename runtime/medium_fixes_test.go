@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -394,14 +395,14 @@ func TestOutboxDrainer_EmitsRecordFailureMetric(t *testing.T) {
 	defer cancel()
 	_ = drainer.Run(drainCtx)
 
-	failures := rec.FindEntries(domain.MetricOutboxRecordFailures)
+	failures := rec.FindEntries(shared.MetricOutboxRecordFailures)
 	if len(failures) == 0 {
 		t.Fatal("expected MetricOutboxRecordFailures to be emitted on record processing failure")
 	}
 
 	found := false
 	for _, tag := range failures[0].Tags {
-		if tag.Key == domain.TagKeyRouteID && tag.Value == "metric-route" {
+		if tag.Key == shared.TagKeyRouteID && tag.Value == "metric-route" {
 			found = true
 		}
 	}

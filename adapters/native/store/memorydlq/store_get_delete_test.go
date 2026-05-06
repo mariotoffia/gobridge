@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorydlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -60,11 +61,11 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 }
 
 // TestGet_Missing_ReturnsErrNotFound validates Get returns
-// domain.ErrNotFound for nonexistent IDs.
+// shared.ErrNotFound for nonexistent IDs.
 func TestGet_Missing_ReturnsErrNotFound(t *testing.T) {
 	s := memorydlq.NewStore()
 	_, err := s.Get(context.Background(), "nope")
-	if !errors.Is(err, domain.ErrNotFound) {
+	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }

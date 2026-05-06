@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // dlqEntryView is the HTTP-layer representation of a DLQ entry.
@@ -200,7 +201,7 @@ func (s *Server) handleDLQMessageByID(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	entry, err := store.Get(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, domain.ErrNotFound) {
+		if errors.Is(err, shared.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "DLQ entry not found")
 			return
 		}
@@ -265,7 +266,7 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 
 		if err := rt.Inject(r.Context(), entry.RouteID, &entry.Envelope); err != nil {
 			msg := "inject failed"
-			if errors.Is(err, domain.ErrNotFound) {
+			if errors.Is(err, shared.ErrNotFound) {
 				msg = "route not found"
 			}
 			redriveErrors = append(redriveErrors, redriveError{

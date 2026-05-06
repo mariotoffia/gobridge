@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -178,7 +179,7 @@ func (d *asbDelivery) Ack(ctx context.Context) error {
 
 	// MetricASBCompleteLatency is emitted here because the InstrumentedDelivery
 	// wrapper uses the generic MetricAckLatency; this gives ASB-specific detail.
-	d.metrics.Timer(domain.MetricASBCompleteLatency, d.clk.Since(start))
+	d.metrics.Timer(shared.MetricASBCompleteLatency, d.clk.Since(start))
 
 	return nil
 }
@@ -209,7 +210,7 @@ func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 		if err != nil {
 			return MapError(err)
 		}
-		d.metrics.Timer(domain.MetricASBScheduleLatency, d.clk.Since(schedStart))
+		d.metrics.Timer(shared.MetricASBScheduleLatency, d.clk.Since(schedStart))
 
 		if err := d.client.CompleteMessage(ctx, d.msg, nil); err != nil {
 			if cancelErr := d.scheduler.CancelScheduledMessages(ctx, seqNums, nil); cancelErr != nil && d.logger != nil {
@@ -301,7 +302,7 @@ func (d *asbDelivery) autoExtendLoop(ctx context.Context, interval time.Duration
 				continue
 			}
 			consecutiveFailures = 0
-			d.metrics.Counter(domain.MetricASBLockRenewals, 1)
+			d.metrics.Counter(shared.MetricASBLockRenewals, 1)
 			if logging.TraceEnabled(d.logger) {
 				d.logger.Log(ctx, logging.LevelTrace, "servicebus: lock renewed",
 					"message_id", d.msg.MessageID,

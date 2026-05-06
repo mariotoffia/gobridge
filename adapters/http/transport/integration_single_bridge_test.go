@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
+	"github.com/mariotoffia/gobridge/domain/shared"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -79,7 +80,7 @@ func (p *filterProcessor) Name() string { return "test-filter" }
 
 func (p *filterProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
 	if p.dropFn(env) {
-		return domain.ErrMessageFiltered
+		return shared.ErrMessageFiltered
 	}
 	return next(ctx, env)
 }

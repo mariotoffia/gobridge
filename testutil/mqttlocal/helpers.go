@@ -2,11 +2,12 @@ package mqttlocal
 
 import (
 	"fmt"
-	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 	"net"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 )
 
 func removeOrphans(prefix string) {

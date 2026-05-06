@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -39,7 +40,7 @@ import (
 // A brief disconnect/reconnect is the portable, correct option.
 func (s *Session) ApplyCredentials(ctx context.Context, creds *domain.CredentialSet) error {
 	if creds == nil {
-		return domain.ErrInvalidPayload.WithMessage("nil credential set")
+		return shared.ErrInvalidPayload.WithMessage("nil credential set")
 	}
 	var user, pass string
 	if creds.Password != nil {
@@ -50,7 +51,7 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *domain.Credential
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return domain.ErrUnavailable.WithMessage("session is closed")
+		return shared.ErrUnavailable.WithMessage("session is closed")
 	}
 	credsChanged := creds.Password != nil &&
 		(s.liveCreds.Username != user || s.liveCreds.Password != pass)

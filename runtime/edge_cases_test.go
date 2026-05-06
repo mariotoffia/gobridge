@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -311,7 +312,7 @@ func TestEdge_ExpiredOutboxEntryDuringDrain(t *testing.T) {
 	}
 
 	// Block the sender so the drainer can't send before expiry.
-	sender.SetSendErr(domain.NewBridgeError("BLOCKED", domain.ErrorTransient, "blocked"))
+	sender.SetSendErr(shared.NewBridgeError("BLOCKED", shared.ErrorTransient, "blocked"))
 
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
@@ -341,7 +342,7 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	sender.SendErr = domain.NewBridgeError("CRASH", domain.ErrorTransient, "always fails")
+	sender.SendErr = shared.NewBridgeError("CRASH", shared.ErrorTransient, "always fails")
 	session := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-poison")
 
@@ -396,7 +397,7 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 // before persisting to outbox, the source redelivers with no message loss.
 func TestEdge_CrashBeforeOutboxPersist(t *testing.T) {
 	outbox := NewFakeOutboxStore()
-	outbox.PersistErr = domain.NewBridgeError("STORE_DOWN", domain.ErrorTransient, "unavailable")
+	outbox.PersistErr = shared.NewBridgeError("STORE_DOWN", shared.ErrorTransient, "unavailable")
 	lease := NewFakeLeaseStore()
 
 	rt := newTestRuntime("bridge-crash-pre", outbox, lease, nil)
@@ -600,7 +601,7 @@ func TestEdge_PermanentSendErrorGoesToDLQ(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	sender.SendErr = domain.NewBridgeError("INVALID_PAYLOAD", domain.ErrorPermanent, "bad data")
+	sender.SendErr = shared.NewBridgeError("INVALID_PAYLOAD", shared.ErrorPermanent, "bad data")
 	session := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-perm")
 
@@ -660,7 +661,7 @@ func TestEdge_CrashAfterSendBeforeCompletion(t *testing.T) {
 	completeCallCount := 0
 	outbox.CompleteFn = func(_ []string, _ domain.LeaseToken) error {
 		completeCallCount++
-		return domain.NewBridgeError("DDB_TIMEOUT", domain.ErrorTransient, "completion timeout")
+		return shared.NewBridgeError("DDB_TIMEOUT", shared.ErrorTransient, "completion timeout")
 	}
 
 	rtA := newTestRuntime("bridge-A-crash-complete", outbox, lease, dlq)
@@ -797,7 +798,7 @@ func TestEdge_FanOutPartialPersist(t *testing.T) {
 	})
 
 	// Make Persist fail atomically — the whole batch is rejected.
-	outbox.PersistErr = domain.NewBridgeError("STORE_DOWN", domain.ErrorTransient, "unavailable")
+	outbox.PersistErr = shared.NewBridgeError("STORE_DOWN", shared.ErrorTransient, "unavailable")
 
 	env := &domain.Envelope{ID: "fanout-partial-msg", Payload: []byte("data")}
 	del := NewFakeDelivery(env)

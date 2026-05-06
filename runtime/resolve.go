@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // MatchFunc determines whether a binding should be selected for a given envelope.
@@ -42,13 +43,13 @@ func (r *BindingResolver) Resolve(_ context.Context, env *domain.Envelope) ([]do
 
 		addr, err := RenderAddress(b.Address, env.Headers)
 		if err != nil {
-			return nil, domain.ErrInvalidTopic.
+			return nil, shared.ErrInvalidTopic.
 				WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
 		}
 
 		if strings.EqualFold(b.Transport, "mqtt") {
 			if err := ValidateMQTTTopic(addr); err != nil {
-				return nil, domain.ErrInvalidTopic.
+				return nil, shared.ErrInvalidTopic.
 					WithMessage(fmt.Sprintf("binding %q: %v", b.ID, err))
 			}
 		}
@@ -61,8 +62,8 @@ func (r *BindingResolver) Resolve(_ context.Context, env *domain.Envelope) ([]do
 	}
 
 	if len(plans) == 0 {
-		return nil, domain.NewBridgeError(
-			domain.ErrCodeNoBindingMatch, domain.ErrorRejected,
+		return nil, shared.NewBridgeError(
+			shared.ErrCodeNoBindingMatch, shared.ErrorRejected,
 			"no binding matched the envelope",
 		)
 	}
@@ -241,8 +242,8 @@ func (r *RuleResolver) Resolve(_ context.Context, env *domain.Envelope) ([]domai
 		return r.planForBinding(r.defaultBinding, env)
 	}
 
-	return nil, domain.NewBridgeError(
-		domain.ErrCodeNoBindingMatch, domain.ErrorRejected,
+	return nil, shared.NewBridgeError(
+		shared.ErrCodeNoBindingMatch, shared.ErrorRejected,
 		"no rule matched the envelope",
 	)
 }
@@ -252,13 +253,13 @@ func (r *RuleResolver) planForBinding(bindingID string, env *domain.Envelope) ([
 
 	addr, err := RenderAddress(b.Address, env.Headers)
 	if err != nil {
-		return nil, domain.ErrInvalidTopic.
+		return nil, shared.ErrInvalidTopic.
 			WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
 	}
 
 	if strings.EqualFold(b.Transport, "mqtt") {
 		if err := ValidateMQTTTopic(addr); err != nil {
-			return nil, domain.ErrInvalidTopic.
+			return nil, shared.ErrInvalidTopic.
 				WithMessage(fmt.Sprintf("binding %q: %v", b.ID, err))
 		}
 	}

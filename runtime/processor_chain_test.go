@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -141,14 +142,14 @@ func TestRunChain_PanicRecovered(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ErrProcessorPanic, got nil")
 	}
-	if !errors.Is(err, domain.ErrProcessorPanic) {
+	if !errors.Is(err, shared.ErrProcessorPanic) {
 		t.Fatalf("expected ErrProcessorPanic, got %v", err)
 	}
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	if !ok {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}
-	if be.Class != domain.ErrorPermanent {
+	if be.Class != shared.ErrorPermanent {
 		t.Fatalf("expected Permanent class, got %q", be.Class)
 	}
 	if follower.CalledCount() != 0 {
@@ -180,14 +181,14 @@ func TestRunChain_HangingProcessorTimesOut(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ErrProcessorTimeout, got nil")
 	}
-	if !errors.Is(err, domain.ErrProcessorTimeout) {
+	if !errors.Is(err, shared.ErrProcessorTimeout) {
 		t.Fatalf("expected ErrProcessorTimeout, got %v", err)
 	}
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	if !ok {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}
-	if be.Class != domain.ErrorTransient {
+	if be.Class != shared.ErrorTransient {
 		t.Fatalf("expected Transient class, got %q", be.Class)
 	}
 	if elapsed > 2*time.Second {
@@ -206,10 +207,10 @@ func TestRunChain_NormalErrorNotMisclassified(t *testing.T) {
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel error, got %v", err)
 	}
-	if errors.Is(err, domain.ErrProcessorPanic) {
+	if errors.Is(err, shared.ErrProcessorPanic) {
 		t.Fatal("normal error must not be classified as panic")
 	}
-	if errors.Is(err, domain.ErrProcessorTimeout) {
+	if errors.Is(err, shared.ErrProcessorTimeout) {
 		t.Fatal("normal error must not be classified as timeout")
 	}
 }

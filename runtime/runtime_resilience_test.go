@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -317,7 +318,7 @@ func TestF6_StaleFencingTokenDoesNotKillRuntime(t *testing.T) {
 		return sessionA.IsStarted()
 	})
 
-	outbox.SetClaimErr(domain.ErrStaleFencingToken)
+	outbox.SetClaimErr(shared.ErrStaleFencingToken)
 
 	time.Sleep(200 * time.Millisecond) // NEGATIVE: verify stale fencing token does not kill runtime
 
@@ -398,7 +399,7 @@ func TestF7_ReacquiredLeaseRestartsDeadSession(t *testing.T) {
 
 	session.SetConnected(false)
 
-	leaseStore.SetRenewErr(domain.ErrVersionMismatch)
+	leaseStore.SetRenewErr(shared.ErrVersionMismatch)
 
 	waitFor(t, 3*time.Second, "lease lost", func() bool {
 		_, has := mgr.Token()
@@ -443,7 +444,7 @@ func TestF7_ReacquiredLeaseSkipsRestartIfHealthy(t *testing.T) {
 		return session.GetStartCount() >= 1
 	})
 
-	leaseStore.SetRenewErr(domain.ErrVersionMismatch)
+	leaseStore.SetRenewErr(shared.ErrVersionMismatch)
 
 	waitFor(t, 3*time.Second, "lease lost", func() bool {
 		_, has := mgr.Token()

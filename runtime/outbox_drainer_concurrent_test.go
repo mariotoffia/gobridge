@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -192,7 +193,7 @@ func TestDrainBatch_ErrorIsolation(t *testing.T) {
 	sender := NewConcurrentSender(func(_ *domain.Envelope) error {
 		n := atomic.AddInt64(&callCount, 1)
 		if n == 3 {
-			return domain.NewBridgeError("FAIL", domain.ErrorTransient, "transient")
+			return shared.NewBridgeError("FAIL", shared.ErrorTransient, "transient")
 		}
 		return nil
 	})

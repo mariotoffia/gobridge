@@ -25,6 +25,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // TestClone_DeepCopy_Independence validates that modifying a clone
@@ -151,13 +153,13 @@ func TestStripReservedHeaders_Idempotent(t *testing.T) {
 // TestBridgeError_Is_MatchesByCode validates errors.Is matching by
 // error code, not by identity.
 func TestBridgeError_Is_MatchesByCode(t *testing.T) {
-	wrapped := ErrConnectionLost.Wrap(errors.New("tcp: connection reset"))
+	wrapped := shared.ErrConnectionLost.Wrap(errors.New("tcp: connection reset"))
 
-	if !errors.Is(wrapped, ErrConnectionLost) {
+	if !errors.Is(wrapped, shared.ErrConnectionLost) {
 		t.Fatal("wrapped error should match sentinel by code")
 	}
 
-	different := ErrTimeout.Wrap(errors.New("context deadline"))
+	different := shared.ErrTimeout.Wrap(errors.New("context deadline"))
 	if errors.Is(wrapped, different) {
 		t.Fatal("different error codes should not match")
 	}
@@ -167,14 +169,14 @@ func TestBridgeError_Is_MatchesByCode(t *testing.T) {
 // types are treated as recoverable (safe default for retry).
 func TestIsRecoverableError_UnknownAsTrue(t *testing.T) {
 	plain := errors.New("generic error")
-	if !IsRecoverableError(plain) {
+	if !shared.IsRecoverableError(plain) {
 		t.Fatal("non-BridgeError should be treated as recoverable")
 	}
 }
 
 // TestIsRecoverableError_Nil validates nil error handling.
 func TestIsRecoverableError_Nil(t *testing.T) {
-	if IsRecoverableError(nil) {
+	if shared.IsRecoverableError(nil) {
 		t.Fatal("nil error should not be recoverable")
 	}
 }
@@ -182,7 +184,7 @@ func TestIsRecoverableError_Nil(t *testing.T) {
 // TestBridgeError_With_ClonesContext validates that With() creates
 // an independent context map.
 func TestBridgeError_With_ClonesContext(t *testing.T) {
-	base := ErrConnectionLost.With("host", "broker-1")
+	base := shared.ErrConnectionLost.With("host", "broker-1")
 	derived := base.With("port", 1883)
 
 	if _, ok := base.Context["port"]; ok {

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -120,7 +121,7 @@ func TestProcess_NoTenantHeader_Required(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing tenant")
 	}
-	if !errors.Is(err, domain.ErrInvalidPayload) {
+	if !errors.Is(err, shared.ErrInvalidPayload) {
 		t.Errorf("expected ErrInvalidPayload, got %v", err)
 	}
 }
@@ -151,7 +152,7 @@ func TestProcess_InactiveTenant_Rejected(t *testing.T) {
 	env := envelope("acme", 0)
 
 	err := p.Process(context.Background(), env, nextOK)
-	if !errors.Is(err, domain.ErrInvalidPayload) {
+	if !errors.Is(err, shared.ErrInvalidPayload) {
 		t.Errorf("expected ErrInvalidPayload, got %v", err)
 	}
 }
@@ -181,7 +182,7 @@ func TestProcess_MessageSizeExceedsQuota(t *testing.T) {
 	env := envelope("acme", 200)
 
 	err := p.Process(context.Background(), env, nextOK)
-	if !errors.Is(err, domain.ErrInvalidPayload) {
+	if !errors.Is(err, shared.ErrInvalidPayload) {
 		t.Errorf("expected ErrInvalidPayload for oversized message, got %v", err)
 	}
 }
@@ -410,5 +411,5 @@ func TestProcessor_RequireTenant_EmptyHeader(t *testing.T) {
 
 	err := p.Process(context.Background(), env, nextOK)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, domain.ErrInvalidPayload)
+	assert.ErrorIs(t, err, shared.ErrInvalidPayload)
 }

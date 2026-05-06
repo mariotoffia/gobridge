@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // verifies Delivery.Envelope returns the wrapped domain envelope.
@@ -63,7 +64,7 @@ func TestDelivery_Ack_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	_, ok := domain.AsBridgeError(err)
+	_, ok := shared.AsBridgeError(err)
 	if !ok {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}
@@ -107,7 +108,7 @@ func TestDelivery_Retry_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	_, ok := domain.AsBridgeError(err)
+	_, ok := shared.AsBridgeError(err)
 	if !ok {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}
@@ -151,7 +152,7 @@ func TestDelivery_Extend_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	_, ok := domain.AsBridgeError(err)
+	_, ok := shared.AsBridgeError(err)
 	if !ok {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}

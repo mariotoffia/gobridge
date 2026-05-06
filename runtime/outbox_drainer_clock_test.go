@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -250,7 +251,7 @@ func TestOutboxDrainer_DrainLatencyUsesInjectedClock(t *testing.T) {
 		t.Fatal("batch did not fire after fake-clock advance")
 	}
 
-	entries := metrics.FindEntries(domain.MetricOutboxDrainLatency)
+	entries := metrics.FindEntries(shared.MetricOutboxDrainLatency)
 	if len(entries) != 1 {
 		t.Fatalf("expected one drain latency metric, got %d", len(entries))
 	}

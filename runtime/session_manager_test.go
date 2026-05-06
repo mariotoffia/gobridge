@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -107,7 +108,7 @@ func TestSessionManager_StepDown(t *testing.T) {
 		t.Fatal("lease not acquired in time")
 	}
 
-	leaseStore.SetRenewErr(domain.ErrVersionMismatch)
+	leaseStore.SetRenewErr(shared.ErrVersionMismatch)
 
 	lossDeadline := time.After(5 * time.Second)
 	for {

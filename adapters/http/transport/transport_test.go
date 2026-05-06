@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
+	"github.com/mariotoffia/gobridge/domain/shared"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -245,7 +246,7 @@ func TestHTTPDelivery_ExtendReturnsNotSupported(t *testing.T) {
 	select {
 	case d := <-deliveryCh:
 		err := d.Extend(context.Background(), time.Now().Add(time.Minute))
-		if !errors.Is(err, domain.ErrNotSupported) {
+		if !errors.Is(err, shared.ErrNotSupported) {
 			t.Fatalf("expected ErrNotSupported, got %v", err)
 		}
 		// Ack so the HTTP handler can finish.

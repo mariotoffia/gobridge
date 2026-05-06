@@ -40,7 +40,6 @@ package mqttlocal
 
 import (
 	"fmt"
-	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 	"net"
 	"net/url"
 	"os"
@@ -48,6 +47,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 )
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -133,7 +134,7 @@ func TestCredentialResolver_NotFoundError(t *testing.T) {
 
 	_, err := r.Resolve(context.Background(), "vault://secret/data")
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrNotFound), "expected ErrNotFound, got: %v", err)
+	assert.True(t, errors.Is(err, shared.ErrNotFound), "expected ErrNotFound, got: %v", err)
 }
 
 // Verifies a second Resolve for the same URI with TTL cache hits the store only once.

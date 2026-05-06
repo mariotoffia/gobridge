@@ -104,7 +104,7 @@ func envelopeToPublishing(env *domain.Envelope, cfg SenderConfig, clk clock.Cloc
 
 // unroutableError is returned by senderChannel.PublishConfirmed when the
 // broker emits a basic.return for a Mandatory publish (i.e. the message
-// matched no queue). It is mapped to domain.ErrNotFound at the seam.
+// matched no queue). It is mapped to shared.ErrNotFound at the seam.
 type unroutableError struct {
 	ReplyCode  uint16
 	ReplyText  string

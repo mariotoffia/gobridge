@@ -5,6 +5,7 @@ import (
 	"maps"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -24,7 +25,7 @@ func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error 
 	s.mu.Unlock()
 
 	if cm == nil {
-		return domain.ErrUnavailable.WithMessage("session not started")
+		return shared.ErrUnavailable.WithMessage("session not started")
 	}
 
 	if len(plan.Subscriptions) == 0 && hasPriorPlan {
@@ -124,8 +125,8 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan domain.
 	}
 
 	elapsed := s.clock().Since(reconcileStart)
-	s.metrics.Timer(domain.MetricMQTTReconcileLatency, elapsed,
-		domain.Tag{Key: domain.TagKeySessionID, Value: s.opts.ClientID})
+	s.metrics.Timer(shared.MetricMQTTReconcileLatency, elapsed,
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "mqtt: reconcile done",
 			"client_id", s.opts.ClientID,

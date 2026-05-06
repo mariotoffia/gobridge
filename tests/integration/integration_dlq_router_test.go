@@ -8,6 +8,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
@@ -57,7 +58,7 @@ func TestIntegration_DLQRouter_RouteStoresEntry(t *testing.T) {
 		},
 	}
 
-	routeErr := domain.ErrInvalidPayload.WithMessage("bad payload format")
+	routeErr := shared.ErrInvalidPayload.WithMessage("bad payload format")
 
 	ctx := context.Background()
 	if err := router.Route(ctx, env, "route-dr1", "bind-dr1", "sess-dr1", "src-dr1", routeErr, 3); err != nil {
@@ -124,7 +125,7 @@ func TestIntegration_DLQRouter_AsyncBufferDrains(t *testing.T) {
 			Subject: "test/async",
 			Payload: []byte(`{"async":"entry"}`),
 		}
-		routeErr := domain.ErrUnavailable.WithMessage("transient failure")
+		routeErr := shared.ErrUnavailable.WithMessage("transient failure")
 		if err := router.Route(ctx, env, "route-dr2", uniqueID("bind"), "sess-dr2", "", routeErr, 1); err != nil {
 			t.Fatalf("Route[%d]: %v", i, err)
 		}
@@ -166,14 +167,14 @@ func TestIntegration_DLQRouter_ErrorClassification(t *testing.T) {
 
 	// Permanent error (ErrNotFound has ErrorPermanent class)
 	env1 := &domain.Envelope{ID: "env-dr3-perm", Subject: "test", Payload: []byte("x")}
-	permErr := domain.ErrNotFound.WithMessage("resource gone")
+	permErr := shared.ErrNotFound.WithMessage("resource gone")
 	if err := router.Route(ctx, env1, "route-dr3", "b1", "s1", "", permErr, 1); err != nil {
 		t.Fatalf("Route perm: %v", err)
 	}
 
 	// Transient error
 	env2 := &domain.Envelope{ID: "env-dr3-trans", Subject: "test", Payload: []byte("y")}
-	transErr := domain.ErrUnavailable.WithMessage("service down")
+	transErr := shared.ErrUnavailable.WithMessage("service down")
 	if err := router.Route(ctx, env2, "route-dr3", "b2", "s2", "", transErr, 2); err != nil {
 		t.Fatalf("Route trans: %v", err)
 	}
@@ -190,10 +191,10 @@ func TestIntegration_DLQRouter_ErrorClassification(t *testing.T) {
 	for _, e := range entries {
 		categories[e.Category] = true
 	}
-	if !categories[string(domain.ErrorPermanent)] {
+	if !categories[string(shared.ErrorPermanent)] {
 		t.Fatal("missing permanent category entry")
 	}
-	if !categories[string(domain.ErrorTransient)] {
+	if !categories[string(shared.ErrorTransient)] {
 		t.Fatal("missing transient category entry")
 	}
 }
@@ -227,7 +228,7 @@ func TestIntegration_DLQRouter_CloseDrainsBuffer(t *testing.T) {
 			Subject: "test/drain",
 			Payload: []byte(`{"drain":"test"}`),
 		}
-		if err := router.Route(ctx, env, "route-dr4", uniqueID("bind"), "sess-dr4", "", domain.ErrUnavailable, 1); err != nil {
+		if err := router.Route(ctx, env, "route-dr4", uniqueID("bind"), "sess-dr4", "", shared.ErrUnavailable, 1); err != nil {
 			t.Fatalf("Route[%d]: %v", i, err)
 		}
 	}
@@ -278,7 +279,7 @@ func TestIntegration_DLQRouter_ConcurrentRoutes(t *testing.T) {
 				Subject: "test/concurrent",
 				Payload: []byte(`{"concurrent":"dlq"}`),
 			}
-			_ = router.Route(ctx, env, "route-dr5", uniqueID("bind"), "sess-dr5", "", domain.ErrUnavailable, 1)
+			_ = router.Route(ctx, env, "route-dr5", uniqueID("bind"), "sess-dr5", "", shared.ErrUnavailable, 1)
 		}()
 	}
 	wg.Wait()

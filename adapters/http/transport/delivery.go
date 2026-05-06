@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 type deliveryResult struct {
@@ -44,5 +45,5 @@ func (d *httpDelivery) Retry(_ context.Context, _ time.Duration, reason error) e
 }
 
 func (d *httpDelivery) Extend(_ context.Context, _ time.Time) error {
-	return domain.ErrNotSupported
+	return shared.ErrNotSupported
 }

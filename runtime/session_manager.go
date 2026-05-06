@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -208,12 +209,12 @@ func (m *SessionManager) handleEvents(ctx context.Context) error {
 }
 
 func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.SessionEvent) error {
-	sessionTag := domain.Tag{Key: domain.TagKeySessionID, Value: m.sessionID}
+	sessionTag := shared.Tag{Key: shared.TagKeySessionID, Value: m.sessionID}
 	switch ev.Type {
 	case ports.SessionConnected:
 		m.log(ctx, slog.LevelInfo, "session connected")
 		if m.connectedOnce.Swap(true) {
-			m.metrics.Counter(domain.MetricMQTTReconnects, 1, sessionTag)
+			m.metrics.Counter(shared.MetricMQTTReconnects, 1, sessionTag)
 		}
 		if logging.DebugEnabled(m.logger) {
 			m.logger.Log(ctx, logging.LevelDebug, "session reconcile",
@@ -223,7 +224,7 @@ func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.Sessio
 		}
 		if err := m.session.Reconcile(ctx, m.plan); err != nil {
 			m.log(ctx, slog.LevelError, "reconcile failed on reconnect", "error", err)
-			m.metrics.Counter(domain.MetricReconcileFailures, 1, sessionTag)
+			m.metrics.Counter(shared.MetricReconcileFailures, 1, sessionTag)
 			return fmt.Errorf("runtime: session-manager: reconcile on reconnect: %w", err)
 		}
 

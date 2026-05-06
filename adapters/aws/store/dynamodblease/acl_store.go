@@ -14,6 +14,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -168,7 +169,7 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 	})
 	if err != nil {
 		if isConditionFailed(err) {
-			return domain.LeaseToken{}, domain.ErrAlreadyExists.
+			return domain.LeaseToken{}, shared.ErrAlreadyExists.
 				WithMessage("lease already held").
 				With("leaseID", leaseID)
 		}
@@ -292,7 +293,7 @@ func (s *Store) Current(ctx context.Context, leaseID string) (domain.LeaseInfo, 
 	}
 	owner := strAttr(result.Item, attrOwner)
 	if len(result.Item) == 0 || owner == "" {
-		return domain.LeaseInfo{}, domain.ErrNotFound.
+		return domain.LeaseInfo{}, shared.ErrNotFound.
 			WithMessage("lease not found").
 			With("leaseID", leaseID)
 	}
@@ -351,18 +352,18 @@ func (s *Store) classifyConditionFailure(ctx context.Context, leaseID string) er
 		ConsistentRead: aws.Bool(true),
 	})
 	if err != nil {
-		return domain.ErrStaleFencingToken.
+		return shared.ErrStaleFencingToken.
 			WithMessage("lease token mismatch (follow-up read failed)").
 			With("leaseID", leaseID).
 			Wrap(err)
 	}
 	// Treat missing items and released items (empty owner) as not found.
 	if len(result.Item) == 0 || strAttr(result.Item, attrOwner) == "" {
-		return domain.ErrNotFound.
+		return shared.ErrNotFound.
 			WithMessage("lease not found").
 			With("leaseID", leaseID)
 	}
-	return domain.ErrStaleFencingToken.
+	return shared.ErrStaleFencingToken.
 		WithMessage("lease token mismatch").
 		With("leaseID", leaseID)
 }

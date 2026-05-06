@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // TestApplyCredentials_BeforeStart_UpdatesLiveCreds verifies that
@@ -42,9 +43,9 @@ func TestApplyCredentials_NilSet_Rejected(t *testing.T) {
 
 	err := s.ApplyCredentials(t.Context(), nil)
 	require.Error(t, err)
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	require.True(t, ok)
-	require.Equal(t, domain.ErrCodeInvalidPayload, be.Code)
+	require.Equal(t, shared.ErrCodeInvalidPayload, be.Code)
 }
 
 // TestApplyCredentials_TLSMaterial_StashesOnOpts verifies TLS
@@ -163,7 +164,7 @@ func TestApplyCredentials_ClosedSession_Rejected(t *testing.T) {
 		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
 	})
 	require.Error(t, err)
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	require.True(t, ok)
-	require.Equal(t, domain.ErrCodeUnavailable, be.Code)
+	require.Equal(t, shared.ErrCodeUnavailable, be.Code)
 }

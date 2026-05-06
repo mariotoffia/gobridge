@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -297,7 +298,7 @@ func (s *FakeLeaseStore) Acquire(_ context.Context, leaseID, ownerID string, ttl
 
 	entry, exists := s.leases[leaseID]
 	if exists && time.Now().Before(entry.expires) && entry.owner != ownerID {
-		return domain.LeaseToken{}, domain.ErrAlreadyExists
+		return domain.LeaseToken{}, shared.ErrAlreadyExists
 	}
 
 	version := s.maxVersions[leaseID] + 1
@@ -323,7 +324,7 @@ func (s *FakeLeaseStore) Renew(_ context.Context, leaseID string, token domain.L
 
 	entry, exists := s.leases[leaseID]
 	if !exists || entry.version != token.Version || entry.owner != token.Owner {
-		return domain.LeaseToken{}, domain.ErrVersionMismatch
+		return domain.LeaseToken{}, shared.ErrVersionMismatch
 	}
 
 	entry.expires = time.Now().Add(ttl)
@@ -343,7 +344,7 @@ func (s *FakeLeaseStore) Release(_ context.Context, leaseID string, token domain
 
 	entry, exists := s.leases[leaseID]
 	if !exists || entry.version != token.Version {
-		return domain.ErrVersionMismatch
+		return shared.ErrVersionMismatch
 	}
 
 	delete(s.leases, leaseID)
@@ -356,7 +357,7 @@ func (s *FakeLeaseStore) Current(_ context.Context, leaseID string) (domain.Leas
 
 	entry, exists := s.leases[leaseID]
 	if !exists {
-		return domain.LeaseInfo{}, domain.ErrNotFound
+		return domain.LeaseInfo{}, shared.ErrNotFound
 	}
 
 	return domain.LeaseInfo{
@@ -407,7 +408,7 @@ func (s *FakeOutboxStore) Persist(_ context.Context, records []domain.OutboxReco
 		for _, existing := range s.records {
 			existingKey := existing.EnvelopeID + ":" + existing.BindingID
 			if existingKey == dedupKey {
-				return domain.ErrDuplicateRecord
+				return shared.ErrDuplicateRecord
 			}
 		}
 		rec.Status = domain.OutboxPending
@@ -480,7 +481,7 @@ func (s *FakeOutboxStore) Complete(ctx context.Context, recordIDs []string, toke
 			continue
 		}
 		if rec.ClaimVersion != token.Version {
-			return domain.ErrStaleFencingToken
+			return shared.ErrStaleFencingToken
 		}
 		rec.Status = domain.OutboxCompleted
 		rec.CompletedAt = time.Now()
@@ -598,7 +599,7 @@ func (s *FakeDLQStore) Get(_ context.Context, id string) (domain.DLQEntry, error
 			return e, nil
 		}
 	}
-	return domain.DLQEntry{}, domain.ErrNotFound
+	return domain.DLQEntry{}, shared.ErrNotFound
 }
 
 func (s *FakeDLQStore) Delete(_ context.Context, ids []string) (int, error) {
@@ -640,11 +641,11 @@ func (s *FakeDLQStore) Count() int {
 type FakeSpan struct {
 	mu       sync.Mutex
 	Name     string
-	Attrs    []domain.Tag
+	Attrs    []shared.Tag
 	Ended    bool
 	Err      error
 	Events   []string
-	SetAttrs []domain.Tag
+	SetAttrs []shared.Tag
 }
 
 func (s *FakeSpan) End() {
@@ -659,13 +660,13 @@ func (s *FakeSpan) SetError(err error) {
 	s.Err = err
 }
 
-func (s *FakeSpan) AddEvent(name string, _ ...domain.Tag) {
+func (s *FakeSpan) AddEvent(name string, _ ...shared.Tag) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Events = append(s.Events, name)
 }
 
-func (s *FakeSpan) SetAttributes(attrs ...domain.Tag) {
+func (s *FakeSpan) SetAttributes(attrs ...shared.Tag) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.SetAttrs = append(s.SetAttrs, attrs...)
@@ -678,12 +679,12 @@ func (s *FakeSpan) IsEnded() bool {
 }
 
 // Inspect returns a consistent snapshot of span fields for test assertions.
-func (s *FakeSpan) Inspect() (name string, ended bool, attrs []domain.Tag, spanErr error) {
+func (s *FakeSpan) Inspect() (name string, ended bool, attrs []shared.Tag, spanErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	name = s.Name
 	ended = s.Ended
-	attrs = append([]domain.Tag(nil), s.Attrs...)
+	attrs = append([]shared.Tag(nil), s.Attrs...)
 	spanErr = s.Err
 	return
 }
@@ -693,10 +694,10 @@ type FakeTracer struct {
 	Spans []*FakeSpan
 }
 
-func (t *FakeTracer) StartSpan(ctx context.Context, name string, attrs ...domain.Tag) (context.Context, ports.Span) {
+func (t *FakeTracer) StartSpan(ctx context.Context, name string, attrs ...shared.Tag) (context.Context, ports.Span) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	span := &FakeSpan{Name: name, Attrs: append([]domain.Tag{}, attrs...)}
+	span := &FakeSpan{Name: name, Attrs: append([]shared.Tag{}, attrs...)}
 	t.Spans = append(t.Spans, span)
 	return ctx, span
 }

@@ -10,6 +10,7 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // rebuildClientWithStatic loads a fresh AWS config with the given
@@ -37,7 +38,7 @@ func rebuildSQSClient(ctx context.Context, region, endpoint, profile string, cre
 
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
-		return nil, domain.ErrTemporaryAuthFailure.Wrap(fmt.Errorf("sqs: load AWS config: %w", err))
+		return nil, shared.ErrTemporaryAuthFailure.Wrap(fmt.Errorf("sqs: load AWS config: %w", err))
 	}
 	if endpoint != "" {
 		cfg.BaseEndpoint = aws.String(endpoint)

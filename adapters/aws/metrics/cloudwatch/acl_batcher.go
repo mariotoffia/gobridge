@@ -9,8 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 type metricType int
@@ -25,7 +25,7 @@ type metricData struct {
 	name       string
 	value      float64
 	unit       cwtypes.StandardUnit
-	tags       []domain.Tag
+	tags       []shared.Tag
 	timestamp  time.Time
 	metricType metricType
 }
@@ -36,12 +36,12 @@ type aggregate struct {
 	min   float64
 	max   float64
 	unit  cwtypes.StandardUnit
-	tags  []domain.Tag
+	tags  []shared.Tag
 }
 
 type batcher struct {
 	namespace   string
-	defaultTags []domain.Tag
+	defaultTags []shared.Tag
 	buffer      []metricData
 	maxSize     int
 	mu          sync.Mutex
@@ -49,7 +49,7 @@ type batcher struct {
 	clk         clock.Clock
 }
 
-func newBatcher(namespace string, defaultTags []domain.Tag, maxSize int, clk clock.Clock) *batcher {
+func newBatcher(namespace string, defaultTags []shared.Tag, maxSize int, clk clock.Clock) *batcher {
 	return &batcher{
 		namespace:   namespace,
 		defaultTags: defaultTags,
@@ -144,7 +144,7 @@ func (b *batcher) isEmpty() bool {
 	return len(b.buffer) == 0 && len(b.aggregates) == 0
 }
 
-func (b *batcher) buildDimensions(tags []domain.Tag) []cwtypes.Dimension {
+func (b *batcher) buildDimensions(tags []shared.Tag) []cwtypes.Dimension {
 	all := append(b.defaultTags, tags...)
 	if len(all) == 0 {
 		return nil
@@ -161,7 +161,7 @@ func (b *batcher) buildDimensions(tags []domain.Tag) []cwtypes.Dimension {
 	return dims
 }
 
-func aggregateKey(name string, tags []domain.Tag) string {
+func aggregateKey(name string, tags []shared.Tag) string {
 	key := name
 	for _, t := range tags {
 		key += "|" + t.Key + "=" + t.Value
@@ -180,7 +180,7 @@ func metricNameFromKey(key string) string {
 
 // addCounter buffers a counter sample. Returns true when the non-histogram
 // buffer has reached its configured capacity (caller should trigger a flush).
-func (b *batcher) addCounter(name string, value int64, tags []domain.Tag) bool {
+func (b *batcher) addCounter(name string, value int64, tags []shared.Tag) bool {
 	return b.add(metricData{
 		name:       name,
 		value:      float64(value),
@@ -191,7 +191,7 @@ func (b *batcher) addCounter(name string, value int64, tags []domain.Tag) bool {
 }
 
 // addGauge buffers a gauge sample.
-func (b *batcher) addGauge(name string, value float64, tags []domain.Tag) bool {
+func (b *batcher) addGauge(name string, value float64, tags []shared.Tag) bool {
 	return b.add(metricData{
 		name:       name,
 		value:      value,
@@ -203,7 +203,7 @@ func (b *batcher) addGauge(name string, value float64, tags []domain.Tag) bool {
 
 // addHistogram buffers a histogram sample. Histogram samples aggregate into
 // CloudWatch StatisticSets on drain.
-func (b *batcher) addHistogram(name string, value float64, tags []domain.Tag) bool {
+func (b *batcher) addHistogram(name string, value float64, tags []shared.Tag) bool {
 	return b.add(metricData{
 		name:       name,
 		value:      value,
@@ -214,7 +214,7 @@ func (b *batcher) addHistogram(name string, value float64, tags []domain.Tag) bo
 }
 
 // addTimer buffers a duration sample (treated as a histogram in milliseconds).
-func (b *batcher) addTimer(name string, duration time.Duration, tags []domain.Tag) bool {
+func (b *batcher) addTimer(name string, duration time.Duration, tags []shared.Tag) bool {
 	ms := float64(duration.Nanoseconds()) / float64(time.Millisecond)
 	return b.add(metricData{
 		name:       name,

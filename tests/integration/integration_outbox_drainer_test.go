@@ -9,6 +9,7 @@ import (
 
 	dboutbox "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
@@ -149,12 +150,12 @@ func TestIntegration_OutboxDrainer_StaleFencingToken(t *testing.T) {
 	}
 
 	_, err = store.Claim(ctx, pk, "owner-B", tok2, 10)
-	if err != nil && !errors.Is(err, domain.ErrStaleFencingToken) {
+	if err != nil && !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("reclaim with tok2: unexpected error: %v", err)
 	}
 
 	err = store.Complete(ctx, []string{rec.ID}, tok1)
-	if !errors.Is(err, domain.ErrStaleFencingToken) {
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken on complete with old token, got %v", err)
 	}
 }

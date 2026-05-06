@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
@@ -297,7 +298,7 @@ func TestWriteIdempotent(t *testing.T) {
 	}
 
 	err := store.Write(ctx, entry)
-	if !errors.Is(err, domain.ErrDuplicateRecord) {
+	if !errors.Is(err, shared.ErrDuplicateRecord) {
 		t.Fatalf("expected ErrDuplicateRecord, got %v", err)
 	}
 }

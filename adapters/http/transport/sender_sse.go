@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -132,11 +133,11 @@ func (s *SSESender) Send(ctx context.Context, env *domain.Envelope) error {
 	for _, c := range clients {
 		select {
 		case <-ctx.Done():
-			s.cfg.metrics.Timer(domain.MetricSSEBroadcastLatency, s.cfg.clock.Since(start))
+			s.cfg.metrics.Timer(shared.MetricSSEBroadcastLatency, s.cfg.clock.Since(start))
 			return ctx.Err()
 		case c.events <- eventBytes:
 		default:
-			s.cfg.metrics.Counter(domain.MetricSSEDroppedEvents, 1)
+			s.cfg.metrics.Counter(shared.MetricSSEDroppedEvents, 1)
 			if s.cfg.logger != nil {
 				s.cfg.logger.Warn("sse: client buffer full, dropping event",
 					"client", c.id, "event_id", env.ID)
@@ -144,7 +145,7 @@ func (s *SSESender) Send(ctx context.Context, env *domain.Envelope) error {
 		}
 	}
 
-	s.cfg.metrics.Timer(domain.MetricSSEBroadcastLatency, s.cfg.clock.Since(start))
+	s.cfg.metrics.Timer(shared.MetricSSEBroadcastLatency, s.cfg.clock.Since(start))
 	return nil
 }
 
@@ -198,7 +199,7 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.clients[clientID] = client
 	count := len(s.clients)
 	s.mu.Unlock()
-	s.cfg.metrics.Gauge(domain.MetricSSEClients, float64(count))
+	s.cfg.metrics.Gauge(shared.MetricSSEClients, float64(count))
 	if logging.DebugEnabled(s.cfg.logger) {
 		s.cfg.logger.Log(context.Background(), logging.LevelDebug, "sse: client connected",
 			"client_id", clientID, "total_clients", count)
@@ -209,7 +210,7 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		delete(s.clients, clientID)
 		count := len(s.clients)
 		s.mu.Unlock()
-		s.cfg.metrics.Gauge(domain.MetricSSEClients, float64(count))
+		s.cfg.metrics.Gauge(shared.MetricSSEClients, float64(count))
 		if logging.DebugEnabled(s.cfg.logger) {
 			s.cfg.logger.Log(context.Background(), logging.LevelDebug, "sse: client disconnected",
 				"client_id", clientID, "total_clients", count)

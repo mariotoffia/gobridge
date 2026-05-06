@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -55,9 +56,9 @@ func TestSender_Send_NoSession(t *testing.T) {
 		t.Fatal("Send() should fail when session is not connected")
 	}
 
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(err, &be) {
-		t.Fatalf("error should be *domain.BridgeError, got %T", err)
+		t.Fatalf("error should be *shared.BridgeError, got %T", err)
 	}
 }
 

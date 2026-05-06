@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -140,7 +140,7 @@ func DefaultSenderOptions() SenderConfig {
 
 func (o *SessionOptions) validate() error {
 	if o.Address == "" {
-		return domain.ErrInvalidPayload.WithMessage("amqp10: Address is required")
+		return shared.ErrInvalidPayload.WithMessage("amqp10: Address is required")
 	}
 	return nil
 }
@@ -232,10 +232,10 @@ func (o *SessionOptions) applyDefaults() {
 
 func (c *ReceiverConfig) validate() error {
 	if c.Address == "" {
-		return domain.ErrInvalidPayload.WithMessage("amqp10: receiver Address is required")
+		return shared.ErrInvalidPayload.WithMessage("amqp10: receiver Address is required")
 	}
 	if c.LinkCredit > math.MaxInt32 {
-		return domain.ErrInvalidPayload.WithMessage("amqp10: link_credit exceeds int32 max")
+		return shared.ErrInvalidPayload.WithMessage("amqp10: link_credit exceeds int32 max")
 	}
 	return nil
 }
@@ -254,7 +254,7 @@ func (c *ReceiverConfig) applyDefaults() {
 
 func (c *SenderConfig) validate() error {
 	if c.Address == "" {
-		return domain.ErrInvalidPayload.WithMessage("amqp10: sender Address is required")
+		return shared.ErrInvalidPayload.WithMessage("amqp10: sender Address is required")
 	}
 	return nil
 }

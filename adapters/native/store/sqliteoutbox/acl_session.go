@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 
 	// Driver registration. The blank import lives in this ACL file so
 	// it never leaks into the port-side outbox.go.
@@ -54,7 +55,7 @@ func (s *sqlSession) close() error {
 }
 
 // persist inserts records under a single transaction. Duplicate
-// records are translated to domain.ErrDuplicateRecord at the SDK
+// records are translated to shared.ErrDuplicateRecord at the SDK
 // boundary.
 func (s *sqlSession) persist(ctx context.Context, records []domain.OutboxRecord, clk clock.Clock) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -101,7 +102,7 @@ func (s *sqlSession) persist(ctx context.Context, records []domain.OutboxRecord,
 		)
 		if err != nil {
 			if isUniqueViolation(err) {
-				return domain.ErrDuplicateRecord.
+				return shared.ErrDuplicateRecord.
 					WithMessage("duplicate outbox record").
 					With("envelopeID", r.EnvelopeID).
 					With("bindingID", r.BindingID)
@@ -112,7 +113,7 @@ func (s *sqlSession) persist(ctx context.Context, records []domain.OutboxRecord,
 
 		n, _ := res.RowsAffected()
 		if n == 0 {
-			return domain.ErrDuplicateRecord.
+			return shared.ErrDuplicateRecord.
 				WithMessage("duplicate outbox record").
 				With("envelopeID", r.EnvelopeID).
 				With("bindingID", r.BindingID)
@@ -215,7 +216,7 @@ func (s *sqlSession) complete(ctx context.Context, recordIDs []string, token dom
 
 	n, _ := res.RowsAffected()
 	if n < int64(len(recordIDs)) {
-		return domain.ErrStaleFencingToken.
+		return shared.ErrStaleFencingToken.
 			WithMessage("claim version mismatch on complete")
 	}
 	return nil

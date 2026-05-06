@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,10 +26,10 @@ func adminRequest(method, path string) *http.Request {
 // without relying on request context cancellation races.
 type adminStopLeakMetrics struct{}
 
-func (adminStopLeakMetrics) Counter(string, int64, ...domain.Tag)       {}
-func (adminStopLeakMetrics) Gauge(string, float64, ...domain.Tag)       {}
-func (adminStopLeakMetrics) Histogram(string, float64, ...domain.Tag)   {}
-func (adminStopLeakMetrics) Timer(string, time.Duration, ...domain.Tag) {}
+func (adminStopLeakMetrics) Counter(string, int64, ...shared.Tag)       {}
+func (adminStopLeakMetrics) Gauge(string, float64, ...shared.Tag)       {}
+func (adminStopLeakMetrics) Histogram(string, float64, ...shared.Tag)   {}
+func (adminStopLeakMetrics) Timer(string, time.Duration, ...shared.Tag) {}
 func (adminStopLeakMetrics) Close(context.Context) error                { return nil }
 func (adminStopLeakMetrics) Flush(context.Context) error {
 	return fmt.Errorf("INTERNAL_STOP_SECRET_do_not_expose")

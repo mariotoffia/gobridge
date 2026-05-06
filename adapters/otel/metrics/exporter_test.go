@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -84,7 +84,7 @@ func TestOptions(t *testing.T) {
 		t.Errorf("expected Authorization header, got %v", e.config.Headers)
 	}
 
-	tags := []domain.Tag{{Key: "env", Value: "test"}}
+	tags := []shared.Tag{{Key: "env", Value: "test"}}
 	WithDefaultTags(tags...)(e)
 	if len(e.config.DefaultTags) != 1 {
 		t.Errorf("expected 1 default tag, got %d", len(e.config.DefaultTags))
@@ -95,7 +95,7 @@ func TestOptions(t *testing.T) {
 func TestMeterClient_BuildAttributes(t *testing.T) {
 	c := &otelMeterClient{}
 
-	attrs := c.buildAttributes([]domain.Tag{{Key: "key1", Value: "val1"}})
+	attrs := c.buildAttributes([]shared.Tag{{Key: "key1", Value: "val1"}})
 	if len(attrs) != 1 {
 		t.Errorf("expected 1 attribute, got %d", len(attrs))
 	}
@@ -104,7 +104,7 @@ func TestMeterClient_BuildAttributes(t *testing.T) {
 		attribute.String("default", "value"),
 	}
 
-	attrs = c.buildAttributes([]domain.Tag{{Key: "key1", Value: "val1"}})
+	attrs = c.buildAttributes([]shared.Tag{{Key: "key1", Value: "val1"}})
 	if len(attrs) != 2 {
 		t.Errorf("expected 2 attributes, got %d", len(attrs))
 	}
