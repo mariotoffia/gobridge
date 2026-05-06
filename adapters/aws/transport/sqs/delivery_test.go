@@ -10,15 +10,15 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // Verifies Envelope returns the underlying domain envelope.
 func TestDelivery_Envelope(t *testing.T) {
-	env := &domain.Envelope{ID: "msg-1", Subject: "test"}
+	env := &messaging.Envelope{ID: "msg-1", Subject: "test"}
 	mock := &mockSQSClient{}
 	d := newDelivery(context.Background(), env, mock, "q-url", "rh-1", 30, false, nil, nil, nil, nil)
 
@@ -30,7 +30,7 @@ func TestDelivery_Envelope(t *testing.T) {
 // Verifies Ack deletes the message using the correct queue URL and receipt handle.
 func TestDelivery_Ack_DeletesMessage(t *testing.T) {
 	mock := &mockSQSClient{}
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	d := newDelivery(context.Background(), env, mock, "https://q", "receipt-1", 30, false, nil, nil, nil, nil)
 
 	if err := d.Ack(context.Background()); err != nil {
@@ -55,7 +55,7 @@ func TestDelivery_Ack_Error(t *testing.T) {
 			return nil, errors.New("AccessDenied")
 		},
 	}
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 30, false, nil, nil, nil, nil)
 
 	err := d.Ack(context.Background())
@@ -74,7 +74,7 @@ func TestDelivery_Ack_Error(t *testing.T) {
 // Verifies Retry with zero delay sets visibility timeout to zero for immediate redelivery.
 func TestDelivery_Retry_ZeroDelay(t *testing.T) {
 	mock := &mockSQSClient{}
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 30, false, nil, nil, nil, nil)
 
 	if err := d.Retry(context.Background(), 0, errors.New("transient")); err != nil {
@@ -92,7 +92,7 @@ func TestDelivery_Retry_ZeroDelay(t *testing.T) {
 // Verifies Retry translates a delay into the expected visibility timeout seconds.
 func TestDelivery_Retry_WithDelay(t *testing.T) {
 	mock := &mockSQSClient{}
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 30, false, nil, nil, nil, nil)
 
 	if err := d.Retry(context.Background(), 10*time.Second, nil); err != nil {
@@ -110,7 +110,7 @@ func TestDelivery_Retry_WithDelay(t *testing.T) {
 // Verifies Extend issues ChangeMessageVisibility with a timeout derived from the target time.
 func TestDelivery_Extend(t *testing.T) {
 	mock := &mockSQSClient{}
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 30, false, nil, nil, nil, nil)
 
 	until := time.Now().Add(60 * time.Second)
@@ -130,7 +130,7 @@ func TestDelivery_Extend(t *testing.T) {
 // Verifies Extend clamps visibility timeout to the SQS maximum (12 hours).
 func TestDelivery_Extend_ClampsMax(t *testing.T) {
 	mock := &mockSQSClient{}
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 30, false, nil, nil, nil, nil)
 
 	until := time.Now().Add(48 * time.Hour)
@@ -156,7 +156,7 @@ func TestDelivery_AutoExtend_CallsChangeVisibility(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	fake := clocktest.New()
 	// Use a very short visibility timeout (2s) so auto-extend fires at 1s.
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 2, true, nil, nil, nil, fake)
@@ -190,7 +190,7 @@ func TestDelivery_AutoExtend_StopsOnAck(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 2, true, nil, nil, nil, nil)
 
 	// Ack immediately to stop the auto-extend goroutine.
@@ -217,7 +217,7 @@ func TestDelivery_AutoExtend_StopsOnRetry(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 2, true, nil, nil, nil, nil)
 
 	if err := d.Retry(context.Background(), 0, nil); err != nil {
@@ -246,7 +246,7 @@ func TestDelivery_NoAutoExtend(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 2, false, nil, nil, nil, nil)
 
 	// NEGATIVE: verify no ChangeMessageVisibility when auto-extend is disabled
@@ -275,7 +275,7 @@ func TestDelivery_AutoExtend_UsesCorrectTimeout(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	fake := clocktest.New()
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 10, true, nil, nil, nil, fake)
 
@@ -303,7 +303,7 @@ func TestDelivery_AutoExtend_UsesCorrectTimeout(t *testing.T) {
 // Verifies calling stop multiple times leaves Ack working without panic or failure.
 func TestDelivery_MultipleStopsAreSafe(t *testing.T) {
 	mock := &mockSQSClient{}
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 30, true, nil, nil, nil, nil)
 
 	d.stopAutoExtend()
@@ -321,7 +321,7 @@ func TestDelivery_MultipleStopsAreSafe(t *testing.T) {
 // Verifies delivery operations use the configured queue URL and receipt handle.
 func TestNewDelivery_WithQueueURLAndHandle(t *testing.T) {
 	mock := &mockSQSClient{}
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	d := newDelivery(context.Background(), env, mock, "https://sqs.us-west-1.amazonaws.com/123/my-queue", "handle-abc", 30, false, nil, nil, nil, nil)
 
 	if err := d.Ack(context.Background()); err != nil {
@@ -352,7 +352,7 @@ func TestDelivery_Ack_StopsAutoExtendThenDeletes(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{ID: "msg-ack-order"}
+	env := &messaging.Envelope{ID: "msg-ack-order"}
 	d := newDelivery(context.Background(), env, mock, "q", "rh", 2, true, nil, nil, nil, nil)
 
 	if err := d.Ack(context.Background()); err != nil {
@@ -379,7 +379,7 @@ func init() {
 
 	// Ensure *sqsDelivery implements ports.Delivery at test compile time.
 	var _ interface {
-		Envelope() *domain.Envelope
+		Envelope() *messaging.Envelope
 		Ack(context.Context) error
 		Retry(context.Context, time.Duration, error) error
 		Extend(context.Context, time.Time) error

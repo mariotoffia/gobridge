@@ -8,6 +8,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
@@ -36,7 +37,7 @@ func writeTestEntry(t *testing.T, store *dynamodbdlq.Store, id, route, cat strin
 	t.Helper()
 	if err := store.Write(context.Background(), domain.DLQEntry{
 		ID: id, RouteID: route, Category: cat, FailedAt: failedAt,
-		Envelope: domain.Envelope{ID: "env-" + id, Subject: "test"},
+		Envelope: messaging.Envelope{ID: "env-" + id, Subject: "test"},
 	}); err != nil {
 		t.Fatalf("write %s: %v", id, err)
 	}
@@ -53,7 +54,7 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 
 	entry := domain.DLQEntry{
 		ID: "dg-1", RouteID: "route-g", Category: "timeout",
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:      "env-dg-1",
 			Subject: "test/get",
 			Payload: []byte(`{"k":"v"}`),

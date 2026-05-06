@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -141,14 +142,14 @@ func TestStaticResolver_ReturnsCopy_Audit(t *testing.T) {
 
 	resolver := NewStaticResolver(plans...)
 
-	result1, err := resolver.Resolve(context.Background(), &domain.Envelope{})
+	result1, err := resolver.Resolve(context.Background(), &messaging.Envelope{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	result1[0].Address = "mutated"
 
-	result2, err := resolver.Resolve(context.Background(), &domain.Envelope{})
+	result2, err := resolver.Resolve(context.Background(), &messaging.Envelope{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -163,10 +164,10 @@ func TestStaticResolver_ReturnsCopy_Audit(t *testing.T) {
 func TestBindingResolver_NoMatch(t *testing.T) {
 	resolver := NewBindingResolver(
 		[]domain.DestinationBinding{{ID: "b1", Address: "topic"}},
-		func(_ *domain.Envelope, _ domain.DestinationBinding) bool { return false },
+		func(_ *messaging.Envelope, _ domain.DestinationBinding) bool { return false },
 	)
 
-	_, err := resolver.Resolve(context.Background(), &domain.Envelope{})
+	_, err := resolver.Resolve(context.Background(), &messaging.Envelope{})
 	if err == nil {
 		t.Fatal("expected error for no matching binding")
 	}

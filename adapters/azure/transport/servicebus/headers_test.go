@@ -5,8 +5,7 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
-
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 func strPtr(s string) *string               { return &s }
@@ -112,16 +111,16 @@ func TestMessageToHeaders_StripsReservedHeaders(t *testing.T) {
 	msg := &azservicebus.ReceivedMessage{
 		MessageID: "msg-004",
 		ApplicationProperties: map[string]any{
-			domain.HeaderCorrelationID: "injected-corr",
-			domain.HeaderRouteID:       "injected-route",
-			"safe-key":                 "keep-me",
+			messaging.HeaderCorrelationID: "injected-corr",
+			messaging.HeaderRouteID:       "injected-route",
+			"safe-key":                    "keep-me",
 		},
 	}
 
 	h := messageToHeaders(msg)
 
-	requireAbsent(t, h, domain.HeaderCorrelationID)
-	requireAbsent(t, h, domain.HeaderRouteID)
+	requireAbsent(t, h, messaging.HeaderCorrelationID)
+	requireAbsent(t, h, messaging.HeaderRouteID)
 	requireEqual(t, "safe-key", h["safe-key"], "keep-me")
 }
 

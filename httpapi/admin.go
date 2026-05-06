@@ -7,7 +7,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -138,10 +138,10 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject: body.Subject,
 		Payload: payload,
-		Headers: domain.StripReservedHeaders(body.Headers),
+		Headers: messaging.StripReservedHeaders(body.Headers),
 	}
 
 	if err := rt.Inject(r.Context(), routeID, env); err != nil {

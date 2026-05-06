@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -32,7 +33,7 @@ type varyingResolver struct {
 	counter int32
 }
 
-func (r *varyingResolver) Resolve(_ context.Context, _ *domain.Envelope) ([]domain.DispatchPlan, error) {
+func (r *varyingResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]domain.DispatchPlan, error) {
 	n := atomic.AddInt32(&r.counter, 1)
 	return []domain.DispatchPlan{{
 		BindingID: fmt.Sprintf("bind-%d", n),
@@ -76,7 +77,7 @@ func TestDepthCache_EvictionClearsOnBurst(t *testing.T) {
 	<-receiver.Ready()
 
 	for i := 0; i < 1050; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("burst-msg-%d", i),
 			Payload: []byte("x"),
 		}
@@ -145,7 +146,7 @@ func TestDepthCacheTTL_WiredFromPolicy(t *testing.T) {
 		return session.IsStarted()
 	})
 
-	env1 := &domain.Envelope{ID: "ttlwire-1", Payload: []byte("x")}
+	env1 := &messaging.Envelope{ID: "ttlwire-1", Payload: []byte("x")}
 	del1 := NewFakeDelivery(env1)
 	_ = receiver.Emit(ctx, del1)
 	waitFor(t, time.Second, "first acked", func() bool { return del1.IsAcked() })
@@ -154,7 +155,7 @@ func TestDepthCacheTTL_WiredFromPolicy(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond) // FIXED: wait for DepthCacheTTL (50ms) to expire
 
-	env2 := &domain.Envelope{ID: "ttlwire-2", Payload: []byte("x")}
+	env2 := &messaging.Envelope{ID: "ttlwire-2", Payload: []byte("x")}
 	del2 := NewFakeDelivery(env2)
 	_ = receiver.Emit(ctx, del2)
 	waitFor(t, time.Second, "second acked", func() bool { return del2.IsAcked() })
@@ -217,7 +218,7 @@ func TestDrainConfig_WiredFromSessionConfig(t *testing.T) {
 	})
 
 	for i := 0; i < 5; i++ {
-		env := &domain.Envelope{ID: fmt.Sprintf("drainwire-%d", i), Payload: []byte("x")}
+		env := &messaging.Envelope{ID: fmt.Sprintf("drainwire-%d", i), Payload: []byte("x")}
 		del := NewFakeDelivery(env)
 		_ = receiver.Emit(ctx, del)
 		waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
@@ -277,7 +278,7 @@ func TestQueryPendingError_FailsClosed(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &domain.Envelope{ID: "failclosed-1", Payload: []byte("x")}
+	env := &messaging.Envelope{ID: "failclosed-1", Payload: []byte("x")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -327,7 +328,7 @@ func TestAbsoluteMaxBatchSize_Clamps(t *testing.T) {
 			ID: fmt.Sprintf("clamp-%d", i), RouteID: "clamp-route",
 			EnvelopeID: fmt.Sprintf("env-clamp-%d", i), BindingID: "bind-1",
 			SessionID: "sess-1",
-			Envelope:  domain.Envelope{ID: fmt.Sprintf("env-clamp-%d", i), Payload: []byte("data")},
+			Envelope:  messaging.Envelope{ID: fmt.Sprintf("env-clamp-%d", i), Payload: []byte("data")},
 			Status:    domain.OutboxPending,
 		}
 		_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -386,7 +387,7 @@ func TestOutboxDrainer_EmitsRecordFailureMetric(t *testing.T) {
 		ID: "rec-fail", RouteID: "metric-route",
 		EnvelopeID: "env-fail", BindingID: "bind-1",
 		SessionID: "sess-1",
-		Envelope:  domain.Envelope{ID: "env-fail", Payload: []byte("data")},
+		Envelope:  messaging.Envelope{ID: "env-fail", Payload: []byte("data")},
 		Status:    domain.OutboxPending,
 	}
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{outboxRec})

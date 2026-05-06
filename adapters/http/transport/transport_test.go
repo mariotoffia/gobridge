@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 
 	"github.com/mariotoffia/gobridge/domain"
@@ -45,10 +46,10 @@ type recordingForwarder struct {
 type forwardCall struct {
 	Peer       *domain.PeerInfo
 	ReceiverID string
-	Env        *domain.Envelope
+	Env        *messaging.Envelope
 }
 
-func (f *recordingForwarder) Forward(_ context.Context, peer *domain.PeerInfo, receiverID string, env *domain.Envelope) error {
+func (f *recordingForwarder) Forward(_ context.Context, peer *domain.PeerInfo, receiverID string, env *messaging.Envelope) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, forwardCall{Peer: peer, ReceiverID: receiverID, Env: env})
 	f.mu.Unlock()
@@ -270,7 +271,7 @@ func TestReceiver_LocalProcessing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var gotEnvelope *domain.Envelope
+	var gotEnvelope *messaging.Envelope
 	deliveryCh := make(chan ports.Delivery, 1)
 
 	go func() {
@@ -494,7 +495,7 @@ func TestSSESender_BroadcastToClients(t *testing.T) {
 		return sender.(*transport.SSESender).ClientCount() >= 1
 	})
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "evt-1",
 		Subject: "user.signup",
 		Payload: []byte(`{"user":"alice"}`),
@@ -621,7 +622,7 @@ func TestHTTPForwarder_ForwardSuccess(t *testing.T) {
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "fwd-msg-1",
 		Subject: "orders.shipped",
 		Payload: []byte(`{"order":"456"}`),

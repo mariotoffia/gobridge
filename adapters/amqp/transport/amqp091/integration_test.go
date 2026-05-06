@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 )
@@ -70,7 +71,7 @@ func TestIntegration_SendReceive(t *testing.T) {
 	})
 
 	payload := []byte(`{"integration":"test"}`)
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "integ-msg-001",
 		Subject: queueName,
 		Payload: payload,
@@ -163,7 +164,7 @@ func TestIntegration_SendBatch(t *testing.T) {
 		Timeout:    10 * time.Second,
 	})
 
-	envs := []*domain.Envelope{
+	envs := []*messaging.Envelope{
 		{ID: "batch-1", Subject: queueName, Payload: []byte("one")},
 		{ID: "batch-2", Subject: queueName, Payload: []byte("two")},
 		{ID: "batch-3", Subject: queueName, Payload: []byte("three")},
@@ -261,7 +262,7 @@ func TestIntegration_RetryRedelivers(t *testing.T) {
 		Session:    sess,
 	})
 
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID: "retry-msg", Subject: queueName, Payload: []byte("retry-me"),
 	}); err != nil {
 		t.Fatalf("send: %v", err)

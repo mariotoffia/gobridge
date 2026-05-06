@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -89,7 +90,7 @@ func TestSharedOutbox_TransientSenderFailure_RecoversOnRetry(t *testing.T) {
 	)
 
 	sender := NewFakeSender()
-	sender.SendFn = func(env *domain.Envelope) error {
+	sender.SendFn = func(env *messaging.Envelope) error {
 		sendAttempts.Add(1)
 		mu.Lock()
 		attempts = append(attempts, env.ID)
@@ -140,7 +141,7 @@ func TestSharedOutbox_TransientSenderFailure_RecoversOnRetry(t *testing.T) {
 	const msgCount = 3
 	dels := make([]*FakeDelivery, msgCount)
 	for i := range msgCount {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      envID(i),
 			Payload: []byte("payload"),
 		}

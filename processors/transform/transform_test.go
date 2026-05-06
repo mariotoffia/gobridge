@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // Validates basic field renaming for simple JSON path mappings.
@@ -26,9 +26,9 @@ func TestJSONTransform_SimpleMapping(t *testing.T) {
 	}
 	inputBytes, _ := json.Marshal(input)
 
-	env := &domain.Envelope{Payload: inputBytes}
+	env := &messaging.Envelope{Payload: inputBytes}
 
-	err = transform.Process(context.Background(), env, func(ctx context.Context, e *domain.Envelope) error {
+	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		return nil
 	})
 	if err != nil {
@@ -77,9 +77,9 @@ func TestJSONTransform_NestedExtraction(t *testing.T) {
 	}
 	inputBytes, _ := json.Marshal(input)
 
-	env := &domain.Envelope{Payload: inputBytes}
+	env := &messaging.Envelope{Payload: inputBytes}
 
-	err = transform.Process(context.Background(), env, func(ctx context.Context, e *domain.Envelope) error {
+	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		return nil
 	})
 	if err != nil {
@@ -123,9 +123,9 @@ func TestJSONTransform_NestedTarget(t *testing.T) {
 	}
 	inputBytes, _ := json.Marshal(input)
 
-	env := &domain.Envelope{Payload: inputBytes}
+	env := &messaging.Envelope{Payload: inputBytes}
 
-	err = transform.Process(context.Background(), env, func(ctx context.Context, e *domain.Envelope) error {
+	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		return nil
 	})
 	if err != nil {
@@ -174,9 +174,9 @@ func TestJSONTransform_TypeTransformation(t *testing.T) {
 	}
 	inputBytes, _ := json.Marshal(input)
 
-	env := &domain.Envelope{Payload: inputBytes}
+	env := &messaging.Envelope{Payload: inputBytes}
 
-	err = transform.Process(context.Background(), env, func(ctx context.Context, e *domain.Envelope) error {
+	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		return nil
 	})
 	if err != nil {
@@ -225,9 +225,9 @@ func TestJSONTransform_DefaultValue(t *testing.T) {
 	}
 	inputBytes, _ := json.Marshal(input)
 
-	env := &domain.Envelope{Payload: inputBytes}
+	env := &messaging.Envelope{Payload: inputBytes}
 
-	err = transform.Process(context.Background(), env, func(ctx context.Context, e *domain.Envelope) error {
+	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		return nil
 	})
 	if err != nil {
@@ -263,9 +263,9 @@ func TestJSONTransform_RequiredField(t *testing.T) {
 	}
 	inputBytes, _ := json.Marshal(input)
 
-	env := &domain.Envelope{Payload: inputBytes}
+	env := &messaging.Envelope{Payload: inputBytes}
 
-	err = transform.Process(context.Background(), env, func(ctx context.Context, e *domain.Envelope) error {
+	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		return nil
 	})
 
@@ -293,9 +293,9 @@ func TestJSONTransform_Base64Encoding(t *testing.T) {
 	}
 	inputBytes, _ := json.Marshal(input)
 
-	env := &domain.Envelope{Payload: inputBytes}
+	env := &messaging.Envelope{Payload: inputBytes}
 
-	err = transform.Process(context.Background(), env, func(ctx context.Context, e *domain.Envelope) error {
+	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		return nil
 	})
 	if err != nil {
@@ -336,9 +336,9 @@ func TestJSONTransform_ArrayAccess(t *testing.T) {
 	}
 	inputBytes, _ := json.Marshal(input)
 
-	env := &domain.Envelope{Payload: inputBytes}
+	env := &messaging.Envelope{Payload: inputBytes}
 
-	err = transform.Process(context.Background(), env, func(ctx context.Context, e *domain.Envelope) error {
+	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		return nil
 	})
 	if err != nil {
@@ -369,10 +369,10 @@ func TestJSONTransform_EmptyPayload(t *testing.T) {
 		t.Fatalf("failed to create transform: %v", err)
 	}
 
-	env := &domain.Envelope{Payload: nil}
+	env := &messaging.Envelope{Payload: nil}
 
 	nextCalled := false
-	err = transform.Process(context.Background(), env, func(ctx context.Context, e *domain.Envelope) error {
+	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		nextCalled = true
 		return nil
 	})

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
@@ -83,7 +83,7 @@ func TestIntegration_SQS_Sender_SendsMessage(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "ir2")
 	sender := newSQSSender(t, queueURL)
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "msg-ir2",
 		Subject: "test-subject",
 		Payload: []byte("hello from sender"),
@@ -123,7 +123,7 @@ func TestIntegration_SQS_Sender_FIFO(t *testing.T) {
 	sender := newSQSSenderFIFO(t, queueURL, "test-group")
 
 	for i := 0; i < 5; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      "msg-" + string(rune('a'+i)),
 			Payload: []byte("order-" + string(rune('0'+i))),
 		}

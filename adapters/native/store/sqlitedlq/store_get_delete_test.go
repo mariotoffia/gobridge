@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -30,7 +31,7 @@ func writeEntry(t *testing.T, s *sqlitedlq.Store, id, route, cat string, failedA
 	t.Helper()
 	if err := s.Write(context.Background(), domain.DLQEntry{
 		ID: id, RouteID: route, Category: cat, FailedAt: failedAt,
-		Envelope: domain.Envelope{ID: "env-" + id, Subject: "test"},
+		Envelope: messaging.Envelope{ID: "env-" + id, Subject: "test"},
 	}); err != nil {
 		t.Fatalf("write %s: %v", id, err)
 	}
@@ -44,7 +45,7 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 
 	entry := domain.DLQEntry{
 		ID: "sg-1", RouteID: "route-g", Category: "timeout",
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:      "env-sg-1",
 			Subject: "test/get",
 			Payload: []byte(`{"k":"v"}`),

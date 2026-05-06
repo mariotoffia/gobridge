@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -648,7 +649,7 @@ func (r *stubReceiver) Run(ctx context.Context, _ func(context.Context, ports.De
 
 type stubSender struct {
 	mu     sync.Mutex
-	sent   []*domain.Envelope
+	sent   []*messaging.Envelope
 	sentCh chan struct{}
 }
 
@@ -656,7 +657,7 @@ func newStubSender() *stubSender {
 	return &stubSender{sentCh: make(chan struct{}, 256)}
 }
 
-func (s *stubSender) Send(_ context.Context, env *domain.Envelope) error {
+func (s *stubSender) Send(_ context.Context, env *messaging.Envelope) error {
 	s.mu.Lock()
 	s.sent = append(s.sent, env.Clone())
 	s.mu.Unlock()

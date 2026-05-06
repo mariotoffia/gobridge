@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -50,7 +50,7 @@ func (p *Processor) Name() string {
 	return "filter"
 }
 
-func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	matches, err := p.evaluate(env)
 	if err != nil {
 		return err
@@ -73,14 +73,14 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 		if env.Headers == nil {
 			env.Headers = make(map[string]any, 1)
 		}
-		env.Headers[domain.HeaderRouteOverride] = p.config.RouteTo
+		env.Headers[messaging.HeaderRouteOverride] = p.config.RouteTo
 		return next(ctx, env)
 	default:
 		return next(ctx, env)
 	}
 }
 
-func (p *Processor) evaluate(env *domain.Envelope) (bool, error) {
+func (p *Processor) evaluate(env *messaging.Envelope) (bool, error) {
 	if len(p.evaluators) == 0 {
 		return true, nil
 	}

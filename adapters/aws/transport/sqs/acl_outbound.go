@@ -13,7 +13,7 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
@@ -21,7 +21,7 @@ import (
 // sendOne builds the SDK SendMessageInput, issues SendMessage and emits
 // the per-call latency metric. All SDK contact for single-message send
 // is concentrated here so sender.go can stay SDK-free.
-func (s *Sender) sendOne(ctx context.Context, env *domain.Envelope) error {
+func (s *Sender) sendOne(ctx context.Context, env *messaging.Envelope) error {
 	input := s.buildSendInput(env)
 
 	start := s.clock().Now()
@@ -46,7 +46,7 @@ func (s *Sender) sendOne(ctx context.Context, env *domain.Envelope) error {
 // owned here so sender.go does not need the SDK or the input types.
 func (s *Sender) sendBatchChunk(
 	ctx context.Context,
-	batch []*domain.Envelope,
+	batch []*messaging.Envelope,
 ) (int, []error) {
 	entries := make([]sqstypes.SendMessageBatchRequestEntry, 0, len(batch))
 	for j, env := range batch {
@@ -98,7 +98,7 @@ func (s *Sender) sendBatchChunk(
 	return sent, errs
 }
 
-func (s *Sender) buildSendInput(env *domain.Envelope) *awssqs.SendMessageInput {
+func (s *Sender) buildSendInput(env *messaging.Envelope) *awssqs.SendMessageInput {
 	input := &awssqs.SendMessageInput{
 		QueueUrl:    aws.String(s.queueURL),
 		MessageBody: aws.String(string(env.Payload)),
@@ -127,7 +127,7 @@ func (s *Sender) buildSendInput(env *domain.Envelope) *awssqs.SendMessageInput {
 	return input
 }
 
-func (s *Sender) buildBatchEntry(idx int, env *domain.Envelope) sqstypes.SendMessageBatchRequestEntry {
+func (s *Sender) buildBatchEntry(idx int, env *messaging.Envelope) sqstypes.SendMessageBatchRequestEntry {
 	entry := sqstypes.SendMessageBatchRequestEntry{
 		Id:          aws.String(strconv.Itoa(idx)),
 		MessageBody: aws.String(string(env.Payload)),
@@ -168,7 +168,7 @@ func (s *Sender) buildBatchEntry(idx int, env *domain.Envelope) sqstypes.SendMes
 	return entry
 }
 
-func (s *Sender) applyFIFO(input *awssqs.SendMessageInput, env *domain.Envelope) {
+func (s *Sender) applyFIFO(input *awssqs.SendMessageInput, env *messaging.Envelope) {
 	if !s.cfg.isFIFO() {
 		return
 	}
@@ -198,7 +198,7 @@ func headersToAttributes(headers map[string]any) map[string]sqstypes.MessageAttr
 	attrs := make(map[string]sqstypes.MessageAttributeValue, len(headers))
 
 	for k, v := range headers {
-		if k == domain.HeaderOrderingKey || k == domain.HeaderDeduplicationID {
+		if k == messaging.HeaderOrderingKey || k == messaging.HeaderDeduplicationID {
 			continue
 		}
 		// Skip SQS system attributes injected by the receiver — they are
@@ -208,7 +208,7 @@ func headersToAttributes(headers map[string]any) map[string]sqstypes.MessageAttr
 		}
 		// Skip bridge-reserved headers; they are injected per-hop and
 		// should not consume SQS attribute slots.
-		if domain.IsReservedHeader(k) {
+		if messaging.IsReservedHeader(k) {
 			continue
 		}
 
@@ -248,12 +248,12 @@ func extractFIFOFields(headers map[string]any) (groupID, dedupID string) {
 	if headers == nil {
 		return "", ""
 	}
-	if v, ok := headers[domain.HeaderOrderingKey]; ok {
+	if v, ok := headers[messaging.HeaderOrderingKey]; ok {
 		if s, ok := v.(string); ok {
 			groupID = s
 		}
 	}
-	if v, ok := headers[domain.HeaderDeduplicationID]; ok {
+	if v, ok := headers[messaging.HeaderDeduplicationID]; ok {
 		if s, ok := v.(string); ok {
 			dedupID = s
 		}
@@ -264,7 +264,7 @@ func extractFIFOFields(headers map[string]any) (groupID, dedupID string) {
 // generateDeduplicationID derives a stable FIFO dedup id from the
 // envelope payload, subject and id. md5 is sufficient — SQS only uses
 // the value as an opaque key for dedup, not for security.
-func generateDeduplicationID(env *domain.Envelope) string {
+func generateDeduplicationID(env *messaging.Envelope) string {
 	h := md5.New()
 	h.Write(env.Payload)
 	h.Write([]byte(env.Subject))

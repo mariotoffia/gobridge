@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -24,7 +25,7 @@ func TestNewSender_Defaults(t *testing.T) {
 func TestSender_Send_NoSession(t *testing.T) {
 	s := NewSender(SenderConfig{})
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "e1",
 		Payload: []byte("hello"),
 	}
@@ -51,7 +52,7 @@ func TestSender_Send_NoConnection(t *testing.T) {
 	defer func() { _ = sess.Close(context.Background()) }()
 	s := NewSender(SenderConfig{Session: sess})
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "e2",
 		Payload: []byte("hello"),
 	}
@@ -69,7 +70,7 @@ func TestSender_Send_NoConnection(t *testing.T) {
 func TestSender_SendBatch_FirstFails(t *testing.T) {
 	s := NewSender(SenderConfig{})
 
-	envs := []*domain.Envelope{
+	envs := []*messaging.Envelope{
 		{ID: "e1", Payload: []byte("a")},
 		{ID: "e2", Payload: []byte("b")},
 	}

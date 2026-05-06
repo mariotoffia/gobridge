@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
@@ -31,7 +32,7 @@ func TestMain(m *testing.M) {
 func makeEntry(id, routeID, category string, failedAt time.Time) domain.DLQEntry {
 	return domain.DLQEntry{
 		ID: id,
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:      "env-" + id,
 			Subject: "test/subject",
 			Payload: []byte(`{"key":"value"}`),

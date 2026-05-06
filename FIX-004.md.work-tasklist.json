@@ -1,0 +1,91 @@
+{
+  "$schema": "v2",
+  "source": "FIX-004.md",
+  "source_sha": "0b663c6f15475631db29a4b3472eac6dd53756bd63342701a122b4460936f0b4",
+  "indexed_at": "2026-05-06T06:24:17Z",
+  "status_convention": "- DONE suffix on Phase H3 headings",
+  "tasks": [
+    {
+      "id": "phase-1",
+      "title": "Move domain/shared (errors, metrics)",
+      "status": "done",
+      "category_hint": "clean-arch refactor",
+      "suggested_agent": "refactoring-specialist",
+      "agent_rationale": "Mechanical package extraction with import rewrites.",
+      "body_suggested_agents": [
+        "refactoring-specialist",
+        "clean-arch-reviewer"
+      ],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "phase-2",
+      "title": "Move domain/messaging (Envelope, Headers, TraceContext)",
+      "status": "done",
+      "category_hint": "clean-arch refactor",
+      "suggested_agent": "refactoring-specialist",
+      "agent_rationale": "Largest fan-out; split envelope.go.",
+      "body_suggested_agents": [
+        "refactoring-specialist",
+        "clean-arch-reviewer"
+      ],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "phase-3",
+      "title": "Move domain/persistence (Outbox, Lease, DrainStrategy)",
+      "status": "pending",
+      "category_hint": "clean-arch refactor",
+      "suggested_agent": "refactoring-specialist",
+      "agent_rationale": "Split envelope.go for outbox types; move lease.go and drain_strategy.go.",
+      "body_suggested_agents": [
+        "refactoring-specialist",
+        "clean-arch-reviewer"
+      ],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "phase-4",
+      "title": "Move domain/routing and domain/connectivity",
+      "status": "pending",
+      "category_hint": "clean-arch refactor",
+      "suggested_agent": "refactoring-specialist",
+      "agent_rationale": "Split route.go; credentials \u2192 connectivity.",
+      "body_suggested_agents": [
+        "refactoring-specialist",
+        "clean-arch-reviewer"
+      ],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "phase-5",
+      "title": "Tighten arch lint, drop transitional domain component",
+      "status": "pending",
+      "category_hint": "clean-arch lint",
+      "suggested_agent": "clean-arch-reviewer",
+      "agent_rationale": "Remove the catch-all domain component once contexts are extracted.",
+      "body_suggested_agents": [
+        "clean-arch-reviewer"
+      ],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "phase-6",
+      "title": "Update .golangci.yml depguard for cross-context bans",
+      "status": "pending",
+      "category_hint": "clean-arch lint",
+      "suggested_agent": "clean-arch-reviewer",
+      "agent_rationale": "Belt-and-suspenders cross-context import bans.",
+      "body_suggested_agents": [
+        "clean-arch-reviewer"
+      ],
+      "body_suggested_skills": [],
+      "review_round": 0
+    }
+  ]
+}

@@ -22,6 +22,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -41,7 +42,7 @@ type concurrencyTracker struct {
 
 func (p *concurrencyTracker) Name() string { return "concurrency-tracker" }
 
-func (p *concurrencyTracker) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *concurrencyTracker) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	cur := p.current.Add(1)
 	for {
 		old := p.max.Load()
@@ -67,7 +68,7 @@ func newFaultySender(inner ports.Sender, failPercent int) *faultySender {
 	return &faultySender{inner: inner, failPercent: failPercent}
 }
 
-func (s *faultySender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *faultySender) Send(ctx context.Context, env *messaging.Envelope) error {
 	s.calls.Add(1)
 	if rand.IntN(100) < s.failPercent {
 		return shared.ErrUnavailable.WithMessage("faulty sender injected failure")
@@ -87,7 +88,7 @@ func newSlowProcessor(name string, delay time.Duration) *slowProcessor {
 
 func (p *slowProcessor) Name() string { return p.name }
 
-func (p *slowProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *slowProcessor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	select {
 	case <-time.After(p.delay):
 	case <-ctx.Done():
@@ -99,12 +100,12 @@ func (p *slowProcessor) Process(ctx context.Context, env *domain.Envelope, next 
 // filterProcessor drops messages that don't match the predicate,
 // returning ErrMessageFiltered for rejected messages.
 type filterProcessor struct {
-	keep func(env *domain.Envelope) bool
+	keep func(env *messaging.Envelope) bool
 }
 
 func (p *filterProcessor) Name() string { return "filter" }
 
-func (p *filterProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *filterProcessor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	if !p.keep(env) {
 		return shared.ErrMessageFiltered.WithMessage("filtered by predicate")
 	}
@@ -123,7 +124,7 @@ func newPausableSender(inner ports.Sender) *pausableSender {
 	return &pausableSender{inner: inner, ch: make(chan struct{})}
 }
 
-func (s *pausableSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *pausableSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	s.mu.Lock()
 	if s.paused {
 		ch := s.ch
@@ -167,7 +168,7 @@ func newSlowSender(inner ports.Sender, delay time.Duration) *slowSender {
 	return &slowSender{inner: inner, delay: delay}
 }
 
-func (s *slowSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *slowSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	select {
 	case <-time.After(s.delay):
 	case <-ctx.Done():
@@ -179,14 +180,14 @@ func (s *slowSender) Send(ctx context.Context, env *domain.Envelope) error {
 // alwaysFailSender always returns a transient error.
 type alwaysFailSender struct{}
 
-func (s *alwaysFailSender) Send(_ context.Context, _ *domain.Envelope) error {
+func (s *alwaysFailSender) Send(_ context.Context, _ *messaging.Envelope) error {
 	return shared.ErrUnavailable.WithMessage("always-fail sender")
 }
 
 // permanentFailSender always returns a permanent error, forcing DLQ routing.
 type permanentFailSender struct{}
 
-func (s *permanentFailSender) Send(_ context.Context, _ *domain.Envelope) error {
+func (s *permanentFailSender) Send(_ context.Context, _ *messaging.Envelope) error {
 	return shared.ErrInvalidPayload.WithMessage("permanent-fail sender")
 }
 
@@ -198,7 +199,7 @@ type chainOrderProcessor struct {
 
 func (p *chainOrderProcessor) Name() string { return "chain-" + p.stage }
 
-func (p *chainOrderProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *chainOrderProcessor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	if env.Headers == nil {
 		env.Headers = make(map[string]any)
 	}
@@ -467,7 +468,7 @@ type errorClassSender struct {
 	inner ports.Sender
 }
 
-func (s *errorClassSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *errorClassSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	if env.Headers != nil {
 		if et, ok := env.Headers["error_type"].(string); ok {
 			switch et {

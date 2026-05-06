@@ -9,7 +9,7 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -50,7 +50,7 @@ func TestBug6_SendBatch_SenderFaultClassifiedAsPermanent(t *testing.T) {
 		metrics:  &ports.NoopExporter{},
 	}
 
-	envs := []*domain.Envelope{
+	envs := []*messaging.Envelope{
 		{ID: "msg-0", Payload: []byte(`{"ok":true}`)},
 		{ID: "msg-1", Payload: []byte(`{"bad":true}`)},
 	}
@@ -119,7 +119,7 @@ func TestBug6_SendBatch_AllFailuresCorrectClassification(t *testing.T) {
 				metrics:  &ports.NoopExporter{},
 			}
 
-			envs := []*domain.Envelope{
+			envs := []*messaging.Envelope{
 				{ID: "msg-0", Payload: []byte(`{"test":true}`)},
 			}
 

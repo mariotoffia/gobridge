@@ -14,6 +14,7 @@ import (
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -132,7 +133,7 @@ type variableDelayProcessor struct {
 func (p *variableDelayProcessor) Name() string { return "variable-delay" }
 
 func (p *variableDelayProcessor) Process(
-	ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc,
+	ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc,
 ) error {
 	seq := extractSeq(env)
 	delay := time.Duration(seq%p.modulo) * time.Second
@@ -145,7 +146,7 @@ func (p *variableDelayProcessor) Process(
 }
 
 // extractSeq parses a seq number from the payload JSON like {"seq":42}.
-func extractSeq(env *domain.Envelope) int {
+func extractSeq(env *messaging.Envelope) int {
 	body := string(env.Payload)
 	var seq int
 	_, _ = fmt.Sscanf(body, `{"seq":%d}`, &seq)
@@ -289,7 +290,7 @@ func TestUC29_MessageTTL_Expiry(t *testing.T) {
 	// Inject messages with ExpiresAt in the past (already expired).
 	// The route runner checks env.IsExpired(clock) before processing.
 	for i := 0; i < msgCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:        fmt.Sprintf("uc29-msg-%d", i),
 			Payload:   []byte(fmt.Sprintf(`{"seq":%d}`, i)),
 			ExpiresAt: time.Now().Add(-1 * time.Second),

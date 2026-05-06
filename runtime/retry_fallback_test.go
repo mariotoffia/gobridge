@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -118,7 +119,7 @@ func TestDirectHold_RetryUnsupported_FallsToDLQ(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{
+	del := NewFakeDelivery(&messaging.Envelope{
 		ID:        "msg-retry-unsup",
 		Payload:   []byte("data"),
 		ExpiresAt: time.Now().Add(time.Hour),
@@ -175,7 +176,7 @@ func TestDirectHold_RetryUnsupported_DLQAlsoFails_ReturnsError(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{
+	del := NewFakeDelivery(&messaging.Envelope{
 		ID:        "msg-both-fail",
 		Payload:   []byte("data"),
 		ExpiresAt: time.Now().Add(time.Hour),
@@ -227,7 +228,7 @@ func TestHandleProcessorError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{
+	del := NewFakeDelivery(&messaging.Envelope{
 		ID:        "msg-proc-retry-unsup",
 		Payload:   []byte("data"),
 		ExpiresAt: time.Now().Add(time.Hour),
@@ -270,7 +271,7 @@ func TestSharedOutbox_RetryUnsupported_FallsToDLQ(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{
+	del := NewFakeDelivery(&messaging.Envelope{
 		ID:        "msg-outbox-retry-unsup",
 		Payload:   []byte("data"),
 		ExpiresAt: time.Now().Add(time.Hour),
@@ -323,7 +324,7 @@ func TestHandleExpired_RetryUnsupported_FallsToDLQ(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{
+	del := NewFakeDelivery(&messaging.Envelope{
 		ID:        "msg-expired-retry-unsup",
 		Payload:   []byte("data"),
 		ExpiresAt: time.Now().Add(-time.Hour),
@@ -367,7 +368,7 @@ func TestHandleResolveError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{
+	del := NewFakeDelivery(&messaging.Envelope{
 		ID:        "msg-resolve-retry-unsup",
 		Payload:   []byte("data"),
 		ExpiresAt: time.Now().Add(time.Hour),
@@ -410,7 +411,7 @@ func TestDirectHold_RetrySupported_NoFallback(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{
+	del := NewFakeDelivery(&messaging.Envelope{
 		ID:        "msg-retry-supported",
 		Payload:   []byte("data"),
 		ExpiresAt: time.Now().Add(time.Hour),

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/stretchr/testify/assert"
@@ -109,7 +110,7 @@ func TestToDLQEntryView_MapsAllFields(t *testing.T) {
 		SourceID: "src1", CorrelationID: "c1", Reason: "timeout",
 		Category: "transient", ErrorCode: "TIMEOUT", LastError: "dial err",
 		FailedAt: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC), Attempts: 5,
-		Envelope: domain.Envelope{Subject: "test/topic"},
+		Envelope: messaging.Envelope{Subject: "test/topic"},
 	}
 	v := toDLQEntryView(e)
 	assert.Equal(t, "v-1", v.ID)
@@ -123,7 +124,7 @@ func TestToDLQEntryView_MapsAllFields(t *testing.T) {
 // detail view includes the envelope payload as base64.
 func TestToDLQEntryDetailView_IncludesBase64Payload(t *testing.T) {
 	e := domain.DLQEntry{
-		Envelope: domain.Envelope{Payload: []byte(`{"msg":"hello"}`)},
+		Envelope: messaging.Envelope{Payload: []byte(`{"msg":"hello"}`)},
 	}
 	v := toDLQEntryDetailView(e)
 	decoded, err := base64.StdEncoding.DecodeString(v.Payload)
@@ -147,7 +148,7 @@ func TestToDLQEntryDetailView_EmptyPayload(t *testing.T) {
 func TestHandleDLQMessageByID_ReturnsEntry(t *testing.T) {
 	entry := domain.DLQEntry{
 		ID: "msg-1", RouteID: "r1", Category: "timeout",
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			Subject: "test/sub",
 			Payload: []byte("binary-data"),
 		},

@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -32,7 +33,7 @@ func TestBugForwarder_5xxReturnsTransientError(t *testing.T) {
 				InstanceID: "remote-5xx",
 				Endpoints:  map[string]string{"http": remote.URL},
 			}
-			env := &domain.Envelope{
+			env := &messaging.Envelope{
 				ID:      "msg-5xx",
 				Subject: "test.5xx",
 				Payload: []byte(`{}`),
@@ -70,7 +71,7 @@ func TestBugForwarder_4xxReturnsPermanentError(t *testing.T) {
 				InstanceID: "remote-4xx",
 				Endpoints:  map[string]string{"http": remote.URL},
 			}
-			env := &domain.Envelope{
+			env := &messaging.Envelope{
 				ID:      "msg-4xx",
 				Subject: "test.4xx",
 				Payload: []byte(`{}`),
@@ -109,7 +110,7 @@ func TestBugForwarder_2xxReturnsNoError(t *testing.T) {
 		InstanceID: "remote-ok",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "msg-ok",
 		Subject: "test.ok",
 		Payload: []byte(`{}`),

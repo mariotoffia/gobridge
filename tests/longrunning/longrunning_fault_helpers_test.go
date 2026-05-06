@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -30,7 +31,7 @@ func newFailFirstNSender(inner ports.Sender, maxFails int) *failFirstNSender {
 	return &failFirstNSender{inner: inner, maxFails: maxFails, attempts: make(map[string]int)}
 }
 
-func (s *failFirstNSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *failFirstNSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	s.mu.Lock()
 	s.attempts[env.ID]++
 	n := s.attempts[env.ID]
@@ -56,7 +57,7 @@ func newCountingSender(inner ports.Sender) *countingSender {
 	return &countingSender{inner: inner}
 }
 
-func (s *countingSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *countingSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	err := s.inner.Send(ctx, env)
 	if err != nil {
 		s.failures.Add(1)
@@ -81,7 +82,7 @@ func newDegradedSender(inner ports.Sender, failPct int, latency time.Duration) *
 	return &degradedSender{inner: inner, failPercent: failPct, latency: latency}
 }
 
-func (s *degradedSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *degradedSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	if s.latency > 0 {
 		select {
 		case <-time.After(s.latency):
@@ -196,7 +197,7 @@ type rejectEveryNthProcessor struct {
 func (p *rejectEveryNthProcessor) Name() string { return "reject-every-nth" }
 
 func (p *rejectEveryNthProcessor) Process(
-	ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc,
+	ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc,
 ) error {
 	c := p.count.Add(1)
 	if c%int64(p.n) == 0 {
@@ -218,7 +219,7 @@ type panicProcessor struct {
 func (p *panicProcessor) Name() string { return "panic-processor" }
 
 func (p *panicProcessor) Process(
-	ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc,
+	ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc,
 ) error {
 	n := p.count.Add(1)
 	if n%int64(p.panicEvery) == 0 {

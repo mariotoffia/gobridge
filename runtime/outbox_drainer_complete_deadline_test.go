@@ -7,12 +7,13 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
-type senderFunc func(context.Context, *domain.Envelope) error
+type senderFunc func(context.Context, *messaging.Envelope) error
 
-func (f senderFunc) Send(ctx context.Context, env *domain.Envelope) error {
+func (f senderFunc) Send(ctx context.Context, env *messaging.Envelope) error {
 	return f(ctx, env)
 }
 
@@ -33,7 +34,7 @@ func TestOutboxDrainer_CompleteSurvivesNearBatchDeadline(t *testing.T) {
 		EnvelopeID: "env-complete-deadline",
 		BindingID:  "bind-1",
 		SessionID:  "sess-complete-deadline",
-		Envelope:   domain.Envelope{ID: "env-complete-deadline", Payload: []byte("payload")},
+		Envelope:   messaging.Envelope{ID: "env-complete-deadline", Payload: []byte("payload")},
 		Status:     domain.OutboxPending,
 	}
 	if err := outbox.Persist(context.Background(), []domain.OutboxRecord{rec}); err != nil {
@@ -128,7 +129,7 @@ func TestOutboxDrainer_CompleteRespectsRuntimeShutdown(t *testing.T) {
 		EnvelopeID: "env-complete-shutdown",
 		BindingID:  "bind-1",
 		SessionID:  "sess-complete-shutdown",
-		Envelope:   domain.Envelope{ID: "env-complete-shutdown", Payload: []byte("payload")},
+		Envelope:   messaging.Envelope{ID: "env-complete-shutdown", Payload: []byte("payload")},
 		Status:     domain.OutboxPending,
 	}
 	if err := outbox.Persist(context.Background(), []domain.OutboxRecord{rec}); err != nil {
@@ -149,7 +150,7 @@ func TestOutboxDrainer_CompleteRespectsRuntimeShutdown(t *testing.T) {
 	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
-	sender := senderFunc(func(_ context.Context, _ *domain.Envelope) error {
+	sender := senderFunc(func(_ context.Context, _ *messaging.Envelope) error {
 		cancel()
 		return nil
 	})

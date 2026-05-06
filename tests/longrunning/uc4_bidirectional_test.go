@@ -14,6 +14,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -144,7 +145,7 @@ func TestUC4_Bidirectional_SQS_MQTT(t *testing.T) {
 			Timeout: 10 * time.Second,
 		})
 		for i := 0; i < msgCount; i++ {
-			env := &domain.Envelope{
+			env := &messaging.Envelope{
 				ID:      fmt.Sprintf("uc4-dirB-%d", i),
 				Subject: "uc4/north/data",
 				Payload: []byte(fmt.Sprintf("dirB-%d", i)),

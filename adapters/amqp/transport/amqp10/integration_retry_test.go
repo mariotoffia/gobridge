@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
@@ -44,7 +45,7 @@ func TestIntegration_RetryRelease(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "retry-release-1",
 		Subject: "test.retry.release",
 		Payload: []byte(`{"action":"release"}`),
@@ -125,7 +126,7 @@ func TestIntegration_RetryModify(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "retry-modify-1",
 		Subject: "test.retry.modify",
 		Payload: []byte(`{"action":"modify"}`),
@@ -207,7 +208,7 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "extend-1",
 		Subject: "test.extend",
 		Payload: []byte(`{"action":"extend"}`),

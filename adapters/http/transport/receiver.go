@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -140,7 +140,7 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	env.Headers = domain.StripReservedHeaders(env.Headers)
+	env.Headers = messaging.StripReservedHeaders(env.Headers)
 
 	r.mu.Lock()
 	routeID := r.routeID
@@ -210,7 +210,7 @@ type ingressRequest struct {
 	ExpiresAt string          `json:"expires_at,omitempty"`
 }
 
-func (r *ingressRequest) toEnvelope(clk clock.Clock) (*domain.Envelope, error) {
+func (r *ingressRequest) toEnvelope(clk clock.Clock) (*messaging.Envelope, error) {
 	if clk == nil {
 		clk = clock.System
 	}
@@ -218,7 +218,7 @@ func (r *ingressRequest) toEnvelope(clk clock.Clock) (*domain.Envelope, error) {
 	if id == "" {
 		id = generateHTTPEnvelopeID(clk)
 	}
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        id,
 		Subject:   r.Subject,
 		Payload:   []byte(r.Payload),

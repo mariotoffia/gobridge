@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -15,7 +15,7 @@ import (
 // Verifies routing with a nil DLQ store is a no-op and returns no error.
 func TestDLQRouter_NilStore(t *testing.T) {
 	dlq := runtime.NewDLQRouter(nil)
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 
 	err := dlq.Route(context.Background(), env, "route-1", "", "", "", shared.ErrNotFound, 1)
 	if err != nil {
@@ -28,9 +28,9 @@ func TestDLQRouter_WritesEntry(t *testing.T) {
 	store := NewFakeDLQStore()
 	dlq := runtime.NewDLQRouter(store)
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "msg-1",
-		Headers: map[string]any{domain.HeaderCorrelationID: "corr-abc"},
+		Headers: map[string]any{messaging.HeaderCorrelationID: "corr-abc"},
 	}
 
 	err := dlq.Route(context.Background(), env, "route-1", "bind-1", "sess-1", "src-1", shared.ErrNotFound, 3)
@@ -61,7 +61,7 @@ func TestDLQRouter_UnknownError(t *testing.T) {
 	store := NewFakeDLQStore()
 	dlq := runtime.NewDLQRouter(store)
 
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	_ = dlq.Route(context.Background(), env, "r", "", "", "", context.DeadlineExceeded, 0)
 
 	if store.Count() != 1 {
@@ -99,7 +99,7 @@ func TestDLQRouter_HasStore_False(t *testing.T) {
 func TestDLQRouter_Route_RedactsErrorDetails(t *testing.T) {
 	store := NewFakeDLQStore()
 	dlq := runtime.NewDLQRouter(store)
-	env := &domain.Envelope{ID: "msg-redact"}
+	env := &messaging.Envelope{ID: "msg-redact"}
 
 	rawErr := shared.ErrConnectionLost.Wrap(
 		fmt.Errorf("connection to db-prod.internal:5432 refused"),
@@ -145,7 +145,7 @@ func TestDLQRouter_Route_StoreWriteError_Propagated(t *testing.T) {
 	store := NewFakeDLQStore()
 	store.WriteErr = fmt.Errorf("disk full")
 	dlq := runtime.NewDLQRouter(store)
-	env := &domain.Envelope{ID: "msg-fail"}
+	env := &messaging.Envelope{ID: "msg-fail"}
 
 	err := dlq.Route(context.Background(), env, "r", "", "", "", shared.ErrNotFound, 1)
 	if err == nil {
@@ -166,11 +166,11 @@ func TestDLQRouter_Route_AllFieldsPopulated(t *testing.T) {
 		Clock: clk,
 	})
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "msg-all",
 		Subject: "test/topic",
 		Payload: []byte("payload-data"),
-		Headers: map[string]any{domain.HeaderCorrelationID: "corr-xyz"},
+		Headers: map[string]any{messaging.HeaderCorrelationID: "corr-xyz"},
 	}
 
 	routeErr := shared.ErrThrottled
@@ -229,7 +229,7 @@ func TestDLQRouter_Route_NoCorrelationID(t *testing.T) {
 	store := NewFakeDLQStore()
 	dlq := runtime.NewDLQRouter(store)
 
-	env := &domain.Envelope{ID: "msg-nocorr"}
+	env := &messaging.Envelope{ID: "msg-nocorr"}
 
 	err := dlq.Route(context.Background(), env, "route-nocorr", "", "", "", shared.ErrNotFound, 1)
 	if err != nil {
@@ -247,7 +247,7 @@ func TestDLQRouter_Route_NoCorrelationID(t *testing.T) {
 func TestDLQRouter_ClassifyError_BridgeError(t *testing.T) {
 	store := NewFakeDLQStore()
 	dlq := runtime.NewDLQRouter(store)
-	env := &domain.Envelope{ID: "msg-bridge"}
+	env := &messaging.Envelope{ID: "msg-bridge"}
 
 	testCases := []struct {
 		name         string

@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -15,18 +15,18 @@ type deliveryResult struct {
 // httpDelivery implements ports.Delivery for HTTP-originated messages.
 // Ack and Retry signal the HTTP handler via a buffered channel.
 type httpDelivery struct {
-	env  *domain.Envelope
+	env  *messaging.Envelope
 	done chan deliveryResult
 }
 
-func newHTTPDelivery(env *domain.Envelope) *httpDelivery {
+func newHTTPDelivery(env *messaging.Envelope) *httpDelivery {
 	return &httpDelivery{
 		env:  env,
 		done: make(chan deliveryResult, 1),
 	}
 }
 
-func (d *httpDelivery) Envelope() *domain.Envelope { return d.env }
+func (d *httpDelivery) Envelope() *messaging.Envelope { return d.env }
 
 func (d *httpDelivery) Ack(_ context.Context) error {
 	select {

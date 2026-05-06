@@ -4,10 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/mariotoffia/gobridge/domain"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -38,7 +37,7 @@ func TestSendBatch_EmptySlice_ReturnsZeroNil(t *testing.T) {
 		cfg:      SenderConfig{BatchSize: 10, Timeout: 30},
 	}
 
-	n, err := s.SendBatch(context.Background(), []*domain.Envelope{})
+	n, err := s.SendBatch(context.Background(), []*messaging.Envelope{})
 	require.NoError(t, err)
 	assert.Equal(t, 0, n, "SendBatch([]) should return 0 sent")
 }

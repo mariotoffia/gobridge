@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -45,7 +45,7 @@ func NewInstrumentedSender(
 	}
 }
 
-func (s *InstrumentedSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *InstrumentedSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	start := s.clk.Now()
 	err := s.inner.Send(ctx, env)
 	s.metrics.Timer(s.metricName, s.clk.Since(start),

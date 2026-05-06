@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 
 	"github.com/mariotoffia/gobridge/domain"
@@ -363,7 +364,7 @@ func TestEdgeR3_ForwarderContextCancelled(t *testing.T) {
 		InstanceID: "slow-peer",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "ctx-cancel-1",
 		Subject: "test.cancel",
 		Payload: []byte(`{}`),
@@ -549,7 +550,7 @@ func TestEdgeR3_SSESendContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // immediately cancelled
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "ctx-1",
 		Subject: "test.ctx",
 		Payload: []byte(`{}`),

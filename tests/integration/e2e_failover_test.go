@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -26,7 +27,7 @@ func newLimitedSender(limit int) *limitedSender {
 	return &limitedSender{inner: newFakeSender(), limit: limit, reached: make(chan struct{})}
 }
 
-func (s *limitedSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *limitedSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	s.mu.Lock()
 	s.count++
 	n := s.count
@@ -43,7 +44,7 @@ func (s *limitedSender) Send(ctx context.Context, env *domain.Envelope) error {
 
 type stallSender struct{}
 
-func (s *stallSender) Send(ctx context.Context, _ *domain.Envelope) error {
+func (s *stallSender) Send(ctx context.Context, _ *messaging.Envelope) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -120,7 +121,7 @@ func TestE2E_F2_Failover_TwoInstances_LeaseTransfer(t *testing.T) {
 		t.Fatalf("Start A: %v", err)
 	}
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
-	env := &domain.Envelope{ID: uniqueID("f2-msg"), Payload: []byte("transfer")}
+	env := &messaging.Envelope{ID: uniqueID("f2-msg"), Payload: []byte("transfer")}
 	del := newFakeDelivery(env)
 	_ = rxA.Emit(ctxA, del)
 	e2eWaitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
@@ -169,7 +170,7 @@ func TestE2E_F3_Failover_ThreeInstances_CascadingFailure(t *testing.T) {
 	}
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
 	for i := 0; i < 3; i++ {
-		del := newFakeDelivery(&domain.Envelope{ID: fmt.Sprintf("f3-%d", i), Payload: []byte("cascade")})
+		del := newFakeDelivery(&messaging.Envelope{ID: fmt.Sprintf("f3-%d", i), Payload: []byte("cascade")})
 		_ = rxA.Emit(ctxA, del)
 		e2eWaitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
 	}
@@ -235,7 +236,7 @@ func TestE2E_F4_Failover_ThreeInstances_StaleFencingToken(t *testing.T) {
 	rec := domain.OutboxRecord{
 		ID: "f4-rec-1", RouteID: "f4-route", EnvelopeID: "f4-env",
 		BindingID: "b1", SessionID: leaseID, Address: "t/f4",
-		Status: domain.OutboxPending, Envelope: domain.Envelope{ID: "f4-env", Payload: []byte("fencing")},
+		Status: domain.OutboxPending, Envelope: messaging.Envelope{ID: "f4-env", Payload: []byte("fencing")},
 	}
 	if err := outboxStore.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
@@ -306,7 +307,7 @@ func TestE2E_F5_Failover_ConnectAfterLease(t *testing.T) {
 		t.Fatal("session started before lease acquired")
 	}
 	e2eWaitFor(t, 10*time.Second, "session after lease expiry", func() bool { return sess.isStarted() })
-	env := &domain.Envelope{ID: uniqueID("f5-msg"), Payload: []byte("deferred")}
+	env := &messaging.Envelope{ID: uniqueID("f5-msg"), Payload: []byte("deferred")}
 	del := newFakeDelivery(env)
 	_ = rx.Emit(ctx, del)
 	e2eWaitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
@@ -487,7 +488,7 @@ func TestE2E_F9_Failover_MultiMessage_ThreeInstances(t *testing.T) {
 	}
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
 	for i := 0; i < 5; i++ {
-		del := newFakeDelivery(&domain.Envelope{ID: fmt.Sprintf("f9-%d", i), Payload: []byte("multi")})
+		del := newFakeDelivery(&messaging.Envelope{ID: fmt.Sprintf("f9-%d", i), Payload: []byte("multi")})
 		_ = rxA.Emit(ctxA, del)
 		e2eWaitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
 	}
@@ -534,7 +535,7 @@ func TestE2E_F10_Failover_GracefulStepDown(t *testing.T) {
 		t.Fatalf("Start A: %v", err)
 	}
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
-	del := newFakeDelivery(&domain.Envelope{ID: uniqueID("f10-msg"), Payload: []byte("step-down")})
+	del := newFakeDelivery(&messaging.Envelope{ID: uniqueID("f10-msg"), Payload: []byte("step-down")})
 	_ = rxA.Emit(ctxA, del)
 	e2eWaitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
 	e2eWaitFor(t, 10*time.Second, "A drained", func() bool { return sA.sentCount() >= 1 })
@@ -556,7 +557,7 @@ func TestE2E_F10_Failover_GracefulStepDown(t *testing.T) {
 		t.Fatalf("Start B: %v", err)
 	}
 	e2eWaitFor(t, 5*time.Second, "B started", func() bool { return sessB.isStarted() })
-	del2 := newFakeDelivery(&domain.Envelope{ID: uniqueID("f10-msg2"), Payload: []byte("new-owner")})
+	del2 := newFakeDelivery(&messaging.Envelope{ID: uniqueID("f10-msg2"), Payload: []byte("new-owner")})
 	_ = rxB.Emit(ctxB, del2)
 	e2eWaitFor(t, 3*time.Second, "B acked", func() bool { return del2.isAcked() })
 	e2eWaitFor(t, 10*time.Second, "B drained", func() bool { return sB.sentCount() >= 1 })

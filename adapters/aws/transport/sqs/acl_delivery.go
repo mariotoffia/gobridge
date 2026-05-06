@@ -10,8 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -51,7 +51,7 @@ var _ ports.Delivery = (*sqsDelivery)(nil)
 //   - SQS API call runs          → uses the still-live deliveryCtx
 //   - cleanupContext runs (defer) → frees the deliveryCtx node
 type sqsDelivery struct {
-	env               *domain.Envelope
+	env               *messaging.Envelope
 	client            sqsAPI
 	queueURL          string
 	receiptHandle     string
@@ -82,7 +82,7 @@ type sqsDelivery struct {
 // control tick firing deterministically.
 func newDelivery(
 	parentCtx context.Context,
-	env *domain.Envelope,
+	env *messaging.Envelope,
 	client sqsAPI,
 	queueURL string,
 	receiptHandle string,
@@ -122,7 +122,7 @@ func newDelivery(
 	return d
 }
 
-func (d *sqsDelivery) Envelope() *domain.Envelope { return d.env }
+func (d *sqsDelivery) Envelope() *messaging.Envelope { return d.env }
 
 // Ack deletes the SQS message, confirming successful processing.
 func (d *sqsDelivery) Ack(ctx context.Context) error {

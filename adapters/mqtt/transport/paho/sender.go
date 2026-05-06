@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -41,7 +41,7 @@ func NewSender(session *Session, opts SenderOptions) *Sender {
 //
 // Returns nil when the broker has accepted the message (PUBACK / PUBCOMP).
 // Returns a classified shared.BridgeError on failure.
-func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
 	if env == nil {
 		return shared.ErrInvalidPayload.WithMessage("nil envelope")
 	}

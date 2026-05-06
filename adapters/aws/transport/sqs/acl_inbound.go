@@ -10,7 +10,7 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
@@ -20,12 +20,12 @@ import (
 // receiver.go can hand both to newDelivery without ever naming an SDK
 // type itself.
 type rawInbound struct {
-	env           *domain.Envelope
+	env           *messaging.Envelope
 	receiptHandle string
 }
 
 // pollAndConvert performs one ReceiveMessage long-poll and translates each
-// returned SDK message into a domain.Envelope. It also emits the
+// returned SDK message into a messaging.Envelope. It also emits the
 // SQS-poll/per-message receive-latency metrics. All SDK types stay
 // inside this ACL file.
 func (r *Receiver) pollAndConvert(
@@ -72,13 +72,13 @@ func (r *Receiver) pollAndConvert(
 	return results, nil
 }
 
-// convertMessage translates a single SDK message into a *domain.Envelope
+// convertMessage translates a single SDK message into a *messaging.Envelope
 // plus the receipt handle the delivery uses for Ack/Retry/Extend.
 func (r *Receiver) convertMessage(
 	ctx context.Context,
 	queueURL string,
 	msg sqstypes.Message,
-) (*domain.Envelope, string) {
+) (*messaging.Envelope, string) {
 	receiptHandle := aws.ToString(msg.ReceiptHandle)
 	body := aws.ToString(msg.Body)
 
@@ -92,7 +92,7 @@ func (r *Receiver) convertMessage(
 		subject = v
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        aws.ToString(msg.MessageId),
 		Subject:   subject,
 		Payload:   []byte(body),
@@ -136,7 +136,7 @@ func attributesToHeaders(
 	h := make(map[string]any, len(msgAttrs)+len(sysAttrs))
 
 	for k, attr := range msgAttrs {
-		if domain.IsReservedHeader(k) {
+		if messaging.IsReservedHeader(k) {
 			continue
 		}
 		switch {

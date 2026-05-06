@@ -15,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -123,7 +124,7 @@ func TestRES003_MQTTSourceDropWithoutDLQ(t *testing.T) {
 	// Publish 100 messages to the MQTT source topic.
 	t.Logf("RES-003: publishing %d messages to MQTT source topic %q", msgCount, srcTopic)
 	for i := 0; i < msgCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("res003-msg-%d", i),
 			Subject: srcTopic,
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),

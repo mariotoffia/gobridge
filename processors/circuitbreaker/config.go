@@ -4,26 +4,26 @@ import (
 	"context"
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // KeyExtractor derives a circuit breaker key from each envelope.
-type KeyExtractor func(ctx context.Context, env *domain.Envelope) string
+type KeyExtractor func(ctx context.Context, env *messaging.Envelope) string
 
 // GlobalKey returns a constant key so all envelopes share one breaker.
-func GlobalKey(_ context.Context, _ *domain.Envelope) string {
+func GlobalKey(_ context.Context, _ *messaging.Envelope) string {
 	return "global"
 }
 
 // SubjectKey uses the envelope's Subject as the breaker key.
-func SubjectKey(_ context.Context, env *domain.Envelope) string {
+func SubjectKey(_ context.Context, env *messaging.Envelope) string {
 	return env.Subject
 }
 
 // HeaderKey returns a KeyExtractor that reads a named header.
 func HeaderKey(name string) KeyExtractor {
-	return func(_ context.Context, env *domain.Envelope) string {
-		if v, ok := domain.GetHeaderString(env.Headers, name); ok {
+	return func(_ context.Context, env *messaging.Envelope) string {
+		if v, ok := messaging.GetHeaderString(env.Headers, name); ok {
 			return v
 		}
 		return "unknown"

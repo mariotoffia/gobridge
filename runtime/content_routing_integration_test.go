@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -68,7 +69,7 @@ func TestIntegration_ContentRouting_HeaderMatch_DirectHold(t *testing.T) {
 		{"msg-3", "unknown"},
 	}
 	for _, m := range msgs {
-		del := NewFakeDelivery(&domain.Envelope{
+		del := NewFakeDelivery(&messaging.Envelope{
 			ID:      m.id,
 			Subject: "test",
 			Headers: map[string]any{"category": m.category},
@@ -131,7 +132,7 @@ func TestIntegration_ContentRouting_SubjectPrefix_DirectHold(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	del := NewFakeDelivery(&domain.Envelope{ID: "eu-1", Subject: "eu.orders.new"})
+	del := NewFakeDelivery(&messaging.Envelope{ID: "eu-1", Subject: "eu.orders.new"})
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "eu acked", del.IsAcked)
 
@@ -182,14 +183,14 @@ func TestIntegration_ContentRouting_JSONPayload_DirectHold(t *testing.T) {
 	<-receiver.Ready()
 
 	// High priority message
-	delH := NewFakeDelivery(&domain.Envelope{
+	delH := NewFakeDelivery(&messaging.Envelope{
 		ID: "high-1", Subject: "evt", Payload: []byte(`{"priority":9}`),
 	})
 	_ = receiver.Emit(ctx, delH)
 	waitFor(t, 2*time.Second, "high acked", delH.IsAcked)
 
 	// Low priority message
-	delL := NewFakeDelivery(&domain.Envelope{
+	delL := NewFakeDelivery(&messaging.Envelope{
 		ID: "low-1", Subject: "evt", Payload: []byte(`{"priority":3}`),
 	})
 	_ = receiver.Emit(ctx, delL)
@@ -225,7 +226,7 @@ func TestIntegration_ContentRouting_ProcessorThenRouting(t *testing.T) {
 
 	// Processor that sets tier=vip when subject starts with "premium."
 	tierProc := &headerInjector{
-		matchFn:   func(env *domain.Envelope) bool { return len(env.Subject) > 8 && env.Subject[:8] == "premium." },
+		matchFn:   func(env *messaging.Envelope) bool { return len(env.Subject) > 8 && env.Subject[:8] == "premium." },
 		headerKey: "tier",
 		headerVal: "vip",
 	}
@@ -249,7 +250,7 @@ func TestIntegration_ContentRouting_ProcessorThenRouting(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	del := NewFakeDelivery(&domain.Envelope{ID: "vip-msg", Subject: "premium.order"})
+	del := NewFakeDelivery(&messaging.Envelope{ID: "vip-msg", Subject: "premium.order"})
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "vip acked", del.IsAcked)
 
@@ -263,16 +264,16 @@ func TestIntegration_ContentRouting_ProcessorThenRouting(t *testing.T) {
 
 // headerInjector is a test processor that injects a header when matchFn returns true.
 type headerInjector struct {
-	matchFn   func(*domain.Envelope) bool
+	matchFn   func(*messaging.Envelope) bool
 	headerKey string
 	headerVal string
 }
 
 func (p *headerInjector) Name() string { return "test-header-injector" }
 
-func (p *headerInjector) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *headerInjector) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	if p.matchFn(env) {
-		env.Headers = domain.SetHeader(env.Headers, p.headerKey, p.headerVal)
+		env.Headers = messaging.SetHeader(env.Headers, p.headerKey, p.headerVal)
 	}
 	return next(ctx, env)
 }
@@ -328,7 +329,7 @@ func TestIntegration_ContentRouting_Concurrent(t *testing.T) {
 			if idx%2 == 1 {
 				target = "b"
 			}
-			del := NewFakeDelivery(&domain.Envelope{
+			del := NewFakeDelivery(&messaging.Envelope{
 				ID:      "msg-" + target + "-" + string(rune('0'+idx%10)),
 				Subject: "test",
 				Headers: map[string]any{"target": target},

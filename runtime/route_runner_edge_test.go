@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -13,7 +14,7 @@ import (
 
 type emptyResolver struct{}
 
-func (emptyResolver) Resolve(_ context.Context, _ *domain.Envelope) ([]domain.DispatchPlan, error) {
+func (emptyResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]domain.DispatchPlan, error) {
 	return []domain.DispatchPlan{}, nil
 }
 
@@ -40,7 +41,7 @@ func TestDirectHold_EmptyPlans_DoesNotPanic(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &domain.Envelope{ID: "test-empty-plans", Payload: []byte("data")}
+	env := &messaging.Envelope{ID: "test-empty-plans", Payload: []byte("data")}
 	del := NewFakeDelivery(env)
 
 	err := receiver.Emit(ctx, del)

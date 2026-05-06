@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
@@ -62,7 +63,7 @@ func TestIdempotentPersistAfterRedelivery(t *testing.T) {
 		BindingID:  "bind-redeliv",
 		SessionID:  "sess-redeliv",
 		Address:    "test/topic",
-		Envelope:   domain.Envelope{ID: "env-redeliv", Subject: "test", Payload: []byte("first")},
+		Envelope:   messaging.Envelope{ID: "env-redeliv", Subject: "test", Payload: []byte("first")},
 	}
 	if err := store.Persist(ctx, []domain.OutboxRecord{r1}); err != nil {
 		t.Fatalf("first persist: %v", err)
@@ -75,7 +76,7 @@ func TestIdempotentPersistAfterRedelivery(t *testing.T) {
 		BindingID:  "bind-redeliv",
 		SessionID:  "sess-redeliv",
 		Address:    "test/topic",
-		Envelope:   domain.Envelope{ID: "env-redeliv", Subject: "test", Payload: []byte("redelivered")},
+		Envelope:   messaging.Envelope{ID: "env-redeliv", Subject: "test", Payload: []byte("redelivered")},
 	}
 	err := store.Persist(ctx, []domain.OutboxRecord{r2})
 	if !errors.Is(err, shared.ErrDuplicateRecord) {
@@ -104,19 +105,19 @@ func TestFanOutAtomicity(t *testing.T) {
 			ID: "fo-atom-1", RouteID: "route-1",
 			EnvelopeID: "env-fo-atom", BindingID: "bind-A",
 			SessionID: "sess-fo-atom", Address: "topic/a",
-			Envelope: domain.Envelope{ID: "env-fo-atom", Subject: "test"},
+			Envelope: messaging.Envelope{ID: "env-fo-atom", Subject: "test"},
 		},
 		{
 			ID: "fo-atom-2", RouteID: "route-1",
 			EnvelopeID: "env-fo-atom", BindingID: "bind-B",
 			SessionID: "sess-fo-atom", Address: "topic/b",
-			Envelope: domain.Envelope{ID: "env-fo-atom", Subject: "test"},
+			Envelope: messaging.Envelope{ID: "env-fo-atom", Subject: "test"},
 		},
 		{
 			ID: "fo-atom-3", RouteID: "route-1",
 			EnvelopeID: "env-fo-atom", BindingID: "bind-C",
 			SessionID: "sess-fo-atom", Address: "topic/c",
-			Envelope: domain.Envelope{ID: "env-fo-atom", Subject: "test"},
+			Envelope: messaging.Envelope{ID: "env-fo-atom", Subject: "test"},
 		},
 	}
 
@@ -143,7 +144,7 @@ func TestFanOutDuplicateRejection(t *testing.T) {
 			ID: "fo-dup-1", RouteID: "route-1",
 			EnvelopeID: "env-fo-dup", BindingID: "bind-X",
 			SessionID: "sess-fo-dup", Address: "topic/x",
-			Envelope: domain.Envelope{ID: "env-fo-dup", Subject: "test"},
+			Envelope: messaging.Envelope{ID: "env-fo-dup", Subject: "test"},
 		},
 	}
 	if err := store.Persist(ctx, first); err != nil {
@@ -155,13 +156,13 @@ func TestFanOutDuplicateRejection(t *testing.T) {
 			ID: "fo-dup-2", RouteID: "route-1",
 			EnvelopeID: "env-fo-dup", BindingID: "bind-X",
 			SessionID: "sess-fo-dup", Address: "topic/x",
-			Envelope: domain.Envelope{ID: "env-fo-dup", Subject: "test"},
+			Envelope: messaging.Envelope{ID: "env-fo-dup", Subject: "test"},
 		},
 		{
 			ID: "fo-dup-3", RouteID: "route-1",
 			EnvelopeID: "env-fo-dup", BindingID: "bind-Y",
 			SessionID: "sess-fo-dup", Address: "topic/y",
-			Envelope: domain.Envelope{ID: "env-fo-dup", Subject: "test"},
+			Envelope: messaging.Envelope{ID: "env-fo-dup", Subject: "test"},
 		},
 	}
 	err := store.Persist(ctx, second)
@@ -187,7 +188,7 @@ func TestConcurrentClaimSafety(t *testing.T) {
 		ID: "conc-1", RouteID: "route-1",
 		EnvelopeID: "env-conc", BindingID: "bind-conc",
 		SessionID: "sess-conc", Address: "test/topic",
-		Envelope: domain.Envelope{ID: "env-conc", Subject: "test", Payload: []byte("concurrent")},
+		Envelope: messaging.Envelope{ID: "env-conc", Subject: "test", Payload: []byte("concurrent")},
 	}
 	if err := store.Persist(ctx, []domain.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
@@ -230,7 +231,7 @@ func TestReplayCountIncrementsOnReclaim(t *testing.T) {
 		ID: "replay-1", RouteID: "route-1",
 		EnvelopeID: "env-replay", BindingID: "bind-replay",
 		SessionID: "sess-replay", Address: "test/topic",
-		Envelope: domain.Envelope{ID: "env-replay", Subject: "test"},
+		Envelope: messaging.Envelope{ID: "env-replay", Subject: "test"},
 	}
 	if err := store.Persist(ctx, []domain.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
@@ -266,7 +267,7 @@ func TestCompleteWithStaleTokenRejected(t *testing.T) {
 		ID: "stale-1", RouteID: "route-1",
 		EnvelopeID: "env-stale", BindingID: "bind-stale",
 		SessionID: "sess-stale", Address: "test/topic",
-		Envelope: domain.Envelope{ID: "env-stale", Subject: "test"},
+		Envelope: messaging.Envelope{ID: "env-stale", Subject: "test"},
 	}
 	if err := store.Persist(ctx, []domain.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
@@ -293,7 +294,7 @@ func TestExpireWithNoExpirySetSkips(t *testing.T) {
 		ID: "noexp-1", RouteID: "route-1",
 		EnvelopeID: "env-noexp", BindingID: "bind-noexp",
 		SessionID: "sess-noexp", Address: "test/topic",
-		Envelope: domain.Envelope{ID: "env-noexp", Subject: "test"},
+		Envelope: messaging.Envelope{ID: "env-noexp", Subject: "test"},
 	}
 	if err := store.Persist(ctx, []domain.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
@@ -325,7 +326,7 @@ func TestDispatchHeadersRoundTrip(t *testing.T) {
 		ID: "hdr-ddb-1", RouteID: "route-1",
 		EnvelopeID: "env-hdr-ddb", BindingID: "bind-hdr-ddb",
 		SessionID: "sess-hdr-ddb", Address: "test/topic",
-		Envelope: domain.Envelope{ID: "env-hdr-ddb", Subject: "test"},
+		Envelope: messaging.Envelope{ID: "env-hdr-ddb", Subject: "test"},
 		DispatchHeaders: map[string]any{
 			"x-custom":  "value",
 			"x-numeric": float64(42),
@@ -357,13 +358,13 @@ func TestEnvelopePayloadRoundTrip(t *testing.T) {
 		ID: "pay-1", RouteID: "route-1",
 		EnvelopeID: "env-pay", BindingID: "bind-pay",
 		SessionID: "sess-pay", Address: "devices/sensor-1/temp",
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:      "env-pay",
 			Subject: "temperature",
 			Payload: payload,
 			Headers: map[string]any{
-				domain.HeaderContentType:   "application/json",
-				domain.HeaderCorrelationID: "corr-123",
+				messaging.HeaderContentType:   "application/json",
+				messaging.HeaderCorrelationID: "corr-123",
 			},
 		},
 	}
@@ -384,7 +385,7 @@ func TestEnvelopePayloadRoundTrip(t *testing.T) {
 	if pending[0].Envelope.Subject != "temperature" {
 		t.Fatalf("subject: got %q", pending[0].Envelope.Subject)
 	}
-	ct, _ := domain.GetHeaderString(pending[0].Envelope.Headers, domain.HeaderContentType)
+	ct, _ := messaging.GetHeaderString(pending[0].Envelope.Headers, messaging.HeaderContentType)
 	if ct != "application/json" {
 		t.Fatalf("content-type header: got %q", ct)
 	}
@@ -417,7 +418,7 @@ func TestFullLifecycleWithExpiry(t *testing.T) {
 		ID: "lce-1", RouteID: "route-1",
 		EnvelopeID: "env-lce", BindingID: "bind-lce",
 		SessionID: "sess-lce", Address: "test/topic",
-		Envelope:  domain.Envelope{ID: "env-lce", Subject: "test"},
+		Envelope:  messaging.Envelope{ID: "env-lce", Subject: "test"},
 		ExpiresAt: expiry,
 	}
 	if err := store.Persist(ctx, []domain.OutboxRecord{r}); err != nil {

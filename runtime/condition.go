@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // Operator constants for condition matching.
@@ -70,7 +70,7 @@ func newConditionEval(c MatchCondition) (*conditionEval, error) {
 // evaluate checks the condition against an envelope using a shared parsed
 // payload context. The parsedPayload may be nil; it will be lazily populated
 // on first JSON path access.
-func (e *conditionEval) evaluate(env *domain.Envelope, ctx *evalContext) (bool, error) {
+func (e *conditionEval) evaluate(env *messaging.Envelope, ctx *evalContext) (bool, error) {
 	value, exists, err := e.extractField(env, ctx)
 	if err != nil {
 		return false, fmt.Errorf("runtime: condition: extract field: %w", err)
@@ -92,7 +92,7 @@ func (e *conditionEval) evaluate(env *domain.Envelope, ctx *evalContext) (bool, 
 }
 
 // extractField retrieves the value for the condition's field path.
-func (e *conditionEval) extractField(env *domain.Envelope, ctx *evalContext) (any, bool, error) {
+func (e *conditionEval) extractField(env *messaging.Envelope, ctx *evalContext) (any, bool, error) {
 	field := e.cond.Field
 
 	switch {

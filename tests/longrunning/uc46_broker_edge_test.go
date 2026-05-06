@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -70,7 +71,7 @@ func TestUC46_BrokerMessageSizeLimit(t *testing.T) {
 
 	// Inject small messages.
 	for i := 0; i < smallCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("uc46-small-%d", i),
 			Subject: outTopic,
 			Payload: []byte(fmt.Sprintf(`{"seq":%d,"size":"small"}`, i)),
@@ -81,7 +82,7 @@ func TestUC46_BrokerMessageSizeLimit(t *testing.T) {
 	// Inject oversized messages.
 	bigPayload := []byte(strings.Repeat("x", 2000))
 	for i := 0; i < bigCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("uc46-big-%d", i),
 			Subject: outTopic,
 			Payload: bigPayload,

@@ -1,9 +1,9 @@
-package domain_test
+package messaging_test
 
 import (
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -33,7 +33,7 @@ import (
 //
 // ═══════════════════════════════════════════════════════════════════
 func TestEnvelope_Clone_MapStringString(t *testing.T) {
-	original := &domain.Envelope{
+	original := &messaging.Envelope{
 		ID: "map-str-str",
 		Headers: map[string]any{
 			"tags": map[string]string{"env": "prod", "region": "us-east-1"},
@@ -57,7 +57,7 @@ func TestEnvelope_Clone_MapStringString(t *testing.T) {
 // TestEnvelope_Clone_IntSlice validates that []int header values are
 // deep-copied so the clone and original do not share the backing array.
 func TestEnvelope_Clone_IntSlice(t *testing.T) {
-	original := &domain.Envelope{
+	original := &messaging.Envelope{
 		ID: "int-slice",
 		Headers: map[string]any{
 			"priorities": []int{1, 2, 3},
@@ -78,7 +78,7 @@ func TestEnvelope_Clone_IntSlice(t *testing.T) {
 // TestEnvelope_Clone_Float64Slice validates that []float64 header
 // values are deep-copied.
 func TestEnvelope_Clone_Float64Slice(t *testing.T) {
-	original := &domain.Envelope{
+	original := &messaging.Envelope{
 		ID: "float-slice",
 		Headers: map[string]any{
 			"weights": []float64{0.5, 1.5, 2.5},

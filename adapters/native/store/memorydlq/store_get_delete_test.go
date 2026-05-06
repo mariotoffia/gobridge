@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorydlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -28,7 +29,7 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 	entry := domain.DLQEntry{
 		ID:      "g-1",
 		RouteID: "route-g",
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:      "env-g-1",
 			Subject: "test/get",
 			Payload: []byte(`{"data":"value"}`),
@@ -210,7 +211,7 @@ func write(t *testing.T, s *memorydlq.Store, id, route, cat string, failedAt tim
 	t.Helper()
 	if err := s.Write(context.Background(), domain.DLQEntry{
 		ID: id, RouteID: route, Category: cat, FailedAt: failedAt,
-		Envelope: domain.Envelope{ID: "env-" + id, Subject: "test"},
+		Envelope: messaging.Envelope{ID: "env-" + id, Subject: "test"},
 	}); err != nil {
 		t.Fatalf("write %s: %v", id, err)
 	}

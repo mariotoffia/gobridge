@@ -5,13 +5,14 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // Delivery is a source-owned unit of work. Transport adapters create
 // concrete implementations that map Ack/Retry/Extend to transport-native
 // operations (e.g., SQS DeleteMessage, ChangeMessageVisibility).
 type Delivery interface {
-	Envelope() *domain.Envelope
+	Envelope() *messaging.Envelope
 	Ack(ctx context.Context) error
 	Retry(ctx context.Context, after time.Duration, reason error) error
 	Extend(ctx context.Context, until time.Time) error
@@ -36,14 +37,14 @@ type ReceiverStartedSignaler interface {
 
 // Sender submits envelopes to a transport.
 type Sender interface {
-	Send(ctx context.Context, env *domain.Envelope) error
+	Send(ctx context.Context, env *messaging.Envelope) error
 }
 
 // BatchSender extends Sender with batch send capability for transports
 // that support it (e.g., SQS SendMessageBatch).
 type BatchSender interface {
 	Sender
-	SendBatch(ctx context.Context, envs []*domain.Envelope) (int, error)
+	SendBatch(ctx context.Context, envs []*messaging.Envelope) (int, error)
 }
 
 // SessionEventType classifies session lifecycle events.

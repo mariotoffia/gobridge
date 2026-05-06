@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // RouteLocator determines which cluster node should handle a given route.
@@ -20,7 +21,7 @@ type RouteLocator interface {
 // The receiverID identifies the remote receiver's mounted path, which may differ
 // from the route ID when a route references a receiver with a different name.
 type MessageForwarder interface {
-	Forward(ctx context.Context, peer *domain.PeerInfo, receiverID string, env *domain.Envelope) error
+	Forward(ctx context.Context, peer *domain.PeerInfo, receiverID string, env *messaging.Envelope) error
 }
 
 // EndpointResolver discovers this instance's externally-reachable address.

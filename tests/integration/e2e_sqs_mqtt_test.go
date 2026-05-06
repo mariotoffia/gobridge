@@ -8,6 +8,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -185,7 +186,7 @@ func TestE2E_S3_MQTTToSQS_DirectHold(t *testing.T) {
 	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("s3-pub"), domain.SessionEphemeral)
 	pubSender := paho.NewSender(pubSess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "s3-msg-1",
 		Subject: topic,
 		Payload: []byte(`{"event":"created"}`),
@@ -561,7 +562,7 @@ func TestE2E_S8_SQSToMQTT_ProcessorChain(t *testing.T) {
 
 	enricher := &testProcessor{
 		name: "enricher",
-		fn: func(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+		fn: func(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 			env.Headers["enriched-by"] = "s8-test"
 			return next(ctx, env)
 		},
@@ -609,10 +610,10 @@ func TestE2E_S8_SQSToMQTT_ProcessorChain(t *testing.T) {
 // testProcessor is a simple ports.Processor for tests.
 type testProcessor struct {
 	name string
-	fn   func(context.Context, *domain.Envelope, ports.ProcessorFunc) error
+	fn   func(context.Context, *messaging.Envelope, ports.ProcessorFunc) error
 }
 
 func (p *testProcessor) Name() string { return p.name }
-func (p *testProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *testProcessor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	return p.fn(ctx, env, next)
 }

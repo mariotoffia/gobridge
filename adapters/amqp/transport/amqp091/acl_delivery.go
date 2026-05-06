@@ -8,8 +8,8 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -21,7 +21,7 @@ var _ ports.Delivery = (*Delivery)(nil)
 // Settlement is guaranteed at-most-once via a mutex-guarded flag that
 // tracks whether the delivery has been settled (and whether it succeeded).
 type Delivery struct {
-	env     *domain.Envelope
+	env     *messaging.Envelope
 	raw     amqp.Delivery
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
@@ -33,7 +33,7 @@ type Delivery struct {
 }
 
 // NewDelivery wraps an amqp091.Delivery as a ports.Delivery.
-func NewDelivery(env *domain.Envelope, raw amqp.Delivery, logger *slog.Logger, metrics ports.MetricsExporter, clk clock.Clock) *Delivery {
+func NewDelivery(env *messaging.Envelope, raw amqp.Delivery, logger *slog.Logger, metrics ports.MetricsExporter, clk clock.Clock) *Delivery {
 	if metrics == nil {
 		metrics = &ports.NoopExporter{}
 	}
@@ -49,7 +49,7 @@ func NewDelivery(env *domain.Envelope, raw amqp.Delivery, logger *slog.Logger, m
 	}
 }
 
-func (d *Delivery) Envelope() *domain.Envelope { return d.env }
+func (d *Delivery) Envelope() *messaging.Envelope { return d.env }
 
 // Ack acknowledges the single message to the broker. The settlement
 // is idempotent for successful calls. If a prior settlement attempt

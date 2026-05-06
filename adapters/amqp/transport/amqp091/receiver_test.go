@@ -13,7 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// verifies deliveryToEnvelope converts an amqp.Delivery to a domain.Envelope
+// verifies deliveryToEnvelope converts an amqp.Delivery to a messaging.Envelope
 // with correct field mappings.
 func TestReceiver_ConvertMessage(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)

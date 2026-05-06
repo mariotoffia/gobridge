@@ -24,7 +24,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -36,15 +36,15 @@ var _ ports.Delivery = (*Delivery)(nil)
 // QoS 2) is handled internally by the Paho client, so Ack is a no-op.
 // Retry and Extend are not supported by MQTT.
 type Delivery struct {
-	env *domain.Envelope
+	env *messaging.Envelope
 }
 
 // NewDelivery wraps an Envelope as a ports.Delivery.
-func NewDelivery(env *domain.Envelope) *Delivery {
+func NewDelivery(env *messaging.Envelope) *Delivery {
 	return &Delivery{env: env}
 }
 
-func (d *Delivery) Envelope() *domain.Envelope { return d.env }
+func (d *Delivery) Envelope() *messaging.Envelope { return d.env }
 
 func (d *Delivery) Ack(_ context.Context) error { return nil }
 

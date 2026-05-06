@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -73,7 +73,7 @@ func (s *Sender) clock() clock.Clock {
 // confirms. The exchange and routing key are derived from configuration
 // and the envelope's Subject. The entire publish+confirm cycle is
 // serialized to prevent confirm-channel races under concurrent callers.
-func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
 	exchange := s.cfg.Exchange
 	routingKey := s.cfg.RoutingKey
 	if routingKey == "" {
@@ -161,7 +161,7 @@ func mapPublishError(err error) error {
 
 // SendBatch publishes multiple envelopes sequentially with publisher
 // confirms. Returns the number of successfully published messages.
-func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, error) {
+func (s *Sender) SendBatch(ctx context.Context, envs []*messaging.Envelope) (int, error) {
 	sent := 0
 	for _, env := range envs {
 		if err := s.Send(ctx, env); err != nil {

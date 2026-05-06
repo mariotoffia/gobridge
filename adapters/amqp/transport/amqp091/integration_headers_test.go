@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
@@ -50,7 +51,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "hdr-msg-001",
 		Subject: queueName,
 		Payload: []byte(`{"round":"trip"}`),
@@ -158,7 +159,7 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        "ttl-msg-001",
 		Subject:   queueName,
 		Payload:   []byte("ttl-test"),
@@ -254,7 +255,7 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 		Session:    sess,
 		Timeout:    10 * time.Second,
 	})
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID: "extend-msg", Subject: queueName, Payload: []byte("extend-test"),
 	}); err != nil {
 		t.Fatalf("Send: %v", err)

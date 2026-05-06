@@ -12,7 +12,7 @@ import (
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
 
@@ -43,9 +43,9 @@ func TestIntegration_SQS_SendBatch_25Messages(t *testing.T) {
 
 	sender := newBatchSender(t, queueURL)
 
-	envs := make([]*domain.Envelope, 25)
+	envs := make([]*messaging.Envelope, 25)
 	for i := range envs {
-		envs[i] = &domain.Envelope{
+		envs[i] = &messaging.Envelope{
 			ID:      fmt.Sprintf("batch-msg-%d", i),
 			Payload: []byte(fmt.Sprintf("body-%d", i)),
 			Headers: map[string]any{
@@ -99,10 +99,10 @@ func TestIntegration_SQS_SendBatch_VerifyBatchBoundaries(t *testing.T) {
 
 	// Build 25 envelopes with batch-identifiable payloads.
 	// Messages 0-9 in batch 1, 10-19 in batch 2, 20-24 in batch 3.
-	envs := make([]*domain.Envelope, 25)
+	envs := make([]*messaging.Envelope, 25)
 	for i := range envs {
 		batchIdx := i / 10
-		envs[i] = &domain.Envelope{
+		envs[i] = &messaging.Envelope{
 			ID:      fmt.Sprintf("boundary-%d", i),
 			Payload: []byte(fmt.Sprintf("batch%d-msg%d", batchIdx, i)),
 		}
@@ -156,9 +156,9 @@ func TestIntegration_SQS_SendBatch_LargeWithHeaders(t *testing.T) {
 	sender := newBatchSender(t, queueURL)
 
 	const total = 50
-	envs := make([]*domain.Envelope, total)
+	envs := make([]*messaging.Envelope, total)
 	for i := range envs {
-		envs[i] = &domain.Envelope{
+		envs[i] = &messaging.Envelope{
 			ID:      fmt.Sprintf("large-%d", i),
 			Subject: "batch-test",
 			Payload: []byte(fmt.Sprintf("large-body-%d", i)),

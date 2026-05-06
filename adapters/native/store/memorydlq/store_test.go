@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorydlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 )
@@ -26,7 +27,7 @@ func makeEntry(id, routeID, category string, failedAt time.Time) domain.DLQEntry
 		RouteID:  routeID,
 		Category: category,
 		FailedAt: failedAt,
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:      "env-" + id,
 			Subject: "test/subject",
 			Payload: []byte("payload-" + id),

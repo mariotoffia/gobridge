@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -75,7 +76,7 @@ func TestFanOut_SingleRouteMultipleSessions(t *testing.T) {
 	})
 
 	// Send a message that fans out to both sessions.
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "fanout-msg-1",
 		Payload: []byte("multi-factory-order"),
 	}
@@ -164,7 +165,7 @@ func TestFanOut_PartialSessionAvailability(t *testing.T) {
 		return sessionA.IsStarted() && sessionB.IsStarted()
 	})
 
-	env := &domain.Envelope{ID: "partial-msg-1", Payload: []byte("data")}
+	env := &messaging.Envelope{ID: "partial-msg-1", Payload: []byte("data")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 

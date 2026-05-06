@@ -12,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -130,7 +131,7 @@ func (f *HTTPForwarder) retryDelay(attempt int) time.Duration {
 
 // Forward sends an envelope to a remote instance's receiver endpoint.
 func (f *HTTPForwarder) Forward(
-	ctx context.Context, target *domain.PeerInfo, receiverID string, env *domain.Envelope,
+	ctx context.Context, target *domain.PeerInfo, receiverID string, env *messaging.Envelope,
 ) error {
 	httpEndpoint, ok := target.Endpoints["http"]
 	if !ok {

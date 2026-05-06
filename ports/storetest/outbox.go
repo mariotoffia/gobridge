@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -23,7 +24,7 @@ func makeRecord(id, envelopeID, bindingID, sessionID, routeID string, expiresAt 
 		BindingID:  bindingID,
 		SessionID:  sessionID,
 		Address:    "test/topic",
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:      envelopeID,
 			Subject: "test-subject",
 			Payload: []byte(`{"data":"value"}`),
@@ -442,7 +443,7 @@ func outboxCompleteAfterTokenChange(t *testing.T, store ports.OutboxStore) {
 			ID:         fmt.Sprintf("ox-catc-%d", time.Now().UnixNano()),
 			EnvelopeID: "env-catc-1",
 			SessionID:  "sess-catc",
-			Envelope:   domain.Envelope{ID: "env-catc-1", Subject: "test"},
+			Envelope:   messaging.Envelope{ID: "env-catc-1", Subject: "test"},
 			Status:     domain.OutboxPending,
 		},
 	}

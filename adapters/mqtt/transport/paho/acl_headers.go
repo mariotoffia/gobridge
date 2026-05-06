@@ -8,8 +8,8 @@ import (
 	"unicode"
 
 	pahov5 "github.com/eclipse/paho.golang/paho"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 const headerMQTTResponseTopic = "mqtt.response-topic"
@@ -32,7 +32,7 @@ func isPrintableASCII(s string) bool {
 	return true
 }
 
-// EnvelopeFromPublish converts an incoming MQTT publish into a domain.Envelope.
+// EnvelopeFromPublish converts an incoming MQTT publish into a messaging.Envelope.
 // Reserved x-bridge.* headers are stripped from user properties to prevent
 // header injection from external sources. CorrelationData and ContentType are
 // validated for length and character safety before being accepted.
@@ -41,13 +41,13 @@ func isPrintableASCII(s string) bool {
 //  1. mqtt.message-id user property (set by PublishFromEnvelope)
 //  2. x-bridge.correlation-id from CorrelationData
 //  3. Deterministic derivation from topic + payload hash
-func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *domain.Envelope {
+func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelope {
 	if clk == nil {
 		clk = clock.System
 	}
 	now := clk.Now()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject:   pub.Topic,
 		Payload:   pub.Payload,
 		CreatedAt: now,
@@ -60,13 +60,13 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *domain.Envelope 
 		if pub.Properties.CorrelationData != nil {
 			corr := string(pub.Properties.CorrelationData)
 			if len(corr) <= maxHeaderValueLen && isPrintableASCII(corr) {
-				headers[domain.HeaderCorrelationID] = corr
+				headers[messaging.HeaderCorrelationID] = corr
 			}
 		}
 		if pub.Properties.ContentType != "" {
 			ct := pub.Properties.ContentType
 			if len(ct) <= maxHeaderValueLen && isPrintableASCII(ct) {
-				headers[domain.HeaderContentType] = ct
+				headers[messaging.HeaderContentType] = ct
 			}
 		}
 		if pub.Properties.ResponseTopic != "" {
@@ -87,7 +87,7 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *domain.Envelope 
 				}
 				continue
 			}
-			if domain.IsReservedHeader(u.Key) {
+			if messaging.IsReservedHeader(u.Key) {
 				continue
 			}
 			if len(u.Key) > maxHeaderValueLen || len(u.Value) > maxHeaderValueLen {
@@ -103,8 +103,8 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *domain.Envelope 
 	switch {
 	case mqttMsgID != "":
 		env.ID = mqttMsgID
-	case headers[domain.HeaderCorrelationID] != nil:
-		env.ID, _ = headers[domain.HeaderCorrelationID].(string)
+	case headers[messaging.HeaderCorrelationID] != nil:
+		env.ID, _ = headers[messaging.HeaderCorrelationID].(string)
 	}
 	if env.ID == "" {
 		env.ID = generateEnvelopeID()
@@ -117,10 +117,10 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *domain.Envelope 
 	return env
 }
 
-// PublishFromEnvelope converts a domain.Envelope into an MQTT publish packet
+// PublishFromEnvelope converts a messaging.Envelope into an MQTT publish packet
 // with mapped headers and message expiry. The Envelope.ID is included as a
 // mqtt.message-id user property so EnvelopeFromPublish can recover it.
-func PublishFromEnvelope(env *domain.Envelope, opts SenderOptions, clk clock.Clock) *pahov5.Publish {
+func PublishFromEnvelope(env *messaging.Envelope, opts SenderOptions, clk clock.Clock) *pahov5.Publish {
 	if clk == nil {
 		clk = clock.System
 	}
@@ -159,21 +159,21 @@ func PublishFromEnvelope(env *domain.Envelope, opts SenderOptions, clk clock.Clo
 	}
 
 	if env.Headers != nil {
-		if v, ok := domain.GetHeaderString(env.Headers, domain.HeaderCorrelationID); ok {
+		if v, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderCorrelationID); ok {
 			props.CorrelationData = []byte(v)
 			hasProps = true
 		}
-		if v, ok := domain.GetHeaderString(env.Headers, domain.HeaderContentType); ok {
+		if v, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderContentType); ok {
 			props.ContentType = v
 			hasProps = true
 		}
-		if v, ok := domain.GetHeaderString(env.Headers, headerMQTTResponseTopic); ok {
+		if v, ok := messaging.GetHeaderString(env.Headers, headerMQTTResponseTopic); ok {
 			props.ResponseTopic = v
 			hasProps = true
 		}
 
 		for k, v := range env.Headers {
-			if k == domain.HeaderCorrelationID || k == domain.HeaderContentType ||
+			if k == messaging.HeaderCorrelationID || k == messaging.HeaderContentType ||
 				k == headerMQTTResponseTopic || k == HeaderMessageID {
 				continue
 			}

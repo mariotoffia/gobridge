@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -56,7 +57,7 @@ func WithChainRouteID(id string) ChainOption {
 // shared.ErrProcessorTimeout (Transient).
 //
 // If processors is empty, returns nil immediately.
-func RunChain(ctx context.Context, processors []ports.Processor, env *domain.Envelope, opts ...ChainOption) error {
+func RunChain(ctx context.Context, processors []ports.Processor, env *messaging.Envelope, opts ...ChainOption) error {
 	if len(processors) == 0 {
 		return nil
 	}
@@ -72,7 +73,7 @@ func RunChain(ctx context.Context, processors []ports.Processor, env *domain.Env
 		cfg.metrics = &ports.NoopExporter{}
 	}
 
-	var terminal ports.ProcessorFunc = func(_ context.Context, _ *domain.Envelope) error {
+	var terminal ports.ProcessorFunc = func(_ context.Context, _ *messaging.Envelope) error {
 		return nil
 	}
 
@@ -86,7 +87,7 @@ func buildChain(processors []ports.Processor, index int, terminal ports.Processo
 	}
 	next := buildChain(processors, index+1, terminal, cfg)
 	p := processors[index]
-	return func(ctx context.Context, env *domain.Envelope) error {
+	return func(ctx context.Context, env *messaging.Envelope) error {
 		return invokeProcessor(ctx, p, index, env, next, cfg)
 	}
 }
@@ -98,7 +99,7 @@ func invokeProcessor(
 	ctx context.Context,
 	p ports.Processor,
 	index int,
-	env *domain.Envelope,
+	env *messaging.Envelope,
 	next ports.ProcessorFunc,
 	cfg *chainOptions,
 ) (err error) {
@@ -151,7 +152,7 @@ func invokeProcessor(
 	}
 }
 
-func buildPanicError(name string, rv any, cfg *chainOptions, env *domain.Envelope) error {
+func buildPanicError(name string, rv any, cfg *chainOptions, env *messaging.Envelope) error {
 	stack := goruntimedebug.Stack()
 	if cfg.logger != nil {
 		cfg.logger.Error("processor panicked",
@@ -174,7 +175,7 @@ func buildPanicError(name string, rv any, cfg *chainOptions, env *domain.Envelop
 		Wrap(fmt.Errorf("panic: %v", rv))
 }
 
-func logTimeout(ctx context.Context, cfg *chainOptions, name string, env *domain.Envelope) {
+func logTimeout(ctx context.Context, cfg *chainOptions, name string, env *messaging.Envelope) {
 	if cfg.logger == nil {
 		return
 	}

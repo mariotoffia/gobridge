@@ -9,7 +9,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -96,8 +96,8 @@ func TestReceiver_RunStripsReservedHeaders(t *testing.T) {
 					MessageID: "msg-inj",
 					Body:      []byte("body"),
 					ApplicationProperties: map[string]any{
-						domain.HeaderCorrelationID: "injected",
-						"safe-header":              "ok",
+						messaging.HeaderCorrelationID: "injected",
+						"safe-header":                 "ok",
 					},
 				},
 			}, nil
@@ -116,14 +116,14 @@ func TestReceiver_RunStripsReservedHeaders(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	var env *domain.Envelope
+	var env *messaging.Envelope
 	_ = recv.Run(ctx, func(_ context.Context, del ports.Delivery) error {
 		env = del.Envelope()
 		cancel()
 		return nil
 	})
 
-	if _, ok := env.Headers[domain.HeaderCorrelationID]; ok {
+	if _, ok := env.Headers[messaging.HeaderCorrelationID]; ok {
 		t.Fatal("x-bridge.correlation-id should be stripped at ingress")
 	}
 	if env.Headers["safe-header"] != "ok" {
@@ -252,7 +252,7 @@ func TestReceiver_SubjectFromTopic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	var env *domain.Envelope
+	var env *messaging.Envelope
 	_ = recv.Run(ctx, func(_ context.Context, del ports.Delivery) error {
 		env = del.Envelope()
 		cancel()
@@ -296,7 +296,7 @@ func TestReceiver_SubjectOverrideFromMessage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	var env *domain.Envelope
+	var env *messaging.Envelope
 	_ = recv.Run(ctx, func(_ context.Context, del ports.Delivery) error {
 		env = del.Envelope()
 		cancel()

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -214,7 +215,7 @@ func TestEdgeR2_ForwarderClusterKey(t *testing.T) {
 		InstanceID: "remote-key",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "fwd-key-1",
 		Subject: "test.cluster-key",
 		Payload: []byte(`{}`),
@@ -287,7 +288,7 @@ func TestEdgeR2_CaseInsensitiveHeaderStripping(t *testing.T) {
 		resultCh <- httpResult{rec: rec}
 	}()
 
-	var env *domain.Envelope
+	var env *messaging.Envelope
 	select {
 	case d := <-deliveryCh:
 		env = d.Envelope()

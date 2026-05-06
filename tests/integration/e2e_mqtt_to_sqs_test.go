@@ -8,6 +8,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -54,7 +55,7 @@ func TestE2E_MQTTToSQS_SingleTopic(t *testing.T) {
 	pubTx := paho.NewSender(pubSess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
 	for i := 0; i < 5; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("m1-msg-%d", i),
 			Subject: topic,
 			Payload: []byte(fmt.Sprintf(`{"temp":%d}`, 20+i)),
@@ -117,7 +118,7 @@ func TestE2E_MQTTToSQS_MultiTopicMerge(t *testing.T) {
 	pubTx := paho.NewSender(pubSess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
 	for i, tp := range topics {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("m2-msg-%d", i),
 			Subject: tp,
 			Payload: []byte(fmt.Sprintf(`{"topic":"%s"}`, tp)),
@@ -189,8 +190,8 @@ func TestE2E_MQTTToSQS_HeaderBasedRouting(t *testing.T) {
 	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("m3-pub"), domain.SessionEphemeral)
 	pubTx := paho.NewSender(pubSess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
-	_ = pubTx.Send(context.Background(), &domain.Envelope{ID: "m3-order", Subject: ordersTopic, Payload: []byte(`{"order":"123"}`)})
-	_ = pubTx.Send(context.Background(), &domain.Envelope{ID: "m3-alert", Subject: alertsTopic, Payload: []byte(`{"alert":"fire"}`)})
+	_ = pubTx.Send(context.Background(), &messaging.Envelope{ID: "m3-order", Subject: ordersTopic, Payload: []byte(`{"order":"123"}`)})
+	_ = pubTx.Send(context.Background(), &messaging.Envelope{ID: "m3-alert", Subject: alertsTopic, Payload: []byte(`{"alert":"fire"}`)})
 
 	ordersBodies := pollSQS(t, ordersClient, ordersQueue, 1, 10*time.Second)
 	alertsBodies := pollSQS(t, alertsClient, alertsQueue, 1, 10*time.Second)
@@ -339,7 +340,7 @@ func TestE2E_MQTTToSQS_BackpressureSQSSlow(t *testing.T) {
 
 	const msgCount = 10
 	for i := 0; i < msgCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("m5-msg-%d", i),
 			Subject: topic,
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),

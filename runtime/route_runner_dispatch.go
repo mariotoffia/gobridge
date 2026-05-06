@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -16,7 +17,7 @@ import (
 
 // sendDirectHoldForBinding creates a dispatch plan for a specific binding ID
 // and sends via the appropriate sender.
-func (r *RouteRunner) sendDirectHoldForBinding(ctx context.Context, del ports.Delivery, env *domain.Envelope, bindingID string) error {
+func (r *RouteRunner) sendDirectHoldForBinding(ctx context.Context, del ports.Delivery, env *messaging.Envelope, bindingID string) error {
 	for _, b := range r.bindings {
 		if b.ID == bindingID {
 			addr := b.Address
@@ -56,12 +57,12 @@ func (r *RouteRunner) hasBinding(bindingID string) bool {
 	return false
 }
 
-func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, env *domain.Envelope, plan domain.DispatchPlan) error {
+func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, env *messaging.Envelope, plan domain.DispatchPlan) error {
 	if plan.Address != "" {
 		env.Subject = plan.Address
 	}
 	if plan.Headers != nil {
-		env.Headers = domain.MergeHeaders(env.Headers, plan.Headers, true)
+		env.Headers = messaging.MergeHeaders(env.Headers, plan.Headers, true)
 	}
 
 	sender := r.senderForBinding(plan.BindingID)
@@ -179,7 +180,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 // invokeOnDelivery calls the optional OnDelivery callback if configured,
 // recovering from any panic so a misbehaving callback cannot kill the
 // delivery goroutine.
-func (r *RouteRunner) invokeOnDelivery(env *domain.Envelope, err error) {
+func (r *RouteRunner) invokeOnDelivery(env *messaging.Envelope, err error) {
 	if r.onDelivery == nil {
 		return
 	}
@@ -190,7 +191,7 @@ func (r *RouteRunner) invokeOnDelivery(env *domain.Envelope, err error) {
 // invokeOnAck calls the optional OnAck callback if configured, recovering
 // from any panic so a misbehaving callback cannot kill the delivery
 // goroutine.
-func (r *RouteRunner) invokeOnAck(env *domain.Envelope, err error) {
+func (r *RouteRunner) invokeOnAck(env *messaging.Envelope, err error) {
 	if r.onAck == nil {
 		return
 	}
@@ -238,7 +239,7 @@ func (r *RouteRunner) sessionIDForBinding(bindingID string) string {
 	return ""
 }
 
-func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env *domain.Envelope) error {
+func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env *messaging.Envelope) error {
 	if r.policy.OnExpired == domain.ExpiredDLQ {
 		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", shared.ErrMessageExpired, 0); dlqErr != nil {
 			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
@@ -248,7 +249,7 @@ func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env
 	return r.ackDelivery(ctx, del)
 }
 
-func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delivery, env *domain.Envelope, err error) error {
+func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delivery, env *messaging.Envelope, err error) error {
 	if errors.Is(err, shared.ErrMessageFiltered) {
 		if r.policy.OnPermanentFailure == domain.FailureDLQ {
 			if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", err, 0); dlqErr != nil {
@@ -270,7 +271,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 	return r.ackDelivery(ctx, del)
 }
 
-func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery, env *domain.Envelope, err error) error {
+func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery, env *messaging.Envelope, err error) error {
 	be, ok := shared.AsBridgeError(err)
 	if ok && be.Class != shared.ErrorTransient {
 		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", err, 0); dlqErr != nil {
@@ -285,7 +286,7 @@ func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery
 // retryOrFallback attempts del.Retry; if the source transport does not
 // support retry (ErrNotSupported), it falls back to DLQ routing with
 // category "retry_unsupported" so the message is not silently lost.
-func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, env *domain.Envelope, after time.Duration, reason error) error {
+func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, env *messaging.Envelope, after time.Duration, reason error) error {
 	retryErr := r.retryDelivery(ctx, del, after, reason)
 	if retryErr == nil || !errors.Is(retryErr, shared.ErrNotSupported) {
 		return retryErr
@@ -319,7 +320,7 @@ func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, e
 // headers. SQS populates this as "sqs.ApproximateReceiveCount".
 // Handles int, int64, float64, and string representations.
 // Returns 0 when the header is absent or not convertible.
-func receiveCount(env *domain.Envelope) int {
+func receiveCount(env *messaging.Envelope) int {
 	if env.Headers == nil {
 		return 0
 	}
@@ -349,12 +350,12 @@ func (r *RouteRunner) emitDLQ(category string) {
 	)
 }
 
-func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env *domain.Envelope) error {
+func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env *messaging.Envelope) error {
 	var plans []domain.DispatchPlan
 
 	// Consume HeaderRouteOverride set by processor chain.
-	if override, ok := domain.GetHeaderString(env.Headers, domain.HeaderRouteOverride); ok {
-		delete(env.Headers, domain.HeaderRouteOverride)
+	if override, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderRouteOverride); ok {
+		delete(env.Headers, messaging.HeaderRouteOverride)
 		if r.hasBinding(override) {
 			for _, b := range r.bindings {
 				if b.ID == override {

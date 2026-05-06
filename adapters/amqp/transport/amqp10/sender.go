@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -22,7 +22,7 @@ var (
 // on. It is satisfied by *senderLink (the production wrapper around
 // *amqp.Sender) and may also be satisfied by test doubles.
 type senderLinkAPI interface {
-	SendEnvelope(ctx context.Context, env *domain.Envelope) error
+	SendEnvelope(ctx context.Context, env *messaging.Envelope) error
 	Close(ctx context.Context) error
 }
 
@@ -81,7 +81,7 @@ func (s *Sender) clock() clock.Clock {
 }
 
 // Send publishes a single envelope to the AMQP 1.0 broker.
-func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
 	sendCtx, cancel := s.applyTimeout(ctx)
 	defer cancel()
 
@@ -156,7 +156,7 @@ func (s *Sender) handleSendFailure(ctx context.Context, failed senderLinkAPI, fa
 }
 
 // SendBatch sends multiple envelopes individually over the AMQP 1.0 link.
-func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, error) {
+func (s *Sender) SendBatch(ctx context.Context, envs []*messaging.Envelope) (int, error) {
 	if err := s.ensureLink(ctx); err != nil {
 		return 0, err
 	}

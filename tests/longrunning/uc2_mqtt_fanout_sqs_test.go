@@ -13,6 +13,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -141,7 +142,7 @@ func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {
 		for i := 0; i < uc2MsgsPerFactory; i++ {
 			deviceID := fmt.Sprintf("dev-%s-%d", factory, i)
 			topic := fmt.Sprintf("uc2/devices/%s/telemetry", deviceID)
-			env := &domain.Envelope{
+			env := &messaging.Envelope{
 				ID:      fmt.Sprintf("uc2-%s-%d", factory, i),
 				Subject: topic,
 				Payload: []byte(fmt.Sprintf(

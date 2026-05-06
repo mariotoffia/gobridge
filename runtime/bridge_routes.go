@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -116,7 +117,7 @@ func (rt *Runtime) RouteLocator() ports.RouteLocator {
 // pipeline (processors, destination resolution, send/outbox). The
 // envelope is cloned to prevent caller mutation. An ID is assigned if
 // the envelope's ID field is empty.
-func (rt *Runtime) Inject(ctx context.Context, routeID string, env *domain.Envelope) error {
+func (rt *Runtime) Inject(ctx context.Context, routeID string, env *messaging.Envelope) error {
 	rt.mu.Lock()
 	if !rt.running {
 		rt.mu.Unlock()
@@ -146,11 +147,11 @@ func (rt *Runtime) Inject(ctx context.Context, routeID string, env *domain.Envel
 // syntheticDelivery implements ports.Delivery for programmatically
 // injected messages that have no underlying transport.
 type syntheticDelivery struct {
-	env *domain.Envelope
+	env *messaging.Envelope
 }
 
-func (d *syntheticDelivery) Envelope() *domain.Envelope  { return d.env }
-func (d *syntheticDelivery) Ack(_ context.Context) error { return nil }
+func (d *syntheticDelivery) Envelope() *messaging.Envelope { return d.env }
+func (d *syntheticDelivery) Ack(_ context.Context) error   { return nil }
 func (d *syntheticDelivery) Retry(_ context.Context, _ time.Duration, _ error) error {
 	return shared.ErrNotSupported
 }

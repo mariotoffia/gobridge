@@ -11,6 +11,7 @@ import (
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -152,7 +153,7 @@ func TestAnaRecv_MessagesArriveAsDeliveries(t *testing.T) {
 
 	var (
 		got     atomic.Int32
-		envSeen *domain.Envelope
+		envSeen *messaging.Envelope
 		mu      sync.Mutex
 	)
 
@@ -198,7 +199,7 @@ func TestAnaRecv_MessagesArriveAsDeliveries(t *testing.T) {
 // TestAnaRecv_DeliveryAck_IsNoop verifies that Delivery.Ack returns nil
 // (MQTT acks are handled by paho internally, no caller action needed).
 func TestAnaRecv_DeliveryAck_IsNoop(t *testing.T) {
-	d := NewDelivery(&domain.Envelope{ID: "x"})
+	d := NewDelivery(&messaging.Envelope{ID: "x"})
 	if err := d.Ack(context.Background()); err != nil {
 		t.Fatalf("Ack returned %v, want nil", err)
 	}
@@ -207,7 +208,7 @@ func TestAnaRecv_DeliveryAck_IsNoop(t *testing.T) {
 // TestAnaRecv_DeliveryRetry_ReturnsErrNotSupported verifies the
 // non-supported semantics for Retry.
 func TestAnaRecv_DeliveryRetry_ReturnsErrNotSupported(t *testing.T) {
-	d := NewDelivery(&domain.Envelope{ID: "x"})
+	d := NewDelivery(&messaging.Envelope{ID: "x"})
 	err := d.Retry(context.Background(), time.Second, errors.New("x"))
 	if err == nil || !errors.Is(err, shared.ErrNotSupported) {
 		t.Fatalf("Retry → %v, want ErrNotSupported", err)
@@ -217,7 +218,7 @@ func TestAnaRecv_DeliveryRetry_ReturnsErrNotSupported(t *testing.T) {
 // TestAnaRecv_DeliveryExtend_ReturnsErrNotSupported verifies the
 // non-supported semantics for Extend.
 func TestAnaRecv_DeliveryExtend_ReturnsErrNotSupported(t *testing.T) {
-	d := NewDelivery(&domain.Envelope{ID: "x"})
+	d := NewDelivery(&messaging.Envelope{ID: "x"})
 	err := d.Extend(context.Background(), time.Now())
 	if err == nil || !errors.Is(err, shared.ErrNotSupported) {
 		t.Fatalf("Extend → %v, want ErrNotSupported", err)

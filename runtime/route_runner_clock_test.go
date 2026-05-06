@@ -8,6 +8,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -17,7 +18,7 @@ func TestRouteRunner_E2ELatencyUsesInjectedClock(t *testing.T) {
 	fake := clocktest.NewAt(time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC))
 	rec := &ports.RecordingExporter{}
 	sender := NewFakeSender()
-	sender.SendFn = func(*domain.Envelope) error {
+	sender.SendFn = func(*messaging.Envelope) error {
 		fake.Advance(42 * time.Millisecond)
 		return nil
 	}
@@ -36,7 +37,7 @@ func TestRouteRunner_E2ELatencyUsesInjectedClock(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{
+	del := NewFakeDelivery(&messaging.Envelope{
 		ID:        "msg-clocked-latency",
 		ExpiresAt: fake.Now().Add(time.Hour),
 	})
@@ -85,7 +86,7 @@ func TestRouteRunner_SharedOutboxCreatedAtUsesInjectedClock(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{
+	del := NewFakeDelivery(&messaging.Envelope{
 		ID:        "msg-clocked-outbox",
 		ExpiresAt: fake.Now().Add(time.Hour),
 	})

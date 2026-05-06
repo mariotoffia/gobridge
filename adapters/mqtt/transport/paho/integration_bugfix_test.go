@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -74,7 +75,7 @@ func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
 		})
 	}()
 
-	if err := sender1.Send(ctx, &domain.Envelope{
+	if err := sender1.Send(ctx, &messaging.Envelope{
 		Subject: topic,
 		Payload: []byte("phase1-msg"),
 	}); err != nil {
@@ -128,7 +129,7 @@ func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
 		})
 	}()
 
-	if err := sender2.Send(ctx, &domain.Envelope{
+	if err := sender2.Send(ctx, &messaging.Envelope{
 		Subject: topic,
 		Payload: []byte("phase2-msg"),
 	}); err != nil {
@@ -217,7 +218,7 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 
 	// Send to both topics.
 	for _, topic := range []string{topicA, topicB} {
-		if err := sender.Send(ctx, &domain.Envelope{
+		if err := sender.Send(ctx, &messaging.Envelope{
 			Subject: topic,
 			Payload: []byte("test-" + topic),
 		}); err != nil {
@@ -419,7 +420,7 @@ func TestIntegration_ConcurrentReconcile_ActiveSubsIntegrity(t *testing.T) {
 	}()
 
 	wait.RequireClosed(t, recv.Started(), 5*time.Second)
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		Subject: verifyTopic,
 		Payload: []byte("verify"),
 	}); err != nil {

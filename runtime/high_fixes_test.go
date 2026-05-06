@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -97,7 +98,7 @@ func TestOutboxDrainer_SendTimeout(t *testing.T) {
 		EnvelopeID: "env-timeout",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   domain.Envelope{ID: "env-timeout", Payload: []byte("data")},
+		Envelope:   messaging.Envelope{ID: "env-timeout", Payload: []byte("data")},
 		Status:     domain.OutboxPending,
 	}
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -149,7 +150,7 @@ func TestRouteRunner_SendTimeout(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{ID: "msg-send-timeout"})
+	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-send-timeout"})
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "delivery retried after send timeout", func() bool {
 		return del.IsRetried()
@@ -200,7 +201,7 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 	var slowSendCancelled atomic.Int32
 
 	ctxSender := &ContextAwareSender{
-		sendFn: func(ctx context.Context, env *domain.Envelope) error {
+		sendFn: func(ctx context.Context, env *messaging.Envelope) error {
 			if env.ID == "env-slow" {
 				<-ctx.Done()
 				slowSendCancelled.Add(1)
@@ -257,13 +258,13 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 		{
 			ID: "rec-first", RouteID: "route-1", EnvelopeID: "env-first",
 			BindingID: "bind-1", SessionID: "sess-1",
-			Envelope: domain.Envelope{ID: "env-first", Payload: []byte("data")},
+			Envelope: messaging.Envelope{ID: "env-first", Payload: []byte("data")},
 			Status:   domain.OutboxPending,
 		},
 		{
 			ID: "rec-slow", RouteID: "route-1", EnvelopeID: "env-slow",
 			BindingID: "bind-1", SessionID: "sess-1",
-			Envelope: domain.Envelope{ID: "env-slow", Payload: []byte("data")},
+			Envelope: messaging.Envelope{ID: "env-slow", Payload: []byte("data")},
 			Status:   domain.OutboxPending,
 		},
 	}
@@ -340,7 +341,7 @@ func TestOutboxDrainer_StaleFencingToken_PropagatedToRunLoop(t *testing.T) {
 	rec := domain.OutboxRecord{
 		ID: "rec-stale", RouteID: "route-1", EnvelopeID: "env-stale",
 		BindingID: "bind-1", SessionID: "sess-1",
-		Envelope: domain.Envelope{ID: "env-stale", Payload: []byte("data")},
+		Envelope: messaging.Envelope{ID: "env-stale", Payload: []byte("data")},
 		Status:   domain.OutboxPending,
 	}
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -364,10 +365,10 @@ func TestOutboxDrainer_StaleFencingToken_PropagatedToRunLoop(t *testing.T) {
 // ContextAwareSender implements ports.Sender with a function that receives
 // the context, enabling tests to verify context cancellation propagation.
 type ContextAwareSender struct {
-	sendFn func(context.Context, *domain.Envelope) error
+	sendFn func(context.Context, *messaging.Envelope) error
 }
 
-func (s *ContextAwareSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *ContextAwareSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	return s.sendFn(ctx, env)
 }
 
@@ -382,7 +383,7 @@ type BlockingSender struct {
 	ctxErrors int
 }
 
-func (s *BlockingSender) Send(ctx context.Context, _ *domain.Envelope) error {
+func (s *BlockingSender) Send(ctx context.Context, _ *messaging.Envelope) error {
 	<-ctx.Done()
 	s.mu.Lock()
 	s.ctxErrors++

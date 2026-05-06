@@ -12,6 +12,7 @@ import (
 	dboutbox "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -38,18 +39,18 @@ func TestMain(m *testing.M) {
 // ---------------------------------------------------------------------------
 
 type fakeDelivery struct {
-	env        *domain.Envelope
+	env        *messaging.Envelope
 	mu         sync.Mutex
 	acked      bool
 	retried    bool
 	retryAfter time.Duration
 }
 
-func newFakeDelivery(env *domain.Envelope) *fakeDelivery {
+func newFakeDelivery(env *messaging.Envelope) *fakeDelivery {
 	return &fakeDelivery{env: env}
 }
 
-func (d *fakeDelivery) Envelope() *domain.Envelope { return d.env }
+func (d *fakeDelivery) Envelope() *messaging.Envelope { return d.env }
 
 func (d *fakeDelivery) Ack(_ context.Context) error {
 	d.mu.Lock()
@@ -103,13 +104,13 @@ func (r *fakeReceiver) Emit(ctx context.Context, del ports.Delivery) error {
 
 type fakeSender struct {
 	mu      sync.Mutex
-	sent    []*domain.Envelope
+	sent    []*messaging.Envelope
 	sendErr error
 }
 
 func newFakeSender() *fakeSender { return &fakeSender{} }
 
-func (s *fakeSender) Send(_ context.Context, env *domain.Envelope) error {
+func (s *fakeSender) Send(_ context.Context, env *messaging.Envelope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.sendErr != nil {
@@ -125,10 +126,10 @@ func (s *fakeSender) sentCount() int {
 	return len(s.sent)
 }
 
-func (s *fakeSender) getSent() []*domain.Envelope {
+func (s *fakeSender) getSent() []*messaging.Envelope {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := make([]*domain.Envelope, len(s.sent))
+	cp := make([]*messaging.Envelope, len(s.sent))
 	copy(cp, s.sent)
 	return cp
 }
@@ -323,7 +324,7 @@ func TestE2E_DynamoDB_SharedOutboxFlow(t *testing.T) {
 	const msgCount = 5
 	dels := make([]*fakeDelivery, msgCount)
 	for i := 0; i < msgCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      t.Name() + "-msg-" + string(rune('A'+i)),
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
 		}
@@ -415,7 +416,7 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 	})
 
 	// Persist messages via A.
-	env := &domain.Envelope{ID: t.Name() + "-transfer-msg", Payload: []byte("transfer")}
+	env := &messaging.Envelope{ID: t.Name() + "-transfer-msg", Payload: []byte("transfer")}
 	del := newFakeDelivery(env)
 	_ = receiverA.Emit(ctxA, del)
 	waitFor(t, 3*time.Second, "acked by A", func() bool { return del.isAcked() })
@@ -527,7 +528,7 @@ func TestE2E_MemoryLease_DynamoOutbox(t *testing.T) {
 		return session.isStarted()
 	})
 
-	env := &domain.Envelope{ID: t.Name() + "-mixed-msg", Payload: []byte("mixed")}
+	env := &messaging.Envelope{ID: t.Name() + "-mixed-msg", Payload: []byte("mixed")}
 	del := newFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -606,7 +607,7 @@ func TestE2E_DynamoDB_CrashRecovery(t *testing.T) {
 	})
 
 	// Persist messages via A.
-	env := &domain.Envelope{ID: t.Name() + "-crash-msg", Payload: []byte("orphaned")}
+	env := &messaging.Envelope{ID: t.Name() + "-crash-msg", Payload: []byte("orphaned")}
 	del := newFakeDelivery(env)
 	_ = receiverA.Emit(ctxA, del)
 	waitFor(t, 3*time.Second, "acked by A", func() bool { return del.isAcked() })
@@ -708,7 +709,7 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 		SessionID:  leaseID,
 		Address:    "topic/fencing",
 		Status:     domain.OutboxPending,
-		Envelope:   domain.Envelope{ID: "fencing-env-1", Payload: []byte("data")},
+		Envelope:   messaging.Envelope{ID: "fencing-env-1", Payload: []byte("data")},
 	}
 	if err := outboxStore.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
@@ -832,7 +833,7 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 		return session.isStarted()
 	})
 
-	env := &domain.Envelope{ID: t.Name() + "-poison-msg", Payload: []byte("toxic")}
+	env := &messaging.Envelope{ID: t.Name() + "-poison-msg", Payload: []byte("toxic")}
 	del := newFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
@@ -917,7 +918,7 @@ func TestE2E_DynamoDB_FanOutAtomicity(t *testing.T) {
 	})
 
 	// Send a message that fans out to both sessions.
-	env := &domain.Envelope{ID: t.Name() + "-fanout-msg", Payload: []byte("multi")}
+	env := &messaging.Envelope{ID: t.Name() + "-fanout-msg", Payload: []byte("multi")}
 	del := newFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -938,7 +939,7 @@ func TestE2E_DynamoDB_FanOutAtomicity(t *testing.T) {
 	}
 
 	// Verify idempotent persist: re-emit the same envelope should not create duplicates.
-	env2 := &domain.Envelope{ID: t.Name() + "-fanout-msg", Payload: []byte("multi")}
+	env2 := &messaging.Envelope{ID: t.Name() + "-fanout-msg", Payload: []byte("multi")}
 	del2 := newFakeDelivery(env2)
 	_ = receiver.Emit(ctx, del2)
 	waitFor(t, 3*time.Second, "redelivery acked", func() bool { return del2.isAcked() })
@@ -951,6 +952,6 @@ type staticResolver struct {
 	plans []domain.DispatchPlan
 }
 
-func (r *staticResolver) Resolve(_ context.Context, _ *domain.Envelope) ([]domain.DispatchPlan, error) {
+func (r *staticResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]domain.DispatchPlan, error) {
 	return r.plans, nil
 }

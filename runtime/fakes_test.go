@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -29,7 +30,7 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 // ---------------------------------------------------------------------------
 
 type FakeDelivery struct {
-	env        *domain.Envelope
+	env        *messaging.Envelope
 	mu         sync.Mutex
 	Acked      bool
 	Retried    bool
@@ -41,11 +42,11 @@ type FakeDelivery struct {
 	RetryFnErr error
 }
 
-func NewFakeDelivery(env *domain.Envelope) *FakeDelivery {
+func NewFakeDelivery(env *messaging.Envelope) *FakeDelivery {
 	return &FakeDelivery{env: env}
 }
 
-func (d *FakeDelivery) Envelope() *domain.Envelope { return d.env }
+func (d *FakeDelivery) Envelope() *messaging.Envelope { return d.env }
 
 func (d *FakeDelivery) Ack(_ context.Context) error {
 	d.mu.Lock()
@@ -130,16 +131,16 @@ func (r *FakeReceiver) Ready() <-chan struct{} {
 
 type FakeSender struct {
 	mu      sync.Mutex
-	Sent    []*domain.Envelope
+	Sent    []*messaging.Envelope
 	SendErr error
-	SendFn  func(*domain.Envelope) error
+	SendFn  func(*messaging.Envelope) error
 }
 
 func NewFakeSender() *FakeSender {
 	return &FakeSender{}
 }
 
-func (s *FakeSender) Send(_ context.Context, env *domain.Envelope) error {
+func (s *FakeSender) Send(_ context.Context, env *messaging.Envelope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -163,10 +164,10 @@ func (s *FakeSender) SentCount() int {
 	return len(s.Sent)
 }
 
-func (s *FakeSender) GetSent() []*domain.Envelope {
+func (s *FakeSender) GetSent() []*messaging.Envelope {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]*domain.Envelope, len(s.Sent))
+	out := make([]*messaging.Envelope, len(s.Sent))
 	copy(out, s.Sent)
 	return out
 }
@@ -726,7 +727,7 @@ type FakeResolver struct {
 	ResolveErr error
 }
 
-func (r *FakeResolver) Resolve(_ context.Context, _ *domain.Envelope) ([]domain.DispatchPlan, error) {
+func (r *FakeResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]domain.DispatchPlan, error) {
 	if r.ResolveErr != nil {
 		return nil, r.ResolveErr
 	}
@@ -739,14 +740,14 @@ func (r *FakeResolver) Resolve(_ context.Context, _ *domain.Envelope) ([]domain.
 
 type FakeProcessor struct {
 	NameVal    string
-	ProcessFn  func(context.Context, *domain.Envelope, ports.ProcessorFunc) error
+	ProcessFn  func(context.Context, *messaging.Envelope, ports.ProcessorFunc) error
 	ProcessErr error
 	called     int32
 }
 
 func (p *FakeProcessor) Name() string { return p.NameVal }
 
-func (p *FakeProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *FakeProcessor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	atomic.AddInt32(&p.called, 1)
 	if p.ProcessFn != nil {
 		return p.ProcessFn(ctx, env, next)

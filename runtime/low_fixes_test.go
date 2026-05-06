@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -54,7 +55,7 @@ func TestRouteRunner_SharedOutbox_DepthCacheExercised(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{ID: "env-1", Payload: []byte("x")})
+	del := NewFakeDelivery(&messaging.Envelope{ID: "env-1", Payload: []byte("x")})
 	_ = receiver.Emit(ctx, del)
 
 	waitFor(t, time.Second, "delivery acked", del.IsAcked)
@@ -92,7 +93,7 @@ func TestRouteRunner_DirectHold_NoQueryPending(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{ID: "env-2", Payload: []byte("y")})
+	del := NewFakeDelivery(&messaging.Envelope{ID: "env-2", Payload: []byte("y")})
 	_ = receiver.Emit(ctx, del)
 
 	waitFor(t, time.Second, "delivery acked", del.IsAcked)
@@ -172,7 +173,7 @@ func TestOutboxDrainerConfig_DrainBatchSize_Default(t *testing.T) {
 	go func() { _ = drainer.Run(ctx) }()
 
 	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{
-		{ID: "rec-def", RouteID: "route-1", EnvelopeID: "env-def", BindingID: "b1", SessionID: "sess-1", Envelope: domain.Envelope{ID: "env-def", Payload: []byte("x")}},
+		{ID: "rec-def", RouteID: "route-1", EnvelopeID: "env-def", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-def", Payload: []byte("x")}},
 	})
 
 	waitFor(t, 2*time.Second, "record sent", func() bool {
@@ -241,7 +242,7 @@ func TestOutboxDrainer_FinalDrain_CompletesAfterCancel(t *testing.T) {
 
 	ctx := context.Background()
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{
-		{ID: "final-1", RouteID: "route-1", EnvelopeID: "env-f1", BindingID: "b1", SessionID: "sess-1", Envelope: domain.Envelope{ID: "env-f1", Payload: []byte("final")}},
+		{ID: "final-1", RouteID: "route-1", EnvelopeID: "env-f1", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-f1", Payload: []byte("final")}},
 	})
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -373,7 +374,7 @@ func TestOutboxDrainerConfig_DrainBatchSize_NegativeClamped(t *testing.T) {
 	go func() { _ = drainer.Run(ctx) }()
 
 	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{
-		{ID: "rec-neg", RouteID: "route-1", EnvelopeID: "env-neg", BindingID: "b1", SessionID: "sess-1", Envelope: domain.Envelope{ID: "env-neg", Payload: []byte("neg")}},
+		{ID: "rec-neg", RouteID: "route-1", EnvelopeID: "env-neg", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-neg", Payload: []byte("neg")}},
 	})
 
 	waitFor(t, 2*time.Second, "record sent with clamped batch size", func() bool {
@@ -401,7 +402,7 @@ func TestOutboxDrainerConfig_DrainMaxBatchSize_FloorsToBatchSize(t *testing.T) {
 	go func() { _ = drainer.Run(ctx) }()
 
 	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{
-		{ID: "rec-floor", RouteID: "route-1", EnvelopeID: "env-floor", BindingID: "b1", SessionID: "sess-1", Envelope: domain.Envelope{ID: "env-floor", Payload: []byte("f")}},
+		{ID: "rec-floor", RouteID: "route-1", EnvelopeID: "env-floor", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-floor", Payload: []byte("f")}},
 	})
 
 	waitFor(t, 2*time.Second, "record sent with floored max batch size", func() bool {
@@ -439,7 +440,7 @@ func TestRouteRunner_SharedOutbox_NilOutboxStore_Retries(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{ID: "env-nil-outbox", Payload: []byte("z")})
+	del := NewFakeDelivery(&messaging.Envelope{ID: "env-nil-outbox", Payload: []byte("z")})
 	_ = receiver.Emit(ctx, del)
 
 	waitFor(t, time.Second, "delivery retried (no outbox store)", del.IsRetried)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -26,7 +27,7 @@ type ctxAwareSender struct {
 
 var _ ports.Sender = (*ctxAwareSender)(nil)
 
-func (s *ctxAwareSender) Send(ctx context.Context, _ *domain.Envelope) error {
+func (s *ctxAwareSender) Send(ctx context.Context, _ *messaging.Envelope) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -174,7 +175,7 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 			EnvelopeID: fmt.Sprintf("env-%d", i),
 			BindingID:  "bind-1",
 			SessionID:  "sess-slow",
-			Envelope: domain.Envelope{
+			Envelope: messaging.Envelope{
 				ID:      fmt.Sprintf("env-%d", i),
 				Payload: []byte("payload"),
 			},
@@ -282,7 +283,7 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 			EnvelopeID: fmt.Sprintf("env-legacy-%d", i),
 			BindingID:  "bind-1",
 			SessionID:  "sess-legacy",
-			Envelope: domain.Envelope{
+			Envelope: messaging.Envelope{
 				ID:      fmt.Sprintf("env-legacy-%d", i),
 				Payload: []byte("payload"),
 			},

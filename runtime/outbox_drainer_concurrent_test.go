@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -44,7 +45,7 @@ func persistRecords(outbox *FakeOutboxStore, count int, prefix string) {
 			EnvelopeID: "env-" + id,
 			BindingID:  "bind-1",
 			SessionID:  "sess-1",
-			Envelope:   domain.Envelope{ID: "env-" + id, Payload: []byte("data")},
+			Envelope:   messaging.Envelope{ID: "env-" + id, Payload: []byte("data")},
 			Status:     domain.OutboxPending,
 		}
 		_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -72,7 +73,7 @@ func TestDrainBatch_ParallelSends(t *testing.T) {
 	var currentConcurrency int64
 	sendStart := make(chan time.Time, 1)
 
-	sender := NewConcurrentSender(func(_ *domain.Envelope) error {
+	sender := NewConcurrentSender(func(_ *messaging.Envelope) error {
 		select {
 		case sendStart <- time.Now():
 		default:
@@ -140,7 +141,7 @@ func TestDrainBatch_ConcurrencyLimit(t *testing.T) {
 	var concurrentPeak int64
 	var currentConcurrency int64
 
-	sender := NewConcurrentSender(func(_ *domain.Envelope) error {
+	sender := NewConcurrentSender(func(_ *messaging.Envelope) error {
 		cur := atomic.AddInt64(&currentConcurrency, 1)
 		defer atomic.AddInt64(&currentConcurrency, -1)
 		for {
@@ -190,7 +191,7 @@ func TestDrainBatch_ErrorIsolation(t *testing.T) {
 	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	var callCount int64
-	sender := NewConcurrentSender(func(_ *domain.Envelope) error {
+	sender := NewConcurrentSender(func(_ *messaging.Envelope) error {
 		n := atomic.AddInt64(&callCount, 1)
 		if n == 3 {
 			return shared.NewBridgeError("FAIL", shared.ErrorTransient, "transient")
@@ -223,7 +224,7 @@ func TestDrainBatch_ConcurrencyDefault(t *testing.T) {
 	var concurrentPeak int64
 	var currentConcurrency int64
 
-	sender := NewConcurrentSender(func(_ *domain.Envelope) error {
+	sender := NewConcurrentSender(func(_ *messaging.Envelope) error {
 		cur := atomic.AddInt64(&currentConcurrency, 1)
 		defer atomic.AddInt64(&currentConcurrency, -1)
 		for {

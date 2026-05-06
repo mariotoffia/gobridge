@@ -8,8 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
-
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -83,7 +82,7 @@ func BenchmarkGenerateDeduplicationID(b *testing.B) {
 	for _, size := range []int{100, 1024, 10240, 102400} {
 		name := fmt.Sprintf("%dB", size)
 		b.Run(name, func(b *testing.B) {
-			env := &domain.Envelope{
+			env := &messaging.Envelope{
 				ID:      "bench-msg-id",
 				Subject: "bench/subject",
 				Payload: make([]byte, size),
@@ -119,7 +118,7 @@ func BenchmarkBuildSendInput(b *testing.B) {
 			s := &Sender{
 				queueURL: "https://sqs.us-west-1.amazonaws.com/123/q",
 			}
-			env := &domain.Envelope{
+			env := &messaging.Envelope{
 				ID:      "bench-id",
 				Subject: "bench/subject",
 				Payload: make([]byte, 1024),

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -71,7 +72,7 @@ func TestRouteRunner_DirectHoldTransientSendUsesBackoff(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{ID: "msg-retry-backoff"})
+	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-retry-backoff"})
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit failed: %v", err)
 	}

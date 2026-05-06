@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -75,7 +76,7 @@ func TestIntegration_SharedSubscription_CompetingConsumers(t *testing.T) {
 	sender := paho.NewSender(publisher, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
 	for i := 0; i < msgCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			Subject: baseTopic,
 			Payload: []byte(fmt.Sprintf("shared-msg-%d", i)),
 		}
@@ -139,7 +140,7 @@ func TestIntegration_PlainSubscription_FanOut(t *testing.T) {
 	sender := paho.NewSender(publisher, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
 	for i := 0; i < msgCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			Subject: topic,
 			Payload: []byte(fmt.Sprintf("fanout-msg-%d", i)),
 		}
@@ -189,7 +190,7 @@ func TestIntegration_SharedSubscription_PayloadIntegrity(t *testing.T) {
 	waitSubActive(t, sess, 5*time.Second)
 
 	recv := paho.NewReceiver("rx-payload", sess)
-	var received []*domain.Envelope
+	var received []*messaging.Envelope
 	var mu sync.Mutex
 
 	recvCtx, recvCancel := context.WithCancel(ctx)
@@ -211,13 +212,13 @@ func TestIntegration_SharedSubscription_PayloadIntegrity(t *testing.T) {
 	t.Cleanup(func() { _ = publisher.Close(context.Background()) })
 	sender := paho.NewSender(publisher, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject: baseTopic,
 		Payload: []byte("integrity-check"),
 		Headers: map[string]any{
-			domain.HeaderCorrelationID: "corr-shared",
-			domain.HeaderContentType:   "application/json",
-			"x-custom":                 "shared-value",
+			messaging.HeaderCorrelationID: "corr-shared",
+			messaging.HeaderContentType:   "application/json",
+			"x-custom":                    "shared-value",
 		},
 	}
 
@@ -250,13 +251,13 @@ func TestIntegration_SharedSubscription_PayloadIntegrity(t *testing.T) {
 	if string(msg.Payload) != "integrity-check" {
 		t.Errorf("payload = %q, want %q", msg.Payload, "integrity-check")
 	}
-	if v, _ := domain.GetHeaderString(msg.Headers, domain.HeaderCorrelationID); v != "corr-shared" {
+	if v, _ := messaging.GetHeaderString(msg.Headers, messaging.HeaderCorrelationID); v != "corr-shared" {
 		t.Errorf("correlation = %q, want %q", v, "corr-shared")
 	}
-	if v, _ := domain.GetHeaderString(msg.Headers, domain.HeaderContentType); v != "application/json" {
+	if v, _ := messaging.GetHeaderString(msg.Headers, messaging.HeaderContentType); v != "application/json" {
 		t.Errorf("content-type = %q, want %q", v, "application/json")
 	}
-	if v, _ := domain.GetHeaderString(msg.Headers, "x-custom"); v != "shared-value" {
+	if v, _ := messaging.GetHeaderString(msg.Headers, "x-custom"); v != "shared-value" {
 		t.Errorf("x-custom = %q, want %q", v, "shared-value")
 	}
 }

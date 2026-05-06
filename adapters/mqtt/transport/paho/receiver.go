@@ -6,7 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -75,7 +75,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 
 	errCh := make(chan error, 1)
 
-	r.session.Router().RegisterEnvelope(r.id, r.session.clock(), func(env *domain.Envelope) {
+	r.session.Router().RegisterEnvelope(r.id, r.session.clock(), func(env *messaging.Envelope) {
 		if logging.TraceEnabled(r.logger) {
 			r.logger.Log(runCtx, logging.LevelTrace, "mqtt: message received",
 				"receiver_id", r.id,

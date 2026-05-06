@@ -17,6 +17,7 @@ import (
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -320,7 +321,7 @@ type uc41SlowFirstN struct {
 func (p *uc41SlowFirstN) Name() string { return "uc41-slow-first-n" }
 
 func (p *uc41SlowFirstN) Process(
-	ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc,
+	ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc,
 ) error {
 	if idx := p.seen.Add(1); idx <= int64(p.limit) {
 		select {

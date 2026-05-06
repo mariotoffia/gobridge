@@ -1,9 +1,9 @@
-package domain_test
+package messaging_test
 
 import (
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // TestIsReservedHeader validates IsReservedHeader for bridge-reserved keys, custom prefixes, and ordinary headers.
@@ -12,18 +12,18 @@ func TestIsReservedHeader(t *testing.T) {
 		key  string
 		want bool
 	}{
-		{domain.HeaderCorrelationID, true},
-		{domain.HeaderRouteID, true},
+		{messaging.HeaderCorrelationID, true},
+		{messaging.HeaderRouteID, true},
 		{"x-bridge.custom", true},
 		{"traceparent", false},
 		{"my-header", false},
 		{"", false},
-		{domain.HeaderTenantID, true},
-		{domain.HeaderRouteOverride, true},
+		{messaging.HeaderTenantID, true},
+		{messaging.HeaderRouteOverride, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.key, func(t *testing.T) {
-			if got := domain.IsReservedHeader(tt.key); got != tt.want {
+			if got := messaging.IsReservedHeader(tt.key); got != tt.want {
 				t.Fatalf("IsReservedHeader(%q) = %v, want %v", tt.key, got, tt.want)
 			}
 		})
@@ -33,14 +33,14 @@ func TestIsReservedHeader(t *testing.T) {
 // TestStripReservedHeaders verifies StripReservedHeaders removes reserved keys, keeps others, copies into a new map, and leaves the input unchanged.
 func TestStripReservedHeaders(t *testing.T) {
 	headers := map[string]any{
-		domain.HeaderCorrelationID: "abc",
-		domain.HeaderSourceID:      "src-1",
-		"traceparent":              "00-trace",
-		"custom":                   "value",
+		messaging.HeaderCorrelationID: "abc",
+		messaging.HeaderSourceID:      "src-1",
+		"traceparent":                 "00-trace",
+		"custom":                      "value",
 	}
-	stripped := domain.StripReservedHeaders(headers)
+	stripped := messaging.StripReservedHeaders(headers)
 
-	if _, ok := stripped[domain.HeaderCorrelationID]; ok {
+	if _, ok := stripped[messaging.HeaderCorrelationID]; ok {
 		t.Fatal("reserved header should be stripped")
 	}
 	if _, ok := stripped["traceparent"]; !ok {
@@ -50,14 +50,14 @@ func TestStripReservedHeaders(t *testing.T) {
 		t.Fatal("custom header should be kept")
 	}
 	// Original map unmodified.
-	if _, ok := headers[domain.HeaderCorrelationID]; !ok {
+	if _, ok := headers[messaging.HeaderCorrelationID]; !ok {
 		t.Fatal("original map should not be modified")
 	}
 }
 
 // TestStripReservedHeaders_Nil verifies StripReservedHeaders returns nil when the input map is nil.
 func TestStripReservedHeaders_Nil(t *testing.T) {
-	if got := domain.StripReservedHeaders(nil); got != nil {
+	if got := messaging.StripReservedHeaders(nil); got != nil {
 		t.Fatalf("expected nil, got %v", got)
 	}
 }
@@ -65,18 +65,18 @@ func TestStripReservedHeaders_Nil(t *testing.T) {
 // TestMergeHeaders verifies MergeHeaders overlays keys and optionally preserves reserved keys already present in the base map.
 func TestMergeHeaders(t *testing.T) {
 	base := map[string]any{
-		domain.HeaderRouteID: "route-1",
-		"custom":             "base",
+		messaging.HeaderRouteID: "route-1",
+		"custom":                "base",
 	}
 	overlay := map[string]any{
-		domain.HeaderRouteID: "route-override",
-		"custom":             "overlay",
-		"extra":              "new",
+		messaging.HeaderRouteID: "route-override",
+		"custom":                "overlay",
+		"extra":                 "new",
 	}
 
 	// Without protection: overlay wins on all keys.
-	merged := domain.MergeHeaders(base, overlay, false)
-	if merged[domain.HeaderRouteID] != "route-override" {
+	merged := messaging.MergeHeaders(base, overlay, false)
+	if merged[messaging.HeaderRouteID] != "route-override" {
 		t.Fatal("overlay should override without protection")
 	}
 	if merged["custom"] != "overlay" {
@@ -87,8 +87,8 @@ func TestMergeHeaders(t *testing.T) {
 	}
 
 	// With protection: reserved keys in base are protected.
-	merged = domain.MergeHeaders(base, overlay, true)
-	if merged[domain.HeaderRouteID] != "route-1" {
+	merged = messaging.MergeHeaders(base, overlay, true)
+	if merged[messaging.HeaderRouteID] != "route-1" {
 		t.Fatal("reserved key in base should be protected")
 	}
 	if merged["custom"] != "overlay" {
@@ -98,14 +98,14 @@ func TestMergeHeaders(t *testing.T) {
 
 // TestMergeHeaders_NilInputs verifies MergeHeaders handles nil base and overlay combinations.
 func TestMergeHeaders_NilInputs(t *testing.T) {
-	if got := domain.MergeHeaders(nil, nil, false); got != nil {
+	if got := messaging.MergeHeaders(nil, nil, false); got != nil {
 		t.Fatalf("expected nil, got %v", got)
 	}
-	result := domain.MergeHeaders(nil, map[string]any{"a": 1}, false)
+	result := messaging.MergeHeaders(nil, map[string]any{"a": 1}, false)
 	if result["a"] != 1 {
 		t.Fatal("should merge overlay into empty base")
 	}
-	result = domain.MergeHeaders(map[string]any{"a": 1}, nil, false)
+	result = messaging.MergeHeaders(map[string]any{"a": 1}, nil, false)
 	if result["a"] != 1 {
 		t.Fatal("should preserve base when overlay is nil")
 	}
@@ -124,7 +124,7 @@ func TestMergeHeaders_ProtectReserved_CaseInsensitive(t *testing.T) {
 		"custom":            "overlay",
 	}
 
-	merged := domain.MergeHeaders(base, overlay, true)
+	merged := messaging.MergeHeaders(base, overlay, true)
 
 	if merged["x-bridge.route-id"] != "original" {
 		t.Fatal("original reserved key should be preserved")
@@ -143,28 +143,28 @@ func TestGetHeaderString(t *testing.T) {
 		"str":    "value",
 		"notstr": 42,
 	}
-	if v, ok := domain.GetHeaderString(headers, "str"); !ok || v != "value" {
+	if v, ok := messaging.GetHeaderString(headers, "str"); !ok || v != "value" {
 		t.Fatal("expected string value")
 	}
-	if _, ok := domain.GetHeaderString(headers, "notstr"); ok {
+	if _, ok := messaging.GetHeaderString(headers, "notstr"); ok {
 		t.Fatal("expected false for non-string value")
 	}
-	if _, ok := domain.GetHeaderString(headers, "missing"); ok {
+	if _, ok := messaging.GetHeaderString(headers, "missing"); ok {
 		t.Fatal("expected false for missing key")
 	}
-	if _, ok := domain.GetHeaderString(nil, "key"); ok {
+	if _, ok := messaging.GetHeaderString(nil, "key"); ok {
 		t.Fatal("expected false for nil headers")
 	}
 }
 
 // TestSetHeader verifies SetHeader initializes a new map from nil and appends keys on an existing map.
 func TestSetHeader(t *testing.T) {
-	h := domain.SetHeader(nil, "key", "value")
+	h := messaging.SetHeader(nil, "key", "value")
 	if h["key"] != "value" {
 		t.Fatal("expected key to be set")
 	}
 
-	h = domain.SetHeader(h, "key2", 42)
+	h = messaging.SetHeader(h, "key2", 42)
 	if h["key2"] != 42 || h["key"] != "value" {
 		t.Fatal("expected both keys to be present")
 	}
@@ -188,7 +188,7 @@ func TestIsReservedHeader_CaseInsensitive(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.key, func(t *testing.T) {
-			if got := domain.IsReservedHeader(tc.key); got != tc.want {
+			if got := messaging.IsReservedHeader(tc.key); got != tc.want {
 				t.Fatalf("IsReservedHeader(%q) = %v, want %v", tc.key, got, tc.want)
 			}
 		})
@@ -203,7 +203,7 @@ func TestStripReservedHeaders_CaseInsensitive(t *testing.T) {
 		"X-BRIDGE.SOURCE-ID": "injected",
 		"safe-header":        "keep",
 	}
-	stripped := domain.StripReservedHeaders(headers)
+	stripped := messaging.StripReservedHeaders(headers)
 
 	if _, ok := stripped["X-Bridge.route-id"]; ok {
 		t.Error("mixed-case reserved header should be stripped")
@@ -219,7 +219,7 @@ func TestStripReservedHeaders_CaseInsensitive(t *testing.T) {
 // TestStripReservedHeaders_EmptyMap validates StripReservedHeaders returns
 // an empty map (not nil) for a non-nil empty input.
 func TestStripReservedHeaders_EmptyMap(t *testing.T) {
-	result := domain.StripReservedHeaders(map[string]any{})
+	result := messaging.StripReservedHeaders(map[string]any{})
 	if result == nil {
 		t.Fatal("expected non-nil empty map")
 	}
@@ -234,12 +234,12 @@ func TestStripReservedHeaders_EmptyMap(t *testing.T) {
 func TestMergeHeaders_ProtectReserved_NewReservedKey(t *testing.T) {
 	base := map[string]any{"custom": "base"}
 	overlay := map[string]any{
-		domain.HeaderCorrelationID: "new-corr",
-		"custom":                   "overlay",
+		messaging.HeaderCorrelationID: "new-corr",
+		"custom":                      "overlay",
 	}
 
-	merged := domain.MergeHeaders(base, overlay, true)
-	if merged[domain.HeaderCorrelationID] != "new-corr" {
+	merged := messaging.MergeHeaders(base, overlay, true)
+	if merged[messaging.HeaderCorrelationID] != "new-corr" {
 		t.Fatal("new reserved key from overlay should be added when not in base")
 	}
 	if merged["custom"] != "overlay" {
@@ -251,8 +251,8 @@ func TestMergeHeaders_ProtectReserved_NewReservedKey(t *testing.T) {
 // must be captured when input is nil.
 func TestSetHeader_ReturnValueRequired(t *testing.T) {
 	var h map[string]any
-	h = domain.SetHeader(h, "a", 1)
-	h = domain.SetHeader(h, "b", 2)
+	h = messaging.SetHeader(h, "a", 1)
+	h = messaging.SetHeader(h, "b", 2)
 	if len(h) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(h))
 	}

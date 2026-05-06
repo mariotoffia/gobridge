@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -35,7 +35,7 @@ func TestDLQRouter_ConcurrentCloseAndRoute(t *testing.T) {
 	ctx := context.Background()
 	router.Start(ctx)
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "race-test",
 		Subject: "test/dlq-race",
 		Payload: []byte("payload"),
@@ -99,7 +99,7 @@ func TestDLQRouter_RouteAfterClose(t *testing.T) {
 	router.Close()
 
 	// Route after close should fall back to writeDirect (no panic).
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "after-close",
 		Subject: "test/after-close",
 		Payload: []byte("payload"),

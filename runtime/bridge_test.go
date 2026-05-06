@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -117,7 +118,7 @@ func TestRuntime_DirectHoldEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	_ = rt.Start(ctx)
 
-	env := &domain.Envelope{ID: "e2e-msg", Payload: []byte("hello")}
+	env := &messaging.Envelope{ID: "e2e-msg", Payload: []byte("hello")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "e2e send and ack", func() bool {
@@ -162,7 +163,7 @@ func TestRuntime_Inject_HappyPath(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "injected-1",
 		Subject: "test/inject",
 		Payload: []byte(`{"injected":true}`),
@@ -202,7 +203,7 @@ func TestRuntime_Inject_UnknownRoute(t *testing.T) {
 
 	<-receiver.Ready()
 
-	err := rt.Inject(context.Background(), "nonexistent", &domain.Envelope{ID: "x"})
+	err := rt.Inject(context.Background(), "nonexistent", &messaging.Envelope{ID: "x"})
 	if err == nil {
 		t.Fatal("expected error for unknown route")
 	}
@@ -212,7 +213,7 @@ func TestRuntime_Inject_UnknownRoute(t *testing.T) {
 func TestRuntime_Inject_NotRunning(t *testing.T) {
 	rt := goruntime.New(goruntime.WithInstanceID("inject-stopped"))
 
-	err := rt.Inject(context.Background(), "any-route", &domain.Envelope{ID: "x"})
+	err := rt.Inject(context.Background(), "any-route", &messaging.Envelope{ID: "x"})
 	if err == nil {
 		t.Fatal("expected error when runtime is not running")
 	}
@@ -238,7 +239,7 @@ func TestRuntime_Inject_AssignsIDWhenEmpty(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &domain.Envelope{Payload: []byte("no-id")}
+	env := &messaging.Envelope{Payload: []byte("no-id")}
 	if err := rt.Inject(context.Background(), "id-route", env); err != nil {
 		t.Fatalf("Inject failed: %v", err)
 	}
@@ -278,7 +279,7 @@ func TestRuntime_Inject_DoesNotMutateOriginal(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "orig-id",
 		Headers: map[string]any{"keep": "this"},
 	}
@@ -341,7 +342,7 @@ func TestRuntime_SharedOutboxEndToEnd(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &domain.Envelope{ID: "outbox-msg", Payload: []byte("outbox-data")}
+	env := &messaging.Envelope{ID: "outbox-msg", Payload: []byte("outbox-data")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "outbox persist and source ack", func() bool {

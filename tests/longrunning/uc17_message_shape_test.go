@@ -21,6 +21,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -273,7 +274,7 @@ func TestUC19_MixedPayloadSizes(t *testing.T) {
 	msgs := collector.getMessages()
 	counts := map[string]int{}
 	for _, m := range msgs {
-		if cls, ok := domain.GetHeaderString(m.Headers, "size_class"); ok {
+		if cls, ok := messaging.GetHeaderString(m.Headers, "size_class"); ok {
 			counts[cls]++
 		}
 	}

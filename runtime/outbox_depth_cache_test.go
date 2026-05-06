@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -95,7 +96,7 @@ func TestDepthCache_PreventsRepeatedQueries(t *testing.T) {
 	})
 
 	for i := 0; i < 10; i++ {
-		env := &domain.Envelope{ID: "cache-msg-" + string(rune('a'+i)), Payload: []byte("x")}
+		env := &messaging.Envelope{ID: "cache-msg-" + string(rune('a'+i)), Payload: []byte("x")}
 		del := NewFakeDelivery(env)
 		_ = receiver.Emit(ctx, del)
 		waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
@@ -156,7 +157,7 @@ func TestDepthCache_ExpiresAfterTTL(t *testing.T) {
 		return session.IsStarted()
 	})
 
-	env1 := &domain.Envelope{ID: "ttl-msg-1", Payload: []byte("x")}
+	env1 := &messaging.Envelope{ID: "ttl-msg-1", Payload: []byte("x")}
 	del1 := NewFakeDelivery(env1)
 	_ = receiver.Emit(ctx, del1)
 	waitFor(t, time.Second, "first acked", func() bool { return del1.IsAcked() })
@@ -165,7 +166,7 @@ func TestDepthCache_ExpiresAfterTTL(t *testing.T) {
 
 	time.Sleep(1200 * time.Millisecond) // FIXED: wait for depth cache TTL (1s) to expire
 
-	env2 := &domain.Envelope{ID: "ttl-msg-2", Payload: []byte("x")}
+	env2 := &messaging.Envelope{ID: "ttl-msg-2", Payload: []byte("x")}
 	del2 := NewFakeDelivery(env2)
 	_ = receiver.Emit(ctx, del2)
 	waitFor(t, time.Second, "second acked", func() bool { return del2.IsAcked() })
@@ -200,7 +201,7 @@ func TestDepthCache_AtCapacityCachedImmediately(t *testing.T) {
 			EnvelopeID: "prefill-env-" + string(rune('a'+i)),
 			BindingID:  "b1",
 			SessionID:  "mqtt-cap",
-			Envelope:   domain.Envelope{ID: "prefill-env-" + string(rune('a'+i)), Payload: []byte("x")},
+			Envelope:   messaging.Envelope{ID: "prefill-env-" + string(rune('a'+i)), Payload: []byte("x")},
 			Status:     domain.OutboxPending,
 		}
 		_ = countingOutbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -224,14 +225,14 @@ func TestDepthCache_AtCapacityCachedImmediately(t *testing.T) {
 	go func() { _ = runner.Run(runCtx) }()
 	<-receiver.Ready()
 
-	env1 := &domain.Envelope{ID: "overflow-1", Payload: []byte("x")}
+	env1 := &messaging.Envelope{ID: "overflow-1", Payload: []byte("x")}
 	del1 := NewFakeDelivery(env1)
 	_ = receiver.Emit(runCtx, del1)
 	waitFor(t, time.Second, "overflow-1 retried", func() bool { return del1.IsRetried() })
 
 	countAfterFirst := countingOutbox.GetQueryCount()
 
-	env2 := &domain.Envelope{ID: "overflow-2", Payload: []byte("x")}
+	env2 := &messaging.Envelope{ID: "overflow-2", Payload: []byte("x")}
 	del2 := NewFakeDelivery(env2)
 	_ = receiver.Emit(runCtx, del2)
 	waitFor(t, time.Second, "overflow-2 retried", func() bool { return del2.IsRetried() })

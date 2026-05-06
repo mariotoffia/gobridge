@@ -8,7 +8,7 @@ import (
 	"time"
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -83,7 +83,7 @@ func TestProcessor_PanicInNext_RecoversProperly(t *testing.T) {
 				t.Fatal("expected panic from next")
 			}
 		}()
-		_ = p.Process(ctx, env, func(_ context.Context, _ *domain.Envelope) error {
+		_ = p.Process(ctx, env, func(_ context.Context, _ *messaging.Envelope) error {
 			panic("simulated downstream panic")
 		})
 	}()

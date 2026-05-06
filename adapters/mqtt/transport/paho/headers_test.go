@@ -5,7 +5,7 @@ import (
 	"time"
 
 	pahov5 "github.com/eclipse/paho.golang/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // verifies EnvelopeFromPublish maps topic, payload, subject, and CreatedAt.
@@ -40,11 +40,11 @@ func TestEnvelopeFromPublish_CorrelationAndContentType(t *testing.T) {
 
 	env := EnvelopeFromPublish(pub, nil)
 
-	v, ok := domain.GetHeaderString(env.Headers, domain.HeaderCorrelationID)
+	v, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderCorrelationID)
 	if !ok || v != "corr-123" {
 		t.Errorf("correlation = %q, want %q", v, "corr-123")
 	}
-	v, ok = domain.GetHeaderString(env.Headers, domain.HeaderContentType)
+	v, ok = messaging.GetHeaderString(env.Headers, messaging.HeaderContentType)
 	if !ok || v != "application/json" {
 		t.Errorf("content-type = %q, want %q", v, "application/json")
 	}
@@ -88,10 +88,10 @@ func TestEnvelopeFromPublish_UserProperties(t *testing.T) {
 
 	env := EnvelopeFromPublish(pub, nil)
 
-	if v, _ := domain.GetHeaderString(env.Headers, "traceparent"); v != "00-abc-def-01" {
+	if v, _ := messaging.GetHeaderString(env.Headers, "traceparent"); v != "00-abc-def-01" {
 		t.Errorf("traceparent = %q, want %q", v, "00-abc-def-01")
 	}
-	if v, _ := domain.GetHeaderString(env.Headers, "custom-key"); v != "custom-val" {
+	if v, _ := messaging.GetHeaderString(env.Headers, "custom-key"); v != "custom-val" {
 		t.Errorf("custom-key = %q, want %q", v, "custom-val")
 	}
 }
@@ -117,7 +117,7 @@ func TestEnvelopeFromPublish_StripsReservedHeaders(t *testing.T) {
 	if _, ok := env.Headers["x-bridge.source-id"]; ok {
 		t.Error("reserved header x-bridge.source-id should be stripped")
 	}
-	if v, _ := domain.GetHeaderString(env.Headers, "safe-key"); v != "safe-val" {
+	if v, _ := messaging.GetHeaderString(env.Headers, "safe-key"); v != "safe-val" {
 		t.Errorf("safe-key = %q, want %q", v, "safe-val")
 	}
 }
@@ -133,14 +133,14 @@ func TestEnvelopeFromPublish_ResponseTopic(t *testing.T) {
 
 	env := EnvelopeFromPublish(pub, nil)
 
-	if v, _ := domain.GetHeaderString(env.Headers, "mqtt.response-topic"); v != "reply/to" {
+	if v, _ := messaging.GetHeaderString(env.Headers, "mqtt.response-topic"); v != "reply/to" {
 		t.Errorf("response-topic = %q, want %q", v, "reply/to")
 	}
 }
 
 // verifies PublishFromEnvelope maps subject, payload, QoS, and retain.
 func TestPublishFromEnvelope_BasicFields(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject: "out/topic",
 		Payload: []byte("world"),
 	}
@@ -164,7 +164,7 @@ func TestPublishFromEnvelope_BasicFields(t *testing.T) {
 
 // verifies PublishFromEnvelope uses DefaultTopic when the envelope has no subject.
 func TestPublishFromEnvelope_DefaultTopic(t *testing.T) {
-	env := &domain.Envelope{Payload: []byte("x")}
+	env := &messaging.Envelope{Payload: []byte("x")}
 	opts := SenderOptions{DefaultTopic: "fallback/topic", QoS: 0}
 
 	pub := PublishFromEnvelope(env, opts, nil)
@@ -176,14 +176,14 @@ func TestPublishFromEnvelope_DefaultTopic(t *testing.T) {
 
 // verifies PublishFromEnvelope maps correlation, content-type, response topic, and user props.
 func TestPublishFromEnvelope_Headers(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject: "t",
 		Payload: []byte("x"),
 		Headers: map[string]any{
-			domain.HeaderCorrelationID: "corr-456",
-			domain.HeaderContentType:   "text/plain",
-			"traceparent":              "00-xyz",
-			"mqtt.response-topic":      "reply",
+			messaging.HeaderCorrelationID: "corr-456",
+			messaging.HeaderContentType:   "text/plain",
+			"traceparent":                 "00-xyz",
+			"mqtt.response-topic":         "reply",
 		},
 	}
 	opts := SenderOptions{QoS: 1}
@@ -216,7 +216,7 @@ func TestPublishFromEnvelope_Headers(t *testing.T) {
 
 // verifies PublishFromEnvelope sets MessageExpiry from envelope ExpiresAt.
 func TestPublishFromEnvelope_MessageExpiry(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject:   "t",
 		Payload:   []byte("x"),
 		ExpiresAt: time.Now().Add(120 * time.Second),
@@ -235,7 +235,7 @@ func TestPublishFromEnvelope_MessageExpiry(t *testing.T) {
 
 // verifies PublishFromEnvelope omits Properties when no header-derived fields are needed.
 func TestPublishFromEnvelope_NoProperties(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject: "t",
 		Payload: []byte("x"),
 	}
@@ -262,7 +262,7 @@ func TestEnvelopeFromPublish_RejectsNonPrintableCorrelationData(t *testing.T) {
 
 	env := EnvelopeFromPublish(pub, nil)
 
-	if _, ok := env.Headers[domain.HeaderCorrelationID]; ok {
+	if _, ok := env.Headers[messaging.HeaderCorrelationID]; ok {
 		t.Error("non-printable correlation data should be rejected")
 	}
 }
@@ -284,7 +284,7 @@ func TestEnvelopeFromPublish_RejectsOversizedCorrelationData(t *testing.T) {
 
 	env := EnvelopeFromPublish(pub, nil)
 
-	if _, ok := env.Headers[domain.HeaderCorrelationID]; ok {
+	if _, ok := env.Headers[messaging.HeaderCorrelationID]; ok {
 		t.Error("oversized correlation data should be rejected")
 	}
 }
@@ -301,7 +301,7 @@ func TestEnvelopeFromPublish_RejectsNonPrintableContentType(t *testing.T) {
 
 	env := EnvelopeFromPublish(pub, nil)
 
-	if _, ok := env.Headers[domain.HeaderContentType]; ok {
+	if _, ok := env.Headers[messaging.HeaderContentType]; ok {
 		t.Error("non-printable content type should be rejected")
 	}
 }
@@ -319,11 +319,11 @@ func TestEnvelopeFromPublish_AcceptsValidCorrelationData(t *testing.T) {
 
 	env := EnvelopeFromPublish(pub, nil)
 
-	v, ok := domain.GetHeaderString(env.Headers, domain.HeaderCorrelationID)
+	v, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderCorrelationID)
 	if !ok || v != "550e8400-e29b-41d4-a716-446655440000" {
 		t.Errorf("valid correlation data should be accepted, got %q", v)
 	}
-	v, ok = domain.GetHeaderString(env.Headers, domain.HeaderContentType)
+	v, ok = messaging.GetHeaderString(env.Headers, messaging.HeaderContentType)
 	if !ok || v != "application/json" {
 		t.Errorf("valid content type should be accepted, got %q", v)
 	}
@@ -385,7 +385,7 @@ func TestEnvelopeFromPublish_MixedCaseReservedHeaders(t *testing.T) {
 	if _, ok := env.Headers["X-BRIDGE.SOURCE-ID"]; ok {
 		t.Error("uppercase reserved header should be stripped")
 	}
-	if v, _ := domain.GetHeaderString(env.Headers, "safe-key"); v != "safe-val" {
+	if v, _ := messaging.GetHeaderString(env.Headers, "safe-key"); v != "safe-val" {
 		t.Error("safe key should be preserved")
 	}
 }
@@ -430,7 +430,7 @@ func TestEnvelopeFromPublish_RejectsOversizedUserProperty(t *testing.T) {
 	if _, ok := env.Headers["normal-key"]; ok {
 		t.Error("oversized user property value should be rejected")
 	}
-	if v, _ := domain.GetHeaderString(env.Headers, "safe-key"); v != "safe-val" {
+	if v, _ := messaging.GetHeaderString(env.Headers, "safe-key"); v != "safe-val" {
 		t.Error("safe user property should be preserved")
 	}
 }
@@ -453,7 +453,7 @@ func TestEnvelopeFromPublish_RejectsNonPrintableUserPropertyKey(t *testing.T) {
 	if _, ok := env.Headers["bad\nkey"]; ok {
 		t.Error("user property with non-printable key should be rejected")
 	}
-	if v, _ := domain.GetHeaderString(env.Headers, "good-key"); v != "good-val" {
+	if v, _ := messaging.GetHeaderString(env.Headers, "good-key"); v != "good-val" {
 		t.Error("good user property should be preserved")
 	}
 }
@@ -475,7 +475,7 @@ func TestEnvelopeFromPublish_IDFromMessageIDHeader(t *testing.T) {
 	if env.ID != "my-envelope-id" {
 		t.Errorf("ID = %q, want %q", env.ID, "my-envelope-id")
 	}
-	if v, _ := domain.GetHeaderString(env.Headers, HeaderMessageID); v != "my-envelope-id" {
+	if v, _ := messaging.GetHeaderString(env.Headers, HeaderMessageID); v != "my-envelope-id" {
 		t.Errorf("header %s = %q, want %q", HeaderMessageID, v, "my-envelope-id")
 	}
 }
@@ -539,7 +539,7 @@ func TestEnvelopeFromPublish_IDFallbackRandom(t *testing.T) {
 
 // verifies PublishFromEnvelope includes Envelope.ID as mqtt.message-id user property.
 func TestPublishFromEnvelope_IncludesMessageID(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "my-id-123",
 		Subject: "t",
 		Payload: []byte("p"),
@@ -562,7 +562,7 @@ func TestPublishFromEnvelope_IncludesMessageID(t *testing.T) {
 
 // verifies full round-trip of Envelope.ID through Publish and back.
 func TestRoundTrip_EnvelopeID(t *testing.T) {
-	original := &domain.Envelope{
+	original := &messaging.Envelope{
 		ID:      "round-trip-id-456",
 		Subject: "rt/topic",
 		Payload: []byte("data"),
@@ -578,13 +578,13 @@ func TestRoundTrip_EnvelopeID(t *testing.T) {
 
 // verifies PublishFromEnvelope followed by EnvelopeFromPublish preserves key fields and headers.
 func TestRoundTrip_EnvelopePublishEnvelope(t *testing.T) {
-	original := &domain.Envelope{
+	original := &messaging.Envelope{
 		Subject: "round/trip",
 		Payload: []byte("data"),
 		Headers: map[string]any{
-			domain.HeaderCorrelationID: "rt-id",
-			domain.HeaderContentType:   "application/octet-stream",
-			"custom":                   "value",
+			messaging.HeaderCorrelationID: "rt-id",
+			messaging.HeaderContentType:   "application/octet-stream",
+			"custom":                      "value",
 		},
 	}
 
@@ -598,13 +598,13 @@ func TestRoundTrip_EnvelopePublishEnvelope(t *testing.T) {
 	if string(restored.Payload) != string(original.Payload) {
 		t.Errorf("payload = %q, want %q", restored.Payload, original.Payload)
 	}
-	if v, _ := domain.GetHeaderString(restored.Headers, domain.HeaderCorrelationID); v != "rt-id" {
+	if v, _ := messaging.GetHeaderString(restored.Headers, messaging.HeaderCorrelationID); v != "rt-id" {
 		t.Errorf("correlation = %q, want %q", v, "rt-id")
 	}
-	if v, _ := domain.GetHeaderString(restored.Headers, domain.HeaderContentType); v != "application/octet-stream" {
+	if v, _ := messaging.GetHeaderString(restored.Headers, messaging.HeaderContentType); v != "application/octet-stream" {
 		t.Errorf("content-type = %q, want %q", v, "application/octet-stream")
 	}
-	if v, _ := domain.GetHeaderString(restored.Headers, "custom"); v != "value" {
+	if v, _ := messaging.GetHeaderString(restored.Headers, "custom"); v != "value" {
 		t.Errorf("custom = %q, want %q", v, "value")
 	}
 }

@@ -11,6 +11,7 @@ import (
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
@@ -78,7 +79,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_FullCycle(t *testing.T) {
 			SessionID:  "sess-sq1",
 			RouteID:    "route-sq1",
 			Address:    "test/sqs/full-cycle",
-			Envelope: domain.Envelope{
+			Envelope: messaging.Envelope{
 				ID:      fmt.Sprintf("env-sq1-%d", i),
 				Subject: "test/sqs/full-cycle",
 				Payload: []byte(fmt.Sprintf(`{"index":%d}`, i)),
@@ -182,7 +183,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_ExpiredToDLQ(t *testing.T) {
 		RouteID:    "route-sq2",
 		Address:    "test/sqs/expired",
 		ExpiresAt:  past,
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:        "env-sq2",
 			Subject:   "test/sqs/expired",
 			Payload:   []byte(`{"expired":"should-not-reach-sqs"}`),
@@ -283,7 +284,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_HeaderPreservation(t *testing.T
 		RouteID:         "route-sq3",
 		Address:         "test/sqs/headers",
 		DispatchHeaders: customHeaders,
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:      "env-sq3",
 			Subject: "test/sqs/headers",
 			Payload: []byte(`{"headers":"preservation-test"}`),

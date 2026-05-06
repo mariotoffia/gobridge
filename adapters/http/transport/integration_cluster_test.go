@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
@@ -220,7 +221,7 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 			return senderB.(*transport.SSESender).ClientCount() >= 1
 		})
 
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID: "sse-evt-1", Subject: "user.created",
 			Payload: []byte(`{"name":"alice"}`),
 		}
@@ -294,7 +295,7 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 	}
 	setRouteID(t, recvB, "route-loop")
 
-	var delivered []*domain.Envelope
+	var delivered []*messaging.Envelope
 	var mu sync.Mutex
 	var wgB sync.WaitGroup
 	wgB.Add(1)

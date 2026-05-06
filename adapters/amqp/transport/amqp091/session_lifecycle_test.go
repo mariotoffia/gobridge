@@ -14,6 +14,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -283,7 +284,7 @@ func runReceiverSelect(
 			if !ok {
 				return
 			}
-			env := &domain.Envelope{ID: "x", Payload: d.Body}
+			env := &messaging.Envelope{ID: "x", Payload: d.Body}
 			if err := emit(ctx, &Delivery{env: env, raw: d}); err != nil {
 				return
 			}

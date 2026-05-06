@@ -12,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorydlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/stretchr/testify/assert"
@@ -86,12 +87,12 @@ func TestHandleDLQRedrive_AllSuccess(t *testing.T) {
 	seedDLQ(t, dlq,
 		domain.DLQEntry{
 			ID: "e1", RouteID: "test-route",
-			Envelope: domain.Envelope{Subject: "s1", Payload: []byte("p1")},
+			Envelope: messaging.Envelope{Subject: "s1", Payload: []byte("p1")},
 			FailedAt: time.Now(),
 		},
 		domain.DLQEntry{
 			ID: "e2", RouteID: "test-route",
-			Envelope: domain.Envelope{Subject: "s2", Payload: []byte("p2")},
+			Envelope: messaging.Envelope{Subject: "s2", Payload: []byte("p2")},
 			FailedAt: time.Now(),
 		},
 	)
@@ -120,7 +121,7 @@ func TestHandleDLQRedrive_EntryNotFound(t *testing.T) {
 	mux, dlq, _ := redriveSetup(t)
 	seedDLQ(t, dlq, domain.DLQEntry{
 		ID: "e1", RouteID: "test-route",
-		Envelope: domain.Envelope{Subject: "s1"},
+		Envelope: messaging.Envelope{Subject: "s1"},
 		FailedAt: time.Now(),
 	})
 
@@ -146,7 +147,7 @@ func TestHandleDLQRedrive_RouteNotFound(t *testing.T) {
 	mux, dlq, _ := redriveSetup(t)
 	seedDLQ(t, dlq, domain.DLQEntry{
 		ID: "e1", RouteID: "nonexistent-route",
-		Envelope: domain.Envelope{Subject: "s1"},
+		Envelope: messaging.Envelope{Subject: "s1"},
 		FailedAt: time.Now(),
 	})
 
@@ -170,7 +171,7 @@ func TestHandleDLQRedrive_DuplicateIDs(t *testing.T) {
 	mux, dlq, sender := redriveSetup(t)
 	seedDLQ(t, dlq, domain.DLQEntry{
 		ID: "e1", RouteID: "test-route",
-		Envelope: domain.Envelope{Subject: "s1"},
+		Envelope: messaging.Envelope{Subject: "s1"},
 		FailedAt: time.Now(),
 	})
 

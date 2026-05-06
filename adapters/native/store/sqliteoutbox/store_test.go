@@ -10,6 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox"
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 )
 
@@ -59,7 +60,7 @@ func TestDurability_CloseAndReopen(t *testing.T) {
 		BindingID:  "bind-dur-1",
 		SessionID:  "sess-dur",
 		Address:    "test/topic",
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:      "env-dur-1",
 			Subject: "test",
 			Payload: []byte("durable payload"),
@@ -110,7 +111,7 @@ func TestTempFileCleanup(t *testing.T) {
 		EnvelopeID: "env-tmp-1",
 		BindingID:  "bind-tmp-1",
 		SessionID:  "sess-tmp",
-		Envelope:   domain.Envelope{ID: "env-tmp-1", Subject: "test"},
+		Envelope:   messaging.Envelope{ID: "env-tmp-1", Subject: "test"},
 	}
 	if err := s.Persist(ctx, []domain.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
@@ -135,7 +136,7 @@ func TestDispatchHeadersRoundTrip(t *testing.T) {
 		EnvelopeID: "env-hdr-1",
 		BindingID:  "bind-hdr-1",
 		SessionID:  "sess-hdr",
-		Envelope:   domain.Envelope{ID: "env-hdr-1", Subject: "test"},
+		Envelope:   messaging.Envelope{ID: "env-hdr-1", Subject: "test"},
 		DispatchHeaders: map[string]any{
 			"x-custom":  "value",
 			"x-numeric": float64(42),
@@ -173,7 +174,7 @@ func TestWithClockControlsCreatedAt(t *testing.T) {
 		EnvelopeID: "env-clk-1",
 		BindingID:  "bind-clk-1",
 		SessionID:  "sess-clk",
-		Envelope:   domain.Envelope{ID: "env-clk-1", Subject: "test"},
+		Envelope:   messaging.Envelope{ID: "env-clk-1", Subject: "test"},
 	}
 	if err := s.Persist(ctx, []domain.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
@@ -203,7 +204,7 @@ func TestExpiresAtRoundTrip(t *testing.T) {
 		EnvelopeID: "env-exprt-1",
 		BindingID:  "bind-exprt-1",
 		SessionID:  "sess-exprt",
-		Envelope:   domain.Envelope{ID: "env-exprt-1", Subject: "test"},
+		Envelope:   messaging.Envelope{ID: "env-exprt-1", Subject: "test"},
 		ExpiresAt:  expiry,
 	}
 	if err := s.Persist(ctx, []domain.OutboxRecord{r}); err != nil {

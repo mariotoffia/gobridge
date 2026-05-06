@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // ---------------------------------------------------------------------------
@@ -14,7 +15,7 @@ import (
 
 func BenchmarkConditionEval_Eq_Header(b *testing.B) {
 	eval, _ := newConditionEval(MatchCondition{Field: "header.tenant", Operator: OpEquals, Value: "acme"})
-	env := &domain.Envelope{Headers: map[string]any{"tenant": "acme"}}
+	env := &messaging.Envelope{Headers: map[string]any{"tenant": "acme"}}
 	ctx := newEvalContext()
 
 	b.ResetTimer()
@@ -26,7 +27,7 @@ func BenchmarkConditionEval_Eq_Header(b *testing.B) {
 
 func BenchmarkConditionEval_Prefix_Subject(b *testing.B) {
 	eval, _ := newConditionEval(MatchCondition{Field: "subject", Operator: OpPrefix, Value: "orders."})
-	env := &domain.Envelope{Subject: "orders.created.eu-west"}
+	env := &messaging.Envelope{Subject: "orders.created.eu-west"}
 	ctx := newEvalContext()
 
 	b.ResetTimer()
@@ -38,7 +39,7 @@ func BenchmarkConditionEval_Prefix_Subject(b *testing.B) {
 
 func BenchmarkConditionEval_Regex_Precompiled(b *testing.B) {
 	eval, _ := newConditionEval(MatchCondition{Field: "subject", Operator: OpRegex, Value: `^order-\d{4,8}$`})
-	env := &domain.Envelope{Subject: "order-12345678"}
+	env := &messaging.Envelope{Subject: "order-12345678"}
 	ctx := newEvalContext()
 
 	b.ResetTimer()
@@ -50,7 +51,7 @@ func BenchmarkConditionEval_Regex_Precompiled(b *testing.B) {
 
 func BenchmarkConditionEval_JSONPath_Shallow(b *testing.B) {
 	eval, _ := newConditionEval(MatchCondition{Field: "$.status", Operator: OpEquals, Value: "active"})
-	env := &domain.Envelope{Payload: []byte(`{"status":"active","count":42}`)}
+	env := &messaging.Envelope{Payload: []byte(`{"status":"active","count":42}`)}
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -62,7 +63,7 @@ func BenchmarkConditionEval_JSONPath_Shallow(b *testing.B) {
 
 func BenchmarkConditionEval_JSONPath_Deep(b *testing.B) {
 	eval, _ := newConditionEval(MatchCondition{Field: "$.order.item.status", Operator: OpEquals, Value: "shipped"})
-	env := &domain.Envelope{Payload: []byte(`{"order":{"item":{"status":"shipped","qty":3}}}`)}
+	env := &messaging.Envelope{Payload: []byte(`{"order":{"item":{"status":"shipped","qty":3}}}`)}
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -124,7 +125,7 @@ func benchRuleResolver(b *testing.B, numRules int, matchIdx int) {
 		matchVal = "no-match"
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject: "test",
 		Headers: map[string]any{"route-key": matchVal},
 	}
@@ -145,7 +146,7 @@ func BenchmarkEvalContext_CachedVsUncached(b *testing.B) {
 	eval2, _ := newConditionEval(MatchCondition{Field: "$.order.status", Operator: OpEquals, Value: "active"})
 	eval3, _ := newConditionEval(MatchCondition{Field: "$.order.priority", Operator: OpGreaterThan, Value: float64(5)})
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Payload: []byte(`{"order":{"id":"42","status":"active","priority":8}}`),
 	}
 

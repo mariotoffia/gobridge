@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -36,7 +37,7 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *domain.OutboxRec
 		env.Subject = rec.Address
 	}
 	if rec.DispatchHeaders != nil {
-		env.Headers = domain.MergeHeaders(env.Headers, rec.DispatchHeaders, true)
+		env.Headers = messaging.MergeHeaders(env.Headers, rec.DispatchHeaders, true)
 	}
 
 	// Re-check lease before sending to minimize duplicate delivery window.

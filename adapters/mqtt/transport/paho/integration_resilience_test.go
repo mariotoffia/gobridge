@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -90,7 +91,7 @@ func TestRes_ConcurrentSendAndClose_NoPanicOrHang(t *testing.T) {
 				if sendAttempts.Add(1) == int64(senders) {
 					close(midFlight)
 				}
-				err := sender.Send(ctx, &domain.Envelope{
+				err := sender.Send(ctx, &messaging.Envelope{
 					Subject: "res/send-close",
 					Payload: []byte(fmt.Sprintf("s%d-i%d", id, i)),
 				})
@@ -160,7 +161,7 @@ func TestRes_SendAfterClose_ReturnsErrorNoPanic(t *testing.T) {
 		}
 	}()
 
-	err := sender.Send(ctx, &domain.Envelope{
+	err := sender.Send(ctx, &messaging.Envelope{
 		Subject: "res/post-close",
 		Payload: []byte("after-close"),
 	})
@@ -368,7 +369,7 @@ func TestRes_BrokerOutage_ReconnectResubscribesAndDelivers(t *testing.T) {
 	defer func() { recvCancel(); rwg.Wait() }()
 
 	// Phase 1: send + receive against live broker.
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		Subject: topic,
 		Payload: []byte("phase-1"),
 	}); err != nil {
@@ -389,7 +390,7 @@ func TestRes_BrokerOutage_ReconnectResubscribesAndDelivers(t *testing.T) {
 
 	// Phase 4: subscription must have been restored — sending again
 	// should be received.
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		Subject: topic,
 		Payload: []byte("phase-2-after-recovery"),
 	}); err != nil {

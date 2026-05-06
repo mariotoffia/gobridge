@@ -1,4 +1,4 @@
-package domain
+package domain_test
 
 // ═══════════════════════════════════════════════
 // Domain Resilience Tests
@@ -12,12 +12,12 @@ package domain
 // ├──────┼────────────────────────────────────────────┼──────────┤
 // │ T001 │ Clone produces independent deep copy       │ PASS     │
 // │ T002 │ Clone nil payload stays nil                │ PASS     │
-// │ T003 │ MergeHeaders protects reserved case-insens.│ PASS     │
-// │ T004 │ StripReservedHeaders is idempotent         │ PASS     │
+// │ T003 │ messaging.MergeHeaders protects reserved case-insens.│ PASS     │
+// │ T004 │ messaging.StripReservedHeaders is idempotent         │ PASS     │
 // │ T005 │ BridgeError.Is matches by code             │ PASS     │
 // │ T006 │ IsRecoverableError treats unknown as true  │ PASS     │
 // │ T007 │ BridgeError.With clones context map        │ PASS     │
-// │ T008 │ OutboxPartitionKey deterministic           │ PASS     │
+// │ T008 │ domain.OutboxPartitionKey deterministic           │ PASS     │
 // └──────┴────────────────────────────────────────────┴──────────┘
 // ═══════════════════════════════════════════════
 
@@ -26,13 +26,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // TestClone_DeepCopy_Independence validates that modifying a clone
 // does not affect the original (QA-M10 property).
 func TestClone_DeepCopy_Independence(t *testing.T) {
-	original := &Envelope{
+	original := &messaging.Envelope{
 		ID:        "orig",
 		Subject:   "test",
 		Payload:   []byte("hello world"),
@@ -69,7 +71,7 @@ func TestClone_DeepCopy_Independence(t *testing.T) {
 // TestClone_NilPayload validates that cloning with nil payload doesn't
 // allocate an empty slice.
 func TestClone_NilPayload(t *testing.T) {
-	original := &Envelope{
+	original := &messaging.Envelope{
 		ID:      "no-payload",
 		Subject: "test",
 		Headers: map[string]any{"k": "v"},
@@ -86,7 +88,7 @@ func TestClone_NilPayload(t *testing.T) {
 
 // TestClone_NilHeaders validates clone with nil headers.
 func TestClone_NilHeaders(t *testing.T) {
-	original := &Envelope{
+	original := &messaging.Envelope{
 		ID:      "no-headers",
 		Subject: "test",
 		Payload: []byte("data"),
@@ -102,17 +104,17 @@ func TestClone_NilHeaders(t *testing.T) {
 // reserved header protection works with mixed-case keys.
 func TestMergeHeaders_ProtectsReserved_CaseInsensitive(t *testing.T) {
 	base := map[string]any{
-		HeaderCorrelationID: "original-corr",
-		"custom":            "base-value",
+		messaging.HeaderCorrelationID: "original-corr",
+		"custom":                      "base-value",
 	}
 	overlay := map[string]any{
 		"X-Bridge.Correlation-Id": "injected-corr",
 		"custom":                  "overlay-value",
 	}
 
-	result := MergeHeaders(base, overlay, true)
+	result := messaging.MergeHeaders(base, overlay, true)
 
-	corrID, ok := result[HeaderCorrelationID]
+	corrID, ok := result[messaging.HeaderCorrelationID]
 	if !ok {
 		t.Fatal("expected correlation ID in result")
 	}
@@ -128,14 +130,14 @@ func TestMergeHeaders_ProtectsReserved_CaseInsensitive(t *testing.T) {
 // idempotent: strip(strip(h)) == strip(h).
 func TestStripReservedHeaders_Idempotent(t *testing.T) {
 	headers := map[string]any{
-		HeaderCorrelationID: "corr-1",
-		HeaderRouteID:       "route-1",
-		"custom-header":     "value",
-		"another":           42,
+		messaging.HeaderCorrelationID: "corr-1",
+		messaging.HeaderRouteID:       "route-1",
+		"custom-header":               "value",
+		"another":                     42,
 	}
 
-	first := StripReservedHeaders(headers)
-	second := StripReservedHeaders(first)
+	first := messaging.StripReservedHeaders(headers)
+	second := messaging.StripReservedHeaders(first)
 
 	if len(first) != len(second) {
 		t.Fatalf("idempotent violation: first=%d, second=%d entries", len(first), len(second))
@@ -145,7 +147,7 @@ func TestStripReservedHeaders_Idempotent(t *testing.T) {
 			t.Fatalf("idempotent violation at key %q: %v vs %v", k, v, second[k])
 		}
 	}
-	if _, exists := first[HeaderCorrelationID]; exists {
+	if _, exists := first[messaging.HeaderCorrelationID]; exists {
 		t.Fatal("reserved header should be stripped")
 	}
 }
@@ -200,7 +202,7 @@ func TestBridgeError_With_ClonesContext(t *testing.T) {
 
 // TestOutboxPartitionKey_Deterministic validates that partition keys
 // are deterministic and non-empty for valid inputs.
-func TestOutboxPartitionKey_Deterministic(t *testing.T) {
+func TestOutboxPartitionKey_DeterministicTable(t *testing.T) {
 	tests := []struct {
 		sessionID string
 		bindingID string
@@ -212,14 +214,14 @@ func TestOutboxPartitionKey_Deterministic(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := OutboxPartitionKey(tc.sessionID, tc.bindingID)
+		got := domain.OutboxPartitionKey(tc.sessionID, tc.bindingID)
 		if got != tc.expected {
-			t.Fatalf("OutboxPartitionKey(%q, %q) = %q, want %q",
+			t.Fatalf("domain.OutboxPartitionKey(%q, %q) = %q, want %q",
 				tc.sessionID, tc.bindingID, got, tc.expected)
 		}
-		got2 := OutboxPartitionKey(tc.sessionID, tc.bindingID)
+		got2 := domain.OutboxPartitionKey(tc.sessionID, tc.bindingID)
 		if got != got2 {
-			t.Fatal("OutboxPartitionKey should be deterministic")
+			t.Fatal("domain.OutboxPartitionKey should be deterministic")
 		}
 	}
 }

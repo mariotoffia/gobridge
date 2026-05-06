@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -88,7 +89,7 @@ injectLoop:
 		case <-injectCtx.Done():
 			break injectLoop
 		case <-ticker.C:
-			env := &domain.Envelope{
+			env := &messaging.Envelope{
 				ID:      fmt.Sprintf("uc68-msg-%d", injected),
 				Subject: outTopic,
 				Payload: []byte(fmt.Sprintf(`{"seq":%d}`, injected)),

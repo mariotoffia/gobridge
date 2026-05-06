@@ -6,18 +6,18 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-func nextOK(_ context.Context, _ *domain.Envelope) error { return nil }
+func nextOK(_ context.Context, _ *messaging.Envelope) error { return nil }
 
-func nextErr(sentinel error) func(context.Context, *domain.Envelope) error {
-	return func(_ context.Context, _ *domain.Envelope) error { return sentinel }
+func nextErr(sentinel error) func(context.Context, *messaging.Envelope) error {
+	return func(_ context.Context, _ *messaging.Envelope) error { return sentinel }
 }
 
-func envelope(subject string, headers map[string]any, payload any) *domain.Envelope {
-	env := &domain.Envelope{Subject: subject, Headers: headers}
+func envelope(subject string, headers map[string]any, payload any) *messaging.Envelope {
+	env := &messaging.Envelope{Subject: subject, Headers: headers}
 	if payload != nil {
 		env.Payload, _ = json.Marshal(payload)
 	}
@@ -88,7 +88,7 @@ func TestRouteFilter_SetsHeaderAndCallsNext(t *testing.T) {
 	t.Run("matching message sets route header", func(t *testing.T) {
 		env := envelope("orders.new", map[string]any{"foo": "bar"}, nil)
 		called := false
-		err := p.Process(context.Background(), env, func(_ context.Context, e *domain.Envelope) error {
+		err := p.Process(context.Background(), env, func(_ context.Context, e *messaging.Envelope) error {
 			called = true
 			return nil
 		})
@@ -98,7 +98,7 @@ func TestRouteFilter_SetsHeaderAndCallsNext(t *testing.T) {
 		if !called {
 			t.Errorf("expected next to be called")
 		}
-		got, ok := env.Headers[domain.HeaderRouteOverride]
+		got, ok := env.Headers[messaging.HeaderRouteOverride]
 		if !ok {
 			t.Fatalf("route header not set")
 		}
@@ -116,8 +116,8 @@ func TestRouteFilter_SetsHeaderAndCallsNext(t *testing.T) {
 		if env.Headers == nil {
 			t.Fatal("expected headers to be initialised")
 		}
-		if env.Headers[domain.HeaderRouteOverride] != "audit-queue" {
-			t.Errorf("route header = %v, want %q", env.Headers[domain.HeaderRouteOverride], "audit-queue")
+		if env.Headers[messaging.HeaderRouteOverride] != "audit-queue" {
+			t.Errorf("route header = %v, want %q", env.Headers[messaging.HeaderRouteOverride], "audit-queue")
 		}
 	})
 
@@ -128,7 +128,7 @@ func TestRouteFilter_SetsHeaderAndCallsNext(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 		if env.Headers != nil {
-			if _, ok := env.Headers[domain.HeaderRouteOverride]; ok {
+			if _, ok := env.Headers[messaging.HeaderRouteOverride]; ok {
 				t.Errorf("route header should not be set for non-matching message")
 			}
 		}
@@ -572,7 +572,7 @@ func TestFilter_NilHeaders(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewDropFilter: %v", err)
 			}
-			env := &domain.Envelope{Subject: "test"}
+			env := &messaging.Envelope{Subject: "test"}
 			err = p.Process(context.Background(), env, nextOK)
 			if err != nil {
 				t.Errorf("expected nil (no panic, field not found = no match), got %v", err)
@@ -591,7 +591,7 @@ func TestFilter_EmptyPayload(t *testing.T) {
 	}
 
 	t.Run("nil payload", func(t *testing.T) {
-		env := &domain.Envelope{Subject: "test"}
+		env := &messaging.Envelope{Subject: "test"}
 		err := p.Process(context.Background(), env, nextOK)
 		if err != nil {
 			t.Errorf("expected nil (no panic, empty payload = no match), got %v", err)
@@ -599,7 +599,7 @@ func TestFilter_EmptyPayload(t *testing.T) {
 	})
 
 	t.Run("empty byte slice payload", func(t *testing.T) {
-		env := &domain.Envelope{Subject: "test", Payload: []byte{}}
+		env := &messaging.Envelope{Subject: "test", Payload: []byte{}}
 		err := p.Process(context.Background(), env, nextOK)
 		if err != nil {
 			t.Errorf("expected nil (no panic, empty payload = no match), got %v", err)

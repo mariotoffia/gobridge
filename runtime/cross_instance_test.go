@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -99,7 +100,7 @@ func TestCrossInstance_SQSConsumerAndMQTTOwnerAreDifferent(t *testing.T) {
 	})
 
 	// Instance A receives a message from SQS.
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "cross-msg-1",
 		Payload: []byte("work-order"),
 	}

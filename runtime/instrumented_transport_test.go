@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -15,7 +15,7 @@ import (
 
 func TestInstrumentedDelivery_Ack_EmitsGenericMetric(t *testing.T) {
 	rec := &ports.RecordingExporter{}
-	inner := NewFakeDelivery(&domain.Envelope{ID: "test"})
+	inner := NewFakeDelivery(&messaging.Envelope{ID: "test"})
 
 	wrapped := goruntime.NewInstrumentedReceiver(
 		&singleDeliveryReceiver{del: inner},
@@ -55,7 +55,7 @@ func TestInstrumentedDelivery_Ack_EmitsGenericMetric(t *testing.T) {
 
 func TestInstrumentedDelivery_Extend_EmitsGenericMetric(t *testing.T) {
 	rec := &ports.RecordingExporter{}
-	inner := NewFakeDelivery(&domain.Envelope{ID: "test"})
+	inner := NewFakeDelivery(&messaging.Envelope{ID: "test"})
 
 	wrapped := goruntime.NewInstrumentedReceiver(
 		&singleDeliveryReceiver{del: inner},
@@ -85,7 +85,7 @@ func TestInstrumentedDelivery_Extend_EmitsGenericMetric(t *testing.T) {
 func TestInstrumentedDelivery_AckLatencyUsesInjectedClock(t *testing.T) {
 	clk := clocktest.NewAt(time.Unix(100, 0))
 	rec := &ports.RecordingExporter{}
-	inner := &advancingDelivery{Delivery: NewFakeDelivery(&domain.Envelope{ID: "test"}), clk: clk, advance: 40 * time.Millisecond}
+	inner := &advancingDelivery{Delivery: NewFakeDelivery(&messaging.Envelope{ID: "test"}), clk: clk, advance: 40 * time.Millisecond}
 
 	wrapped := goruntime.NewInstrumentedReceiver(
 		&singleDeliveryReceiver{del: inner},

@@ -8,8 +8,8 @@ import (
 
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
@@ -52,7 +52,7 @@ func TestBugM6_AutoExtend_TickerResetsAfterVisibilityChange(t *testing.T) {
 	}
 
 	rec := &ports.RecordingExporter{}
-	env := &domain.Envelope{ID: "msg-m6"}
+	env := &messaging.Envelope{ID: "msg-m6"}
 	fake := clocktest.New()
 
 	d := newDelivery(
@@ -127,7 +127,7 @@ func TestBugM6_AutoExtend_SameTimeout_NoReset(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{ID: "msg-m6b"}
+	env := &messaging.Envelope{ID: "msg-m6b"}
 	fake := clocktest.New()
 	d := newDelivery(
 		context.Background(), env, mock, "q", "rh", 2, true, nil, nil, nil, fake,

@@ -8,6 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -83,7 +84,7 @@ func TestInstrumentedOutboxStore_PersistRecordsLatency(t *testing.T) {
 
 	records := []domain.OutboxRecord{{
 		ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1",
-		Status: domain.OutboxPending, Envelope: domain.Envelope{ID: "env-1"},
+		Status: domain.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"},
 	}}
 
 	err := store.Persist(context.Background(), records)
@@ -108,7 +109,7 @@ func TestInstrumentedOutboxStore_CompleteDelegates(t *testing.T) {
 
 	records := []domain.OutboxRecord{
 		{ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", SessionID: "s1",
-			Status: domain.OutboxPending, Envelope: domain.Envelope{ID: "env-1"}},
+			Status: domain.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"}},
 	}
 	_ = store.Persist(context.Background(), records)
 
@@ -152,7 +153,7 @@ func TestInstrumentedOutboxStore_QueryPendingRecordsDepth(t *testing.T) {
 			BindingID:  "b1",
 			SessionID:  "s1",
 			Status:     domain.OutboxPending,
-			Envelope:   domain.Envelope{ID: "env-" + string(rune('0'+i))},
+			Envelope:   messaging.Envelope{ID: "env-" + string(rune('0'+i))},
 		}}
 		_ = store.Persist(context.Background(), records)
 	}
@@ -178,7 +179,7 @@ func TestInstrumentedSender_RecordsSendLatency(t *testing.T) {
 	sender := runtime.NewInstrumentedSender(inner, rec,
 		shared.MetricMQTTPublishLatency, shared.TagKeySessionID, "sess-1", clock.System)
 
-	env := &domain.Envelope{ID: "msg-1", Payload: []byte("test")}
+	env := &messaging.Envelope{ID: "msg-1", Payload: []byte("test")}
 	err := sender.Send(context.Background(), env)
 	if err != nil {
 		t.Fatal(err)
@@ -203,7 +204,7 @@ func TestInstrumentedReceiver_RecordsReceiveLatency(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		env := &domain.Envelope{ID: "msg-1", Payload: []byte("data")}
+		env := &messaging.Envelope{ID: "msg-1", Payload: []byte("data")}
 		del := NewFakeDelivery(env)
 		_ = inner.Emit(ctx, del)
 		cancel()
@@ -227,7 +228,7 @@ func TestInstrumentedOutboxStore_ExpireDelegates(t *testing.T) {
 
 	records := []domain.OutboxRecord{
 		{ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", SessionID: "s1",
-			Status: domain.OutboxPending, Envelope: domain.Envelope{ID: "env-1"}},
+			Status: domain.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"}},
 	}
 	_ = store.Persist(context.Background(), records)
 	rec.Reset()
@@ -249,7 +250,7 @@ func TestInstrumentedDelivery_ExtendCountsVisibilityExtension(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		env := &domain.Envelope{ID: "msg-1", Payload: []byte("data")}
+		env := &messaging.Envelope{ID: "msg-1", Payload: []byte("data")}
 		del := NewFakeDelivery(env)
 		_ = inner.Emit(ctx, del)
 		cancel()
@@ -317,7 +318,7 @@ func TestInstrumentedOutboxStore_PersistLatencyUsesInjectedClock(t *testing.T) {
 	store := runtime.NewInstrumentedOutboxStore(inner, rec, clk)
 
 	err := store.Persist(context.Background(), []domain.OutboxRecord{{
-		ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", Envelope: domain.Envelope{ID: "env-1"},
+		ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", Envelope: messaging.Envelope{ID: "env-1"},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -336,14 +337,14 @@ func TestInstrumentedSender_SendLatencyUsesInjectedClock(t *testing.T) {
 	clk := clocktest.NewAt(time.Unix(100, 0))
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeSender()
-	inner.SendFn = func(*domain.Envelope) error {
+	inner.SendFn = func(*messaging.Envelope) error {
 		clk.Advance(125 * time.Millisecond)
 		return nil
 	}
 	sender := runtime.NewInstrumentedSender(inner, rec,
 		shared.MetricMQTTPublishLatency, shared.TagKeySessionID, "sess-1", clk)
 
-	err := sender.Send(context.Background(), &domain.Envelope{ID: "msg-1"})
+	err := sender.Send(context.Background(), &messaging.Envelope{ID: "msg-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +367,7 @@ func TestInstrumentedReceiver_RunLatencyUsesInjectedClock(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		_ = inner.Emit(ctx, NewFakeDelivery(&domain.Envelope{ID: "msg-1"}))
+		_ = inner.Emit(ctx, NewFakeDelivery(&messaging.Envelope{ID: "msg-1"}))
 		cancel()
 	}()
 

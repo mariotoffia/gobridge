@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -164,12 +165,12 @@ func TestOutboxDrainer_FinalDrainCompletesPendingRecords(t *testing.T) {
 		RouteID:   "r1",
 		SessionID: "s1",
 		Status:    domain.OutboxPending,
-		Envelope:  domain.Envelope{ID: "env-1", Payload: []byte("hello")},
+		Envelope:  messaging.Envelope{ID: "env-1", Payload: []byte("hello")},
 	}})
 
 	var sent atomic.Int32
 	sender := &FakeSender{
-		SendFn: func(_ *domain.Envelope) error {
+		SendFn: func(_ *messaging.Envelope) error {
 			sent.Add(1)
 			return nil
 		},

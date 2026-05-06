@@ -9,13 +9,13 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-func makeTestDelivery(acker *mockAcknowledger, tag uint64) (*Delivery, *domain.Envelope) {
-	env := &domain.Envelope{
+func makeTestDelivery(acker *mockAcknowledger, tag uint64) (*Delivery, *messaging.Envelope) {
+	env := &messaging.Envelope{
 		ID:      "test-env",
 		Subject: "test.subject",
 		Payload: []byte("hello"),
@@ -155,7 +155,7 @@ func TestDelivery_AckThenRetry(t *testing.T) {
 
 // verifies NewDelivery uses a NoopExporter when nil metrics are provided.
 func TestDelivery_NilMetrics(t *testing.T) {
-	env := &domain.Envelope{ID: "x"}
+	env := &messaging.Envelope{ID: "x"}
 	raw := amqp.Delivery{Acknowledger: newMockAcknowledger()}
 	del := NewDelivery(env, raw, nil, nil, nil)
 

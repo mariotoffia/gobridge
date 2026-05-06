@@ -1,9 +1,9 @@
-package domain_test
+package messaging_test
 
 import (
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -33,7 +33,7 @@ import (
 //
 // ═══════════════════════════════════════════════════════════════════
 func TestEnvelope_Clone_DeepCopiesByteSliceHeaders(t *testing.T) {
-	original := &domain.Envelope{
+	original := &messaging.Envelope{
 		ID: "byte-test",
 		Headers: map[string]any{
 			"binary": []byte{0x01, 0x02, 0x03, 0x04},
@@ -57,7 +57,7 @@ func TestEnvelope_Clone_DeepCopiesByteSliceHeaders(t *testing.T) {
 // TestEnvelope_Clone_ByteSliceInsideAnySlice validates that []byte values
 // nested inside []any headers are also deep-copied.
 func TestEnvelope_Clone_ByteSliceInsideAnySlice(t *testing.T) {
-	original := &domain.Envelope{
+	original := &messaging.Envelope{
 		Headers: map[string]any{
 			"mixed": []any{[]byte{0xAA, 0xBB}, "text"},
 		},
@@ -79,7 +79,7 @@ func TestEnvelope_Clone_ByteSliceInsideAnySlice(t *testing.T) {
 // TestEnvelope_Clone_ByteSliceInsideNestedMap validates that []byte values
 // nested inside map[string]any headers are also deep-copied.
 func TestEnvelope_Clone_ByteSliceInsideNestedMap(t *testing.T) {
-	original := &domain.Envelope{
+	original := &messaging.Envelope{
 		Headers: map[string]any{
 			"nested": map[string]any{
 				"data": []byte{0xDE, 0xAD},
@@ -103,7 +103,7 @@ func TestEnvelope_Clone_ByteSliceInsideNestedMap(t *testing.T) {
 // TestEnvelope_Clone_EmptyByteSlice validates that empty []byte headers
 // are cloned correctly (non-nil but empty).
 func TestEnvelope_Clone_EmptyByteSlice(t *testing.T) {
-	original := &domain.Envelope{
+	original := &messaging.Envelope{
 		Headers: map[string]any{
 			"empty": []byte{},
 		},
@@ -123,7 +123,7 @@ func TestEnvelope_Clone_EmptyByteSlice(t *testing.T) {
 // TestEnvelope_Clone_NilByteSlice validates that nil []byte headers
 // remain nil after cloning (falls through to default case).
 func TestEnvelope_Clone_NilByteSlice(t *testing.T) {
-	original := &domain.Envelope{
+	original := &messaging.Envelope{
 		Headers: map[string]any{
 			"nilbytes": ([]byte)(nil),
 		},
@@ -147,7 +147,7 @@ func TestEnvelope_Clone_LargePayload(t *testing.T) {
 		payload[i] = byte(i % 256)
 	}
 
-	original := &domain.Envelope{
+	original := &messaging.Envelope{
 		ID:      "large",
 		Payload: payload,
 	}

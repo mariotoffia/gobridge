@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 )
@@ -42,7 +43,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "headers-rt-1",
 		Subject: "test.headers",
 		Payload: []byte(`{"test":"headers"}`),
@@ -72,7 +73,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
 
-	var received *domain.Envelope
+	var received *messaging.Envelope
 	runErr := recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
 		received = del.Envelope()
 		if err := del.Ack(recvCtx); err != nil {
@@ -130,7 +131,7 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 	defer func() { _ = sender.Close(context.Background()) }()
 
 	expiry := time.Now().Add(time.Hour).UTC().Truncate(time.Millisecond)
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        "ttl-1",
 		Subject:   "test.ttl",
 		Payload:   []byte(`{"test":"ttl"}`),
@@ -152,7 +153,7 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
 
-	var received *domain.Envelope
+	var received *messaging.Envelope
 	runErr := recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
 		received = del.Envelope()
 		if err := del.Ack(recvCtx); err != nil {
@@ -211,7 +212,7 @@ func TestIntegration_ApplicationProperties(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "appprops-1",
 		Subject: "test.appprops",
 		Payload: []byte(`{"test":"appprops"}`),
@@ -239,7 +240,7 @@ func TestIntegration_ApplicationProperties(t *testing.T) {
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
 
-	var received *domain.Envelope
+	var received *messaging.Envelope
 	runErr := recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
 		received = del.Envelope()
 		if err := del.Ack(recvCtx); err != nil {
@@ -261,7 +262,7 @@ func TestIntegration_ApplicationProperties(t *testing.T) {
 	assertHeader(t, h, "priority", "high")
 
 	for k := range h {
-		if domain.IsReservedHeader(k) {
+		if messaging.IsReservedHeader(k) {
 			t.Errorf("reserved header %q present in received envelope", k)
 		}
 	}

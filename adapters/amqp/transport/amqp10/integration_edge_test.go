@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -62,8 +63,8 @@ func edgeSession(t *testing.T, logger *slog.Logger) *Session {
 	return sess
 }
 
-func edgeSendRecv(t *testing.T, sess *Session, addr string, env *domain.Envelope,
-	timeout time.Duration) *domain.Envelope {
+func edgeSendRecv(t *testing.T, sess *Session, addr string, env *messaging.Envelope,
+	timeout time.Duration) *messaging.Envelope {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -87,7 +88,7 @@ func edgeSendRecv(t *testing.T, sess *Session, addr string, env *domain.Envelope
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
 
-	var received *domain.Envelope
+	var received *messaging.Envelope
 	_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
 		received = del.Envelope()
 		_ = del.Ack(recvCtx)
@@ -110,7 +111,7 @@ func TestIntegration_Edge_EmptyPayload(t *testing.T) {
 	addr := artemislocal.UniqueAddress("edge-empty")
 
 	t.Run("nil_payload", func(t *testing.T) {
-		got := edgeSendRecv(t, sess, addr, &domain.Envelope{
+		got := edgeSendRecv(t, sess, addr, &messaging.Envelope{
 			ID: "empty-nil", Subject: "test",
 		}, 15*time.Second)
 		if len(got.Payload) != 0 {
@@ -119,7 +120,7 @@ func TestIntegration_Edge_EmptyPayload(t *testing.T) {
 	})
 
 	t.Run("zero_length_payload", func(t *testing.T) {
-		got := edgeSendRecv(t, sess, addr, &domain.Envelope{
+		got := edgeSendRecv(t, sess, addr, &messaging.Envelope{
 			ID: "empty-zero", Subject: "test", Payload: []byte{},
 		}, 15*time.Second)
 		if len(got.Payload) != 0 {
@@ -145,7 +146,7 @@ func TestIntegration_Edge_LargePayload(t *testing.T) {
 	}
 	sentHash := sha256.Sum256(payload)
 
-	got := edgeSendRecv(t, sess, addr, &domain.Envelope{
+	got := edgeSendRecv(t, sess, addr, &messaging.Envelope{
 		ID: "large-msg", Subject: "test", Payload: payload,
 	}, 30*time.Second)
 
@@ -176,7 +177,7 @@ func TestIntegration_Edge_SendContextTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err = sender.Send(ctx, &domain.Envelope{
+	err = sender.Send(ctx, &messaging.Envelope{
 		ID: "timeout-msg", Subject: "test", Payload: []byte("hello"),
 	})
 	if err == nil {
@@ -231,7 +232,7 @@ func TestIntegration_Edge_DoubleAck(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID: "dbl-ack", Subject: "test", Payload: []byte("ack-me"),
 	}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -279,7 +280,7 @@ func TestIntegration_Edge_DoubleRetry(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID: "dbl-retry", Subject: "test", Payload: []byte("retry-me"),
 	}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -329,7 +330,7 @@ func TestIntegration_Edge_AckThenRetry(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID: "ack-then-retry", Subject: "test", Payload: []byte("test"),
 	}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -384,7 +385,7 @@ func TestIntegration_Edge_SendAfterSessionClose(t *testing.T) {
 	}
 	_ = sess.Close(ctx)
 
-	err = sender.Send(ctx, &domain.Envelope{
+	err = sender.Send(ctx, &messaging.Envelope{
 		ID: "after-close", Subject: "test", Payload: []byte("nope"),
 	})
 	if err == nil {

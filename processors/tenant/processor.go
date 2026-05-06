@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -23,7 +23,7 @@ var _ ports.Processor = (*Processor)(nil)
 // New creates a tenant processor with the given configuration and options.
 func New(cfg Config, opts ...Option) *Processor {
 	if cfg.TenantHeader == "" {
-		cfg.TenantHeader = domain.HeaderTenantID
+		cfg.TenantHeader = messaging.HeaderTenantID
 	}
 	if cfg.InFlightDecrementTimeout <= 0 {
 		cfg.InFlightDecrementTimeout = 2 * time.Second
@@ -43,8 +43,8 @@ func (p *Processor) Name() string {
 	return "tenant"
 }
 
-func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
-	tenantID, _ := domain.GetHeaderString(env.Headers, p.config.TenantHeader)
+func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
+	tenantID, _ := messaging.GetHeaderString(env.Headers, p.config.TenantHeader)
 
 	if tenantID == "" {
 		if p.config.RequireTenant {

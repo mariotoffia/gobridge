@@ -13,6 +13,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -89,7 +90,7 @@ func (p *stageProcessor) Name() string { return "stage-" + p.stage }
 
 func (p *stageProcessor) Process(
 	ctx context.Context,
-	env *domain.Envelope,
+	env *messaging.Envelope,
 	next ports.ProcessorFunc,
 ) error {
 	if env.Headers == nil {

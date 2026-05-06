@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -33,7 +34,7 @@ import (
 func makePeakTracker() (sender *ConcurrentSender, peak *int64) {
 	var concurrentPeak int64
 	var currentConcurrency int64
-	s := NewConcurrentSender(func(_ *domain.Envelope) error {
+	s := NewConcurrentSender(func(_ *messaging.Envelope) error {
 		cur := atomic.AddInt64(&currentConcurrency, 1)
 		defer atomic.AddInt64(&currentConcurrency, -1)
 		for {
@@ -89,7 +90,7 @@ func TestRouteRunner_ConcurrentDelivery(t *testing.T) {
 		emitWg.Add(1)
 		go func(n int) {
 			defer emitWg.Done()
-			env := &domain.Envelope{ID: "conc-msg-" + string(rune('a'+n)), Payload: []byte("x")}
+			env := &messaging.Envelope{ID: "conc-msg-" + string(rune('a'+n)), Payload: []byte("x")}
 			del := NewFakeDelivery(env)
 			_ = receiver.Emit(ctx, del)
 		}(i)
@@ -123,7 +124,7 @@ func TestRouteRunner_BackpressureOnSemFull(t *testing.T) {
 	var concurrentPeak int64
 	var currentConcurrency int64
 
-	sender := NewConcurrentSender(func(_ *domain.Envelope) error {
+	sender := NewConcurrentSender(func(_ *messaging.Envelope) error {
 		cur := atomic.AddInt64(&currentConcurrency, 1)
 		defer atomic.AddInt64(&currentConcurrency, -1)
 		for {
@@ -164,7 +165,7 @@ func TestRouteRunner_BackpressureOnSemFull(t *testing.T) {
 		emitWg.Add(1)
 		go func(n int) {
 			defer emitWg.Done()
-			env := &domain.Envelope{ID: "bp-" + string(rune('a'+n)), Payload: []byte("x")}
+			env := &messaging.Envelope{ID: "bp-" + string(rune('a'+n)), Payload: []byte("x")}
 			del := NewFakeDelivery(env)
 			_ = receiver.Emit(ctx, del)
 		}(i)
@@ -195,7 +196,7 @@ func TestRouteRunner_BackpressureOnSemFull(t *testing.T) {
 func TestRouteRunner_GracefulShutdownWaitsInFlight(t *testing.T) {
 	var sendCompleted int64
 
-	sender := NewConcurrentSender(func(_ *domain.Envelope) error {
+	sender := NewConcurrentSender(func(_ *messaging.Envelope) error {
 		time.Sleep(200 * time.Millisecond) // OTHER: simulated processing duration
 		atomic.StoreInt64(&sendCompleted, 1)
 		return nil
@@ -219,7 +220,7 @@ func TestRouteRunner_GracefulShutdownWaitsInFlight(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &domain.Envelope{ID: "shutdown-msg", Payload: []byte("data")}
+	env := &messaging.Envelope{ID: "shutdown-msg", Payload: []byte("data")}
 	del := NewFakeDelivery(env)
 
 	go func() {
@@ -255,7 +256,7 @@ func TestGlobalSemaphore_LimitsCrossRoute(t *testing.T) {
 	var currentConcurrency int64
 
 	makeSender := func() *ConcurrentSender {
-		return NewConcurrentSender(func(_ *domain.Envelope) error {
+		return NewConcurrentSender(func(_ *messaging.Envelope) error {
 			cur := atomic.AddInt64(&currentConcurrency, 1)
 			defer atomic.AddInt64(&currentConcurrency, -1)
 			for {
@@ -308,12 +309,12 @@ func TestGlobalSemaphore_LimitsCrossRoute(t *testing.T) {
 		emitWg.Add(2)
 		go func(n int) {
 			defer emitWg.Done()
-			env := &domain.Envelope{ID: "g1-" + string(rune('a'+n)), Payload: []byte("x")}
+			env := &messaging.Envelope{ID: "g1-" + string(rune('a'+n)), Payload: []byte("x")}
 			_ = receiver1.Emit(ctx, NewFakeDelivery(env))
 		}(i)
 		go func(n int) {
 			defer emitWg.Done()
-			env := &domain.Envelope{ID: "g2-" + string(rune('a'+n)), Payload: []byte("x")}
+			env := &messaging.Envelope{ID: "g2-" + string(rune('a'+n)), Payload: []byte("x")}
 			_ = receiver2.Emit(ctx, NewFakeDelivery(env))
 		}(i)
 	}
@@ -356,7 +357,7 @@ func TestGlobalSemaphore_ZeroDisablesGlobal(t *testing.T) {
 		emitWg.Add(1)
 		go func(n int) {
 			defer emitWg.Done()
-			env := &domain.Envelope{ID: "ng-" + string(rune('a'+n)), Payload: []byte("x")}
+			env := &messaging.Envelope{ID: "ng-" + string(rune('a'+n)), Payload: []byte("x")}
 			_ = receiver.Emit(ctx, NewFakeDelivery(env))
 		}(i)
 	}

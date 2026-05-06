@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/mariotoffia/gobridge/domain/messaging"
+)
 
 // DeliveryMode determines how a route handles message ownership transfer.
 type DeliveryMode string
@@ -215,7 +219,7 @@ type SessionPlan struct {
 // DLQEntry represents a dead-letter queue record.
 type DLQEntry struct {
 	ID            string
-	Envelope      Envelope
+	Envelope      messaging.Envelope
 	RouteID       string
 	BindingID     string
 	SessionID     string

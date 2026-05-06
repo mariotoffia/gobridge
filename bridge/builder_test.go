@@ -7,6 +7,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 
@@ -33,7 +34,7 @@ func (f *fakeReceiver) Run(ctx context.Context, emit func(context.Context, ports
 
 type fakeSender struct{}
 
-func (f *fakeSender) Send(ctx context.Context, env *domain.Envelope) error { return nil }
+func (f *fakeSender) Send(ctx context.Context, env *messaging.Envelope) error { return nil }
 
 type fakeTransportFactory struct{}
 

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -46,7 +47,7 @@ func TestDeliveryHook_SharedOutbox_Success(t *testing.T) {
 		cfg.Hook = hook
 	})
 
-	env := domain.Envelope{ID: "outbox-msg-1", Payload: []byte("payload")}
+	env := messaging.Envelope{ID: "outbox-msg-1", Payload: []byte("payload")}
 	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{{
 		ID: "rec-1", RouteID: "route-1", EnvelopeID: env.ID,
 		BindingID: "bind-1", SessionID: "sess-1",
@@ -96,7 +97,7 @@ func TestDeliveryHook_SharedOutbox_Poison(t *testing.T) {
 		cfg.Policy.MaxReplayAttempts = 1
 	})
 
-	env := domain.Envelope{ID: "poison-msg", Payload: []byte("payload")}
+	env := messaging.Envelope{ID: "poison-msg", Payload: []byte("payload")}
 	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{{
 		ID: "rec-poison", RouteID: "route-1", EnvelopeID: env.ID,
 		BindingID: "bind-1", SessionID: "sess-1",
@@ -137,7 +138,7 @@ func TestDeliveryHook_SharedOutbox_Expired(t *testing.T) {
 		cfg.Hook = hook
 	})
 
-	env := domain.Envelope{
+	env := messaging.Envelope{
 		ID: "expired-msg", Payload: []byte("old"),
 		ExpiresAt: time.Now().Add(-1 * time.Hour),
 	}
@@ -183,7 +184,7 @@ func TestDeliveryHook_SharedOutbox_PermanentSendError(t *testing.T) {
 	})
 	sender.SendErr = permErr
 
-	env := domain.Envelope{ID: "perm-msg", Payload: []byte("fail")}
+	env := messaging.Envelope{ID: "perm-msg", Payload: []byte("fail")}
 	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{{
 		ID: "rec-perm", RouteID: "route-1", EnvelopeID: env.ID,
 		BindingID: "bind-1", SessionID: "sess-1",
@@ -221,7 +222,7 @@ func TestDeliveryHook_SharedOutbox_TransientNoSettled(t *testing.T) {
 	})
 	sender.SendErr = transientErr
 
-	env := domain.Envelope{ID: "transient-msg", Payload: []byte("retry")}
+	env := messaging.Envelope{ID: "transient-msg", Payload: []byte("retry")}
 	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{{
 		ID: "rec-transient", RouteID: "route-1", EnvelopeID: env.ID,
 		BindingID: "bind-1", SessionID: "sess-1",
@@ -260,7 +261,7 @@ func TestDeliveryHook_SharedOutbox_AttemptIsReplayCountPlusOne(t *testing.T) {
 		cfg.Hook = hook
 	})
 
-	env := domain.Envelope{ID: "replay-msg", Payload: []byte("replay")}
+	env := messaging.Envelope{ID: "replay-msg", Payload: []byte("replay")}
 	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{{
 		ID: "rec-replay", RouteID: "route-1", EnvelopeID: env.ID,
 		BindingID: "bind-1", SessionID: "sess-1",
@@ -298,7 +299,7 @@ func TestDeliveryHook_SharedOutbox_MultipleBatchRecords(t *testing.T) {
 	})
 
 	for i := range 3 {
-		env := domain.Envelope{
+		env := messaging.Envelope{
 			ID:      "batch-" + string(rune('A'+i)),
 			Payload: []byte("data"),
 		}
@@ -362,7 +363,7 @@ func TestDeliveryHook_Builder_RegisterPropagates(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	del := NewFakeDelivery(&domain.Envelope{ID: "prop-msg", Payload: []byte("test")})
+	del := NewFakeDelivery(&messaging.Envelope{ID: "prop-msg", Payload: []byte("test")})
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}

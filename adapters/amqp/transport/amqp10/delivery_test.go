@@ -10,13 +10,13 @@ import (
 
 	"github.com/Azure/go-amqp"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 func newTestDelivery(settle settler) *Delivery {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "env-1",
 		Subject: "test/topic",
 		Payload: []byte("hello"),
@@ -169,7 +169,7 @@ func TestDelivery_AckThenRetry(t *testing.T) {
 }
 
 func TestDelivery_NilMetrics(t *testing.T) {
-	env := &domain.Envelope{ID: "nil-metrics"}
+	env := &messaging.Envelope{ID: "nil-metrics"}
 	msg := &amqp.Message{}
 	s := newMockSettler()
 

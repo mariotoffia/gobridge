@@ -10,8 +10,8 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -84,7 +84,7 @@ func headersToMessage(headers map[string]any) *azservicebus.Message {
 		if asbWellKnownHeaders[k] || strings.HasPrefix(k, asbHeaderPrefix) {
 			continue
 		}
-		if domain.IsReservedHeader(k) {
+		if messaging.IsReservedHeader(k) {
 			continue
 		}
 		if appProps == nil {
@@ -104,7 +104,7 @@ func headersToMessage(headers map[string]any) *azservicebus.Message {
 //
 // defaultSessionID is used when env has no asb.session-id header and
 // the sender is configured with a default session.
-func envelopeToMessage(env *domain.Envelope, defaultSessionID string, clk clock.Clock) *azservicebus.Message {
+func envelopeToMessage(env *messaging.Envelope, defaultSessionID string, clk clock.Clock) *azservicebus.Message {
 	if clk == nil {
 		clk = clock.System
 	}
@@ -208,7 +208,7 @@ func buildRetryMessage(received *azservicebus.ReceivedMessage) *azservicebus.Mes
 // sendOne builds the SDK message from env and dispatches a single
 // SendMessage call against the asbSenderAPI seam. Errors are
 // classified to *shared.BridgeError before they cross the seam.
-func sendOne(ctx context.Context, client asbSenderAPI, env *domain.Envelope, defaultSessionID string, clk clock.Clock) error {
+func sendOne(ctx context.Context, client asbSenderAPI, env *messaging.Envelope, defaultSessionID string, clk clock.Clock) error {
 	msg := envelopeToMessage(env, defaultSessionID, clk)
 	if err := client.SendMessage(ctx, msg, nil); err != nil {
 		return MapError(err)
@@ -227,7 +227,7 @@ func sendOne(ctx context.Context, client asbSenderAPI, env *domain.Envelope, def
 func sendChunk(
 	ctx context.Context,
 	client asbSenderAPI,
-	chunk []*domain.Envelope,
+	chunk []*messaging.Envelope,
 	defaultSessionID string,
 	clk clock.Clock,
 	logger *slog.Logger,

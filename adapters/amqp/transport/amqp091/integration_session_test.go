@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 )
@@ -245,12 +246,12 @@ func TestIntegration_SessionReconcile_MultipleQueues(t *testing.T) {
 		Timeout:  10 * time.Second,
 	})
 
-	if err := directSender.Send(ctx, &domain.Envelope{
+	if err := directSender.Send(ctx, &messaging.Envelope{
 		ID: "direct-1", Subject: directQueue, Payload: []byte("direct-payload"),
 	}); err != nil {
 		t.Fatalf("send direct: %v", err)
 	}
-	if err := fanoutSender.Send(ctx, &domain.Envelope{
+	if err := fanoutSender.Send(ctx, &messaging.Envelope{
 		ID: "fanout-1", Subject: fanoutQueue, Payload: []byte("fanout-payload"),
 	}); err != nil {
 		t.Fatalf("send fanout: %v", err)
@@ -352,7 +353,7 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 		Session:    sess1,
 		Timeout:    10 * time.Second,
 	})
-	if err := sender1.Send(ctx, &domain.Envelope{
+	if err := sender1.Send(ctx, &messaging.Envelope{
 		ID: "restart-msg", Subject: queueName, Payload: []byte("first-session"),
 	}); err != nil {
 		t.Fatalf("send on session1: %v", err)
@@ -381,7 +382,7 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 		Session:    sess2,
 		Timeout:    10 * time.Second,
 	})
-	if err := sender2.Send(ctx, &domain.Envelope{
+	if err := sender2.Send(ctx, &messaging.Envelope{
 		ID: "restart-msg-2", Subject: queueName, Payload: []byte("second-session"),
 	}); err != nil {
 		t.Fatalf("send on session2: %v", err)
@@ -396,7 +397,7 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
 
-	received := make(chan *domain.Envelope, 2)
+	received := make(chan *messaging.Envelope, 2)
 	go func() {
 		_ = receiver.Run(recvCtx, func(_ context.Context, d ports.Delivery) error {
 			received <- d.Envelope()

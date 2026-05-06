@@ -11,6 +11,7 @@ import (
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -33,17 +34,17 @@ import (
 // integrating with such consumers should add a stripping middleware
 // at their ACL.
 func TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject: "t",
 		Payload: []byte("p"),
 		Headers: map[string]any{
-			domain.HeaderCorrelationID:  "corr",         // mapped to MQTT CorrelationData
-			domain.HeaderContentType:    "text/plain",   // mapped to MQTT ContentType
-			domain.HeaderCausationID:    "cause",        // forwarded as user property
-			domain.HeaderIdempotencyKey: "idem",         // forwarded
-			domain.HeaderTenantID:       "tenant-7",     // forwarded
-			domain.HeaderRouteID:        "internal-rt",  // forwarded (debatable)
-			domain.HeaderSourceID:       "internal-src", // forwarded (debatable)
+			messaging.HeaderCorrelationID:  "corr",         // mapped to MQTT CorrelationData
+			messaging.HeaderContentType:    "text/plain",   // mapped to MQTT ContentType
+			messaging.HeaderCausationID:    "cause",        // forwarded as user property
+			messaging.HeaderIdempotencyKey: "idem",         // forwarded
+			messaging.HeaderTenantID:       "tenant-7",     // forwarded
+			messaging.HeaderRouteID:        "internal-rt",  // forwarded (debatable)
+			messaging.HeaderSourceID:       "internal-src", // forwarded (debatable)
 		},
 	}
 	pub := PublishFromEnvelope(env, SenderOptions{QoS: 1}, nil)
@@ -58,14 +59,14 @@ func TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization(t *test
 
 	// HeaderCorrelationID must NOT be on the wire as a user property
 	// (it occupies CorrelationData instead).
-	if _, hasCorr := mapped[domain.HeaderCorrelationID]; hasCorr {
+	if _, hasCorr := mapped[messaging.HeaderCorrelationID]; hasCorr {
 		t.Error("HeaderCorrelationID must not appear as a user property")
 	}
 	if string(pub.Properties.CorrelationData) != "corr" {
 		t.Errorf("CorrelationData = %q, want %q", pub.Properties.CorrelationData, "corr")
 	}
 	// HeaderContentType must NOT be on the wire as a user property.
-	if _, hasCT := mapped[domain.HeaderContentType]; hasCT {
+	if _, hasCT := mapped[messaging.HeaderContentType]; hasCT {
 		t.Error("HeaderContentType must not appear as a user property")
 	}
 	if pub.Properties.ContentType != "text/plain" {
@@ -76,11 +77,11 @@ func TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization(t *test
 	// behaviour). If this changes, update the characterization to
 	// reflect the new contract.
 	wantOnWire := []string{
-		domain.HeaderCausationID,
-		domain.HeaderIdempotencyKey,
-		domain.HeaderTenantID,
-		domain.HeaderRouteID,
-		domain.HeaderSourceID,
+		messaging.HeaderCausationID,
+		messaging.HeaderIdempotencyKey,
+		messaging.HeaderTenantID,
+		messaging.HeaderRouteID,
+		messaging.HeaderSourceID,
 	}
 	for _, k := range wantOnWire {
 		if _, ok := mapped[k]; !ok {

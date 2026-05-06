@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -24,10 +25,10 @@ func (p *poisonProcessor) Name() string { return "poison-filter" }
 
 func (p *poisonProcessor) Process(
 	ctx context.Context,
-	env *domain.Envelope,
+	env *messaging.Envelope,
 	next ports.ProcessorFunc,
 ) error {
-	v, ok := domain.GetHeaderString(env.Headers, "poison")
+	v, ok := messaging.GetHeaderString(env.Headers, "poison")
 	if ok && v == "true" {
 		return shared.ErrInvalidPayload.WithMessage("poison message rejected")
 	}
@@ -139,7 +140,7 @@ func TestUC6_BurstBackpressure(t *testing.T) {
 		require.True(t, len(msg.Payload) > 0,
 			"MQTT message %d has empty payload", idx)
 		// Normal messages must NOT have the poison header set to "true".
-		v, _ := domain.GetHeaderString(msg.Headers, "poison")
+		v, _ := messaging.GetHeaderString(msg.Headers, "poison")
 		require.NotEqual(t, "true", v,
 			"MQTT message %d has poison=true header but should be normal", idx)
 	}

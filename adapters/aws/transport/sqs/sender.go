@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -61,7 +61,7 @@ func (s *Sender) clock() clock.Clock {
 }
 
 // Send submits a single envelope to SQS.
-func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
 	if err := s.ensureClient(ctx); err != nil {
 		return err
 	}
@@ -85,7 +85,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 // fail (partial failures or API errors), the method continues sending
 // the remaining batches and returns a combined error with the total
 // successful count.
-func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, error) {
+func (s *Sender) SendBatch(ctx context.Context, envs []*messaging.Envelope) (int, error) {
 	if err := s.ensureClient(ctx); err != nil {
 		return 0, err
 	}

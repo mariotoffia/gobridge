@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -91,7 +92,7 @@ func TestGlobalMaxInFlight_NegativeClamp(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "msg-1",
 		Subject: "test",
 		Payload: []byte("data"),
@@ -118,7 +119,7 @@ func TestGlobalMaxInFlight_LimitsAcrossRoutes(t *testing.T) {
 	receiver2 := NewFakeReceiver()
 
 	sender := NewFakeSender()
-	sender.SendFn = func(_ *domain.Envelope) error {
+	sender.SendFn = func(_ *messaging.Envelope) error {
 		time.Sleep(100 * time.Millisecond) // OTHER: simulated processing duration
 		return nil
 	}
@@ -157,10 +158,10 @@ func TestGlobalMaxInFlight_LimitsAcrossRoutes(t *testing.T) {
 	<-receiver1.Ready()
 	<-receiver2.Ready()
 
-	del1 := NewFakeDelivery(&domain.Envelope{
+	del1 := NewFakeDelivery(&messaging.Envelope{
 		ID: "msg-r1", Subject: "test", Payload: []byte("1"),
 	})
-	del2 := NewFakeDelivery(&domain.Envelope{
+	del2 := NewFakeDelivery(&messaging.Envelope{
 		ID: "msg-r2", Subject: "test", Payload: []byte("2"),
 	})
 

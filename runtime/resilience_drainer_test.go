@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -104,7 +105,7 @@ func TestRetryUnsupported_NilDLQ_AcksDelivery(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "msg-1",
 		Subject: "test",
 		Payload: []byte("hello"),
@@ -150,7 +151,7 @@ func TestRetryUnsupported_WithDLQ_RoutesToDLQ(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "msg-2",
 		Subject: "test",
 		Payload: []byte("hello"),

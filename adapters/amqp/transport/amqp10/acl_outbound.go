@@ -7,8 +7,7 @@ import (
 	"time"
 
 	"github.com/Azure/go-amqp"
-
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // headersToMessage maps envelope headers to AMQP 1.0 message properties
@@ -103,7 +102,7 @@ func headersToMessage(headers map[string]any) *amqp.Message {
 		if wellKnownHeaders[k] || strings.HasPrefix(k, headerPrefix) {
 			continue
 		}
-		if domain.IsReservedHeader(k) {
+		if messaging.IsReservedHeader(k) {
 			continue
 		}
 		if appProps == nil {
@@ -119,7 +118,7 @@ func headersToMessage(headers map[string]any) *amqp.Message {
 // envelopeToMessage builds an outbound *amqp.Message from an envelope,
 // merging headers, payload, and any envelope-level fields (ID, subject,
 // expiry, creation time) into a single SDK message.
-func envelopeToMessage(env *domain.Envelope) *amqp.Message {
+func envelopeToMessage(env *messaging.Envelope) *amqp.Message {
 	msg := headersToMessage(env.Headers)
 	msg.Data = [][]byte{env.Payload}
 
@@ -153,7 +152,7 @@ type senderLink struct {
 // SendEnvelope serialises the envelope into an AMQP 1.0 message and
 // publishes it over the link. Errors flow through unwrapped so callers
 // can MapError them at the seam.
-func (s *senderLink) SendEnvelope(ctx context.Context, env *domain.Envelope) error {
+func (s *senderLink) SendEnvelope(ctx context.Context, env *messaging.Envelope) error {
 	msg := envelopeToMessage(env)
 	if err := s.raw.Send(ctx, msg, nil); err != nil {
 		return fmt.Errorf("amqp10: send: %w", err)

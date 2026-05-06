@@ -34,7 +34,7 @@ import (
 	"time"
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -324,11 +324,11 @@ func TestProcessor_PermanentError_PassesThrough(t *testing.T) {
 	}
 	p := New("test", cfg)
 
-	next := func(_ context.Context, _ *domain.Envelope) error {
+	next := func(_ context.Context, _ *messaging.Envelope) error {
 		return shared.ErrInvalidPayload
 	}
 
-	env := &domain.Envelope{ID: "1", Subject: "test"}
+	env := &messaging.Envelope{ID: "1", Subject: "test"}
 	for i := 0; i < 10; i++ {
 		err := p.Process(context.Background(), env, next)
 		if !errors.Is(err, shared.ErrInvalidPayload) {

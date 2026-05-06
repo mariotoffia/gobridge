@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -70,7 +71,7 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 			EnvelopeID: envID,
 			BindingID:  "bind-1",
 			SessionID:  sessionID,
-			Envelope:   domain.Envelope{ID: envID, Payload: []byte("payload")},
+			Envelope:   messaging.Envelope{ID: envID, Payload: []byte("payload")},
 			Status:     domain.OutboxPending,
 		}
 		if err := outbox.Persist(context.Background(), []domain.OutboxRecord{rec}); err != nil {
@@ -179,7 +180,7 @@ func TestOutboxDrainer_DrainLatencyUsesInjectedClock(t *testing.T) {
 
 	outbox := NewFakeOutboxStore()
 	sender := NewFakeSender()
-	sender.SendFn = func(*domain.Envelope) error {
+	sender.SendFn = func(*messaging.Envelope) error {
 		fake.Advance(sendDuration)
 		return nil
 	}
@@ -197,7 +198,7 @@ func TestOutboxDrainer_DrainLatencyUsesInjectedClock(t *testing.T) {
 		EnvelopeID: "env-1",
 		BindingID:  "bind-1",
 		SessionID:  sessionID,
-		Envelope:   domain.Envelope{ID: "env-1", Payload: []byte("payload")},
+		Envelope:   messaging.Envelope{ID: "env-1", Payload: []byte("payload")},
 		Status:     domain.OutboxPending,
 	}
 	if err := outbox.Persist(context.Background(), []domain.OutboxRecord{rec}); err != nil {

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -17,7 +18,7 @@ func (r *RouteRunner) outboxPartitionKey(plans []domain.DispatchPlan) string {
 	return domain.OutboxPartitionKey(sessionID, plans[0].BindingID)
 }
 
-func (r *RouteRunner) resolvePlans(ctx context.Context, env *domain.Envelope) ([]domain.DispatchPlan, error) {
+func (r *RouteRunner) resolvePlans(ctx context.Context, env *messaging.Envelope) ([]domain.DispatchPlan, error) {
 	if r.resolver != nil {
 		return r.resolver.Resolve(ctx, env)
 	}
@@ -46,7 +47,7 @@ func (r *RouteRunner) resolvePlans(ctx context.Context, env *domain.Envelope) ([
 	return []domain.DispatchPlan{{BindingID: r.routeID}}, nil
 }
 
-func (r *RouteRunner) buildOutboxRecords(env *domain.Envelope, plans []domain.DispatchPlan) []domain.OutboxRecord {
+func (r *RouteRunner) buildOutboxRecords(env *messaging.Envelope, plans []domain.DispatchPlan) []domain.OutboxRecord {
 	now := r.clk.Now()
 	records := make([]domain.OutboxRecord, len(plans))
 
@@ -69,15 +70,15 @@ func (r *RouteRunner) buildOutboxRecords(env *domain.Envelope, plans []domain.Di
 	return records
 }
 
-func (r *RouteRunner) injectHeaders(env *domain.Envelope) {
+func (r *RouteRunner) injectHeaders(env *messaging.Envelope) {
 	if env.Headers == nil {
 		env.Headers = make(map[string]any, 3)
 	}
-	if _, ok := env.Headers[domain.HeaderCorrelationID]; !ok {
-		env.Headers[domain.HeaderCorrelationID] = generateID()
+	if _, ok := env.Headers[messaging.HeaderCorrelationID]; !ok {
+		env.Headers[messaging.HeaderCorrelationID] = generateID()
 	}
-	env.Headers[domain.HeaderRouteID] = r.routeID
-	env.Headers[domain.HeaderSourceID] = r.instanceID
+	env.Headers[messaging.HeaderRouteID] = r.routeID
+	env.Headers[messaging.HeaderSourceID] = r.instanceID
 }
 
 func (r *RouteRunner) acquireSlots(ctx context.Context) error {

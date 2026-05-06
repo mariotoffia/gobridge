@@ -10,7 +10,7 @@ import (
 
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -211,7 +211,7 @@ func TestAnaErr_ContainsAnyEmptySubstrs(t *testing.T) {
 // TestAnaHdr_PublishFromEnvelope_NilEnvelopeHeaders_NoCrash validates
 // the helper against nil headers (common case).
 func TestAnaHdr_PublishFromEnvelope_NilEnvelopeHeaders_NoCrash(t *testing.T) {
-	env := &domain.Envelope{Subject: "t", Payload: []byte("p")}
+	env := &messaging.Envelope{Subject: "t", Payload: []byte("p")}
 	defer func() {
 		if rv := recover(); rv != nil {
 			t.Fatalf("PublishFromEnvelope panicked: %v", rv)
@@ -228,7 +228,7 @@ func TestAnaHdr_PublishFromEnvelope_NilEnvelopeHeaders_NoCrash(t *testing.T) {
 // properties; non-string values (int, struct, ...) are silently
 // dropped.
 func TestAnaHdr_PublishFromEnvelope_NonStringHeaderValueIsSkipped(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject: "t",
 		Payload: []byte("p"),
 		Headers: map[string]any{
@@ -311,7 +311,7 @@ func TestAnaHdr_EnvelopeFromPublish_AcceptsEmptyUserPropertyValue(t *testing.T) 
 		},
 	}
 	env := EnvelopeFromPublish(pub, nil)
-	if v, ok := domain.GetHeaderString(env.Headers, "k"); !ok || v != "" {
+	if v, ok := messaging.GetHeaderString(env.Headers, "k"); !ok || v != "" {
 		t.Fatalf("empty user property value should be accepted, got ok=%v v=%q", ok, v)
 	}
 }
@@ -319,7 +319,7 @@ func TestAnaHdr_EnvelopeFromPublish_AcceptsEmptyUserPropertyValue(t *testing.T) 
 // TestAnaHdr_PublishFromEnvelope_EmptyEnvelope_NoProperties verifies
 // the publish has nil Properties when no header-derived data exists.
 func TestAnaHdr_PublishFromEnvelope_EmptyEnvelope_NoProperties(t *testing.T) {
-	env := &domain.Envelope{Subject: "t", Payload: []byte{}}
+	env := &messaging.Envelope{Subject: "t", Payload: []byte{}}
 	pub := PublishFromEnvelope(env, SenderOptions{QoS: 0}, nil)
 	if pub.Properties != nil {
 		t.Errorf("expected nil Properties for empty envelope, got %+v", pub.Properties)
@@ -340,7 +340,7 @@ func TestAnaHdr_EnvelopeFromPublish_EmptyTopicAccepted(t *testing.T) {
 // verifies that an envelope with only ExpiresAt produces a publish
 // with Properties set (and only MessageExpiry populated).
 func TestAnaHdr_PublishFromEnvelope_OnlyMessageExpiry_HasProperties(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject:   "t",
 		Payload:   []byte("p"),
 		ExpiresAt: nowPlus(60),

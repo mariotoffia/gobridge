@@ -6,11 +6,12 @@ import (
 	"strings"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // MatchFunc determines whether a binding should be selected for a given envelope.
-type MatchFunc func(env *domain.Envelope, b domain.DestinationBinding) bool
+type MatchFunc func(env *messaging.Envelope, b domain.DestinationBinding) bool
 
 // BindingResolver is a production DestinationResolver that selects bindings
 // using a MatchFunc, renders address templates from envelope headers, and
@@ -33,7 +34,7 @@ func NewBindingResolver(bindings []domain.DestinationBinding, matchFn MatchFunc)
 
 // Resolve selects matching bindings, renders address templates, and returns
 // one DispatchPlan per match. Returns a Rejected error when no binding matches.
-func (r *BindingResolver) Resolve(_ context.Context, env *domain.Envelope) ([]domain.DispatchPlan, error) {
+func (r *BindingResolver) Resolve(_ context.Context, env *messaging.Envelope) ([]domain.DispatchPlan, error) {
 	var plans []domain.DispatchPlan
 
 	for _, b := range r.bindings {
@@ -86,7 +87,7 @@ func NewStaticResolver(plans ...domain.DispatchPlan) *StaticResolver {
 
 // Resolve returns a copy of the pre-configured plans to prevent callers
 // from mutating the resolver's internal state.
-func (r *StaticResolver) Resolve(_ context.Context, _ *domain.Envelope) ([]domain.DispatchPlan, error) {
+func (r *StaticResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]domain.DispatchPlan, error) {
 	cp := make([]domain.DispatchPlan, len(r.plans))
 	copy(cp, r.plans)
 	return cp, nil
@@ -97,8 +98,8 @@ func (r *StaticResolver) Resolve(_ context.Context, _ *domain.Envelope) ([]domai
 // in bindingMap. This implements the SQS-to-factory pattern: header "factory"
 // value "A" maps to binding ID "mqtt-factory-a-orders".
 func MatchByHeader(headerKey string, bindingMap map[string]string) MatchFunc {
-	return func(env *domain.Envelope, b domain.DestinationBinding) bool {
-		val, ok := domain.GetHeaderString(env.Headers, headerKey)
+	return func(env *messaging.Envelope, b domain.DestinationBinding) bool {
+		val, ok := messaging.GetHeaderString(env.Headers, headerKey)
 		if !ok {
 			return false
 		}
@@ -109,14 +110,14 @@ func MatchByHeader(headerKey string, bindingMap map[string]string) MatchFunc {
 
 // MatchAll returns a MatchFunc that selects every binding (static fan-out).
 func MatchAll() MatchFunc {
-	return func(_ *domain.Envelope, _ domain.DestinationBinding) bool {
+	return func(_ *messaging.Envelope, _ domain.DestinationBinding) bool {
 		return true
 	}
 }
 
 // MatchByID returns a MatchFunc that selects only the binding with the given ID.
 func MatchByID(bindingID string) MatchFunc {
-	return func(_ *domain.Envelope, b domain.DestinationBinding) bool {
+	return func(_ *messaging.Envelope, b domain.DestinationBinding) bool {
 		return b.ID == bindingID
 	}
 }
@@ -125,7 +126,7 @@ func MatchByID(bindingID string) MatchFunc {
 // envelope's Subject starts with a prefix that maps to the binding's ID.
 // The prefixMap keys are subject prefixes, values are binding IDs.
 func MatchBySubjectPrefix(prefixMap map[string]string) MatchFunc {
-	return func(env *domain.Envelope, b domain.DestinationBinding) bool {
+	return func(env *messaging.Envelope, b domain.DestinationBinding) bool {
 		for prefix, targetID := range prefixMap {
 			if strings.HasPrefix(env.Subject, prefix) && targetID == b.ID {
 				return true
@@ -217,7 +218,7 @@ func NewRuleResolver(
 // the first matching rule. Condition evaluation errors are treated as
 // non-matching; if all rules fail with errors, the message goes to the
 // default binding or returns ErrNoBindingMatch.
-func (r *RuleResolver) Resolve(_ context.Context, env *domain.Envelope) ([]domain.DispatchPlan, error) {
+func (r *RuleResolver) Resolve(_ context.Context, env *messaging.Envelope) ([]domain.DispatchPlan, error) {
 	ctx := newEvalContext()
 
 	for _, rule := range r.rules {
@@ -248,7 +249,7 @@ func (r *RuleResolver) Resolve(_ context.Context, env *domain.Envelope) ([]domai
 	)
 }
 
-func (r *RuleResolver) planForBinding(bindingID string, env *domain.Envelope) ([]domain.DispatchPlan, error) {
+func (r *RuleResolver) planForBinding(bindingID string, env *messaging.Envelope) ([]domain.DispatchPlan, error) {
 	b := r.bindingIndex[bindingID]
 
 	addr, err := RenderAddress(b.Address, env.Headers)
@@ -300,7 +301,7 @@ func RenderAddress(template string, vars map[string]any) (string, error) {
 			return "", fmt.Errorf("empty placeholder in address template %q", template)
 		}
 
-		val, ok := domain.GetHeaderString(vars, key)
+		val, ok := messaging.GetHeaderString(vars, key)
 		if !ok {
 			return "", fmt.Errorf("address template placeholder {%s} not found in headers", key)
 		}

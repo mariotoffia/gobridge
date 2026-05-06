@@ -4,9 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	amqp "github.com/rabbitmq/amqp091-go"
-
-	"github.com/mariotoffia/gobridge/domain"
 )
 
 func requireHeaderEqual(t *testing.T, headers map[string]any, key string, want any) {
@@ -103,16 +102,16 @@ func TestDeliveryToHeaders_ZeroValues(t *testing.T) {
 func TestDeliveryToHeaders_ReservedFiltered(t *testing.T) {
 	d := amqp.Delivery{
 		Headers: amqp.Table{
-			domain.HeaderCorrelationID: "injected",
-			domain.HeaderRouteID:       "injected-route",
-			"safe-key":                 "keep-me",
+			messaging.HeaderCorrelationID: "injected",
+			messaging.HeaderRouteID:       "injected-route",
+			"safe-key":                    "keep-me",
 		},
 	}
 
 	h := deliveryToHeaders(d)
 
-	requireHeaderAbsent(t, h, domain.HeaderCorrelationID)
-	requireHeaderAbsent(t, h, domain.HeaderRouteID)
+	requireHeaderAbsent(t, h, messaging.HeaderCorrelationID)
+	requireHeaderAbsent(t, h, messaging.HeaderRouteID)
 	requireHeaderEqual(t, h, "safe-key", "keep-me")
 }
 
@@ -221,10 +220,10 @@ func TestHeadersToPublishing(t *testing.T) {
 // verifies headersToPublishing excludes amqp091-prefixed and reserved headers from the table.
 func TestHeadersToPublishing_ExcludesReserved(t *testing.T) {
 	headers := map[string]any{
-		HeaderDeliveryTag:          uint64(1),
-		HeaderRedelivered:          true,
-		domain.HeaderCorrelationID: "injected",
-		"custom":                   "keep",
+		HeaderDeliveryTag:             uint64(1),
+		HeaderRedelivered:             true,
+		messaging.HeaderCorrelationID: "injected",
+		"custom":                      "keep",
 	}
 
 	pub := headersToPublishing(headers)
@@ -238,7 +237,7 @@ func TestHeadersToPublishing_ExcludesReserved(t *testing.T) {
 	if _, ok := pub.Headers[HeaderRedelivered]; ok {
 		t.Error("amqp091-prefixed key should not be in table")
 	}
-	if _, ok := pub.Headers[domain.HeaderCorrelationID]; ok {
+	if _, ok := pub.Headers[messaging.HeaderCorrelationID]; ok {
 		t.Error("reserved header should not be in table")
 	}
 	if pub.Headers["custom"] != "keep" {
@@ -259,14 +258,14 @@ func TestHeadersToPublishing_Nil(t *testing.T) {
 
 // verifies envelopeToPublishing maps envelope fields to an AMQP Publishing.
 func TestEnvelopeToPublishing(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "env-001",
 		Subject: "order.created",
 		Payload: []byte(`{"order":1}`),
 		Headers: map[string]any{
-			HeaderContentType:        "application/json",
-			domain.HeaderContentType: "application/json",
-			"tenant":                 "acme",
+			HeaderContentType:           "application/json",
+			messaging.HeaderContentType: "application/json",
+			"tenant":                    "acme",
 		},
 	}
 
@@ -285,7 +284,7 @@ func TestEnvelopeToPublishing(t *testing.T) {
 
 // verifies envelopeToPublishing does not override MessageId if already set in headers.
 func TestEnvelopeToPublishing_HeaderMessageIDPrecedence(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID: "env-from-id",
 		Headers: map[string]any{
 			HeaderMessageID: "from-header",
@@ -301,7 +300,7 @@ func TestEnvelopeToPublishing_HeaderMessageIDPrecedence(t *testing.T) {
 
 // verifies envelopeToPublishing sets expiration from envelope TTL.
 func TestEnvelopeToPublishing_Expiry(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        "env-ttl",
 		ExpiresAt: time.Now().Add(5 * time.Second),
 	}
@@ -316,10 +315,10 @@ func TestEnvelopeToPublishing_Expiry(t *testing.T) {
 // verifies envelopeToPublishing falls back to x-bridge.content-type when
 // amqp091.content-type header is absent.
 func TestEnvelopeToPublishing_FallbackContentType(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID: "env-ct",
 		Headers: map[string]any{
-			domain.HeaderContentType: "text/xml",
+			messaging.HeaderContentType: "text/xml",
 		},
 	}
 

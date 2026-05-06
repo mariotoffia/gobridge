@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 const (
@@ -53,11 +53,11 @@ var tidCounter atomic.Uint64
 // Tag stamps env with a unique TID in both the header and (if the payload
 // is a JSON object) a _tid field. Returns the generated TID and a
 // snapshot of the tagged envelope as an Expected value.
-func Tag(env *domain.Envelope) (string, Expected) {
+func Tag(env *messaging.Envelope) (string, Expected) {
 	tidCounter.Add(1)
 	tid := fmt.Sprintf("tid-%d-%d", time.Now().UnixNano(), tidCounter.Load())
 
-	env.Headers = domain.SetHeader(env.Headers, HeaderTID, tid)
+	env.Headers = messaging.SetHeader(env.Headers, HeaderTID, tid)
 
 	env.Payload = injectPayloadTID(env.Payload, tid)
 
@@ -70,7 +70,7 @@ func Tag(env *domain.Envelope) (string, Expected) {
 }
 
 // TagN stamps N envelopes and returns the Expected list in order.
-func TagN(envs []*domain.Envelope) []Expected {
+func TagN(envs []*messaging.Envelope) []Expected {
 	out := make([]Expected, len(envs))
 	for i, env := range envs {
 		_, out[i] = Tag(env)
@@ -80,18 +80,18 @@ func TagN(envs []*domain.Envelope) []Expected {
 
 // ExtractTID reads the TID from an envelope, trying the header first,
 // then falling back to the JSON _tid field. Returns "" if neither is present.
-func ExtractTID(env *domain.Envelope) string {
+func ExtractTID(env *messaging.Envelope) string {
 	if env.Headers != nil {
-		if v, ok := domain.GetHeaderString(env.Headers, HeaderTID); ok && v != "" {
+		if v, ok := messaging.GetHeaderString(env.Headers, HeaderTID); ok && v != "" {
 			return v
 		}
 	}
 	return extractPayloadTID(env.Payload)
 }
 
-// ReceivedFromEnvelopes converts a slice of domain.Envelope pointers
+// ReceivedFromEnvelopes converts a slice of messaging.Envelope pointers
 // to a slice of Received, extracting TIDs automatically.
-func ReceivedFromEnvelopes(envs []*domain.Envelope) []Received {
+func ReceivedFromEnvelopes(envs []*messaging.Envelope) []Received {
 	out := make([]Received, len(envs))
 	for i, env := range envs {
 		out[i] = Received{

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 )
@@ -136,7 +137,7 @@ func TestIntegration_Edge_MulticastRouting(t *testing.T) {
 		}
 	}
 
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID: "multicast-1", Subject: "test", Payload: []byte("fan-out"),
 	}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -174,11 +175,11 @@ func TestIntegration_Edge_SendBatchPartialVerify(t *testing.T) {
 	defer func() { _ = sender.Close(context.Background()) }()
 
 	const msgCount = 5
-	envs := make([]*domain.Envelope, msgCount)
+	envs := make([]*messaging.Envelope, msgCount)
 	wantIDs := make(map[string]bool, msgCount)
 	for i := range envs {
 		id := "batch-" + string(rune('A'+i))
-		envs[i] = &domain.Envelope{
+		envs[i] = &messaging.Envelope{
 			ID: id, Subject: "test", Payload: []byte("payload"),
 		}
 		wantIDs[id] = true
@@ -231,7 +232,7 @@ func TestIntegration_Edge_HeaderUnicodeAndLongValues(t *testing.T) {
 	addr := artemislocal.UniqueAddress("edge-headers-unicode")
 
 	longValue := strings.Repeat("x", 4096)
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID: "unicode-headers", Subject: "test", Payload: []byte("body"),
 		Headers: map[string]any{
 			"emoji":      "hello 🌍🚀",
@@ -272,7 +273,7 @@ func TestIntegration_Edge_EnvelopeFieldsRoundTrip(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	expiresAt := now.Add(1 * time.Hour)
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        "full-fields",
 		Subject:   "integration.edge",
 		Payload:   []byte(`{"complete":"envelope"}`),

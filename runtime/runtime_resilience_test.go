@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -106,7 +107,7 @@ func TestF3_DrainOnShutdown(t *testing.T) {
 		EnvelopeID: "env-f3",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   domain.Envelope{ID: "env-f3", Payload: []byte("shutdown-drain")},
+		Envelope:   messaging.Envelope{ID: "env-f3", Payload: []byte("shutdown-drain")},
 		Status:     domain.OutboxPending,
 	}
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -254,7 +255,7 @@ func TestF5_DrainBatchSkipsTOCTOUCheck(t *testing.T) {
 	rec := domain.OutboxRecord{
 		ID: "rec-f5", RouteID: "route-1", EnvelopeID: "env-f5",
 		BindingID: "bind-1", SessionID: "sess-1",
-		Envelope: domain.Envelope{ID: "env-f5", Payload: []byte("data")},
+		Envelope: messaging.Envelope{ID: "env-f5", Payload: []byte("data")},
 		Status:   domain.OutboxPending,
 	}
 	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{rec})
@@ -329,7 +330,7 @@ func TestF6_StaleFencingTokenDoesNotKillRuntime(t *testing.T) {
 		t.Error("runtime should remain running after scoped stale fencing token error")
 	}
 
-	env := &domain.Envelope{ID: "f6-msg", Payload: []byte("test-f6")}
+	env := &messaging.Envelope{ID: "f6-msg", Payload: []byte("test-f6")}
 	del := NewFakeDelivery(env)
 	_ = receiverB.Emit(ctx, del)
 

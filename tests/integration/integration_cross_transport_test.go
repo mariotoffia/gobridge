@@ -14,6 +14,7 @@ import (
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -91,7 +92,7 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("cross-sse-pub"), domain.SessionEphemeral)
 	mqttSend := setupMQTTSender(t, pubSess)
 
-	pubEnv := &domain.Envelope{
+	pubEnv := &messaging.Envelope{
 		ID:      "sse-order-99",
 		Subject: pubTopic,
 		Payload: []byte(`{"order_id":"99"}`),
@@ -134,7 +135,7 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 		}
 		if evt.Headers == nil {
 			t.Error("missing headers in SSE event")
-		} else if _, ok := evt.Headers[domain.HeaderCorrelationID]; !ok {
+		} else if _, ok := evt.Headers[messaging.HeaderCorrelationID]; !ok {
 			t.Error("missing correlation-id header")
 		}
 	case <-time.After(10 * time.Second):

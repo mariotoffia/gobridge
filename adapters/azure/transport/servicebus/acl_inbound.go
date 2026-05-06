@@ -8,8 +8,8 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -54,7 +54,7 @@ func messageToHeaders(msg *azservicebus.ReceivedMessage) map[string]any {
 	}
 
 	for k, v := range msg.ApplicationProperties {
-		if domain.IsReservedHeader(k) {
+		if messaging.IsReservedHeader(k) {
 			continue
 		}
 		h[k] = v
@@ -64,8 +64,8 @@ func messageToHeaders(msg *azservicebus.ReceivedMessage) map[string]any {
 }
 
 // receivedToEnvelope translates an inbound *azservicebus.ReceivedMessage
-// to a fresh domain.Envelope using the supplied default subject.
-func receivedToEnvelope(msg *azservicebus.ReceivedMessage, defaultSubject string, clk clock.Clock) *domain.Envelope {
+// to a fresh messaging.Envelope using the supplied default subject.
+func receivedToEnvelope(msg *azservicebus.ReceivedMessage, defaultSubject string, clk clock.Clock) *messaging.Envelope {
 	if clk == nil {
 		clk = clock.System
 	}
@@ -73,7 +73,7 @@ func receivedToEnvelope(msg *azservicebus.ReceivedMessage, defaultSubject string
 	if msg.Subject != nil {
 		subject = *msg.Subject
 	}
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        msg.MessageID,
 		Subject:   subject,
 		Payload:   msg.Body,
@@ -92,7 +92,7 @@ var _ ports.Delivery = (*asbDelivery)(nil)
 // ports.Delivery. Settlement (Ack/Retry/Extend) is forwarded to the
 // asbAPI seam; SDK-typed plumbing stays local to this ACL file.
 type asbDelivery struct {
-	env       *domain.Envelope
+	env       *messaging.Envelope
 	client    asbAPI
 	scheduler retryScheduler
 	msg       *azservicebus.ReceivedMessage
@@ -108,7 +108,7 @@ type asbDelivery struct {
 // pass a clocktest.Fake to control tick firing deterministically.
 func newDelivery(
 	parentCtx context.Context,
-	env *domain.Envelope,
+	env *messaging.Envelope,
 	client asbAPI,
 	scheduler retryScheduler,
 	msg *azservicebus.ReceivedMessage,
@@ -161,7 +161,7 @@ func newDelivery(
 	return d
 }
 
-func (d *asbDelivery) Envelope() *domain.Envelope { return d.env }
+func (d *asbDelivery) Envelope() *messaging.Envelope { return d.env }
 
 func (d *asbDelivery) Ack(ctx context.Context) error {
 	d.stop()

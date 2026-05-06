@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -45,7 +46,7 @@ func TestSender_Send_NoSession(t *testing.T) {
 		t.Fatalf("NewSender() error = %v", err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "msg-1",
 		Subject: "test",
 		Payload: []byte("data"),
@@ -70,7 +71,7 @@ func TestSender_SendBatch_NoSession(t *testing.T) {
 		t.Fatalf("NewSender() error = %v", err)
 	}
 
-	envs := []*domain.Envelope{
+	envs := []*messaging.Envelope{
 		{ID: "b-1", Payload: []byte("one")},
 		{ID: "b-2", Payload: []byte("two")},
 	}
@@ -94,7 +95,7 @@ func TestSender_BuildMessage(t *testing.T) {
 	now := time.Now().UTC()
 	expiry := now.Add(time.Hour)
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        "build-1",
 		Subject:   "evt.test",
 		Payload:   []byte("payload-data"),
@@ -134,7 +135,7 @@ func TestSender_BuildMessage_NoExpiry(t *testing.T) {
 		t.Fatalf("NewSender() error = %v", err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "no-expiry",
 		Payload: []byte("data"),
 	}
@@ -170,7 +171,7 @@ func TestSender_SendBatch_ContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	envs := []*domain.Envelope{
+	envs := []*messaging.Envelope{
 		{ID: "c-1", Payload: []byte("one")},
 	}
 

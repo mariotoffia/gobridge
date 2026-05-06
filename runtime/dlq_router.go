@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -167,7 +168,7 @@ func (r *DLQRouter) Close() {
 // started, it writes synchronously (backward-compatible).
 func (r *DLQRouter) Route(
 	ctx context.Context,
-	env *domain.Envelope,
+	env *messaging.Envelope,
 	routeID, bindingID, sessionID, sourceID string,
 	err error,
 	attempts int,
@@ -204,13 +205,13 @@ func (r *DLQRouter) Route(
 }
 
 func (r *DLQRouter) buildEntry(
-	env *domain.Envelope,
+	env *messaging.Envelope,
 	routeID, bindingID, sessionID, sourceID string,
 	err error,
 	attempts int,
 ) domain.DLQEntry {
 	category, errorCode := classifyError(err)
-	correlationID, _ := domain.GetHeaderString(env.Headers, domain.HeaderCorrelationID)
+	correlationID, _ := messaging.GetHeaderString(env.Headers, messaging.HeaderCorrelationID)
 	reason := safeErrorReason(err)
 
 	return domain.DLQEntry{

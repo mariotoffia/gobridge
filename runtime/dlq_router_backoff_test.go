@@ -12,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -105,7 +106,7 @@ func TestDLQRouter_RetryBackoff_FakeClock(t *testing.T) {
 	ctx := context.Background()
 	router.Start(ctx)
 	defer router.Close()
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "backoff-test-1",
 		Subject: "test/backoff",
 		Payload: []byte("payload"),

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -32,7 +32,7 @@ type latencyRecorder struct {
 func (p *latencyRecorder) Name() string { return "latency-recorder" }
 
 func (p *latencyRecorder) Process(
-	ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc,
+	ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc,
 ) error {
 	start := time.Now()
 	err := next(ctx, env)
@@ -171,9 +171,9 @@ type tenantSlowProcessor struct {
 func (p *tenantSlowProcessor) Name() string { return "tenant-slow" }
 
 func (p *tenantSlowProcessor) Process(
-	ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc,
+	ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc,
 ) error {
-	if tid, ok := domain.GetHeaderString(env.Headers, "tenant_id"); ok && tid == p.slowTenant {
+	if tid, ok := messaging.GetHeaderString(env.Headers, "tenant_id"); ok && tid == p.slowTenant {
 		select {
 		case <-time.After(p.delay):
 		case <-ctx.Done():

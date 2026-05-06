@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -29,7 +30,7 @@ func TestRouteRunner_EmitsE2ELatency(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &domain.Envelope{ID: "msg-1", Payload: []byte("data"), ExpiresAt: time.Now().Add(time.Hour)}
+	env := &messaging.Envelope{ID: "msg-1", Payload: []byte("data"), ExpiresAt: time.Now().Add(time.Hour)}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -73,7 +74,7 @@ func TestRouteRunner_EmitsDLQEntries(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &domain.Envelope{ID: "msg-dlq", Payload: []byte("data"), ExpiresAt: time.Now().Add(time.Hour)}
+	env := &messaging.Envelope{ID: "msg-dlq", Payload: []byte("data"), ExpiresAt: time.Now().Add(time.Hour)}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -99,7 +100,7 @@ func TestOutboxDrainer_EmitsDrainLatency(t *testing.T) {
 	records := []domain.OutboxRecord{{
 		ID: "r1", RouteID: "route-drain", EnvelopeID: "e1", BindingID: "b1",
 		SessionID: "session-1", Status: domain.OutboxPending,
-		Envelope: domain.Envelope{ID: "e1", Payload: []byte("data")},
+		Envelope: messaging.Envelope{ID: "e1", Payload: []byte("data")},
 	}}
 	_ = outbox.Persist(context.Background(), records)
 
@@ -145,7 +146,7 @@ func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 	records := []domain.OutboxRecord{{
 		ID: "r-exp", RouteID: "route-exp", EnvelopeID: "e-exp", BindingID: "b1",
 		SessionID: "s1", Status: domain.OutboxPending,
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:        "e-exp",
 			Payload:   []byte("data"),
 			ExpiresAt: time.Now().Add(-time.Hour),

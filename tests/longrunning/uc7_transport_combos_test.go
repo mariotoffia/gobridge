@@ -14,6 +14,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -248,7 +249,7 @@ func TestUC9_MQTT_QoS2_Stress(t *testing.T) {
 	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc9-pub"), domain.SessionEphemeral)
 	pubSnd := paho.NewSender(pubSess, paho.SenderOptions{QoS: 2, Timeout: 10 * time.Second})
 	for i := 0; i < msgCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("uc9-%d", i),
 			Subject: "uc9/input",
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
@@ -329,7 +330,7 @@ func TestUC10_HTTP_Inject_To_MQTT(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < msgCount; i++ {
-			env := &domain.Envelope{
+			env := &messaging.Envelope{
 				ID:      fmt.Sprintf("uc10-%d", i),
 				Subject: "uc10/output",
 				Payload: []byte(fmt.Sprintf(`{"inject":%d}`, i)),

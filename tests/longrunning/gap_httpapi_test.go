@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/httpapi"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -261,7 +262,7 @@ func TestGAP_HTTPBridgeStartStop(t *testing.T) {
 
 	// Use rt.Inject directly as well.
 	for i := 0; i < 10; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("ha2-inject-%d", i),
 			Subject: "gap-ha2/out",
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),

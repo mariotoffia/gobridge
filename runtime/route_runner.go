@@ -12,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/observability"
@@ -44,8 +45,8 @@ type RouteRunner struct {
 	depthCache           *outboxDepthCache
 	panicRetryTimeout    time.Duration
 	receiverCloseTimeout time.Duration
-	onDelivery           func(env *domain.Envelope, err error)
-	onAck                func(env *domain.Envelope, err error)
+	onDelivery           func(env *messaging.Envelope, err error)
+	onAck                func(env *messaging.Envelope, err error)
 	started              chan struct{}
 	startedOnce          sync.Once
 	inFlight             atomic.Int64
@@ -78,11 +79,11 @@ type RouteRunnerConfig struct {
 	// OnDelivery is invoked (non-blocking) for each envelope the RouteRunner
 	// has successfully dispatched (sent to the target). Receives the envelope
 	// and any error from the send pipeline (nil on success). Optional.
-	OnDelivery func(env *domain.Envelope, err error)
+	OnDelivery func(env *messaging.Envelope, err error)
 	// OnAck is invoked (non-blocking) after the source delivery is acked or
 	// retried. Receives the envelope and the ack error (nil on successful ack).
 	// Optional.
-	OnAck func(env *domain.Envelope, err error)
+	OnAck func(env *messaging.Envelope, err error)
 }
 
 // NewRouteRunnerFromConfig creates a RouteRunner from a config struct.
@@ -329,7 +330,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 
 	env := del.Envelope()
 
-	env.Headers = domain.StripReservedHeaders(env.Headers)
+	env.Headers = messaging.StripReservedHeaders(env.Headers)
 	r.injectHeaders(env)
 
 	if logging.TraceEnabled(r.logger) {
@@ -340,7 +341,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		)
 	}
 
-	tc, hasTrace := domain.ExtractTraceContext(env.Headers)
+	tc, hasTrace := messaging.ExtractTraceContext(env.Headers)
 
 	attrs := []shared.Tag{
 		{Key: shared.TagKeyRouteID, Value: r.routeID},
@@ -353,7 +354,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 	ctx, span := r.tracer.StartSpan(ctx, "bridge.handleDelivery", attrs...)
 	defer span.End()
 
-	if corrID, ok := domain.GetHeaderString(env.Headers, domain.HeaderCorrelationID); ok {
+	if corrID, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderCorrelationID); ok {
 		ctx = observability.WithCorrelationID(ctx, corrID)
 	}
 	if hasTrace {
@@ -423,11 +424,11 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 	return deliveryErr
 }
 
-func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *domain.Envelope) error {
+func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *messaging.Envelope) error {
 	// Consume HeaderRouteOverride set by processor chain (e.g., filter ActionRoute).
 	// SEC-1: validate the override references a binding declared on this route.
-	if override, ok := domain.GetHeaderString(env.Headers, domain.HeaderRouteOverride); ok {
-		delete(env.Headers, domain.HeaderRouteOverride)
+	if override, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderRouteOverride); ok {
+		delete(env.Headers, messaging.HeaderRouteOverride)
 		if r.hasBinding(override) {
 			return r.sendDirectHoldForBinding(ctx, del, env, override)
 		}

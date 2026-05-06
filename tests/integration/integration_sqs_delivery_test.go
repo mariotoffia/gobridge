@@ -9,7 +9,7 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
@@ -211,7 +211,7 @@ func TestIntegration_SQS_HeaderRoundTrip(t *testing.T) {
 	queueURL, _ := setupSQSQueue(t, "id4")
 	sender := newSQSSender(t, queueURL)
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "hdr-roundtrip-1",
 		Subject: "test-subject-hdr",
 		Payload: []byte(`{"header":"roundtrip"}`),
@@ -230,7 +230,7 @@ func TestIntegration_SQS_HeaderRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	var received *domain.Envelope
+	var received *messaging.Envelope
 	_ = receiver.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
 		received = del.Envelope()
 		_ = del.Ack(ctx)

@@ -10,7 +10,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -125,7 +125,7 @@ func TestSender_Send_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "msg-123",
 		Subject: "order.created",
 		Payload: []byte(`{"order_id":"42"}`),
@@ -161,7 +161,7 @@ func TestSender_Send_HeaderMapping(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "hdr-msg",
 		Subject: "test",
 		Payload: []byte("body"),
@@ -223,7 +223,7 @@ func TestSender_Send_DefaultSessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Payload: []byte("no-session-header"),
 	}
 
@@ -252,7 +252,7 @@ func TestSender_Send_HeaderSessionOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Payload: []byte("override-session"),
 		Headers: map[string]any{
 			"asb.session-id": "override-sess",
@@ -287,7 +287,7 @@ func TestSender_Send_Error(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &domain.Envelope{Payload: []byte("fail")}
+	env := &messaging.Envelope{Payload: []byte("fail")}
 	sendErr := sender.Send(context.Background(), env)
 	if sendErr == nil {
 		t.Fatal("expected error from Send")
@@ -310,7 +310,7 @@ func TestSender_Send_SubjectMapping(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject: "my-subject",
 		Payload: []byte("data"),
 	}
@@ -339,7 +339,7 @@ func TestSender_Send_EmptyID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Payload: []byte("no-id"),
 	}
 
@@ -367,7 +367,7 @@ func TestSender_Send_NilHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "nil-hdr",
 		Payload: []byte("body"),
 	}
@@ -404,7 +404,7 @@ func TestSender_SendBatch_EmptySlice(t *testing.T) {
 		t.Errorf("sent = %d, want 0", sent)
 	}
 
-	sent, err = sender.SendBatch(context.Background(), []*domain.Envelope{})
+	sent, err = sender.SendBatch(context.Background(), []*messaging.Envelope{})
 	if err != nil {
 		t.Fatalf("SendBatch(empty): %v", err)
 	}
@@ -429,7 +429,7 @@ func TestSender_SendBatch_NewBatchError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	envs := []*domain.Envelope{
+	envs := []*messaging.Envelope{
 		{ID: "b1", Payload: []byte("msg1")},
 		{ID: "b2", Payload: []byte("msg2")},
 	}
@@ -465,7 +465,7 @@ func TestSender_SendBatch_SendBatchError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	envs := []*domain.Envelope{
+	envs := []*messaging.Envelope{
 		{ID: "b1", Payload: []byte("msg1")},
 	}
 
@@ -538,7 +538,7 @@ func TestSender_Send_ContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	env := &domain.Envelope{Payload: []byte("canceled")}
+	env := &messaging.Envelope{Payload: []byte("canceled")}
 	sendErr := sender.Send(ctx, env)
 	if sendErr == nil {
 		t.Fatal("expected error on canceled context")
@@ -557,7 +557,7 @@ func TestSender_Send_Timestamps(t *testing.T) {
 	}
 
 	now := time.Now()
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        "ts-msg",
 		Payload:   []byte("with-timestamps"),
 		CreatedAt: now,
@@ -589,7 +589,7 @@ func TestSender_Send_MultipleMessages(t *testing.T) {
 	}
 
 	for i := 0; i < 5; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("msg-%d", i),
 			Payload: []byte(fmt.Sprintf("payload-%d", i)),
 		}

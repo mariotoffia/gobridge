@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -94,10 +95,10 @@ func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 	wait.RequireClosed(t, r2.Started(), 5*time.Second)
 
 	sender := NewSender(SenderConfig{Exchange: exchange, Session: sess, Timeout: 5 * time.Second})
-	if err := sender.Send(ctx, &domain.Envelope{ID: "pre-A", Subject: queueA, Payload: []byte("a1")}); err != nil {
+	if err := sender.Send(ctx, &messaging.Envelope{ID: "pre-A", Subject: queueA, Payload: []byte("a1")}); err != nil {
 		t.Fatalf("send pre-A: %v", err)
 	}
-	if err := sender.Send(ctx, &domain.Envelope{ID: "pre-B", Subject: queueB, Payload: []byte("b1")}); err != nil {
+	if err := sender.Send(ctx, &messaging.Envelope{ID: "pre-B", Subject: queueB, Payload: []byte("b1")}); err != nil {
 		t.Fatalf("send pre-B: %v", err)
 	}
 
@@ -131,8 +132,8 @@ func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 	defer sendCancel()
 	go func() {
 		for sendCtx.Err() == nil {
-			_ = sender2.Send(sendCtx, &domain.Envelope{ID: "post-A", Subject: queueA, Payload: []byte("a2")})
-			_ = sender2.Send(sendCtx, &domain.Envelope{ID: "post-B", Subject: queueB, Payload: []byte("b2")})
+			_ = sender2.Send(sendCtx, &messaging.Envelope{ID: "post-A", Subject: queueA, Payload: []byte("a2")})
+			_ = sender2.Send(sendCtx, &messaging.Envelope{ID: "post-B", Subject: queueB, Payload: []byte("b2")})
 			select {
 			case <-sendCtx.Done():
 			case <-time.After(100 * time.Millisecond):
@@ -181,7 +182,7 @@ func TestIntegration_Sender_MandatoryUnroutable_ReturnsError(t *testing.T) {
 		Session:    sess,
 	})
 	defer func() { _ = sender.Close(ctx) }()
-	err := sender.Send(ctx, &domain.Envelope{
+	err := sender.Send(ctx, &messaging.Envelope{
 		ID:      "unrouted-1",
 		Subject: "unused",
 		Payload: []byte("nobody home"),
@@ -227,7 +228,7 @@ func TestIntegration_Sender_MandatoryRouted_Succeeds(t *testing.T) {
 		Session:    sess,
 	})
 	defer func() { _ = sender.Close(ctx) }()
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID:      "routed-1",
 		Subject: queue,
 		Payload: []byte("delivered"),
@@ -290,7 +291,7 @@ func TestIntegration_ConsumerTag_ReuseAfterReconnect(t *testing.T) {
 	wait.RequireClosed(t, recv.Started(), 5*time.Second)
 
 	sender := NewSender(SenderConfig{Exchange: exchange, RoutingKey: queue, Session: sess, Timeout: 5 * time.Second})
-	if err := sender.Send(ctx, &domain.Envelope{ID: "tag-pre", Payload: []byte("pre")}); err != nil {
+	if err := sender.Send(ctx, &messaging.Envelope{ID: "tag-pre", Payload: []byte("pre")}); err != nil {
 		t.Fatalf("send pre: %v", err)
 	}
 
@@ -316,7 +317,7 @@ func TestIntegration_ConsumerTag_ReuseAfterReconnect(t *testing.T) {
 	defer sendCancel()
 	go func() {
 		for sendCtx.Err() == nil {
-			_ = postSender.Send(sendCtx, &domain.Envelope{ID: "tag-post", Payload: []byte("post")})
+			_ = postSender.Send(sendCtx, &messaging.Envelope{ID: "tag-post", Payload: []byte("post")})
 			select {
 			case <-sendCtx.Done():
 			case <-time.After(100 * time.Millisecond):

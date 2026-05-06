@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"net/http"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/observability"
 )
 
@@ -32,7 +32,7 @@ func (s *Server) correlationMW(next http.Handler) http.Handler {
 
 		var traceID, spanID string
 		if tp := r.Header.Get("Traceparent"); tp != "" {
-			if tc, ok := domain.ParseTraceparent(tp); ok {
+			if tc, ok := messaging.ParseTraceparent(tp); ok {
 				traceID = tc.TraceID
 				spanID = tc.SpanID
 			}

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	servicebus "github.com/mariotoffia/gobridge/adapters/azure/transport/servicebus"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/asblocal"
 )
@@ -72,7 +72,7 @@ func TestIntegration_ReceiverClose_ReceiveThenShutdown(t *testing.T) {
 	sender := newTestSender(t, queue)
 	defer sender.Close(ctx) //nolint:errcheck
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        fmt.Sprintf("close-test-%d", time.Now().UnixNano()),
 		Subject:   "close-test",
 		Payload:   []byte("close-test-payload"),

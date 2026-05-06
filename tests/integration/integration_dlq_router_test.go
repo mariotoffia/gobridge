@@ -8,6 +8,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
@@ -49,12 +50,12 @@ func TestIntegration_DLQRouter_RouteStoresEntry(t *testing.T) {
 		WriteTimeout: 10 * time.Second,
 	})
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "env-dr1",
 		Subject: "test/topic",
 		Payload: []byte(`{"dlq":"entry"}`),
 		Headers: map[string]any{
-			domain.HeaderCorrelationID: "corr-dr1",
+			messaging.HeaderCorrelationID: "corr-dr1",
 		},
 	}
 
@@ -120,7 +121,7 @@ func TestIntegration_DLQRouter_AsyncBufferDrains(t *testing.T) {
 	defer router.Close()
 	const entryCount = 5
 	for i := 0; i < entryCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      uniqueID("env-dr2"),
 			Subject: "test/async",
 			Payload: []byte(`{"async":"entry"}`),
@@ -166,14 +167,14 @@ func TestIntegration_DLQRouter_ErrorClassification(t *testing.T) {
 	ctx := context.Background()
 
 	// Permanent error (ErrNotFound has ErrorPermanent class)
-	env1 := &domain.Envelope{ID: "env-dr3-perm", Subject: "test", Payload: []byte("x")}
+	env1 := &messaging.Envelope{ID: "env-dr3-perm", Subject: "test", Payload: []byte("x")}
 	permErr := shared.ErrNotFound.WithMessage("resource gone")
 	if err := router.Route(ctx, env1, "route-dr3", "b1", "s1", "", permErr, 1); err != nil {
 		t.Fatalf("Route perm: %v", err)
 	}
 
 	// Transient error
-	env2 := &domain.Envelope{ID: "env-dr3-trans", Subject: "test", Payload: []byte("y")}
+	env2 := &messaging.Envelope{ID: "env-dr3-trans", Subject: "test", Payload: []byte("y")}
 	transErr := shared.ErrUnavailable.WithMessage("service down")
 	if err := router.Route(ctx, env2, "route-dr3", "b2", "s2", "", transErr, 2); err != nil {
 		t.Fatalf("Route trans: %v", err)
@@ -223,7 +224,7 @@ func TestIntegration_DLQRouter_CloseDrainsBuffer(t *testing.T) {
 
 	const entryCount = 5
 	for i := 0; i < entryCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      uniqueID("env-dr4"),
 			Subject: "test/drain",
 			Payload: []byte(`{"drain":"test"}`),
@@ -274,7 +275,7 @@ func TestIntegration_DLQRouter_ConcurrentRoutes(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
-			env := &domain.Envelope{
+			env := &messaging.Envelope{
 				ID:      uniqueID("env-dr5"),
 				Subject: "test/concurrent",
 				Payload: []byte(`{"concurrent":"dlq"}`),

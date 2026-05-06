@@ -3,7 +3,7 @@ package ports
 import (
 	"context"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // DeliveryDirection indicates whether a message is entering or leaving
@@ -29,7 +29,7 @@ type DeliveryAttempt struct {
 	// BindingID identifies the destination binding (egress only).
 	BindingID string
 	// Envelope is the message being processed. Hooks must not mutate it.
-	Envelope *domain.Envelope
+	Envelope *messaging.Envelope
 	// Attempt is the 1-based attempt number for this message.
 	Attempt int
 	// MaxAttempts is the configured maximum replay attempts from the
@@ -51,7 +51,7 @@ type DeliveryOutcome struct {
 	BindingID string
 	// Envelope is the message that reached its terminal state.
 	// Hooks must not mutate it.
-	Envelope *domain.Envelope
+	Envelope *messaging.Envelope
 	// Attempt is the total number of attempts made.
 	Attempt int
 	// MaxAttempts is the configured maximum from route policy.

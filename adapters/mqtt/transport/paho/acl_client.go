@@ -7,8 +7,8 @@ import (
 	"github.com/eclipse/paho.golang/autopaho"
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // pahoConnection is the unexported mock seam that wraps an
@@ -29,7 +29,7 @@ type pahoConnection interface {
 	Unsubscribe(ctx context.Context, topics []string) error
 	PublishEnvelope(
 		ctx context.Context,
-		env *domain.Envelope,
+		env *messaging.Envelope,
 		opts SenderOptions,
 		clk clock.Clock,
 	) (publishResult, error)
@@ -112,13 +112,13 @@ func (c *pahoConn) Unsubscribe(ctx context.Context, topics []string) error {
 	return nil
 }
 
-// PublishEnvelope serialises the given domain.Envelope into a paho
+// PublishEnvelope serialises the given messaging.Envelope into a paho
 // Publish via PublishFromEnvelope and forwards it to the broker. The
 // PUBACK / PUBREC reason code is returned in publishResult so the port
 // side can map it via MapPublishReasonCode without importing the SDK.
 func (c *pahoConn) PublishEnvelope(
 	ctx context.Context,
-	env *domain.Envelope,
+	env *messaging.Envelope,
 	opts SenderOptions,
 	clk clock.Clock,
 ) (publishResult, error) {

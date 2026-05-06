@@ -1,9 +1,9 @@
-package domain_test
+package messaging_test
 
 import (
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -32,7 +32,7 @@ func TestParseTraceparent_PartialSegmentLengths(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, ok := domain.ParseTraceparent(tt.input)
+			_, ok := messaging.ParseTraceparent(tt.input)
 			if ok {
 				t.Fatalf("expected rejection for %q", tt.input)
 			}
@@ -43,7 +43,7 @@ func TestParseTraceparent_PartialSegmentLengths(t *testing.T) {
 // TestParseTraceparent_UppercaseHex validates that uppercase hex
 // characters are rejected (W3C spec requires lowercase).
 func TestParseTraceparent_UppercaseHex(t *testing.T) {
-	_, ok := domain.ParseTraceparent("00-ABCDEF0123456789ABCDEF0123456789-0123456789ABCDEF-01")
+	_, ok := messaging.ParseTraceparent("00-ABCDEF0123456789ABCDEF0123456789-0123456789ABCDEF-01")
 	if ok {
 		t.Fatal("uppercase hex should be rejected by W3C spec")
 	}
@@ -52,7 +52,7 @@ func TestParseTraceparent_UppercaseHex(t *testing.T) {
 // TestParseTraceparent_AllZeroTraceID validates rejection of all-zero
 // trace ID (invalid per W3C spec).
 func TestParseTraceparent_AllZeroTraceID(t *testing.T) {
-	_, ok := domain.ParseTraceparent("00-00000000000000000000000000000000-0123456789abcdef-01")
+	_, ok := messaging.ParseTraceparent("00-00000000000000000000000000000000-0123456789abcdef-01")
 	if ok {
 		t.Fatal("all-zero trace ID should be rejected")
 	}
@@ -61,7 +61,7 @@ func TestParseTraceparent_AllZeroTraceID(t *testing.T) {
 // TestParseTraceparent_AllZeroSpanID validates rejection of all-zero
 // span ID (invalid per W3C spec).
 func TestParseTraceparent_AllZeroSpanID(t *testing.T) {
-	_, ok := domain.ParseTraceparent("00-abcdef0123456789abcdef0123456789-0000000000000000-01")
+	_, ok := messaging.ParseTraceparent("00-abcdef0123456789abcdef0123456789-0000000000000000-01")
 	if ok {
 		t.Fatal("all-zero span ID should be rejected")
 	}
@@ -71,12 +71,12 @@ func TestParseTraceparent_AllZeroSpanID(t *testing.T) {
 // parses and re-formats correctly.
 func TestParseTraceparent_ValidRoundtrip(t *testing.T) {
 	input := "00-abcdef0123456789abcdef0123456789-0123456789abcdef-01"
-	tc, ok := domain.ParseTraceparent(input)
+	tc, ok := messaging.ParseTraceparent(input)
 	if !ok {
 		t.Fatalf("valid traceparent should parse: %q", input)
 	}
 
-	output := domain.FormatTraceparent(tc)
+	output := messaging.FormatTraceparent(tc)
 	if output != input {
 		t.Fatalf("roundtrip mismatch: %q != %q", output, input)
 	}
@@ -89,7 +89,7 @@ func TestExtractTraceContext_WithState(t *testing.T) {
 		"tracestate":  "vendor=value",
 	}
 
-	tc, ok := domain.ExtractTraceContext(headers)
+	tc, ok := messaging.ExtractTraceContext(headers)
 	if !ok {
 		t.Fatal("should extract valid trace context")
 	}

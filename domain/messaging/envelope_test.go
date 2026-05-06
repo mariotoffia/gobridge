@@ -1,18 +1,18 @@
-package domain_test
+package messaging_test
 
 import (
 	"reflect"
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/stretchr/testify/assert"
 )
 
 // TestEnvelope_HasExpiry verifies HasExpiry is false for zero ExpiresAt and true when expiry is set.
 func TestEnvelope_HasExpiry(t *testing.T) {
-	e := &domain.Envelope{}
+	e := &messaging.Envelope{}
 	if e.HasExpiry() {
 		t.Fatal("zero time should not have expiry")
 	}
@@ -26,7 +26,7 @@ func TestEnvelope_HasExpiry(t *testing.T) {
 func TestEnvelope_IsExpired(t *testing.T) {
 	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
 	clk := clocktest.NewAt(now)
-	e := &domain.Envelope{}
+	e := &messaging.Envelope{}
 	if e.IsExpired(clk) {
 		t.Fatal("no expiry should not be expired")
 	}
@@ -46,7 +46,7 @@ func TestEnvelope_IsExpired(t *testing.T) {
 func TestEnvelope_RemainingTTL(t *testing.T) {
 	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
 	clk := clocktest.NewAt(now)
-	e := &domain.Envelope{}
+	e := &messaging.Envelope{}
 	if r := e.RemainingTTL(clk); r != 0 {
 		t.Fatalf("no expiry: expected 0, got %v", r)
 	}
@@ -64,7 +64,7 @@ func TestEnvelope_RemainingTTL(t *testing.T) {
 
 // TestEnvelope_Clone verifies Clone copies scalar fields and deep-copies payload and headers so mutations do not alias the original.
 func TestEnvelope_Clone(t *testing.T) {
-	orig := &domain.Envelope{
+	orig := &messaging.Envelope{
 		ID:        "msg-1",
 		Subject:   "test",
 		Payload:   []byte("hello"),
@@ -96,7 +96,7 @@ func TestEnvelope_Clone(t *testing.T) {
 
 // TestEnvelope_Clone_NilFields verifies Clone leaves nil Payload and Headers nil on the copy.
 func TestEnvelope_Clone_NilFields(t *testing.T) {
-	orig := &domain.Envelope{ID: "msg-nil"}
+	orig := &messaging.Envelope{ID: "msg-nil"}
 	clone := orig.Clone()
 	if clone.Payload != nil {
 		t.Fatal("nil payload should remain nil after clone")
@@ -106,35 +106,8 @@ func TestEnvelope_Clone_NilFields(t *testing.T) {
 	}
 }
 
-// TestOutboxPartitionKey_WithSession validates the "SESSION#<id>" format when sessionID is non-empty.
-func TestOutboxPartitionKey_WithSession(t *testing.T) {
-	key := domain.OutboxPartitionKey("sess-1", "bind-1")
-	if key != "SESSION#sess-1" {
-		t.Fatalf("got %q, want %q", key, "SESSION#sess-1")
-	}
-}
-
-// TestOutboxPartitionKey_WithBinding validates the "BINDING#<id>" format when sessionID is empty.
-func TestOutboxPartitionKey_WithBinding(t *testing.T) {
-	key := domain.OutboxPartitionKey("", "bind-1")
-	if key != "BINDING#bind-1" {
-		t.Fatalf("got %q, want %q", key, "BINDING#bind-1")
-	}
-}
-
-// TestOutboxPartitionKey_Deterministic validates that the same inputs always produce the same key.
-func TestOutboxPartitionKey_Deterministic(t *testing.T) {
-	for i := 0; i < 100; i++ {
-		a := domain.OutboxPartitionKey("s1", "b1")
-		b := domain.OutboxPartitionKey("s1", "b1")
-		if a != b {
-			t.Fatalf("iteration %d: keys diverged: %q vs %q", i, a, b)
-		}
-	}
-}
-
 func TestEnvelope_Clone_DeepCopiesSliceHeaders(t *testing.T) {
-	orig := &domain.Envelope{
+	orig := &messaging.Envelope{
 		Headers: map[string]any{"tags": []string{"a", "b"}},
 	}
 	clone := orig.Clone()
@@ -146,7 +119,7 @@ func TestEnvelope_Clone_DeepCopiesSliceHeaders(t *testing.T) {
 }
 
 func TestEnvelope_Clone_DeepCopiesMapHeaders(t *testing.T) {
-	orig := &domain.Envelope{
+	orig := &messaging.Envelope{
 		Headers: map[string]any{"nested": map[string]any{"k": "val"}},
 	}
 	clone := orig.Clone()
@@ -158,7 +131,7 @@ func TestEnvelope_Clone_DeepCopiesMapHeaders(t *testing.T) {
 }
 
 func TestEnvelope_Clone_DeepCopiesNestedMaps(t *testing.T) {
-	orig := &domain.Envelope{
+	orig := &messaging.Envelope{
 		Headers: map[string]any{
 			"lvl1": map[string]any{
 				"lvl2": map[string]any{"deep": "original"},
@@ -174,7 +147,7 @@ func TestEnvelope_Clone_DeepCopiesNestedMaps(t *testing.T) {
 }
 
 func TestEnvelope_Clone_DeepCopiesAnySlice(t *testing.T) {
-	orig := &domain.Envelope{
+	orig := &messaging.Envelope{
 		Headers: map[string]any{"mix": []any{1, "two", 3}},
 	}
 	clone := orig.Clone()
@@ -186,13 +159,13 @@ func TestEnvelope_Clone_DeepCopiesAnySlice(t *testing.T) {
 }
 
 func TestEnvelope_Clone_NilHeaders(t *testing.T) {
-	orig := &domain.Envelope{Headers: nil}
+	orig := &messaging.Envelope{Headers: nil}
 	clone := orig.Clone()
 	assert.Nil(t, clone.Headers)
 }
 
 func TestEnvelope_Clone_EmptyHeaders(t *testing.T) {
-	orig := &domain.Envelope{Headers: map[string]any{}}
+	orig := &messaging.Envelope{Headers: map[string]any{}}
 	clone := orig.Clone()
 
 	assert.NotNil(t, clone.Headers)

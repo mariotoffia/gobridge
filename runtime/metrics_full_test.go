@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -49,7 +50,7 @@ func TestMetrics_FullPipeline_DirectHold(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &domain.Envelope{ID: "full-msg-1", Payload: []byte("payload"), ExpiresAt: time.Now().Add(time.Hour)}
+	env := &messaging.Envelope{ID: "full-msg-1", Payload: []byte("payload"), ExpiresAt: time.Now().Add(time.Hour)}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -119,7 +120,7 @@ func TestMetrics_FullPipeline_SharedOutbox(t *testing.T) {
 		return session.IsStarted()
 	})
 
-	env := &domain.Envelope{ID: "outbox-msg-1", Payload: []byte("payload"), ExpiresAt: time.Now().Add(time.Hour)}
+	env := &messaging.Envelope{ID: "outbox-msg-1", Payload: []byte("payload"), ExpiresAt: time.Now().Add(time.Hour)}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 

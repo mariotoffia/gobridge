@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -96,7 +97,7 @@ func TestSharedOutbox_BasicFlow(t *testing.T) {
 		return session.IsStarted()
 	})
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "msg-basic-1",
 		Payload: []byte("hello"),
 	}
@@ -145,7 +146,7 @@ func TestSharedOutbox_ProcessorChainRuns(t *testing.T) {
 
 	enricher := &FakeProcessor{
 		NameVal: "enricher",
-		ProcessFn: func(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+		ProcessFn: func(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 			env.Headers["enriched"] = true
 			return next(ctx, env)
 		},
@@ -178,7 +179,7 @@ func TestSharedOutbox_ProcessorChainRuns(t *testing.T) {
 		return session.IsStarted()
 	})
 
-	env := &domain.Envelope{ID: "msg-proc-1", Payload: []byte("data")}
+	env := &messaging.Envelope{ID: "msg-proc-1", Payload: []byte("data")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -229,7 +230,7 @@ func TestSharedOutbox_CorrelationIDInjected(t *testing.T) {
 		return session.IsStarted()
 	})
 
-	env := &domain.Envelope{ID: "msg-corr-1", Payload: []byte("x")}
+	env := &messaging.Envelope{ID: "msg-corr-1", Payload: []byte("x")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -238,10 +239,10 @@ func TestSharedOutbox_CorrelationIDInjected(t *testing.T) {
 	})
 
 	sent := sender.GetSent()
-	if _, ok := sent[0].Headers[domain.HeaderCorrelationID]; !ok {
+	if _, ok := sent[0].Headers[messaging.HeaderCorrelationID]; !ok {
 		t.Error("expected correlation ID header")
 	}
-	if _, ok := sent[0].Headers[domain.HeaderRouteID]; !ok {
+	if _, ok := sent[0].Headers[messaging.HeaderRouteID]; !ok {
 		t.Error("expected route ID header")
 	}
 }
@@ -279,7 +280,7 @@ func TestSharedOutbox_ReservedHeadersStripped(t *testing.T) {
 		return session.IsStarted()
 	})
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "msg-hdr-1",
 		Payload: []byte("x"),
 		Headers: map[string]any{
@@ -326,7 +327,7 @@ func NewTrackingSender(tag string) *TrackingSender {
 	return &TrackingSender{Tag: tag}
 }
 
-func (s *TrackingSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *TrackingSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	s.mu.Lock()
 	s.SentIDs = append(s.SentIDs, env.ID)
 	s.mu.Unlock()
@@ -353,7 +354,7 @@ func emitMessages(t *testing.T, ctx context.Context, receiver *FakeReceiver, pre
 	t.Helper()
 	dels := make([]*FakeDelivery, n)
 	for i := 0; i < n; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("%s-%d", prefix, i),
 			Payload: []byte(fmt.Sprintf("payload-%d", i)),
 		}

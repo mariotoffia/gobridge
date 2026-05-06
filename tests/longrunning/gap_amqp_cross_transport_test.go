@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -119,7 +120,7 @@ func TestGap_AMQP091_To_SQS_CrossTransport(t *testing.T) {
 
 	t.Logf("GAP-CROSS-SQS: publishing %d messages to RabbitMQ", gapCrossMsgCount)
 	for i := 0; i < gapCrossMsgCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("gap-cross-sqs-%d", i),
 			Subject: "cross-transport-test",
 			Payload: []byte(fmt.Sprintf(`{"seq":%d,"origin":"amqp091"}`, i)),
@@ -244,7 +245,7 @@ func TestGap_AMQP091_To_MQTT_CrossTransport(t *testing.T) {
 
 	t.Logf("GAP-CROSS-MQTT: publishing %d messages to RabbitMQ", gapCrossMsgCount)
 	for i := 0; i < gapCrossMsgCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("gap-cross-mqtt-%d", i),
 			Subject: "cross-transport-test",
 			Payload: []byte(fmt.Sprintf(`{"seq":%d,"origin":"amqp091"}`, i)),

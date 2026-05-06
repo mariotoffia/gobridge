@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -43,7 +44,7 @@ func TestOutboxDrainer_WorkCtxNotCappedBySendTimeout(t *testing.T) {
 	var sendInvoked atomic.Bool
 
 	ctxSender := &ContextAwareSender{
-		sendFn: func(ctx context.Context, _ *domain.Envelope) error {
+		sendFn: func(ctx context.Context, _ *messaging.Envelope) error {
 			sendInvoked.Store(true)
 			select {
 			case <-time.After(800 * time.Millisecond):
@@ -94,7 +95,7 @@ func TestOutboxDrainer_WorkCtxNotCappedBySendTimeout(t *testing.T) {
 		EnvelopeID: "env-m1",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   domain.Envelope{ID: "env-m1", Payload: []byte("data")},
+		Envelope:   messaging.Envelope{ID: "env-m1", Payload: []byte("data")},
 		Status:     domain.OutboxPending,
 	}
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -172,7 +173,7 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 		EnvelopeID: "env-m3",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   domain.Envelope{ID: "env-m3", Payload: []byte("data")},
+		Envelope:   messaging.Envelope{ID: "env-m3", Payload: []byte("data")},
 		Status:     domain.OutboxPending,
 	}
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{outboxRec})

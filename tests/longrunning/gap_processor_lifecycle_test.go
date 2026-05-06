@@ -16,6 +16,7 @@ import (
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/processors/circuitbreaker"
@@ -131,7 +132,7 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 	t.Log("GAP-CB: Phase 1 — injecting 10 transient-error messages for tenant A")
 	var cbRejections int
 	for i := 0; i < 10; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("cb-fail-%d", i),
 			Subject: outTopic,
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
@@ -171,7 +172,7 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 
 	t.Log("GAP-CB: Phase 2 — injecting success probes for tenant A")
 	for probe := 0; probe < 5; probe++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("cb-probe-%d", probe),
 			Subject: outTopic,
 			Payload: []byte(fmt.Sprintf(`{"probe":%d}`, probe)),
@@ -205,7 +206,7 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 	prePhase3 := collector.count()
 	t.Log("GAP-CB: Phase 3 — injecting 20 normal messages for tenant A")
 	for i := 0; i < 20; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("cb-normal-%d", i),
 			Subject: outTopic,
 			Payload: []byte(fmt.Sprintf(`{"normal":%d}`, i)),
@@ -386,7 +387,7 @@ type headerErrorProcessor struct{}
 
 func (p *headerErrorProcessor) Name() string { return "header-error" }
 
-func (p *headerErrorProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *headerErrorProcessor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	if env.Headers != nil {
 		if et, ok := env.Headers["error_type"].(string); ok && et == "transient" {
 			return shared.ErrUnavailable.WithMessage("headerErrorProcessor: transient")

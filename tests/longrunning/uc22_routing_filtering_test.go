@@ -14,6 +14,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -221,7 +222,7 @@ func TestUC23_SubjectPrefix_Routing(t *testing.T) {
 	pubSnd := paho.NewSender(pubSess, paho.SenderOptions{QoS: 1, Timeout: 10 * time.Second})
 	for _, pfx := range prefixes {
 		for i := 0; i < perPrefix; i++ {
-			env := &domain.Envelope{
+			env := &messaging.Envelope{
 				ID:      fmt.Sprintf("uc23-%s-%d", pfx, i),
 				Subject: fmt.Sprintf("%sitem-%d", pfx, i),
 				Payload: []byte(fmt.Sprintf(`{"pfx":"%s","seq":%d}`, pfx, i)),
@@ -333,8 +334,8 @@ func TestUC25_FilterProcessor_90Percent_Drop(t *testing.T) {
 	sqsRx := newSQSReceiver(t, inURL)
 
 	filter := &filterProcessor{
-		keep: func(env *domain.Envelope) bool {
-			s, ok := domain.GetHeaderString(env.Headers, "seq")
+		keep: func(env *messaging.Envelope) bool {
+			s, ok := messaging.GetHeaderString(env.Headers, "seq")
 			if !ok {
 				return false
 			}

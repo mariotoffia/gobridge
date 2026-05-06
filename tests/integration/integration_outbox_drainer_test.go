@@ -9,6 +9,7 @@ import (
 
 	dboutbox "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
@@ -62,7 +63,7 @@ func TestIntegration_OutboxDrainer_FullLifecycle(t *testing.T) {
 		SessionID:  "sess-od1",
 		RouteID:    "route-od1",
 		Address:    "test/topic",
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:      "env-od1",
 			Subject: "test",
 			Payload: []byte(`{"lifecycle":"test"}`),
@@ -126,7 +127,7 @@ func TestIntegration_OutboxDrainer_StaleFencingToken(t *testing.T) {
 		BindingID:  "bind-od2",
 		SessionID:  "sess-od2",
 		RouteID:    "route-od2",
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:      "env-od2",
 			Subject: "test",
 			Payload: []byte(`{"stale":"test"}`),
@@ -180,7 +181,7 @@ func TestIntegration_OutboxDrainer_ExpiredRecordRoutesDLQ(t *testing.T) {
 		SessionID:  "sess-od3",
 		RouteID:    "route-od3",
 		ExpiresAt:  past,
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:        "env-od3",
 			Subject:   "test",
 			Payload:   []byte(`{"expired":"test"}`),
@@ -248,7 +249,7 @@ func TestIntegration_OutboxDrainer_PoisonMessageRoutesDLQ(t *testing.T) {
 		BindingID:  "bind-od4",
 		SessionID:  "sess-od4",
 		RouteID:    "route-od4",
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:      "env-od4",
 			Subject: "test",
 			Payload: []byte(`{"poison":"test"}`),
@@ -337,7 +338,7 @@ func TestIntegration_OutboxDrainer_ConcurrentDrainers(t *testing.T) {
 			BindingID:  uniqueID("bind-od5"),
 			SessionID:  "sess-od5",
 			RouteID:    "route-od5",
-			Envelope: domain.Envelope{
+			Envelope: messaging.Envelope{
 				ID:      uniqueID("env-od5"),
 				Subject: "test",
 				Payload: []byte(`{"concurrent":"test"}`),
@@ -412,7 +413,7 @@ func TestIntegration_OutboxDrainer_AdaptiveBatchSize(t *testing.T) {
 			BindingID:  uniqueID("bind-od6"),
 			SessionID:  "sess-od6",
 			RouteID:    "route-od6",
-			Envelope: domain.Envelope{
+			Envelope: messaging.Envelope{
 				ID:      uniqueID("env-od6"),
 				Subject: "test",
 				Payload: []byte(`{"adaptive":"test"}`),
@@ -476,10 +477,10 @@ func newDDBOutboxStoreWithStaleDuration(t *testing.T, prefix string, staleDurati
 
 type collectingSender struct {
 	mu   sync.Mutex
-	envs []*domain.Envelope
+	envs []*messaging.Envelope
 }
 
-func (s *collectingSender) Send(_ context.Context, env *domain.Envelope) error {
+func (s *collectingSender) Send(_ context.Context, env *messaging.Envelope) error {
 	s.mu.Lock()
 	s.envs = append(s.envs, env)
 	s.mu.Unlock()

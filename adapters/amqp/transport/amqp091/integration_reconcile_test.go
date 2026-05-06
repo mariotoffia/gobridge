@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 )
@@ -69,7 +70,7 @@ func TestIntegration_Reconcile_FirstFailureDoesNotPoisonSubsequentReconciles(t *
 		Session: sess, Timeout: 5 * time.Second,
 	})
 	defer func() { _ = sender.Close(ctx) }()
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID: "post-recon", Subject: freshQueue, Payload: []byte("ok"),
 	}); err != nil {
 		t.Fatalf("send after recovered Reconcile: %v", err)

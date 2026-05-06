@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -131,7 +132,7 @@ func TestIntegration_ConcurrentReconcile_NoCorruption(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("receiver did not start")
 	}
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		Subject: verifyTopic,
 		Payload: []byte("verify-state"),
 	}); err != nil {

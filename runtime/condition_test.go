@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // ---------------------------------------------------------------------------
@@ -16,7 +16,7 @@ func TestConditionEval_SubjectField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newConditionEval: %v", err)
 	}
-	env := &domain.Envelope{Subject: "orders.new"}
+	env := &messaging.Envelope{Subject: "orders.new"}
 	ok, err := eval.evaluate(env, newEvalContext())
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
@@ -28,7 +28,7 @@ func TestConditionEval_SubjectField(t *testing.T) {
 
 func TestConditionEval_HeaderDotField(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "header.x-tenant", Operator: OpEquals, Value: "acme"})
-	env := &domain.Envelope{Headers: map[string]any{"x-tenant": "acme"}}
+	env := &messaging.Envelope{Headers: map[string]any{"x-tenant": "acme"}}
 	ok, err := eval.evaluate(env, newEvalContext())
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
@@ -40,7 +40,7 @@ func TestConditionEval_HeaderDotField(t *testing.T) {
 
 func TestConditionEval_HeaderDotField_MissingKey(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "header.absent", Operator: OpEquals, Value: "x"})
-	env := &domain.Envelope{Headers: map[string]any{"other": "val"}}
+	env := &messaging.Envelope{Headers: map[string]any{"other": "val"}}
 	ok, _ := eval.evaluate(env, newEvalContext())
 	if ok {
 		t.Fatal("expected no match for missing header")
@@ -49,7 +49,7 @@ func TestConditionEval_HeaderDotField_MissingKey(t *testing.T) {
 
 func TestConditionEval_HeaderDotField_NilHeaders(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "header.x", Operator: OpEquals, Value: "x"})
-	env := &domain.Envelope{}
+	env := &messaging.Envelope{}
 	ok, _ := eval.evaluate(env, newEvalContext())
 	if ok {
 		t.Fatal("expected no match for nil headers")
@@ -58,7 +58,7 @@ func TestConditionEval_HeaderDotField_NilHeaders(t *testing.T) {
 
 func TestConditionEval_JSONPath_Nested(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "$.order.status", Operator: OpEquals, Value: "confirmed"})
-	env := &domain.Envelope{Payload: []byte(`{"order":{"status":"confirmed"}}`)}
+	env := &messaging.Envelope{Payload: []byte(`{"order":{"status":"confirmed"}}`)}
 	ok, err := eval.evaluate(env, newEvalContext())
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
@@ -70,7 +70,7 @@ func TestConditionEval_JSONPath_Nested(t *testing.T) {
 
 func TestConditionEval_JSONPath_Deep(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "$.a.b.c.d", Operator: OpEquals, Value: "deep"})
-	env := &domain.Envelope{Payload: []byte(`{"a":{"b":{"c":{"d":"deep"}}}}`)}
+	env := &messaging.Envelope{Payload: []byte(`{"a":{"b":{"c":{"d":"deep"}}}}`)}
 	ok, _ := eval.evaluate(env, newEvalContext())
 	if !ok {
 		t.Fatal("expected match on deep path")
@@ -79,7 +79,7 @@ func TestConditionEval_JSONPath_Deep(t *testing.T) {
 
 func TestConditionEval_JSONPath_MissingPath(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "$.order.missing", Operator: OpEquals, Value: "x"})
-	env := &domain.Envelope{Payload: []byte(`{"order":{"status":"ok"}}`)}
+	env := &messaging.Envelope{Payload: []byte(`{"order":{"status":"ok"}}`)}
 	ok, _ := eval.evaluate(env, newEvalContext())
 	if ok {
 		t.Fatal("expected no match for missing path")
@@ -88,7 +88,7 @@ func TestConditionEval_JSONPath_MissingPath(t *testing.T) {
 
 func TestConditionEval_JSONPath_EmptyPayload(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "$.x", Operator: OpEquals, Value: "y"})
-	env := &domain.Envelope{}
+	env := &messaging.Envelope{}
 	ok, _ := eval.evaluate(env, newEvalContext())
 	if ok {
 		t.Fatal("expected no match for empty payload")
@@ -97,7 +97,7 @@ func TestConditionEval_JSONPath_EmptyPayload(t *testing.T) {
 
 func TestConditionEval_JSONPath_InvalidJSON(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "$.x", Operator: OpEquals, Value: "y"})
-	env := &domain.Envelope{Payload: []byte(`{broken}`)}
+	env := &messaging.Envelope{Payload: []byte(`{broken}`)}
 	ok, _ := eval.evaluate(env, newEvalContext())
 	if ok {
 		t.Fatal("expected no match for invalid JSON")
@@ -106,7 +106,7 @@ func TestConditionEval_JSONPath_InvalidJSON(t *testing.T) {
 
 func TestConditionEval_BareField_FallsBackToHeader(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "tenant", Operator: OpEquals, Value: "acme"})
-	env := &domain.Envelope{Headers: map[string]any{"tenant": "acme"}}
+	env := &messaging.Envelope{Headers: map[string]any{"tenant": "acme"}}
 	ok, _ := eval.evaluate(env, newEvalContext())
 	if !ok {
 		t.Fatal("expected match via header fallback")
@@ -115,7 +115,7 @@ func TestConditionEval_BareField_FallsBackToHeader(t *testing.T) {
 
 func TestConditionEval_BareField_NilHeaders(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "tenant", Operator: OpEquals, Value: "acme"})
-	env := &domain.Envelope{}
+	env := &messaging.Envelope{}
 	ok, _ := eval.evaluate(env, newEvalContext())
 	if ok {
 		t.Fatal("expected no match for nil headers")
@@ -130,53 +130,53 @@ func TestConditionEval_AllOperators(t *testing.T) {
 	tests := []struct {
 		name    string
 		cond    MatchCondition
-		env     *domain.Envelope
+		env     *messaging.Envelope
 		wantOK  bool
 		wantErr bool
 	}{
 		// eq
-		{"eq_match", MatchCondition{"subject", OpEquals, "orders"}, &domain.Envelope{Subject: "orders"}, true, false},
-		{"eq_no_match", MatchCondition{"subject", OpEquals, "orders"}, &domain.Envelope{Subject: "users"}, false, false},
+		{"eq_match", MatchCondition{"subject", OpEquals, "orders"}, &messaging.Envelope{Subject: "orders"}, true, false},
+		{"eq_no_match", MatchCondition{"subject", OpEquals, "orders"}, &messaging.Envelope{Subject: "users"}, false, false},
 
 		// ne
-		{"ne_match", MatchCondition{"subject", OpNotEquals, "orders"}, &domain.Envelope{Subject: "users"}, true, false},
-		{"ne_no_match", MatchCondition{"subject", OpNotEquals, "orders"}, &domain.Envelope{Subject: "orders"}, false, false},
+		{"ne_match", MatchCondition{"subject", OpNotEquals, "orders"}, &messaging.Envelope{Subject: "users"}, true, false},
+		{"ne_no_match", MatchCondition{"subject", OpNotEquals, "orders"}, &messaging.Envelope{Subject: "orders"}, false, false},
 
 		// prefix
-		{"prefix_match", MatchCondition{"subject", OpPrefix, "orders."}, &domain.Envelope{Subject: "orders.new"}, true, false},
-		{"prefix_no_match", MatchCondition{"subject", OpPrefix, "orders."}, &domain.Envelope{Subject: "users.new"}, false, false},
-		{"prefix_exact", MatchCondition{"subject", OpPrefix, "orders"}, &domain.Envelope{Subject: "orders"}, true, false},
-		{"prefix_not_contains", MatchCondition{"subject", OpPrefix, "rder"}, &domain.Envelope{Subject: "orders"}, false, false},
+		{"prefix_match", MatchCondition{"subject", OpPrefix, "orders."}, &messaging.Envelope{Subject: "orders.new"}, true, false},
+		{"prefix_no_match", MatchCondition{"subject", OpPrefix, "orders."}, &messaging.Envelope{Subject: "users.new"}, false, false},
+		{"prefix_exact", MatchCondition{"subject", OpPrefix, "orders"}, &messaging.Envelope{Subject: "orders"}, true, false},
+		{"prefix_not_contains", MatchCondition{"subject", OpPrefix, "rder"}, &messaging.Envelope{Subject: "orders"}, false, false},
 
 		// contains
-		{"contains_match", MatchCondition{"subject", OpContains, "admin"}, &domain.Envelope{Subject: "/api/admin/users"}, true, false},
-		{"contains_no_match", MatchCondition{"subject", OpContains, "admin"}, &domain.Envelope{Subject: "/api/public"}, false, false},
+		{"contains_match", MatchCondition{"subject", OpContains, "admin"}, &messaging.Envelope{Subject: "/api/admin/users"}, true, false},
+		{"contains_no_match", MatchCondition{"subject", OpContains, "admin"}, &messaging.Envelope{Subject: "/api/public"}, false, false},
 
 		// regex
-		{"regex_match", MatchCondition{"subject", OpRegex, `^order-\d+$`}, &domain.Envelope{Subject: "order-123"}, true, false},
-		{"regex_no_match", MatchCondition{"subject", OpRegex, `^order-\d+$`}, &domain.Envelope{Subject: "user-abc"}, false, false},
+		{"regex_match", MatchCondition{"subject", OpRegex, `^order-\d+$`}, &messaging.Envelope{Subject: "order-123"}, true, false},
+		{"regex_no_match", MatchCondition{"subject", OpRegex, `^order-\d+$`}, &messaging.Envelope{Subject: "user-abc"}, false, false},
 
 		// gt / lt / gte / lte
-		{"gt_match", MatchCondition{"header.priority", OpGreaterThan, float64(5)}, &domain.Envelope{Headers: map[string]any{"priority": float64(10)}}, true, false},
-		{"gt_equal", MatchCondition{"header.priority", OpGreaterThan, float64(5)}, &domain.Envelope{Headers: map[string]any{"priority": float64(5)}}, false, false},
-		{"lt_match", MatchCondition{"header.priority", OpLessThan, float64(5)}, &domain.Envelope{Headers: map[string]any{"priority": float64(3)}}, true, false},
-		{"gte_equal", MatchCondition{"header.priority", OpGTE, float64(5)}, &domain.Envelope{Headers: map[string]any{"priority": float64(5)}}, true, false},
-		{"lte_equal", MatchCondition{"header.priority", OpLTE, float64(5)}, &domain.Envelope{Headers: map[string]any{"priority": float64(5)}}, true, false},
+		{"gt_match", MatchCondition{"header.priority", OpGreaterThan, float64(5)}, &messaging.Envelope{Headers: map[string]any{"priority": float64(10)}}, true, false},
+		{"gt_equal", MatchCondition{"header.priority", OpGreaterThan, float64(5)}, &messaging.Envelope{Headers: map[string]any{"priority": float64(5)}}, false, false},
+		{"lt_match", MatchCondition{"header.priority", OpLessThan, float64(5)}, &messaging.Envelope{Headers: map[string]any{"priority": float64(3)}}, true, false},
+		{"gte_equal", MatchCondition{"header.priority", OpGTE, float64(5)}, &messaging.Envelope{Headers: map[string]any{"priority": float64(5)}}, true, false},
+		{"lte_equal", MatchCondition{"header.priority", OpLTE, float64(5)}, &messaging.Envelope{Headers: map[string]any{"priority": float64(5)}}, true, false},
 
 		// exists
-		{"exists_true_present", MatchCondition{"header.x", OpExists, true}, &domain.Envelope{Headers: map[string]any{"x": "v"}}, true, false},
-		{"exists_true_absent", MatchCondition{"header.x", OpExists, true}, &domain.Envelope{Headers: map[string]any{}}, false, false},
-		{"exists_false_absent", MatchCondition{"header.x", OpExists, false}, &domain.Envelope{Headers: map[string]any{}}, true, false},
-		{"exists_false_present", MatchCondition{"header.x", OpExists, false}, &domain.Envelope{Headers: map[string]any{"x": "v"}}, false, false},
+		{"exists_true_present", MatchCondition{"header.x", OpExists, true}, &messaging.Envelope{Headers: map[string]any{"x": "v"}}, true, false},
+		{"exists_true_absent", MatchCondition{"header.x", OpExists, true}, &messaging.Envelope{Headers: map[string]any{}}, false, false},
+		{"exists_false_absent", MatchCondition{"header.x", OpExists, false}, &messaging.Envelope{Headers: map[string]any{}}, true, false},
+		{"exists_false_present", MatchCondition{"header.x", OpExists, false}, &messaging.Envelope{Headers: map[string]any{"x": "v"}}, false, false},
 
 		// in
-		{"in_match", MatchCondition{"subject", OpIn, []any{"prod", "staging"}}, &domain.Envelope{Subject: "prod"}, true, false},
-		{"in_no_match", MatchCondition{"subject", OpIn, []any{"prod", "staging"}}, &domain.Envelope{Subject: "dev"}, false, false},
+		{"in_match", MatchCondition{"subject", OpIn, []any{"prod", "staging"}}, &messaging.Envelope{Subject: "prod"}, true, false},
+		{"in_no_match", MatchCondition{"subject", OpIn, []any{"prod", "staging"}}, &messaging.Envelope{Subject: "dev"}, false, false},
 
 		// numeric coercion
-		{"numeric_string", MatchCondition{"header.count", OpGreaterThan, float64(5)}, &domain.Envelope{Headers: map[string]any{"count": "10"}}, true, false},
-		{"numeric_json_number", MatchCondition{"$.priority", OpGreaterThan, float64(5)}, &domain.Envelope{Payload: []byte(`{"priority":10}`)}, true, false},
-		{"numeric_non_numeric_err", MatchCondition{"header.x", OpGreaterThan, float64(5)}, &domain.Envelope{Headers: map[string]any{"x": "abc"}}, false, true},
+		{"numeric_string", MatchCondition{"header.count", OpGreaterThan, float64(5)}, &messaging.Envelope{Headers: map[string]any{"count": "10"}}, true, false},
+		{"numeric_json_number", MatchCondition{"$.priority", OpGreaterThan, float64(5)}, &messaging.Envelope{Payload: []byte(`{"priority":10}`)}, true, false},
+		{"numeric_non_numeric_err", MatchCondition{"header.x", OpGreaterThan, float64(5)}, &messaging.Envelope{Headers: map[string]any{"x": "abc"}}, false, true},
 	}
 
 	for _, tc := range tests {
@@ -219,7 +219,7 @@ func TestConditionEval_RegexNonString(t *testing.T) {
 
 func TestConditionEval_UnknownOperator(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "subject", Operator: "bogus", Value: "x"})
-	_, err := eval.evaluate(&domain.Envelope{Subject: "x"}, newEvalContext())
+	_, err := eval.evaluate(&messaging.Envelope{Subject: "x"}, newEvalContext())
 	if err == nil {
 		t.Fatal("expected error for unknown operator")
 	}
@@ -242,7 +242,7 @@ func TestConditionEval_RegexPatternTooLong(t *testing.T) {
 
 func TestConditionEval_NaN_Rejected(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "header.x", Operator: OpGreaterThan, Value: float64(5)})
-	env := &domain.Envelope{Headers: map[string]any{"x": "NaN"}}
+	env := &messaging.Envelope{Headers: map[string]any{"x": "NaN"}}
 	_, err := eval.evaluate(env, newEvalContext())
 	if err == nil {
 		t.Fatal("expected error for NaN")
@@ -251,7 +251,7 @@ func TestConditionEval_NaN_Rejected(t *testing.T) {
 
 func TestConditionEval_Inf_Rejected(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "header.x", Operator: OpGreaterThan, Value: float64(5)})
-	env := &domain.Envelope{Headers: map[string]any{"x": "Inf"}}
+	env := &messaging.Envelope{Headers: map[string]any{"x": "Inf"}}
 	_, err := eval.evaluate(env, newEvalContext())
 	if err == nil {
 		t.Fatal("expected error for Inf")
@@ -268,7 +268,7 @@ func TestConditionEval_RegexInputTooLong_NoMatch(t *testing.T) {
 	for i := range longSubject {
 		longSubject[i] = 'a'
 	}
-	env := &domain.Envelope{Subject: string(longSubject)}
+	env := &messaging.Envelope{Subject: string(longSubject)}
 	ok, _ := eval.evaluate(env, newEvalContext())
 	if ok {
 		t.Fatal("expected no match for input exceeding max regex input length")
@@ -318,7 +318,7 @@ func TestEvalContext_JSONNumber_FromPayload(t *testing.T) {
 
 func TestConditionEval_EmptySubject_ExistsTrue(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "subject", Operator: OpExists, Value: true})
-	env := &domain.Envelope{Subject: ""}
+	env := &messaging.Envelope{Subject: ""}
 	ok, _ := eval.evaluate(env, newEvalContext())
 	if !ok {
 		t.Fatal("subject field always exists (even if empty)")

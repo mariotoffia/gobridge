@@ -3,14 +3,14 @@ package filter
 import (
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 func TestCondition_Equals(t *testing.T) {
 	tests := []struct {
 		name   string
 		cond   Condition
-		env    *domain.Envelope
+		env    *messaging.Envelope
 		expect bool
 	}{
 		{

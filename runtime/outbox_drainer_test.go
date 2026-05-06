@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -58,7 +59,7 @@ func TestOutboxDrainer_HappyPath(t *testing.T) {
 		EnvelopeID: "env-1",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   domain.Envelope{ID: "env-1", Payload: []byte("data")},
+		Envelope:   messaging.Envelope{ID: "env-1", Payload: []byte("data")},
 		Status:     domain.OutboxPending,
 	}
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -87,7 +88,7 @@ func TestOutboxDrainer_ExpiredRecord(t *testing.T) {
 		EnvelopeID: "env-exp",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   domain.Envelope{ID: "env-exp", ExpiresAt: time.Now().Add(-time.Second)},
+		Envelope:   messaging.Envelope{ID: "env-exp", ExpiresAt: time.Now().Add(-time.Second)},
 		Status:     domain.OutboxPending,
 	}
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -118,7 +119,7 @@ func TestOutboxDrainer_PoisonMessage(t *testing.T) {
 		EnvelopeID:  "env-poison",
 		BindingID:   "bind-1",
 		SessionID:   "sess-1",
-		Envelope:    domain.Envelope{ID: "env-poison", Payload: []byte("bad")},
+		Envelope:    messaging.Envelope{ID: "env-poison", Payload: []byte("bad")},
 		Status:      domain.OutboxPending,
 		ReplayCount: 3,
 	}
@@ -150,7 +151,7 @@ func TestOutboxDrainer_StaleFencingToken(t *testing.T) {
 		EnvelopeID: "env-stale",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   domain.Envelope{ID: "env-stale"},
+		Envelope:   messaging.Envelope{ID: "env-stale"},
 		Status:     domain.OutboxPending,
 	}
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -189,7 +190,7 @@ func TestOutboxDrainer_NoLease(t *testing.T) {
 	rec := domain.OutboxRecord{
 		ID: "rec-nolease", RouteID: "route-1", EnvelopeID: "env-nolease",
 		BindingID: "bind-1", SessionID: "sess-1",
-		Envelope: domain.Envelope{ID: "env-nolease"}, Status: domain.OutboxPending,
+		Envelope: messaging.Envelope{ID: "env-nolease"}, Status: domain.OutboxPending,
 	}
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
 
@@ -215,7 +216,7 @@ func TestOutboxDrainer_AppliesAddress(t *testing.T) {
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
 		Address:    "factory/a/orders/42",
-		Envelope:   domain.Envelope{ID: "env-addr", Subject: "original-subject", Payload: []byte("data")},
+		Envelope:   messaging.Envelope{ID: "env-addr", Subject: "original-subject", Payload: []byte("data")},
 		Status:     domain.OutboxPending,
 	}
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -245,7 +246,7 @@ func TestOutboxDrainer_EmptyAddressPreservesSubject(t *testing.T) {
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
 		Address:    "",
-		Envelope:   domain.Envelope{ID: "env-noaddr", Subject: "original", Payload: []byte("data")},
+		Envelope:   messaging.Envelope{ID: "env-noaddr", Subject: "original", Payload: []byte("data")},
 		Status:     domain.OutboxPending,
 	}
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -272,7 +273,7 @@ func TestOutboxDrainer_PermanentSendError(t *testing.T) {
 	rec := domain.OutboxRecord{
 		ID: "rec-perm", RouteID: "route-1", EnvelopeID: "env-perm",
 		BindingID: "bind-1", SessionID: "sess-1",
-		Envelope: domain.Envelope{ID: "env-perm"}, Status: domain.OutboxPending,
+		Envelope: messaging.Envelope{ID: "env-perm"}, Status: domain.OutboxPending,
 	}
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
 
@@ -342,7 +343,7 @@ func TestOutboxDrainer_CancelDuringBatch_ReturnsPromptly(t *testing.T) {
 				EnvelopeID: fmt.Sprintf("env-%d", i),
 				BindingID:  "bind-1",
 				SessionID:  "sess-1",
-				Envelope:   domain.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("data")},
+				Envelope:   messaging.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("data")},
 				Status:     domain.OutboxPending,
 			}
 			_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -350,7 +351,7 @@ func TestOutboxDrainer_CancelDuringBatch_ReturnsPromptly(t *testing.T) {
 		cfg.OutboxStore = outbox
 
 		sender := NewFakeSender()
-		sender.SendFn = func(_ *domain.Envelope) error {
+		sender.SendFn = func(_ *messaging.Envelope) error {
 			n := atomic.AddInt32(&sendCount, 1)
 			if n >= 2 {
 				cancelOnce.Do(func() {
@@ -409,7 +410,7 @@ func TestOutboxDrainer_CancelBeforeBatch_ExitsPromptly(t *testing.T) {
 			EnvelopeID: fmt.Sprintf("env-pre-%d", i),
 			BindingID:  "bind-1",
 			SessionID:  "sess-1",
-			Envelope:   domain.Envelope{ID: fmt.Sprintf("env-pre-%d", i), Payload: []byte("x")},
+			Envelope:   messaging.Envelope{ID: fmt.Sprintf("env-pre-%d", i), Payload: []byte("x")},
 			Status:     domain.OutboxPending,
 		}
 		_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -468,7 +469,7 @@ func TestOutboxDrainer_ConcurrentBatch_SemaphoreConsistency(t *testing.T) {
 				EnvelopeID: fmt.Sprintf("env-c-%d", i),
 				BindingID:  "bind-1",
 				SessionID:  "sess-1",
-				Envelope:   domain.Envelope{ID: fmt.Sprintf("env-c-%d", i), Payload: []byte("data")},
+				Envelope:   messaging.Envelope{ID: fmt.Sprintf("env-c-%d", i), Payload: []byte("data")},
 				Status:     domain.OutboxPending,
 			}
 			_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -476,7 +477,7 @@ func TestOutboxDrainer_ConcurrentBatch_SemaphoreConsistency(t *testing.T) {
 		cfg.OutboxStore = outbox
 
 		sender := NewFakeSender()
-		sender.SendFn = func(_ *domain.Envelope) error {
+		sender.SendFn = func(_ *messaging.Envelope) error {
 			n := atomic.AddInt32(&sendCount, 1)
 			if n >= 5 {
 				cancelOnce.Do(func() {

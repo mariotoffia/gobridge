@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 
 	"github.com/mariotoffia/gobridge/domain"
@@ -146,7 +147,7 @@ func TestEdge_ReservedHeadersStrippedAtIngress(t *testing.T) {
 		resultCh <- httpResult{rec: rec}
 	}()
 
-	var env *domain.Envelope
+	var env *messaging.Envelope
 	select {
 	case d := <-deliveryCh:
 		env = d.Envelope()
@@ -189,7 +190,7 @@ func TestEdge_ForwarderPreservesExpiresAt(t *testing.T) {
 	}
 
 	expiresAt := time.Now().Add(10 * time.Minute).Truncate(time.Second).UTC()
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        "exp-msg-1",
 		Subject:   "order.expiring",
 		Payload:   []byte(`{"id":"42"}`),
@@ -232,7 +233,7 @@ func TestEdge_ForwarderMissingHTTPEndpoint(t *testing.T) {
 		InstanceID: "grpc-only",
 		Endpoints:  map[string]string{"grpc": "grpc://remote:50051"},
 	}
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "no-http-1",
 		Subject: "test.no-http",
 		Payload: []byte(`{}`),
@@ -261,7 +262,7 @@ func TestEdge_ForwarderRemoteReturns500(t *testing.T) {
 		InstanceID: "error-node",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "err-500",
 		Subject: "test.error",
 		Payload: []byte(`{}`),
@@ -307,7 +308,7 @@ func TestEdge_SSEFieldSanitization(t *testing.T) {
 		return sender.(*transport.SSESender).ClientCount() >= 1
 	})
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "evil\ninjection",
 		Subject: "sanitize.test",
 		Payload: []byte(`{}`),
@@ -403,7 +404,7 @@ func TestEdge_SendWithNoClients(t *testing.T) {
 		t.Fatalf("NewSender: %v", err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "orphan-1",
 		Subject: "no.listeners",
 		Payload: []byte(`{}`),

@@ -25,7 +25,7 @@ import (
 
 	"github.com/Azure/go-amqp"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -37,7 +37,7 @@ func TestDelivery_AckFails_ThenRetry_ReportsError(t *testing.T) {
 	settler := newMockSettler()
 	settler.acceptErr = errors.New("network error during accept")
 
-	env := &domain.Envelope{ID: "bug2-test"}
+	env := &messaging.Envelope{ID: "bug2-test"}
 	msg := &amqp.Message{}
 	d := NewDelivery(env, msg, settler, slog.Default(), &ports.NoopExporter{}, nil)
 
@@ -61,7 +61,7 @@ func TestDelivery_RetryFails_ThenAck_ReportsError(t *testing.T) {
 	settler := newMockSettler()
 	settler.releaseErr = errors.New("network error during release")
 
-	env := &domain.Envelope{ID: "bug2-reverse"}
+	env := &messaging.Envelope{ID: "bug2-reverse"}
 	msg := &amqp.Message{}
 	d := NewDelivery(env, msg, settler, slog.Default(), &ports.NoopExporter{}, nil)
 
@@ -80,7 +80,7 @@ func TestDelivery_RetryFails_ThenAck_ReportsError(t *testing.T) {
 // calls from multiple goroutines are safe and only one settlement occurs.
 func TestDelivery_ConcurrentSettlement(t *testing.T) {
 	settler := newMockSettler()
-	env := &domain.Envelope{ID: "concurrent-test"}
+	env := &messaging.Envelope{ID: "concurrent-test"}
 	msg := &amqp.Message{}
 	d := NewDelivery(env, msg, settler, slog.Default(), &ports.NoopExporter{}, nil)
 
@@ -111,7 +111,7 @@ func TestDelivery_ConcurrentSettlement(t *testing.T) {
 // TestDelivery_Extend_NotSupported validates Extend returns ErrNotSupported.
 func TestDelivery_Extend_NotSupported(t *testing.T) {
 	settler := newMockSettler()
-	env := &domain.Envelope{ID: "extend-test"}
+	env := &messaging.Envelope{ID: "extend-test"}
 	msg := &amqp.Message{}
 	d := NewDelivery(env, msg, settler, slog.Default(), &ports.NoopExporter{}, nil)
 

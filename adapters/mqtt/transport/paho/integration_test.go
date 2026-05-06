@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -189,7 +190,7 @@ func TestIntegration_PubSubRoundTrip(t *testing.T) {
 	recv := paho.NewReceiver("rx1", sess)
 	sender := paho.NewSender(sess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
-	var received []*domain.Envelope
+	var received []*messaging.Envelope
 	var mu sync.Mutex
 
 	recvCtx, recvCancel := context.WithCancel(ctx)
@@ -205,13 +206,13 @@ func TestIntegration_PubSubRoundTrip(t *testing.T) {
 		})
 	}()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject: "roundtrip/test",
 		Payload: []byte("hello-roundtrip"),
 		Headers: map[string]any{
-			domain.HeaderCorrelationID: "test-corr",
-			domain.HeaderContentType:   "text/plain",
-			"custom-key":               "custom-val",
+			messaging.HeaderCorrelationID: "test-corr",
+			messaging.HeaderContentType:   "text/plain",
+			"custom-key":                  "custom-val",
 		},
 	}
 
@@ -247,13 +248,13 @@ func TestIntegration_PubSubRoundTrip(t *testing.T) {
 	if string(msg.Payload) != "hello-roundtrip" {
 		t.Errorf("payload = %q, want %q", msg.Payload, "hello-roundtrip")
 	}
-	if v, _ := domain.GetHeaderString(msg.Headers, domain.HeaderCorrelationID); v != "test-corr" {
+	if v, _ := messaging.GetHeaderString(msg.Headers, messaging.HeaderCorrelationID); v != "test-corr" {
 		t.Errorf("correlation = %q, want %q", v, "test-corr")
 	}
-	if v, _ := domain.GetHeaderString(msg.Headers, domain.HeaderContentType); v != "text/plain" {
+	if v, _ := messaging.GetHeaderString(msg.Headers, messaging.HeaderContentType); v != "text/plain" {
 		t.Errorf("content-type = %q, want %q", v, "text/plain")
 	}
-	if v, _ := domain.GetHeaderString(msg.Headers, "custom-key"); v != "custom-val" {
+	if v, _ := messaging.GetHeaderString(msg.Headers, "custom-key"); v != "custom-val" {
 		t.Errorf("custom-key = %q, want %q", v, "custom-val")
 	}
 }
@@ -316,7 +317,7 @@ func TestIntegration_BackpressureNoDrops(t *testing.T) {
 	}()
 
 	for i := 0; i < msgCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			Subject: "bp/test",
 			Payload: []byte(fmt.Sprintf("msg-%d", i)),
 		}
@@ -396,7 +397,7 @@ func TestIntegration_QoS1Completion(t *testing.T) {
 		Timeout:      5 * time.Second,
 	})
 
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		Payload: []byte("qos1-message"),
 	}); err != nil {
 		t.Fatalf("QoS 1 Send: %v", err)

@@ -16,6 +16,7 @@ import (
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -205,7 +206,7 @@ func setupMQTTSender(t *testing.T, sess *paho.Session) *paho.Sender {
 // collects received envelopes. Call stop() to cancel and wait for cleanup.
 type mqttCollector struct {
 	mu       sync.Mutex
-	messages []*domain.Envelope
+	messages []*messaging.Envelope
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 }
@@ -280,10 +281,10 @@ func (c *mqttCollector) count() int {
 	return len(c.messages)
 }
 
-func (c *mqttCollector) getMessages() []*domain.Envelope {
+func (c *mqttCollector) getMessages() []*messaging.Envelope {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	cp := make([]*domain.Envelope, len(c.messages))
+	cp := make([]*messaging.Envelope, len(c.messages))
 	copy(cp, c.messages)
 	return cp
 }

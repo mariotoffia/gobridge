@@ -15,6 +15,7 @@ import (
 	amqp091adapter "github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091"
 	amqp10adapter "github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
@@ -135,7 +136,7 @@ func newArtemisReceiver(
 
 type amqpCollector struct {
 	mu       sync.Mutex
-	messages []*domain.Envelope
+	messages []*messaging.Envelope
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 }
@@ -202,10 +203,10 @@ func (c *amqpCollector) count() int {
 	return len(c.messages)
 }
 
-func (c *amqpCollector) getMessages() []*domain.Envelope {
+func (c *amqpCollector) getMessages() []*messaging.Envelope {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	cp := make([]*domain.Envelope, len(c.messages))
+	cp := make([]*messaging.Envelope, len(c.messages))
 	copy(cp, c.messages)
 	return cp
 }
@@ -230,7 +231,7 @@ func sendToRabbitMQ(
 	t.Helper()
 	ctx := context.Background()
 	for i := 0; i < count; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:        fmt.Sprintf("%s-%d", idPrefix, i),
 			Subject:   "test",
 			Payload:   []byte(fmt.Sprintf(`{"seq":%d}`, i)),
@@ -248,7 +249,7 @@ func sendToArtemis(
 	t.Helper()
 	ctx := context.Background()
 	for i := 0; i < count; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:        fmt.Sprintf("%s-%d", idPrefix, i),
 			Subject:   "test",
 			Payload:   []byte(fmt.Sprintf(`{"seq":%d}`, i)),

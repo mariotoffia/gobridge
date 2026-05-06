@@ -13,6 +13,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -33,7 +34,7 @@ func TestUC74_MQTTRetainedMessages(t *testing.T) {
 		Retain:       true,
 		Timeout:      5 * time.Second,
 	})
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "uc74-retained-0",
 		Subject: "uc74/retained",
 		Payload: []byte(`{"retained":true}`),

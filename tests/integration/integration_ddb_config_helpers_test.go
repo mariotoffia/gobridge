@@ -15,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
@@ -274,7 +275,7 @@ func (r *cfgFakeReceiver) Run(ctx context.Context, _ func(context.Context, ports
 // cfgFakeSender implements ports.Sender. No-op send.
 type cfgFakeSender struct{}
 
-func (s *cfgFakeSender) Send(_ context.Context, _ *domain.Envelope) error { return nil }
+func (s *cfgFakeSender) Send(_ context.Context, _ *messaging.Envelope) error { return nil }
 
 // cfgFakeTransportFactory implements ports.TransportFactory for test configs
 // that use transport="fake".

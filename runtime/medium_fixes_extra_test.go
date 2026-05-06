@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -47,7 +48,7 @@ func TestAdaptBatchSize_HalvesOnConsecutiveZeroSuccess(t *testing.T) {
 
 	outbox := NewFakeOutboxStore()
 	sender := NewFakeSender()
-	sender.SendFn = func(_ *domain.Envelope) error {
+	sender.SendFn = func(_ *messaging.Envelope) error {
 		n := atomic.AddInt32(&sendCount, 1)
 		if n > failAfter {
 			return errors.New("downstream unavailable")
@@ -65,7 +66,7 @@ func TestAdaptBatchSize_HalvesOnConsecutiveZeroSuccess(t *testing.T) {
 			ID: fmt.Sprintf("adapt-%d", i), RouteID: "adapt-route",
 			EnvelopeID: fmt.Sprintf("env-adapt-%d", i), BindingID: "bind-1",
 			SessionID: "sess-1",
-			Envelope:  domain.Envelope{ID: fmt.Sprintf("env-adapt-%d", i), Payload: []byte("data")},
+			Envelope:  messaging.Envelope{ID: fmt.Sprintf("env-adapt-%d", i), Payload: []byte("data")},
 			Status:    domain.OutboxPending,
 		}
 		_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -228,8 +229,8 @@ func TestFakeProcessor_AtomicCalled(t *testing.T) {
 
 	for i := 0; i < goroutines; i++ {
 		go func() {
-			env := &domain.Envelope{ID: "test"}
-			_ = p.Process(context.Background(), env, func(_ context.Context, _ *domain.Envelope) error {
+			env := &messaging.Envelope{ID: "test"}
+			_ = p.Process(context.Background(), env, func(_ context.Context, _ *messaging.Envelope) error {
 				return nil
 			})
 			done <- struct{}{}
@@ -271,7 +272,7 @@ func TestQueryPendingSuccess_PersistsNormally(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &domain.Envelope{ID: "query-ok-1", Payload: []byte("x")}
+	env := &messaging.Envelope{ID: "query-ok-1", Payload: []byte("x")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
@@ -301,7 +302,7 @@ func TestNormalMaxBatchSize_NotClamped(t *testing.T) {
 			ID: fmt.Sprintf("normal-%d", i), RouteID: "normal-route",
 			EnvelopeID: fmt.Sprintf("env-normal-%d", i), BindingID: "bind-1",
 			SessionID: "sess-1",
-			Envelope:  domain.Envelope{ID: fmt.Sprintf("env-normal-%d", i), Payload: []byte("data")},
+			Envelope:  messaging.Envelope{ID: fmt.Sprintf("env-normal-%d", i), Payload: []byte("data")},
 			Status:    domain.OutboxPending,
 		}
 		_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -374,7 +375,7 @@ func TestOutboxDrainer_SuccessEmitsCompletion(t *testing.T) {
 		ID: "rec-ok", RouteID: "success-route",
 		EnvelopeID: "env-ok", BindingID: "bind-1",
 		SessionID: "sess-1",
-		Envelope:  domain.Envelope{ID: "env-ok", Payload: []byte("data")},
+		Envelope:  messaging.Envelope{ID: "env-ok", Payload: []byte("data")},
 		Status:    domain.OutboxPending,
 	}
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{outboxRec})
@@ -415,7 +416,7 @@ func TestBatchSizeClamped_PreventsAbsoluteMaxBypass(t *testing.T) {
 			ID: fmt.Sprintf("bsclamp-%d", i), RouteID: "bsclamp-route",
 			EnvelopeID: fmt.Sprintf("env-bsclamp-%d", i), BindingID: "bind-1",
 			SessionID: "sess-1",
-			Envelope:  domain.Envelope{ID: fmt.Sprintf("env-bsclamp-%d", i), Payload: []byte("data")},
+			Envelope:  messaging.Envelope{ID: fmt.Sprintf("env-bsclamp-%d", i), Payload: []byte("data")},
 			Status:    domain.OutboxPending,
 		}
 		_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
@@ -491,7 +492,7 @@ func TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric(t *testing.T) {
 		ID: "rec-stale-metric", RouteID: "stale-metric-route",
 		EnvelopeID: "env-stale-metric", BindingID: "bind-1",
 		SessionID: "sess-1",
-		Envelope:  domain.Envelope{ID: "env-stale-metric", Payload: []byte("data")},
+		Envelope:  messaging.Envelope{ID: "env-stale-metric", Payload: []byte("data")},
 		Status:    domain.OutboxPending,
 	}
 	_ = outbox.Persist(ctx, []domain.OutboxRecord{outboxRec})

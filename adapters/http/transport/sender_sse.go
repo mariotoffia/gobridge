@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -94,7 +94,7 @@ func (s *SSESender) SetRouteID(routeID string) {
 }
 
 // Send broadcasts an envelope to all connected SSE clients.
-func (s *SSESender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *SSESender) Send(ctx context.Context, env *messaging.Envelope) error {
 	start := s.cfg.clock.Now()
 
 	select {

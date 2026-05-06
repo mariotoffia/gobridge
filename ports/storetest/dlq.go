@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -33,7 +34,7 @@ func makeDLQEntry(id, routeID, category string, failedAt time.Time) domain.DLQEn
 		LastError:     "something went wrong",
 		FailedAt:      failedAt,
 		Attempts:      1,
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:      "env-" + id,
 			Subject: "test/subject",
 			Payload: []byte(`{"key":"value"}`),

@@ -8,8 +8,8 @@ import (
 
 	"github.com/Azure/go-amqp"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -31,7 +31,7 @@ var _ ports.Delivery = (*Delivery)(nil)
 //   - Retry:  ReleaseMessage or ModifyMessage
 //   - Extend: not supported (credit-based flow control)
 type Delivery struct {
-	env     *domain.Envelope
+	env     *messaging.Envelope
 	msg     *amqp.Message
 	settle  settler
 	logger  *slog.Logger
@@ -45,7 +45,7 @@ type Delivery struct {
 
 // NewDelivery wraps an AMQP 1.0 message as a ports.Delivery.
 func NewDelivery(
-	env *domain.Envelope,
+	env *messaging.Envelope,
 	msg *amqp.Message,
 	settle settler,
 	logger *slog.Logger,
@@ -68,7 +68,7 @@ func NewDelivery(
 	}
 }
 
-func (d *Delivery) Envelope() *domain.Envelope { return d.env }
+func (d *Delivery) Envelope() *messaging.Envelope { return d.env }
 
 // Ack settles the message with an accepted disposition. The settlement
 // is idempotent — only the first successful call performs the operation.

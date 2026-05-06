@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 )
@@ -48,7 +49,7 @@ func TestIntegration_MultipleSenders(t *testing.T) {
 			t.Fatalf("NewSender(%d) error = %v", s, err)
 		}
 		for m := 0; m < msgsPerSender; m++ {
-			env := &domain.Envelope{
+			env := &messaging.Envelope{
 				ID:      fmt.Sprintf("multi-s%d-m%d", s, m),
 				Payload: []byte(fmt.Sprintf("sender-%d-msg-%d", s, m)),
 			}
@@ -124,7 +125,7 @@ func TestIntegration_CompetingReceivers(t *testing.T) {
 		t.Fatalf("NewSender() error = %v", err)
 	}
 	for i := 0; i < totalMsgs; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("competing-%d", i),
 			Payload: []byte(fmt.Sprintf("msg-%d", i)),
 		}
@@ -258,7 +259,7 @@ func TestIntegration_SenderCloseReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSender(1) error = %v", err)
 	}
-	env1 := &domain.Envelope{
+	env1 := &messaging.Envelope{
 		ID:      "reopen-1",
 		Payload: []byte("first"),
 	}
@@ -278,7 +279,7 @@ func TestIntegration_SenderCloseReopen(t *testing.T) {
 	}
 	defer func() { _ = sender2.Close(context.Background()) }()
 
-	env2 := &domain.Envelope{
+	env2 := &messaging.Envelope{
 		ID:      "reopen-2",
 		Payload: []byte("second"),
 	}
