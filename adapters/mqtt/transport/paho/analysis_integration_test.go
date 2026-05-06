@@ -195,7 +195,7 @@ func TestAnaIntg_LargePayload_RoundTrip(t *testing.T) {
 		})
 	}()
 
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{Subject: topic, Payload: payload}}); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{Subject: topic, Payload: payload}, Address: topic}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -371,7 +371,7 @@ func TestAnaIntg_ReconcileSameTopicTwice_Idempotent(t *testing.T) {
 	}()
 	defer func() { rcancel(); wg.Wait() }()
 
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{Subject: topic, Payload: []byte("p")}}); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{Subject: topic, Payload: []byte("p")}, Address: topic}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -442,7 +442,7 @@ func TestAnaIntg_HealthDuringTraffic_RemainsStable(t *testing.T) {
 	}()
 
 	for i := 0; i < 30; i++ {
-		_ = sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{Subject: topic, Payload: []byte("p")}})
+		_ = sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{Subject: topic, Payload: []byte("p")}, Address: topic})
 	}
 	<-pollDone
 }

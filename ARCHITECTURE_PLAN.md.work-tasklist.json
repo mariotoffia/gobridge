@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "ARCHITECTURE_PLAN.md",
-  "source_sha": "eb5d1585c3ee257dd04fb07ec738e89187c17b84f4c61abfc1a928e647f8b829",
+  "source_sha": "28d1b2d9cb2b223b42239118f7fa162bcab53ed38d27aa96ad63716e5e58936e",
   "indexed_at": "2026-05-06T00:00:00Z",
   "status_convention": "per-task markers only; absent any marker \u2192 pending. File-level ## Status: Planned is not propagated.",
   "tasks": [
@@ -52,7 +52,7 @@
     {
       "id": "T05",
       "title": "Update MQTT adapter",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "MQTT adapter Go code change: sender, headers, subject mapping, and tests.",

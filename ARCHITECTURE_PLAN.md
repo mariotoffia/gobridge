@@ -209,7 +209,7 @@ Blast radius: low.
 - Populate hook and DLQ address fields.
 - Acceptance: a unit test proves outbox drain sends to address while preserving logical subject.
 
-### 5. Update MQTT adapter
+### 5. Update MQTT adapter - DONE
 
 - Change sender to use `OutboundMessage.Address` or default topic.
 - Remove `env.Subject` topic fallback.

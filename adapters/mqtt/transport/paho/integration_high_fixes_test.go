@@ -135,7 +135,7 @@ func TestIntegration_ConcurrentReconcile_NoCorruption(t *testing.T) {
 	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		Subject: verifyTopic,
 		Payload: []byte("verify-state"),
-	}}); err != nil {
+	}, Address: verifyTopic}); err != nil {
 		t.Fatalf("Send to verify topic: %v", err)
 	}
 

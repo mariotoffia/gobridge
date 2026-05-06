@@ -21,6 +21,25 @@ const headerMQTTResponseTopic = "mqtt.response-topic"
 // the second choice, and a deterministic hash is the fallback.
 const HeaderMessageID = "mqtt.message-id"
 
+// HeaderGobridgeSubject is the user-property key used to round-trip
+// the logical Envelope.Subject through MQTT, distinct from the
+// transport-level publish topic. PublishFromEnvelope writes this
+// property when env.Subject is non-empty; EnvelopeFromPublish reads
+// it back into env.Subject. Inbound user properties carrying this
+// key from a peer bridge are honoured (subject-preserving round
+// trip is intentional); broker-injected duplicates lose to typed
+// extraction because the generic user-property loop skips this
+// reserved key.
+const HeaderGobridgeSubject = "gobridge.subject"
+
+// HeaderMQTTTopic is the envelope-headers key under which the
+// MQTT publish topic (transport-level destination) is recorded on
+// receive. It is set unconditionally by EnvelopeFromPublish and is
+// adapter-controlled: inbound user properties literally named
+// "mqtt.topic" are dropped to prevent a hostile broker from
+// spoofing the recorded transport address.
+const HeaderMQTTTopic = "mqtt.topic"
+
 const maxHeaderValueLen = 256
 
 // isPrintableASCII reports whether every byte in s is printable ASCII (0x20–0x7E).
@@ -38,6 +57,11 @@ func isPrintableASCII(s string) bool {
 // header injection from external sources. CorrelationData and ContentType are
 // validated for length and character safety before being accepted.
 //
+// The MQTT publish topic (transport-level destination) is recorded under
+// the HeaderMQTTTopic envelope-headers key, distinct from the logical
+// Envelope.Subject. Envelope.Subject is populated only from the
+// HeaderGobridgeSubject user property; if absent, Subject is left empty.
+//
 // Envelope.ID is resolved in priority order:
 //  1. mqtt.message-id user property (set by PublishFromEnvelope)
 //  2. x-bridge.correlation-id from CorrelationData
@@ -49,12 +73,13 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 	now := clk.Now()
 
 	env := &messaging.Envelope{
-		Subject:   pub.Topic,
 		Payload:   pub.Payload,
 		CreatedAt: now,
 	}
 
-	headers := make(map[string]any)
+	headers := map[string]any{
+		HeaderMQTTTopic: pub.Topic,
+	}
 	var mqttMsgID string
 
 	if pub.Properties != nil {
@@ -81,6 +106,17 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 		}
 
 		for _, u := range pub.Properties.User {
+			if u.Key == HeaderGobridgeSubject {
+				if len(u.Value) <= maxHeaderValueLen && isPrintableASCII(u.Value) {
+					env.Subject = u.Value
+				}
+				continue
+			}
+			if u.Key == HeaderMQTTTopic {
+				// Adapter-controlled: never let an inbound user property
+				// override the recorded transport-level topic.
+				continue
+			}
 			if u.Key == HeaderMessageID {
 				if len(u.Value) <= maxHeaderValueLen && isPrintableASCII(u.Value) {
 					mqttMsgID = u.Value
@@ -111,23 +147,21 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 		env.ID = generateEnvelopeID()
 	}
 
-	if len(headers) > 0 {
-		env.Headers = headers
-	}
+	env.Headers = headers
 
 	return env
 }
 
 // PublishFromEnvelope converts a messaging.Envelope into an MQTT publish packet
-// with mapped headers and message expiry. The Envelope.ID is included as a
-// mqtt.message-id user property so EnvelopeFromPublish can recover it.
-func PublishFromEnvelope(env *messaging.Envelope, opts SenderOptions, clk clock.Clock) *pahov5.Publish {
+// with mapped headers and message expiry. The publish topic is supplied by
+// the caller (typically resolved from OutboundMessage.Address or
+// SenderOptions.DefaultTopic) — Envelope.Subject is the logical event
+// subject, NOT the transport address, and is round-tripped via the
+// HeaderGobridgeSubject user property. The Envelope.ID is included as a
+// HeaderMessageID user property so EnvelopeFromPublish can recover it.
+func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptions, clk clock.Clock) *pahov5.Publish {
 	if clk == nil {
 		clk = clock.System
-	}
-	topic := env.Subject
-	if topic == "" {
-		topic = opts.DefaultTopic
 	}
 
 	pub := &pahov5.Publish{
@@ -143,6 +177,13 @@ func PublishFromEnvelope(env *messaging.Envelope, opts SenderOptions, clk clock.
 	if env.ID != "" {
 		props.User = append(props.User, pahov5.UserProperty{
 			Key: HeaderMessageID, Value: env.ID,
+		})
+		hasProps = true
+	}
+
+	if env.Subject != "" {
+		props.User = append(props.User, pahov5.UserProperty{
+			Key: HeaderGobridgeSubject, Value: env.Subject,
 		})
 		hasProps = true
 	}
@@ -175,7 +216,8 @@ func PublishFromEnvelope(env *messaging.Envelope, opts SenderOptions, clk clock.
 
 		for k, v := range env.Headers {
 			if k == messaging.HeaderCorrelationID || k == messaging.HeaderContentType ||
-				k == headerMQTTResponseTopic || k == HeaderMessageID {
+				k == headerMQTTResponseTopic || k == HeaderMessageID ||
+				k == HeaderGobridgeSubject || k == HeaderMQTTTopic {
 				continue
 			}
 			s, ok := v.(string)

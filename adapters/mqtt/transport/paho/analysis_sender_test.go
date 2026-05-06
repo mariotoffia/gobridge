@@ -77,15 +77,16 @@ func TestAnaSender_EmptyTopicAndNoDefault_ReturnsErrInvalidTopic(t *testing.T) {
 	}
 }
 
-// TestAnaSender_DefaultTopicUsedWhenSubjectEmpty proves that the
-// SenderOptions.DefaultTopic is used when the envelope has no subject.
-// We assert this via PublishFromEnvelope — Send itself requires a real
-// broker.
-func TestAnaSender_DefaultTopicUsedWhenSubjectEmpty(t *testing.T) {
+// TestAnaSender_PublishFromEnvelope_UsesExplicitTopic proves that
+// PublishFromEnvelope uses the supplied topic argument verbatim and
+// does NOT consult SenderOptions.DefaultTopic — the latter is the
+// responsibility of Sender.Send (see Sender.Send for the full
+// resolution order: msg.Address || opts.DefaultTopic).
+func TestAnaSender_PublishFromEnvelope_UsesExplicitTopic(t *testing.T) {
 	env := &messaging.Envelope{Payload: []byte("x")}
-	pub := PublishFromEnvelope(env, SenderOptions{DefaultTopic: "fallback/t", QoS: 1}, nil)
-	if pub.Topic != "fallback/t" {
-		t.Fatalf("topic = %q, want %q", pub.Topic, "fallback/t")
+	pub := PublishFromEnvelope(env, "explicit/t", SenderOptions{DefaultTopic: "fallback/t", QoS: 1}, nil)
+	if pub.Topic != "explicit/t" {
+		t.Fatalf("topic = %q, want %q", pub.Topic, "explicit/t")
 	}
 }
 

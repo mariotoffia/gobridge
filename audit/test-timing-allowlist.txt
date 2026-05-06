@@ -30,7 +30,7 @@
 ./adapters/http/transport/integration_edge_cases_r3_test.go:357:		time.Sleep(2 * time.Second) // OTHER: simulates slow remote for context cancellation test
 ./adapters/http/transport/integration_single_bridge_test.go:57:		time.Sleep(10 * time.Millisecond) // OTHER: internal polling interval in test helper
 ./adapters/mqtt/transport/paho/analysis_router_test.go:168:	time.Sleep(100 * time.Millisecond) // OTHER: race window — let concurrent register/unregister/route goroutines exercise
-./adapters/mqtt/transport/paho/analysis_sender_test.go:242:	time.Sleep(80 * time.Millisecond)
+./adapters/mqtt/transport/paho/analysis_sender_test.go:243:	time.Sleep(80 * time.Millisecond)
 ./adapters/mqtt/transport/paho/analysis_session_test.go:285:			time.Sleep(time.Duration(trial+1) * 100 * time.Microsecond) // OTHER: race window — Close during concurrent pushEvent
 ./adapters/mqtt/transport/paho/analysis_session_test.go:334:	time.Sleep(80 * time.Millisecond) // OTHER: race window — let concurrent goroutines exercise before stopping
 ./adapters/mqtt/transport/paho/analysis_session_test.go:381:	time.Sleep(80 * time.Millisecond) // OTHER: race window — let concurrent goroutines exercise before stopping
@@ -79,7 +79,7 @@
 ./runtime/credential_cache_eviction_test.go:275:	time.Sleep(20 * time.Millisecond) // FIXED: wait for cache TTL (5ms) to expire
 ./runtime/credential_cache_eviction_test.go:338:	time.Sleep(20 * time.Millisecond) // FIXED: wait for cache TTL (5ms) to expire
 ./runtime/credential_race_test.go:136:	time.Sleep(60 * time.Millisecond) // FIXED: wait for cache TTL (50ms) to expire
-./runtime/cross_instance_test.go:276:	time.Sleep(100 * time.Millisecond) // NEGATIVE: verify session not started before lease acquisition
+./runtime/cross_instance_test.go:280:	time.Sleep(100 * time.Millisecond) // NEGATIVE: verify session not started before lease acquisition
 ./runtime/dlq_router_backoff_test.go:126:	time.Sleep(10 * time.Millisecond)
 ./runtime/dlq_router_backoff_test.go:141:	time.Sleep(10 * time.Millisecond) // OTHER: real-time sync for clocktest.Fake
 ./runtime/edge_cases_test.go:323:	time.Sleep(200 * time.Millisecond) // FIXED: wait for message expiry (100ms TTL + margin)
