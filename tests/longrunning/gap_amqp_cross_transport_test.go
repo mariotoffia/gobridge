@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
@@ -271,9 +272,22 @@ func TestGap_AMQP091_To_MQTT_CrossTransport(t *testing.T) {
 	rxPayloads := make(map[string]bool, len(msgs))
 	for i, msg := range msgs {
 		assert.Equal(t, "cross-transport-test", msg.Subject,
-			"msg %d: Subject should be preserved across AMQP→MQTT", i)
+			"msg %d: logical Subject must be preserved across AMQP→MQTT (transport address must NOT overwrite Subject)", i)
 		assert.Contains(t, string(msg.Payload), `"origin":"amqp091"`,
 			"msg %d: payload should contain origin marker", i)
+
+		// T12: the MQTT ingress side must surface the *transport address*
+		// (publish topic) under the dedicated mqtt.topic header — distinct
+		// from the logical Envelope.Subject above. This proves that subject
+		// and transport address travel as independent fields end-to-end.
+		gotTopic, ok := messaging.GetHeaderString(msg.Headers, paho.HeaderMQTTTopic)
+		if assert.Truef(t, ok, "msg %d: expected %q header on MQTT ingress envelope, headers=%v",
+			i, paho.HeaderMQTTTopic, msg.Headers) {
+			assert.Equalf(t, mqttTopic, gotTopic,
+				"msg %d: header %q should equal the configured publish topic",
+				i, paho.HeaderMQTTTopic)
+		}
+
 		rxPayloads[string(msg.Payload)] = true
 	}
 	for i := 0; i < gapCrossMsgCount; i++ {

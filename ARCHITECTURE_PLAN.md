@@ -269,7 +269,7 @@ Blast radius: low.
 - Ensure configured binding address validation still happens before send.
 - Acceptance: bridge builder tests pass without subject/address coupling.
 
-### 12. Update cross-transport regression coverage
+### 12. Update cross-transport regression coverage - DONE
 
 - Keep AMQP 0-9-1 to MQTT test expecting logical subject `cross-transport-test`.
 - Add assertion that MQTT ingress header `mqtt.topic` equals `gap-cross/mqtt`.

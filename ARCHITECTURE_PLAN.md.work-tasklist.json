@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "ARCHITECTURE_PLAN.md",
-  "source_sha": "425d803ca135f814ac0f5a3e94cc643d5238d54f9796c03aafe3e05019120aa4",
+  "source_sha": "e9cbebe0df690a10c53361ac6e229890ae6695135a3c8b79d3cba37507dc92e7",
   "indexed_at": "2026-05-06T00:00:00Z",
   "status_convention": "per-task markers only; absent any marker \u2192 pending. File-level ## Status: Planned is not propagated.",
   "tasks": [
@@ -129,7 +129,7 @@
     {
       "id": "T12",
       "title": "Update cross-transport regression coverage",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "test-automator",
       "agent_rationale": "Pure test work: extend cross-transport regression suite to assert subject vs address separation.",

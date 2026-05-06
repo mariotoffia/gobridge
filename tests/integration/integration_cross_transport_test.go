@@ -37,6 +37,11 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 
 	subTopic := "test/cross/sse/" + uniqueID("t") + "/+"
 	pubTopic := strings.TrimSuffix(subTopic, "/+") + "/orders"
+	// Logical subject is intentionally distinct from the MQTT publish topic
+	// so the test cannot accidentally pass by conflating subject with the
+	// transport address. The end-to-end assertions below verify both
+	// channels independently.
+	const logicalSubject = "orders.created.v1"
 
 	// --- MQTT receiver session ---
 	recvSess := setupMQTTSession(t, mqttlocal.UniqueClientID("cross-sse-recv"), connectivity.SessionEphemeral)
@@ -95,10 +100,10 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 
 	pubEnv := &messaging.Envelope{
 		ID:      "sse-order-99",
-		Subject: pubTopic,
+		Subject: logicalSubject,
 		Payload: []byte(`{"order_id":"99"}`),
 	}
-	if err := mqttSend.Send(ctx, ports.OutboundMessage{Envelope: pubEnv}); err != nil {
+	if err := mqttSend.Send(ctx, ports.OutboundMessage{Envelope: pubEnv, Address: pubTopic}); err != nil {
 		t.Fatalf("MQTT publish: %v", err)
 	}
 
@@ -128,16 +133,31 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 
 	select {
 	case evt := <-eventCh:
-		if evt.Subject != pubTopic {
-			t.Errorf("subject: got %q, want %q", evt.Subject, pubTopic)
+		// Logical subject must travel via gobridge.subject end-to-end and
+		// must NOT be replaced by the MQTT publish topic.
+		if evt.Subject != logicalSubject {
+			t.Errorf("subject: got %q, want %q (logical Subject must survive MQTT→bridge→SSE)",
+				evt.Subject, logicalSubject)
+		}
+		if evt.Subject == pubTopic {
+			t.Errorf("subject equals MQTT publish topic %q — subject must NOT be conflated with transport address",
+				pubTopic)
 		}
 		if !strings.Contains(string(evt.Payload), `"order_id":"99"`) {
 			t.Errorf("payload mismatch: %s", evt.Payload)
 		}
 		if evt.Headers == nil {
 			t.Error("missing headers in SSE event")
-		} else if _, ok := evt.Headers[messaging.HeaderCorrelationID]; !ok {
-			t.Error("missing correlation-id header")
+		} else {
+			if _, ok := evt.Headers[messaging.HeaderCorrelationID]; !ok {
+				t.Error("missing correlation-id header")
+			}
+			// Transport address (MQTT publish topic) must surface on the
+			// ingress side under the dedicated mqtt.topic header.
+			if got, _ := evt.Headers[paho.HeaderMQTTTopic].(string); got != pubTopic {
+				t.Errorf("headers[%q] = %q, want %q (transport address must travel via header, not Subject)",
+					paho.HeaderMQTTTopic, got, pubTopic)
+			}
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("timeout waiting for SSE event")
@@ -159,6 +179,9 @@ func TestIntegration_HTTP_To_MQTT_CrossTransport(t *testing.T) {
 	ctx := context.Background()
 
 	mqttTopic := "test/cross/http/" + uniqueID("t") + "/signup"
+	// Logical subject is distinct from the MQTT publish topic so the test
+	// cannot accidentally pass by conflating subject with transport address.
+	const logicalSubject = "user.signup.v1"
 
 	// --- MQTT sender session ---
 	senderSess := setupMQTTSession(t, mqttlocal.UniqueClientID("cross-http-send"), connectivity.SessionEphemeral)
@@ -172,8 +195,15 @@ func TestIntegration_HTTP_To_MQTT_CrossTransport(t *testing.T) {
 	}
 
 	// --- Runtime ---
+	// Wire a static resolver so the bridge dispatches to the configured MQTT
+	// topic via OutboundMessage.Address. The envelope's logical Subject must
+	// remain untouched (it is later asserted independently of the topic).
 	rt := goruntime.New(goruntime.WithInstanceID("cross-bridge-http"))
-	if err := rt.AddRoute(crossRouteConfig("http-to-mqtt"), httpRecv, mqttSend, nil, nil); err != nil {
+	routeCfg := crossRouteConfig("http-to-mqtt")
+	routeCfg.Resolver = goruntime.NewStaticResolver(
+		routing.DispatchPlan{BindingID: "mqtt-out", Address: mqttTopic},
+	)
+	if err := rt.AddRoute(routeCfg, httpRecv, mqttSend, nil, nil); err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
 
@@ -191,8 +221,12 @@ func TestIntegration_HTTP_To_MQTT_CrossTransport(t *testing.T) {
 	collector := newMQTTCollector(t, mqttTopic, "cross-http-coll")
 
 	// --- POST to HTTP receiver ---
+	// The HTTP body carries the LOGICAL subject (distinct from the MQTT
+	// topic); the bridge's static resolver is what selects the transport
+	// address. Producers must never have to encode a transport address as
+	// the logical subject.
 	body, _ := json.Marshal(map[string]any{
-		"subject": mqttTopic,
+		"subject": logicalSubject,
 		"payload": json.RawMessage(`{"user":"bob"}`),
 	})
 	resp, err := http.Post(
@@ -219,13 +253,58 @@ func TestIntegration_HTTP_To_MQTT_CrossTransport(t *testing.T) {
 	}
 
 	env := msgs[0]
-	if env.Subject != mqttTopic {
-		t.Errorf("MQTT topic: got %q, want %q", env.Subject, mqttTopic)
+	// Subject side: logical subject must survive HTTP→bridge→MQTT
+	// publish→MQTT receive (via gobridge.subject user property) and must
+	// NOT be replaced by the destination topic.
+	if env.Subject != logicalSubject {
+		t.Errorf("Subject: got %q, want %q (logical subject must survive HTTP→MQTT)",
+			env.Subject, logicalSubject)
+	}
+	if env.Subject == mqttTopic {
+		t.Errorf("Subject equals MQTT topic %q — subject must NOT be conflated with transport address",
+			mqttTopic)
+	}
+	// Address side: the publish topic must surface on the ingress envelope
+	// under the dedicated mqtt.topic header — distinct from Subject.
+	if got, _ := messaging.GetHeaderString(env.Headers, paho.HeaderMQTTTopic); got != mqttTopic {
+		t.Errorf("headers[%q] = %q, want %q (transport address must travel via header, not Subject)",
+			paho.HeaderMQTTTopic, got, mqttTopic)
 	}
 	if string(env.Payload) != `{"user":"bob"}` {
 		t.Errorf("payload = %q, want exact %q", string(env.Payload), `{"user":"bob"}`)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 2.3 Direct cross-adapter subject/address propagation tests (T12)
+//
+// The task list (T12) calls for direct unit tests for MQTT→AMQP 1.0 and
+// SQS→MQTT subject propagation "if test infrastructure allows". Per-adapter
+// coverage already exists today:
+//
+//   - adapters/mqtt/transport/paho/address_send_test.go
+//   - adapters/amqp/transport/amqp10/subject_address_test.go
+//   - adapters/aws/transport/sqs/subject_address_test.go
+//   - runtime/t03_direct_hold_subject_test.go (cross-adapter via fake sender)
+//
+// A genuine in-process MQTT→AMQP1.0 / SQS→MQTT wiring would require either
+// running real brokers (already exercised by the longrunning suite) or
+// elevating the package-private `mockConn`/`mockSQSClient` test doubles to a
+// shared testutil package so two adapter packages can be wired together
+// in-process. That is new fake-infrastructure work and is explicitly out of
+// scope for T12 ("if test infrastructure allows").
+//
+// TODO(T12-followup): promote adapters/amqp/transport/amqp10/mock_test.go
+// (mockConn / mockSession / mockReceiver) and
+// adapters/aws/transport/sqs/mock_test.go (mockSQSClient) into a shared
+// testutil/<adapter>fake/ package, then add an in-process bridge test that
+// pipes a real paho.Receiver fake into a real amqp10.Sender fake (and a
+// real sqs.Receiver fake into a real paho.Sender fake) and asserts that:
+//   * the AMQP 1.0 link target / SQS queue URL == OutboundMessage.Address
+//   * the destination's wire-level subject carrier (gobridge.subject user
+//     property for MQTT, AMQP 1.0 message Properties.Subject, SQS message
+//     attribute) carries the producer's logical Subject unchanged.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // helpers
