@@ -1,0 +1,114 @@
+# GoBridge — Ubiquitous Language
+
+Authoritative glossary. One term per row. If a concept appears in code, config, logs, or docs, it must use this name and this meaning.
+
+Grouped by bounded context (see [DDD.md](DDD.md)).
+
+---
+
+## Shared kernel (`domain/shared`)
+
+| Term | Meaning |
+|---|---|
+| **BridgeError** | Structured error returned across every layer. Carries `Code`, `Class`, `Message`, optional `Cause`, `RetryAfter`, free-form `Context`. |
+| **ErrorClass** | Classification that drives pipeline routing: `transient` (retry), `permanent` (DLQ), `expired` (run expired-action policy), `rejected` (drop, no DLQ). |
+| **ErrorCode** | Sentinel identity for `errors.Is` (e.g. `TIMEOUT`, `NOT_AUTHORIZED`, `STALE_FENCING_TOKEN`). |
+| **RetryAfter** | Hint on a transient error telling the runtime how long to wait before retrying. |
+| **Tag** | Key-value dimension attached to an emitted metric. |
+| **MetricNamespace** | Single namespace `GoBridge/Runtime` under which every bridge metric is reported. |
+
+## Messaging (`domain/messaging`)
+
+| Term | Meaning |
+|---|---|
+| **Envelope** | The canonical message moving through the bridge. `ID`, `Subject`, `Payload`, `Headers`, `CreatedAt`, `ExpiresAt`. Aggregate root of the messaging context. |
+| **Subject** | Logical destination/topic of an envelope. Free-form string; transport-specific meaning. |
+| **Reserved header** | Header key with prefix `x-bridge.` (case-insensitive). Bridge-internal; must be stripped from external sources at ingress. |
+| **Correlation ID** | `x-bridge.correlation-id`. End-to-end ID used to correlate logs/traces across hops. |
+| **Causation ID** | `x-bridge.causation-id`. ID of the envelope that caused this one to be produced. |
+| **Idempotency key** | `x-bridge.idempotency-key`. Used by adapters and outbox to dedup. |
+| **Ordering key** | `x-bridge.ordering-key`. Hint to ordered transports (e.g. SQS FIFO group). |
+| **Dedup ID** | `x-bridge.dedup-id`. Transport-level deduplication identifier. |
+| **Forwarded-from / Forwarded-hop** | Cluster-forwarding lineage headers. |
+| **TraceContext** | W3C Trace Context (`traceparent` + `tracestate`). Parsed/formatted/extracted/injected only via the helpers in `messaging`. |
+
+## Persistence (`domain/persistence`)
+
+| Term | Meaning |
+|---|---|
+| **Outbox** | Durable store of envelopes awaiting reliable egress. The transactional pattern that decouples "accepted from source" from "sent to target". |
+| **OutboxRecord** | One persisted envelope plus dispatch metadata, status, claim ownership, and replay counters. Aggregate root. |
+| **OutboxStatus** | State of an `OutboxRecord`: `pending` → `claimed` → `completed` (or → `expired`). |
+| **OutboxPartitionKey** | Canonical partition key derived from `(sessionID, bindingID)`: `SESSION#<id>` if session set, else `BINDING#<id>`. |
+| **Drain** | The act of pulling pending records from the outbox and dispatching them. |
+| **DrainStrategy** | Policy returning the next wait between drain cycles. Implementations: `FixedPoll`, `AdaptiveBackoff`. |
+| **AdaptiveBackoff** | Drain policy that resets to `MinInterval` when records were found, else exponentially backs off up to `MaxInterval` (with ±25 % jitter). |
+| **Lease** | Cluster ownership grant. The current owner alone may claim/complete outbox records and forward routes. |
+| **LeaseInfo** | Authoritative lease state: `LeaseID`, `Owner`, `Version`, `ExpiresAt`, `Endpoints`. |
+| **LeaseToken** | Fencing token `{Owner, Version}` returned with the lease. Carried on every guarded write so stale owners are rejected. |
+| **Fencing token / Fencing** | The mechanism that uses `LeaseToken.Version` (monotonic) to reject writes from a previous owner after a lease transfer. |
+| **Stale fencing token** | A write attempted with an older `Version` than the current lease. Rejected with `shared.ErrCodeStaleFencingToken`. |
+| **Replay** | Re-attempting outbox dispatch of a previously claimed record. Counted by `ReplayCount`, capped by `RoutePolicy.MaxReplayAttempts`. |
+| **PeerInfo** | Remote bridge instance discovered via lease ownership history. |
+
+## Routing (`domain/routing`)
+
+| Term | Meaning |
+|---|---|
+| **Route** | A logical edge from a source binding through processors to one or more destination bindings, governed by a `RoutePolicy`. |
+| **RoutePolicy** | Per-route delivery, retry, backpressure, and timeout configuration. Aggregate root for routing. |
+| **BackoffPolicy** | Retry backoff parameters: `InitialInterval`, `MaxInterval`, `Multiplier`. |
+| **DeliveryMode** | `direct_hold` (hold source ack until target accepts) or `shared_outbox` (persist then ack source). |
+| **DispatchMode** | `single` (one binding per envelope) or `fan_out` (every matching binding). |
+| **AckBoundary** | `target_accept` (ack source after target accepts) or `outbox_persist` (ack source after outbox persists). Together with `DeliveryMode` determines the at-least-once / once-and-only contract per route. |
+| **ExpiredAction** | What happens to expired envelopes: `drop` or `dlq`. |
+| **FailureAction** | What happens on permanent failure: `dlq` or `drop`. |
+| **DestinationBinding** | A concrete target an envelope can be sent to: `Transport`, `SessionID`, `SenderID`, `Address`, plugin `Config`, optional static `Headers`. |
+| **DispatchPlan** | Result of resolving destinations for one envelope: which `BindingID`, which `Address`, merged `Headers`. |
+| **DLQ** | Dead-letter queue. Permanent record of envelopes that could not be delivered. |
+| **DLQEntry** | One DLQ record: snapshot `Envelope`, route/binding/session/source IDs, `Reason`, `Category`, `ErrorCode`, `LastError`, `Attempts`, `FailedAt`. |
+| **DLQFilter** | Query criteria for DLQ scans: by route, category, time window, limit. |
+| **MaxInFlight** | Per-route concurrency cap for in-flight dispatches. |
+| **MaxOutboxDepth** | Per-route backpressure cap on outbox depth. |
+| **DepthCacheTTL** | TTL of the cached outbox-depth value used for fast backpressure checks. |
+| **ProcessorTimeout** | Per-processor execution deadline. Exceeding it returns `ErrProcessorTimeout` (transient); panicking returns `ErrProcessorPanic` (permanent). |
+| **AllowUnfenced** | Route-level escape hatch permitting writes without a fencing token. Off by default. |
+| **AllowRetryDrop** | Route-level flag permitting silent drop instead of DLQ on retry exhaustion. Off by default. |
+
+## Connectivity (`domain/connectivity`)
+
+| Term | Meaning |
+|---|---|
+| **Session** | A live connection to a transport (one MQTT/AMQP/SQS/ASB/HTTP connection) with subscriptions and publishers attached. |
+| **SessionMode** | `ephemeral` (no durable subscriptions), `persistent` (durable, resumed across restarts), `exclusive` (single-owner). |
+| **SessionPlan** | The desired state of a session: list of `SubscriptionPlan` and `PublisherPlan`. Adapters reconcile actual state toward the plan. |
+| **SubscriptionPlan** | Desired subscription: `Topic`, `QoS`, transport-typed `Config`. |
+| **PublisherPlan** | Desired publisher: `Topic`, `QoS`, transport-typed `Config`. |
+| **Reconcile** | The act of bringing a session's actual subscriptions/publishers in line with its `SessionPlan`. |
+| **Credential** | Authentication material. One of: `password`, `tls`. |
+| **CredentialSet** | Composite credential container — may carry both a `PasswordCredential` and `TLSMaterial`. Aggregate root. |
+| **PasswordCredential** | `Username` + `Password`. Redacts in `String`/`GoString`. |
+| **TLSMaterial** | `CertPEM`, `KeyPEM`, `CAPEMs`, `InsecureSkipVerify`. Redacts in `String`/`GoString`. |
+| **Push credential / Pull credential** | Two delivery modes for credential rotation: push stores emit on change; pull stores are polled. `CredentialSet.Equal` is the canonical change check. |
+
+## Clock (`domain/clock`)
+
+| Term | Meaning |
+|---|---|
+| **Clock** | Time abstraction with `Now`, `Since`, `NewTimer`, `NewTicker`, `After`. **No `Sleep`** — every wait must be cancellable via `ctx.Done()`. |
+| **Timer / Ticker** | Domain-owned interfaces wrapping `time.Timer` / `time.Ticker`. Faked in tests via `domain/clock/clocktest`. |
+| **System clock** | The default `Clock` backed by the stdlib `time` package. |
+
+## Cross-cutting (Layer 2)
+
+| Term | Meaning |
+|---|---|
+| **Port** | An interface defined in `ports/` that an adapter implements. The contract crossing the hexagon. |
+| **Adapter** | An implementation of a port living in `adapters/<vendor>/<category>/<tech>`. |
+| **Driving adapter** | Adapter that calls into the application core (e.g. HTTP API, config loader). |
+| **Driven adapter** | Adapter the core calls out to (e.g. transport, store, credential resolver). |
+| **Composition root** | `cmd/` — the only place that wires adapters into the runtime. |
+| **Bridge** | The composition factory in `bridge/` that turns a parsed `BridgeConfig` into a running `Runtime`. |
+| **Runtime** | The use-case engine in `runtime/` that executes routes, drains outboxes, manages leases. |
+| **Blueprint** | A parsed-but-not-yet-validated configuration shape (`ports.BridgeConfig`). The blueprint validator runs invariants before the bridge is built. |
+| **Plugin config** | Transport- or processor-specific typed configuration carried as `any` through the domain and type-asserted at the adapter boundary. |
