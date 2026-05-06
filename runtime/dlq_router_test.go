@@ -17,7 +17,7 @@ func TestDLQRouter_NilStore(t *testing.T) {
 	dlq := runtime.NewDLQRouter(nil)
 	env := &messaging.Envelope{ID: "msg-1"}
 
-	err := dlq.Route(context.Background(), env, "route-1", "", "", "", shared.ErrNotFound, 1)
+	err := dlq.Route(context.Background(), env, "route-1", "", "", "", "", shared.ErrNotFound, 1)
 	if err != nil {
 		t.Fatalf("nil store should be a no-op, got %v", err)
 	}
@@ -33,7 +33,7 @@ func TestDLQRouter_WritesEntry(t *testing.T) {
 		Headers: map[string]any{messaging.HeaderCorrelationID: "corr-abc"},
 	}
 
-	err := dlq.Route(context.Background(), env, "route-1", "bind-1", "sess-1", "src-1", shared.ErrNotFound, 3)
+	err := dlq.Route(context.Background(), env, "route-1", "bind-1", "", "sess-1", "src-1", shared.ErrNotFound, 3)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestDLQRouter_UnknownError(t *testing.T) {
 	dlq := runtime.NewDLQRouter(store)
 
 	env := &messaging.Envelope{ID: "msg-1"}
-	_ = dlq.Route(context.Background(), env, "r", "", "", "", context.DeadlineExceeded, 0)
+	_ = dlq.Route(context.Background(), env, "r", "", "", "", "", context.DeadlineExceeded, 0)
 
 	if store.Count() != 1 {
 		t.Fatalf("expected 1 entry, got %d", store.Count())
@@ -105,7 +105,7 @@ func TestDLQRouter_Route_RedactsErrorDetails(t *testing.T) {
 		fmt.Errorf("connection to db-prod.internal:5432 refused"),
 	)
 
-	err := dlq.Route(context.Background(), env, "route-redact", "bind-1", "sess-1", "src-1", rawErr, 1)
+	err := dlq.Route(context.Background(), env, "route-redact", "bind-1", "", "sess-1", "src-1", rawErr, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestDLQRouter_Route_StoreWriteError_Propagated(t *testing.T) {
 	dlq := runtime.NewDLQRouter(store)
 	env := &messaging.Envelope{ID: "msg-fail"}
 
-	err := dlq.Route(context.Background(), env, "r", "", "", "", shared.ErrNotFound, 1)
+	err := dlq.Route(context.Background(), env, "r", "", "", "", "", shared.ErrNotFound, 1)
 	if err == nil {
 		t.Fatal("expected store write error to be propagated")
 	}
@@ -174,7 +174,7 @@ func TestDLQRouter_Route_AllFieldsPopulated(t *testing.T) {
 	}
 
 	routeErr := shared.ErrThrottled
-	err := dlq.Route(context.Background(), env, "route-all", "bind-all", "sess-all", "src-all", routeErr, 7)
+	err := dlq.Route(context.Background(), env, "route-all", "bind-all", "", "sess-all", "src-all", routeErr, 7)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestDLQRouter_Route_NoCorrelationID(t *testing.T) {
 
 	env := &messaging.Envelope{ID: "msg-nocorr"}
 
-	err := dlq.Route(context.Background(), env, "route-nocorr", "", "", "", shared.ErrNotFound, 1)
+	err := dlq.Route(context.Background(), env, "route-nocorr", "", "", "", "", shared.ErrNotFound, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestDLQRouter_ClassifyError_BridgeError(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			store.Entries = nil
-			err := dlq.Route(context.Background(), env, "route-classify", "", "", "", tc.err, 1)
+			err := dlq.Route(context.Background(), env, "route-classify", "", "", "", "", tc.err, 1)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

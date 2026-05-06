@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "ARCHITECTURE_PLAN.md",
-  "source_sha": "e7dbeb270821ff18fe1704ec23ed4713e9d08793af07415c86a1ae8a8cacff7f",
+  "source_sha": "75e0a48cd344236e73e908da7bae5f17ced1685fa9de6e60c262cecffb7a4434",
   "indexed_at": "2026-05-06T00:00:00Z",
   "status_convention": "per-task markers only; absent any marker \u2192 pending. File-level ## Status: Planned is not propagated.",
   "tasks": [
@@ -19,7 +19,7 @@
     {
       "id": "T02",
       "title": "Add address to observability contracts",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "Adds Address fields to Go port/domain structs used by egress hooks and DLQ.",

@@ -89,6 +89,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		Direction:   ports.DirectionEgress,
 		RouteID:     r.routeID,
 		BindingID:   plan.BindingID,
+		Address:     plan.Address,
 		Envelope:    env,
 		Attempt:     attempt,
 		MaxAttempts: r.policy.MaxReplayAttempts,
@@ -108,6 +109,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 			Direction:   ports.DirectionEgress,
 			RouteID:     r.routeID,
 			BindingID:   plan.BindingID,
+			Address:     plan.Address,
 			Envelope:    env,
 			Attempt:     attempt,
 			MaxAttempts: r.policy.MaxReplayAttempts,
@@ -131,7 +133,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 			}
 			poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent,
 				fmt.Sprintf("direct_hold: receive count %d >= max replay attempts %d", rc, r.policy.MaxReplayAttempts))
-			if dlqErr := r.dlq.Route(ctx, env, r.routeID, plan.BindingID,
+			if dlqErr := r.dlq.Route(ctx, env, r.routeID, plan.BindingID, plan.Address,
 				r.sessionIDForBinding(plan.BindingID), "", poisonErr, rc); dlqErr != nil {
 				return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 			}
@@ -140,6 +142,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 				Direction:   ports.DirectionEgress,
 				RouteID:     r.routeID,
 				BindingID:   plan.BindingID,
+				Address:     plan.Address,
 				Envelope:    env,
 				Attempt:     attempt,
 				MaxAttempts: r.policy.MaxReplayAttempts,
@@ -152,7 +155,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		return r.retryOrFallback(ctx, del, env, retryDelay(r.policy, receiveCount(env)+1, sendErr), sendErr)
 	}
 
-	if dlqErr := r.dlq.Route(ctx, env, r.routeID, plan.BindingID, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
+	if dlqErr := r.dlq.Route(ctx, env, r.routeID, plan.BindingID, plan.Address, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
 		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 	}
 	if logging.DebugEnabled(r.logger) {
@@ -168,6 +171,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		Direction:   ports.DirectionEgress,
 		RouteID:     r.routeID,
 		BindingID:   plan.BindingID,
+		Address:     plan.Address,
 		Envelope:    env,
 		Attempt:     attempt,
 		MaxAttempts: r.policy.MaxReplayAttempts,
@@ -241,7 +245,7 @@ func (r *RouteRunner) sessionIDForBinding(bindingID string) string {
 
 func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env *messaging.Envelope) error {
 	if r.policy.OnExpired == routing.ExpiredDLQ {
-		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", shared.ErrMessageExpired, 0); dlqErr != nil {
+		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", shared.ErrMessageExpired, 0); dlqErr != nil {
 			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 		}
 		r.emitDLQ("expired")
@@ -252,7 +256,7 @@ func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env
 func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delivery, env *messaging.Envelope, err error) error {
 	if errors.Is(err, shared.ErrMessageFiltered) {
 		if r.policy.OnPermanentFailure == routing.FailureDLQ {
-			if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", err, 0); dlqErr != nil {
+			if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", err, 0); dlqErr != nil {
 				return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 			}
 			r.emitDLQ("filtered")
@@ -264,7 +268,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 			shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
 		return r.retryOrFallback(ctx, del, env, retryDelay(r.policy, receiveCount(env)+1, err), err)
 	}
-	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", err, 0); dlqErr != nil {
+	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", err, 0); dlqErr != nil {
 		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 	}
 	r.emitDLQ("permanent")
@@ -274,7 +278,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery, env *messaging.Envelope, err error) error {
 	be, ok := shared.AsBridgeError(err)
 	if ok && be.Class != shared.ErrorTransient {
-		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", err, 0); dlqErr != nil {
+		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", err, 0); dlqErr != nil {
 			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 		}
 		r.emitDLQ("rejected")
@@ -291,7 +295,7 @@ func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, e
 	if retryErr == nil || !errors.Is(retryErr, shared.ErrNotSupported) {
 		return retryErr
 	}
-	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", reason, 0); dlqErr != nil {
+	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", reason, 0); dlqErr != nil {
 		r.emitDLQ("retry_unsupported_dlq_failed")
 		return fmt.Errorf("runtime: route-runner: retry unsupported and write dlq: %w", dlqErr)
 	}

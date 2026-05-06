@@ -66,6 +66,6 @@ func BenchmarkDLQRouter_Route(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = dlq.Route(ctx, env, "route-1", "bind-1", "", "", shared.ErrNotFound, 1)
+		_ = dlq.Route(ctx, env, "route-1", "bind-1", "", "", "", shared.ErrNotFound, 1)
 	}
 }

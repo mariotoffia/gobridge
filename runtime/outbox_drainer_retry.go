@@ -55,6 +55,7 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *persistence.Outb
 		Direction:   ports.DirectionEgress,
 		RouteID:     d.routeID,
 		BindingID:   rec.BindingID,
+		Address:     rec.Address,
 		Envelope:    env,
 		Attempt:     attempt,
 		MaxAttempts: d.policy.MaxReplayAttempts,
@@ -77,6 +78,7 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *persistence.Outb
 			Direction:   ports.DirectionEgress,
 			RouteID:     d.routeID,
 			BindingID:   rec.BindingID,
+			Address:     rec.Address,
 			Envelope:    env,
 			Attempt:     attempt,
 			MaxAttempts: d.policy.MaxReplayAttempts,
@@ -87,7 +89,7 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *persistence.Outb
 
 	be, ok := shared.AsBridgeError(sendErr)
 	if ok && be.Class != shared.ErrorTransient {
-		if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID, rec.SessionID, "", sendErr, rec.ReplayCount); dlqErr != nil {
+		if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID, rec.Address, rec.SessionID, "", sendErr, rec.ReplayCount); dlqErr != nil {
 			d.log(ctx, slog.LevelError, "DLQ write failed, will not complete record",
 				"record_id", rec.ID, "dlq_error", dlqErr)
 			return dlqErr
@@ -96,6 +98,7 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *persistence.Outb
 			Direction:   ports.DirectionEgress,
 			RouteID:     d.routeID,
 			BindingID:   rec.BindingID,
+			Address:     rec.Address,
 			Envelope:    env,
 			Attempt:     attempt,
 			MaxAttempts: d.policy.MaxReplayAttempts,
@@ -121,7 +124,7 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *persistence.Outb
 func (d *OutboxDrainer) handleExpired(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
 	env := &rec.Envelope
 	if d.policy.OnExpired == routing.ExpiredDLQ {
-		if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID, rec.SessionID, "", shared.ErrMessageExpired, rec.ReplayCount); dlqErr != nil {
+		if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID, rec.Address, rec.SessionID, "", shared.ErrMessageExpired, rec.ReplayCount); dlqErr != nil {
 			return dlqErr
 		}
 	}
@@ -129,6 +132,7 @@ func (d *OutboxDrainer) handleExpired(ctx context.Context, rec *persistence.Outb
 		Direction:   ports.DirectionEgress,
 		RouteID:     d.routeID,
 		BindingID:   rec.BindingID,
+		Address:     rec.Address,
 		Envelope:    env,
 		Attempt:     rec.ReplayCount + 1,
 		MaxAttempts: d.policy.MaxReplayAttempts,
@@ -144,13 +148,14 @@ func (d *OutboxDrainer) handleExpired(ctx context.Context, rec *persistence.Outb
 func (d *OutboxDrainer) handlePoison(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
 	env := &rec.Envelope
 	poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent, "replay count exceeded")
-	if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID, rec.SessionID, "", poisonErr, rec.ReplayCount); dlqErr != nil {
+	if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID, rec.Address, rec.SessionID, "", poisonErr, rec.ReplayCount); dlqErr != nil {
 		return dlqErr
 	}
 	d.hook.OnSettled(ctx, ports.DeliveryOutcome{
 		Direction:   ports.DirectionEgress,
 		RouteID:     d.routeID,
 		BindingID:   rec.BindingID,
+		Address:     rec.Address,
 		Envelope:    env,
 		Attempt:     rec.ReplayCount + 1,
 		MaxAttempts: d.policy.MaxReplayAttempts,

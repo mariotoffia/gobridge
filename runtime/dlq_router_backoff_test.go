@@ -112,7 +112,7 @@ func TestDLQRouter_RetryBackoff_FakeClock(t *testing.T) {
 		Payload: []byte("payload"),
 	}
 
-	err := router.Route(ctx, env, "route-1", "bind-1", "sess-1", "src-1", shared.ErrUnavailable, 1)
+	err := router.Route(ctx, env, "route-1", "bind-1", "", "sess-1", "src-1", shared.ErrUnavailable, 1)
 	require.NoError(t, err)
 
 	// ── Attempt 1 (immediate, no timer wait) ─────────────────────────────

@@ -186,7 +186,7 @@ Blast radius: low.
 - Update fake senders and compiler errors across the repo.
 - Acceptance: code compiles far enough to expose concrete runtime and adapter updates.
 
-### 2. Add address to observability contracts
+### 2. Add address to observability contracts - DONE
 
 - Add `Address string` to `ports.DeliveryAttempt`.
 - Add `Address string` to `ports.DeliveryOutcome`.

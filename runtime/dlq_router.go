@@ -167,10 +167,16 @@ func (r *DLQRouter) Close() {
 // Route sends a failed envelope to the DLQ. When started, this enqueues
 // to the internal buffer (non-blocking up to EnqTimeout). When not
 // started, it writes synchronously (backward-compatible).
+//
+// The address parameter is the transport destination address that was
+// the target of the failed delivery (e.g. MQTT topic, SQS queue URL,
+// AMQP routing key) on egress, or the source address on ingress. It
+// is recorded on the DLQ entry so consumers can route or analyze
+// failures by transport address without inspecting Envelope.Subject.
 func (r *DLQRouter) Route(
 	ctx context.Context,
 	env *messaging.Envelope,
-	routeID, bindingID, sessionID, sourceID string,
+	routeID, bindingID, address, sessionID, sourceID string,
 	err error,
 	attempts int,
 ) error {
@@ -178,7 +184,7 @@ func (r *DLQRouter) Route(
 		return nil
 	}
 
-	entry := r.buildEntry(env, routeID, bindingID, sessionID, sourceID, err, attempts)
+	entry := r.buildEntry(env, routeID, bindingID, address, sessionID, sourceID, err, attempts)
 
 	r.mu.Lock()
 	if r.stopped || !r.started {
@@ -207,7 +213,7 @@ func (r *DLQRouter) Route(
 
 func (r *DLQRouter) buildEntry(
 	env *messaging.Envelope,
-	routeID, bindingID, sessionID, sourceID string,
+	routeID, bindingID, address, sessionID, sourceID string,
 	err error,
 	attempts int,
 ) routing.DLQEntry {
@@ -220,6 +226,7 @@ func (r *DLQRouter) buildEntry(
 		Envelope:      *env,
 		RouteID:       routeID,
 		BindingID:     bindingID,
+		Address:       address,
 		SessionID:     sessionID,
 		SourceID:      sourceID,
 		CorrelationID: correlationID,
