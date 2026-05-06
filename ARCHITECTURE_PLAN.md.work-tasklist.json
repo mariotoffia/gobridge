@@ -107,7 +107,7 @@
     {
       "id": "T10",
       "title": "Update HTTP/SSE adapter",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "HTTP/SSE Go adapter sender signature change and test/fake updates.",

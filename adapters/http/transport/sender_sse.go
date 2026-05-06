@@ -92,10 +92,43 @@ func (s *SSESender) SetRouteID(routeID string) {
 	s.mu.Unlock()
 }
 
+// identity returns the configured logical identity used to validate
+// ports.OutboundMessage.Address. When SetRouteID has supplied a
+// routeID, that value wins; otherwise the sender spec ID (cfg.id) is
+// used.
+func (s *SSESender) identity() string {
+	s.mu.RLock()
+	rid := s.routeID
+	s.mu.RUnlock()
+	if rid != "" {
+		return rid
+	}
+	return s.cfg.id
+}
+
 // Send broadcasts an envelope to all connected SSE clients.
+//
+// Address validation: an SSESender is bound at construction to a
+// single logical identity (its sender spec ID, optionally overridden
+// by SetRouteID for cluster-aware routing). When msg.Address is
+// empty, the configured identity is used. A non-empty msg.Address
+// must match the configured identity exactly; any other value is
+// rejected with shared.ErrInvalidTopic without marshalling, fan-out
+// to clients, or metric emission. Per-message dynamic SSE channel
+// routing is explicitly out of scope (Non-Goal in
+// ARCHITECTURE_PLAN.md). The logical Envelope.Subject flows through
+// to the SSE event payload's "subject" field unchanged.
 func (s *SSESender) Send(ctx context.Context, msg ports.OutboundMessage) error {
-	// TODO(T03/T09): consume msg.Address as the SSE channel/route override.
 	env := msg.Envelope
+	if env == nil {
+		return shared.ErrInvalidPayload.WithMessage("sse: nil envelope")
+	}
+	identity := s.identity()
+	if msg.Address != "" && msg.Address != identity {
+		return shared.ErrInvalidTopic.WithMessage(fmt.Sprintf(
+			"sse: address %q does not match configured identity %q",
+			msg.Address, identity))
+	}
 	start := s.cfg.clock.Now()
 
 	select {
