@@ -72,8 +72,15 @@ expect adapter_tracing_otel          /adapters/otel/tracing
 expect adapter_cluster_native        /adapters/native/cluster
 expect adapter_cluster_aws           /adapters/aws/cluster/ecs
 
-# Inner ring sanity.
-expect domain  /domain
+# Inner ring sanity. The domain layer is decomposed by bounded context
+# (FIX-004 Phase 5); each context has its own sentinel so the YAML
+# cannot quietly re-absorb a sub-package into a catch-all.
+expect domain_shared       /domain/shared
+expect domain_messaging    /domain/messaging
+expect domain_persistence  /domain/persistence
+expect domain_routing      /domain/routing
+expect domain_connectivity /domain/connectivity
+expect domain_clock        /domain/clock
 expect ports   /ports
 expect config  /config
 

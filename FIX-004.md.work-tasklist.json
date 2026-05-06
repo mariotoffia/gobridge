@@ -64,7 +64,7 @@
     {
       "id": "phase-5",
       "title": "Tighten arch lint, drop transitional domain component",
-      "status": "pending",
+      "status": "done",
       "category_hint": "clean-arch lint",
       "suggested_agent": "clean-arch-reviewer",
       "agent_rationale": "Remove the catch-all domain component once contexts are extracted.",
