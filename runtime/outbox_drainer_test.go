@@ -204,7 +204,8 @@ func TestOutboxDrainer_NoLease(t *testing.T) {
 	}
 }
 
-// TestOutboxDrainer_AppliesAddress verifies the record address overrides the envelope subject on send.
+// TestOutboxDrainer_AppliesAddress verifies the record address travels via
+// OutboundMessage.Address while the envelope's logical Subject is preserved.
 func TestOutboxDrainer_AppliesAddress(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token)
@@ -229,8 +230,23 @@ func TestOutboxDrainer_AppliesAddress(t *testing.T) {
 	if sender.SentCount() != 1 {
 		t.Fatalf("expected 1 sent, got %d", sender.SentCount())
 	}
-	if sender.Sent[0].Subject != "factory/a/orders/42" {
-		t.Fatalf("expected subject from outbox record address, got %q", sender.Sent[0].Subject)
+	if sender.Sent[0].Subject != "original-subject" {
+		t.Fatalf("logical subject must be preserved on outbound envelope, got %q", sender.Sent[0].Subject)
+	}
+	outbound := sender.GetOutbound()
+	if len(outbound) != 1 || outbound[0].Address != "factory/a/orders/42" {
+		t.Fatalf("expected OutboundMessage.Address factory/a/orders/42, got %+v", outbound)
+	}
+	// And the persisted record must not have its logical Subject mutated.
+	recs := outbox.Records()
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(recs))
+	}
+	if recs[0].Envelope.Subject != "original-subject" {
+		t.Fatalf("persisted record envelope subject mutated: got %q", recs[0].Envelope.Subject)
+	}
+	if recs[0].Address != "factory/a/orders/42" {
+		t.Fatalf("persisted record address = %q, want factory/a/orders/42", recs[0].Address)
 	}
 }
 

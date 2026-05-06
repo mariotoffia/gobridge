@@ -564,6 +564,18 @@ func (s *FakeOutboxStore) CompletedCount() int {
 	return n
 }
 
+// Records returns a snapshot of all persisted outbox records (any status).
+// The returned slice is a copy; mutating it does not affect the store.
+func (s *FakeOutboxStore) Records() []persistence.OutboxRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]persistence.OutboxRecord, 0, len(s.records))
+	for _, rec := range s.records {
+		out = append(out, *rec)
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // FakeDLQStore
 // ---------------------------------------------------------------------------

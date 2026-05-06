@@ -201,7 +201,7 @@ Blast radius: low.
 - Populate hook `Address` fields.
 - Acceptance: a unit test proves source `Envelope.Subject` remains unchanged after direct-hold send.
 
-### 4. Fix shared-outbox dispatch and drain
+### 4. Fix shared-outbox dispatch and drain - DONE
 
 - Persist `OutboxRecord.Address` without changing `OutboxRecord.Envelope.Subject`.
 - During drain, build an outbound envelope copy.
