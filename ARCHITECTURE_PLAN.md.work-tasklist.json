@@ -85,7 +85,7 @@
     {
       "id": "T08",
       "title": "Update SQS adapter",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "SQS Go adapter sender/batch/receiver/SNS-unwrap updates with FIFO dedup review.",

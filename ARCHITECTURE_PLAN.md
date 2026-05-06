@@ -236,7 +236,7 @@ Blast radius: low.
 - Update AMQP 1.0 conversion tests.
 - Acceptance: messages without `Properties.Subject` produce empty `Envelope.Subject`.
 
-### 8. Update SQS adapter
+### 8. Update SQS adapter - DONE
 
 - Change sender and batch sender signatures.
 - Keep logical subject mapped to `Subject` message attribute.

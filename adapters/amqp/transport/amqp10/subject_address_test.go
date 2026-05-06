@@ -32,10 +32,10 @@ import (
 // or that the recorded envelope preserves Subject independently of the
 // link's bound address.
 type recordingSenderLink struct {
-	mu        sync.Mutex
-	sent      []*messaging.Envelope
-	sendErr   error
-	closeErr  error
+	mu         sync.Mutex
+	sent       []*messaging.Envelope
+	sendErr    error
+	closeErr   error
 	closeCalls int
 }
 

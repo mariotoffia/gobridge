@@ -30,6 +30,24 @@
 // messaging.HeaderDeduplicationID maps to MessageDeduplicationId for FIFO
 // queues.
 //
+// # Subject and Address
+//
+// The logical Envelope.Subject is mapped to the "Subject" SQS message
+// attribute on egress and read back from that attribute on ingress.
+// The receiver does NOT fall back to the queue name or queue URL when
+// the "Subject" attribute is absent — Envelope.Subject is left empty
+// in that case. When SNSUnwrap is enabled and the body is an SNS
+// notification, the inner SNS Subject (if present) is used instead;
+// when the SNS notification has no Subject field the TopicArn is
+// preserved in headers["sns.topic_arn"] but is NOT promoted into
+// Envelope.Subject.
+//
+// SQS senders are bound to a single queue URL. ports.OutboundMessage
+// .Address is validated against the configured queue URL: empty means
+// "use the configured queue URL", a matching value succeeds, anything
+// else is rejected with shared.ErrInvalidTopic without contacting the
+// SDK. Per-message dynamic addressing for SQS is out of scope.
+//
 // # SQS Native DLQ
 //
 // SQS native DLQ (maxReceiveCount on the source queue) should be set to
