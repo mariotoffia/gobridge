@@ -358,22 +358,25 @@ classDiagram
 The application/use-case ring (Layer 2) and adapters (Layer 3) depend **inward** on every relevant domain context. The diagram shows direction of dependency (A → B = A imports B).
 
 ```mermaid
-flowchart LR
-    subgraph L4 [Layer 4 - composition root]
+flowchart TB
+    subgraph L4 [Layer 4 - Composition root]
+        direction LR
         cmd
         deployment
     end
     subgraph L3 [Layer 3 - Interface Adapters]
+        direction TB
         httpapi
         processors
-        adapters_transport["adapter_transport_*<br/>mqtt/sqs/asb/amqp091/amqp10/http"]
-        adapters_store["adapter_store_*<br/>memory/sqlite/dynamodb"]
+        adapters_transport["adapter_transport_*<br/>mqtt · sqs · asb<br/>amqp091 · amqp10 · http"]
+        adapters_store["adapter_store_*<br/>memory · sqlite · dynamodb"]
         adapters_config["adapter_config_*"]
         adapters_creds["adapter_credentials_*"]
-        adapters_obs["adapter_metrics_* / adapter_tracing_*"]
+        adapters_obs["adapter_metrics_*<br/>adapter_tracing_*"]
         adapters_cluster["adapter_cluster_*"]
     end
     subgraph L2 [Layer 2 - Application + Ports + Shared kernel]
+        direction TB
         ports
         config
         runtime
@@ -384,6 +387,7 @@ flowchart LR
         observability
     end
     subgraph L1 [Layer 1 - Domain]
+        direction TB
         shared
         messaging
         persistence
