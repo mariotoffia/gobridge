@@ -7,24 +7,24 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // Verifies reserved bridge headers are stripped while custom and trace headers remain.
 func TestAttributesToHeaders_StripsReservedPrefix(t *testing.T) {
 	attrs := map[string]sqstypes.MessageAttributeValue{
-		domain.HeaderCorrelationID: {DataType: aws.String("String"), StringValue: aws.String("injected")},
-		domain.HeaderRouteID:       {DataType: aws.String("String"), StringValue: aws.String("injected-route")},
-		"custom-key":               {DataType: aws.String("String"), StringValue: aws.String("allowed")},
-		"traceparent":              {DataType: aws.String("String"), StringValue: aws.String("00-trace")},
+		messaging.HeaderCorrelationID: {DataType: aws.String("String"), StringValue: aws.String("injected")},
+		messaging.HeaderRouteID:       {DataType: aws.String("String"), StringValue: aws.String("injected-route")},
+		"custom-key":                  {DataType: aws.String("String"), StringValue: aws.String("allowed")},
+		"traceparent":                 {DataType: aws.String("String"), StringValue: aws.String("00-trace")},
 	}
 
 	h := attributesToHeaders(attrs, nil)
 
-	if _, ok := h[domain.HeaderCorrelationID]; ok {
+	if _, ok := h[messaging.HeaderCorrelationID]; ok {
 		t.Fatal("reserved header x-bridge.correlation-id should be stripped")
 	}
-	if _, ok := h[domain.HeaderRouteID]; ok {
+	if _, ok := h[messaging.HeaderRouteID]; ok {
 		t.Fatal("reserved header x-bridge.route-id should be stripped")
 	}
 	if h["custom-key"] != "allowed" {
@@ -101,17 +101,17 @@ func TestHeadersToAttributes_Basic(t *testing.T) {
 // Verifies FIFO-specific headers are omitted from message attributes.
 func TestHeadersToAttributes_ExcludesFIFOFields(t *testing.T) {
 	headers := map[string]any{
-		domain.HeaderOrderingKey:     "group-1",
-		domain.HeaderDeduplicationID: "dedup-1",
-		"normal":                     "value",
+		messaging.HeaderOrderingKey:     "group-1",
+		messaging.HeaderDeduplicationID: "dedup-1",
+		"normal":                        "value",
 	}
 
 	attrs := headersToAttributes(headers)
 
-	if _, ok := attrs[domain.HeaderOrderingKey]; ok {
+	if _, ok := attrs[messaging.HeaderOrderingKey]; ok {
 		t.Fatal("ordering key should be excluded from attributes")
 	}
-	if _, ok := attrs[domain.HeaderDeduplicationID]; ok {
+	if _, ok := attrs[messaging.HeaderDeduplicationID]; ok {
 		t.Fatal("dedup ID should be excluded from attributes")
 	}
 	if attrs["normal"].StringValue == nil || *attrs["normal"].StringValue != "value" {
@@ -139,8 +139,8 @@ func TestHeadersToAttributes_EmptyValues(t *testing.T) {
 // Verifies extractFIFOFields reads ordering key and deduplication ID from headers.
 func TestExtractFIFOFields(t *testing.T) {
 	headers := map[string]any{
-		domain.HeaderOrderingKey:     "my-group",
-		domain.HeaderDeduplicationID: "my-dedup",
+		messaging.HeaderOrderingKey:     "my-group",
+		messaging.HeaderDeduplicationID: "my-dedup",
 	}
 
 	groupID, dedupID := extractFIFOFields(headers)

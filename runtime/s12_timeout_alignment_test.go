@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -157,19 +159,19 @@ func TestSessionManager_DerivedRenewInterval(t *testing.T) {
 func TestOutboxDrainer_FinalDrainCompletesPendingRecords(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	lease := NewFakeLeaseStore()
-	token := domain.LeaseToken{Version: 1, Owner: "me"}
+	token := persistence.LeaseToken{Version: 1, Owner: "me"}
 
-	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{{
+	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{{
 		ID:        "rec-1",
 		RouteID:   "r1",
 		SessionID: "s1",
-		Status:    domain.OutboxPending,
-		Envelope:  domain.Envelope{ID: "env-1", Payload: []byte("hello")},
+		Status:    persistence.OutboxPending,
+		Envelope:  messaging.Envelope{ID: "env-1", Payload: []byte("hello")},
 	}})
 
 	var sent atomic.Int32
 	sender := &FakeSender{
-		SendFn: func(_ *domain.Envelope) error {
+		SendFn: func(_ *messaging.Envelope) error {
 			sent.Add(1)
 			return nil
 		},
@@ -183,10 +185,10 @@ func TestOutboxDrainer_FinalDrainCompletesPendingRecords(t *testing.T) {
 		PartitionKey: "SESSION#s1",
 		LeaseID:      "s1",
 		OwnerID:      "me",
-		Policy:       domain.RoutePolicy{}.WithDefaults(),
-		Strategy:     domain.NewFixedPoll(50 * time.Millisecond),
+		Policy:       routing.RoutePolicy{}.WithDefaults(),
+		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainTimeout: 5 * time.Second,
-		TokenFn:      func() (domain.LeaseToken, bool) { return token, true },
+		TokenFn:      func() (persistence.LeaseToken, bool) { return token, true },
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

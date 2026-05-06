@@ -10,9 +10,9 @@
 //   - Ack is a no-op: the PUBACK (QoS 1) or PUBREC/PUBCOMP (QoS 2) was
 //     already sent by autopaho before the inbound handler ever ran. There
 //     is no application-layer handle to acknowledge.
-//   - Retry returns domain.ErrNotSupported: MQTT has no broker-side
+//   - Retry returns shared.ErrNotSupported: MQTT has no broker-side
 //     visibility timeout or per-message redelivery primitive akin to SQS.
-//   - Extend returns domain.ErrNotSupported for the same reason — there
+//   - Extend returns shared.ErrNotSupported for the same reason — there
 //     is nothing to extend.
 //
 // Routes that need at-least-once semantics on top of an MQTT source must
@@ -24,7 +24,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -35,22 +36,22 @@ var _ ports.Delivery = (*Delivery)(nil)
 // QoS 2) is handled internally by the Paho client, so Ack is a no-op.
 // Retry and Extend are not supported by MQTT.
 type Delivery struct {
-	env *domain.Envelope
+	env *messaging.Envelope
 }
 
 // NewDelivery wraps an Envelope as a ports.Delivery.
-func NewDelivery(env *domain.Envelope) *Delivery {
+func NewDelivery(env *messaging.Envelope) *Delivery {
 	return &Delivery{env: env}
 }
 
-func (d *Delivery) Envelope() *domain.Envelope { return d.env }
+func (d *Delivery) Envelope() *messaging.Envelope { return d.env }
 
 func (d *Delivery) Ack(_ context.Context) error { return nil }
 
 func (d *Delivery) Retry(_ context.Context, _ time.Duration, _ error) error {
-	return domain.ErrNotSupported
+	return shared.ErrNotSupported
 }
 
 func (d *Delivery) Extend(_ context.Context, _ time.Time) error {
-	return domain.ErrNotSupported
+	return shared.ErrNotSupported
 }

@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -29,15 +30,15 @@ func newMinimalLeaseStore(onRenew chan struct{}) *minimalLeaseStore {
 	return &minimalLeaseStore{onRenew: onRenew}
 }
 
-func (s *minimalLeaseStore) Acquire(_ context.Context, _ string, ownerID string, _ time.Duration, _ map[string]string) (domain.LeaseToken, error) {
+func (s *minimalLeaseStore) Acquire(_ context.Context, _ string, ownerID string, _ time.Duration, _ map[string]string) (persistence.LeaseToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.version++
 	s.owner = ownerID
-	return domain.LeaseToken{Version: s.version, Owner: ownerID}, nil
+	return persistence.LeaseToken{Version: s.version, Owner: ownerID}, nil
 }
 
-func (s *minimalLeaseStore) Renew(_ context.Context, _ string, token domain.LeaseToken, _ time.Duration, _ map[string]string) (domain.LeaseToken, error) {
+func (s *minimalLeaseStore) Renew(_ context.Context, _ string, token persistence.LeaseToken, _ time.Duration, _ map[string]string) (persistence.LeaseToken, error) {
 	atomic.AddInt32(&s.renews, 1)
 	s.mu.Lock()
 	owner := s.owner
@@ -45,17 +46,17 @@ func (s *minimalLeaseStore) Renew(_ context.Context, _ string, token domain.Leas
 	if s.onRenew != nil {
 		s.onRenew <- struct{}{}
 	}
-	return domain.LeaseToken{Version: token.Version, Owner: owner}, nil
+	return persistence.LeaseToken{Version: token.Version, Owner: owner}, nil
 }
 
-func (s *minimalLeaseStore) Release(context.Context, string, domain.LeaseToken) error {
+func (s *minimalLeaseStore) Release(context.Context, string, persistence.LeaseToken) error {
 	return nil
 }
 
-func (s *minimalLeaseStore) Current(_ context.Context, leaseID string) (domain.LeaseInfo, error) {
+func (s *minimalLeaseStore) Current(_ context.Context, leaseID string) (persistence.LeaseInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return domain.LeaseInfo{LeaseID: leaseID, Owner: s.owner, Version: s.version}, nil
+	return persistence.LeaseInfo{LeaseID: leaseID, Owner: s.owner, Version: s.version}, nil
 }
 
 func (s *minimalLeaseStore) renewCount() int32 { return atomic.LoadInt32(&s.renews) }
@@ -72,8 +73,10 @@ func newStubSessionForClockTest() *stubSessionForClockTest {
 	return &stubSessionForClockTest{events: make(chan ports.SessionEvent)}
 }
 
-func (s *stubSessionForClockTest) Start(context.Context) error                         { return nil }
-func (s *stubSessionForClockTest) Reconcile(context.Context, domain.SessionPlan) error { return nil }
+func (s *stubSessionForClockTest) Start(context.Context) error { return nil }
+func (s *stubSessionForClockTest) Reconcile(context.Context, connectivity.SessionPlan) error {
+	return nil
+}
 func (s *stubSessionForClockTest) Health(context.Context) ports.SessionHealth {
 	return ports.SessionHealth{Connected: true, Ready: true, ServiceLevel: ports.ServiceLevelFull}
 }

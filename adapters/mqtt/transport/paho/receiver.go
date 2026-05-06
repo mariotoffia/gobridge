@@ -6,7 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -58,7 +59,7 @@ func (r *Receiver) Started() <-chan struct{} { return r.started }
 // the type-level documentation for the rationale.
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
 	if !r.running.CompareAndSwap(false, true) {
-		return domain.ErrUnavailable.WithMessage(
+		return shared.ErrUnavailable.WithMessage(
 			"mqtt receiver " + r.id + ": Run already in flight; receivers are single-flight per instance")
 	}
 	defer r.running.Store(false)
@@ -74,7 +75,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 
 	errCh := make(chan error, 1)
 
-	r.session.Router().RegisterEnvelope(r.id, r.session.clock(), func(env *domain.Envelope) {
+	r.session.Router().RegisterEnvelope(r.id, r.session.clock(), func(env *messaging.Envelope) {
 		if logging.TraceEnabled(r.logger) {
 			r.logger.Log(runCtx, logging.LevelTrace, "mqtt: message received",
 				"receiver_id", r.id,

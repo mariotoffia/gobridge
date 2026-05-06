@@ -9,7 +9,7 @@ import (
 	"time"
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
@@ -62,7 +62,7 @@ func TestIntegration_SQS_Sender_QueueNameResolution(t *testing.T) {
 		t.Fatalf("NewSender: %v", err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "qn1-msg-1",
 		Subject: "qn1-subject",
 		Payload: []byte("resolved-by-name"),
@@ -175,7 +175,7 @@ func TestIntegration_SQS_SenderReceiver_FullRoundTrip(t *testing.T) {
 		t.Fatalf("NewSender: %v", err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "qn3-roundtrip",
 		Subject: "orders.created",
 		Payload: []byte(`{"order_id":"12345","amount":99.95}`),
@@ -207,7 +207,7 @@ func TestIntegration_SQS_SenderReceiver_FullRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	var got *domain.Envelope
+	var got *messaging.Envelope
 	err = receiver.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
 		got = del.Envelope()
 		_ = del.Ack(ctx)
@@ -301,9 +301,9 @@ func TestIntegration_SQS_Sender_BatchThenReceive(t *testing.T) {
 	}
 
 	const total = 15
-	envs := make([]*domain.Envelope, total)
+	envs := make([]*messaging.Envelope, total)
 	for i := range envs {
-		envs[i] = &domain.Envelope{
+		envs[i] = &messaging.Envelope{
 			ID:      fmt.Sprintf("qn4-batch-%d", i),
 			Subject: "batch-subject",
 			Payload: []byte(fmt.Sprintf("batch-body-%d", i)),

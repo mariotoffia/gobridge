@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/shared"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
@@ -145,7 +147,7 @@ func TestEdge_ReservedHeadersStrippedAtIngress(t *testing.T) {
 		resultCh <- httpResult{rec: rec}
 	}()
 
-	var env *domain.Envelope
+	var env *messaging.Envelope
 	select {
 	case d := <-deliveryCh:
 		env = d.Envelope()
@@ -182,13 +184,13 @@ func TestEdge_ForwarderPreservesExpiresAt(t *testing.T) {
 	}))
 	defer remote.Close()
 	fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
-	peer := &domain.PeerInfo{
+	peer := &persistence.PeerInfo{
 		InstanceID: "remote-exp",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
 
 	expiresAt := time.Now().Add(10 * time.Minute).Truncate(time.Second).UTC()
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        "exp-msg-1",
 		Subject:   "order.expiring",
 		Payload:   []byte(`{"id":"42"}`),
@@ -227,11 +229,11 @@ func TestEdge_ForwarderPreservesExpiresAt(t *testing.T) {
 
 func TestEdge_ForwarderMissingHTTPEndpoint(t *testing.T) {
 	fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
-	peer := &domain.PeerInfo{
+	peer := &persistence.PeerInfo{
 		InstanceID: "grpc-only",
 		Endpoints:  map[string]string{"grpc": "grpc://remote:50051"},
 	}
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "no-http-1",
 		Subject: "test.no-http",
 		Payload: []byte(`{}`),
@@ -241,7 +243,7 @@ func TestEdge_ForwarderMissingHTTPEndpoint(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !errors.Is(err, domain.ErrForwardFailed) {
+	if !errors.Is(err, shared.ErrForwardFailed) {
 		t.Fatalf("expected ErrForwardFailed, got %v", err)
 	}
 }
@@ -256,11 +258,11 @@ func TestEdge_ForwarderRemoteReturns500(t *testing.T) {
 	}))
 	defer remote.Close()
 	fwd := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
-	peer := &domain.PeerInfo{
+	peer := &persistence.PeerInfo{
 		InstanceID: "error-node",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "err-500",
 		Subject: "test.error",
 		Payload: []byte(`{}`),
@@ -270,10 +272,10 @@ func TestEdge_ForwarderRemoteReturns500(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !errors.Is(err, domain.ErrUnavailable) {
+	if !errors.Is(err, shared.ErrUnavailable) {
 		t.Fatalf("expected ErrUnavailable (transient) for 500, got %v", err)
 	}
-	if !domain.IsRecoverableError(err) {
+	if !shared.IsRecoverableError(err) {
 		t.Fatal("expected recoverable error for 500")
 	}
 }
@@ -306,7 +308,7 @@ func TestEdge_SSEFieldSanitization(t *testing.T) {
 		return sender.(*transport.SSESender).ClientCount() >= 1
 	})
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "evil\ninjection",
 		Subject: "sanitize.test",
 		Payload: []byte(`{}`),
@@ -402,7 +404,7 @@ func TestEdge_SendWithNoClients(t *testing.T) {
 		t.Fatalf("NewSender: %v", err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "orphan-1",
 		Subject: "no.listeners",
 		Payload: []byte(`{}`),

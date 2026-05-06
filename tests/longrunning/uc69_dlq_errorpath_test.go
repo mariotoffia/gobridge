@@ -11,7 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -38,7 +39,7 @@ func TestUC69_DLQReplayIntegration(t *testing.T) {
 
 	// Phase 1: all messages fail -> DLQ
 	sessID := mqttlocal.UniqueClientID("uc69-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionExclusive)
 	failSnd := &alwaysFailSender{}
 	rx := newSQSReceiver(t, sqsInURL)
 
@@ -50,11 +51,11 @@ func TestUC69_DLQReplayIntegration(t *testing.T) {
 
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc69-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:      domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:      routing.DeliveryDirectHold,
 			MaxReplayAttempts: 1,
 		},
-		Resolver: goruntime.NewStaticResolver(domain.DispatchPlan{
+		Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{
 			BindingID: "uc69-bind",
 			Address:   outTopic,
 		}),
@@ -75,7 +76,7 @@ func TestUC69_DLQReplayIntegration(t *testing.T) {
 	assert.Equal(t, 0, collector.count())
 
 	// Phase 2: replay DLQ entries through working bridge
-	entries, err := dlq.List(ctx, domain.DLQFilter{})
+	entries, err := dlq.List(ctx, routing.DLQFilter{})
 	require.NoError(t, err)
 	t.Logf("UC69: replaying %d DLQ entries", len(entries))
 
@@ -88,10 +89,10 @@ func TestUC69_DLQReplayIntegration(t *testing.T) {
 
 	require.NoError(t, rt2.AddRoute(goruntime.RouteConfig{
 		ID: "uc69-route2",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
-		Resolver: goruntime.NewStaticResolver(domain.DispatchPlan{
+		Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{
 			BindingID: "uc69-bind2",
 			Address:   outTopic,
 		}),
@@ -138,7 +139,7 @@ func TestUC70_ErrorClassificationAccuracy(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc70-col")
 
 	sessID := mqttlocal.UniqueClientID("uc70-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionExclusive)
 	realSnd := setupMQTTSender(t, sess)
 	errSnd := &errorClassSender{inner: realSnd}
 	rx := newSQSReceiver(t, sqsInURL)
@@ -151,11 +152,11 @@ func TestUC70_ErrorClassificationAccuracy(t *testing.T) {
 
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc70-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:      domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:      routing.DeliveryDirectHold,
 			MaxReplayAttempts: 1,
 		},
-		Resolver: goruntime.NewStaticResolver(domain.DispatchPlan{
+		Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{
 			BindingID: "uc70-bind",
 			Address:   outTopic,
 		}),
@@ -215,7 +216,7 @@ func TestUC71_PoisonMessageAttemptCount(t *testing.T) {
 	defer cancel()
 
 	sessID := mqttlocal.UniqueClientID("uc71-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, connectivity.SessionExclusive)
 	failSnd := &alwaysFailSender{}
 	rx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessID)
@@ -230,15 +231,15 @@ func TestUC71_PoisonMessageAttemptCount(t *testing.T) {
 
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc71-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:      domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:      routing.DeliverySharedOutbox,
 			MaxReplayAttempts: maxReplayAttempts,
 		},
-		Resolver: goruntime.NewStaticResolver(domain.DispatchPlan{
+		Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{
 			BindingID: "uc71-bind",
 			Address:   outTopic,
 		}),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc71-bind", SessionID: sessID},
 		},
 		SourceCapabilities: directHoldCaps,
@@ -282,7 +283,7 @@ func TestUC72_DLQEntryFieldIntegrity(t *testing.T) {
 	defer cancel()
 
 	sessID := mqttlocal.UniqueClientID("uc72-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, connectivity.SessionExclusive)
 	failSnd := &alwaysFailSender{}
 	rx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessID)
@@ -297,15 +298,15 @@ func TestUC72_DLQEntryFieldIntegrity(t *testing.T) {
 
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc72-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:      domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:      routing.DeliverySharedOutbox,
 			MaxReplayAttempts: 1,
 		},
-		Resolver: goruntime.NewStaticResolver(domain.DispatchPlan{
+		Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{
 			BindingID: "uc72-bind",
 			Address:   outTopic,
 		}),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc72-bind", SessionID: sessID},
 		},
 		SourceCapabilities: directHoldCaps,
@@ -360,7 +361,7 @@ func TestUC73_MixedErrorTypes(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc73-col")
 
 	sessID := mqttlocal.UniqueClientID("uc73-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionExclusive)
 	realSnd := setupMQTTSender(t, sess)
 	errSnd := &errorClassSender{inner: realSnd}
 	rx := newSQSReceiver(t, sqsInURL)
@@ -373,11 +374,11 @@ func TestUC73_MixedErrorTypes(t *testing.T) {
 
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc73-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:      domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:      routing.DeliveryDirectHold,
 			MaxReplayAttempts: 1,
 		},
-		Resolver: goruntime.NewStaticResolver(domain.DispatchPlan{
+		Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{
 			BindingID: "uc73-bind",
 			Address:   outTopic,
 		}),

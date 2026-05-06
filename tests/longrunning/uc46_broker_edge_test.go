@@ -12,7 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -42,7 +44,7 @@ func TestUC46_BrokerMessageSizeLimit(t *testing.T) {
 	collector := newMQTTCollectorWithBroker(t, brokerURL, outTopic, "uc46-col")
 
 	sessID := mqttlocal.UniqueClientID("uc46-sess")
-	sess := setupMQTTSessionWithBroker(t, brokerURL, sessID, domain.SessionExclusive, 65535)
+	sess := setupMQTTSessionWithBroker(t, brokerURL, sessID, connectivity.SessionExclusive, 65535)
 	snd := setupMQTTSender(t, sess)
 
 	rt := goruntime.New(
@@ -52,12 +54,12 @@ func TestUC46_BrokerMessageSizeLimit(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc46-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  50,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc46-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc46-bind", Address: outTopic},
 		),
 		SourceCapabilities: []ports.Capability{ports.CapHTTPEndpoint},
 	}, &noopReceiver{}, snd, sess, nil))
@@ -70,7 +72,7 @@ func TestUC46_BrokerMessageSizeLimit(t *testing.T) {
 
 	// Inject small messages.
 	for i := 0; i < smallCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("uc46-small-%d", i),
 			Subject: outTopic,
 			Payload: []byte(fmt.Sprintf(`{"seq":%d,"size":"small"}`, i)),
@@ -81,7 +83,7 @@ func TestUC46_BrokerMessageSizeLimit(t *testing.T) {
 	// Inject oversized messages.
 	bigPayload := []byte(strings.Repeat("x", 2000))
 	for i := 0; i < bigCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("uc46-big-%d", i),
 			Subject: outTopic,
 			Payload: bigPayload,
@@ -139,7 +141,7 @@ func TestUC47_BrokerMaxQueuedMessages(t *testing.T) {
 	// Set up the MQTT sender wrapped in a countingSender to track bridge-side
 	// send successes independently of the collector.
 	sessID := mqttlocal.UniqueClientID("uc47-sess")
-	sess := setupMQTTSessionWithBroker(t, brokerURL, sessID, domain.SessionExclusive, 65535)
+	sess := setupMQTTSessionWithBroker(t, brokerURL, sessID, connectivity.SessionExclusive, 65535)
 	baseSnd := setupMQTTSender(t, sess)
 	snd := newCountingSender(baseSnd)
 	rx := newSQSReceiver(t, sqsInURL)
@@ -154,13 +156,13 @@ func TestUC47_BrokerMaxQueuedMessages(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc47-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc47-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc47-bind", Address: outTopic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc47-bind", SessionID: sessID},
 		},
 	}, rx, snd, sess, &sc))

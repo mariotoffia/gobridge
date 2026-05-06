@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -147,7 +147,7 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 		}
 		if err != nil {
 			_ = asbClient.Close(context.Background())
-			return domain.ErrUnavailable.Wrap(err)
+			return shared.ErrUnavailable.Wrap(err)
 		}
 		r.client = seam
 	} else {
@@ -159,7 +159,7 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 		}
 		if err != nil {
 			_ = asbClient.Close(context.Background())
-			return domain.ErrUnavailable.Wrap(err)
+			return shared.ErrUnavailable.Wrap(err)
 		}
 		r.client = seam
 	}
@@ -217,8 +217,8 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			continue
 		}
 
-		r.metrics.Timer(domain.MetricASBReceiveLatency, r.clock().Since(pollStart),
-			domain.Tag{Key: domain.TagKeyEntity, Value: r.entityName()})
+		r.metrics.Timer(shared.MetricASBReceiveLatency, r.clock().Since(pollStart),
+			shared.Tag{Key: shared.TagKeyEntity, Value: r.entityName()})
 		backoff.reset()
 
 		for _, del := range deliveries {

@@ -8,13 +8,13 @@ import (
 	"io"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // TestMapError_PreservesContextErrors asserts policy Rule 1
 // (`_design/error-wrapping-policy.adoc:100-104`): canonical context
 // sentinels are returned identity-equal and never reclassified as
-// domain.ErrTimeout / domain.ErrUnavailable.
+// shared.ErrTimeout / shared.ErrUnavailable.
 func TestMapError_PreservesContextErrors(t *testing.T) {
 	wrappedDeadline := fmt.Errorf("sqlite call: %w", context.DeadlineExceeded)
 	wrappedCanceled := fmt.Errorf("sqlite call: %w", context.Canceled)
@@ -34,8 +34,8 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 				if !errors.Is(out, context.DeadlineExceeded) {
 					t.Fatalf("errors.Is(out, context.DeadlineExceeded) = false")
 				}
-				if errors.Is(out, domain.ErrTimeout) {
-					t.Fatalf("ctx error must not be classified as domain.ErrTimeout")
+				if errors.Is(out, shared.ErrTimeout) {
+					t.Fatalf("ctx error must not be classified as shared.ErrTimeout")
 				}
 			},
 		},
@@ -49,8 +49,8 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 				if !errors.Is(out, context.Canceled) {
 					t.Fatalf("errors.Is(out, context.Canceled) = false")
 				}
-				if errors.Is(out, domain.ErrUnavailable) {
-					t.Fatalf("ctx error must not be classified as domain.ErrUnavailable")
+				if errors.Is(out, shared.ErrUnavailable) {
+					t.Fatalf("ctx error must not be classified as shared.ErrUnavailable")
 				}
 			},
 		},
@@ -64,8 +64,8 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 				if !errors.Is(out, context.DeadlineExceeded) {
 					t.Fatalf("errors.Is(out, context.DeadlineExceeded) = false")
 				}
-				if errors.Is(out, domain.ErrTimeout) {
-					t.Fatalf("wrapped ctx error must not be classified as domain.ErrTimeout")
+				if errors.Is(out, shared.ErrTimeout) {
+					t.Fatalf("wrapped ctx error must not be classified as shared.ErrTimeout")
 				}
 			},
 		},
@@ -79,8 +79,8 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 				if !errors.Is(out, context.Canceled) {
 					t.Fatalf("errors.Is(out, context.Canceled) = false")
 				}
-				if errors.Is(out, domain.ErrUnavailable) {
-					t.Fatalf("wrapped ctx error must not be classified as domain.ErrUnavailable")
+				if errors.Is(out, shared.ErrUnavailable) {
+					t.Fatalf("wrapped ctx error must not be classified as shared.ErrUnavailable")
 				}
 			},
 		},
@@ -88,8 +88,8 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 			name:  "no-rows",
 			input: sql.ErrNoRows,
 			check: func(t *testing.T, _, out error) {
-				if !errors.Is(out, domain.ErrNotFound) {
-					t.Fatalf("sql.ErrNoRows must classify as domain.ErrNotFound, got %v", out)
+				if !errors.Is(out, shared.ErrNotFound) {
+					t.Fatalf("sql.ErrNoRows must classify as shared.ErrNotFound, got %v", out)
 				}
 			},
 		},
@@ -97,8 +97,8 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 			name:  "unique-violation-string-match",
 			input: errors.New("constraint failed: UNIQUE constraint failed: dlq.id"),
 			check: func(t *testing.T, _, out error) {
-				if !errors.Is(out, domain.ErrDuplicateRecord) {
-					t.Fatalf("UNIQUE constraint must classify as domain.ErrDuplicateRecord, got %v", out)
+				if !errors.Is(out, shared.ErrDuplicateRecord) {
+					t.Fatalf("UNIQUE constraint must classify as shared.ErrDuplicateRecord, got %v", out)
 				}
 			},
 		},
@@ -106,8 +106,8 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 			name:  "busy-locked-string-match",
 			input: errors.New("database is locked"),
 			check: func(t *testing.T, _, out error) {
-				if !errors.Is(out, domain.ErrThrottled) {
-					t.Fatalf("database is locked must classify as domain.ErrThrottled, got %v", out)
+				if !errors.Is(out, shared.ErrThrottled) {
+					t.Fatalf("database is locked must classify as shared.ErrThrottled, got %v", out)
 				}
 			},
 		},
@@ -115,8 +115,8 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 			name:  "io-eof",
 			input: io.EOF,
 			check: func(t *testing.T, _, out error) {
-				if !errors.Is(out, domain.ErrConnectionLost) {
-					t.Fatalf("io.EOF must classify as domain.ErrConnectionLost, got %v", out)
+				if !errors.Is(out, shared.ErrConnectionLost) {
+					t.Fatalf("io.EOF must classify as shared.ErrConnectionLost, got %v", out)
 				}
 			},
 		},
@@ -124,8 +124,8 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 			name:  "generic-error-fallback",
 			input: errors.New("some random sqlite error"),
 			check: func(t *testing.T, _, out error) {
-				if !errors.Is(out, domain.ErrUnavailable) {
-					t.Fatalf("unclassified error must default to domain.ErrUnavailable, got %v", out)
+				if !errors.Is(out, shared.ErrUnavailable) {
+					t.Fatalf("unclassified error must default to shared.ErrUnavailable, got %v", out)
 				}
 			},
 		},
@@ -149,15 +149,15 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 }
 
 // TestWrapErr_ContextSentinelPassThrough asserts that wrapErr does not
-// wrap canonical ctx sentinels and never produces a *domain.BridgeError
+// wrap canonical ctx sentinels and never produces a *shared.BridgeError
 // from them.
 func TestWrapErr_ContextSentinelPassThrough(t *testing.T) {
 	out := wrapErr(context.Canceled, "sqlitedlq: write", "entryID", "abc")
 	if out != context.Canceled {
 		t.Fatalf("wrapErr must pass ctx.Canceled through unchanged, got %v (%T)", out, out)
 	}
-	if _, ok := out.(*domain.BridgeError); ok {
-		t.Fatalf("wrapErr must not produce a *domain.BridgeError from ctx sentinel")
+	if _, ok := out.(*shared.BridgeError); ok {
+		t.Fatalf("wrapErr must not produce a *shared.BridgeError from ctx sentinel")
 	}
 }
 
@@ -165,12 +165,12 @@ func TestWrapErr_ContextSentinelPassThrough(t *testing.T) {
 // non-ctx error with the supplied kvs.
 func TestWrapErr_AttachesKVs(t *testing.T) {
 	out := wrapErr(sql.ErrNoRows, "sqlitedlq: get", "entryID", "abc")
-	if !errors.Is(out, domain.ErrNotFound) {
+	if !errors.Is(out, shared.ErrNotFound) {
 		t.Fatalf("want errors.Is(out, ErrNotFound), got %v", out)
 	}
-	be, ok := domain.AsBridgeError(out)
+	be, ok := shared.AsBridgeError(out)
 	if !ok {
-		t.Fatalf("want *domain.BridgeError, got %T", out)
+		t.Fatalf("want *shared.BridgeError, got %T", out)
 	}
 	if be.Message == "" {
 		t.Fatalf("want message attached, got empty")

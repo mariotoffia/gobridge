@@ -8,7 +8,7 @@ import (
 	awsssm "github.com/aws/aws-sdk-go-v2/service/ssm"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // Per-call SDK request/response translation.
@@ -45,7 +45,7 @@ func (s *session) getParameter(ctx context.Context, path string, decrypt bool) (
 	}
 
 	if out.Parameter == nil || out.Parameter.Value == nil {
-		return parameterValue{}, domain.ErrNotFound.WithMessage(
+		return parameterValue{}, shared.ErrNotFound.WithMessage(
 			fmt.Sprintf("SSM parameter %s has no value", path),
 		)
 	}

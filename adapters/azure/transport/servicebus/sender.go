@@ -5,8 +5,9 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -64,7 +65,7 @@ func (s *Sender) entityName() string {
 }
 
 // Send submits a single envelope to Service Bus.
-func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
 	if err := s.ensureClient(ctx); err != nil {
 		return err
 	}
@@ -89,8 +90,8 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 		return err
 	}
 
-	s.metrics.Timer(domain.MetricASBSendLatency, s.clock().Since(start),
-		domain.Tag{Key: domain.TagKeyEntity, Value: s.entityName()})
+	s.metrics.Timer(shared.MetricASBSendLatency, s.clock().Since(start),
+		shared.Tag{Key: shared.TagKeyEntity, Value: s.entityName()})
 
 	return nil
 }
@@ -99,7 +100,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 // ASB batches are size-limited; when a message overflows the batch, the
 // current batch is flushed and the oversized message is sent individually.
 // Returns the number of successfully sent messages.
-func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, error) {
+func (s *Sender) SendBatch(ctx context.Context, envs []*messaging.Envelope) (int, error) {
 	if err := s.ensureClient(ctx); err != nil {
 		return 0, err
 	}
@@ -130,8 +131,8 @@ func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, e
 			return sent, err
 		}
 
-		s.metrics.Timer(domain.MetricASBSendBatchLatency, s.clock().Since(start),
-			domain.Tag{Key: domain.TagKeyEntity, Value: s.entityName()})
+		s.metrics.Timer(shared.MetricASBSendBatchLatency, s.clock().Since(start),
+			shared.Tag{Key: shared.TagKeyEntity, Value: s.entityName()})
 	}
 
 	return sent, nil

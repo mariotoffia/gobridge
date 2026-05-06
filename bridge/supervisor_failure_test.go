@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 const swapTimeout = 2 * time.Second

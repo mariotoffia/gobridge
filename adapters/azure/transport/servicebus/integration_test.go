@@ -12,7 +12,8 @@ import (
 	"time"
 
 	servicebus "github.com/mariotoffia/gobridge/adapters/azure/transport/servicebus"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/asblocal"
 )
@@ -87,7 +88,7 @@ func warmupRoundtrip(cs string, timeout time.Duration) error {
 	}
 	defer sender.Close(context.Background()) //nolint:errcheck
 
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID:      fmt.Sprintf("warmup-%d", time.Now().UnixNano()),
 		Subject: "asb-warmup",
 		Payload: []byte(`{"warmup":true}`),
@@ -212,7 +213,7 @@ func TestIntegration_SendReceive(t *testing.T) {
 	defer sender.Close(ctx) //nolint:errcheck
 
 	payload := []byte(`{"msg":"hello"}`)
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      fmt.Sprintf("test-msg-%d", time.Now().UnixNano()),
 		Subject: "test-subject",
 		Payload: payload,
@@ -265,7 +266,7 @@ func TestIntegration_AckRetryExtend(t *testing.T) {
 	sender := newTestSender(t, asblocal.TestQueue)
 	defer sender.Close(ctx) //nolint:errcheck
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        fmt.Sprintf("ack-test-%d", time.Now().UnixNano()),
 		Subject:   "ack-test",
 		Payload:   []byte("ack-retry-extend-test"),
@@ -343,9 +344,9 @@ func TestIntegration_BatchSend(t *testing.T) {
 	defer sender.Close(ctx) //nolint:errcheck
 
 	const batchSize = 5
-	envs := make([]*domain.Envelope, batchSize)
+	envs := make([]*messaging.Envelope, batchSize)
 	for i := range envs {
-		envs[i] = &domain.Envelope{
+		envs[i] = &messaging.Envelope{
 			ID:        fmt.Sprintf("batch-%d-%d", i, time.Now().UnixNano()),
 			Subject:   "batch-test",
 			Payload:   []byte(fmt.Sprintf("batch-message-%d", i)),
@@ -408,7 +409,7 @@ func TestIntegration_ErrorMapping(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	sendErr := s.Send(ctx, &domain.Envelope{
+	sendErr := s.Send(ctx, &messaging.Envelope{
 		ID:        "error-test",
 		Subject:   "error-test",
 		Payload:   []byte("error-test"),
@@ -419,9 +420,9 @@ func TestIntegration_ErrorMapping(t *testing.T) {
 		t.Fatal("expected error when sending to non-existent queue")
 	}
 
-	var bridgeErr *domain.BridgeError
+	var bridgeErr *shared.BridgeError
 	if !errors.As(sendErr, &bridgeErr) {
-		t.Fatalf("expected *domain.BridgeError, got %T: %v", sendErr, sendErr)
+		t.Fatalf("expected *shared.BridgeError, got %T: %v", sendErr, sendErr)
 	}
 
 	t.Logf("error class = %s, code = %s, message = %s",
@@ -438,7 +439,7 @@ func TestIntegration_AutoExtend(t *testing.T) {
 	sender := newTestSender(t, asblocal.TestQueue)
 	defer sender.Close(ctx) //nolint:errcheck
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        fmt.Sprintf("autoextend-%d", time.Now().UnixNano()),
 		Subject:   "auto-extend-test",
 		Payload:   []byte("auto-extend-payload"),
@@ -507,7 +508,7 @@ func TestIntegration_TopicSubscription(t *testing.T) {
 	}
 	defer topicSender.Close(ctx) //nolint:errcheck
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      fmt.Sprintf("topic-msg-%d", time.Now().UnixNano()),
 		Subject: "topic-test",
 		Payload: []byte("topic-payload"),

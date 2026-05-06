@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -43,7 +43,7 @@ func TestFactory_NewSession(t *testing.T) {
 	spec := ports.SessionSpec{
 		ID:          "sess-1",
 		Transport:   "amqp10",
-		SessionMode: domain.SessionEphemeral,
+		SessionMode: connectivity.SessionEphemeral,
 		Config: Config{
 			Session: SessionOptions{Address: "amqp://localhost:5672"},
 		},
@@ -107,7 +107,7 @@ func TestFactory_NewSender_InvalidSession(t *testing.T) {
 
 func TestFactory_NewReceiver_ValidSession(t *testing.T) {
 	f := &Factory{Logger: slog.Default()}
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 
 	spec := ports.ReceiverSpec{
 		ID:     "recv-1",
@@ -125,7 +125,7 @@ func TestFactory_NewReceiver_ValidSession(t *testing.T) {
 
 func TestFactory_NewSender_ValidSession(t *testing.T) {
 	f := &Factory{Logger: slog.Default()}
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 
 	spec := ports.SenderSpec{
 		ID:     "send-1",

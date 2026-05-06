@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -12,8 +12,8 @@ func TestValidateStructural_EmptyID(t *testing.T) {
 	cfg := BridgeConfig{}
 	bc := cfg
 	r := RouteConfig{
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
-		Bindings: []domain.DestinationBinding{{ID: "b1"}},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
+		Bindings: []routing.DestinationBinding{{ID: "b1"}},
 	}
 	bc.Routes = []RouteConfig{r}
 	err := Validate(bc)
@@ -29,7 +29,7 @@ func TestValidateStructural_NoBindings(t *testing.T) {
 	cfg := BridgeConfig{}
 	r := RouteConfig{
 		ID:     "r1",
-		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy: routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 	}
 	cfg.Routes = []RouteConfig{r}
 	err := Validate(cfg)
@@ -45,8 +45,8 @@ func TestValidateStructural_UnknownDeliveryMode(t *testing.T) {
 	cfg := BridgeConfig{}
 	r := RouteConfig{
 		ID:       "r1",
-		Policy:   domain.RoutePolicy{DeliveryMode: "invalid_mode"},
-		Bindings: []domain.DestinationBinding{{ID: "b1"}},
+		Policy:   routing.RoutePolicy{DeliveryMode: "invalid_mode"},
+		Bindings: []routing.DestinationBinding{{ID: "b1"}},
 	}
 	cfg.Routes = []RouteConfig{r}
 	err := Validate(cfg)
@@ -64,8 +64,8 @@ func TestValidateStructural_UnknownSession(t *testing.T) {
 	}
 	r := RouteConfig{
 		ID:     "r1",
-		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
-		Bindings: []domain.DestinationBinding{
+		Policy: routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "missing-session"},
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
@@ -84,8 +84,8 @@ func TestValidateDirectHold_NoVisibilityExtension(t *testing.T) {
 	cfg := BridgeConfig{}
 	r := RouteConfig{
 		ID:       "r1",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
-		Bindings: []domain.DestinationBinding{{ID: "b1"}},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
+		Bindings: []routing.DestinationBinding{{ID: "b1"}},
 	}
 	cfg.Routes = []RouteConfig{r}
 	err := Validate(cfg)
@@ -101,11 +101,11 @@ func TestValidateDirectHold_FanOutRejected(t *testing.T) {
 	cfg := BridgeConfig{}
 	r := RouteConfig{
 		ID: "r1",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
-			DispatchMode: domain.DispatchFanOut,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
+			DispatchMode: routing.DispatchFanOut,
 		},
-		Bindings:           []domain.DestinationBinding{{ID: "b1"}},
+		Bindings:           []routing.DestinationBinding{{ID: "b1"}},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 	cfg.Routes = []RouteConfig{r}
@@ -122,8 +122,8 @@ func TestValidateSharedOutbox_NoOutboxStore(t *testing.T) {
 	cfg := BridgeConfig{}
 	r := RouteConfig{
 		ID:                 "r1",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
-		Bindings:           []domain.DestinationBinding{{ID: "b1"}},
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
+		Bindings:           []routing.DestinationBinding{{ID: "b1"}},
 		HasIdempotencyProc: true,
 	}
 	cfg.Routes = []RouteConfig{r}
@@ -140,8 +140,8 @@ func TestValidateSharedOutbox_NoIdempotencyProcOrSourceID(t *testing.T) {
 	cfg := BridgeConfig{HasOutboxStore: true}
 	r := RouteConfig{
 		ID:       "r1",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
-		Bindings: []domain.DestinationBinding{{ID: "b1"}},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
+		Bindings: []routing.DestinationBinding{{ID: "b1"}},
 	}
 	cfg.Routes = []RouteConfig{r}
 	err := Validate(cfg)
@@ -154,17 +154,17 @@ func TestValidateSharedOutbox_NoIdempotencyProcOrSourceID(t *testing.T) {
 }
 
 func TestValidateSharedOutbox_FanOutExceedsTransactionLimit(t *testing.T) {
-	bindings := make([]domain.DestinationBinding, DefaultOutboxTransactionLimit+1)
+	bindings := make([]routing.DestinationBinding, DefaultOutboxTransactionLimit+1)
 	for i := range bindings {
-		bindings[i] = domain.DestinationBinding{ID: "b" + string(rune('0'+i))}
+		bindings[i] = routing.DestinationBinding{ID: "b" + string(rune('0'+i))}
 	}
 
 	cfg := BridgeConfig{HasOutboxStore: true}
 	r := RouteConfig{
 		ID: "r1",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			DispatchMode: domain.DispatchFanOut,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			DispatchMode: routing.DispatchFanOut,
 		},
 		Bindings:           bindings,
 		HasIdempotencyProc: true,
@@ -183,8 +183,8 @@ func TestValidateMQTTQoS_ReliableWithQoS0(t *testing.T) {
 	cfg := BridgeConfig{HasOutboxStore: true}
 	r := RouteConfig{
 		ID:                 "r1",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
-		Bindings:           []domain.DestinationBinding{{ID: "b1"}},
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
+		Bindings:           []routing.DestinationBinding{{ID: "b1"}},
 		HasIdempotencyProc: true,
 		TargetTransport:    "MQTT",
 		TargetQoS:          0,
@@ -203,8 +203,8 @@ func TestValidate_ValidDirectHold(t *testing.T) {
 	cfg := BridgeConfig{}
 	r := RouteConfig{
 		ID:                 "r1",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
-		Bindings:           []domain.DestinationBinding{{ID: "b1"}},
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
+		Bindings:           []routing.DestinationBinding{{ID: "b1"}},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 	cfg.Routes = []RouteConfig{r}
@@ -218,8 +218,8 @@ func TestValidate_ValidSharedOutbox(t *testing.T) {
 	cfg := BridgeConfig{HasOutboxStore: true}
 	r := RouteConfig{
 		ID:                 "r1",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
-		Bindings:           []domain.DestinationBinding{{ID: "b1"}},
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
+		Bindings:           []routing.DestinationBinding{{ID: "b1"}},
 		HasIdempotencyProc: true,
 	}
 	cfg.Routes = []RouteConfig{r}

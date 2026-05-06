@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // TestSession_Start_ConcurrentRace validates that two concurrent Start
@@ -92,7 +92,7 @@ func TestSession_Start_DialFailure(t *testing.T) {
 		t.Fatal("Start() should fail when dial returns error")
 	}
 
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected BridgeError, got %T: %v", err, err)
 	}

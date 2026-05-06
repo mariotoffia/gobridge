@@ -4,14 +4,16 @@ import (
 	"context"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 )
 
 // Delivery is a source-owned unit of work. Transport adapters create
 // concrete implementations that map Ack/Retry/Extend to transport-native
 // operations (e.g., SQS DeleteMessage, ChangeMessageVisibility).
 type Delivery interface {
-	Envelope() *domain.Envelope
+	Envelope() *messaging.Envelope
 	Ack(ctx context.Context) error
 	Retry(ctx context.Context, after time.Duration, reason error) error
 	Extend(ctx context.Context, until time.Time) error
@@ -36,14 +38,14 @@ type ReceiverStartedSignaler interface {
 
 // Sender submits envelopes to a transport.
 type Sender interface {
-	Send(ctx context.Context, env *domain.Envelope) error
+	Send(ctx context.Context, env *messaging.Envelope) error
 }
 
 // BatchSender extends Sender with batch send capability for transports
 // that support it (e.g., SQS SendMessageBatch).
 type BatchSender interface {
 	Sender
-	SendBatch(ctx context.Context, envs []*domain.Envelope) (int, error)
+	SendBatch(ctx context.Context, envs []*messaging.Envelope) (int, error)
 }
 
 // SessionEventType classifies session lifecycle events.
@@ -109,7 +111,7 @@ func (h SessionHealth) HasTopic(topic string) bool {
 // Stateless transports do not require a Session.
 type Session interface {
 	Start(ctx context.Context) error
-	Reconcile(ctx context.Context, plan domain.SessionPlan) error
+	Reconcile(ctx context.Context, plan connectivity.SessionPlan) error
 	Health(ctx context.Context) SessionHealth
 	Events() <-chan SessionEvent
 	Close(ctx context.Context) error
@@ -117,9 +119,9 @@ type Session interface {
 
 // Lease manages cluster ownership for single-active scenarios.
 type Lease interface {
-	Acquire(ctx context.Context) (domain.LeaseToken, error)
-	Renew(ctx context.Context, token domain.LeaseToken) (domain.LeaseToken, error)
-	Release(ctx context.Context, token domain.LeaseToken) error
+	Acquire(ctx context.Context) (persistence.LeaseToken, error)
+	Renew(ctx context.Context, token persistence.LeaseToken) (persistence.LeaseToken, error)
+	Release(ctx context.Context, token persistence.LeaseToken) error
 	Owner() string
 }
 

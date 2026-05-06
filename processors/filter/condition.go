@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 type conditionEvaluator struct {
@@ -34,7 +34,7 @@ func newConditionEvaluator(c Condition) (*conditionEvaluator, error) {
 	return eval, nil
 }
 
-func (e *conditionEvaluator) evaluate(env *domain.Envelope) (bool, error) {
+func (e *conditionEvaluator) evaluate(env *messaging.Envelope) (bool, error) {
 	value, exists, err := e.extractField(env)
 	if err != nil {
 		return false, err
@@ -55,7 +55,7 @@ func (e *conditionEvaluator) evaluate(env *domain.Envelope) (bool, error) {
 	return e.compare(value)
 }
 
-func (e *conditionEvaluator) extractField(env *domain.Envelope) (any, bool, error) {
+func (e *conditionEvaluator) extractField(env *messaging.Envelope) (any, bool, error) {
 	field := e.condition.Field
 
 	switch {

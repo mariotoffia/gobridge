@@ -11,7 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -93,7 +94,7 @@ func TestGAP_BrokerHardCrash_SharedOutbox(t *testing.T) {
 	collector := newPersistentCollectorWithBroker(t, brokerURL, outTopic, "gap-bc1-col")
 
 	sessID := mqttlocal.UniqueClientID("gap-bc1-sess")
-	sess := newMQTTSessionWithBroker(t, brokerURL, sessID, domain.SessionExclusive, 65534, 5)
+	sess := newMQTTSessionWithBroker(t, brokerURL, sessID, connectivity.SessionExclusive, 65534, 5)
 	snd := setupMQTTSender(t, sess)
 	sc := lrSessionConfig(sessID)
 
@@ -106,14 +107,14 @@ func TestGAP_BrokerHardCrash_SharedOutbox(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-bc1-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			AckAfter:     domain.AckAfterOutboxPersist,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			AckAfter:     routing.AckAfterOutboxPersist,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "bc1-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "bc1-bind", Address: outTopic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "bc1-bind", SessionID: sessID},
 		},
 	}, newSQSReceiver(t, sqsInURL), snd, sess, &sc))
@@ -204,7 +205,7 @@ func TestGAP_BrokerDisconnect_KeepAliveDetection(t *testing.T) {
 	collector := newPersistentCollectorWithBroker(t, brokerURL, outTopic, "gap-bc2-col")
 
 	sessID := mqttlocal.UniqueClientID("gap-bc2-sess")
-	sess := newMQTTSessionWithBroker(t, brokerURL, sessID, domain.SessionExclusive, 65534, 3)
+	sess := newMQTTSessionWithBroker(t, brokerURL, sessID, connectivity.SessionExclusive, 65534, 3)
 	snd := setupMQTTSender(t, sess)
 	sc := lrSessionConfig(sessID)
 
@@ -217,12 +218,12 @@ func TestGAP_BrokerDisconnect_KeepAliveDetection(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-bc2-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			AckAfter:     domain.AckAfterOutboxPersist,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			AckAfter:     routing.AckAfterOutboxPersist,
 		},
-		Resolver: goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "bc2-bind", Address: outTopic}),
-		Bindings: []domain.DestinationBinding{
+		Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "bc2-bind", Address: outTopic}),
+		Bindings: []routing.DestinationBinding{
 			{ID: "bc2-bind", SessionID: sessID},
 		},
 	}, newSQSReceiver(t, sqsInURL), snd, sess, &sc))

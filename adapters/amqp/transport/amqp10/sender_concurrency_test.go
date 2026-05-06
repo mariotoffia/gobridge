@@ -14,7 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -38,7 +39,7 @@ func newMockSenderLink() *mockSenderLink {
 	return &mockSenderLink{sendBlock: make(chan struct{})}
 }
 
-func (m *mockSenderLink) SendEnvelope(ctx context.Context, _ *domain.Envelope) error {
+func (m *mockSenderLink) SendEnvelope(ctx context.Context, _ *messaging.Envelope) error {
 	cur := m.inFlight.Add(1)
 	for {
 		obs := m.maxInFlight.Load()
@@ -84,7 +85,7 @@ func (m *mockSenderLink) release() {
 // link.Send, which serialised throughput to one publish at a time.
 func TestSender_ConcurrentSends_DoNotSerialiseOnNetwork(t *testing.T) {
 	sess := NewSession(SessionOptions{Address: "amqp://localhost:5672"},
-		domain.SessionEphemeral, slog.Default())
+		connectivity.SessionEphemeral, slog.Default())
 
 	s, err := NewSender(SenderConfig{Address: "queue/x", Session: sess}, sess)
 	if err != nil {
@@ -102,7 +103,7 @@ func TestSender_ConcurrentSends_DoNotSerialiseOnNetwork(t *testing.T) {
 	for i := range callers {
 		go func(i int) {
 			defer wg.Done()
-			_ = s.Send(context.Background(), &domain.Envelope{
+			_ = s.Send(context.Background(), &messaging.Envelope{
 				ID:      "x",
 				Payload: []byte{byte(i)},
 			})
@@ -130,7 +131,7 @@ func TestSender_ConcurrentSends_DoNotSerialiseOnNetwork(t *testing.T) {
 // Otherwise repeated link.Close calls would race the broker.
 func TestSender_ConcurrentSendFailure_OnlyClosesLinkOnce(t *testing.T) {
 	sess := NewSession(SessionOptions{Address: "amqp://localhost:5672"},
-		domain.SessionEphemeral, slog.Default())
+		connectivity.SessionEphemeral, slog.Default())
 
 	s, err := NewSender(SenderConfig{Address: "queue/x", Session: sess}, sess)
 	if err != nil {
@@ -149,7 +150,7 @@ func TestSender_ConcurrentSendFailure_OnlyClosesLinkOnce(t *testing.T) {
 	for range callers {
 		go func() {
 			defer wg.Done()
-			_ = s.Send(context.Background(), &domain.Envelope{ID: "x"})
+			_ = s.Send(context.Background(), &messaging.Envelope{ID: "x"})
 		}()
 	}
 
@@ -177,7 +178,7 @@ func TestSender_ConcurrentSendFailure_OnlyClosesLinkOnce(t *testing.T) {
 // can acquire the Sender mutex (e.g., via Close).
 func TestSender_Send_ReleasesLockBeforeNetworkIO(t *testing.T) {
 	sess := NewSession(SessionOptions{Address: "amqp://localhost:5672"},
-		domain.SessionEphemeral, slog.Default())
+		connectivity.SessionEphemeral, slog.Default())
 
 	s, err := NewSender(SenderConfig{Address: "queue/x", Session: sess}, sess)
 	if err != nil {
@@ -191,7 +192,7 @@ func TestSender_Send_ReleasesLockBeforeNetworkIO(t *testing.T) {
 
 	sendDone := make(chan error, 1)
 	go func() {
-		sendDone <- s.Send(context.Background(), &domain.Envelope{ID: "x"})
+		sendDone <- s.Send(context.Background(), &messaging.Envelope{ID: "x"})
 	}()
 
 	// Wait until the Send is parked inside link.Send.
@@ -228,7 +229,7 @@ func TestSender_Send_ReleasesLockBeforeNetworkIO(t *testing.T) {
 // Confirms the off-mutex close does not break the recovery path.
 func TestSender_NoLink_AfterFailure(t *testing.T) {
 	sess := NewSession(SessionOptions{Address: "amqp://localhost:5672"},
-		domain.SessionEphemeral, slog.Default())
+		connectivity.SessionEphemeral, slog.Default())
 
 	s, err := NewSender(SenderConfig{Address: "queue/x", Session: sess}, sess)
 	if err != nil {
@@ -244,7 +245,7 @@ func TestSender_NoLink_AfterFailure(t *testing.T) {
 	close(failing.sendBlock)
 	failing.sendBlock = nil
 
-	if err := s.Send(context.Background(), &domain.Envelope{ID: "x"}); err == nil {
+	if err := s.Send(context.Background(), &messaging.Envelope{ID: "x"}); err == nil {
 		t.Fatal("expected Send error from failing link")
 	}
 
@@ -271,7 +272,7 @@ func TestSender_NoLink_AfterFailure(t *testing.T) {
 	s.link = healthy
 	s.mu.Unlock()
 
-	if err := s.Send(context.Background(), &domain.Envelope{ID: "y"}); err != nil {
+	if err := s.Send(context.Background(), &messaging.Envelope{ID: "y"}); err != nil {
 		t.Fatalf("Send on fresh link after failure: %v", err)
 	}
 }
@@ -281,7 +282,7 @@ func TestSender_NoLink_AfterFailure(t *testing.T) {
 // regressing memory race shows up in CI.
 func TestSender_ConcurrentSends_RaceDetector(t *testing.T) {
 	sess := NewSession(SessionOptions{Address: "amqp://localhost:5672"},
-		domain.SessionEphemeral, slog.Default())
+		connectivity.SessionEphemeral, slog.Default())
 
 	s, err := NewSender(SenderConfig{Address: "queue/x",
 		Session: sess, Metrics: &ports.NoopExporter{}}, sess)
@@ -304,7 +305,7 @@ func TestSender_ConcurrentSends_RaceDetector(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range perG {
-				_ = s.Send(context.Background(), &domain.Envelope{ID: "z"})
+				_ = s.Send(context.Background(), &messaging.Envelope{ID: "z"})
 			}
 		}()
 	}

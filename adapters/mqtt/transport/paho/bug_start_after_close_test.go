@@ -5,7 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -45,7 +46,7 @@ func TestBugSAC_StartAfterClose_ReturnsErrorAndDoesNotConnect(t *testing.T) {
 		BrokerURLs:     []string{"tcp://192.0.2.1:1883"}, // RFC 5737 unreachable
 		ClientID:       "bug-sac-1",
 		ConnectTimeout: 200 * time.Millisecond,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := s.Close(context.Background()); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -71,12 +72,12 @@ func TestBugSAC_StartAfterClose_ReturnsErrorAndDoesNotConnect(t *testing.T) {
 		t.Fatal("BUG-SAC: Start after Close must return an error " +
 			"(closed sessions are single-use)")
 	}
-	be, ok := err.(*domain.BridgeError)
+	be, ok := err.(*shared.BridgeError)
 	if !ok {
-		t.Fatalf("BUG-SAC: Start after Close should return *domain.BridgeError, got %T: %v", err, err)
+		t.Fatalf("BUG-SAC: Start after Close should return *shared.BridgeError, got %T: %v", err, err)
 	}
-	if be.Code != domain.ErrUnavailable.Code {
-		t.Errorf("BUG-SAC: err code = %s, want %s", be.Code, domain.ErrUnavailable.Code)
+	if be.Code != shared.ErrUnavailable.Code {
+		t.Errorf("BUG-SAC: err code = %s, want %s", be.Code, shared.ErrUnavailable.Code)
 	}
 	if elapsed > 100*time.Millisecond {
 		t.Errorf("BUG-SAC: Start took %v after Close — must return immediately, not attempt connect", elapsed)
@@ -101,7 +102,7 @@ func TestBugSAC_HealthAfterStartAfterClose_StillReportsDisconnected(t *testing.T
 		BrokerURLs:     []string{"tcp://192.0.2.1:1883"},
 		ClientID:       "bug-sac-2",
 		ConnectTimeout: 200 * time.Millisecond,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	_ = s.Close(context.Background())
 
@@ -127,7 +128,7 @@ func TestBugSAC_StartAfterClose_DoesNotLeakConnectionManager(t *testing.T) {
 		BrokerURLs:     []string{"tcp://192.0.2.1:1883"},
 		ClientID:       "bug-sac-3",
 		ConnectTimeout: 200 * time.Millisecond,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	_ = s.Close(context.Background())
 
@@ -149,7 +150,7 @@ func TestBugSAC_ReconcileAfterStartAfterClose_ReturnsError(t *testing.T) {
 		BrokerURLs:     []string{"tcp://192.0.2.1:1883"},
 		ClientID:       "bug-sac-4",
 		ConnectTimeout: 200 * time.Millisecond,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	_ = s.Close(context.Background())
 
@@ -157,17 +158,17 @@ func TestBugSAC_ReconcileAfterStartAfterClose_ReturnsError(t *testing.T) {
 	defer cancel()
 	_ = s.Start(ctx)
 
-	err := s.Reconcile(context.Background(), domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "t/x", QoS: 1}},
+	err := s.Reconcile(context.Background(), connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "t/x", QoS: 1}},
 	})
 	if err == nil {
 		t.Fatal("BUG-SAC: Reconcile after Start-on-closed must error")
 	}
-	be, ok := err.(*domain.BridgeError)
+	be, ok := err.(*shared.BridgeError)
 	if !ok {
-		t.Fatalf("BUG-SAC: err type = %T, want *domain.BridgeError", err)
+		t.Fatalf("BUG-SAC: err type = %T, want *shared.BridgeError", err)
 	}
-	if be.Code != domain.ErrUnavailable.Code {
-		t.Errorf("BUG-SAC: err code = %s, want %s", be.Code, domain.ErrUnavailable.Code)
+	if be.Code != shared.ErrUnavailable.Code {
+		t.Errorf("BUG-SAC: err code = %s, want %s", be.Code, shared.ErrUnavailable.Code)
 	}
 }

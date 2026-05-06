@@ -10,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -47,19 +48,19 @@ func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 			BrokerURL:      ep,
 			ReconnectDelay: 100 * time.Millisecond,
 		},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(context.Background()) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: queueA, Config: &Config{Subscription: SubscriptionParams{Exchange: exchange, RoutingKey: queueA}}},
 			{Topic: queueB, Config: &Config{Subscription: SubscriptionParams{Exchange: exchange, RoutingKey: queueB}}},
 		},
-		Publishers: []domain.PublisherPlan{{Topic: exchange}},
+		Publishers: []connectivity.PublisherPlan{{Topic: exchange}},
 	}
 	if err := sess.Reconcile(ctx, plan); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -94,10 +95,10 @@ func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 	wait.RequireClosed(t, r2.Started(), 5*time.Second)
 
 	sender := NewSender(SenderConfig{Exchange: exchange, Session: sess, Timeout: 5 * time.Second})
-	if err := sender.Send(ctx, &domain.Envelope{ID: "pre-A", Subject: queueA, Payload: []byte("a1")}); err != nil {
+	if err := sender.Send(ctx, &messaging.Envelope{ID: "pre-A", Subject: queueA, Payload: []byte("a1")}); err != nil {
 		t.Fatalf("send pre-A: %v", err)
 	}
-	if err := sender.Send(ctx, &domain.Envelope{ID: "pre-B", Subject: queueB, Payload: []byte("b1")}); err != nil {
+	if err := sender.Send(ctx, &messaging.Envelope{ID: "pre-B", Subject: queueB, Payload: []byte("b1")}); err != nil {
 		t.Fatalf("send pre-B: %v", err)
 	}
 
@@ -131,8 +132,8 @@ func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 	defer sendCancel()
 	go func() {
 		for sendCtx.Err() == nil {
-			_ = sender2.Send(sendCtx, &domain.Envelope{ID: "post-A", Subject: queueA, Payload: []byte("a2")})
-			_ = sender2.Send(sendCtx, &domain.Envelope{ID: "post-B", Subject: queueB, Payload: []byte("b2")})
+			_ = sender2.Send(sendCtx, &messaging.Envelope{ID: "post-A", Subject: queueA, Payload: []byte("a2")})
+			_ = sender2.Send(sendCtx, &messaging.Envelope{ID: "post-B", Subject: queueB, Payload: []byte("b2")})
 			select {
 			case <-sendCtx.Done():
 			case <-time.After(100 * time.Millisecond):
@@ -161,13 +162,13 @@ func TestIntegration_Sender_MandatoryUnroutable_ReturnsError(t *testing.T) {
 
 	exchange := rabbitmqlocal.UniqueExchange("mand-unrouted-ex")
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, nil)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, nil)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Publishers: []domain.PublisherPlan{{Topic: exchange}},
+	plan := connectivity.SessionPlan{
+		Publishers: []connectivity.PublisherPlan{{Topic: exchange}},
 	}
 	if err := sess.Reconcile(ctx, plan); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -181,7 +182,7 @@ func TestIntegration_Sender_MandatoryUnroutable_ReturnsError(t *testing.T) {
 		Session:    sess,
 	})
 	defer func() { _ = sender.Close(ctx) }()
-	err := sender.Send(ctx, &domain.Envelope{
+	err := sender.Send(ctx, &messaging.Envelope{
 		ID:      "unrouted-1",
 		Subject: "unused",
 		Payload: []byte("nobody home"),
@@ -204,16 +205,16 @@ func TestIntegration_Sender_MandatoryRouted_Succeeds(t *testing.T) {
 	queue := rabbitmqlocal.UniqueQueue("mand-routed")
 	exchange := rabbitmqlocal.UniqueExchange("mand-routed-ex")
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, nil)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, nil)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: queue, Config: &Config{Subscription: SubscriptionParams{Exchange: exchange, RoutingKey: queue}}},
 		},
-		Publishers: []domain.PublisherPlan{{Topic: exchange}},
+		Publishers: []connectivity.PublisherPlan{{Topic: exchange}},
 	}
 	if err := sess.Reconcile(ctx, plan); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -227,7 +228,7 @@ func TestIntegration_Sender_MandatoryRouted_Succeeds(t *testing.T) {
 		Session:    sess,
 	})
 	defer func() { _ = sender.Close(ctx) }()
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID:      "routed-1",
 		Subject: queue,
 		Payload: []byte("delivered"),
@@ -252,18 +253,18 @@ func TestIntegration_ConsumerTag_ReuseAfterReconnect(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep, ReconnectDelay: 100 * time.Millisecond},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(context.Background()) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: queue, Config: &Config{Subscription: SubscriptionParams{Exchange: exchange, RoutingKey: queue}}},
 		},
-		Publishers: []domain.PublisherPlan{{Topic: exchange}},
+		Publishers: []connectivity.PublisherPlan{{Topic: exchange}},
 	}
 	if err := sess.Reconcile(ctx, plan); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -290,7 +291,7 @@ func TestIntegration_ConsumerTag_ReuseAfterReconnect(t *testing.T) {
 	wait.RequireClosed(t, recv.Started(), 5*time.Second)
 
 	sender := NewSender(SenderConfig{Exchange: exchange, RoutingKey: queue, Session: sess, Timeout: 5 * time.Second})
-	if err := sender.Send(ctx, &domain.Envelope{ID: "tag-pre", Payload: []byte("pre")}); err != nil {
+	if err := sender.Send(ctx, &messaging.Envelope{ID: "tag-pre", Payload: []byte("pre")}); err != nil {
 		t.Fatalf("send pre: %v", err)
 	}
 
@@ -316,7 +317,7 @@ func TestIntegration_ConsumerTag_ReuseAfterReconnect(t *testing.T) {
 	defer sendCancel()
 	go func() {
 		for sendCtx.Err() == nil {
-			_ = postSender.Send(sendCtx, &domain.Envelope{ID: "tag-post", Payload: []byte("post")})
+			_ = postSender.Send(sendCtx, &messaging.Envelope{ID: "tag-post", Payload: []byte("post")})
 			select {
 			case <-sendCtx.Done():
 			case <-time.After(100 * time.Millisecond):

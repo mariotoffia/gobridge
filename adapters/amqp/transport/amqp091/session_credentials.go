@@ -3,7 +3,8 @@ package amqp091
 import (
 	"context"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -24,15 +25,15 @@ import (
 //     and "first-time TLS enable" are supported; enabling TLS on a
 //     previously non-TLS session rebuilds s.dial so the new dialer
 //     actually performs the handshake.
-func (s *Session) ApplyCredentials(ctx context.Context, set *domain.CredentialSet) error {
+func (s *Session) ApplyCredentials(ctx context.Context, set *connectivity.CredentialSet) error {
 	if set == nil {
-		return domain.ErrInvalidPayload.WithMessage("amqp091: nil credential set")
+		return shared.ErrInvalidPayload.WithMessage("amqp091: nil credential set")
 	}
 
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return domain.ErrUnavailable.WithMessage("amqp091: session already closed")
+		return shared.ErrUnavailable.WithMessage("amqp091: session already closed")
 	}
 
 	var credsChanged bool
@@ -89,7 +90,7 @@ func (s *Session) ApplyCredentials(ctx context.Context, set *domain.CredentialSe
 // applyAMQPTLSMaterial mirrors the paho helper: returns true when the
 // session's TLS config was mutated, signalling the caller needs to
 // force a reconnect. See the paho analogue for the full rationale.
-func applyAMQPTLSMaterial(opts **TLSConfig, mat *domain.TLSMaterial) bool {
+func applyAMQPTLSMaterial(opts **TLSConfig, mat *connectivity.TLSMaterial) bool {
 	if mat == nil {
 		return false
 	}

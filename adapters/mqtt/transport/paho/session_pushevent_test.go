@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -42,7 +42,7 @@ func TestPushEvent_ConcurrentClose_NoPanic(t *testing.T) {
 	for trial := 0; trial < 20; trial++ {
 		s := NewSession(
 			SessionOptions{BrokerURLs: []string{"tcp://localhost:1883"}, ClientID: "test"},
-			domain.SessionEphemeral,
+			connectivity.SessionEphemeral,
 			nil,
 		)
 
@@ -89,7 +89,7 @@ func TestPushEvent_ConcurrentClose_NoPanic(t *testing.T) {
 func TestPushEvent_AfterClose_IsNoop(t *testing.T) {
 	s := NewSession(
 		SessionOptions{BrokerURLs: []string{"tcp://localhost:1883"}, ClientID: "test"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -130,7 +130,7 @@ func TestPushEvent_AfterClose_IsNoop(t *testing.T) {
 func TestPushEvent_BufferFull_DropsOldest(t *testing.T) {
 	s := NewSession(
 		SessionOptions{BrokerURLs: []string{"tcp://localhost:1883"}, ClientID: "test"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
@@ -58,7 +58,7 @@ func withFreshInfra(t *testing.T) *testInfra {
 // when the runtime's SessionManager will manage the session lifecycle
 // (exclusive sessions). The runtime calls session.Start() itself.
 func newMQTTSession(
-	t *testing.T, clientID string, mode domain.SessionMode,
+	t *testing.T, clientID string, mode connectivity.SessionMode,
 ) *paho.Session {
 	t.Helper()
 	url := mqttlocal.BrokerURL(t)
@@ -67,7 +67,7 @@ func newMQTTSession(
 		ClientID:       clientID,
 		KeepAlive:      30,
 		ConnectTimeout: 15 * time.Second,
-		CleanStart:     mode == domain.SessionEphemeral,
+		CleanStart:     mode == connectivity.SessionEphemeral,
 		ReceiveMaximum: 65534,
 	}, mode, testLogger(t))
 

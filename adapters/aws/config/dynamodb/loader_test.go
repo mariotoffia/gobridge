@@ -9,8 +9,8 @@ import (
 	"time"
 
 	ddbconfig "github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
@@ -126,7 +126,7 @@ func TestLoadNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing config")
 	}
-	if !errors.Is(err, domain.ErrNotFound) {
+	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }

@@ -5,7 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 )
@@ -20,7 +21,7 @@ func TestIntegration_SessionHealth(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -47,8 +48,8 @@ func TestIntegration_SessionHealth(t *testing.T) {
 	queueName := rabbitmqlocal.UniqueQueue("sess-health")
 	exchangeName := rabbitmqlocal.UniqueExchange("sess-health-ex")
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -58,7 +59,7 @@ func TestIntegration_SessionHealth(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName, Config: &Config{Publisher: PublisherParams{Durable: false}}},
 		},
 	}
@@ -97,7 +98,7 @@ func TestIntegration_SessionEvents(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -140,8 +141,8 @@ checkConnected:
 
 	queueName := rabbitmqlocal.UniqueQueue("sess-events")
 	exchangeName := rabbitmqlocal.UniqueExchange("sess-events-ex")
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -150,7 +151,7 @@ checkConnected:
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName},
 		},
 	}
@@ -194,7 +195,7 @@ func TestIntegration_SessionReconcile_MultipleQueues(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
@@ -206,8 +207,8 @@ func TestIntegration_SessionReconcile_MultipleQueues(t *testing.T) {
 	fanoutQueue := rabbitmqlocal.UniqueQueue("multi-fanout")
 	fanoutExchange := rabbitmqlocal.UniqueExchange("multi-fanout-ex")
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: directQueue,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -224,7 +225,7 @@ func TestIntegration_SessionReconcile_MultipleQueues(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: directExchange},
 			{Topic: fanoutExchange, Config: &Config{Publisher: PublisherParams{ExchangeType: "fanout"}}},
 		},
@@ -245,12 +246,12 @@ func TestIntegration_SessionReconcile_MultipleQueues(t *testing.T) {
 		Timeout:  10 * time.Second,
 	})
 
-	if err := directSender.Send(ctx, &domain.Envelope{
+	if err := directSender.Send(ctx, &messaging.Envelope{
 		ID: "direct-1", Subject: directQueue, Payload: []byte("direct-payload"),
 	}); err != nil {
 		t.Fatalf("send direct: %v", err)
 	}
-	if err := fanoutSender.Send(ctx, &domain.Envelope{
+	if err := fanoutSender.Send(ctx, &messaging.Envelope{
 		ID: "fanout-1", Subject: fanoutQueue, Payload: []byte("fanout-payload"),
 	}); err != nil {
 		t.Fatalf("send fanout: %v", err)
@@ -319,8 +320,8 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 	queueName := rabbitmqlocal.UniqueQueue("sess-restart")
 	exchangeName := rabbitmqlocal.UniqueExchange("sess-restart-ex")
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -329,14 +330,14 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName},
 		},
 	}
 
 	sess1 := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess1.Start(ctx); err != nil {
@@ -352,7 +353,7 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 		Session:    sess1,
 		Timeout:    10 * time.Second,
 	})
-	if err := sender1.Send(ctx, &domain.Envelope{
+	if err := sender1.Send(ctx, &messaging.Envelope{
 		ID: "restart-msg", Subject: queueName, Payload: []byte("first-session"),
 	}); err != nil {
 		t.Fatalf("send on session1: %v", err)
@@ -364,7 +365,7 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 
 	sess2 := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess2.Start(ctx); err != nil {
@@ -381,7 +382,7 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 		Session:    sess2,
 		Timeout:    10 * time.Second,
 	})
-	if err := sender2.Send(ctx, &domain.Envelope{
+	if err := sender2.Send(ctx, &messaging.Envelope{
 		ID: "restart-msg-2", Subject: queueName, Payload: []byte("second-session"),
 	}); err != nil {
 		t.Fatalf("send on session2: %v", err)
@@ -396,7 +397,7 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
 
-	received := make(chan *domain.Envelope, 2)
+	received := make(chan *messaging.Envelope, 2)
 	go func() {
 		_ = receiver.Run(recvCtx, func(_ context.Context, d ports.Delivery) error {
 			received <- d.Envelope()

@@ -1,7 +1,7 @@
 package oteltracing
 
 import (
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 
 	"go.opentelemetry.io/otel/codes"
@@ -27,7 +27,7 @@ func (s *otelSpan) SetError(err error) {
 	s.span.SetStatus(codes.Error, err.Error())
 }
 
-func (s *otelSpan) AddEvent(name string, attrs ...domain.Tag) {
+func (s *otelSpan) AddEvent(name string, attrs ...shared.Tag) {
 	if len(attrs) > 0 {
 		s.span.AddEvent(name, trace.WithAttributes(tagsToAttributes(attrs)...))
 		return
@@ -35,7 +35,7 @@ func (s *otelSpan) AddEvent(name string, attrs ...domain.Tag) {
 	s.span.AddEvent(name)
 }
 
-func (s *otelSpan) SetAttributes(attrs ...domain.Tag) {
+func (s *otelSpan) SetAttributes(attrs ...shared.Tag) {
 	if len(attrs) > 0 {
 		s.span.SetAttributes(tagsToAttributes(attrs)...)
 	}

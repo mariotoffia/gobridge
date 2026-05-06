@@ -10,8 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/observability"
 	"github.com/mariotoffia/gobridge/ports"
@@ -23,7 +25,7 @@ import (
 // optional global semaphore provides host-level throttling across routes.
 type RouteRunner struct {
 	routeID              string
-	policy               domain.RoutePolicy
+	policy               routing.RoutePolicy
 	receiver             ports.Receiver
 	sender               ports.Sender
 	senders              map[string]ports.Sender // binding ID -> sender (optional)
@@ -31,7 +33,7 @@ type RouteRunner struct {
 	dlq                  *DLQRouter
 	resolver             ports.DestinationResolver
 	processors           []ports.Processor
-	bindings             []domain.DestinationBinding
+	bindings             []routing.DestinationBinding
 	instanceID           string
 	metrics              ports.MetricsExporter
 	tracer               ports.Tracer
@@ -43,8 +45,8 @@ type RouteRunner struct {
 	depthCache           *outboxDepthCache
 	panicRetryTimeout    time.Duration
 	receiverCloseTimeout time.Duration
-	onDelivery           func(env *domain.Envelope, err error)
-	onAck                func(env *domain.Envelope, err error)
+	onDelivery           func(env *messaging.Envelope, err error)
+	onAck                func(env *messaging.Envelope, err error)
 	started              chan struct{}
 	startedOnce          sync.Once
 	inFlight             atomic.Int64
@@ -55,7 +57,7 @@ type RouteRunner struct {
 // RouteRunnerConfig holds the configuration for a RouteRunner.
 type RouteRunnerConfig struct {
 	RouteID              string
-	Policy               domain.RoutePolicy
+	Policy               routing.RoutePolicy
 	Receiver             ports.Receiver
 	Sender               ports.Sender
 	Senders              map[string]ports.Sender // binding ID -> sender (optional)
@@ -63,7 +65,7 @@ type RouteRunnerConfig struct {
 	DLQ                  *DLQRouter
 	Resolver             ports.DestinationResolver
 	Processors           []ports.Processor
-	Bindings             []domain.DestinationBinding
+	Bindings             []routing.DestinationBinding
 	InstanceID           string
 	Metrics              ports.MetricsExporter
 	Tracer               ports.Tracer
@@ -77,11 +79,11 @@ type RouteRunnerConfig struct {
 	// OnDelivery is invoked (non-blocking) for each envelope the RouteRunner
 	// has successfully dispatched (sent to the target). Receives the envelope
 	// and any error from the send pipeline (nil on success). Optional.
-	OnDelivery func(env *domain.Envelope, err error)
+	OnDelivery func(env *messaging.Envelope, err error)
 	// OnAck is invoked (non-blocking) after the source delivery is acked or
 	// retried. Receives the envelope and the ack error (nil on successful ack).
 	// Optional.
-	OnAck func(env *domain.Envelope, err error)
+	OnAck func(env *messaging.Envelope, err error)
 }
 
 // NewRouteRunnerFromConfig creates a RouteRunner from a config struct.
@@ -123,10 +125,10 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 	}
 
 	var dc *outboxDepthCache
-	if policy.DeliveryMode == domain.DeliverySharedOutbox {
+	if policy.DeliveryMode == routing.DeliverySharedOutbox {
 		depthTTL := cfg.DepthCacheTTL
 		if depthTTL <= 0 {
-			depthTTL = domain.DefaultDepthCacheTTL
+			depthTTL = routing.DefaultDepthCacheTTL
 		}
 		dc = newOutboxDepthCache(depthTTL, clk)
 	}
@@ -190,8 +192,8 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 		}
 		wg.Add(1)
 		mu.Unlock()
-		r.metrics.Counter(domain.MetricMessagesReceived, 1,
-			domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID})
+		r.metrics.Counter(shared.MetricMessagesReceived, 1,
+			shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
 		go func() {
 			r.inFlight.Add(1)
 			defer func() {
@@ -222,8 +224,8 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 									"route", r.routeID, "panic", r2)
 							}
 						}()
-						r.metrics.Counter(domain.MetricDeliveryPanics, 1,
-							domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID},
+						r.metrics.Counter(shared.MetricDeliveryPanics, 1,
+							shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID},
 						)
 						// Propagate caller ctx for trace/correlation values and to
 						// honour any deadline the caller already set. If the caller
@@ -328,7 +330,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 
 	env := del.Envelope()
 
-	env.Headers = domain.StripReservedHeaders(env.Headers)
+	env.Headers = messaging.StripReservedHeaders(env.Headers)
 	r.injectHeaders(env)
 
 	if logging.TraceEnabled(r.logger) {
@@ -339,20 +341,20 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		)
 	}
 
-	tc, hasTrace := domain.ExtractTraceContext(env.Headers)
+	tc, hasTrace := messaging.ExtractTraceContext(env.Headers)
 
-	attrs := []domain.Tag{
-		{Key: domain.TagKeyRouteID, Value: r.routeID},
+	attrs := []shared.Tag{
+		{Key: shared.TagKeyRouteID, Value: r.routeID},
 		{Key: "envelope_id", Value: env.ID},
 	}
 	if hasTrace {
-		attrs = append(attrs, domain.Tag{Key: "trace_id", Value: tc.TraceID})
+		attrs = append(attrs, shared.Tag{Key: "trace_id", Value: tc.TraceID})
 	}
 
 	ctx, span := r.tracer.StartSpan(ctx, "bridge.handleDelivery", attrs...)
 	defer span.End()
 
-	if corrID, ok := domain.GetHeaderString(env.Headers, domain.HeaderCorrelationID); ok {
+	if corrID, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderCorrelationID); ok {
 		ctx = observability.WithCorrelationID(ctx, corrID)
 	}
 	if hasTrace {
@@ -384,7 +386,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		WithChainRouteID(r.routeID),
 	); err != nil {
 		pErr := r.handleProcessorError(ctx, del, env, err)
-		if !errors.Is(err, domain.ErrMessageFiltered) {
+		if !errors.Is(err, shared.ErrMessageFiltered) {
 			span.SetError(err)
 		}
 		return pErr
@@ -406,7 +408,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 
 	var deliveryErr error
 	switch r.policy.DeliveryMode {
-	case domain.DeliverySharedOutbox:
+	case routing.DeliverySharedOutbox:
 		deliveryErr = r.sharedOutbox(ctx, del, env)
 	default:
 		deliveryErr = r.directHold(ctx, del, env)
@@ -416,17 +418,17 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		span.SetError(deliveryErr)
 	}
 
-	routeTag := domain.Tag{Key: domain.TagKeyRouteID, Value: r.routeID}
-	r.metrics.Timer(domain.MetricDeliveryE2ELatency, r.clk.Since(start), routeTag)
+	routeTag := shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID}
+	r.metrics.Timer(shared.MetricDeliveryE2ELatency, r.clk.Since(start), routeTag)
 
 	return deliveryErr
 }
 
-func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *domain.Envelope) error {
+func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *messaging.Envelope) error {
 	// Consume HeaderRouteOverride set by processor chain (e.g., filter ActionRoute).
 	// SEC-1: validate the override references a binding declared on this route.
-	if override, ok := domain.GetHeaderString(env.Headers, domain.HeaderRouteOverride); ok {
-		delete(env.Headers, domain.HeaderRouteOverride)
+	if override, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderRouteOverride); ok {
+		delete(env.Headers, messaging.HeaderRouteOverride)
 		if r.hasBinding(override) {
 			return r.sendDirectHoldForBinding(ctx, del, env, override)
 		}

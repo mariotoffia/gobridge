@@ -5,7 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -18,17 +21,17 @@ func TestRouteRunner_EmitsE2ELatency(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "route-e2e",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
 		Metrics:  rec,
-		Bindings: []domain.DestinationBinding{{ID: "b1"}},
+		Bindings: []routing.DestinationBinding{{ID: "b1"}},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &domain.Envelope{ID: "msg-1", Payload: []byte("data"), ExpiresAt: time.Now().Add(time.Hour)}
+	env := &messaging.Envelope{ID: "msg-1", Payload: []byte("data"), ExpiresAt: time.Now().Add(time.Hour)}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -36,13 +39,13 @@ func TestRouteRunner_EmitsE2ELatency(t *testing.T) {
 
 	cancel()
 
-	timers := rec.FindEntries(domain.MetricDeliveryE2ELatency)
+	timers := rec.FindEntries(shared.MetricDeliveryE2ELatency)
 	if len(timers) == 0 {
 		t.Fatal("expected at least 1 DeliveryE2ELatency timer")
 	}
 	found := false
 	for _, tag := range timers[0].Tags {
-		if tag.Key == domain.TagKeyRouteID && tag.Value == "route-e2e" {
+		if tag.Key == shared.TagKeyRouteID && tag.Value == "route-e2e" {
 			found = true
 		}
 	}
@@ -55,24 +58,24 @@ func TestRouteRunner_EmitsE2ELatency(t *testing.T) {
 func TestRouteRunner_EmitsDLQEntries(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	sender := NewFakeSender()
-	sender.SendErr = domain.NewBridgeError("PERM", domain.ErrorPermanent, "permanent failure")
+	sender.SendErr = shared.NewBridgeError("PERM", shared.ErrorPermanent, "permanent failure")
 	receiver := NewFakeReceiver()
 	dlqStore := NewFakeDLQStore()
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "route-dlq",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(dlqStore),
 		Metrics:  rec,
-		Bindings: []domain.DestinationBinding{{ID: "b1"}},
+		Bindings: []routing.DestinationBinding{{ID: "b1"}},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &domain.Envelope{ID: "msg-dlq", Payload: []byte("data"), ExpiresAt: time.Now().Add(time.Hour)}
+	env := &messaging.Envelope{ID: "msg-dlq", Payload: []byte("data"), ExpiresAt: time.Now().Add(time.Hour)}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -80,7 +83,7 @@ func TestRouteRunner_EmitsDLQEntries(t *testing.T) {
 
 	cancel()
 
-	dlqCounters := rec.FindEntries(domain.MetricDLQEntries)
+	dlqCounters := rec.FindEntries(shared.MetricDLQEntries)
 	if len(dlqCounters) == 0 {
 		t.Fatal("expected DLQEntries counter emission")
 	}
@@ -95,10 +98,10 @@ func TestOutboxDrainer_EmitsDrainLatency(t *testing.T) {
 
 	token, _ := lease.Acquire(context.Background(), "session-1", "owner-1", 30*time.Second, nil)
 
-	records := []domain.OutboxRecord{{
+	records := []persistence.OutboxRecord{{
 		ID: "r1", RouteID: "route-drain", EnvelopeID: "e1", BindingID: "b1",
-		SessionID: "session-1", Status: domain.OutboxPending,
-		Envelope: domain.Envelope{ID: "e1", Payload: []byte("data")},
+		SessionID: "session-1", Status: persistence.OutboxPending,
+		Envelope: messaging.Envelope{ID: "e1", Payload: []byte("data")},
 	}}
 	_ = outbox.Persist(context.Background(), records)
 
@@ -107,26 +110,26 @@ func TestOutboxDrainer_EmitsDrainLatency(t *testing.T) {
 		LeaseStore:     lease,
 		Sender:         sender,
 		RouteID:        "route-drain",
-		PartitionKey:   domain.OutboxPartitionKey("session-1", "b1"),
+		PartitionKey:   persistence.OutboxPartitionKey("session-1", "b1"),
 		LeaseID:        "session-1",
 		OwnerID:        "owner-1",
-		Policy:         domain.RoutePolicy{}.WithDefaults(),
-		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		Policy:         routing.RoutePolicy{}.WithDefaults(),
+		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		Metrics:        rec,
-		TokenFn:        func() (domain.LeaseToken, bool) { return token, true },
+		TokenFn:        func() (persistence.LeaseToken, bool) { return token, true },
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	_ = drainer.Run(ctx)
 
-	timers := rec.FindEntries(domain.MetricOutboxDrainLatency)
+	timers := rec.FindEntries(shared.MetricOutboxDrainLatency)
 	if len(timers) == 0 {
 		t.Fatal("expected OutboxDrainLatency timer emission")
 	}
 
-	completions := rec.FindEntries(domain.MetricOutboxCompletions)
+	completions := rec.FindEntries(shared.MetricOutboxCompletions)
 	if len(completions) == 0 {
 		t.Fatal("expected OutboxCompletions counter emission")
 	}
@@ -141,10 +144,10 @@ func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 
 	token, _ := lease.Acquire(context.Background(), "s1", "owner-1", 30*time.Second, nil)
 
-	records := []domain.OutboxRecord{{
+	records := []persistence.OutboxRecord{{
 		ID: "r-exp", RouteID: "route-exp", EnvelopeID: "e-exp", BindingID: "b1",
-		SessionID: "s1", Status: domain.OutboxPending,
-		Envelope: domain.Envelope{
+		SessionID: "s1", Status: persistence.OutboxPending,
+		Envelope: messaging.Envelope{
 			ID:        "e-exp",
 			Payload:   []byte("data"),
 			ExpiresAt: time.Now().Add(-time.Hour),
@@ -158,21 +161,21 @@ func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 		LeaseStore:     lease,
 		Sender:         sender,
 		RouteID:        "route-exp",
-		PartitionKey:   domain.OutboxPartitionKey("s1", "b1"),
+		PartitionKey:   persistence.OutboxPartitionKey("s1", "b1"),
 		LeaseID:        "s1",
 		OwnerID:        "owner-1",
-		Policy:         domain.RoutePolicy{OnExpired: domain.ExpiredDLQ}.WithDefaults(),
-		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		Policy:         routing.RoutePolicy{OnExpired: routing.ExpiredDLQ}.WithDefaults(),
+		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		Metrics:        rec,
-		TokenFn:        func() (domain.LeaseToken, bool) { return token, true },
+		TokenFn:        func() (persistence.LeaseToken, bool) { return token, true },
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	_ = drainer.Run(ctx)
 
-	expired := rec.FindEntries(domain.MetricOutboxExpiredBeforeSend)
+	expired := rec.FindEntries(shared.MetricOutboxExpiredBeforeSend)
 	if len(expired) == 0 {
 		t.Fatal("expected OutboxExpiredBeforeSend counter emission")
 	}
@@ -208,10 +211,10 @@ func TestSessionManager_EmitsLeaseMetrics(t *testing.T) {
 	}()
 
 	waitFor(t, 2*time.Second, "LeaseAcquireLatency emitted", func() bool {
-		return len(rec.FindEntries(domain.MetricLeaseAcquireLatency)) > 0
+		return len(rec.FindEntries(shared.MetricLeaseAcquireLatency)) > 0
 	})
 	waitFor(t, 2*time.Second, "LeaseRenewLatency emitted", func() bool {
-		return len(rec.FindEntries(domain.MetricLeaseRenewLatency)) > 0
+		return len(rec.FindEntries(shared.MetricLeaseRenewLatency)) > 0
 	})
 
 	cancel()
@@ -253,7 +256,7 @@ func TestSessionManager_EmitsReconnectMetric(t *testing.T) {
 
 	_ = mgr.Run(ctx)
 
-	reconnects := rec.FindEntries(domain.MetricMQTTReconnects)
+	reconnects := rec.FindEntries(shared.MetricMQTTReconnects)
 	if len(reconnects) != 1 {
 		t.Fatalf("expected 1 MQTTReconnects counter (not counting initial connect), got %d", len(reconnects))
 	}

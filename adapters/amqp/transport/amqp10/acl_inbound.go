@@ -11,8 +11,8 @@ import (
 
 	"github.com/Azure/go-amqp"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -67,7 +67,7 @@ func messageToHeaders(msg *amqp.Message) map[string]any {
 	}
 
 	for k, v := range msg.ApplicationProperties {
-		if domain.IsReservedHeader(k) || strings.HasPrefix(k, headerPrefix) {
+		if messaging.IsReservedHeader(k) || strings.HasPrefix(k, headerPrefix) {
 			continue
 		}
 		h[k] = v
@@ -114,9 +114,9 @@ func (r *receiverLink) Close(ctx context.Context) error {
 }
 
 // messageToEnvelope translates an inbound *amqp.Message into a fresh
-// domain.Envelope. The defaultSubject parameter is used when the
+// messaging.Envelope. The defaultSubject parameter is used when the
 // message does not carry one of its own.
-func messageToEnvelope(msg *amqp.Message, defaultSubject string, clk clock.Clock) *domain.Envelope {
+func messageToEnvelope(msg *amqp.Message, defaultSubject string, clk clock.Clock) *messaging.Envelope {
 	if clk == nil {
 		clk = clock.System
 	}
@@ -146,7 +146,7 @@ func messageToEnvelope(msg *amqp.Message, defaultSubject string, clk clock.Clock
 		}
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        msgID,
 		Subject:   subject,
 		Payload:   body,

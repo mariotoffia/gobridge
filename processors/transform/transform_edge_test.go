@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 func TestJSONTransform_FailOnError_StopsOnMappingFailure(t *testing.T) {
 	input := map[string]any{"other": "data"}
 	inputBytes, _ := json.Marshal(input)
-	noop := func(_ context.Context, _ *domain.Envelope) error { return nil }
+	noop := func(_ context.Context, _ *messaging.Envelope) error { return nil }
 
 	t.Run("FailOnError=true with required missing field returns error", func(t *testing.T) {
 		proc, err := New(Config{
@@ -24,7 +24,7 @@ func TestJSONTransform_FailOnError_StopsOnMappingFailure(t *testing.T) {
 			t.Fatalf("failed to create processor: %v", err)
 		}
 
-		env := &domain.Envelope{Payload: append([]byte(nil), inputBytes...)}
+		env := &messaging.Envelope{Payload: append([]byte(nil), inputBytes...)}
 		if err := proc.Process(context.Background(), env, noop); err == nil {
 			t.Fatal("expected error for required missing field with FailOnError=true")
 		}
@@ -41,7 +41,7 @@ func TestJSONTransform_FailOnError_StopsOnMappingFailure(t *testing.T) {
 			t.Fatalf("failed to create processor: %v", err)
 		}
 
-		env := &domain.Envelope{Payload: append([]byte(nil), inputBytes...)}
+		env := &messaging.Envelope{Payload: append([]byte(nil), inputBytes...)}
 		if err := proc.Process(context.Background(), env, noop); err != nil {
 			t.Fatalf("expected success when FailOnError=false, got: %v", err)
 		}
@@ -58,7 +58,7 @@ func TestJSONTransform_FailOnError_StopsOnMappingFailure(t *testing.T) {
 			t.Fatalf("failed to create processor: %v", err)
 		}
 
-		env := &domain.Envelope{Payload: append([]byte(nil), inputBytes...)}
+		env := &messaging.Envelope{Payload: append([]byte(nil), inputBytes...)}
 		if err := proc.Process(context.Background(), env, noop); err == nil {
 			t.Fatal("expected error converting non-numeric string to int with FailOnError=true")
 		}
@@ -75,7 +75,7 @@ func TestJSONTransform_FailOnError_StopsOnMappingFailure(t *testing.T) {
 			t.Fatalf("failed to create processor: %v", err)
 		}
 
-		env := &domain.Envelope{Payload: append([]byte(nil), inputBytes...)}
+		env := &messaging.Envelope{Payload: append([]byte(nil), inputBytes...)}
 		if err := proc.Process(context.Background(), env, noop); err != nil {
 			t.Fatalf("expected mapping to be skipped when FailOnError=false, got: %v", err)
 		}
@@ -95,9 +95,9 @@ func TestJSONTransform_TransformFloat(t *testing.T) {
 
 	input := map[string]any{"price": "42.5"}
 	inputBytes, _ := json.Marshal(input)
-	env := &domain.Envelope{Payload: inputBytes}
+	env := &messaging.Envelope{Payload: inputBytes}
 
-	err = proc.Process(context.Background(), env, func(_ context.Context, _ *domain.Envelope) error {
+	err = proc.Process(context.Background(), env, func(_ context.Context, _ *messaging.Envelope) error {
 		return nil
 	})
 	if err != nil {
@@ -164,9 +164,9 @@ func TestJSONTransform_TransformNone(t *testing.T) {
 
 	input := map[string]any{"status": "active"}
 	inputBytes, _ := json.Marshal(input)
-	env := &domain.Envelope{Payload: inputBytes}
+	env := &messaging.Envelope{Payload: inputBytes}
 
-	err = proc.Process(context.Background(), env, func(_ context.Context, _ *domain.Envelope) error {
+	err = proc.Process(context.Background(), env, func(_ context.Context, _ *messaging.Envelope) error {
 		return nil
 	})
 	if err != nil {

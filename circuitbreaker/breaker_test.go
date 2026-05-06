@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/circuitbreaker"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -75,7 +75,7 @@ func TestBreaker_ClosedToOpen_AfterThreshold(t *testing.T) {
 		transitions = append(transitions, from.String()+"->"+to.String())
 	})
 
-	transientErr := domain.ErrTimeout
+	transientErr := shared.ErrTimeout
 
 	for i := 0; i < 2; i++ {
 		_ = b.BeforeRequest()
@@ -108,14 +108,14 @@ func TestBreaker_Open_RejectsWithRetryAfter(t *testing.T) {
 	b := circuitbreaker.NewBreaker("test", cfg, nil)
 
 	_ = b.BeforeRequest()
-	b.AfterRequest(domain.ErrTimeout)
+	b.AfterRequest(shared.ErrTimeout)
 
 	err := b.BeforeRequest()
 	if err == nil {
 		t.Fatal("open breaker should reject request")
 	}
 
-	retryAfter := domain.GetRetryAfter(err)
+	retryAfter := shared.GetRetryAfter(err)
 	if retryAfter <= 0 || retryAfter > 10*time.Second {
 		t.Fatalf("expected RetryAfter in (0, 10s], got %v", retryAfter)
 	}
@@ -138,7 +138,7 @@ func TestBreaker_OpenToHalfOpen_AfterResetTimeout(t *testing.T) {
 	}, circuitbreaker.WithBreakerClock(fake))
 
 	_ = b.BeforeRequest()
-	b.AfterRequest(domain.ErrTimeout)
+	b.AfterRequest(shared.ErrTimeout)
 
 	fake.Advance(100 * time.Millisecond)
 
@@ -218,7 +218,7 @@ func TestBreaker_HalfOpenFailure_ReopensCircuit(t *testing.T) {
 	b.ForceStateForTest(circuitbreaker.StateHalfOpen, time.Time{})
 
 	_ = b.BeforeRequest()
-	b.AfterRequest(domain.ErrTimeout)
+	b.AfterRequest(shared.ErrTimeout)
 
 	m := b.GetMetrics()
 	if m.State != "open" {
@@ -240,7 +240,7 @@ func TestBreaker_NonCountableError_DoesNotTrip(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		_ = b.BeforeRequest()
-		b.AfterRequest(domain.ErrInvalidPayload)
+		b.AfterRequest(shared.ErrInvalidPayload)
 	}
 
 	m := b.GetMetrics()
@@ -269,7 +269,7 @@ func TestBreaker_GetMetrics_Snapshot(t *testing.T) {
 	_ = b.BeforeRequest()
 	b.AfterRequest(nil)
 	_ = b.BeforeRequest()
-	b.AfterRequest(domain.ErrTimeout)
+	b.AfterRequest(shared.ErrTimeout)
 
 	m := b.GetMetrics()
 	if m.Key != "my-service" {
@@ -307,7 +307,7 @@ func TestBreaker_WithBreakerClockControlsFailureAndResetTiming(t *testing.T) {
 	if err := b.BeforeRequest(); err != nil {
 		t.Fatalf("closed breaker should allow request: %v", err)
 	}
-	b.AfterRequest(domain.ErrTimeout)
+	b.AfterRequest(shared.ErrTimeout)
 
 	m := b.GetMetrics()
 	if !m.LastFailureTime.Equal(start) {
@@ -320,7 +320,7 @@ func TestBreaker_WithBreakerClockControlsFailureAndResetTiming(t *testing.T) {
 	fake.Advance(9 * time.Second)
 	if err := b.BeforeRequest(); err == nil {
 		t.Fatal("open breaker should reject before injected ResetTimeout elapses")
-	} else if retryAfter := domain.GetRetryAfter(err); retryAfter != time.Second {
+	} else if retryAfter := shared.GetRetryAfter(err); retryAfter != time.Second {
 		t.Fatalf("RetryAfter = %v, want 1s", retryAfter)
 	}
 
@@ -389,7 +389,7 @@ func TestBreaker_StateChangeCallback_InvokedOutsideLock(t *testing.T) {
 	})
 
 	_ = b.BeforeRequest()
-	b.AfterRequest(domain.ErrTimeout)
+	b.AfterRequest(shared.ErrTimeout)
 
 	select {
 	case <-callbackCalled:
@@ -421,7 +421,7 @@ func TestBreaker_ConcurrentAccess(t *testing.T) {
 					if n%2 == 0 {
 						b.AfterRequest(nil)
 					} else {
-						b.AfterRequest(domain.ErrTimeout)
+						b.AfterRequest(shared.ErrTimeout)
 					}
 				}
 			}

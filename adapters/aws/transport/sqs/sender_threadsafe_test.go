@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // TestSenderEnsureClientConcurrentS14 verifies that concurrent Send calls do not
@@ -28,7 +28,7 @@ func TestSenderEnsureClientConcurrentS14(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        "id-1",
 		Payload:   []byte("payload"),
 		CreatedAt: time.Now(),

@@ -6,13 +6,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // meterClient is the adapter-internal mock seam shielding the
@@ -20,10 +21,10 @@ import (
 // SDK-typed fields, lazy instrument caches and recording calls
 // live behind this interface.
 type meterClient interface {
-	Counter(name string, value int64, tags []domain.Tag)
-	Gauge(name string, value float64, tags []domain.Tag)
-	Histogram(name string, value float64, tags []domain.Tag)
-	Timer(name string, duration time.Duration, tags []domain.Tag)
+	Counter(name string, value int64, tags []shared.Tag)
+	Gauge(name string, value float64, tags []shared.Tag)
+	Histogram(name string, value float64, tags []shared.Tag)
+	Timer(name string, duration time.Duration, tags []shared.Tag)
 	Flush(ctx context.Context) error
 	Close(ctx context.Context) error
 }
@@ -99,7 +100,7 @@ func newMeterClientFromProvider(mp *sdkmetric.MeterProvider, cfg Config) *otelMe
 	}
 }
 
-func (c *otelMeterClient) Counter(name string, value int64, tags []domain.Tag) {
+func (c *otelMeterClient) Counter(name string, value int64, tags []shared.Tag) {
 	counter, err := c.getOrCreateCounter(name)
 	if err != nil {
 		// Emit failure intentionally dropped: ports.MetricsExporter.Counter
@@ -110,7 +111,7 @@ func (c *otelMeterClient) Counter(name string, value int64, tags []domain.Tag) {
 	counter.Add(context.Background(), value, metric.WithAttributes(c.buildAttributes(tags)...))
 }
 
-func (c *otelMeterClient) Gauge(name string, value float64, tags []domain.Tag) {
+func (c *otelMeterClient) Gauge(name string, value float64, tags []shared.Tag) {
 	gauge, err := c.getOrCreateGauge(name)
 	if err != nil {
 		return
@@ -118,7 +119,7 @@ func (c *otelMeterClient) Gauge(name string, value float64, tags []domain.Tag) {
 	gauge.Record(context.Background(), value, metric.WithAttributes(c.buildAttributes(tags)...))
 }
 
-func (c *otelMeterClient) Histogram(name string, value float64, tags []domain.Tag) {
+func (c *otelMeterClient) Histogram(name string, value float64, tags []shared.Tag) {
 	histogram, err := c.getOrCreateHistogram(name)
 	if err != nil {
 		return
@@ -126,7 +127,7 @@ func (c *otelMeterClient) Histogram(name string, value float64, tags []domain.Ta
 	histogram.Record(context.Background(), value, metric.WithAttributes(c.buildAttributes(tags)...))
 }
 
-func (c *otelMeterClient) Timer(name string, duration time.Duration, tags []domain.Tag) {
+func (c *otelMeterClient) Timer(name string, duration time.Duration, tags []shared.Tag) {
 	ms := float64(duration.Nanoseconds()) / float64(time.Millisecond)
 	c.Histogram(name, ms, tags)
 }
@@ -214,7 +215,7 @@ func (c *otelMeterClient) getOrCreateHistogram(name string) (metric.Float64Histo
 	return histogram, nil
 }
 
-func (c *otelMeterClient) buildAttributes(tags []domain.Tag) []attribute.KeyValue {
+func (c *otelMeterClient) buildAttributes(tags []shared.Tag) []attribute.KeyValue {
 	attrs := make([]attribute.KeyValue, 0, len(c.defaultAttrs)+len(tags))
 	attrs = append(attrs, c.defaultAttrs...)
 	for _, tag := range tags {
@@ -223,7 +224,7 @@ func (c *otelMeterClient) buildAttributes(tags []domain.Tag) []attribute.KeyValu
 	return attrs
 }
 
-func buildDefaultAttrs(tags []domain.Tag) []attribute.KeyValue {
+func buildDefaultAttrs(tags []shared.Tag) []attribute.KeyValue {
 	attrs := make([]attribute.KeyValue, len(tags))
 	for i, tag := range tags {
 		attrs[i] = attribute.String(tag.Key, tag.Value)

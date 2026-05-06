@@ -12,7 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -53,7 +54,7 @@ func TestGAP_GoroutineLeak_StartStopCycle(t *testing.T) {
 			dlq := &lrDLQStore{}
 
 			sessID := mqttlocal.UniqueClientID("gap-gortn-" + label)
-			sess := newMQTTSession(st, sessID, domain.SessionExclusive)
+			sess := newMQTTSession(st, sessID, connectivity.SessionExclusive)
 			snd := setupMQTTSender(st, sess)
 			sc := lrSessionConfig(sessID)
 			collector := newMQTTCollector(st, outTopic, "gap-gortn-col-"+label)
@@ -67,13 +68,13 @@ func TestGAP_GoroutineLeak_StartStopCycle(t *testing.T) {
 			)
 			require.NoError(st, rt.AddRoute(goruntime.RouteConfig{
 				ID: "gap-gortn-route-" + label,
-				Policy: domain.RoutePolicy{
-					DeliveryMode: domain.DeliverySharedOutbox,
+				Policy: routing.RoutePolicy{
+					DeliveryMode: routing.DeliverySharedOutbox,
 				},
 				Resolver: goruntime.NewStaticResolver(
-					domain.DispatchPlan{BindingID: "gortn-bind", Address: outTopic},
+					routing.DispatchPlan{BindingID: "gortn-bind", Address: outTopic},
 				),
-				Bindings: []domain.DestinationBinding{
+				Bindings: []routing.DestinationBinding{
 					{ID: "gortn-bind", SessionID: sessID},
 				},
 			}, newSQSReceiver(st, sqsInURL), snd, sess, &sc))

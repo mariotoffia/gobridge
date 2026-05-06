@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -27,7 +27,7 @@ func DefaultRouteLocatorConfig() RouteLocatorConfig {
 }
 
 type cachedLease struct {
-	info      domain.LeaseInfo
+	info      persistence.LeaseInfo
 	fetchedAt time.Time
 }
 
@@ -87,7 +87,7 @@ func (rl *routeLocator) RegisterRoute(routeID, sessionID string) {
 // Locate determines if a route should be handled locally or forwarded.
 // Non-exclusive routes always return local=true.
 // Exclusive routes check the lease owner and return PeerInfo if remote.
-func (rl *routeLocator) Locate(ctx context.Context, routeID string) (*domain.PeerInfo, bool, error) {
+func (rl *routeLocator) Locate(ctx context.Context, routeID string) (*persistence.PeerInfo, bool, error) {
 	rl.mu.RLock()
 	sessionID, isExclusive := rl.routeSessionMap[routeID]
 	rl.mu.RUnlock()
@@ -106,7 +106,7 @@ func (rl *routeLocator) Locate(ctx context.Context, routeID string) (*domain.Pee
 		if cached.info.Owner == rl.instanceID {
 			return nil, true, nil
 		}
-		return &domain.PeerInfo{
+		return &persistence.PeerInfo{
 			InstanceID: cached.info.Owner,
 			Endpoints:  cached.info.Endpoints,
 		}, false, nil
@@ -123,7 +123,7 @@ func (rl *routeLocator) Locate(ctx context.Context, routeID string) (*domain.Pee
 			if cached.info.Owner == rl.instanceID {
 				return nil, true, nil
 			}
-			return &domain.PeerInfo{
+			return &persistence.PeerInfo{
 				InstanceID: cached.info.Owner,
 				Endpoints:  cached.info.Endpoints,
 			}, false, nil
@@ -141,7 +141,7 @@ func (rl *routeLocator) Locate(ctx context.Context, routeID string) (*domain.Pee
 		return nil, true, nil
 	}
 
-	return &domain.PeerInfo{
+	return &persistence.PeerInfo{
 		InstanceID: info.Owner,
 		Endpoints:  info.Endpoints,
 	}, false, nil

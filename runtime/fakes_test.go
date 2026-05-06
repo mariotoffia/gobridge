@@ -7,7 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -28,7 +32,7 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 // ---------------------------------------------------------------------------
 
 type FakeDelivery struct {
-	env        *domain.Envelope
+	env        *messaging.Envelope
 	mu         sync.Mutex
 	Acked      bool
 	Retried    bool
@@ -40,11 +44,11 @@ type FakeDelivery struct {
 	RetryFnErr error
 }
 
-func NewFakeDelivery(env *domain.Envelope) *FakeDelivery {
+func NewFakeDelivery(env *messaging.Envelope) *FakeDelivery {
 	return &FakeDelivery{env: env}
 }
 
-func (d *FakeDelivery) Envelope() *domain.Envelope { return d.env }
+func (d *FakeDelivery) Envelope() *messaging.Envelope { return d.env }
 
 func (d *FakeDelivery) Ack(_ context.Context) error {
 	d.mu.Lock()
@@ -129,16 +133,16 @@ func (r *FakeReceiver) Ready() <-chan struct{} {
 
 type FakeSender struct {
 	mu      sync.Mutex
-	Sent    []*domain.Envelope
+	Sent    []*messaging.Envelope
 	SendErr error
-	SendFn  func(*domain.Envelope) error
+	SendFn  func(*messaging.Envelope) error
 }
 
 func NewFakeSender() *FakeSender {
 	return &FakeSender{}
 }
 
-func (s *FakeSender) Send(_ context.Context, env *domain.Envelope) error {
+func (s *FakeSender) Send(_ context.Context, env *messaging.Envelope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -162,10 +166,10 @@ func (s *FakeSender) SentCount() int {
 	return len(s.Sent)
 }
 
-func (s *FakeSender) GetSent() []*domain.Envelope {
+func (s *FakeSender) GetSent() []*messaging.Envelope {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]*domain.Envelope, len(s.Sent))
+	out := make([]*messaging.Envelope, len(s.Sent))
 	copy(out, s.Sent)
 	return out
 }
@@ -184,7 +188,7 @@ type FakeSession struct {
 	mu           sync.Mutex
 	Started      bool
 	Closed       bool
-	Plans        []domain.SessionPlan
+	Plans        []connectivity.SessionPlan
 	events       chan ports.SessionEvent
 	closeOnce    sync.Once
 	StartErr     error
@@ -203,7 +207,7 @@ func (s *FakeSession) Start(_ context.Context) error {
 	return s.StartErr
 }
 
-func (s *FakeSession) Reconcile(_ context.Context, plan domain.SessionPlan) error {
+func (s *FakeSession) Reconcile(_ context.Context, plan connectivity.SessionPlan) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Plans = append(s.Plans, plan)
@@ -287,17 +291,17 @@ func (s *FakeLeaseStore) SetReleaseErr(err error) {
 	s.releaseErr = err
 }
 
-func (s *FakeLeaseStore) Acquire(_ context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *FakeLeaseStore) Acquire(_ context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.acquireErr != nil {
-		return domain.LeaseToken{}, s.acquireErr
+		return persistence.LeaseToken{}, s.acquireErr
 	}
 
 	entry, exists := s.leases[leaseID]
 	if exists && time.Now().Before(entry.expires) && entry.owner != ownerID {
-		return domain.LeaseToken{}, domain.ErrAlreadyExists
+		return persistence.LeaseToken{}, shared.ErrAlreadyExists
 	}
 
 	version := s.maxVersions[leaseID] + 1
@@ -310,20 +314,20 @@ func (s *FakeLeaseStore) Acquire(_ context.Context, leaseID, ownerID string, ttl
 		endpoints: endpoints,
 	}
 
-	return domain.LeaseToken{Version: version, Owner: ownerID}, nil
+	return persistence.LeaseToken{Version: version, Owner: ownerID}, nil
 }
 
-func (s *FakeLeaseStore) Renew(_ context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *FakeLeaseStore) Renew(_ context.Context, leaseID string, token persistence.LeaseToken, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.renewErr != nil {
-		return domain.LeaseToken{}, s.renewErr
+		return persistence.LeaseToken{}, s.renewErr
 	}
 
 	entry, exists := s.leases[leaseID]
 	if !exists || entry.version != token.Version || entry.owner != token.Owner {
-		return domain.LeaseToken{}, domain.ErrVersionMismatch
+		return persistence.LeaseToken{}, shared.ErrVersionMismatch
 	}
 
 	entry.expires = time.Now().Add(ttl)
@@ -333,7 +337,7 @@ func (s *FakeLeaseStore) Renew(_ context.Context, leaseID string, token domain.L
 	return token, nil
 }
 
-func (s *FakeLeaseStore) Release(_ context.Context, leaseID string, token domain.LeaseToken) error {
+func (s *FakeLeaseStore) Release(_ context.Context, leaseID string, token persistence.LeaseToken) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -343,23 +347,23 @@ func (s *FakeLeaseStore) Release(_ context.Context, leaseID string, token domain
 
 	entry, exists := s.leases[leaseID]
 	if !exists || entry.version != token.Version {
-		return domain.ErrVersionMismatch
+		return shared.ErrVersionMismatch
 	}
 
 	delete(s.leases, leaseID)
 	return nil
 }
 
-func (s *FakeLeaseStore) Current(_ context.Context, leaseID string) (domain.LeaseInfo, error) {
+func (s *FakeLeaseStore) Current(_ context.Context, leaseID string) (persistence.LeaseInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	entry, exists := s.leases[leaseID]
 	if !exists {
-		return domain.LeaseInfo{}, domain.ErrNotFound
+		return persistence.LeaseInfo{}, shared.ErrNotFound
 	}
 
-	return domain.LeaseInfo{
+	return persistence.LeaseInfo{
 		LeaseID:   leaseID,
 		Owner:     entry.owner,
 		Version:   entry.version,
@@ -374,22 +378,22 @@ func (s *FakeLeaseStore) Current(_ context.Context, leaseID string) (domain.Leas
 
 type FakeOutboxStore struct {
 	mu            sync.Mutex
-	records       map[string]*domain.OutboxRecord
+	records       map[string]*persistence.OutboxRecord
 	PersistErr    error
-	PersistFn     func([]domain.OutboxRecord) error
+	PersistFn     func([]persistence.OutboxRecord) error
 	ClaimErr      error
-	ClaimFn       func(partitionKey, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error)
+	ClaimFn       func(partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error)
 	CompleteErr   error
-	CompleteFn    func([]string, domain.LeaseToken) error
-	CompleteCtxFn func(context.Context, []string, domain.LeaseToken) error
+	CompleteFn    func([]string, persistence.LeaseToken) error
+	CompleteCtxFn func(context.Context, []string, persistence.LeaseToken) error
 	StaleClaimAge time.Duration
 }
 
 func NewFakeOutboxStore() *FakeOutboxStore {
-	return &FakeOutboxStore{records: make(map[string]*domain.OutboxRecord)}
+	return &FakeOutboxStore{records: make(map[string]*persistence.OutboxRecord)}
 }
 
-func (s *FakeOutboxStore) Persist(_ context.Context, records []domain.OutboxRecord) error {
+func (s *FakeOutboxStore) Persist(_ context.Context, records []persistence.OutboxRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -407,17 +411,17 @@ func (s *FakeOutboxStore) Persist(_ context.Context, records []domain.OutboxReco
 		for _, existing := range s.records {
 			existingKey := existing.EnvelopeID + ":" + existing.BindingID
 			if existingKey == dedupKey {
-				return domain.ErrDuplicateRecord
+				return shared.ErrDuplicateRecord
 			}
 		}
-		rec.Status = domain.OutboxPending
+		rec.Status = persistence.OutboxPending
 		clone := rec
 		s.records[rec.ID] = &clone
 	}
 	return nil
 }
 
-func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error) {
+func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -434,21 +438,21 @@ func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string,
 	}
 	staleThreshold := time.Now().Add(-staleAge)
 
-	var claimed []domain.OutboxRecord
+	var claimed []persistence.OutboxRecord
 	for _, rec := range s.records {
 		if len(claimed) >= limit {
 			break
 		}
-		recPK := domain.OutboxPartitionKey(rec.SessionID, rec.BindingID)
+		recPK := persistence.OutboxPartitionKey(rec.SessionID, rec.BindingID)
 		if recPK != partitionKey {
 			continue
 		}
-		claimable := rec.Status == domain.OutboxPending ||
-			(rec.Status == domain.OutboxClaimed && rec.ClaimedAt.Before(staleThreshold))
+		claimable := rec.Status == persistence.OutboxPending ||
+			(rec.Status == persistence.OutboxClaimed && rec.ClaimedAt.Before(staleThreshold))
 		if !claimable {
 			continue
 		}
-		rec.Status = domain.OutboxClaimed
+		rec.Status = persistence.OutboxClaimed
 		rec.ClaimedBy = ownerID
 		rec.ClaimedAt = time.Now()
 		rec.ClaimVersion = token.Version
@@ -458,7 +462,7 @@ func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string,
 	return claimed, nil
 }
 
-func (s *FakeOutboxStore) Complete(ctx context.Context, recordIDs []string, token domain.LeaseToken) error {
+func (s *FakeOutboxStore) Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -480,9 +484,9 @@ func (s *FakeOutboxStore) Complete(ctx context.Context, recordIDs []string, toke
 			continue
 		}
 		if rec.ClaimVersion != token.Version {
-			return domain.ErrStaleFencingToken
+			return shared.ErrStaleFencingToken
 		}
-		rec.Status = domain.OutboxCompleted
+		rec.Status = persistence.OutboxCompleted
 		rec.CompletedAt = time.Now()
 	}
 	return nil
@@ -494,8 +498,8 @@ func (s *FakeOutboxStore) Expire(_ context.Context, before time.Time) (int, erro
 
 	count := 0
 	for _, rec := range s.records {
-		if rec.Status == domain.OutboxPending && !rec.ExpiresAt.IsZero() && rec.ExpiresAt.Before(before) {
-			rec.Status = domain.OutboxExpired
+		if rec.Status == persistence.OutboxPending && !rec.ExpiresAt.IsZero() && rec.ExpiresAt.Before(before) {
+			rec.Status = persistence.OutboxExpired
 			count++
 		}
 	}
@@ -508,20 +512,20 @@ func (s *FakeOutboxStore) SetClaimErr(err error) {
 	s.ClaimErr = err
 }
 
-func (s *FakeOutboxStore) QueryPending(_ context.Context, partitionKey string, limit int) ([]domain.OutboxRecord, error) {
+func (s *FakeOutboxStore) QueryPending(_ context.Context, partitionKey string, limit int) ([]persistence.OutboxRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var result []domain.OutboxRecord
+	var result []persistence.OutboxRecord
 	for _, rec := range s.records {
 		if len(result) >= limit {
 			break
 		}
-		recPK := domain.OutboxPartitionKey(rec.SessionID, rec.BindingID)
+		recPK := persistence.OutboxPartitionKey(rec.SessionID, rec.BindingID)
 		if recPK != partitionKey {
 			continue
 		}
-		if rec.Status == domain.OutboxPending {
+		if rec.Status == persistence.OutboxPending {
 			result = append(result, *rec)
 		}
 	}
@@ -539,7 +543,7 @@ func (s *FakeOutboxStore) CompletedCount() int {
 	defer s.mu.Unlock()
 	n := 0
 	for _, rec := range s.records {
-		if rec.Status == domain.OutboxCompleted {
+		if rec.Status == persistence.OutboxCompleted {
 			n++
 		}
 	}
@@ -552,7 +556,7 @@ func (s *FakeOutboxStore) CompletedCount() int {
 
 type FakeDLQStore struct {
 	mu       sync.Mutex
-	Entries  []domain.DLQEntry
+	Entries  []routing.DLQEntry
 	WriteErr error
 }
 
@@ -560,7 +564,7 @@ func NewFakeDLQStore() *FakeDLQStore {
 	return &FakeDLQStore{}
 }
 
-func (s *FakeDLQStore) Write(_ context.Context, entry domain.DLQEntry) error {
+func (s *FakeDLQStore) Write(_ context.Context, entry routing.DLQEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.WriteErr != nil {
@@ -570,11 +574,11 @@ func (s *FakeDLQStore) Write(_ context.Context, entry domain.DLQEntry) error {
 	return nil
 }
 
-func (s *FakeDLQStore) List(_ context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *FakeDLQStore) List(_ context.Context, filter routing.DLQFilter) ([]routing.DLQEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var result []domain.DLQEntry
+	var result []routing.DLQEntry
 	for _, e := range s.Entries {
 		if filter.RouteID != "" && e.RouteID != filter.RouteID {
 			continue
@@ -590,7 +594,7 @@ func (s *FakeDLQStore) List(_ context.Context, filter domain.DLQFilter) ([]domai
 	return result, nil
 }
 
-func (s *FakeDLQStore) Get(_ context.Context, id string) (domain.DLQEntry, error) {
+func (s *FakeDLQStore) Get(_ context.Context, id string) (routing.DLQEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, e := range s.Entries {
@@ -598,7 +602,7 @@ func (s *FakeDLQStore) Get(_ context.Context, id string) (domain.DLQEntry, error
 			return e, nil
 		}
 	}
-	return domain.DLQEntry{}, domain.ErrNotFound
+	return routing.DLQEntry{}, shared.ErrNotFound
 }
 
 func (s *FakeDLQStore) Delete(_ context.Context, ids []string) (int, error) {
@@ -608,7 +612,7 @@ func (s *FakeDLQStore) Delete(_ context.Context, ids []string) (int, error) {
 	for _, id := range ids {
 		idSet[id] = struct{}{}
 	}
-	var remaining []domain.DLQEntry
+	var remaining []routing.DLQEntry
 	var count int
 	for _, e := range s.Entries {
 		if _, ok := idSet[e.ID]; ok {
@@ -621,7 +625,7 @@ func (s *FakeDLQStore) Delete(_ context.Context, ids []string) (int, error) {
 	return count, nil
 }
 
-func (s *FakeDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error) {
+func (s *FakeDLQStore) DeleteByFilter(_ context.Context, _ routing.DLQFilter) (int, error) {
 	return 0, nil
 }
 
@@ -640,11 +644,11 @@ func (s *FakeDLQStore) Count() int {
 type FakeSpan struct {
 	mu       sync.Mutex
 	Name     string
-	Attrs    []domain.Tag
+	Attrs    []shared.Tag
 	Ended    bool
 	Err      error
 	Events   []string
-	SetAttrs []domain.Tag
+	SetAttrs []shared.Tag
 }
 
 func (s *FakeSpan) End() {
@@ -659,13 +663,13 @@ func (s *FakeSpan) SetError(err error) {
 	s.Err = err
 }
 
-func (s *FakeSpan) AddEvent(name string, _ ...domain.Tag) {
+func (s *FakeSpan) AddEvent(name string, _ ...shared.Tag) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Events = append(s.Events, name)
 }
 
-func (s *FakeSpan) SetAttributes(attrs ...domain.Tag) {
+func (s *FakeSpan) SetAttributes(attrs ...shared.Tag) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.SetAttrs = append(s.SetAttrs, attrs...)
@@ -678,12 +682,12 @@ func (s *FakeSpan) IsEnded() bool {
 }
 
 // Inspect returns a consistent snapshot of span fields for test assertions.
-func (s *FakeSpan) Inspect() (name string, ended bool, attrs []domain.Tag, spanErr error) {
+func (s *FakeSpan) Inspect() (name string, ended bool, attrs []shared.Tag, spanErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	name = s.Name
 	ended = s.Ended
-	attrs = append([]domain.Tag(nil), s.Attrs...)
+	attrs = append([]shared.Tag(nil), s.Attrs...)
 	spanErr = s.Err
 	return
 }
@@ -693,10 +697,10 @@ type FakeTracer struct {
 	Spans []*FakeSpan
 }
 
-func (t *FakeTracer) StartSpan(ctx context.Context, name string, attrs ...domain.Tag) (context.Context, ports.Span) {
+func (t *FakeTracer) StartSpan(ctx context.Context, name string, attrs ...shared.Tag) (context.Context, ports.Span) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	span := &FakeSpan{Name: name, Attrs: append([]domain.Tag{}, attrs...)}
+	span := &FakeSpan{Name: name, Attrs: append([]shared.Tag{}, attrs...)}
 	t.Spans = append(t.Spans, span)
 	return ctx, span
 }
@@ -721,11 +725,11 @@ func (t *FakeTracer) LastSpan() *FakeSpan {
 // ---------------------------------------------------------------------------
 
 type FakeResolver struct {
-	Plans      []domain.DispatchPlan
+	Plans      []routing.DispatchPlan
 	ResolveErr error
 }
 
-func (r *FakeResolver) Resolve(_ context.Context, _ *domain.Envelope) ([]domain.DispatchPlan, error) {
+func (r *FakeResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]routing.DispatchPlan, error) {
 	if r.ResolveErr != nil {
 		return nil, r.ResolveErr
 	}
@@ -738,14 +742,14 @@ func (r *FakeResolver) Resolve(_ context.Context, _ *domain.Envelope) ([]domain.
 
 type FakeProcessor struct {
 	NameVal    string
-	ProcessFn  func(context.Context, *domain.Envelope, ports.ProcessorFunc) error
+	ProcessFn  func(context.Context, *messaging.Envelope, ports.ProcessorFunc) error
 	ProcessErr error
 	called     int32
 }
 
 func (p *FakeProcessor) Name() string { return p.NameVal }
 
-func (p *FakeProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *FakeProcessor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	atomic.AddInt32(&p.called, 1)
 	if p.ProcessFn != nil {
 		return p.ProcessFn(ctx, env, next)

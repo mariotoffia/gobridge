@@ -12,7 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -31,7 +32,7 @@ type latencyRecorder struct {
 func (p *latencyRecorder) Name() string { return "latency-recorder" }
 
 func (p *latencyRecorder) Process(
-	ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc,
+	ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc,
 ) error {
 	start := time.Now()
 	err := next(ctx, env)
@@ -170,9 +171,9 @@ type tenantSlowProcessor struct {
 func (p *tenantSlowProcessor) Name() string { return "tenant-slow" }
 
 func (p *tenantSlowProcessor) Process(
-	ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc,
+	ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc,
 ) error {
-	if tid, ok := domain.GetHeaderString(env.Headers, "tenant_id"); ok && tid == p.slowTenant {
+	if tid, ok := messaging.GetHeaderString(env.Headers, "tenant_id"); ok && tid == p.slowTenant {
 		select {
 		case <-time.After(p.delay):
 		case <-ctx.Done():
@@ -221,14 +222,14 @@ func (r *benchmarkReport) logReport(t *testing.T, exporter *ports.RecordingExpor
 
 	// Stage latency breakdown.
 	stages := []string{
-		domain.MetricSQSPollLatency,
-		domain.MetricSQSReceiveLatency,
-		domain.MetricMQTTPublishLatency,
-		domain.MetricOutboxPersistLatency,
-		domain.MetricOutboxDrainLatency,
-		domain.MetricDeliveryE2ELatency,
-		domain.MetricAckLatency,
-		domain.MetricSQSDeleteLatency,
+		shared.MetricSQSPollLatency,
+		shared.MetricSQSReceiveLatency,
+		shared.MetricMQTTPublishLatency,
+		shared.MetricOutboxPersistLatency,
+		shared.MetricOutboxDrainLatency,
+		shared.MetricDeliveryE2ELatency,
+		shared.MetricAckLatency,
+		shared.MetricSQSDeleteLatency,
 	}
 
 	type latRow struct {
@@ -274,10 +275,10 @@ func (r *benchmarkReport) logReport(t *testing.T, exporter *ports.RecordingExpor
 
 	// Counter totals.
 	counterNames := []string{
-		domain.MetricMessagesReceived,
-		domain.MetricMessagesSent,
-		domain.MetricMessagesDropped,
-		domain.MetricRouteErrors,
+		shared.MetricMessagesReceived,
+		shared.MetricMessagesSent,
+		shared.MetricMessagesDropped,
+		shared.MetricRouteErrors,
 	}
 	sb.WriteString("\nCounters:\n")
 	for _, cn := range counterNames {

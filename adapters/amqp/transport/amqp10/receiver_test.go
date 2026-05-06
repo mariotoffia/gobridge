@@ -10,12 +10,13 @@ import (
 
 	"github.com/Azure/go-amqp"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 func TestNewReceiver_Validates(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 
 	_, err := NewReceiver(ReceiverConfig{}, sess)
 	if err == nil {
@@ -24,7 +25,7 @@ func TestNewReceiver_Validates(t *testing.T) {
 }
 
 func TestNewReceiver_AppliesDefaults(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 
 	r, err := NewReceiver(ReceiverConfig{Address: "queue/in"}, sess)
 	if err != nil {
@@ -39,7 +40,7 @@ func TestNewReceiver_AppliesDefaults(t *testing.T) {
 }
 
 func TestReceiver_ConvertMessage(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 	r, err := NewReceiver(ReceiverConfig{Address: "queue/input"}, sess)
 	if err != nil {
 		t.Fatalf("NewReceiver() error = %v", err)
@@ -82,7 +83,7 @@ func TestReceiver_ConvertMessage(t *testing.T) {
 }
 
 func TestReceiver_ConvertMessage_NoSubject(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 	r, err := NewReceiver(ReceiverConfig{Address: "queue/fallback"}, sess)
 	if err != nil {
 		t.Fatalf("NewReceiver() error = %v", err)
@@ -99,7 +100,7 @@ func TestReceiver_ConvertMessage_NoSubject(t *testing.T) {
 }
 
 func TestReceiver_ConvertMessage_ValueBody(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 	r, err := NewReceiver(ReceiverConfig{Address: "queue/val"}, sess)
 	if err != nil {
 		t.Fatalf("NewReceiver() error = %v", err)
@@ -116,7 +117,7 @@ func TestReceiver_ConvertMessage_ValueBody(t *testing.T) {
 }
 
 func TestReceiver_ConvertMessage_EmptyBody(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 	r, err := NewReceiver(ReceiverConfig{Address: "queue/empty"}, sess)
 	if err != nil {
 		t.Fatalf("NewReceiver() error = %v", err)
@@ -131,7 +132,7 @@ func TestReceiver_ConvertMessage_EmptyBody(t *testing.T) {
 }
 
 func TestReceiver_ConvertMessage_NonStringMessageID(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 	r, err := NewReceiver(ReceiverConfig{Address: "queue/id"}, sess)
 	if err != nil {
 		t.Fatalf("NewReceiver() error = %v", err)
@@ -151,7 +152,7 @@ func TestReceiver_ConvertMessage_NonStringMessageID(t *testing.T) {
 }
 
 func TestReceiver_Run_ContextCancel(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 	r, err := NewReceiver(ReceiverConfig{Address: "queue/cancel"}, sess)
 	if err != nil {
 		t.Fatalf("NewReceiver() error = %v", err)
@@ -169,17 +170,17 @@ func TestReceiver_Run_ContextCancel(t *testing.T) {
 		t.Fatal("Run() should return error on cancelled context")
 	}
 	if !errors.Is(runErr, context.Canceled) {
-		var be *domain.BridgeError
+		var be *shared.BridgeError
 		if errors.As(runErr, &be) {
-			if be.Code != domain.ErrCodeUnavailable {
-				t.Fatalf("error code = %q, want %q", be.Code, domain.ErrCodeUnavailable)
+			if be.Code != shared.ErrCodeUnavailable {
+				t.Fatalf("error code = %q, want %q", be.Code, shared.ErrCodeUnavailable)
 			}
 		}
 	}
 }
 
 func TestReceiver_NilLogger(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, nil)
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, nil)
 
 	r, err := NewReceiver(ReceiverConfig{Address: "queue/nil-log"}, sess)
 	if err != nil {
@@ -192,7 +193,7 @@ func TestReceiver_NilLogger(t *testing.T) {
 
 func TestReceiver_CustomMetrics(t *testing.T) {
 	rec := &ports.RecordingExporter{}
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 
 	r, err := NewReceiver(ReceiverConfig{
 		Address: "queue/metrics",

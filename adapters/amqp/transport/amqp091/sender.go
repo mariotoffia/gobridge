@@ -6,8 +6,9 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -72,7 +73,7 @@ func (s *Sender) clock() clock.Clock {
 // confirms. The exchange and routing key are derived from configuration
 // and the envelope's Subject. The entire publish+confirm cycle is
 // serialized to prevent confirm-channel races under concurrent callers.
-func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
 	exchange := s.cfg.Exchange
 	routingKey := s.cfg.RoutingKey
 	if routingKey == "" {
@@ -91,7 +92,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	sendCtx, cancel := s.applyTimeout(ctx)
 	defer cancel()
 
-	sessionTag := domain.Tag{Key: domain.TagKeyEntity, Value: s.cfg.Exchange}
+	sessionTag := shared.Tag{Key: shared.TagKeyEntity, Value: s.cfg.Exchange}
 
 	s.mu.Lock()
 	sc, err := s.ensureChannelLocked()
@@ -106,7 +107,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	if perr != nil {
 		s.resetChannelLocked()
 		s.mu.Unlock()
-		s.metrics.Timer(domain.MetricAMQP091PublishLatency, s.clock().Since(start), sessionTag)
+		s.metrics.Timer(shared.MetricAMQP091PublishLatency, s.clock().Since(start), sessionTag)
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(ctx, logging.LevelDebug, "amqp091: publish failed",
 				"exchange", exchange, "routing_key", routingKey, "error", perr)
@@ -116,7 +117,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 	s.mu.Unlock()
 
 	elapsed := s.clock().Since(start)
-	s.metrics.Timer(domain.MetricAMQP091PublishLatency, elapsed, sessionTag)
+	s.metrics.Timer(shared.MetricAMQP091PublishLatency, elapsed, sessionTag)
 
 	if res.Returned != nil {
 		if logging.DebugEnabled(s.logger) {
@@ -128,7 +129,7 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 				"routing_key", res.Returned.RoutingKey,
 			)
 		}
-		return domain.ErrNotFound.WithMessage(
+		return shared.ErrNotFound.WithMessage(
 			"amqp091: mandatory publish unroutable: " + res.Returned.ReplyText)
 	}
 
@@ -150,17 +151,17 @@ func (s *Sender) Send(ctx context.Context, env *domain.Envelope) error {
 // everything else is run through MapError.
 func mapPublishError(err error) error {
 	if errors.Is(err, errConfirmChannelClosed) {
-		return domain.ErrUnavailable.WithMessage("amqp091: confirm channel closed")
+		return shared.ErrUnavailable.WithMessage("amqp091: confirm channel closed")
 	}
 	if errors.Is(err, errPublishNacked) {
-		return domain.ErrUnavailable.WithMessage("amqp091: publish nacked by broker")
+		return shared.ErrUnavailable.WithMessage("amqp091: publish nacked by broker")
 	}
 	return MapError(err)
 }
 
 // SendBatch publishes multiple envelopes sequentially with publisher
 // confirms. Returns the number of successfully published messages.
-func (s *Sender) SendBatch(ctx context.Context, envs []*domain.Envelope) (int, error) {
+func (s *Sender) SendBatch(ctx context.Context, envs []*messaging.Envelope) (int, error) {
 	sent := 0
 	for _, env := range envs {
 		if err := s.Send(ctx, env); err != nil {
@@ -177,11 +178,11 @@ func (s *Sender) ensureChannelLocked() (*senderChannel, error) {
 		return s.sc, nil
 	}
 	if s.session == nil {
-		return nil, domain.ErrUnavailable.WithMessage("amqp091: no session")
+		return nil, shared.ErrUnavailable.WithMessage("amqp091: no session")
 	}
 	conn := s.session.Connection()
 	if conn == nil {
-		return nil, domain.ErrUnavailable.WithMessage("amqp091: session not connected")
+		return nil, shared.ErrUnavailable.WithMessage("amqp091: session not connected")
 	}
 
 	sc, err := openSenderChannel(conn, s.cfg.Mandatory)

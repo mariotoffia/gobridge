@@ -12,7 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
@@ -21,7 +22,7 @@ import (
 // BridgeError (not wrapped in emitError) is classified as transport error.
 func TestReceiver_IsEmitError_TransportBridgeError(t *testing.T) {
 	r := &Receiver{}
-	err := domain.ErrConnectionLost.WithMessage("test")
+	err := shared.ErrConnectionLost.WithMessage("test")
 
 	if r.isEmitError(err) {
 		t.Fatal("unwrapped BridgeError should be classified as transport error (isEmitError=false)")
@@ -43,7 +44,7 @@ func TestReceiver_IsEmitError_EmitWrapped(t *testing.T) {
 // BridgeError wrapped in emitError is correctly classified as emit error.
 func TestReceiver_IsEmitError_EmitWrappedBridgeError(t *testing.T) {
 	r := &Receiver{}
-	inner := domain.ErrInvalidPayload.WithMessage("bad data")
+	inner := shared.ErrInvalidPayload.WithMessage("bad data")
 	err := &emitError{err: inner}
 
 	if !r.isEmitError(err) {
@@ -67,7 +68,7 @@ func TestReceiver_IsEmitError_PlainError(t *testing.T) {
 func TestReceiver_WaitForReconnect_ContextCancel(t *testing.T) {
 	sess := NewSession(
 		SessionOptions{BrokerURL: "amqp://localhost/"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		slog.Default(),
 	)
 	r := &Receiver{
@@ -93,7 +94,7 @@ func TestReceiver_WaitForReconnect_ContextCancel(t *testing.T) {
 func TestReceiver_WaitForReconnect_EventReceived(t *testing.T) {
 	sess := NewSession(
 		SessionOptions{BrokerURL: "amqp://localhost/"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		slog.Default(),
 	)
 	r := &Receiver{
@@ -126,7 +127,7 @@ func TestReceiver_WaitForReconnect_EventReceived(t *testing.T) {
 func TestReceiver_WaitForReconnect_ChannelClosed(t *testing.T) {
 	sess := NewSession(
 		SessionOptions{BrokerURL: "amqp://localhost/"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		slog.Default(),
 	)
 	r := &Receiver{

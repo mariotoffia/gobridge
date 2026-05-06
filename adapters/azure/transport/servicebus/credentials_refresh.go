@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
-// credentialsToConnection translates a domain.CredentialSet into the
+// credentialsToConnection translates a connectivity.CredentialSet into the
 // subset of ConnectionConfig that can be rotated. The convention is:
 //
 //   - PasswordCredential.Username empty, Password holds the full SAS
@@ -24,7 +25,7 @@ import (
 //     fields.
 //
 // Returning changed=false signals "nothing rotatable in this set".
-func credentialsToConnection(existing ConnectionConfig, set *domain.CredentialSet) (ConnectionConfig, bool) {
+func credentialsToConnection(existing ConnectionConfig, set *connectivity.CredentialSet) (ConnectionConfig, bool) {
 	if set == nil {
 		return existing, false
 	}
@@ -102,9 +103,9 @@ func joinASBPEMs(pems []string) string {
 // SAS/secret path does here. A dedicated TLS-only rotation would map
 // cert/key PEMs into a tls.Config and rebuild; out of scope for the
 // MVP.
-func (s *Sender) ApplyCredentials(ctx context.Context, set *domain.CredentialSet) error {
+func (s *Sender) ApplyCredentials(ctx context.Context, set *connectivity.CredentialSet) error {
 	if set == nil {
-		return domain.ErrInvalidPayload.WithMessage("servicebus: nil credential set")
+		return shared.ErrInvalidPayload.WithMessage("servicebus: nil credential set")
 	}
 	newConn, changed := credentialsToConnection(s.cfg.Connection, set)
 	if !changed {
@@ -113,13 +114,13 @@ func (s *Sender) ApplyCredentials(ctx context.Context, set *domain.CredentialSet
 
 	asbClient, err := rawNewAzClient(newConn)
 	if err != nil {
-		return domain.ErrTemporaryAuthFailure.Wrap(err)
+		return shared.ErrTemporaryAuthFailure.Wrap(err)
 	}
 
 	newSender, err := asbClient.NewSender(s.entityName())
 	if err != nil {
 		_ = asbClient.Close(ctx)
-		return domain.ErrTemporaryAuthFailure.Wrap(
+		return shared.ErrTemporaryAuthFailure.Wrap(
 			fmt.Errorf("servicebus: rotate sender for %q: %w", s.entityName(), err))
 	}
 
@@ -161,9 +162,9 @@ func (s *Sender) ApplyCredentials(ctx context.Context, set *domain.CredentialSet
 // long-running Run is expected to be restarted by the framework
 // (Close → Run) on credential rotation. This is conservative but
 // matches how most supervisors already handle config changes.
-func (r *Receiver) ApplyCredentials(_ context.Context, set *domain.CredentialSet) error {
+func (r *Receiver) ApplyCredentials(_ context.Context, set *connectivity.CredentialSet) error {
 	if set == nil {
-		return domain.ErrInvalidPayload.WithMessage("servicebus: nil credential set")
+		return shared.ErrInvalidPayload.WithMessage("servicebus: nil credential set")
 	}
 	newConn, changed := credentialsToConnection(r.cfg.Connection, set)
 	if !changed {

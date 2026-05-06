@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -37,16 +39,16 @@ func persistRecords(outbox *FakeOutboxStore, count int, prefix string) {
 	ctx := context.Background()
 	for i := 0; i < count; i++ {
 		id := fmt.Sprintf("%s-%d", prefix, i)
-		rec := domain.OutboxRecord{
+		rec := persistence.OutboxRecord{
 			ID:         id,
 			RouteID:    "route-1",
 			EnvelopeID: "env-" + id,
 			BindingID:  "bind-1",
 			SessionID:  "sess-1",
-			Envelope:   domain.Envelope{ID: "env-" + id, Payload: []byte("data")},
-			Status:     domain.OutboxPending,
+			Envelope:   messaging.Envelope{ID: "env-" + id, Payload: []byte("data")},
+			Status:     persistence.OutboxPending,
 		}
-		_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+		_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 	}
 }
 
@@ -65,13 +67,13 @@ func persistRecords(outbox *FakeOutboxStore, count int, prefix string) {
 //   - All 20 records sent and completed
 //   - Peak concurrency > 1
 func TestDrainBatch_ParallelSends(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	var concurrentPeak int64
 	var currentConcurrency int64
 	sendStart := make(chan time.Time, 1)
 
-	sender := NewConcurrentSender(func(_ *domain.Envelope) error {
+	sender := NewConcurrentSender(func(_ *messaging.Envelope) error {
 		select {
 		case sendStart <- time.Now():
 		default:
@@ -134,12 +136,12 @@ func TestDrainBatch_ParallelSends(t *testing.T) {
 //
 // ───────────────────────────────────────────────────────────────────
 func TestDrainBatch_ConcurrencyLimit(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	var concurrentPeak int64
 	var currentConcurrency int64
 
-	sender := NewConcurrentSender(func(_ *domain.Envelope) error {
+	sender := NewConcurrentSender(func(_ *messaging.Envelope) error {
 		cur := atomic.AddInt64(&currentConcurrency, 1)
 		defer atomic.AddInt64(&currentConcurrency, -1)
 		for {
@@ -186,13 +188,13 @@ func TestDrainBatch_ConcurrencyLimit(t *testing.T) {
 //
 // ───────────────────────────────────────────────────────────────────
 func TestDrainBatch_ErrorIsolation(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	var callCount int64
-	sender := NewConcurrentSender(func(_ *domain.Envelope) error {
+	sender := NewConcurrentSender(func(_ *messaging.Envelope) error {
 		n := atomic.AddInt64(&callCount, 1)
 		if n == 3 {
-			return domain.NewBridgeError("FAIL", domain.ErrorTransient, "transient")
+			return shared.NewBridgeError("FAIL", shared.ErrorTransient, "transient")
 		}
 		return nil
 	})
@@ -217,12 +219,12 @@ func TestDrainBatch_ErrorIsolation(t *testing.T) {
 // TestDrainBatch_ConcurrencyDefault validates the default MaxDrainConcurrency
 // is applied when not explicitly configured.
 func TestDrainBatch_ConcurrencyDefault(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	var concurrentPeak int64
 	var currentConcurrency int64
 
-	sender := NewConcurrentSender(func(_ *domain.Envelope) error {
+	sender := NewConcurrentSender(func(_ *messaging.Envelope) error {
 		cur := atomic.AddInt64(&currentConcurrency, 1)
 		defer atomic.AddInt64(&currentConcurrency, -1)
 		for {
@@ -271,7 +273,7 @@ func TestDrainBatch_ConcurrencyDefault(t *testing.T) {
 //
 // ───────────────────────────────────────────────────────────────────
 func TestAdaptBatchSize_ScalesUpOnFullBatch(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
 		cfg.DrainBatchSize = 5
@@ -296,7 +298,7 @@ func TestAdaptBatchSize_ScalesUpOnFullBatch(t *testing.T) {
 // TestAdaptBatchSize_CapsAtMaxBatchSize validates batch size never grows
 // beyond MaxBatchSize.
 func TestAdaptBatchSize_CapsAtMaxBatchSize(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
 		cfg.DrainBatchSize = 5
@@ -318,7 +320,7 @@ func TestAdaptBatchSize_CapsAtMaxBatchSize(t *testing.T) {
 // TestAdaptBatchSize_ResetsOnEmptyBatch validates batch size resets to
 // the initial value when no records are found.
 func TestAdaptBatchSize_ResetsOnEmptyBatch(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
 		cfg.DrainBatchSize = 5
@@ -343,6 +345,6 @@ func TestAdaptBatchSize_ResetsOnEmptyBatch(t *testing.T) {
 // TestAdaptBatchSize_DefaultMaxBatchSize validates the default
 // MaxBatchSize of 500 is applied.
 func TestAdaptBatchSize_DefaultMaxBatchSize(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	_, _, _, _ = makeDrainer(t, token)
 }

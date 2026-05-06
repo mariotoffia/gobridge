@@ -7,7 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -26,7 +29,7 @@ func newLimitedSender(limit int) *limitedSender {
 	return &limitedSender{inner: newFakeSender(), limit: limit, reached: make(chan struct{})}
 }
 
-func (s *limitedSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *limitedSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	s.mu.Lock()
 	s.count++
 	n := s.count
@@ -43,7 +46,7 @@ func (s *limitedSender) Send(ctx context.Context, env *domain.Envelope) error {
 
 type stallSender struct{}
 
-func (s *stallSender) Send(ctx context.Context, _ *domain.Envelope) error {
+func (s *stallSender) Send(ctx context.Context, _ *messaging.Envelope) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -51,9 +54,9 @@ func (s *stallSender) Send(ctx context.Context, _ *domain.Envelope) error {
 func outboxRoute(id, sessionID, addr string) goruntime.RouteConfig {
 	return goruntime.RouteConfig{
 		ID:       id,
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
-		Resolver: goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "b1", Address: addr}),
-		Bindings: []domain.DestinationBinding{{ID: "b1", SessionID: sessionID}},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
+		Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "b1", Address: addr}),
+		Bindings: []routing.DestinationBinding{{ID: "b1", SessionID: sessionID}},
 	}
 }
 
@@ -67,9 +70,9 @@ func TestE2E_F1_Failover_SingleInstance_CrashBeforeDrain(t *testing.T) {
 	dlq := &e2eDLQStore{}
 	cfg := outboxRoute("f1-route", sessionID, topic)
 
-	sessA := setupMQTTSession(t, sessionID+"-a", domain.SessionEphemeral)
+	sessA := setupMQTTSession(t, sessionID+"-a", connectivity.SessionEphemeral)
 	scA := e2eFastSessionConfig(sessionID)
-	scA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
+	scA.DrainStrategy = persistence.NewFixedPoll(30 * time.Second)
 	rtA := goruntime.New(goruntime.WithInstanceID("f1-A"),
 		goruntime.WithLeaseStore(leaseStore), goruntime.WithOutboxStore(outboxStore), goruntime.WithDLQStore(dlq))
 	_ = rtA.AddRoute(cfg, newSQSReceiver(t, queueURL), setupMQTTSender(t, sessA), sessA, &scA)
@@ -79,7 +82,7 @@ func TestE2E_F1_Failover_SingleInstance_CrashBeforeDrain(t *testing.T) {
 	time.Sleep(3 * time.Second) // OTHER: simulated crash delay — let message enter pipeline before killing instance A
 	cancelA()
 	_ = rtA.Stop(context.Background())
-	sessB := setupMQTTSession(t, sessionID+"-b", domain.SessionEphemeral)
+	sessB := setupMQTTSession(t, sessionID+"-b", connectivity.SessionEphemeral)
 	scB := e2eFastSessionConfig(sessionID)
 	rtB := goruntime.New(goruntime.WithInstanceID("f1-B"),
 		goruntime.WithLeaseStore(leaseStore), goruntime.WithOutboxStore(outboxStore), goruntime.WithDLQStore(dlq))
@@ -112,7 +115,7 @@ func TestE2E_F2_Failover_TwoInstances_LeaseTransfer(t *testing.T) {
 	rxA := newFakeReceiver()
 	sessA := newFakeSession()
 	scA := e2eFastSessionConfig(sessionID)
-	scA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
+	scA.DrainStrategy = persistence.NewFixedPoll(30 * time.Second)
 	if err := rtA.AddRoute(cfg, rxA, newFakeSender(), sessA, &scA); err != nil {
 		t.Fatalf("AddRoute A: %v", err)
 	}
@@ -120,7 +123,7 @@ func TestE2E_F2_Failover_TwoInstances_LeaseTransfer(t *testing.T) {
 		t.Fatalf("Start A: %v", err)
 	}
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
-	env := &domain.Envelope{ID: uniqueID("f2-msg"), Payload: []byte("transfer")}
+	env := &messaging.Envelope{ID: uniqueID("f2-msg"), Payload: []byte("transfer")}
 	del := newFakeDelivery(env)
 	_ = rxA.Emit(ctxA, del)
 	e2eWaitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
@@ -160,7 +163,7 @@ func TestE2E_F3_Failover_ThreeInstances_CascadingFailure(t *testing.T) {
 	rxA := newFakeReceiver()
 	sessA := newFakeSession()
 	scA := e2eFastSessionConfig(sessionID)
-	scA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
+	scA.DrainStrategy = persistence.NewFixedPoll(30 * time.Second)
 	if err := rtA.AddRoute(cfg, rxA, newFakeSender(), sessA, &scA); err != nil {
 		t.Fatalf("AddRoute A: %v", err)
 	}
@@ -169,7 +172,7 @@ func TestE2E_F3_Failover_ThreeInstances_CascadingFailure(t *testing.T) {
 	}
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
 	for i := 0; i < 3; i++ {
-		del := newFakeDelivery(&domain.Envelope{ID: fmt.Sprintf("f3-%d", i), Payload: []byte("cascade")})
+		del := newFakeDelivery(&messaging.Envelope{ID: fmt.Sprintf("f3-%d", i), Payload: []byte("cascade")})
 		_ = rxA.Emit(ctxA, del)
 		e2eWaitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
 	}
@@ -232,15 +235,15 @@ func TestE2E_F4_Failover_ThreeInstances_StaleFencingToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("A acquire: %v", err)
 	}
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID: "f4-rec-1", RouteID: "f4-route", EnvelopeID: "f4-env",
 		BindingID: "b1", SessionID: leaseID, Address: "t/f4",
-		Status: domain.OutboxPending, Envelope: domain.Envelope{ID: "f4-env", Payload: []byte("fencing")},
+		Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "f4-env", Payload: []byte("fencing")},
 	}
-	if err := outboxStore.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
+	if err := outboxStore.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
-	pk := domain.OutboxPartitionKey(leaseID, "b1")
+	pk := persistence.OutboxPartitionKey(leaseID, "b1")
 	claimed, err := outboxStore.Claim(ctx, pk, "owner-A", tokenA, 10)
 	if err != nil {
 		t.Fatalf("A claim: %v", err)
@@ -306,7 +309,7 @@ func TestE2E_F5_Failover_ConnectAfterLease(t *testing.T) {
 		t.Fatal("session started before lease acquired")
 	}
 	e2eWaitFor(t, 10*time.Second, "session after lease expiry", func() bool { return sess.isStarted() })
-	env := &domain.Envelope{ID: uniqueID("f5-msg"), Payload: []byte("deferred")}
+	env := &messaging.Envelope{ID: uniqueID("f5-msg"), Payload: []byte("deferred")}
 	del := newFakeDelivery(env)
 	_ = rx.Emit(ctx, del)
 	e2eWaitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
@@ -325,15 +328,15 @@ func TestE2E_F6_Failover_FanOutCrossInstance_ThreeSessions(t *testing.T) {
 		topics[i] = fmt.Sprintf("e2e/f6/%d", i)
 		collectors[i] = newMQTTCollector(t, topics[i], fmt.Sprintf("f6-c%d", i))
 	}
-	bindings := make([]domain.DestinationBinding, 3)
-	plans := make([]domain.DispatchPlan, 3)
+	bindings := make([]routing.DestinationBinding, 3)
+	plans := make([]routing.DispatchPlan, 3)
 	for i := range bindings {
 		bid := fmt.Sprintf("b%d", i)
-		bindings[i] = domain.DestinationBinding{ID: bid, SessionID: sessionIDs[i]}
-		plans[i] = domain.DispatchPlan{BindingID: bid, Address: topics[i]}
+		bindings[i] = routing.DestinationBinding{ID: bid, SessionID: sessionIDs[i]}
+		plans[i] = routing.DispatchPlan{BindingID: bid, Address: topics[i]}
 	}
 	routeCfg := goruntime.RouteConfig{
-		ID: "f6-route", Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		ID: "f6-route", Policy: routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewStaticResolver(plans...), Bindings: bindings,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -344,7 +347,7 @@ func TestE2E_F6_Failover_FanOutCrossInstance_ThreeSessions(t *testing.T) {
 	}
 	var rts [3]*goruntime.Runtime
 	for i := range sessionIDs {
-		sess := setupMQTTSession(t, fmt.Sprintf("%s-rt%d", sessionIDs[i], i), domain.SessionEphemeral)
+		sess := setupMQTTSession(t, fmt.Sprintf("%s-rt%d", sessionIDs[i], i), connectivity.SessionEphemeral)
 		sc := e2eFastSessionConfig(sessionIDs[i])
 		rts[i] = mkRT(fmt.Sprintf("f6-%d", i))
 		if i == 0 {
@@ -381,15 +384,15 @@ func TestE2E_F7_Failover_FanOutSessionOwnerCrash(t *testing.T) {
 		topics[i] = fmt.Sprintf("e2e/f7/%d", i)
 		collectors[i] = newMQTTCollector(t, topics[i], fmt.Sprintf("f7-c%d", i))
 	}
-	bindings := make([]domain.DestinationBinding, 3)
-	plans := make([]domain.DispatchPlan, 3)
+	bindings := make([]routing.DestinationBinding, 3)
+	plans := make([]routing.DispatchPlan, 3)
 	for i := range bindings {
 		bid := fmt.Sprintf("b%d", i)
-		bindings[i] = domain.DestinationBinding{ID: bid, SessionID: sessionIDs[i]}
-		plans[i] = domain.DispatchPlan{BindingID: bid, Address: topics[i]}
+		bindings[i] = routing.DestinationBinding{ID: bid, SessionID: sessionIDs[i]}
+		plans[i] = routing.DispatchPlan{BindingID: bid, Address: topics[i]}
 	}
 	routeCfg := goruntime.RouteConfig{
-		ID: "f7-route", Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		ID: "f7-route", Policy: routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewStaticResolver(plans...), Bindings: bindings,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -398,7 +401,7 @@ func TestE2E_F7_Failover_FanOutSessionOwnerCrash(t *testing.T) {
 		return goruntime.New(goruntime.WithInstanceID(id),
 			goruntime.WithLeaseStore(leaseStore), goruntime.WithOutboxStore(outboxStore), goruntime.WithDLQStore(dlq))
 	}
-	sessA := setupMQTTSession(t, sessionIDs[0]+"-a", domain.SessionEphemeral)
+	sessA := setupMQTTSession(t, sessionIDs[0]+"-a", connectivity.SessionEphemeral)
 	scA := e2eFastSessionConfig(sessionIDs[0])
 	rtA := mkRT("f7-A")
 	_ = rtA.AddRoute(routeCfg, newSQSReceiver(t, queueURL), setupMQTTSender(t, sessA), sessA, &scA)
@@ -406,14 +409,14 @@ func TestE2E_F7_Failover_FanOutSessionOwnerCrash(t *testing.T) {
 	defer func() { _ = rtA.Stop(context.Background()) }()
 
 	ctxB, cancelB := context.WithCancel(context.Background())
-	sessB := setupMQTTSession(t, sessionIDs[1]+"-b", domain.SessionEphemeral)
+	sessB := setupMQTTSession(t, sessionIDs[1]+"-b", connectivity.SessionEphemeral)
 	scB := e2eFastSessionConfig(sessionIDs[1])
-	scB.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
+	scB.DrainStrategy = persistence.NewFixedPoll(30 * time.Second)
 	rtB := mkRT("f7-B")
 	_ = rtB.AddRoute(routeCfg, newFakeReceiver(), setupMQTTSender(t, sessB), sessB, &scB)
 	_ = rtB.Start(ctxB)
 
-	sessC := setupMQTTSession(t, sessionIDs[2]+"-c", domain.SessionEphemeral)
+	sessC := setupMQTTSession(t, sessionIDs[2]+"-c", connectivity.SessionEphemeral)
 	scC := e2eFastSessionConfig(sessionIDs[2])
 	rtC := mkRT("f7-C")
 	_ = rtC.AddRoute(routeCfg, newFakeReceiver(), setupMQTTSender(t, sessC), sessC, &scC)
@@ -426,7 +429,7 @@ func TestE2E_F7_Failover_FanOutSessionOwnerCrash(t *testing.T) {
 	cancelB()
 	_ = rtB.Stop(context.Background())
 
-	sessD := setupMQTTSession(t, sessionIDs[1]+"-d", domain.SessionEphemeral)
+	sessD := setupMQTTSession(t, sessionIDs[1]+"-d", connectivity.SessionEphemeral)
 	scD := e2eFastSessionConfig(sessionIDs[1])
 	rtD := mkRT("f7-D")
 	_ = rtD.AddRoute(routeCfg, newFakeReceiver(), setupMQTTSender(t, sessD), sessD, &scD)
@@ -442,8 +445,8 @@ func TestE2E_F8_Failover_IngressCrashSQSRedelivery(t *testing.T) {
 	collector := newMQTTCollector(t, topic, "f8-sub")
 	dlq := &e2eDLQStore{}
 	cfg := goruntime.RouteConfig{
-		ID: "f8-route", Policy: domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "b1", Address: topic}),
+		ID: "f8-route", Policy: routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "b1", Address: topic}),
 		SourceCapabilities: []ports.Capability{ports.CapSourceRedelivery, ports.CapVisibilityExtension},
 	}
 	ctxA, cancelA := context.WithCancel(context.Background())
@@ -455,7 +458,7 @@ func TestE2E_F8_Failover_IngressCrashSQSRedelivery(t *testing.T) {
 	cancelA()
 	_ = rtA.Stop(context.Background())
 
-	sessB := setupMQTTSession(t, mqttlocal.UniqueClientID("f8-b"), domain.SessionEphemeral)
+	sessB := setupMQTTSession(t, mqttlocal.UniqueClientID("f8-b"), connectivity.SessionEphemeral)
 	rtB := goruntime.New(goruntime.WithInstanceID("f8-B"), goruntime.WithDLQStore(dlq))
 	_ = rtB.AddRoute(cfg, newSQSReceiver(t, queueURL), setupMQTTSender(t, sessB), nil, nil)
 	ctxB, cancelB := context.WithCancel(context.Background())
@@ -478,7 +481,7 @@ func TestE2E_F9_Failover_MultiMessage_ThreeInstances(t *testing.T) {
 	rxA := newFakeReceiver()
 	sessA := newFakeSession()
 	scA := e2eFastSessionConfig(sessionID)
-	scA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
+	scA.DrainStrategy = persistence.NewFixedPoll(30 * time.Second)
 	if err := rtA.AddRoute(cfg, rxA, newFakeSender(), sessA, &scA); err != nil {
 		t.Fatalf("AddRoute A: %v", err)
 	}
@@ -487,7 +490,7 @@ func TestE2E_F9_Failover_MultiMessage_ThreeInstances(t *testing.T) {
 	}
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
 	for i := 0; i < 5; i++ {
-		del := newFakeDelivery(&domain.Envelope{ID: fmt.Sprintf("f9-%d", i), Payload: []byte("multi")})
+		del := newFakeDelivery(&messaging.Envelope{ID: fmt.Sprintf("f9-%d", i), Payload: []byte("multi")})
 		_ = rxA.Emit(ctxA, del)
 		e2eWaitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
 	}
@@ -534,7 +537,7 @@ func TestE2E_F10_Failover_GracefulStepDown(t *testing.T) {
 		t.Fatalf("Start A: %v", err)
 	}
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
-	del := newFakeDelivery(&domain.Envelope{ID: uniqueID("f10-msg"), Payload: []byte("step-down")})
+	del := newFakeDelivery(&messaging.Envelope{ID: uniqueID("f10-msg"), Payload: []byte("step-down")})
 	_ = rxA.Emit(ctxA, del)
 	e2eWaitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
 	e2eWaitFor(t, 10*time.Second, "A drained", func() bool { return sA.sentCount() >= 1 })
@@ -556,7 +559,7 @@ func TestE2E_F10_Failover_GracefulStepDown(t *testing.T) {
 		t.Fatalf("Start B: %v", err)
 	}
 	e2eWaitFor(t, 5*time.Second, "B started", func() bool { return sessB.isStarted() })
-	del2 := newFakeDelivery(&domain.Envelope{ID: uniqueID("f10-msg2"), Payload: []byte("new-owner")})
+	del2 := newFakeDelivery(&messaging.Envelope{ID: uniqueID("f10-msg2"), Payload: []byte("new-owner")})
 	_ = rxB.Emit(ctxB, del2)
 	e2eWaitFor(t, 3*time.Second, "B acked", func() bool { return del2.isAcked() })
 	e2eWaitFor(t, 10*time.Second, "B drained", func() bool { return sB.sentCount() >= 1 })

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -105,7 +105,7 @@ func (c *Config) CredentialsURI() string {
 // string vs. AAD client-secret split. Pre-existing inline values on
 // Connection take precedence: credentialsToConnection only writes
 // when the resolved material differs.
-func (c *Config) ApplyCredentials(set *domain.CredentialSet) error {
+func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 	if c == nil {
 		return errors.New("servicebus: nil config")
 	}

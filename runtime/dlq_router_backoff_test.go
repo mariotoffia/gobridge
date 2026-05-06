@@ -10,8 +10,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -22,11 +24,11 @@ type retryCountingDLQStore struct {
 	mu      sync.Mutex
 	count   int
 	failN   int
-	entries []domain.DLQEntry
+	entries []routing.DLQEntry
 	onWrite chan int // sends attempt number after each Write
 }
 
-func (s *retryCountingDLQStore) Write(_ context.Context, entry domain.DLQEntry) error {
+func (s *retryCountingDLQStore) Write(_ context.Context, entry routing.DLQEntry) error {
 	s.mu.Lock()
 	s.count++
 	n := s.count
@@ -46,22 +48,22 @@ func (s *retryCountingDLQStore) Write(_ context.Context, entry domain.DLQEntry) 
 	return nil
 }
 
-func (s *retryCountingDLQStore) storedEntries() []domain.DLQEntry {
+func (s *retryCountingDLQStore) storedEntries() []routing.DLQEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]domain.DLQEntry, len(s.entries))
+	out := make([]routing.DLQEntry, len(s.entries))
 	copy(out, s.entries)
 	return out
 }
 
-func (s *retryCountingDLQStore) Get(_ context.Context, _ string) (domain.DLQEntry, error) {
-	return domain.DLQEntry{}, domain.ErrNotFound
+func (s *retryCountingDLQStore) Get(_ context.Context, _ string) (routing.DLQEntry, error) {
+	return routing.DLQEntry{}, shared.ErrNotFound
 }
-func (s *retryCountingDLQStore) List(_ context.Context, _ domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *retryCountingDLQStore) List(_ context.Context, _ routing.DLQFilter) ([]routing.DLQEntry, error) {
 	return nil, nil
 }
 func (s *retryCountingDLQStore) Delete(_ context.Context, _ []string) (int, error) { return 0, nil }
-func (s *retryCountingDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error) {
+func (s *retryCountingDLQStore) DeleteByFilter(_ context.Context, _ routing.DLQFilter) (int, error) {
 	return 0, nil
 }
 func (s *retryCountingDLQStore) Purge(_ context.Context, _ time.Time) (int, error) { return 0, nil }
@@ -91,7 +93,7 @@ func TestDLQRouter_RetryBackoff_FakeClock(t *testing.T) {
 		BufferSize: 1,
 		Workers:    1,
 		Clock:      fake,
-		WriteRetryBackoff: domain.BackoffPolicy{
+		WriteRetryBackoff: routing.BackoffPolicy{
 			InitialInterval: 100 * time.Millisecond,
 			MaxInterval:     1 * time.Second,
 			Multiplier:      2.0,
@@ -104,13 +106,13 @@ func TestDLQRouter_RetryBackoff_FakeClock(t *testing.T) {
 	ctx := context.Background()
 	router.Start(ctx)
 	defer router.Close()
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "backoff-test-1",
 		Subject: "test/backoff",
 		Payload: []byte("payload"),
 	}
 
-	err := router.Route(ctx, env, "route-1", "bind-1", "sess-1", "src-1", domain.ErrUnavailable, 1)
+	err := router.Route(ctx, env, "route-1", "bind-1", "sess-1", "src-1", shared.ErrUnavailable, 1)
 	require.NoError(t, err)
 
 	// ── Attempt 1 (immediate, no timer wait) ─────────────────────────────

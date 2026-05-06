@@ -13,7 +13,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
 // Options configures self-signed certificate generation.
@@ -124,8 +124,8 @@ func MustGenerate(opts Options) *Result {
 }
 
 // TestCredentialSet generates a self-signed CA certificate and returns it as a
-// domain.CredentialSet ready for use in tests. Panics on generation failure.
-func TestCredentialSet(commonName string) *domain.CredentialSet {
+// connectivity.CredentialSet ready for use in tests. Panics on generation failure.
+func TestCredentialSet(commonName string) *connectivity.CredentialSet {
 	r := MustGenerate(Options{
 		CommonName: commonName,
 		DNSNames:   []string{commonName, "localhost"},
@@ -133,8 +133,8 @@ func TestCredentialSet(commonName string) *domain.CredentialSet {
 		IsCA:       true,
 	})
 
-	return &domain.CredentialSet{
-		TLS: &domain.TLSMaterial{
+	return &connectivity.CredentialSet{
+		TLS: &connectivity.TLSMaterial{
 			CertPEM:            r.CertPEM,
 			KeyPEM:             r.KeyPEM,
 			CAPEMs:             []string{r.CAPEM},

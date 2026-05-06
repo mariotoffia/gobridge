@@ -6,17 +6,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
 func TestRetryDelay_HonoursRetryAfter(t *testing.T) {
-	policy := domain.RoutePolicy{Backoff: domain.BackoffPolicy{
+	policy := routing.RoutePolicy{Backoff: routing.BackoffPolicy{
 		InitialInterval: time.Second,
 		MaxInterval:     30 * time.Second,
 		Multiplier:      2.0,
 	}}
-	sendErr := domain.ErrThrottled.WithRetryAfter(5 * time.Second)
+	sendErr := shared.ErrThrottled.WithRetryAfter(5 * time.Second)
 
 	for _, attempt := range []int{1, 2, 5} {
 		if got := runtime.RetryDelay(policy, attempt, sendErr); got != 5*time.Second {
@@ -26,7 +28,7 @@ func TestRetryDelay_HonoursRetryAfter(t *testing.T) {
 }
 
 func TestRetryDelay_TransientErrorUsesBackoff(t *testing.T) {
-	policy := domain.RoutePolicy{Backoff: domain.BackoffPolicy{
+	policy := routing.RoutePolicy{Backoff: routing.BackoffPolicy{
 		InitialInterval: time.Second,
 		MaxInterval:     30 * time.Second,
 		Multiplier:      2.0,
@@ -50,27 +52,27 @@ func TestRetryDelay_TransientErrorUsesBackoff(t *testing.T) {
 }
 
 func TestRetryDelay_ZeroPolicyUsesDefaults(t *testing.T) {
-	if got := runtime.RetryDelay(domain.RoutePolicy{}, 1, errors.New("io error")); got <= 0 {
+	if got := runtime.RetryDelay(routing.RoutePolicy{}, 1, errors.New("io error")); got <= 0 {
 		t.Fatalf("retryDelay = %v, want > 0", got)
 	}
 }
 
 func TestRouteRunner_DirectHoldTransientSendUsesBackoff(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.Backoff = domain.BackoffPolicy{
+		cfg.Policy.Backoff = routing.BackoffPolicy{
 			InitialInterval: 500 * time.Millisecond,
 			MaxInterval:     30 * time.Second,
 			Multiplier:      2.0,
 		}
 		cfg.Policy.MaxReplayAttempts = 5
 	})
-	sender.SendErr = domain.ErrUnavailable
+	sender.SendErr = shared.ErrUnavailable
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{ID: "msg-retry-backoff"})
+	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-retry-backoff"})
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit failed: %v", err)
 	}

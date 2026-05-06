@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -304,7 +304,7 @@ func (rt *Runtime) startBackground(ctx context.Context, name string, fn func(con
 			}
 			rt.mu.Lock()
 			rt.componentErrors[name] = err
-			if errors.Is(err, domain.ErrStaleFencingToken) {
+			if errors.Is(err, shared.ErrStaleFencingToken) {
 				rt.mu.Unlock()
 				return
 			}

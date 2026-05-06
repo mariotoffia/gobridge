@@ -7,8 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -59,7 +60,7 @@ func NewStore(opts ...Option) *Store {
 	return s
 }
 
-func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memorylease: acquire",
 			"lease_id", leaseID, "owner_id", ownerID)
@@ -69,7 +70,7 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 
 	now := s.clk.Now()
 	if e, ok := s.leases[leaseID]; ok && now.Before(e.expiresAt) {
-		return domain.LeaseToken{}, domain.ErrAlreadyExists.
+		return persistence.LeaseToken{}, shared.ErrAlreadyExists.
 			WithMessage("lease already held").
 			With("leaseID", leaseID).
 			With("owner", e.owner)
@@ -83,10 +84,10 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 		endpoints: endpoints,
 	}
 
-	return domain.LeaseToken{Version: ver, Owner: ownerID}, nil
+	return persistence.LeaseToken{Version: ver, Owner: ownerID}, nil
 }
 
-func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *Store) Renew(ctx context.Context, leaseID string, token persistence.LeaseToken, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memorylease: renew",
 			"lease_id", leaseID, "owner_id", token.Owner)
@@ -96,21 +97,21 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseTok
 
 	e, ok := s.leases[leaseID]
 	if !ok {
-		return domain.LeaseToken{}, domain.ErrNotFound.
+		return persistence.LeaseToken{}, shared.ErrNotFound.
 			WithMessage("lease not found").
 			With("leaseID", leaseID)
 	}
 
 	now := s.clk.Now()
 	if !now.Before(e.expiresAt) {
-		return domain.LeaseToken{}, domain.ErrStaleFencingToken.
+		return persistence.LeaseToken{}, shared.ErrStaleFencingToken.
 			WithMessage("lease expired, must re-acquire").
 			With("leaseID", leaseID).
 			With("expiredAt", e.expiresAt)
 	}
 
 	if e.version != token.Version || e.owner != token.Owner {
-		return domain.LeaseToken{}, domain.ErrStaleFencingToken.
+		return persistence.LeaseToken{}, shared.ErrStaleFencingToken.
 			WithMessage("lease token mismatch on renew").
 			With("leaseID", leaseID).
 			With("storedVersion", e.version).
@@ -124,7 +125,7 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token domain.LeaseTok
 	return token, nil
 }
 
-func (s *Store) Release(ctx context.Context, leaseID string, token domain.LeaseToken) error {
+func (s *Store) Release(ctx context.Context, leaseID string, token persistence.LeaseToken) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memorylease: release",
 			"lease_id", leaseID)
@@ -134,13 +135,13 @@ func (s *Store) Release(ctx context.Context, leaseID string, token domain.LeaseT
 
 	e, ok := s.leases[leaseID]
 	if !ok {
-		return domain.ErrNotFound.
+		return shared.ErrNotFound.
 			WithMessage("lease not found").
 			With("leaseID", leaseID)
 	}
 
 	if e.version != token.Version || e.owner != token.Owner {
-		return domain.ErrStaleFencingToken.
+		return shared.ErrStaleFencingToken.
 			WithMessage("lease token mismatch on release").
 			With("leaseID", leaseID).
 			With("storedVersion", e.version).
@@ -151,18 +152,18 @@ func (s *Store) Release(ctx context.Context, leaseID string, token domain.LeaseT
 	return nil
 }
 
-func (s *Store) Current(_ context.Context, leaseID string) (domain.LeaseInfo, error) {
+func (s *Store) Current(_ context.Context, leaseID string) (persistence.LeaseInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	e, ok := s.leases[leaseID]
 	if !ok {
-		return domain.LeaseInfo{}, domain.ErrNotFound.
+		return persistence.LeaseInfo{}, shared.ErrNotFound.
 			WithMessage("lease not found").
 			With("leaseID", leaseID)
 	}
 
-	return domain.LeaseInfo{
+	return persistence.LeaseInfo{
 		LeaseID:   leaseID,
 		Owner:     e.owner,
 		Version:   e.version,

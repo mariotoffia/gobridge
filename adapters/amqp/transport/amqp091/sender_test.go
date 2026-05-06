@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -23,7 +25,7 @@ func TestNewSender_Defaults(t *testing.T) {
 func TestSender_Send_NoSession(t *testing.T) {
 	s := NewSender(SenderConfig{})
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "e1",
 		Payload: []byte("hello"),
 	}
@@ -31,11 +33,11 @@ func TestSender_Send_NoSession(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nil session")
 	}
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}
-	if !errors.Is(be, domain.ErrUnavailable) {
+	if !errors.Is(be, shared.ErrUnavailable) {
 		t.Errorf("expected ErrUnavailable, got code %s", be.Code)
 	}
 }
@@ -44,13 +46,13 @@ func TestSender_Send_NoSession(t *testing.T) {
 func TestSender_Send_NoConnection(t *testing.T) {
 	sess := NewSession(
 		SessionOptions{BrokerURL: "amqp://localhost/"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		slog.Default(),
 	)
 	defer func() { _ = sess.Close(context.Background()) }()
 	s := NewSender(SenderConfig{Session: sess})
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "e2",
 		Payload: []byte("hello"),
 	}
@@ -58,7 +60,7 @@ func TestSender_Send_NoConnection(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for disconnected session")
 	}
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}
@@ -68,7 +70,7 @@ func TestSender_Send_NoConnection(t *testing.T) {
 func TestSender_SendBatch_FirstFails(t *testing.T) {
 	s := NewSender(SenderConfig{})
 
-	envs := []*domain.Envelope{
+	envs := []*messaging.Envelope{
 		{ID: "e1", Payload: []byte("a")},
 		{ID: "e2", Payload: []byte("b")},
 	}
@@ -105,7 +107,7 @@ func TestNewSender_InheritsSessionLogger(t *testing.T) {
 	logger := slog.Default()
 	sess := NewSession(
 		SessionOptions{BrokerURL: "amqp://localhost/"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		logger,
 	)
 	defer func() { _ = sess.Close(context.Background()) }()

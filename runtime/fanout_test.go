@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -35,7 +37,7 @@ func TestFanOut_SingleRouteMultipleSessions(t *testing.T) {
 	}
 
 	resolver := &FakeResolver{
-		Plans: []domain.DispatchPlan{
+		Plans: []routing.DispatchPlan{
 			{BindingID: "bind-factory-a", Address: "factory/a/orders/42"},
 			{BindingID: "bind-factory-b", Address: "factory/b/orders/42"},
 		},
@@ -43,11 +45,11 @@ func TestFanOut_SingleRouteMultipleSessions(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "fanout-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: resolver,
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "bind-factory-a", SessionID: "mqtt-factory-a"},
 			{ID: "bind-factory-b", SessionID: "mqtt-factory-b"},
 		},
@@ -74,7 +76,7 @@ func TestFanOut_SingleRouteMultipleSessions(t *testing.T) {
 	})
 
 	// Send a message that fans out to both sessions.
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "fanout-msg-1",
 		Payload: []byte("multi-factory-order"),
 	}
@@ -129,7 +131,7 @@ func TestFanOut_PartialSessionAvailability(t *testing.T) {
 
 	// Sender B will fail all sends (simulating offline target).
 	senderB := NewFakeSender()
-	senderB.SendErr = domain.NewBridgeError("TARGET_DOWN", domain.ErrorTransient, "offline")
+	senderB.SendErr = shared.NewBridgeError("TARGET_DOWN", shared.ErrorTransient, "offline")
 	sessionB := NewFakeSession()
 	sessCfgB := fastSessionConfig("mqtt-partial-b")
 
@@ -137,16 +139,16 @@ func TestFanOut_PartialSessionAvailability(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "partial-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &FakeResolver{
-			Plans: []domain.DispatchPlan{
+			Plans: []routing.DispatchPlan{
 				{BindingID: "ba", Address: "topic/a"},
 				{BindingID: "bb", Address: "topic/b"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "ba", SessionID: "mqtt-partial-a"},
 			{ID: "bb", SessionID: "mqtt-partial-b"},
 		},
@@ -163,7 +165,7 @@ func TestFanOut_PartialSessionAvailability(t *testing.T) {
 		return sessionA.IsStarted() && sessionB.IsStarted()
 	})
 
-	env := &domain.Envelope{ID: "partial-msg-1", Payload: []byte("data")}
+	env := &messaging.Envelope{ID: "partial-msg-1", Payload: []byte("data")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 

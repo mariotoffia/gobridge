@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -30,15 +32,15 @@ func TestCrossInstance_SQSConsumerAndMQTTOwnerAreDifferent(t *testing.T) {
 
 	cfgA := goruntime.RouteConfig{
 		ID: "route-sqs-mqtt",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &FakeResolver{
-			Plans: []domain.DispatchPlan{
+			Plans: []routing.DispatchPlan{
 				{BindingID: "mqtt-bind", Address: "factory/a/orders/42"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "mqtt-bind", SessionID: sessionID},
 		},
 	}
@@ -61,15 +63,15 @@ func TestCrossInstance_SQSConsumerAndMQTTOwnerAreDifferent(t *testing.T) {
 
 	cfgB := goruntime.RouteConfig{
 		ID: "route-sqs-mqtt",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &FakeResolver{
-			Plans: []domain.DispatchPlan{
+			Plans: []routing.DispatchPlan{
 				{BindingID: "mqtt-bind", Address: "factory/a/orders/42"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "mqtt-bind", SessionID: sessionID},
 		},
 	}
@@ -98,7 +100,7 @@ func TestCrossInstance_SQSConsumerAndMQTTOwnerAreDifferent(t *testing.T) {
 	})
 
 	// Instance A receives a message from SQS.
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "cross-msg-1",
 		Payload: []byte("work-order"),
 	}
@@ -156,10 +158,10 @@ func TestCrossInstance_LeaseTransferDrainsRemaining(t *testing.T) {
 
 	cfgA := goruntime.RouteConfig{
 		ID: "failover-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -184,7 +186,7 @@ func TestCrossInstance_LeaseTransferDrainsRemaining(t *testing.T) {
 
 	// A may have sent some of these via its drainer. Block A's sender
 	// from sending more by making it fail, then crash A.
-	senderA.SetSendErr(domain.NewBridgeError("SIMULATED_CRASH", domain.ErrorTransient, "crash"))
+	senderA.SetSendErr(shared.NewBridgeError("SIMULATED_CRASH", shared.ErrorTransient, "crash"))
 
 	// Crash instance A.
 	cancelA()
@@ -206,10 +208,10 @@ func TestCrossInstance_LeaseTransferDrainsRemaining(t *testing.T) {
 
 	cfgB := goruntime.RouteConfig{
 		ID: "failover-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -256,10 +258,10 @@ func TestCrossInstance_ConnectAfterLease(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "deferred-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-deferred"},
 		},
 	}
@@ -297,10 +299,10 @@ func TestCrossInstance_MultipleMessages(t *testing.T) {
 
 	cfgA := goruntime.RouteConfig{
 		ID: "stream-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -315,10 +317,10 @@ func TestCrossInstance_MultipleMessages(t *testing.T) {
 
 	cfgB := goruntime.RouteConfig{
 		ID: "stream-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}

@@ -11,8 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -27,10 +28,10 @@ const (
 )
 
 type storedCredentials struct {
-	Credentials *domain.CredentialSet `json:"credentials"`
-	Version     int64                 `json:"version"`
-	CreatedAt   time.Time             `json:"createdAt"`
-	UpdatedAt   time.Time             `json:"updatedAt"`
+	Credentials *connectivity.CredentialSet `json:"credentials"`
+	Version     int64                       `json:"version"`
+	CreatedAt   time.Time                   `json:"createdAt"`
+	UpdatedAt   time.Time                   `json:"updatedAt"`
 }
 
 type Repository struct {
@@ -75,7 +76,7 @@ func New(basePath string, opts ...Option) (*Repository, error) {
 func (r *Repository) Scheme() string    { return Scheme }
 func (r *Repository) Namespace() string { return r.namespace }
 
-func (r *Repository) Get(ctx context.Context, uri string) (*domain.CredentialSet, error) {
+func (r *Repository) Get(ctx context.Context, uri string) (*connectivity.CredentialSet, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -87,7 +88,7 @@ func (r *Repository) Get(ctx context.Context, uri string) (*domain.CredentialSet
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, domain.ErrNotFound
+			return nil, shared.ErrNotFound
 		}
 		return nil, fmt.Errorf("failed to read credentials file: %w", err)
 	}
@@ -100,7 +101,7 @@ func (r *Repository) Get(ctx context.Context, uri string) (*domain.CredentialSet
 	return stored.Credentials, nil
 }
 
-func (r *Repository) Create(ctx context.Context, uri string, creds *domain.CredentialSet) error {
+func (r *Repository) Create(ctx context.Context, uri string, creds *connectivity.CredentialSet) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -110,7 +111,7 @@ func (r *Repository) Create(ctx context.Context, uri string, creds *domain.Crede
 	}
 
 	if _, err := os.Stat(filePath); err == nil {
-		return domain.ErrAlreadyExists
+		return shared.ErrAlreadyExists
 	}
 
 	dir := filepath.Dir(filePath)
@@ -129,7 +130,7 @@ func (r *Repository) Create(ctx context.Context, uri string, creds *domain.Crede
 	return r.writeCredentials(filePath, &stored)
 }
 
-func (r *Repository) Update(ctx context.Context, uri string, creds *domain.CredentialSet, version int64) error {
+func (r *Repository) Update(ctx context.Context, uri string, creds *connectivity.CredentialSet, version int64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -141,7 +142,7 @@ func (r *Repository) Update(ctx context.Context, uri string, creds *domain.Crede
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return domain.ErrNotFound
+			return shared.ErrNotFound
 		}
 		return fmt.Errorf("failed to read credentials file: %w", err)
 	}
@@ -152,7 +153,7 @@ func (r *Repository) Update(ctx context.Context, uri string, creds *domain.Crede
 	}
 
 	if version > 0 && stored.Version != version {
-		return domain.ErrVersionMismatch
+		return shared.ErrVersionMismatch
 	}
 
 	stored.Credentials = creds
@@ -172,7 +173,7 @@ func (r *Repository) Delete(ctx context.Context, uri string, version int64) erro
 	}
 
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		return domain.ErrNotFound
+		return shared.ErrNotFound
 	}
 
 	if version > 0 {
@@ -187,7 +188,7 @@ func (r *Repository) Delete(ctx context.Context, uri string, version int64) erro
 		}
 
 		if stored.Version != version {
-			return domain.ErrVersionMismatch
+			return shared.ErrVersionMismatch
 		}
 	}
 

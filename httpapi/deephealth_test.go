@@ -8,12 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/wait"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // stubSession implements ports.Session for deep health tests.
@@ -37,8 +39,8 @@ func newStubSession(connected, ready bool) *stubSession {
 	}
 }
 
-func (s *stubSession) Start(context.Context) error                         { return nil }
-func (s *stubSession) Reconcile(context.Context, domain.SessionPlan) error { return nil }
+func (s *stubSession) Start(context.Context) error                               { return nil }
+func (s *stubSession) Reconcile(context.Context, connectivity.SessionPlan) error { return nil }
 func (s *stubSession) Health(context.Context) ports.SessionHealth {
 	return ports.SessionHealth{
 		Connected:    s.connected,
@@ -85,8 +87,8 @@ func TestHandleDeepHealth_Running(t *testing.T) {
 	sender := &stubSender{}
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID: "route-alpha",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}, receiver, sender, nil, nil)
@@ -118,7 +120,7 @@ func TestHandleDeepHealth_Running(t *testing.T) {
 
 	require.Len(t, body.Routes, 1)
 	assert.Equal(t, "route-alpha", body.Routes[0].ID)
-	assert.Equal(t, string(domain.DeliveryDirectHold), body.Routes[0].DeliveryMode)
+	assert.Equal(t, string(routing.DeliveryDirectHold), body.Routes[0].DeliveryMode)
 }
 
 // TestHandleDeepHealth_WithSession validates that deep health includes
@@ -133,8 +135,8 @@ func TestHandleDeepHealth_WithSession(t *testing.T) {
 
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID: "route-with-session",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}, receiver, sender, sess, sessCfg)

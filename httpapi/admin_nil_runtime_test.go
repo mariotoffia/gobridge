@@ -7,9 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/runtime"
 )
 
 // nilRuntimeAdminServer returns a Server whose RuntimeProvider always returns

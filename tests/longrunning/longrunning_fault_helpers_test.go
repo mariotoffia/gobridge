@@ -10,7 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -29,13 +31,13 @@ func newFailFirstNSender(inner ports.Sender, maxFails int) *failFirstNSender {
 	return &failFirstNSender{inner: inner, maxFails: maxFails, attempts: make(map[string]int)}
 }
 
-func (s *failFirstNSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *failFirstNSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	s.mu.Lock()
 	s.attempts[env.ID]++
 	n := s.attempts[env.ID]
 	s.mu.Unlock()
 	if n <= s.maxFails {
-		return domain.ErrUnavailable.WithMessage(
+		return shared.ErrUnavailable.WithMessage(
 			fmt.Sprintf("failFirstN: attempt %d/%d for %s", n, s.maxFails, env.ID))
 	}
 	return s.inner.Send(ctx, env)
@@ -55,7 +57,7 @@ func newCountingSender(inner ports.Sender) *countingSender {
 	return &countingSender{inner: inner}
 }
 
-func (s *countingSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *countingSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	err := s.inner.Send(ctx, env)
 	if err != nil {
 		s.failures.Add(1)
@@ -80,7 +82,7 @@ func newDegradedSender(inner ports.Sender, failPct int, latency time.Duration) *
 	return &degradedSender{inner: inner, failPercent: failPct, latency: latency}
 }
 
-func (s *degradedSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *degradedSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	if s.latency > 0 {
 		select {
 		case <-time.After(s.latency):
@@ -90,7 +92,7 @@ func (s *degradedSender) Send(ctx context.Context, env *domain.Envelope) error {
 	}
 	s.calls.Add(1)
 	if rand.IntN(100) < s.failPercent {
-		return domain.ErrUnavailable.WithMessage("degraded sender: injected failure")
+		return shared.ErrUnavailable.WithMessage("degraded sender: injected failure")
 	}
 	return s.inner.Send(ctx, env)
 }
@@ -108,7 +110,7 @@ func newSlowDLQStore(inner ports.DLQStore, delay time.Duration) *slowDLQStore {
 	return &slowDLQStore{inner: inner, delay: delay}
 }
 
-func (s *slowDLQStore) Write(ctx context.Context, entry domain.DLQEntry) error {
+func (s *slowDLQStore) Write(ctx context.Context, entry routing.DLQEntry) error {
 	select {
 	case <-time.After(s.delay):
 	case <-ctx.Done():
@@ -117,11 +119,11 @@ func (s *slowDLQStore) Write(ctx context.Context, entry domain.DLQEntry) error {
 	return s.inner.Write(ctx, entry)
 }
 
-func (s *slowDLQStore) List(ctx context.Context, f domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *slowDLQStore) List(ctx context.Context, f routing.DLQFilter) ([]routing.DLQEntry, error) {
 	return s.inner.List(ctx, f)
 }
 
-func (s *slowDLQStore) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
+func (s *slowDLQStore) Get(ctx context.Context, id string) (routing.DLQEntry, error) {
 	return s.inner.Get(ctx, id)
 }
 
@@ -129,7 +131,7 @@ func (s *slowDLQStore) Delete(ctx context.Context, ids []string) (int, error) {
 	return s.inner.Delete(ctx, ids)
 }
 
-func (s *slowDLQStore) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error) {
+func (s *slowDLQStore) DeleteByFilter(ctx context.Context, filter routing.DLQFilter) (int, error) {
 	return s.inner.DeleteByFilter(ctx, filter)
 }
 
@@ -145,9 +147,9 @@ type replayableDLQStore struct {
 	lrDLQStore
 }
 
-func (s *replayableDLQStore) List(_ context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *replayableDLQStore) List(_ context.Context, filter routing.DLQFilter) ([]routing.DLQEntry, error) {
 	entries := s.getEntries()
-	var result []domain.DLQEntry
+	var result []routing.DLQEntry
 	for _, e := range entries {
 		if filter.RouteID != "" && e.RouteID != filter.RouteID {
 			continue
@@ -170,7 +172,7 @@ func (s *replayableDLQStore) Delete(_ context.Context, ids []string) (int, error
 	for _, id := range ids {
 		idSet[id] = struct{}{}
 	}
-	var remaining []domain.DLQEntry
+	var remaining []routing.DLQEntry
 	var count int
 	for _, e := range s.entries {
 		if _, ok := idSet[e.ID]; ok {
@@ -195,11 +197,11 @@ type rejectEveryNthProcessor struct {
 func (p *rejectEveryNthProcessor) Name() string { return "reject-every-nth" }
 
 func (p *rejectEveryNthProcessor) Process(
-	ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc,
+	ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc,
 ) error {
 	c := p.count.Add(1)
 	if c%int64(p.n) == 0 {
-		return domain.ErrInvalidPayload.WithMessage(
+		return shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("reject-every-%d: msg %d rejected", p.n, c))
 	}
 	return next(ctx, env)
@@ -217,7 +219,7 @@ type panicProcessor struct {
 func (p *panicProcessor) Name() string { return "panic-processor" }
 
 func (p *panicProcessor) Process(
-	ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc,
+	ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc,
 ) error {
 	n := p.count.Add(1)
 	if n%int64(p.panicEvery) == 0 {

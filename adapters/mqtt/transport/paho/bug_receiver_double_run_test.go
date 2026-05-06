@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -45,7 +46,7 @@ func TestBugRDR_ConcurrentRunOnSameReceiver_ReturnsError(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "bug-rdr-1",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-rdr", sess)
 
@@ -88,12 +89,12 @@ func TestBugRDR_ConcurrentRunOnSameReceiver_ReturnsError(t *testing.T) {
 	if earlyErr == nil {
 		t.Fatal("BUG-RDR: second concurrent Run must return an error, not nil")
 	}
-	be, ok := earlyErr.(*domain.BridgeError)
+	be, ok := earlyErr.(*shared.BridgeError)
 	if !ok {
-		t.Fatalf("BUG-RDR: err type = %T, want *domain.BridgeError", earlyErr)
+		t.Fatalf("BUG-RDR: err type = %T, want *shared.BridgeError", earlyErr)
 	}
-	if be.Code != domain.ErrUnavailable.Code {
-		t.Errorf("BUG-RDR: err code = %s, want %s", be.Code, domain.ErrUnavailable.Code)
+	if be.Code != shared.ErrUnavailable.Code {
+		t.Errorf("BUG-RDR: err code = %s, want %s", be.Code, shared.ErrUnavailable.Code)
 	}
 
 	// Now stop the first Run cleanly.
@@ -113,7 +114,7 @@ func TestBugRDR_HandlerRemainsForFirstRun_DespiteSecondRunRejection(t *testing.T
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "bug-rdr-2",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-rdr-2", sess)
 
@@ -181,7 +182,7 @@ func TestBugRDR_SequentialRunOnSameReceiver_AllowedAfterFirstReturns(t *testing.
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "bug-rdr-3",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-rdr-3", sess)
 

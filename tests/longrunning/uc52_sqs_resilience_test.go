@@ -14,7 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -40,7 +41,7 @@ func TestUC52_VisibilityTimeoutExpiry(t *testing.T) {
 	}, slog.Default())
 	require.NoError(t, err)
 
-	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc52"), domain.SessionExclusive)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc52"), connectivity.SessionExclusive)
 	collector := newMQTTCollector(t, "uc52/out", "uc52")
 	sender := setupMQTTSender(t, sess)
 
@@ -55,12 +56,12 @@ func TestUC52_VisibilityTimeoutExpiry(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc52-vis",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  50,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc52-bind", Address: "uc52/out"},
+			routing.DispatchPlan{BindingID: "uc52-bind", Address: "uc52/out"},
 		),
 		Processors:         []ports.Processor{slow},
 		SourceCapabilities: directHoldCaps,
@@ -102,7 +103,7 @@ func TestUC53_AutoExtendUnderLoad(t *testing.T) {
 	}, slog.Default())
 	require.NoError(t, err)
 
-	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc53"), domain.SessionExclusive)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc53"), connectivity.SessionExclusive)
 	collector := newMQTTCollector(t, "uc53/out", "uc53")
 	sender := setupMQTTSender(t, sess)
 
@@ -117,12 +118,12 @@ func TestUC53_AutoExtendUnderLoad(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc53-autoext",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  20,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc53-bind", Address: "uc53/out"},
+			routing.DispatchPlan{BindingID: "uc53-bind", Address: "uc53/out"},
 		),
 		Processors:         []ports.Processor{slow},
 		SourceCapabilities: directHoldCaps,
@@ -153,7 +154,7 @@ func TestUC54_FIFODeduplication(t *testing.T) {
 	queueURL, client := setupFIFOQueue(t, "uc54")
 
 	receiver := newSQSReceiver(t, queueURL)
-	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc54"), domain.SessionExclusive)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc54"), connectivity.SessionExclusive)
 	collector := newMQTTCollector(t, "uc54/out", "uc54")
 	sender := setupMQTTSender(t, sess)
 
@@ -166,12 +167,12 @@ func TestUC54_FIFODeduplication(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc54-fifo-dedup",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  1, // serialize to avoid ElasticMQ group cycling issues
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc54-bind", Address: "uc54/out"},
+			routing.DispatchPlan{BindingID: "uc54-bind", Address: "uc54/out"},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, receiver, sender, sess, nil))
@@ -211,7 +212,7 @@ func TestUC55_FIFOOrdering(t *testing.T) {
 	queueURL, client := setupFIFOQueue(t, "uc55")
 
 	receiver := newSQSReceiver(t, queueURL)
-	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc55"), domain.SessionExclusive)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc55"), connectivity.SessionExclusive)
 	collector := newMQTTCollector(t, "uc55/out", "uc55")
 	sender := setupMQTTSender(t, sess)
 
@@ -224,12 +225,12 @@ func TestUC55_FIFOOrdering(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc55-fifo-order",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  1,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc55-bind", Address: "uc55/out"},
+			routing.DispatchPlan{BindingID: "uc55-bind", Address: "uc55/out"},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, receiver, sender, sess, nil))
@@ -294,7 +295,7 @@ func TestUC56_BatchMixedSuccessFailure(t *testing.T) {
 	queueURL, client := setupSQSQueue(t, "uc56")
 
 	receiver := newSQSReceiver(t, queueURL)
-	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc56"), domain.SessionExclusive)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc56"), connectivity.SessionExclusive)
 	collector := newMQTTCollector(t, "uc56/out", "uc56")
 	sender := setupMQTTSender(t, sess)
 
@@ -311,13 +312,13 @@ func TestUC56_BatchMixedSuccessFailure(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc56-mixed",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:       domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:       routing.DeliveryDirectHold,
 			MaxInFlight:        20,
 			OnPermanentFailure: "dlq",
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc56-bind", Address: "uc56/out"},
+			routing.DispatchPlan{BindingID: "uc56-bind", Address: "uc56/out"},
 		),
 		Processors:         []ports.Processor{rejector},
 		SourceCapabilities: directHoldCaps,

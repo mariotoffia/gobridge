@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/mariotoffia/gobridge/domain"
-	"github.com/mariotoffia/gobridge/ports"
 	"github.com/ohler55/ojg/jp"
 	"github.com/ohler55/ojg/oj"
+
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // Processor is a processor that transforms message payloads using JSONPath.
@@ -54,7 +55,7 @@ func (p *Processor) Name() string {
 }
 
 // Process transforms the message payload according to the configured mappings.
-func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	if len(env.Payload) == 0 {
 		return next(ctx, env)
 	}

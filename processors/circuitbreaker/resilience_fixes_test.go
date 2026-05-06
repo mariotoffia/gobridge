@@ -34,7 +34,8 @@ import (
 	"time"
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -68,7 +69,7 @@ func TestHalfOpen_LimitsConcurrentProbes(t *testing.T) {
 	if err2 == nil {
 		t.Fatal("second half-open probe should be rejected when max=1")
 	}
-	if !errors.Is(err2, domain.ErrUnavailable) {
+	if !errors.Is(err2, shared.ErrUnavailable) {
 		t.Fatalf("expected ErrUnavailable, got: %v", err2)
 	}
 
@@ -126,7 +127,7 @@ func TestPermanentErrors_DontTripBreaker(t *testing.T) {
 
 	for i := 0; i < cfg.FailureThreshold*3; i++ {
 		_ = b.BeforeRequest()
-		b.AfterRequest(domain.ErrInvalidPayload)
+		b.AfterRequest(shared.ErrInvalidPayload)
 	}
 
 	m := b.GetMetrics()
@@ -147,13 +148,13 @@ func TestMixedErrors_OnlyTransientCounted(t *testing.T) {
 	b := cb.NewBreaker("test", cfg, nil)
 
 	_ = b.BeforeRequest()
-	b.AfterRequest(domain.ErrInvalidPayload)
+	b.AfterRequest(shared.ErrInvalidPayload)
 
 	_ = b.BeforeRequest()
-	b.AfterRequest(domain.ErrSchemaViolation)
+	b.AfterRequest(shared.ErrSchemaViolation)
 
 	_ = b.BeforeRequest()
-	b.AfterRequest(domain.ErrConnectionLost)
+	b.AfterRequest(shared.ErrConnectionLost)
 
 	m := b.GetMetrics()
 	if m.ConsecutiveFailures != 1 {
@@ -174,7 +175,7 @@ func TestCustomErrorClassifier(t *testing.T) {
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
-		b.AfterRequest(domain.ErrInvalidPayload)
+		b.AfterRequest(shared.ErrInvalidPayload)
 	}
 
 	m := b.GetMetrics()
@@ -323,14 +324,14 @@ func TestProcessor_PermanentError_PassesThrough(t *testing.T) {
 	}
 	p := New("test", cfg)
 
-	next := func(_ context.Context, _ *domain.Envelope) error {
-		return domain.ErrInvalidPayload
+	next := func(_ context.Context, _ *messaging.Envelope) error {
+		return shared.ErrInvalidPayload
 	}
 
-	env := &domain.Envelope{ID: "1", Subject: "test"}
+	env := &messaging.Envelope{ID: "1", Subject: "test"}
 	for i := 0; i < 10; i++ {
 		err := p.Process(context.Background(), env, next)
-		if !errors.Is(err, domain.ErrInvalidPayload) {
+		if !errors.Is(err, shared.ErrInvalidPayload) {
 			t.Fatalf("expected ErrInvalidPayload, got: %v", err)
 		}
 	}

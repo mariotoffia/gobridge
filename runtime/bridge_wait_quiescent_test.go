@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -24,15 +25,15 @@ func closeOnce(ch chan struct{}) func() {
 func helperQuiescentRoute(id string, release <-chan struct{}) (goruntime.RouteConfig, *FakeReceiver, *FakeSender) {
 	cfg := goruntime.RouteConfig{
 		ID: id,
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  4,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 	sender := NewFakeSender()
 	if release != nil {
-		sender.SendFn = func(env *domain.Envelope) error {
+		sender.SendFn = func(env *messaging.Envelope) error {
 			<-release
 			return nil
 		}
@@ -100,7 +101,7 @@ func TestWaitQuiescent_ReturnsOnIdleEvent(t *testing.T) {
 	}
 
 	// Emit a delivery; it will block in Send until release fires.
-	del := NewFakeDelivery(&domain.Envelope{ID: "m1", Subject: "t"})
+	del := NewFakeDelivery(&messaging.Envelope{ID: "m1", Subject: "t"})
 	if err := recv.Emit(context.Background(), del); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -167,7 +168,7 @@ func TestWaitQuiescent_WatchedRoutesFilter(t *testing.T) {
 
 	// Make route-a permanently busy.
 	if err := recvA.Emit(context.Background(),
-		NewFakeDelivery(&domain.Envelope{ID: "m-a", Subject: "t"})); err != nil {
+		NewFakeDelivery(&messaging.Envelope{ID: "m-a", Subject: "t"})); err != nil {
 		t.Fatalf("Emit a: %v", err)
 	}
 
@@ -214,7 +215,7 @@ func TestWaitQuiescent_ContextCancel(t *testing.T) {
 	}
 
 	if err := recv.Emit(context.Background(),
-		NewFakeDelivery(&domain.Envelope{ID: "m1", Subject: "t"})); err != nil {
+		NewFakeDelivery(&messaging.Envelope{ID: "m1", Subject: "t"})); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 

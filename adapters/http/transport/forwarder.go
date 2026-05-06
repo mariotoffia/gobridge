@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -129,11 +131,11 @@ func (f *HTTPForwarder) retryDelay(attempt int) time.Duration {
 
 // Forward sends an envelope to a remote instance's receiver endpoint.
 func (f *HTTPForwarder) Forward(
-	ctx context.Context, target *domain.PeerInfo, receiverID string, env *domain.Envelope,
+	ctx context.Context, target *persistence.PeerInfo, receiverID string, env *messaging.Envelope,
 ) error {
 	httpEndpoint, ok := target.Endpoints["http"]
 	if !ok {
-		return domain.ErrForwardFailed.WithMessage("target has no HTTP endpoint")
+		return shared.ErrForwardFailed.WithMessage("target has no HTTP endpoint")
 	}
 
 	if logging.TraceEnabled(f.logger) {
@@ -155,14 +157,14 @@ func (f *HTTPForwarder) Forward(
 	}
 	body, err := json.Marshal(ir)
 	if err != nil {
-		return domain.ErrForwardFailed.Wrap(err)
+		return shared.ErrForwardFailed.Wrap(err)
 	}
 
 	url := httpEndpoint + f.pathPrefix + "/receivers/" + receiverID + "/messages"
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
-		return domain.ErrForwardFailed.Wrap(err)
+		return shared.ErrForwardFailed.Wrap(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Bridge-Forwarded", "true")
@@ -176,7 +178,7 @@ func (f *HTTPForwarder) Forward(
 			delay := f.retryDelay(attempt)
 			select {
 			case <-ctx.Done():
-				return domain.ErrForwardFailed.Wrap(ctx.Err())
+				return shared.ErrForwardFailed.Wrap(ctx.Err())
 			case <-f.cfg.Clock.After(delay):
 			}
 			req = req.Clone(ctx)
@@ -201,7 +203,7 @@ func (f *HTTPForwarder) Forward(
 					"attempt", attempt+1,
 				)
 			}
-			lastErr = domain.ErrUnavailable.WithMessage(
+			lastErr = shared.ErrUnavailable.WithMessage(
 				fmt.Sprintf("remote returned %d", resp.StatusCode),
 			)
 			continue
@@ -214,13 +216,13 @@ func (f *HTTPForwarder) Forward(
 					"status_code", resp.StatusCode,
 				)
 			}
-			return domain.NewBridgeError(
-				domain.ErrCodeForwardFailed, domain.ErrorPermanent,
+			return shared.NewBridgeError(
+				shared.ErrCodeForwardFailed, shared.ErrorPermanent,
 				fmt.Sprintf("remote returned %d", resp.StatusCode),
 			)
 		}
 		return nil
 	}
 
-	return domain.ErrForwardFailed.Wrap(lastErr)
+	return shared.ErrForwardFailed.Wrap(lastErr)
 }

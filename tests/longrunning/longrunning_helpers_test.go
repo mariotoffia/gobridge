@@ -21,7 +21,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -40,7 +42,7 @@ type concurrencyTracker struct {
 
 func (p *concurrencyTracker) Name() string { return "concurrency-tracker" }
 
-func (p *concurrencyTracker) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *concurrencyTracker) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	cur := p.current.Add(1)
 	for {
 		old := p.max.Load()
@@ -66,10 +68,10 @@ func newFaultySender(inner ports.Sender, failPercent int) *faultySender {
 	return &faultySender{inner: inner, failPercent: failPercent}
 }
 
-func (s *faultySender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *faultySender) Send(ctx context.Context, env *messaging.Envelope) error {
 	s.calls.Add(1)
 	if rand.IntN(100) < s.failPercent {
-		return domain.ErrUnavailable.WithMessage("faulty sender injected failure")
+		return shared.ErrUnavailable.WithMessage("faulty sender injected failure")
 	}
 	return s.inner.Send(ctx, env)
 }
@@ -86,7 +88,7 @@ func newSlowProcessor(name string, delay time.Duration) *slowProcessor {
 
 func (p *slowProcessor) Name() string { return p.name }
 
-func (p *slowProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *slowProcessor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	select {
 	case <-time.After(p.delay):
 	case <-ctx.Done():
@@ -98,14 +100,14 @@ func (p *slowProcessor) Process(ctx context.Context, env *domain.Envelope, next 
 // filterProcessor drops messages that don't match the predicate,
 // returning ErrMessageFiltered for rejected messages.
 type filterProcessor struct {
-	keep func(env *domain.Envelope) bool
+	keep func(env *messaging.Envelope) bool
 }
 
 func (p *filterProcessor) Name() string { return "filter" }
 
-func (p *filterProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *filterProcessor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	if !p.keep(env) {
-		return domain.ErrMessageFiltered.WithMessage("filtered by predicate")
+		return shared.ErrMessageFiltered.WithMessage("filtered by predicate")
 	}
 	return next(ctx, env)
 }
@@ -122,7 +124,7 @@ func newPausableSender(inner ports.Sender) *pausableSender {
 	return &pausableSender{inner: inner, ch: make(chan struct{})}
 }
 
-func (s *pausableSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *pausableSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	s.mu.Lock()
 	if s.paused {
 		ch := s.ch
@@ -166,7 +168,7 @@ func newSlowSender(inner ports.Sender, delay time.Duration) *slowSender {
 	return &slowSender{inner: inner, delay: delay}
 }
 
-func (s *slowSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *slowSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	select {
 	case <-time.After(s.delay):
 	case <-ctx.Done():
@@ -178,15 +180,15 @@ func (s *slowSender) Send(ctx context.Context, env *domain.Envelope) error {
 // alwaysFailSender always returns a transient error.
 type alwaysFailSender struct{}
 
-func (s *alwaysFailSender) Send(_ context.Context, _ *domain.Envelope) error {
-	return domain.ErrUnavailable.WithMessage("always-fail sender")
+func (s *alwaysFailSender) Send(_ context.Context, _ *messaging.Envelope) error {
+	return shared.ErrUnavailable.WithMessage("always-fail sender")
 }
 
 // permanentFailSender always returns a permanent error, forcing DLQ routing.
 type permanentFailSender struct{}
 
-func (s *permanentFailSender) Send(_ context.Context, _ *domain.Envelope) error {
-	return domain.ErrInvalidPayload.WithMessage("permanent-fail sender")
+func (s *permanentFailSender) Send(_ context.Context, _ *messaging.Envelope) error {
+	return shared.ErrInvalidPayload.WithMessage("permanent-fail sender")
 }
 
 // chainOrderProcessor appends its stage name to a "chain_order" header
@@ -197,7 +199,7 @@ type chainOrderProcessor struct {
 
 func (p *chainOrderProcessor) Name() string { return "chain-" + p.stage }
 
-func (p *chainOrderProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *chainOrderProcessor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	if env.Headers == nil {
 		env.Headers = make(map[string]any)
 	}
@@ -338,7 +340,7 @@ func resolveKeepAlive(vals []uint16) uint16 {
 // reconnection delay after broker.Restart().
 func setupMQTTSessionWithBroker(
 	t *testing.T, brokerURL, clientID string,
-	mode domain.SessionMode, receiveMax uint16,
+	mode connectivity.SessionMode, receiveMax uint16,
 	keepAlive ...uint16,
 ) *paho.Session {
 	t.Helper()
@@ -374,7 +376,7 @@ func setupMQTTSessionWithBroker(
 // reconnection delay after broker.Restart().
 func newMQTTSessionWithBroker(
 	t *testing.T, brokerURL, clientID string,
-	mode domain.SessionMode, receiveMax uint16,
+	mode connectivity.SessionMode, receiveMax uint16,
 	keepAlive ...uint16,
 ) *paho.Session {
 	t.Helper()
@@ -383,7 +385,7 @@ func newMQTTSessionWithBroker(
 		ClientID:       clientID,
 		KeepAlive:      resolveKeepAlive(keepAlive),
 		ConnectTimeout: 15 * time.Second,
-		CleanStart:     mode == domain.SessionEphemeral,
+		CleanStart:     mode == connectivity.SessionEphemeral,
 		ReceiveMaximum: receiveMax,
 	}, mode, testLogger(t))
 
@@ -412,7 +414,7 @@ func newMQTTCollectorWithBroker(
 		KeepAlive:      resolveKeepAlive(keepAlive),
 		ConnectTimeout: 15 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, testLogger(t))
+	}, connectivity.SessionEphemeral, testLogger(t))
 
 	ctx := context.Background()
 	require.NoError(t, sess.Start(ctx), "collector Start at %s", brokerURL)
@@ -422,8 +424,8 @@ func newMQTTCollectorWithBroker(
 	case <-time.After(5 * time.Second):
 	}
 
-	require.NoError(t, sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	require.NoError(t, sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}), "collector Reconcile")
 	waitSubReady(t, sess, 5*time.Second)
 
@@ -459,21 +461,21 @@ func newMQTTCollectorWithBroker(
 // returns the corresponding sentinel error. If no header is set, or the
 // value is unrecognised, it delegates to the inner sender.
 //
-//   - "transient" -> domain.ErrUnavailable
-//   - "permanent" -> domain.ErrInvalidPayload
+//   - "transient" -> shared.ErrUnavailable
+//   - "permanent" -> shared.ErrInvalidPayload
 //   - anything else -> inner.Send
 type errorClassSender struct {
 	inner ports.Sender
 }
 
-func (s *errorClassSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *errorClassSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	if env.Headers != nil {
 		if et, ok := env.Headers["error_type"].(string); ok {
 			switch et {
 			case "transient":
-				return domain.ErrUnavailable.WithMessage("errorClassSender: transient")
+				return shared.ErrUnavailable.WithMessage("errorClassSender: transient")
 			case "permanent":
-				return domain.ErrInvalidPayload.WithMessage("errorClassSender: permanent")
+				return shared.ErrInvalidPayload.WithMessage("errorClassSender: permanent")
 			}
 		}
 	}
@@ -589,7 +591,7 @@ func newPersistentCollectorWithBroker(
 		ConnectTimeout:        15 * time.Second,
 		CleanStart:            false,
 		SessionExpiryInterval: 300,
-	}, domain.SessionPersistent, testLogger(t))
+	}, connectivity.SessionPersistent, testLogger(t))
 
 	ctx := context.Background()
 	require.NoError(t, sess.Start(ctx), "persistent collector Start at %s", brokerURL)
@@ -597,8 +599,8 @@ func newPersistentCollectorWithBroker(
 	case <-sess.Events():
 	case <-time.After(5 * time.Second):
 	}
-	require.NoError(t, sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	require.NoError(t, sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}), "persistent collector Reconcile")
 	waitSubReady(t, sess, 5*time.Second)
 

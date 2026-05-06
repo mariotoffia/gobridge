@@ -9,8 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -30,7 +32,7 @@ const (
 // LeaseStateEvent is emitted whenever the lease state changes.
 type LeaseStateEvent struct {
 	State     LeaseState
-	Token     domain.LeaseToken
+	Token     persistence.LeaseToken
 	Timestamp time.Time
 	Err       error
 }
@@ -44,7 +46,7 @@ type SessionManager struct {
 	ownerID           string
 	exclusive         bool
 	connectAfterLease bool
-	plan              domain.SessionPlan
+	plan              connectivity.SessionPlan
 	leaseTTL          time.Duration
 	renewInterval     time.Duration
 	renewJitter       time.Duration
@@ -57,7 +59,7 @@ type SessionManager struct {
 	clk               clock.Clock
 
 	mu            sync.Mutex
-	token         domain.LeaseToken
+	token         persistence.LeaseToken
 	hasLease      bool
 	connectedOnce atomic.Bool
 
@@ -159,7 +161,7 @@ func (m *SessionManager) SetAudit(audit ports.AuditLogger) {
 // LeaseStateChanged returns a channel that receives lease state transitions.
 func (m *SessionManager) LeaseStateChanged() <-chan LeaseStateEvent { return m.leaseEvents }
 
-func (m *SessionManager) pushLeaseEvent(state LeaseState, token domain.LeaseToken, err error) {
+func (m *SessionManager) pushLeaseEvent(state LeaseState, token persistence.LeaseToken, err error) {
 	evt := LeaseStateEvent{State: state, Token: token, Timestamp: m.clk.Now(), Err: err}
 	select {
 	case m.leaseEvents <- evt:
@@ -168,7 +170,7 @@ func (m *SessionManager) pushLeaseEvent(state LeaseState, token domain.LeaseToke
 }
 
 // Token returns the current lease token and whether the manager holds the lease.
-func (m *SessionManager) Token() (domain.LeaseToken, bool) {
+func (m *SessionManager) Token() (persistence.LeaseToken, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.token, m.hasLease
@@ -208,12 +210,12 @@ func (m *SessionManager) handleEvents(ctx context.Context) error {
 }
 
 func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.SessionEvent) error {
-	sessionTag := domain.Tag{Key: domain.TagKeySessionID, Value: m.sessionID}
+	sessionTag := shared.Tag{Key: shared.TagKeySessionID, Value: m.sessionID}
 	switch ev.Type {
 	case ports.SessionConnected:
 		m.log(ctx, slog.LevelInfo, "session connected")
 		if m.connectedOnce.Swap(true) {
-			m.metrics.Counter(domain.MetricMQTTReconnects, 1, sessionTag)
+			m.metrics.Counter(shared.MetricMQTTReconnects, 1, sessionTag)
 		}
 		if logging.DebugEnabled(m.logger) {
 			m.logger.Log(ctx, logging.LevelDebug, "session reconcile",
@@ -223,7 +225,7 @@ func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.Sessio
 		}
 		if err := m.session.Reconcile(ctx, m.plan); err != nil {
 			m.log(ctx, slog.LevelError, "reconcile failed on reconnect", "error", err)
-			m.metrics.Counter(domain.MetricReconcileFailures, 1, sessionTag)
+			m.metrics.Counter(shared.MetricReconcileFailures, 1, sessionTag)
 			return fmt.Errorf("runtime: session-manager: reconcile on reconnect: %w", err)
 		}
 
@@ -239,7 +241,7 @@ func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.Sessio
 	return nil
 }
 
-func (m *SessionManager) setToken(token domain.LeaseToken) {
+func (m *SessionManager) setToken(token persistence.LeaseToken) {
 	m.mu.Lock()
 	m.token = token
 	m.hasLease = true
@@ -269,7 +271,7 @@ func (m *SessionManager) log(ctx context.Context, level slog.Level, msg string, 
 	m.logger.Log(ctx, level, msg, allArgs...)
 }
 
-func (m *SessionManager) emitLeaseAudit(ctx context.Context, action, outcome string, token domain.LeaseToken, err error) {
+func (m *SessionManager) emitLeaseAudit(ctx context.Context, action, outcome string, token persistence.LeaseToken, err error) {
 	detail := map[string]any{
 		"owner_id": m.ownerID,
 		"version":  token.Version,

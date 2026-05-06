@@ -11,7 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 )
@@ -49,7 +50,7 @@ func TestUC95_AMQP10_HighThroughput(t *testing.T) {
 	collector := newArtemisCollector(t, address)
 
 	sessID := uniqueID("uc95-sess")
-	sess := setupArtemisSession(t, domain.SessionExclusive)
+	sess := setupArtemisSession(t, connectivity.SessionExclusive)
 
 	sender := newArtemisSender(t, sess, address)
 	rx := newSQSReceiver(t, sqsInURL)
@@ -64,13 +65,13 @@ func TestUC95_AMQP10_HighThroughput(t *testing.T) {
 	)
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc95-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc95-bind", Address: address},
+			routing.DispatchPlan{BindingID: "uc95-bind", Address: address},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc95-bind", SessionID: sessID},
 		},
 	}

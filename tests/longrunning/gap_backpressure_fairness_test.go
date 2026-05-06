@@ -11,7 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -79,12 +80,12 @@ func TestGAP_BackpressureFairness_MixedFastSlow(t *testing.T) {
 	trackerB := &concurrencyTracker{}
 
 	// Route A: slow sender.
-	sessA := setupMQTTSession(t, mqttlocal.UniqueClientID("gap-bp-sa"), domain.SessionEphemeral)
+	sessA := setupMQTTSession(t, mqttlocal.UniqueClientID("gap-bp-sa"), connectivity.SessionEphemeral)
 	baseSndA := setupMQTTSender(t, sessA)
 	slowSndA := newSlowSender(baseSndA, 200*time.Millisecond)
 
 	// Route B: fast sender.
-	sessB := setupMQTTSession(t, mqttlocal.UniqueClientID("gap-bp-sb"), domain.SessionEphemeral)
+	sessB := setupMQTTSession(t, mqttlocal.UniqueClientID("gap-bp-sb"), connectivity.SessionEphemeral)
 	sndB := setupMQTTSender(t, sessB)
 
 	rt := goruntime.New(
@@ -97,24 +98,24 @@ func TestGAP_BackpressureFairness_MixedFastSlow(t *testing.T) {
 	// Route A: slow (with concurrency tracker).
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-bp-slow",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  100,
 		},
 		Processors:         []ports.Processor{trackerA},
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "bp-a", Address: outTopicA}),
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "bp-a", Address: outTopicA}),
 		SourceCapabilities: directHoldCaps,
 	}, newSQSReceiver(t, sqsInURLa), slowSndA, sessA, nil))
 
 	// Route B: fast (with concurrency tracker).
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-bp-fast",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  100,
 		},
 		Processors:         []ports.Processor{trackerB},
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "bp-b", Address: outTopicB}),
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "bp-b", Address: outTopicB}),
 		SourceCapabilities: directHoldCaps,
 	}, newSQSReceiver(t, sqsInURLb), sndB, sessB, nil))
 

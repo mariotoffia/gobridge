@@ -9,9 +9,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsssm "github.com/aws/aws-sdk-go-v2/service/ssm"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/stretchr/testify/require"
+
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/testutil/localstack"
-	"github.com/stretchr/testify/require"
 )
 
 func TestIntegration_AppStartsWithLocalstackSSMSecrets(t *testing.T) {

@@ -5,13 +5,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 func TestCredentialsToConnection_ConnectionString(t *testing.T) {
 	existing := ConnectionConfig{ConnectionString: "Endpoint=sb://old/;..."}
-	out, changed := credentialsToConnection(existing, &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Password: "Endpoint=sb://new/;..."},
+	out, changed := credentialsToConnection(existing, &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Password: "Endpoint=sb://new/;..."},
 	})
 	require.True(t, changed)
 	require.Equal(t, "Endpoint=sb://new/;...", out.ConnectionString)
@@ -24,8 +25,8 @@ func TestCredentialsToConnection_AADClientSecret(t *testing.T) {
 		TenantID:  "tenant-1",
 		ClientID:  "old-client",
 	}
-	out, changed := credentialsToConnection(existing, &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "new-client", Password: "new-secret"},
+	out, changed := credentialsToConnection(existing, &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "new-client", Password: "new-secret"},
 	})
 	require.True(t, changed)
 	require.Equal(t, "new-client", out.ClientID)
@@ -51,9 +52,9 @@ func TestApplyCredentials_Sender_NilSet_Rejected(t *testing.T) {
 
 	err = s.ApplyCredentials(t.Context(), nil)
 	require.Error(t, err)
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	require.True(t, ok)
-	require.Equal(t, domain.ErrCodeInvalidPayload, be.Code)
+	require.Equal(t, shared.ErrCodeInvalidPayload, be.Code)
 }
 
 // TestApplyCredentials_Receiver_NilSet_Rejected mirrors the Sender
@@ -67,9 +68,9 @@ func TestApplyCredentials_Receiver_NilSet_Rejected(t *testing.T) {
 
 	err = r.ApplyCredentials(t.Context(), nil)
 	require.Error(t, err)
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	require.True(t, ok)
-	require.Equal(t, domain.ErrCodeInvalidPayload, be.Code)
+	require.Equal(t, shared.ErrCodeInvalidPayload, be.Code)
 }
 
 // TestApplyCredentials_NoChange_ReturnsNil verifies that a matching
@@ -81,7 +82,7 @@ func TestApplyCredentials_NoChange_ReturnsNil(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, s.ApplyCredentials(t.Context(),
-		&domain.CredentialSet{Password: &domain.PasswordCredential{Password: conn.ConnectionString}}))
+		&connectivity.CredentialSet{Password: &connectivity.PasswordCredential{Password: conn.ConnectionString}}))
 }
 
 // TestCredentialsToConnection_TLSMaterial_ChangesPEMFields verifies
@@ -90,8 +91,8 @@ func TestApplyCredentials_NoChange_ReturnsNil(t *testing.T) {
 // rebuilds tls.Config from the new PEM material.
 func TestCredentialsToConnection_TLSMaterial_ChangesPEMFields(t *testing.T) {
 	existing := ConnectionConfig{ConnectionString: "Endpoint=sb://x/;..."}
-	out, changed := credentialsToConnection(existing, &domain.CredentialSet{
-		TLS: &domain.TLSMaterial{
+	out, changed := credentialsToConnection(existing, &connectivity.CredentialSet{
+		TLS: &connectivity.TLSMaterial{
 			CertPEM: "--- CERT ---",
 			KeyPEM:  "--- KEY ---",
 			CAPEMs:  []string{"--- CA ---"},
@@ -116,8 +117,8 @@ func TestCredentialsToConnection_TLSMaterial_Dedup(t *testing.T) {
 		ClientCertPEM:    "--- CERT ---",
 		ClientKeyPEM:     "--- KEY ---",
 	}
-	_, changed := credentialsToConnection(existing, &domain.CredentialSet{
-		TLS: &domain.TLSMaterial{
+	_, changed := credentialsToConnection(existing, &connectivity.CredentialSet{
+		TLS: &connectivity.TLSMaterial{
 			CertPEM: "--- CERT ---",
 			KeyPEM:  "--- KEY ---",
 			CAPEMs:  []string{"--- CA ---"},
@@ -129,8 +130,8 @@ func TestCredentialsToConnection_TLSMaterial_Dedup(t *testing.T) {
 // TestCredentialsToConnection_MultiCA_Joined documents how multiple
 // CA PEMs are folded into a single CaPEM bundle.
 func TestCredentialsToConnection_MultiCA_Joined(t *testing.T) {
-	out, changed := credentialsToConnection(ConnectionConfig{}, &domain.CredentialSet{
-		TLS: &domain.TLSMaterial{CAPEMs: []string{"ca1", "ca2"}},
+	out, changed := credentialsToConnection(ConnectionConfig{}, &connectivity.CredentialSet{
+		TLS: &connectivity.TLSMaterial{CAPEMs: []string{"ca1", "ca2"}},
 	})
 	require.True(t, changed)
 	require.Equal(t, "ca1\nca2", out.CaPEM)

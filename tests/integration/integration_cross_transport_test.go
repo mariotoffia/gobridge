@@ -13,7 +13,9 @@ import (
 
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -37,9 +39,9 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 	pubTopic := strings.TrimSuffix(subTopic, "/+") + "/orders"
 
 	// --- MQTT receiver session ---
-	recvSess := setupMQTTSession(t, mqttlocal.UniqueClientID("cross-sse-recv"), domain.SessionEphemeral)
-	if err := recvSess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: subTopic, QoS: 1}},
+	recvSess := setupMQTTSession(t, mqttlocal.UniqueClientID("cross-sse-recv"), connectivity.SessionEphemeral)
+	if err := recvSess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: subTopic, QoS: 1}},
 	}); err != nil {
 		t.Fatalf("reconcile receiver subscription: %v", err)
 	}
@@ -88,10 +90,10 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 	}
 
 	// --- Publish an MQTT message ---
-	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("cross-sse-pub"), domain.SessionEphemeral)
+	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("cross-sse-pub"), connectivity.SessionEphemeral)
 	mqttSend := setupMQTTSender(t, pubSess)
 
-	pubEnv := &domain.Envelope{
+	pubEnv := &messaging.Envelope{
 		ID:      "sse-order-99",
 		Subject: pubTopic,
 		Payload: []byte(`{"order_id":"99"}`),
@@ -134,7 +136,7 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 		}
 		if evt.Headers == nil {
 			t.Error("missing headers in SSE event")
-		} else if _, ok := evt.Headers[domain.HeaderCorrelationID]; !ok {
+		} else if _, ok := evt.Headers[messaging.HeaderCorrelationID]; !ok {
 			t.Error("missing correlation-id header")
 		}
 	case <-time.After(10 * time.Second):
@@ -159,7 +161,7 @@ func TestIntegration_HTTP_To_MQTT_CrossTransport(t *testing.T) {
 	mqttTopic := "test/cross/http/" + uniqueID("t") + "/signup"
 
 	// --- MQTT sender session ---
-	senderSess := setupMQTTSession(t, mqttlocal.UniqueClientID("cross-http-send"), domain.SessionEphemeral)
+	senderSess := setupMQTTSession(t, mqttlocal.UniqueClientID("cross-http-send"), connectivity.SessionEphemeral)
 	mqttSend := setupMQTTSender(t, senderSess)
 
 	// --- HTTP receiver ---
@@ -232,9 +234,9 @@ func TestIntegration_HTTP_To_MQTT_CrossTransport(t *testing.T) {
 func crossRouteConfig(id string) goruntime.RouteConfig {
 	return goruntime.RouteConfig{
 		ID: id,
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
-			DispatchMode: domain.DispatchSingle,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
+			DispatchMode: routing.DispatchSingle,
 		},
 		SourceCapabilities: []ports.Capability{
 			ports.CapSourceRedelivery,

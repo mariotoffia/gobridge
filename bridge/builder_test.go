@@ -6,7 +6,11 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/config"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 
 	"github.com/stretchr/testify/assert"
@@ -17,11 +21,11 @@ import (
 
 type fakeSession struct{}
 
-func (f *fakeSession) Start(ctx context.Context) error                              { return nil }
-func (f *fakeSession) Reconcile(ctx context.Context, plan domain.SessionPlan) error { return nil }
-func (f *fakeSession) Health(ctx context.Context) ports.SessionHealth               { return ports.SessionHealth{} }
-func (f *fakeSession) Events() <-chan ports.SessionEvent                            { return nil }
-func (f *fakeSession) Close(ctx context.Context) error                              { return nil }
+func (f *fakeSession) Start(ctx context.Context) error                                    { return nil }
+func (f *fakeSession) Reconcile(ctx context.Context, plan connectivity.SessionPlan) error { return nil }
+func (f *fakeSession) Health(ctx context.Context) ports.SessionHealth                     { return ports.SessionHealth{} }
+func (f *fakeSession) Events() <-chan ports.SessionEvent                                  { return nil }
+func (f *fakeSession) Close(ctx context.Context) error                                    { return nil }
 
 type fakeReceiver struct{}
 
@@ -32,7 +36,7 @@ func (f *fakeReceiver) Run(ctx context.Context, emit func(context.Context, ports
 
 type fakeSender struct{}
 
-func (f *fakeSender) Send(ctx context.Context, env *domain.Envelope) error { return nil }
+func (f *fakeSender) Send(ctx context.Context, env *messaging.Envelope) error { return nil }
 
 type fakeTransportFactory struct{}
 
@@ -51,28 +55,30 @@ func (f *fakeTransportFactory) Capabilities() []ports.Capability {
 
 type fakeLeaseStore struct{}
 
-func (f *fakeLeaseStore) Acquire(_ context.Context, _ string, _ string, _ time.Duration, _ map[string]string) (domain.LeaseToken, error) {
-	return domain.LeaseToken{}, nil
+func (f *fakeLeaseStore) Acquire(_ context.Context, _ string, _ string, _ time.Duration, _ map[string]string) (persistence.LeaseToken, error) {
+	return persistence.LeaseToken{}, nil
 }
-func (f *fakeLeaseStore) Renew(_ context.Context, _ string, _ domain.LeaseToken, _ time.Duration, _ map[string]string) (domain.LeaseToken, error) {
-	return domain.LeaseToken{}, nil
+func (f *fakeLeaseStore) Renew(_ context.Context, _ string, _ persistence.LeaseToken, _ time.Duration, _ map[string]string) (persistence.LeaseToken, error) {
+	return persistence.LeaseToken{}, nil
 }
-func (f *fakeLeaseStore) Release(_ context.Context, _ string, _ domain.LeaseToken) error { return nil }
-func (f *fakeLeaseStore) Current(_ context.Context, _ string) (domain.LeaseInfo, error) {
-	return domain.LeaseInfo{}, nil
+func (f *fakeLeaseStore) Release(_ context.Context, _ string, _ persistence.LeaseToken) error {
+	return nil
+}
+func (f *fakeLeaseStore) Current(_ context.Context, _ string) (persistence.LeaseInfo, error) {
+	return persistence.LeaseInfo{}, nil
 }
 
 type fakeOutboxStore struct{}
 
-func (f *fakeOutboxStore) Persist(_ context.Context, _ []domain.OutboxRecord) error { return nil }
-func (f *fakeOutboxStore) Claim(_ context.Context, _ string, _ string, _ domain.LeaseToken, _ int) ([]domain.OutboxRecord, error) {
+func (f *fakeOutboxStore) Persist(_ context.Context, _ []persistence.OutboxRecord) error { return nil }
+func (f *fakeOutboxStore) Claim(_ context.Context, _ string, _ string, _ persistence.LeaseToken, _ int) ([]persistence.OutboxRecord, error) {
 	return nil, nil
 }
-func (f *fakeOutboxStore) Complete(_ context.Context, _ []string, _ domain.LeaseToken) error {
+func (f *fakeOutboxStore) Complete(_ context.Context, _ []string, _ persistence.LeaseToken) error {
 	return nil
 }
 func (f *fakeOutboxStore) Expire(_ context.Context, _ time.Time) (int, error) { return 0, nil }
-func (f *fakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]domain.OutboxRecord, error) {
+func (f *fakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]persistence.OutboxRecord, error) {
 	return nil, nil
 }
 
@@ -89,14 +95,14 @@ func (f *fakeStoreFactory) NewDLQStore(_ context.Context, _ ports.PluginConfig) 
 }
 
 type fakeCredentialStore struct {
-	creds map[string]*domain.CredentialSet
+	creds map[string]*connectivity.CredentialSet
 }
 
-func (f *fakeCredentialStore) Resolve(_ context.Context, uri string) (*domain.CredentialSet, error) {
+func (f *fakeCredentialStore) Resolve(_ context.Context, uri string) (*connectivity.CredentialSet, error) {
 	if cs, ok := f.creds[uri]; ok {
 		return cs, nil
 	}
-	return nil, domain.ErrNotFound.WithMessage("not found: " + uri)
+	return nil, shared.ErrNotFound.WithMessage("not found: " + uri)
 }
 
 type capturingTransportFactory struct {
@@ -122,7 +128,7 @@ type testCredConfig struct {
 func (c *testCredConfig) Kind() string           { return "test.cred" }
 func (c *testCredConfig) Validate() error        { return nil }
 func (c *testCredConfig) CredentialsURI() string { return c.URI }
-func (c *testCredConfig) ApplyCredentials(creds *domain.CredentialSet) error {
+func (c *testCredConfig) ApplyCredentials(creds *connectivity.CredentialSet) error {
 	if creds != nil && creds.Password != nil {
 		if c.Username == "" {
 			c.Username = creds.Password.Username
@@ -187,7 +193,7 @@ func TestBuilder_Build(t *testing.T) {
 	routes := rt.Routes()
 	require.Len(t, routes, 1)
 	assert.Equal(t, "r1", routes[0].ID)
-	assert.Equal(t, domain.DeliverySharedOutbox, routes[0].DeliveryMode)
+	assert.Equal(t, routing.DeliverySharedOutbox, routes[0].DeliveryMode)
 }
 
 // Verifies Build fails when a configured transport has no registered factory.
@@ -260,7 +266,7 @@ func TestBuilder_DirectHoldRoute(t *testing.T) {
 
 	routes := rt.Routes()
 	require.Len(t, routes, 1)
-	assert.Equal(t, domain.DeliveryDirectHold, routes[0].DeliveryMode)
+	assert.Equal(t, routing.DeliveryDirectHold, routes[0].DeliveryMode)
 }
 
 // Verifies WithCredentialStore resolves credentials_uri into the typed
@@ -271,9 +277,9 @@ func TestBuilder_WithCredentialStore(t *testing.T) {
 	cfg.Sessions[0].Config = sessCfg
 
 	cs := &fakeCredentialStore{
-		creds: map[string]*domain.CredentialSet{
+		creds: map[string]*connectivity.CredentialSet{
 			"file://test/creds": {
-				Password: &domain.PasswordCredential{
+				Password: &connectivity.PasswordCredential{
 					Username: "resolved-user",
 					Password: "resolved-pass",
 				},
@@ -306,9 +312,9 @@ func TestBuilder_CredentialInlineOverride(t *testing.T) {
 	cfg.Sessions[0].Config = sessCfg
 
 	cs := &fakeCredentialStore{
-		creds: map[string]*domain.CredentialSet{
+		creds: map[string]*connectivity.CredentialSet{
 			"file://test/creds": {
-				Password: &domain.PasswordCredential{
+				Password: &connectivity.PasswordCredential{
 					Username: "resolved-user",
 					Password: "resolved-pass",
 				},

@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -36,7 +38,7 @@ func NewQueryCountingOutboxStore() *QueryCountingOutboxStore {
 	return &QueryCountingOutboxStore{FakeOutboxStore: NewFakeOutboxStore()}
 }
 
-func (s *QueryCountingOutboxStore) QueryPending(ctx context.Context, partitionKey string, limit int) ([]domain.OutboxRecord, error) {
+func (s *QueryCountingOutboxStore) QueryPending(ctx context.Context, partitionKey string, limit int) ([]persistence.OutboxRecord, error) {
 	atomic.AddInt64(&s.queryCount, 1)
 	return s.FakeOutboxStore.QueryPending(ctx, partitionKey, limit)
 }
@@ -74,11 +76,11 @@ func TestDepthCache_PreventsRepeatedQueries(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "cache-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:   domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:   routing.DeliverySharedOutbox,
 			MaxOutboxDepth: 1000,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-cache"},
 		},
 	}
@@ -95,7 +97,7 @@ func TestDepthCache_PreventsRepeatedQueries(t *testing.T) {
 	})
 
 	for i := 0; i < 10; i++ {
-		env := &domain.Envelope{ID: "cache-msg-" + string(rune('a'+i)), Payload: []byte("x")}
+		env := &messaging.Envelope{ID: "cache-msg-" + string(rune('a'+i)), Payload: []byte("x")}
 		del := NewFakeDelivery(env)
 		_ = receiver.Emit(ctx, del)
 		waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
@@ -136,11 +138,11 @@ func TestDepthCache_ExpiresAfterTTL(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "ttl-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:   domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:   routing.DeliverySharedOutbox,
 			MaxOutboxDepth: 1000,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-ttl"},
 		},
 	}
@@ -156,7 +158,7 @@ func TestDepthCache_ExpiresAfterTTL(t *testing.T) {
 		return session.IsStarted()
 	})
 
-	env1 := &domain.Envelope{ID: "ttl-msg-1", Payload: []byte("x")}
+	env1 := &messaging.Envelope{ID: "ttl-msg-1", Payload: []byte("x")}
 	del1 := NewFakeDelivery(env1)
 	_ = receiver.Emit(ctx, del1)
 	waitFor(t, time.Second, "first acked", func() bool { return del1.IsAcked() })
@@ -165,7 +167,7 @@ func TestDepthCache_ExpiresAfterTTL(t *testing.T) {
 
 	time.Sleep(1200 * time.Millisecond) // FIXED: wait for depth cache TTL (1s) to expire
 
-	env2 := &domain.Envelope{ID: "ttl-msg-2", Payload: []byte("x")}
+	env2 := &messaging.Envelope{ID: "ttl-msg-2", Payload: []byte("x")}
 	del2 := NewFakeDelivery(env2)
 	_ = receiver.Emit(ctx, del2)
 	waitFor(t, time.Second, "second acked", func() bool { return del2.IsAcked() })
@@ -194,16 +196,16 @@ func TestDepthCache_AtCapacityCachedImmediately(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		rec := domain.OutboxRecord{
+		rec := persistence.OutboxRecord{
 			ID:         "prefill-" + string(rune('a'+i)),
 			RouteID:    "cap-route",
 			EnvelopeID: "prefill-env-" + string(rune('a'+i)),
 			BindingID:  "b1",
 			SessionID:  "mqtt-cap",
-			Envelope:   domain.Envelope{ID: "prefill-env-" + string(rune('a'+i)), Payload: []byte("x")},
-			Status:     domain.OutboxPending,
+			Envelope:   messaging.Envelope{ID: "prefill-env-" + string(rune('a'+i)), Payload: []byte("x")},
+			Status:     persistence.OutboxPending,
 		}
-		_ = countingOutbox.Persist(ctx, []domain.OutboxRecord{rec})
+		_ = countingOutbox.Persist(ctx, []persistence.OutboxRecord{rec})
 	}
 
 	receiver := NewFakeReceiver()
@@ -211,11 +213,11 @@ func TestDepthCache_AtCapacityCachedImmediately(t *testing.T) {
 
 	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
 		RouteID:     "cap-route",
-		Policy:      domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox, MaxOutboxDepth: 3},
+		Policy:      routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox, MaxOutboxDepth: 3},
 		Receiver:    receiver,
 		Sender:      sender,
 		OutboxStore: countingOutbox,
-		Bindings:    []domain.DestinationBinding{{ID: "b1", SessionID: "mqtt-cap"}},
+		Bindings:    []routing.DestinationBinding{{ID: "b1", SessionID: "mqtt-cap"}},
 	})
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -224,14 +226,14 @@ func TestDepthCache_AtCapacityCachedImmediately(t *testing.T) {
 	go func() { _ = runner.Run(runCtx) }()
 	<-receiver.Ready()
 
-	env1 := &domain.Envelope{ID: "overflow-1", Payload: []byte("x")}
+	env1 := &messaging.Envelope{ID: "overflow-1", Payload: []byte("x")}
 	del1 := NewFakeDelivery(env1)
 	_ = receiver.Emit(runCtx, del1)
 	waitFor(t, time.Second, "overflow-1 retried", func() bool { return del1.IsRetried() })
 
 	countAfterFirst := countingOutbox.GetQueryCount()
 
-	env2 := &domain.Envelope{ID: "overflow-2", Payload: []byte("x")}
+	env2 := &messaging.Envelope{ID: "overflow-2", Payload: []byte("x")}
 	del2 := NewFakeDelivery(env2)
 	_ = receiver.Emit(runCtx, del2)
 	waitFor(t, time.Second, "overflow-2 retried", func() bool { return del2.IsRetried() })

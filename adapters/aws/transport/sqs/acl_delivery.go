@@ -10,8 +10,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -50,7 +51,7 @@ var _ ports.Delivery = (*sqsDelivery)(nil)
 //   - SQS API call runs          → uses the still-live deliveryCtx
 //   - cleanupContext runs (defer) → frees the deliveryCtx node
 type sqsDelivery struct {
-	env               *domain.Envelope
+	env               *messaging.Envelope
 	client            sqsAPI
 	queueURL          string
 	receiptHandle     string
@@ -81,7 +82,7 @@ type sqsDelivery struct {
 // control tick firing deterministically.
 func newDelivery(
 	parentCtx context.Context,
-	env *domain.Envelope,
+	env *messaging.Envelope,
 	client sqsAPI,
 	queueURL string,
 	receiptHandle string,
@@ -121,7 +122,7 @@ func newDelivery(
 	return d
 }
 
-func (d *sqsDelivery) Envelope() *domain.Envelope { return d.env }
+func (d *sqsDelivery) Envelope() *messaging.Envelope { return d.env }
 
 // Ack deletes the SQS message, confirming successful processing.
 func (d *sqsDelivery) Ack(ctx context.Context) error {
@@ -143,8 +144,8 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 	if err != nil {
 		return MapError(err)
 	}
-	d.metrics.Timer(domain.MetricSQSDeleteLatency, d.clk.Since(start),
-		domain.Tag{Key: domain.TagKeyQueueURL, Value: d.queueURL})
+	d.metrics.Timer(shared.MetricSQSDeleteLatency, d.clk.Since(start),
+		shared.Tag{Key: shared.TagKeyQueueURL, Value: d.queueURL})
 	return nil
 }
 
@@ -221,8 +222,8 @@ func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
 		return MapError(err)
 	}
 
-	d.metrics.Counter(domain.MetricSQSVisibilityExtensions, 1,
-		domain.Tag{Key: domain.TagKeyQueueURL, Value: d.queueURL})
+	d.metrics.Counter(shared.MetricSQSVisibilityExtensions, 1,
+		shared.Tag{Key: shared.TagKeyQueueURL, Value: d.queueURL})
 	d.visibilityTimeout.Store(timeout)
 	return nil
 }
@@ -348,8 +349,8 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 				ticker.Reset(newInterval)
 				interval = newInterval
 			}
-			d.metrics.Counter(domain.MetricSQSAutoExtends, 1,
-				domain.Tag{Key: domain.TagKeyQueueURL, Value: d.queueURL})
+			d.metrics.Counter(shared.MetricSQSAutoExtends, 1,
+				shared.Tag{Key: shared.TagKeyQueueURL, Value: d.queueURL})
 			if logging.TraceEnabled(d.logger) {
 				d.logger.Log(ctx, logging.LevelTrace, "sqs: auto-extended",
 					"queue_url", d.queueURL,

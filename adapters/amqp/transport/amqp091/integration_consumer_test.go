@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 )
@@ -25,15 +26,15 @@ func TestIntegration_CompetingConsumers(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -42,7 +43,7 @@ func TestIntegration_CompetingConsumers(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName},
 		},
 	}
@@ -59,7 +60,7 @@ func TestIntegration_CompetingConsumers(t *testing.T) {
 		Timeout:    10 * time.Second,
 	})
 	for i := 0; i < msgCount; i++ {
-		if err := sender.Send(ctx, &domain.Envelope{
+		if err := sender.Send(ctx, &messaging.Envelope{
 			ID:      "compete-" + string(rune('A'+i)),
 			Subject: queueName,
 			Payload: []byte("compete"),
@@ -141,15 +142,15 @@ func TestIntegration_AutoAck(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -158,7 +159,7 @@ func TestIntegration_AutoAck(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName},
 		},
 	}
@@ -172,7 +173,7 @@ func TestIntegration_AutoAck(t *testing.T) {
 		Session:    sess,
 		Timeout:    10 * time.Second,
 	})
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID: "autoack-1", Subject: queueName, Payload: []byte("auto"),
 	}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -188,7 +189,7 @@ func TestIntegration_AutoAck(t *testing.T) {
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
 
-	received := make(chan *domain.Envelope, 1)
+	received := make(chan *messaging.Envelope, 1)
 	go func() {
 		_ = receiver.Run(recvCtx, func(_ context.Context, d ports.Delivery) error {
 			received <- d.Envelope()
@@ -206,7 +207,7 @@ func TestIntegration_AutoAck(t *testing.T) {
 		t.Fatal("timed out waiting for auto-ack message")
 	}
 
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID: "autoack-2", Subject: queueName, Payload: []byte("second"),
 	}); err != nil {
 		t.Fatalf("Send second: %v", err)
@@ -222,7 +223,7 @@ func TestIntegration_AutoAck(t *testing.T) {
 	recv2Ctx, recv2Cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recv2Cancel()
 
-	received2 := make(chan *domain.Envelope, 1)
+	received2 := make(chan *messaging.Envelope, 1)
 	go func() {
 		_ = recv2.Run(recv2Ctx, func(_ context.Context, d ports.Delivery) error {
 			received2 <- d.Envelope()
@@ -254,15 +255,15 @@ func TestIntegration_PrefetchCount(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -271,7 +272,7 @@ func TestIntegration_PrefetchCount(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName},
 		},
 	}
@@ -289,7 +290,7 @@ func TestIntegration_PrefetchCount(t *testing.T) {
 		Timeout:    10 * time.Second,
 	})
 	for i := 0; i < totalMessages; i++ {
-		if err := sender.Send(ctx, &domain.Envelope{
+		if err := sender.Send(ctx, &messaging.Envelope{
 			ID:      "pf-" + string(rune('0'+i)),
 			Subject: queueName,
 			Payload: []byte("prefetch-test"),

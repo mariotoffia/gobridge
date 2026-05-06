@@ -14,8 +14,9 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -84,7 +85,7 @@ func TestIntegration_Cluster_ForwardToBridge(t *testing.T) {
 	defer serverB.Close()
 	// Bridge A — locator points to Bridge B, uses HTTPForwarder.
 	locA := &stubLocator{
-		peer:  &domain.PeerInfo{InstanceID: "bridge-b", Endpoints: map[string]string{"http": serverB.URL}},
+		peer:  &persistence.PeerInfo{InstanceID: "bridge-b", Endpoints: map[string]string{"http": serverB.URL}},
 		local: false,
 	}
 	fwdA := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
@@ -171,7 +172,7 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 	defer serverB.Close()
 	// Bridge A — locator says remote → redirect.
 	locA := &stubLocator{
-		peer:  &domain.PeerInfo{InstanceID: "bridge-b", Endpoints: map[string]string{"http": serverB.URL}},
+		peer:  &persistence.PeerInfo{InstanceID: "bridge-b", Endpoints: map[string]string{"http": serverB.URL}},
 		local: false,
 	}
 	factoryA := transport.NewFactory(transport.WithRouteLocator(locA))
@@ -220,7 +221,7 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 			return senderB.(*transport.SSESender).ClientCount() >= 1
 		})
 
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID: "sse-evt-1", Subject: "user.created",
 			Payload: []byte(`{"name":"alice"}`),
 		}
@@ -278,8 +279,8 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	peerA := &domain.PeerInfo{InstanceID: "bridge-a", Endpoints: make(map[string]string)}
-	peerB := &domain.PeerInfo{InstanceID: "bridge-b", Endpoints: make(map[string]string)}
+	peerA := &persistence.PeerInfo{InstanceID: "bridge-a", Endpoints: make(map[string]string)}
+	peerB := &persistence.PeerInfo{InstanceID: "bridge-b", Endpoints: make(map[string]string)}
 
 	// Bridge B — locator says remote(A), but forwarded flag bypasses that.
 	locB := &stubLocator{peer: peerA, local: false}
@@ -294,7 +295,7 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 	}
 	setRouteID(t, recvB, "route-loop")
 
-	var delivered []*domain.Envelope
+	var delivered []*messaging.Envelope
 	var mu sync.Mutex
 	var wgB sync.WaitGroup
 	wgB.Add(1)
@@ -388,7 +389,7 @@ func TestIntegration_Cluster_ForwardToDeadPeer(t *testing.T) {
 	defer cancel()
 
 	loc := &stubLocator{
-		peer:  &domain.PeerInfo{InstanceID: "dead", Endpoints: map[string]string{"http": deadURL}},
+		peer:  &persistence.PeerInfo{InstanceID: "dead", Endpoints: map[string]string{"http": deadURL}},
 		local: false,
 	}
 	fwd := transport.NewHTTPForwarder("/transport/http", 2*time.Second)
@@ -463,7 +464,7 @@ func TestIntegration_Cluster_ForwardPreservesEnvelope(t *testing.T) {
 	defer serverB.Close()
 	// Bridge A — forwards to Bridge B.
 	locA := &stubLocator{
-		peer:  &domain.PeerInfo{InstanceID: "bridge-b", Endpoints: map[string]string{"http": serverB.URL}},
+		peer:  &persistence.PeerInfo{InstanceID: "bridge-b", Endpoints: map[string]string{"http": serverB.URL}},
 		local: false,
 	}
 	fwdA := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
@@ -578,7 +579,7 @@ func TestIntegration_Cluster_ForwardDivergentReceiverID(t *testing.T) {
 	defer serverB.Close()
 	// Bridge A — locator says remote(B), forwards via HTTPForwarder.
 	locA := &stubLocator{
-		peer:  &domain.PeerInfo{InstanceID: "bridge-b", Endpoints: map[string]string{"http": serverB.URL}},
+		peer:  &persistence.PeerInfo{InstanceID: "bridge-b", Endpoints: map[string]string{"http": serverB.URL}},
 		local: false,
 	}
 	fwdA := transport.NewHTTPForwarder("/transport/http", 5*time.Second)

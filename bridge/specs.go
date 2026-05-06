@@ -1,7 +1,7 @@
 package bridge
 
 import (
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -12,19 +12,19 @@ func sessionSpecFrom(def ports.SessionDef) ports.SessionSpec {
 	return ports.SessionSpec{
 		ID:          def.ID,
 		Transport:   def.Transport,
-		SessionMode: domain.SessionMode(def.SessionMode),
+		SessionMode: connectivity.SessionMode(def.SessionMode),
 		Config:      def.Config,
 	}
 }
 
 // receiverSpecFrom converts a ports.ReceiverDef to a ports.ReceiverSpec.
-// SubscriptionDef entries are mapped to domain.SubscriptionPlan values.
+// SubscriptionDef entries are mapped to connectivity.SubscriptionPlan values.
 func receiverSpecFrom(def ports.ReceiverDef) ports.ReceiverSpec {
-	var subs []domain.SubscriptionPlan
+	var subs []connectivity.SubscriptionPlan
 	if len(def.Topics) > 0 {
-		subs = make([]domain.SubscriptionPlan, len(def.Topics))
+		subs = make([]connectivity.SubscriptionPlan, len(def.Topics))
 		for i, t := range def.Topics {
-			subs[i] = domain.SubscriptionPlan{
+			subs[i] = connectivity.SubscriptionPlan{
 				Topic:  t.Topic,
 				QoS:    t.QoS,
 				Config: t.Config,

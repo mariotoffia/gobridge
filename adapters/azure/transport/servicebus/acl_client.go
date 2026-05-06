@@ -11,7 +11,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // asbAPI is the unexported mock-seam interface for the Azure Service
@@ -262,16 +262,16 @@ func rawNewAzClient(cfg ConnectionConfig) (*asbClientHandle, error) {
 
 // buildClient constructs a Service Bus client handle for the cold-init
 // code path (Receiver.ensureClient / Sender.ensureClient). It
-// classifies any failure with domain.ErrUnavailable so the runtime
+// classifies any failure with shared.ErrUnavailable so the runtime
 // treats the pipeline as transiently unavailable and retries.
 //
 // For the credential-rotation path (ApplyCredentials), use
 // rawNewAzClient directly and classify with
-// domain.ErrTemporaryAuthFailure.
+// shared.ErrTemporaryAuthFailure.
 func buildClient(cfg ConnectionConfig) (*asbClientHandle, error) {
 	client, err := rawNewAzClient(cfg)
 	if err != nil {
-		return nil, domain.ErrUnavailable.Wrap(err)
+		return nil, shared.ErrUnavailable.Wrap(err)
 	}
 	return client, nil
 }

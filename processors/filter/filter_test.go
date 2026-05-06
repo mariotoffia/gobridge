@@ -6,17 +6,18 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-func nextOK(_ context.Context, _ *domain.Envelope) error { return nil }
+func nextOK(_ context.Context, _ *messaging.Envelope) error { return nil }
 
-func nextErr(sentinel error) func(context.Context, *domain.Envelope) error {
-	return func(_ context.Context, _ *domain.Envelope) error { return sentinel }
+func nextErr(sentinel error) func(context.Context, *messaging.Envelope) error {
+	return func(_ context.Context, _ *messaging.Envelope) error { return sentinel }
 }
 
-func envelope(subject string, headers map[string]any, payload any) *domain.Envelope {
-	env := &domain.Envelope{Subject: subject, Headers: headers}
+func envelope(subject string, headers map[string]any, payload any) *messaging.Envelope {
+	env := &messaging.Envelope{Subject: subject, Headers: headers}
 	if payload != nil {
 		env.Payload, _ = json.Marshal(payload)
 	}
@@ -35,7 +36,7 @@ func TestDropFilter_MatchingMessages(t *testing.T) {
 	t.Run("matching message is dropped", func(t *testing.T) {
 		env := envelope("orders.new", nil, nil)
 		err := p.Process(context.Background(), env, nextOK)
-		if !errors.Is(err, domain.ErrMessageFiltered) {
+		if !errors.Is(err, shared.ErrMessageFiltered) {
 			t.Errorf("expected ErrMessageFiltered, got %v", err)
 		}
 	})
@@ -69,7 +70,7 @@ func TestPassFilter_MatchingMessages(t *testing.T) {
 	t.Run("non-matching message is dropped", func(t *testing.T) {
 		env := envelope("orders.updated", nil, nil)
 		err := p.Process(context.Background(), env, nextOK)
-		if !errors.Is(err, domain.ErrMessageFiltered) {
+		if !errors.Is(err, shared.ErrMessageFiltered) {
 			t.Errorf("expected ErrMessageFiltered, got %v", err)
 		}
 	})
@@ -87,7 +88,7 @@ func TestRouteFilter_SetsHeaderAndCallsNext(t *testing.T) {
 	t.Run("matching message sets route header", func(t *testing.T) {
 		env := envelope("orders.new", map[string]any{"foo": "bar"}, nil)
 		called := false
-		err := p.Process(context.Background(), env, func(_ context.Context, e *domain.Envelope) error {
+		err := p.Process(context.Background(), env, func(_ context.Context, e *messaging.Envelope) error {
 			called = true
 			return nil
 		})
@@ -97,7 +98,7 @@ func TestRouteFilter_SetsHeaderAndCallsNext(t *testing.T) {
 		if !called {
 			t.Errorf("expected next to be called")
 		}
-		got, ok := env.Headers[domain.HeaderRouteOverride]
+		got, ok := env.Headers[messaging.HeaderRouteOverride]
 		if !ok {
 			t.Fatalf("route header not set")
 		}
@@ -115,8 +116,8 @@ func TestRouteFilter_SetsHeaderAndCallsNext(t *testing.T) {
 		if env.Headers == nil {
 			t.Fatal("expected headers to be initialised")
 		}
-		if env.Headers[domain.HeaderRouteOverride] != "audit-queue" {
-			t.Errorf("route header = %v, want %q", env.Headers[domain.HeaderRouteOverride], "audit-queue")
+		if env.Headers[messaging.HeaderRouteOverride] != "audit-queue" {
+			t.Errorf("route header = %v, want %q", env.Headers[messaging.HeaderRouteOverride], "audit-queue")
 		}
 	})
 
@@ -127,7 +128,7 @@ func TestRouteFilter_SetsHeaderAndCallsNext(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 		if env.Headers != nil {
-			if _, ok := env.Headers[domain.HeaderRouteOverride]; ok {
+			if _, ok := env.Headers[messaging.HeaderRouteOverride]; ok {
 				t.Errorf("route header should not be set for non-matching message")
 			}
 		}
@@ -290,7 +291,7 @@ func TestCondition_AllOperators(t *testing.T) {
 			}
 			env := envelope("test", tc.headers, nil)
 			err = p.Process(context.Background(), env, nextOK)
-			dropped := errors.Is(err, domain.ErrMessageFiltered)
+			dropped := errors.Is(err, shared.ErrMessageFiltered)
 			if dropped != tc.wantDrop {
 				t.Errorf("dropped=%v, want %v (err=%v)", dropped, tc.wantDrop, err)
 			}
@@ -330,7 +331,7 @@ func TestCondition_JSONPath(t *testing.T) {
 			}
 			env := envelope("test", nil, payload)
 			err = p.Process(context.Background(), env, nextOK)
-			dropped := errors.Is(err, domain.ErrMessageFiltered)
+			dropped := errors.Is(err, shared.ErrMessageFiltered)
 			if dropped != tc.wantDrop {
 				t.Errorf("dropped=%v, want %v (err=%v)", dropped, tc.wantDrop, err)
 			}
@@ -349,7 +350,7 @@ func TestCondition_SubjectField(t *testing.T) {
 
 	env := envelope("orders.created", nil, nil)
 	err = p.Process(context.Background(), env, nextOK)
-	if !errors.Is(err, domain.ErrMessageFiltered) {
+	if !errors.Is(err, shared.ErrMessageFiltered) {
 		t.Errorf("expected ErrMessageFiltered for subject containing 'orders', got %v", err)
 	}
 
@@ -371,7 +372,7 @@ func TestCondition_HeaderField(t *testing.T) {
 
 	env := envelope("test", map[string]any{"x-custom": "secret"}, nil)
 	err = p.Process(context.Background(), env, nextOK)
-	if !errors.Is(err, domain.ErrMessageFiltered) {
+	if !errors.Is(err, shared.ErrMessageFiltered) {
 		t.Errorf("expected ErrMessageFiltered, got %v", err)
 	}
 
@@ -393,7 +394,7 @@ func TestCondition_BareFieldFallback(t *testing.T) {
 
 	env := envelope("test", map[string]any{"tenant": "acme"}, nil)
 	err = p.Process(context.Background(), env, nextOK)
-	if !errors.Is(err, domain.ErrMessageFiltered) {
+	if !errors.Is(err, shared.ErrMessageFiltered) {
 		t.Errorf("expected ErrMessageFiltered for bare field matching header, got %v", err)
 	}
 
@@ -417,7 +418,7 @@ func TestFilter_MultipleConditions(t *testing.T) {
 	t.Run("all conditions match", func(t *testing.T) {
 		env := envelope("orders.new", map[string]any{"priority": "high"}, nil)
 		err := p.Process(context.Background(), env, nextOK)
-		if !errors.Is(err, domain.ErrMessageFiltered) {
+		if !errors.Is(err, shared.ErrMessageFiltered) {
 			t.Errorf("expected ErrMessageFiltered, got %v", err)
 		}
 	})
@@ -462,7 +463,7 @@ func TestFilter_Inversion(t *testing.T) {
 	t.Run("non-matching becomes matching with invert", func(t *testing.T) {
 		env := envelope("orders.updated", nil, nil)
 		err := p.Process(context.Background(), env, nextOK)
-		if !errors.Is(err, domain.ErrMessageFiltered) {
+		if !errors.Is(err, shared.ErrMessageFiltered) {
 			t.Errorf("expected ErrMessageFiltered (inverted non-match should drop), got %v", err)
 		}
 	})
@@ -547,7 +548,7 @@ func TestFilter_NoConditionsAlwaysMatches(t *testing.T) {
 
 	env := envelope("anything", nil, nil)
 	err = p.Process(context.Background(), env, nextOK)
-	if !errors.Is(err, domain.ErrMessageFiltered) {
+	if !errors.Is(err, shared.ErrMessageFiltered) {
 		t.Errorf("expected ErrMessageFiltered (no conditions = always match + drop), got %v", err)
 	}
 }
@@ -571,7 +572,7 @@ func TestFilter_NilHeaders(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewDropFilter: %v", err)
 			}
-			env := &domain.Envelope{Subject: "test"}
+			env := &messaging.Envelope{Subject: "test"}
 			err = p.Process(context.Background(), env, nextOK)
 			if err != nil {
 				t.Errorf("expected nil (no panic, field not found = no match), got %v", err)
@@ -590,7 +591,7 @@ func TestFilter_EmptyPayload(t *testing.T) {
 	}
 
 	t.Run("nil payload", func(t *testing.T) {
-		env := &domain.Envelope{Subject: "test"}
+		env := &messaging.Envelope{Subject: "test"}
 		err := p.Process(context.Background(), env, nextOK)
 		if err != nil {
 			t.Errorf("expected nil (no panic, empty payload = no match), got %v", err)
@@ -598,7 +599,7 @@ func TestFilter_EmptyPayload(t *testing.T) {
 	})
 
 	t.Run("empty byte slice payload", func(t *testing.T) {
-		env := &domain.Envelope{Subject: "test", Payload: []byte{}}
+		env := &messaging.Envelope{Subject: "test", Payload: []byte{}}
 		err := p.Process(context.Background(), env, nextOK)
 		if err != nil {
 			t.Errorf("expected nil (no panic, empty payload = no match), got %v", err)

@@ -5,7 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -15,7 +16,7 @@ func TestSessionManager_NonExclusive(t *testing.T) {
 	cfg := goruntime.SessionConfig{
 		SessionID: "sess-1",
 		Exclusive: false,
-		Plan:      domain.SessionPlan{},
+		Plan:      connectivity.SessionPlan{},
 	}
 
 	mgr := goruntime.NewSessionManagerFromConfig(cfg, session, nil, "bridge-1", nil)
@@ -107,7 +108,7 @@ func TestSessionManager_StepDown(t *testing.T) {
 		t.Fatal("lease not acquired in time")
 	}
 
-	leaseStore.SetRenewErr(domain.ErrVersionMismatch)
+	leaseStore.SetRenewErr(shared.ErrVersionMismatch)
 
 	lossDeadline := time.After(5 * time.Second)
 	for {

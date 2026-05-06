@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -26,20 +28,20 @@ import (
 
 type fakeSender struct {
 	mu   sync.Mutex
-	sent []*domain.Envelope
+	sent []*messaging.Envelope
 }
 
-func (s *fakeSender) Send(_ context.Context, env *domain.Envelope) error {
+func (s *fakeSender) Send(_ context.Context, env *messaging.Envelope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sent = append(s.sent, env.Clone())
 	return nil
 }
 
-func (s *fakeSender) getSent() []*domain.Envelope {
+func (s *fakeSender) getSent() []*messaging.Envelope {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := make([]*domain.Envelope, len(s.sent))
+	cp := make([]*messaging.Envelope, len(s.sent))
 	copy(cp, s.sent)
 	return cp
 }
@@ -72,14 +74,14 @@ func waitReceiverReady(t *testing.T, recv any, timeout time.Duration) {
 }
 
 type filterProcessor struct {
-	dropFn func(*domain.Envelope) bool
+	dropFn func(*messaging.Envelope) bool
 }
 
 func (p *filterProcessor) Name() string { return "test-filter" }
 
-func (p *filterProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *filterProcessor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	if p.dropFn(env) {
-		return domain.ErrMessageFiltered
+		return shared.ErrMessageFiltered
 	}
 	return next(ctx, env)
 }
@@ -87,9 +89,9 @@ func (p *filterProcessor) Process(ctx context.Context, env *domain.Envelope, nex
 func directHoldRouteConfig(id string, procs []ports.Processor) runtime.RouteConfig {
 	return runtime.RouteConfig{
 		ID: id,
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
-			DispatchMode: domain.DispatchSingle,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
+			DispatchMode: routing.DispatchSingle,
 		},
 		SourceCapabilities: []ports.Capability{
 			ports.CapSourceRedelivery,
@@ -148,10 +150,10 @@ func TestIntegration_HTTPPost_RuntimePipeline_FakeSender(t *testing.T) {
 	if !strings.Contains(string(env.Payload), `"id":"42"`) {
 		t.Fatalf("payload mismatch: %s", env.Payload)
 	}
-	if _, ok := env.Headers[domain.HeaderRouteID]; !ok {
+	if _, ok := env.Headers[messaging.HeaderRouteID]; !ok {
 		t.Fatal("missing x-bridge.route-id header")
 	}
-	if _, ok := env.Headers[domain.HeaderCorrelationID]; !ok {
+	if _, ok := env.Headers[messaging.HeaderCorrelationID]; !ok {
 		t.Fatal("missing x-bridge.correlation-id header")
 	}
 }
@@ -169,7 +171,7 @@ func TestIntegration_HTTPPost_FilterDrop_NoSend(t *testing.T) {
 		t.Fatalf("NewReceiver: %v", err)
 	}
 	sender := &fakeSender{}
-	filter := &filterProcessor{dropFn: func(env *domain.Envelope) bool {
+	filter := &filterProcessor{dropFn: func(env *messaging.Envelope) bool {
 		return strings.HasPrefix(env.Subject, "spam.")
 	}}
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
@@ -246,7 +248,7 @@ func TestIntegration_SSEClient_ReceivesMultipleEvents(t *testing.T) {
 
 	subjects := []string{"evt.one", "evt.two", "evt.three"}
 	for i, subj := range subjects {
-		env := &domain.Envelope{ID: subj, Subject: subj, Payload: []byte(`{}`)}
+		env := &messaging.Envelope{ID: subj, Subject: subj, Payload: []byte(`{}`)}
 		if err := sender.Send(context.Background(), env); err != nil {
 			t.Fatalf("Send[%d]: %v", i, err)
 		}
@@ -290,7 +292,7 @@ func TestIntegration_SSEClient_ReceivesMultipleEvents(t *testing.T) {
 
 	_ = resp.Body.Close()
 
-	if err := sender.Send(context.Background(), &domain.Envelope{
+	if err := sender.Send(context.Background(), &messaging.Envelope{
 		ID: "after-close", Subject: "evt.four", Payload: []byte(`{}`),
 	}); err != nil {
 		t.Fatalf("Send after client disconnect should not error: %v", err)
@@ -474,7 +476,7 @@ func TestIntegration_HTTPPost_HeaderProcessing(t *testing.T) {
 
 	env := sender.getSent()[0]
 
-	routeID, ok := domain.GetHeaderString(env.Headers, domain.HeaderRouteID)
+	routeID, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderRouteID)
 	if !ok || routeID != "hdr-route" {
 		t.Fatalf("route-id: got %q, want hdr-route", routeID)
 	}
@@ -484,7 +486,7 @@ func TestIntegration_HTTPPost_HeaderProcessing(t *testing.T) {
 		t.Fatalf("custom-header: got %v, want keep-me", custom)
 	}
 
-	if _, ok := env.Headers[domain.HeaderCorrelationID]; !ok {
+	if _, ok := env.Headers[messaging.HeaderCorrelationID]; !ok {
 		t.Fatal("missing auto-injected correlation-id")
 	}
 }

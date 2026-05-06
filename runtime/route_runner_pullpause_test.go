@@ -11,7 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -65,7 +66,7 @@ func TestRouteRunner_PullPause_EmitBlocksWhenSaturated(t *testing.T) {
 	gate := make(chan struct{})
 	var sendsInProgress atomic.Int32
 
-	sender := NewConcurrentSender(func(_ *domain.Envelope) error {
+	sender := NewConcurrentSender(func(_ *messaging.Envelope) error {
 		sendsInProgress.Add(1)
 		defer sendsInProgress.Add(-1)
 		<-gate
@@ -75,9 +76,9 @@ func TestRouteRunner_PullPause_EmitBlocksWhenSaturated(t *testing.T) {
 	receiver := NewFakeReceiver()
 	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
 		RouteID: "pullpause-route",
-		Policy: domain.RoutePolicy{
+		Policy: routing.RoutePolicy{
 			MaxInFlight:  maxInFlight,
-			DeliveryMode: domain.DeliveryDirectHold,
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Receiver: receiver,
 		Sender:   sender,
@@ -99,7 +100,7 @@ func TestRouteRunner_PullPause_EmitBlocksWhenSaturated(t *testing.T) {
 	// until both senders are actually parked on the gate — this
 	// guarantees the 2 semaphore slots are held by in-flight work.
 	for i := range maxInFlight {
-		del := NewFakeDelivery(&domain.Envelope{
+		del := NewFakeDelivery(&messaging.Envelope{
 			ID:      fmt.Sprintf("pp-fill-%d", i),
 			Payload: []byte("fill"),
 		})
@@ -113,7 +114,7 @@ func TestRouteRunner_PullPause_EmitBlocksWhenSaturated(t *testing.T) {
 	// acquireSlots because the per-route semaphore is saturated. The
 	// delivery goroutine for msg #3 will not be spawned until a slot
 	// is released.
-	blocker := NewFakeDelivery(&domain.Envelope{
+	blocker := NewFakeDelivery(&messaging.Envelope{
 		ID:      "pp-blocker",
 		Payload: []byte("blocks"),
 	})
@@ -190,7 +191,7 @@ func TestRouteRunner_PullPause_ThroughputResumesAfterSlowSender(t *testing.T) {
 	var concurrentPeak int64
 	var currentConcurrency int64
 
-	sender := NewConcurrentSender(func(env *domain.Envelope) error {
+	sender := NewConcurrentSender(func(env *messaging.Envelope) error {
 		cur := atomic.AddInt64(&currentConcurrency, 1)
 		defer atomic.AddInt64(&currentConcurrency, -1)
 		for {
@@ -212,9 +213,9 @@ func TestRouteRunner_PullPause_ThroughputResumesAfterSlowSender(t *testing.T) {
 	receiver := NewFakeReceiver()
 	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
 		RouteID: "pullpause-throughput-route",
-		Policy: domain.RoutePolicy{
+		Policy: routing.RoutePolicy{
 			MaxInFlight:  maxInFlight,
-			DeliveryMode: domain.DeliveryDirectHold,
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Receiver: receiver,
 		Sender:   sender,
@@ -233,7 +234,7 @@ func TestRouteRunner_PullPause_ThroughputResumesAfterSlowSender(t *testing.T) {
 
 	// Prime 2 slow sends that fill the semaphore.
 	for i := range maxInFlight {
-		del := NewFakeDelivery(&domain.Envelope{
+		del := NewFakeDelivery(&messaging.Envelope{
 			ID:      fmt.Sprintf("slow-%d", i),
 			Payload: []byte("slow"),
 		})
@@ -252,7 +253,7 @@ func TestRouteRunner_PullPause_ThroughputResumesAfterSlowSender(t *testing.T) {
 	for i := range fastCount {
 		go func(n int) {
 			defer fastWg.Done()
-			del := NewFakeDelivery(&domain.Envelope{
+			del := NewFakeDelivery(&messaging.Envelope{
 				ID:      fmt.Sprintf("fast-%d", n),
 				Payload: []byte("fast"),
 			})

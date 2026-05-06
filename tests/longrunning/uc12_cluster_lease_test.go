@@ -12,7 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -44,17 +45,17 @@ func TestUC12_RollingRestart_NoMessageLoss(t *testing.T) {
 
 	routeCfg := goruntime.RouteConfig{
 		ID:     "uc12-route",
-		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy: routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc12-bind", Address: "uc12/output"}),
-		Bindings: []domain.DestinationBinding{
+			routing.DispatchPlan{BindingID: "uc12-bind", Address: "uc12/output"}),
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc12-bind", SessionID: sessionID},
 		},
 	}
 
 	mkInst := func(label string) *clusterInst {
 		sid := mqttlocal.UniqueClientID(fmt.Sprintf("uc12-%s", label))
-		sess := newMQTTSession(t, sid, domain.SessionExclusive)
+		sess := newMQTTSession(t, sid, connectivity.SessionExclusive)
 		sc := lrSessionConfig(sessionID)
 		rt := goruntime.New(
 			goruntime.WithInstanceID(fmt.Sprintf("uc12-%s", label)),
@@ -120,17 +121,17 @@ func TestUC13_SplitBrain_Recovery(t *testing.T) {
 
 	routeCfg := goruntime.RouteConfig{
 		ID:     "uc13-route",
-		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy: routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc13-bind", Address: "uc13/output"}),
-		Bindings: []domain.DestinationBinding{
+			routing.DispatchPlan{BindingID: "uc13-bind", Address: "uc13/output"}),
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc13-bind", SessionID: sessionID},
 		},
 	}
 
 	mkInst := func(label string) (*goruntime.Runtime, context.CancelFunc) {
 		sid := mqttlocal.UniqueClientID(fmt.Sprintf("uc13-%s", label))
-		sess := newMQTTSession(t, sid, domain.SessionExclusive)
+		sess := newMQTTSession(t, sid, connectivity.SessionExclusive)
 		sc := lrSessionConfig(sessionID)
 		rt := goruntime.New(
 			goruntime.WithInstanceID(fmt.Sprintf("uc13-%s", label)),
@@ -193,10 +194,10 @@ func TestUC14_LeaseContention_TenInstances(t *testing.T) {
 
 	routeCfg := goruntime.RouteConfig{
 		ID:     "uc14-route",
-		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy: routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc14-bind", Address: "uc14/output"}),
-		Bindings: []domain.DestinationBinding{
+			routing.DispatchPlan{BindingID: "uc14-bind", Address: "uc14/output"}),
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc14-bind", SessionID: sessionID},
 		},
 	}
@@ -206,7 +207,7 @@ func TestUC14_LeaseContention_TenInstances(t *testing.T) {
 	for i := range instCount {
 		label := fmt.Sprintf("inst-%d", i)
 		sid := mqttlocal.UniqueClientID(fmt.Sprintf("uc14-%s", label))
-		sess := newMQTTSession(t, sid, domain.SessionExclusive)
+		sess := newMQTTSession(t, sid, connectivity.SessionExclusive)
 		sc := lrSessionConfig(sessionID)
 		rt := goruntime.New(
 			goruntime.WithInstanceID(fmt.Sprintf("uc14-%s", label)),
@@ -268,17 +269,17 @@ func TestUC15_ConnectAfterLease(t *testing.T) {
 
 	routeCfg := goruntime.RouteConfig{
 		ID:     "uc15-route",
-		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy: routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc15-bind", Address: "uc15/output"}),
-		Bindings: []domain.DestinationBinding{
+			routing.DispatchPlan{BindingID: "uc15-bind", Address: "uc15/output"}),
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc15-bind", SessionID: sessionID},
 		},
 	}
 
 	mkInst := func(label string) (*goruntime.Runtime, context.CancelFunc) {
 		sid := mqttlocal.UniqueClientID(fmt.Sprintf("uc15-%s", label))
-		sess := newMQTTSession(t, sid, domain.SessionExclusive)
+		sess := newMQTTSession(t, sid, connectivity.SessionExclusive)
 		sc := lrSessionConfig(sessionID)
 		sc.ConnectAfterLease = true
 		rt := goruntime.New(
@@ -358,8 +359,8 @@ func TestUC16_MultiSession_Cluster(t *testing.T) {
 
 	saID := mqttlocal.UniqueClientID("uc16-alpha")
 	sbID := mqttlocal.UniqueClientID("uc16-beta")
-	sessA := newMQTTSession(t, saID, domain.SessionExclusive)
-	sessB := newMQTTSession(t, sbID, domain.SessionExclusive)
+	sessA := newMQTTSession(t, saID, connectivity.SessionExclusive)
+	sessB := newMQTTSession(t, sbID, connectivity.SessionExclusive)
 	scA := lrSessionConfig(saID)
 	scB := lrSessionConfig(sbID)
 
@@ -371,18 +372,18 @@ func TestUC16_MultiSession_Cluster(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID:     "uc16-route-alpha",
-		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy: routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "a-bind", Address: "uc16/alpha"}),
-		Bindings: []domain.DestinationBinding{{ID: "a-bind", SessionID: saID}},
+			routing.DispatchPlan{BindingID: "a-bind", Address: "uc16/alpha"}),
+		Bindings: []routing.DestinationBinding{{ID: "a-bind", SessionID: saID}},
 	}, newSQSReceiver(t, sqsIn1URL), setupMQTTSender(t, sessA), sessA, &scA))
 
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID:     "uc16-route-beta",
-		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy: routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "b-bind", Address: "uc16/beta"}),
-		Bindings: []domain.DestinationBinding{{ID: "b-bind", SessionID: sbID}},
+			routing.DispatchPlan{BindingID: "b-bind", Address: "uc16/beta"}),
+		Bindings: []routing.DestinationBinding{{ID: "b-bind", SessionID: sbID}},
 	}, newSQSReceiver(t, sqsIn2URL), setupMQTTSender(t, sessB), sessB, &scB))
 
 	require.NoError(t, rt.Start(ctx))

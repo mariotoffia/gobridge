@@ -11,7 +11,7 @@ import (
 	"github.com/eclipse/paho.golang/packets"
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
 func newTestPacketPublish(topic string, payload []byte) *packets.Publish {
@@ -125,7 +125,7 @@ func TestRouter_ShallowCopy_DistinctPointers(t *testing.T) {
 func TestRouter_Close_WaitsForInflightHandlers(t *testing.T) {
 	s := NewSession(
 		SessionOptions{BrokerURLs: []string{"tcp://localhost:1883"}, ClientID: "test"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -179,7 +179,7 @@ func TestRouter_Close_WaitsForInflightHandlers(t *testing.T) {
 func TestRouter_Close_RespectsCtxDeadline(t *testing.T) {
 	s := NewSession(
 		SessionOptions{BrokerURLs: []string{"tcp://localhost:1883"}, ClientID: "test-ctx"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 

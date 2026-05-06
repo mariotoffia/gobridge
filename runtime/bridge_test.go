@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -40,7 +42,7 @@ func TestRuntime_StartStop(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID:                 "route-1",
-		Policy:             domain.RoutePolicy{}.WithDefaults(),
+		Policy:             routing.RoutePolicy{}.WithDefaults(),
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 
@@ -107,8 +109,8 @@ func TestRuntime_DirectHoldEndToEnd(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "e2e-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
@@ -117,7 +119,7 @@ func TestRuntime_DirectHoldEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	_ = rt.Start(ctx)
 
-	env := &domain.Envelope{ID: "e2e-msg", Payload: []byte("hello")}
+	env := &messaging.Envelope{ID: "e2e-msg", Payload: []byte("hello")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "e2e send and ack", func() bool {
@@ -149,8 +151,8 @@ func TestRuntime_Inject_HappyPath(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "inject-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
@@ -162,7 +164,7 @@ func TestRuntime_Inject_HappyPath(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "injected-1",
 		Subject: "test/inject",
 		Payload: []byte(`{"injected":true}`),
@@ -202,7 +204,7 @@ func TestRuntime_Inject_UnknownRoute(t *testing.T) {
 
 	<-receiver.Ready()
 
-	err := rt.Inject(context.Background(), "nonexistent", &domain.Envelope{ID: "x"})
+	err := rt.Inject(context.Background(), "nonexistent", &messaging.Envelope{ID: "x"})
 	if err == nil {
 		t.Fatal("expected error for unknown route")
 	}
@@ -212,7 +214,7 @@ func TestRuntime_Inject_UnknownRoute(t *testing.T) {
 func TestRuntime_Inject_NotRunning(t *testing.T) {
 	rt := goruntime.New(goruntime.WithInstanceID("inject-stopped"))
 
-	err := rt.Inject(context.Background(), "any-route", &domain.Envelope{ID: "x"})
+	err := rt.Inject(context.Background(), "any-route", &messaging.Envelope{ID: "x"})
 	if err == nil {
 		t.Fatal("expected error when runtime is not running")
 	}
@@ -227,8 +229,8 @@ func TestRuntime_Inject_AssignsIDWhenEmpty(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "id-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
@@ -238,7 +240,7 @@ func TestRuntime_Inject_AssignsIDWhenEmpty(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &domain.Envelope{Payload: []byte("no-id")}
+	env := &messaging.Envelope{Payload: []byte("no-id")}
 	if err := rt.Inject(context.Background(), "id-route", env); err != nil {
 		t.Fatalf("Inject failed: %v", err)
 	}
@@ -267,8 +269,8 @@ func TestRuntime_Inject_DoesNotMutateOriginal(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "clone-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
@@ -278,7 +280,7 @@ func TestRuntime_Inject_DoesNotMutateOriginal(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "orig-id",
 		Headers: map[string]any{"keep": "this"},
 	}
@@ -318,19 +320,19 @@ func TestRuntime_SharedOutboxEndToEnd(t *testing.T) {
 	sessCfg := goruntime.DefaultSessionConfig("sess-e2e", true)
 	sessCfg.LeaseTTL = 500 * time.Millisecond
 	sessCfg.RenewInterval = 100 * time.Millisecond
-	sessCfg.DrainStrategy = domain.NewFixedPoll(50 * time.Millisecond)
+	sessCfg.DrainStrategy = persistence.NewFixedPoll(50 * time.Millisecond)
 
 	cfg := goruntime.RouteConfig{
 		ID: "outbox-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &FakeResolver{
-			Plans: []domain.DispatchPlan{
+			Plans: []routing.DispatchPlan{
 				{BindingID: "bind-e2e", Address: "topic/e2e"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "bind-e2e", SessionID: "sess-e2e"},
 		},
 	}
@@ -341,7 +343,7 @@ func TestRuntime_SharedOutboxEndToEnd(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &domain.Envelope{ID: "outbox-msg", Payload: []byte("outbox-data")}
+	env := &messaging.Envelope{ID: "outbox-msg", Payload: []byte("outbox-data")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "outbox persist and source ack", func() bool {

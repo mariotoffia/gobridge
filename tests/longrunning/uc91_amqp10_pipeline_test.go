@@ -12,7 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	amqp10adapter "github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 )
@@ -69,7 +70,7 @@ func TestUC91_SQS_To_Artemis_SharedOutbox(t *testing.T) {
 		Password:       pass,
 		ConnectTimeout: 30 * time.Second,
 		IdleTimeout:    2 * time.Minute,
-	}, domain.SessionExclusive, testLogger(t))
+	}, connectivity.SessionExclusive, testLogger(t))
 	t.Cleanup(func() { _ = amqpSess.Close(context.Background()) })
 
 	// Sender stores references lazily; safe to create before session starts.
@@ -94,13 +95,13 @@ func TestUC91_SQS_To_Artemis_SharedOutbox(t *testing.T) {
 	)
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc91-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc91-bind", Address: address},
+			routing.DispatchPlan{BindingID: "uc91-bind", Address: address},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc91-bind", SessionID: sessionID},
 		},
 	}

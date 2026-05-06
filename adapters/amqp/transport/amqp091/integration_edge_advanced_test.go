@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 )
@@ -27,7 +28,7 @@ func TestIntegration_Edge_SessionHealthTransitions(t *testing.T) {
 	logger := traceLogger091(&buf)
 	ep := rabbitmqlocal.Endpoint(t)
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, logger)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, logger)
 	ctx := context.Background()
 
 	h := sess.Health(ctx)
@@ -80,21 +81,21 @@ func TestIntegration_Edge_ExchangeRouting(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, logger)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, logger)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(context.Background()) }()
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{
 			Topic: queue,
 			Config: &Config{Subscription: SubscriptionParams{
 				Exchange:   exchange,
 				RoutingKey: routingKey,
 			}},
 		}},
-		Publishers: []domain.PublisherPlan{{Topic: exchange}},
+		Publishers: []connectivity.PublisherPlan{{Topic: exchange}},
 	}
 	if err := sess.Reconcile(ctx, plan); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -105,7 +106,7 @@ func TestIntegration_Edge_ExchangeRouting(t *testing.T) {
 	})
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID: "exchange-routed", Subject: routingKey, Payload: []byte("routed"),
 	}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -118,7 +119,7 @@ func TestIntegration_Edge_ExchangeRouting(t *testing.T) {
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
 
-	var received *domain.Envelope
+	var received *messaging.Envelope
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -155,18 +156,18 @@ func TestIntegration_Edge_ReconcilePlan(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, logger)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, logger)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(context.Background()) }()
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: q1, Config: &Config{Subscription: SubscriptionParams{Exchange: ex, RoutingKey: q1}}},
 			{Topic: q2, Config: &Config{Subscription: SubscriptionParams{Exchange: ex, RoutingKey: q2}}},
 		},
-		Publishers: []domain.PublisherPlan{{Topic: ex}},
+		Publishers: []connectivity.PublisherPlan{{Topic: ex}},
 	}
 	if err := sess.Reconcile(ctx, plan); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -202,11 +203,11 @@ func TestIntegration_Edge_SendBatchAllReceived(t *testing.T) {
 	defer func() { _ = sender.Close(context.Background()) }()
 
 	const msgCount = 5
-	envs := make([]*domain.Envelope, msgCount)
+	envs := make([]*messaging.Envelope, msgCount)
 	wantIDs := make(map[string]bool, msgCount)
 	for i := range envs {
 		id := "batch-" + string(rune('A'+i))
-		envs[i] = &domain.Envelope{
+		envs[i] = &messaging.Envelope{
 			ID: id, Subject: e.queue, Payload: []byte("payload"),
 		}
 		wantIDs[id] = true
@@ -262,7 +263,7 @@ func TestIntegration_Edge_HeaderRoundTrip(t *testing.T) {
 	e := edge091Setup(t, logger, "edge-headers")
 
 	longValue := strings.Repeat("y", 4096)
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID: "unicode-headers", Subject: e.queue, Payload: []byte("body"),
 		Headers: map[string]any{
 			"emoji":      "hello 🌍🚀",
@@ -317,7 +318,7 @@ func TestIntegration_Edge_PrefetchHonored(t *testing.T) {
 
 	const total = 3
 	for i := 0; i < total; i++ {
-		if err := sender.Send(ctx, &domain.Envelope{
+		if err := sender.Send(ctx, &messaging.Envelope{
 			ID: "pf-" + string(rune('A'+i)), Subject: e.queue, Payload: []byte("x"),
 		}); err != nil {
 			t.Fatalf("Send[%d]: %v", i, err)

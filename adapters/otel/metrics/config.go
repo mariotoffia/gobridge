@@ -3,7 +3,7 @@ package otelmetrics
 import (
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // Config holds the configuration for the OTEL metrics exporter.
@@ -18,7 +18,7 @@ type Config struct {
 	// Environment is the deployment.environment resource attribute.
 	Environment string `json:"environment,omitempty"`
 	// DefaultTags are added to all metrics as attributes.
-	DefaultTags []domain.Tag `json:"defaultTags,omitempty"`
+	DefaultTags []shared.Tag `json:"defaultTags,omitempty"`
 	// FlushInterval is how often to export metrics. Default: 60 seconds.
 	FlushInterval time.Duration `json:"flushInterval,omitempty"`
 	// Insecure uses HTTP instead of HTTPS. Default: false.
@@ -59,7 +59,7 @@ func WithEnvironment(env string) Option {
 }
 
 // WithDefaultTags sets the default tags for all metrics.
-func WithDefaultTags(tags ...domain.Tag) Option {
+func WithDefaultTags(tags ...shared.Tag) Option {
 	return func(e *Exporter) {
 		e.config.DefaultTags = tags
 	}

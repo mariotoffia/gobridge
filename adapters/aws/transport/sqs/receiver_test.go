@@ -12,7 +12,7 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -106,9 +106,9 @@ func TestReceiver_RunStripsReservedHeaders(t *testing.T) {
 						ReceiptHandle: aws.String("rh-inj"),
 						Body:          aws.String("body"),
 						MessageAttributes: map[string]sqstypes.MessageAttributeValue{
-							domain.HeaderCorrelationID: {DataType: aws.String("String"), StringValue: aws.String("injected")},
-							domain.HeaderRouteID:       {DataType: aws.String("String"), StringValue: aws.String("injected")},
-							"safe-header":              {DataType: aws.String("String"), StringValue: aws.String("ok")},
+							messaging.HeaderCorrelationID: {DataType: aws.String("String"), StringValue: aws.String("injected")},
+							messaging.HeaderRouteID:       {DataType: aws.String("String"), StringValue: aws.String("injected")},
+							"safe-header":                 {DataType: aws.String("String"), StringValue: aws.String("ok")},
 						},
 					},
 				},
@@ -130,17 +130,17 @@ func TestReceiver_RunStripsReservedHeaders(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	var env *domain.Envelope
+	var env *messaging.Envelope
 	_ = recv.Run(ctx, func(_ context.Context, del ports.Delivery) error {
 		env = del.Envelope()
 		cancel()
 		return nil
 	})
 
-	if _, ok := env.Headers[domain.HeaderCorrelationID]; ok {
+	if _, ok := env.Headers[messaging.HeaderCorrelationID]; ok {
 		t.Fatal("x-bridge.correlation-id should be stripped at ingress")
 	}
-	if _, ok := env.Headers[domain.HeaderRouteID]; ok {
+	if _, ok := env.Headers[messaging.HeaderRouteID]; ok {
 		t.Fatal("x-bridge.route-id should be stripped at ingress")
 	}
 	if env.Headers["safe-header"] != "ok" {
@@ -192,7 +192,7 @@ func TestReceiver_RunSNSUnwrap(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	var env *domain.Envelope
+	var env *messaging.Envelope
 	_ = recv.Run(ctx, func(_ context.Context, del ports.Delivery) error {
 		env = del.Envelope()
 		cancel()

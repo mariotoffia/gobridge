@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -61,7 +61,7 @@ func (s *Store) Close() error {
 }
 
 // Persist inserts the supplied records in a single transaction.
-func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) error {
+func (s *Store) Persist(ctx context.Context, records []persistence.OutboxRecord) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: persist", "count", len(records))
 	}
@@ -69,7 +69,7 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 }
 
 // Claim atomically claims up to limit pending records under partition pk.
-func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error) {
+func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: claim", "partition_key", pk, "limit", limit)
 	}
@@ -77,7 +77,7 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token doma
 }
 
 // Complete marks the supplied records as completed at the current clock time.
-func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.LeaseToken) error {
+func (s *Store) Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: complete", "count", len(recordIDs))
 	}
@@ -94,7 +94,7 @@ func (s *Store) Expire(ctx context.Context, before time.Time) (int, error) {
 }
 
 // QueryPending returns up to limit pending records under partition pk.
-func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]domain.OutboxRecord, error) {
+func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]persistence.OutboxRecord, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: query_pending", "partition_key", pk, "limit", limit)
 	}
@@ -105,7 +105,7 @@ func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]domai
 //
 // Lives in the port-side file because it operates purely on domain
 // types — no SQL, no SDK.
-func partitionKey(r *domain.OutboxRecord) string {
+func partitionKey(r *persistence.OutboxRecord) string {
 	if r.SessionID != "" {
 		return "SESSION#" + r.SessionID
 	}

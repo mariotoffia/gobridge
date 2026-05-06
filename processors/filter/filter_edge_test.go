@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // TestFilter_UnknownAction_FallsThroughToNext validates that when Action is an
@@ -37,7 +38,7 @@ func TestFilter_UnknownAction_FallsThroughToNext(t *testing.T) {
 
 			called := false
 			env := envelope("test", nil, nil)
-			err = p.Process(context.Background(), env, func(_ context.Context, _ *domain.Envelope) error {
+			err = p.Process(context.Background(), env, func(_ context.Context, _ *messaging.Envelope) error {
 				called = true
 				return nil
 			})
@@ -72,7 +73,7 @@ func TestFilter_ReDoS_GoRegexpSafe(t *testing.T) {
 	err = p.Process(context.Background(), env, nextOK)
 	elapsed := time.Since(start)
 
-	if errors.Is(err, domain.ErrMessageFiltered) {
+	if errors.Is(err, shared.ErrMessageFiltered) {
 		t.Fatal("pattern should not match input ending with '!'")
 	}
 	if err != nil {
@@ -97,13 +98,13 @@ func TestCondition_InvalidJSONPayload_SilentNoMatch(t *testing.T) {
 		t.Fatalf("NewDropFilter: %v", err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject: "test",
 		Payload: []byte("not json {{{"),
 	}
 
 	called := false
-	err = p.Process(context.Background(), env, func(_ context.Context, _ *domain.Envelope) error {
+	err = p.Process(context.Background(), env, func(_ context.Context, _ *messaging.Envelope) error {
 		called = true
 		return nil
 	})

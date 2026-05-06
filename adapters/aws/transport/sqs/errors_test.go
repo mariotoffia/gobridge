@@ -8,7 +8,7 @@ import (
 
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // Verifies MapError returns nil for a nil input error.
@@ -21,7 +21,7 @@ func TestMapError_Nil(t *testing.T) {
 // Verifies context deadline exceeded maps to ErrTimeout.
 func TestMapError_ContextDeadline(t *testing.T) {
 	err := MapError(context.DeadlineExceeded)
-	if !errors.Is(err, domain.ErrTimeout) {
+	if !errors.Is(err, shared.ErrTimeout) {
 		t.Fatalf("expected ErrTimeout, got %v", err)
 	}
 }
@@ -29,7 +29,7 @@ func TestMapError_ContextDeadline(t *testing.T) {
 // Verifies context canceled maps to ErrUnavailable.
 func TestMapError_ContextCanceled(t *testing.T) {
 	err := MapError(context.Canceled)
-	if !errors.Is(err, domain.ErrUnavailable) {
+	if !errors.Is(err, shared.ErrUnavailable) {
 		t.Fatalf("expected ErrUnavailable, got %v", err)
 	}
 }
@@ -37,7 +37,7 @@ func TestMapError_ContextCanceled(t *testing.T) {
 // Verifies QueueDoesNotExist maps to ErrNotFound with a stable message.
 func TestMapError_QueueDoesNotExist(t *testing.T) {
 	err := MapError(&sqstypes.QueueDoesNotExist{Message: strPtr("gone")})
-	if !errors.Is(err, domain.ErrNotFound) {
+	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 	if err.Message != "queue does not exist" {
@@ -48,7 +48,7 @@ func TestMapError_QueueDoesNotExist(t *testing.T) {
 // Verifies MessageNotInflight maps to ErrInvalidPayload.
 func TestMapError_MessageNotInflight(t *testing.T) {
 	err := MapError(&sqstypes.MessageNotInflight{Message: strPtr("nope")})
-	if !errors.Is(err, domain.ErrInvalidPayload) {
+	if !errors.Is(err, shared.ErrInvalidPayload) {
 		t.Fatalf("expected ErrInvalidPayload, got %v", err)
 	}
 }
@@ -56,7 +56,7 @@ func TestMapError_MessageNotInflight(t *testing.T) {
 // Verifies ReceiptHandleIsInvalid maps to ErrInvalidPayload.
 func TestMapError_ReceiptHandleIsInvalid(t *testing.T) {
 	err := MapError(&sqstypes.ReceiptHandleIsInvalid{Message: strPtr("bad")})
-	if !errors.Is(err, domain.ErrInvalidPayload) {
+	if !errors.Is(err, shared.ErrInvalidPayload) {
 		t.Fatalf("expected ErrInvalidPayload, got %v", err)
 	}
 }
@@ -64,7 +64,7 @@ func TestMapError_ReceiptHandleIsInvalid(t *testing.T) {
 // Verifies OverLimit maps to ErrThrottled.
 func TestMapError_OverLimit(t *testing.T) {
 	err := MapError(&sqstypes.OverLimit{Message: strPtr("too much")})
-	if !errors.Is(err, domain.ErrThrottled) {
+	if !errors.Is(err, shared.ErrThrottled) {
 		t.Fatalf("expected ErrThrottled, got %v", err)
 	}
 }
@@ -72,7 +72,7 @@ func TestMapError_OverLimit(t *testing.T) {
 // Verifies BatchRequestTooLong maps to ErrPayloadTooLarge.
 func TestMapError_BatchRequestTooLong(t *testing.T) {
 	err := MapError(&sqstypes.BatchRequestTooLong{Message: strPtr("big")})
-	if !errors.Is(err, domain.ErrPayloadTooLarge) {
+	if !errors.Is(err, shared.ErrPayloadTooLarge) {
 		t.Fatalf("expected ErrPayloadTooLarge, got %v", err)
 	}
 }
@@ -80,7 +80,7 @@ func TestMapError_BatchRequestTooLong(t *testing.T) {
 // Verifies UnsupportedOperation maps to ErrProtocolError.
 func TestMapError_UnsupportedOperation(t *testing.T) {
 	err := MapError(&sqstypes.UnsupportedOperation{Message: strPtr("nah")})
-	if !errors.Is(err, domain.ErrProtocolError) {
+	if !errors.Is(err, shared.ErrProtocolError) {
 		t.Fatalf("expected ErrProtocolError, got %v", err)
 	}
 }
@@ -90,14 +90,14 @@ func TestMapError_StringPatterns(t *testing.T) {
 	tests := []struct {
 		name   string
 		errMsg string
-		want   *domain.BridgeError
+		want   *shared.BridgeError
 	}{
-		{"throttle", "Throttling: Rate exceeded", domain.ErrThrottled},
-		{"unavailable", "ServiceUnavailable", domain.ErrUnavailable},
-		{"network", "connection refused", domain.ErrConnectionLost},
-		{"auth", "AccessDenied for user", domain.ErrNotAuthorized},
-		{"validation", "ValidationError: bad param", domain.ErrInvalidPayload},
-		{"unknown", "something weird happened", domain.ErrUnavailable},
+		{"throttle", "Throttling: Rate exceeded", shared.ErrThrottled},
+		{"unavailable", "ServiceUnavailable", shared.ErrUnavailable},
+		{"network", "connection refused", shared.ErrConnectionLost},
+		{"auth", "AccessDenied for user", shared.ErrNotAuthorized},
+		{"validation", "ValidationError: bad param", shared.ErrInvalidPayload},
+		{"unknown", "something weird happened", shared.ErrUnavailable},
 	}
 
 	for _, tt := range tests {
@@ -126,7 +126,7 @@ func TestMapError_IsRecoverable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := domain.IsRecoverableError(tt.err); got != tt.recoverable {
+			if got := shared.IsRecoverableError(tt.err); got != tt.recoverable {
 				t.Fatalf("IsRecoverableError = %v, want %v", got, tt.recoverable)
 			}
 		})

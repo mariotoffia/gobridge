@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 
 	oteltracing "github.com/mariotoffia/gobridge/adapters/otel/tracing"
@@ -73,8 +73,8 @@ func TestStartSpan_CreatesSpan(t *testing.T) {
 	ctx := context.Background()
 
 	ctx, span := tr.StartSpan(ctx, "test-span",
-		domain.Tag{Key: "k1", Value: "v1"},
-		domain.Tag{Key: "k2", Value: "v2"},
+		shared.Tag{Key: "k1", Value: "v1"},
+		shared.Tag{Key: "k2", Value: "v2"},
 	)
 	span.End()
 
@@ -125,7 +125,7 @@ func TestSpan_AddEvent(t *testing.T) {
 	ctx := context.Background()
 
 	_, span := tr.StartSpan(ctx, "event-span")
-	span.AddEvent("my-event", domain.Tag{Key: "detail", Value: "info"})
+	span.AddEvent("my-event", shared.Tag{Key: "detail", Value: "info"})
 	span.End()
 
 	_ = tp.ForceFlush(context.Background())
@@ -171,7 +171,7 @@ func TestSpan_SetAttributes(t *testing.T) {
 
 	_, span := tr.StartSpan(ctx, "attr-span")
 	span.SetAttributes(
-		domain.Tag{Key: "added", Value: "later"},
+		shared.Tag{Key: "added", Value: "later"},
 	)
 	span.End()
 

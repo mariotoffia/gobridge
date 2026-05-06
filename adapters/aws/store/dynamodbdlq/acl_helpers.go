@@ -8,11 +8,11 @@ import (
 
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 )
 
-func unmarshalEntry(item map[string]ddbtypes.AttributeValue) (domain.DLQEntry, error) {
-	var e domain.DLQEntry
+func unmarshalEntry(item map[string]ddbtypes.AttributeValue) (routing.DLQEntry, error) {
+	var e routing.DLQEntry
 
 	pk := strAttr(item, attrPK)
 	if len(pk) > 4 {

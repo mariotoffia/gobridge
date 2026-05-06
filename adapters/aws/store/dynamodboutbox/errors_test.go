@@ -8,13 +8,13 @@ import (
 
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // TestMapError_PreservesContextErrors asserts policy Rule 1
 // (`_design/error-wrapping-policy.adoc:100-104`): canonical context
 // sentinels are returned identity-equal and never reclassified as
-// domain.ErrTimeout / domain.ErrUnavailable.
+// shared.ErrTimeout / shared.ErrUnavailable.
 func TestMapError_PreservesContextErrors(t *testing.T) {
 	wrappedDeadline := fmt.Errorf("sdk call: %w", context.DeadlineExceeded)
 	wrappedCanceled := fmt.Errorf("sdk call: %w", context.Canceled)
@@ -34,8 +34,8 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 				if !errors.Is(out, context.DeadlineExceeded) {
 					t.Fatalf("errors.Is(out, context.DeadlineExceeded) = false")
 				}
-				if errors.Is(out, domain.ErrTimeout) {
-					t.Fatalf("ctx error must not be classified as domain.ErrTimeout")
+				if errors.Is(out, shared.ErrTimeout) {
+					t.Fatalf("ctx error must not be classified as shared.ErrTimeout")
 				}
 			},
 		},
@@ -49,8 +49,8 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 				if !errors.Is(out, context.Canceled) {
 					t.Fatalf("errors.Is(out, context.Canceled) = false")
 				}
-				if errors.Is(out, domain.ErrUnavailable) {
-					t.Fatalf("ctx error must not be classified as domain.ErrUnavailable")
+				if errors.Is(out, shared.ErrUnavailable) {
+					t.Fatalf("ctx error must not be classified as shared.ErrUnavailable")
 				}
 			},
 		},
@@ -64,8 +64,8 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 				if !errors.Is(out, context.DeadlineExceeded) {
 					t.Fatalf("errors.Is(out, context.DeadlineExceeded) = false")
 				}
-				if errors.Is(out, domain.ErrTimeout) {
-					t.Fatalf("wrapped ctx error must not be classified as domain.ErrTimeout")
+				if errors.Is(out, shared.ErrTimeout) {
+					t.Fatalf("wrapped ctx error must not be classified as shared.ErrTimeout")
 				}
 			},
 		},
@@ -79,8 +79,8 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 				if !errors.Is(out, context.Canceled) {
 					t.Fatalf("errors.Is(out, context.Canceled) = false")
 				}
-				if errors.Is(out, domain.ErrUnavailable) {
-					t.Fatalf("wrapped ctx error must not be classified as domain.ErrUnavailable")
+				if errors.Is(out, shared.ErrUnavailable) {
+					t.Fatalf("wrapped ctx error must not be classified as shared.ErrUnavailable")
 				}
 			},
 		},
@@ -88,8 +88,8 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 			name:  "resource-not-found-regression",
 			input: &ddbtypes.ResourceNotFoundException{},
 			check: func(t *testing.T, in, out error) {
-				if !errors.Is(out, domain.ErrNotFound) {
-					t.Fatalf("ResourceNotFoundException must classify as domain.ErrNotFound, got %v", out)
+				if !errors.Is(out, shared.ErrNotFound) {
+					t.Fatalf("ResourceNotFoundException must classify as shared.ErrNotFound, got %v", out)
 				}
 			},
 		},
@@ -97,8 +97,8 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 			name:  "provisioned-throughput-regression",
 			input: &ddbtypes.ProvisionedThroughputExceededException{},
 			check: func(t *testing.T, in, out error) {
-				if !errors.Is(out, domain.ErrThrottled) {
-					t.Fatalf("ProvisionedThroughputExceededException must classify as domain.ErrThrottled, got %v", out)
+				if !errors.Is(out, shared.ErrThrottled) {
+					t.Fatalf("ProvisionedThroughputExceededException must classify as shared.ErrThrottled, got %v", out)
 				}
 			},
 		},

@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -17,8 +18,8 @@ const DefaultOutboxTransactionLimit = 100
 // importing concrete adapter implementations.
 type RouteConfig struct {
 	ID                 string
-	Policy             domain.RoutePolicy
-	Bindings           []domain.DestinationBinding
+	Policy             routing.RoutePolicy
+	Bindings           []routing.DestinationBinding
 	SourceCapabilities []ports.Capability
 	SourceGuaranteesID bool
 	HasIdempotencyProc bool
@@ -39,7 +40,7 @@ func (r *RouteConfig) HasCapability(cap ports.Capability) bool {
 // SessionConfig describes a session for startup validation.
 type SessionConfig struct {
 	ID   string
-	Mode domain.SessionMode
+	Mode connectivity.SessionMode
 }
 
 // BridgeConfig is the full bridge wiring descriptor passed to Validate.

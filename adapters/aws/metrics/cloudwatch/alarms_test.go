@@ -3,7 +3,7 @@ package cloudwatch
 import (
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // Verifies DefaultAlarms returns the expected number of predefined alarms.
@@ -18,8 +18,8 @@ func TestDefaultAlarms_Count(t *testing.T) {
 func TestDefaultAlarms_Namespace(t *testing.T) {
 	alarms := DefaultAlarms("", "")
 	for _, a := range alarms {
-		if a.Namespace != domain.MetricNamespace {
-			t.Errorf("alarm %s namespace = %q, want %q", a.Name, a.Namespace, domain.MetricNamespace)
+		if a.Namespace != shared.MetricNamespace {
+			t.Errorf("alarm %s namespace = %q, want %q", a.Name, a.Namespace, shared.MetricNamespace)
 		}
 	}
 
@@ -46,11 +46,11 @@ func TestDefaultAlarms_SNSTopic(t *testing.T) {
 func TestDefaultAlarms_MetricNames(t *testing.T) {
 	alarms := DefaultAlarms("", "")
 	want := map[string]bool{
-		domain.MetricOutboxDepth:             false,
-		domain.MetricLeaseExpiries:           false,
-		domain.MetricDLQEntries:              false,
-		domain.MetricLeaseAcquireFailures:    false,
-		domain.MetricSQSVisibilityExtensions: false,
+		shared.MetricOutboxDepth:             false,
+		shared.MetricLeaseExpiries:           false,
+		shared.MetricDLQEntries:              false,
+		shared.MetricLeaseAcquireFailures:    false,
+		shared.MetricSQSVisibilityExtensions: false,
 	}
 	for _, a := range alarms {
 		want[a.MetricName] = true

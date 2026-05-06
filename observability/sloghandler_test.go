@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/observability"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/observability"
 )
 
 func newTestLogger(buf *bytes.Buffer) *slog.Logger {

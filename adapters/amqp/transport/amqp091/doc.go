@@ -27,7 +27,7 @@
 //
 // # Error Mapping
 //
-// amqp091.Error codes are classified into domain.BridgeError categories:
+// amqp091.Error codes are classified into shared.BridgeError categories:
 //
 //   - 320 (connection-forced)         -> ErrConnectionLost (transient)
 //   - 403 (access-refused)            -> ErrNotAuthorized  (permanent)

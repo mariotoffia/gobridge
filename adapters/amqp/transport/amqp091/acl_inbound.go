@@ -8,8 +8,8 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // deliveryToHeaders maps an amqp091.Delivery's system properties and
@@ -66,7 +66,7 @@ func deliveryToHeaders(d amqp.Delivery) map[string]any {
 	}
 
 	for k, v := range d.Headers {
-		if domain.IsReservedHeader(k) || strings.HasPrefix(k, amqp091Prefix) {
+		if messaging.IsReservedHeader(k) || strings.HasPrefix(k, amqp091Prefix) {
 			continue
 		}
 		h[k] = v
@@ -76,13 +76,13 @@ func deliveryToHeaders(d amqp.Delivery) map[string]any {
 }
 
 // deliveryToEnvelope translates an inbound *amqp091.Delivery to a fresh
-// domain.Envelope. The CreatedAt field falls back to clk.Now() when the
+// messaging.Envelope. The CreatedAt field falls back to clk.Now() when the
 // inbound message carries no timestamp.
-func deliveryToEnvelope(d amqp.Delivery, clk clock.Clock) *domain.Envelope {
+func deliveryToEnvelope(d amqp.Delivery, clk clock.Clock) *messaging.Envelope {
 	if clk == nil {
 		clk = clock.System
 	}
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        d.MessageId,
 		Subject:   d.RoutingKey,
 		Payload:   d.Body,

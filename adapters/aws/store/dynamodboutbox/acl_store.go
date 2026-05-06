@@ -13,8 +13,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -73,7 +75,7 @@ func WithStaleClaimDuration(d time.Duration) Option {
 
 // WithMaxReplayCount sets the maximum number of times a record may be
 // claimed before it is excluded from future claims (poison message
-// protection). A value of 0 means no limit. Default: domain.DefaultMaxReplayAttempts.
+// protection). A value of 0 means no limit. Default: routing.DefaultMaxReplayAttempts.
 func WithMaxReplayCount(n int) Option {
 	return func(s *Store) { s.maxReplayCount = n }
 }
@@ -100,7 +102,7 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 		table:          defaultTableName,
 		compactGrace:   defaultCompactionGrace,
 		staleClaim:     defaultStaleClaimDuration,
-		maxReplayCount: domain.DefaultMaxReplayAttempts,
+		maxReplayCount: routing.DefaultMaxReplayAttempts,
 		clk:            clock.System,
 	}
 	for _, o := range opts {
@@ -180,7 +182,7 @@ func (s *Store) CreateTable(ctx context.Context) error {
 // Persist writes outbox records atomically. For a single record, it uses
 // PutItem with a condition to reject duplicates. For multiple records
 // (fan-out), it uses TransactWriteItems to ensure atomicity.
-func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) error {
+func (s *Store) Persist(ctx context.Context, records []persistence.OutboxRecord) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: persist", "count", len(records))
 	}
@@ -197,7 +199,7 @@ func (s *Store) Persist(ctx context.Context, records []domain.OutboxRecord) erro
 	return s.persistFanOut(ctx, records, now)
 }
 
-func (s *Store) persistSingle(ctx context.Context, r *domain.OutboxRecord, now time.Time) error {
+func (s *Store) persistSingle(ctx context.Context, r *persistence.OutboxRecord, now time.Time) error {
 	item, err := marshalRecord(r, now, s.compactGrace)
 	if err != nil {
 		return err
@@ -210,7 +212,7 @@ func (s *Store) persistSingle(ctx context.Context, r *domain.OutboxRecord, now t
 	})
 	if err != nil {
 		if isConditionFailed(err) {
-			return domain.ErrDuplicateRecord.
+			return shared.ErrDuplicateRecord.
 				WithMessage("duplicate outbox record").
 				With("envelopeID", r.EnvelopeID).
 				With("bindingID", r.BindingID)
@@ -220,7 +222,7 @@ func (s *Store) persistSingle(ctx context.Context, r *domain.OutboxRecord, now t
 	return nil
 }
 
-func (s *Store) persistFanOut(ctx context.Context, records []domain.OutboxRecord, now time.Time) error {
+func (s *Store) persistFanOut(ctx context.Context, records []persistence.OutboxRecord, now time.Time) error {
 	if len(records) > 100 {
 		return fmt.Errorf("dynamodboutbox: fan-out exceeds DynamoDB transaction limit of 100 items (%d)", len(records))
 	}
@@ -245,7 +247,7 @@ func (s *Store) persistFanOut(ctx context.Context, records []domain.OutboxRecord
 	})
 	if err != nil {
 		if isTransactionCanceled(err) {
-			return domain.ErrDuplicateRecord.
+			return shared.ErrDuplicateRecord.
 				WithMessage("duplicate outbox record in fan-out batch")
 		}
 		return wrapErr(err, "outbox persist fan-out failed", "recordCount", len(records))
@@ -258,7 +260,7 @@ func (s *Store) persistFanOut(ctx context.Context, records []domain.OutboxRecord
 // Uses strongly consistent reads with pagination to handle the DynamoDB
 // Limit+Filter interaction (Limit caps evaluated items, not filtered results).
 // Records that have exceeded the max replay count are skipped.
-func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error) {
+func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: claim", "partition_key", partitionKey, "limit", limit)
 	}
@@ -271,8 +273,8 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, 
 	exprValues := map[string]ddbtypes.AttributeValue{
 		":pk":      &ddbtypes.AttributeValueMemberS{Value: partitionKey},
 		":prefix":  &ddbtypes.AttributeValueMemberS{Value: skPrefix},
-		":pending": &ddbtypes.AttributeValueMemberS{Value: string(domain.OutboxPending)},
-		":claimed": &ddbtypes.AttributeValueMemberS{Value: string(domain.OutboxClaimed)},
+		":pending": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxPending)},
+		":claimed": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxClaimed)},
 		":stale":   &ddbtypes.AttributeValueMemberN{Value: i64(staleThreshold.UnixMilli())},
 	}
 
@@ -281,7 +283,7 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, 
 		exprValues[":maxReplay"] = &ddbtypes.AttributeValueMemberN{Value: strconv.Itoa(s.maxReplayCount)}
 	}
 
-	var claimed []domain.OutboxRecord
+	var claimed []persistence.OutboxRecord
 	var startKey map[string]ddbtypes.AttributeValue
 
 	for len(claimed) < limit {
@@ -315,9 +317,9 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, 
 
 			condExpr := "(#st = :pending) OR (#st = :cur_claimed AND claimed_at < :stale)"
 			condValues := map[string]ddbtypes.AttributeValue{
-				":claimed":     &ddbtypes.AttributeValueMemberS{Value: string(domain.OutboxClaimed)},
-				":pending":     &ddbtypes.AttributeValueMemberS{Value: string(domain.OutboxPending)},
-				":cur_claimed": &ddbtypes.AttributeValueMemberS{Value: string(domain.OutboxClaimed)},
+				":claimed":     &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxClaimed)},
+				":pending":     &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxPending)},
+				":cur_claimed": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxClaimed)},
 				":owner":       &ddbtypes.AttributeValueMemberS{Value: ownerID},
 				":ver":         &ddbtypes.AttributeValueMemberN{Value: u64(token.Version)},
 				":now":         &ddbtypes.AttributeValueMemberN{Value: i64(now.UnixMilli())},
@@ -370,7 +372,7 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, 
 
 // Complete marks the given records as completed after successful target delivery.
 // The caller's fencing token must match the claim_version on each record.
-func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.LeaseToken) error {
+func (s *Store) Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: complete", "count", len(recordIDs))
 	}
@@ -388,7 +390,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.L
 			return err
 		}
 		if pk == "" {
-			return domain.ErrNotFound.
+			return shared.ErrNotFound.
 				WithMessage("outbox record not found").
 				With("recordID", id)
 		}
@@ -408,7 +410,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.L
 				"#ttl": "ttl",
 			},
 			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
-				":completed": &ddbtypes.AttributeValueMemberS{Value: string(domain.OutboxCompleted)},
+				":completed": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxCompleted)},
 				":now":       &ddbtypes.AttributeValueMemberN{Value: i64(now.UnixMilli())},
 				":ttl":       &ddbtypes.AttributeValueMemberN{Value: i64(ttlEpoch)},
 				":owner":     &ddbtypes.AttributeValueMemberS{Value: token.Owner},
@@ -417,7 +419,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token domain.L
 		})
 		if err != nil {
 			if isConditionFailed(err) {
-				return domain.ErrStaleFencingToken.
+				return shared.ErrStaleFencingToken.
 					WithMessage("claim version mismatch on complete").
 					With("recordID", id).
 					With("givenVersion", token.Version)
@@ -436,7 +438,7 @@ func (s *Store) Expire(ctx context.Context, before time.Time) (int, error) {
 	ttlEpoch := before.Add(s.compactGrace).Unix()
 	count := 0
 
-	for _, status := range []string{string(domain.OutboxPending), string(domain.OutboxClaimed)} {
+	for _, status := range []string{string(persistence.OutboxPending), string(persistence.OutboxClaimed)} {
 		n, err := s.expireByStatus(ctx, status, beforeMs, ttlEpoch)
 		if err != nil {
 			return count, err
@@ -493,9 +495,9 @@ func (s *Store) expireByStatus(ctx context.Context, status string, beforeMs, ttl
 					"#ttl": "ttl",
 				},
 				ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
-					":expired": &ddbtypes.AttributeValueMemberS{Value: string(domain.OutboxExpired)},
-					":pending": &ddbtypes.AttributeValueMemberS{Value: string(domain.OutboxPending)},
-					":claimed": &ddbtypes.AttributeValueMemberS{Value: string(domain.OutboxClaimed)},
+					":expired": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxExpired)},
+					":pending": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxPending)},
+					":claimed": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxClaimed)},
 					":zero":    &ddbtypes.AttributeValueMemberN{Value: "0"},
 					":before":  &ddbtypes.AttributeValueMemberN{Value: i64(beforeMs)},
 					":ttl":     &ddbtypes.AttributeValueMemberN{Value: i64(ttlEpoch)},
@@ -522,12 +524,12 @@ func (s *Store) expireByStatus(ctx context.Context, status string, beforeMs, ttl
 // QueryPending returns pending records for the given partition key, ordered
 // by creation time (oldest first). Uses strongly consistent reads and
 // paginates past DynamoDB's Limit+Filter interaction.
-func (s *Store) QueryPending(ctx context.Context, partitionKey string, limit int) ([]domain.OutboxRecord, error) {
+func (s *Store) QueryPending(ctx context.Context, partitionKey string, limit int) ([]persistence.OutboxRecord, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: query_pending", "partition_key", partitionKey, "limit", limit)
 	}
 
-	var records []domain.OutboxRecord
+	var records []persistence.OutboxRecord
 	var startKey map[string]ddbtypes.AttributeValue
 
 	for len(records) < limit {
@@ -541,7 +543,7 @@ func (s *Store) QueryPending(ctx context.Context, partitionKey string, limit int
 			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 				":pk":      &ddbtypes.AttributeValueMemberS{Value: partitionKey},
 				":prefix":  &ddbtypes.AttributeValueMemberS{Value: skPrefix},
-				":pending": &ddbtypes.AttributeValueMemberS{Value: string(domain.OutboxPending)},
+				":pending": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxPending)},
 			},
 			ConsistentRead: aws.Bool(true),
 		}
@@ -608,11 +610,11 @@ func sortKey(envelopeID, bindingID string) string {
 	return skPrefix + envelopeID + "#" + bindingID
 }
 
-func partitionKey(r *domain.OutboxRecord) string {
-	return domain.OutboxPartitionKey(r.SessionID, r.BindingID)
+func partitionKey(r *persistence.OutboxRecord) string {
+	return persistence.OutboxPartitionKey(r.SessionID, r.BindingID)
 }
 
-func marshalRecord(r *domain.OutboxRecord, now time.Time, compactGrace time.Duration) (map[string]ddbtypes.AttributeValue, error) {
+func marshalRecord(r *persistence.OutboxRecord, now time.Time, compactGrace time.Duration) (map[string]ddbtypes.AttributeValue, error) {
 	createdAt := r.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = now
@@ -633,7 +635,7 @@ func marshalRecord(r *domain.OutboxRecord, now time.Time, compactGrace time.Dura
 		"session_id":    &ddbtypes.AttributeValueMemberS{Value: r.SessionID},
 		"address":       &ddbtypes.AttributeValueMemberS{Value: r.Address},
 		"envelope_json": &ddbtypes.AttributeValueMemberS{Value: string(envJSON)},
-		"status":        &ddbtypes.AttributeValueMemberS{Value: string(domain.OutboxPending)},
+		"status":        &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxPending)},
 		"claim_version": &ddbtypes.AttributeValueMemberN{Value: "0"},
 		"replay_count":  &ddbtypes.AttributeValueMemberN{Value: "0"},
 		"created_at":    &ddbtypes.AttributeValueMemberN{Value: i64(createdAt.UnixMilli())},
@@ -661,8 +663,8 @@ func marshalRecord(r *domain.OutboxRecord, now time.Time, compactGrace time.Dura
 	return item, nil
 }
 
-func unmarshalRecord(item map[string]ddbtypes.AttributeValue) (domain.OutboxRecord, error) {
-	var r domain.OutboxRecord
+func unmarshalRecord(item map[string]ddbtypes.AttributeValue) (persistence.OutboxRecord, error) {
+	var r persistence.OutboxRecord
 
 	r.ID = strAttr(item, "record_id")
 	r.RouteID = strAttr(item, "route_id")
@@ -670,7 +672,7 @@ func unmarshalRecord(item map[string]ddbtypes.AttributeValue) (domain.OutboxReco
 	r.BindingID = strAttr(item, "binding_id")
 	r.SessionID = strAttr(item, "session_id")
 	r.Address = strAttr(item, "address")
-	r.Status = domain.OutboxStatus(strAttr(item, "status"))
+	r.Status = persistence.OutboxStatus(strAttr(item, "status"))
 	r.ClaimedBy = strAttr(item, "claimed_by")
 	r.ClaimVersion = numAttrU64(item, "claim_version")
 	r.ReplayCount = int(numAttrI64(item, "replay_count"))

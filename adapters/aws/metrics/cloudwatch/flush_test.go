@@ -7,7 +7,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
-	"github.com/mariotoffia/gobridge/domain"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // Verifies New with a mock client creates a working exporter.
@@ -43,7 +44,7 @@ func TestExporter_Flush_SendsCounters(t *testing.T) {
 	}
 	defer func() { _ = e.Close(ctx) }()
 
-	e.Counter("requests", 5, domain.Tag{Key: "route", Value: "orders"})
+	e.Counter("requests", 5, shared.Tag{Key: "route", Value: "orders"})
 	e.Counter("errors", 1)
 
 	if err := e.Flush(ctx); err != nil {
@@ -276,7 +277,7 @@ func TestExporter_Flush_SendsGauges(t *testing.T) {
 	}
 	defer func() { _ = e.Close(ctx) }()
 
-	e.Gauge("cpu_usage", 72.5, domain.Tag{Key: "host", Value: "prod-1"})
+	e.Gauge("cpu_usage", 72.5, shared.Tag{Key: "host", Value: "prod-1"})
 
 	if err := e.Flush(ctx); err != nil {
 		t.Fatalf("Flush: %v", err)

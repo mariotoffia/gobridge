@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
@@ -48,23 +50,23 @@ func TestIntegration_DLQRouter_RouteStoresEntry(t *testing.T) {
 		WriteTimeout: 10 * time.Second,
 	})
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "env-dr1",
 		Subject: "test/topic",
 		Payload: []byte(`{"dlq":"entry"}`),
 		Headers: map[string]any{
-			domain.HeaderCorrelationID: "corr-dr1",
+			messaging.HeaderCorrelationID: "corr-dr1",
 		},
 	}
 
-	routeErr := domain.ErrInvalidPayload.WithMessage("bad payload format")
+	routeErr := shared.ErrInvalidPayload.WithMessage("bad payload format")
 
 	ctx := context.Background()
 	if err := router.Route(ctx, env, "route-dr1", "bind-dr1", "sess-dr1", "src-dr1", routeErr, 3); err != nil {
 		t.Fatalf("Route: %v", err)
 	}
 
-	entries, err := store.List(ctx, domain.DLQFilter{RouteID: "route-dr1"})
+	entries, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dr1"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -119,26 +121,26 @@ func TestIntegration_DLQRouter_AsyncBufferDrains(t *testing.T) {
 	defer router.Close()
 	const entryCount = 5
 	for i := 0; i < entryCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      uniqueID("env-dr2"),
 			Subject: "test/async",
 			Payload: []byte(`{"async":"entry"}`),
 		}
-		routeErr := domain.ErrUnavailable.WithMessage("transient failure")
+		routeErr := shared.ErrUnavailable.WithMessage("transient failure")
 		if err := router.Route(ctx, env, "route-dr2", uniqueID("bind"), "sess-dr2", "", routeErr, 1); err != nil {
 			t.Fatalf("Route[%d]: %v", i, err)
 		}
 	}
 
 	e2eWaitFor(t, 10*time.Second, "async DLQ entries drained", func() bool {
-		entries, err := store.List(ctx, domain.DLQFilter{RouteID: "route-dr2"})
+		entries, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dr2"})
 		if err != nil {
 			return false
 		}
 		return len(entries) >= entryCount
 	})
 
-	entries, _ := store.List(ctx, domain.DLQFilter{RouteID: "route-dr2"})
+	entries, _ := store.List(ctx, routing.DLQFilter{RouteID: "route-dr2"})
 	if len(entries) != entryCount {
 		t.Fatalf("expected %d DLQ entries, got %d", entryCount, len(entries))
 	}
@@ -165,20 +167,20 @@ func TestIntegration_DLQRouter_ErrorClassification(t *testing.T) {
 	ctx := context.Background()
 
 	// Permanent error (ErrNotFound has ErrorPermanent class)
-	env1 := &domain.Envelope{ID: "env-dr3-perm", Subject: "test", Payload: []byte("x")}
-	permErr := domain.ErrNotFound.WithMessage("resource gone")
+	env1 := &messaging.Envelope{ID: "env-dr3-perm", Subject: "test", Payload: []byte("x")}
+	permErr := shared.ErrNotFound.WithMessage("resource gone")
 	if err := router.Route(ctx, env1, "route-dr3", "b1", "s1", "", permErr, 1); err != nil {
 		t.Fatalf("Route perm: %v", err)
 	}
 
 	// Transient error
-	env2 := &domain.Envelope{ID: "env-dr3-trans", Subject: "test", Payload: []byte("y")}
-	transErr := domain.ErrUnavailable.WithMessage("service down")
+	env2 := &messaging.Envelope{ID: "env-dr3-trans", Subject: "test", Payload: []byte("y")}
+	transErr := shared.ErrUnavailable.WithMessage("service down")
 	if err := router.Route(ctx, env2, "route-dr3", "b2", "s2", "", transErr, 2); err != nil {
 		t.Fatalf("Route trans: %v", err)
 	}
 
-	entries, err := store.List(ctx, domain.DLQFilter{RouteID: "route-dr3"})
+	entries, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dr3"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -190,10 +192,10 @@ func TestIntegration_DLQRouter_ErrorClassification(t *testing.T) {
 	for _, e := range entries {
 		categories[e.Category] = true
 	}
-	if !categories[string(domain.ErrorPermanent)] {
+	if !categories[string(shared.ErrorPermanent)] {
 		t.Fatal("missing permanent category entry")
 	}
-	if !categories[string(domain.ErrorTransient)] {
+	if !categories[string(shared.ErrorTransient)] {
 		t.Fatal("missing transient category entry")
 	}
 }
@@ -222,19 +224,19 @@ func TestIntegration_DLQRouter_CloseDrainsBuffer(t *testing.T) {
 
 	const entryCount = 5
 	for i := 0; i < entryCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      uniqueID("env-dr4"),
 			Subject: "test/drain",
 			Payload: []byte(`{"drain":"test"}`),
 		}
-		if err := router.Route(ctx, env, "route-dr4", uniqueID("bind"), "sess-dr4", "", domain.ErrUnavailable, 1); err != nil {
+		if err := router.Route(ctx, env, "route-dr4", uniqueID("bind"), "sess-dr4", "", shared.ErrUnavailable, 1); err != nil {
 			t.Fatalf("Route[%d]: %v", i, err)
 		}
 	}
 
 	router.Close()
 
-	entries, err := store.List(ctx, domain.DLQFilter{RouteID: "route-dr4"})
+	entries, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dr4"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -273,18 +275,18 @@ func TestIntegration_DLQRouter_ConcurrentRoutes(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
-			env := &domain.Envelope{
+			env := &messaging.Envelope{
 				ID:      uniqueID("env-dr5"),
 				Subject: "test/concurrent",
 				Payload: []byte(`{"concurrent":"dlq"}`),
 			}
-			_ = router.Route(ctx, env, "route-dr5", uniqueID("bind"), "sess-dr5", "", domain.ErrUnavailable, 1)
+			_ = router.Route(ctx, env, "route-dr5", uniqueID("bind"), "sess-dr5", "", shared.ErrUnavailable, 1)
 		}()
 	}
 	wg.Wait()
 	router.Close()
 
-	entries, err := store.List(ctx, domain.DLQFilter{RouteID: "route-dr5"})
+	entries, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dr5"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

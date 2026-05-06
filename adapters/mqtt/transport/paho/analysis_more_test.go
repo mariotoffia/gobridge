@@ -10,7 +10,9 @@ import (
 
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -32,17 +34,17 @@ import (
 // integrating with such consumers should add a stripping middleware
 // at their ACL.
 func TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject: "t",
 		Payload: []byte("p"),
 		Headers: map[string]any{
-			domain.HeaderCorrelationID:  "corr",         // mapped to MQTT CorrelationData
-			domain.HeaderContentType:    "text/plain",   // mapped to MQTT ContentType
-			domain.HeaderCausationID:    "cause",        // forwarded as user property
-			domain.HeaderIdempotencyKey: "idem",         // forwarded
-			domain.HeaderTenantID:       "tenant-7",     // forwarded
-			domain.HeaderRouteID:        "internal-rt",  // forwarded (debatable)
-			domain.HeaderSourceID:       "internal-src", // forwarded (debatable)
+			messaging.HeaderCorrelationID:  "corr",         // mapped to MQTT CorrelationData
+			messaging.HeaderContentType:    "text/plain",   // mapped to MQTT ContentType
+			messaging.HeaderCausationID:    "cause",        // forwarded as user property
+			messaging.HeaderIdempotencyKey: "idem",         // forwarded
+			messaging.HeaderTenantID:       "tenant-7",     // forwarded
+			messaging.HeaderRouteID:        "internal-rt",  // forwarded (debatable)
+			messaging.HeaderSourceID:       "internal-src", // forwarded (debatable)
 		},
 	}
 	pub := PublishFromEnvelope(env, SenderOptions{QoS: 1}, nil)
@@ -57,14 +59,14 @@ func TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization(t *test
 
 	// HeaderCorrelationID must NOT be on the wire as a user property
 	// (it occupies CorrelationData instead).
-	if _, hasCorr := mapped[domain.HeaderCorrelationID]; hasCorr {
+	if _, hasCorr := mapped[messaging.HeaderCorrelationID]; hasCorr {
 		t.Error("HeaderCorrelationID must not appear as a user property")
 	}
 	if string(pub.Properties.CorrelationData) != "corr" {
 		t.Errorf("CorrelationData = %q, want %q", pub.Properties.CorrelationData, "corr")
 	}
 	// HeaderContentType must NOT be on the wire as a user property.
-	if _, hasCT := mapped[domain.HeaderContentType]; hasCT {
+	if _, hasCT := mapped[messaging.HeaderContentType]; hasCT {
 		t.Error("HeaderContentType must not appear as a user property")
 	}
 	if pub.Properties.ContentType != "text/plain" {
@@ -75,11 +77,11 @@ func TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization(t *test
 	// behaviour). If this changes, update the characterization to
 	// reflect the new contract.
 	wantOnWire := []string{
-		domain.HeaderCausationID,
-		domain.HeaderIdempotencyKey,
-		domain.HeaderTenantID,
-		domain.HeaderRouteID,
-		domain.HeaderSourceID,
+		messaging.HeaderCausationID,
+		messaging.HeaderIdempotencyKey,
+		messaging.HeaderTenantID,
+		messaging.HeaderRouteID,
+		messaging.HeaderSourceID,
 	}
 	for _, k := range wantOnWire {
 		if _, ok := mapped[k]; !ok {
@@ -92,7 +94,7 @@ func TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization(t *test
 
 // TestAnaMore_Sender_NilEnvelope_ReturnsInvalidPayload pins the
 // Sender.Send contract for a nil envelope: the adapter rejects the
-// call with a classified domain.ErrInvalidPayload rather than
+// call with a classified shared.ErrInvalidPayload rather than
 // panicking. Validating at the transport boundary keeps session
 // state intact and gives callers a recoverable error instead of
 // undefined behaviour.
@@ -100,7 +102,7 @@ func TestAnaMore_Sender_NilEnvelope_ReturnsInvalidPayload(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-nil-env",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	sess.mu.Lock()
 	sess.cm = &pahoConn{cm: fakeCM}
 	sess.mu.Unlock()
@@ -111,12 +113,12 @@ func TestAnaMore_Sender_NilEnvelope_ReturnsInvalidPayload(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for nil envelope, got nil")
 	}
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	if !ok {
-		t.Fatalf("expected *domain.BridgeError, got %T: %v", err, err)
+		t.Fatalf("expected *shared.BridgeError, got %T: %v", err, err)
 	}
-	if be.Code != domain.ErrInvalidPayload.Code {
-		t.Fatalf("expected code %q, got %q", domain.ErrInvalidPayload.Code, be.Code)
+	if be.Code != shared.ErrInvalidPayload.Code {
+		t.Fatalf("expected code %q, got %q", shared.ErrInvalidPayload.Code, be.Code)
 	}
 }
 
@@ -128,17 +130,17 @@ func TestAnaMore_ReconcileMetric_NotEmittedOnNoOp(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recon-metric-noop",
-	}, domain.SessionEphemeral, nil, rec)
+	}, connectivity.SessionEphemeral, nil, rec)
 	s.mu.Lock()
 	s.cm = &pahoConn{cm: fakeCM}
-	s.plan = &domain.SessionPlan{Subscriptions: []domain.SubscriptionPlan{{Topic: "kept"}}}
+	s.plan = &connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: "kept"}}}
 	s.mu.Unlock()
 
 	// Empty plan + prior plan = no-op short-circuit BEFORE reconcile().
-	if err := s.Reconcile(context.Background(), domain.SessionPlan{}); err != nil {
+	if err := s.Reconcile(context.Background(), connectivity.SessionPlan{}); err != nil {
 		t.Fatalf("no-op Reconcile error: %v", err)
 	}
-	if entries := rec.FindEntries(domain.MetricMQTTReconcileLatency); len(entries) != 0 {
+	if entries := rec.FindEntries(shared.MetricMQTTReconcileLatency); len(entries) != 0 {
 		t.Fatalf("no-op Reconcile must NOT emit MQTTReconcileLatency, got %d entries", len(entries))
 	}
 }
@@ -151,14 +153,14 @@ func TestAnaMore_Reconcile_DesiredEqualsCurrent_NoBrokerCallNeeded(t *testing.T)
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recon-delta-zero",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	s.mu.Lock()
 	s.cm = &pahoConn{cm: fakeCM}
 	s.activeSubs = map[string]byte{"a": 0, "b": 1}
 	s.mu.Unlock()
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "a", QoS: 0},
 			{Topic: "b", QoS: 1},
 		},
@@ -179,7 +181,7 @@ func TestAnaMore_PushEvent_ManyDifferentTypes_PreservesEventKind(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-pushevent-types",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	types := []ports.SessionEventType{
 		ports.SessionConnected,
@@ -239,7 +241,7 @@ func TestAnaMore_Sender_RetryAfterHintForRateLimitCodes(t *testing.T) {
 	}
 	// Direct assertion for 0x97 (the most important rate-limit code).
 	be := MapPublishReasonCode(0x97)
-	if be == nil || be.Code != domain.ErrThrottled.Code {
+	if be == nil || be.Code != shared.ErrThrottled.Code {
 		t.Fatalf("0x97 → %v, want ErrThrottled", be)
 	}
 }
@@ -251,7 +253,7 @@ func TestAnaMore_PushEvent_BurstUnderClose_NoLostCloseSemantics(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-pushevent-close",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	var wg sync.WaitGroup
 	const pushers = 8
@@ -288,7 +290,7 @@ func TestAnaMore_Receiver_BlockedEmit_BackpressureCancelOnRunCtxDone(t *testing.
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recv-bp-cancel",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-bp-cancel", sess)
 
@@ -333,7 +335,7 @@ func TestAnaMore_Receiver_RunningGuard_DoesNotLeakAfterPanic(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recv-panic-clear",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-panic-clear", sess)
 

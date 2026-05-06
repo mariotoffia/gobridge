@@ -13,7 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
@@ -28,7 +29,7 @@ func newResilienceSession(dial dialFunc) *Session {
 	opts.applyDefaults()
 	return &Session{
 		opts:        opts,
-		mode:        domain.SessionMode("consumer"),
+		mode:        connectivity.SessionMode("consumer"),
 		logger:      slog.Default(),
 		metrics:     &ports.NoopExporter{},
 		dial:        dial,
@@ -48,8 +49,8 @@ func TestSession_Start_AlreadyClosed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Start on closed session")
 	}
-	var be *domain.BridgeError
-	if !errors.As(err, &be) || be.Code != domain.ErrCodeUnavailable {
+	var be *shared.BridgeError
+	if !errors.As(err, &be) || be.Code != shared.ErrCodeUnavailable {
 		t.Fatalf("expected ErrUnavailable, got %v", err)
 	}
 }
@@ -158,12 +159,12 @@ func TestSession_Health_Disconnected(t *testing.T) {
 // ErrUnavailable when session has no connection.
 func TestSession_Reconcile_NoConnection(t *testing.T) {
 	s := newResilienceSession(nil)
-	err := s.Reconcile(context.Background(), domain.SessionPlan{})
+	err := s.Reconcile(context.Background(), connectivity.SessionPlan{})
 	if err == nil {
 		t.Fatal("expected error from Reconcile with no connection")
 	}
-	var be *domain.BridgeError
-	if !errors.As(err, &be) || be.Code != domain.ErrCodeUnavailable {
+	var be *shared.BridgeError
+	if !errors.As(err, &be) || be.Code != shared.ErrCodeUnavailable {
 		t.Fatalf("expected ErrUnavailable, got %v", err)
 	}
 }

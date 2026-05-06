@@ -37,7 +37,7 @@ CREATE INDEX IF NOT EXISTS idx_outbox_partition_status ON outbox(partition_key, 
 `
 
 // outboxColumns is the canonical column list used for SELECTs that
-// hydrate full domain.OutboxRecord values via scanRecords.
+// hydrate full persistence.OutboxRecord values via scanRecords.
 const outboxColumns = `id, partition_key, route_id, envelope_id, binding_id, session_id,
         address, envelope_json, headers_json, status, claimed_by, claim_version,
         replay_count, created_at, expires_at, completed_at`

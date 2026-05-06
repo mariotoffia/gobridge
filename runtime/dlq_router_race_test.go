@@ -9,7 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -34,7 +35,7 @@ func TestDLQRouter_ConcurrentCloseAndRoute(t *testing.T) {
 	ctx := context.Background()
 	router.Start(ctx)
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "race-test",
 		Subject: "test/dlq-race",
 		Payload: []byte("payload"),
@@ -53,7 +54,7 @@ func TestDLQRouter_ConcurrentCloseAndRoute(t *testing.T) {
 				_ = router.Route(
 					ctx, env,
 					"route-1", "bind-1", "sess-1", "src-1",
-					domain.ErrUnavailable, 1,
+					shared.ErrUnavailable, 1,
 				)
 			}
 		}()
@@ -98,7 +99,7 @@ func TestDLQRouter_RouteAfterClose(t *testing.T) {
 	router.Close()
 
 	// Route after close should fall back to writeDirect (no panic).
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "after-close",
 		Subject: "test/after-close",
 		Payload: []byte("payload"),
@@ -107,7 +108,7 @@ func TestDLQRouter_RouteAfterClose(t *testing.T) {
 	err := router.Route(
 		ctx, env,
 		"route-1", "bind-1", "sess-1", "src-1",
-		domain.ErrUnavailable, 1,
+		shared.ErrUnavailable, 1,
 	)
 	assert.NoError(t, err, "Route after Close should fall back to direct write")
 	assert.Equal(t, 1, store.Count(), "entry should be written synchronously")

@@ -12,7 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -26,14 +28,14 @@ func TestUC74_MQTTRetainedMessages(t *testing.T) {
 	defer cancel()
 
 	// Publish one retained message to the topic before any collector subscribes.
-	retainedSess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc74-ret"), domain.SessionEphemeral)
+	retainedSess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc74-ret"), connectivity.SessionEphemeral)
 	retainedSnd := paho.NewSender(retainedSess, paho.SenderOptions{
 		DefaultTopic: "uc74/retained",
 		QoS:          1,
 		Retain:       true,
 		Timeout:      5 * time.Second,
 	})
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "uc74-retained-0",
 		Subject: "uc74/retained",
 		Payload: []byte(`{"retained":true}`),
@@ -49,7 +51,7 @@ func TestUC74_MQTTRetainedMessages(t *testing.T) {
 	sqsRcv := newSQSReceiver(t, sqsURL)
 
 	// MQTT sender (non-retained) for bridge output.
-	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc74-snd"), domain.SessionEphemeral)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc74-snd"), connectivity.SessionEphemeral)
 	snd := setupMQTTSender(t, sess)
 
 	dlq := &lrDLQStore{}
@@ -61,11 +63,11 @@ func TestUC74_MQTTRetainedMessages(t *testing.T) {
 
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc74-retained",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc74-bind", Address: "uc74/retained"},
+			routing.DispatchPlan{BindingID: "uc74-bind", Address: "uc74/retained"},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, sqsRcv, snd, sess, nil))
@@ -112,7 +114,7 @@ func TestUC75_WildcardSubscriptionOverlap(t *testing.T) {
 	sqsRcv := newSQSReceiver(t, sqsURL)
 
 	// MQTT sender targeting the specific topic.
-	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc75-snd"), domain.SessionEphemeral)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc75-snd"), connectivity.SessionEphemeral)
 	snd := paho.NewSender(sess, paho.SenderOptions{
 		DefaultTopic: "uc75/tenant1/data",
 		QoS:          1,
@@ -128,11 +130,11 @@ func TestUC75_WildcardSubscriptionOverlap(t *testing.T) {
 
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc75-wildcard",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc75-bind", Address: "uc75/tenant1/data"},
+			routing.DispatchPlan{BindingID: "uc75-bind", Address: "uc75/tenant1/data"},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, sqsRcv, snd, sess, nil))
@@ -179,7 +181,7 @@ func TestUC76_QoS0FireAndForget(t *testing.T) {
 	sqsRcv := newSQSReceiver(t, sqsURL)
 
 	// QoS 0 sender — fire and forget.
-	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc76-snd"), domain.SessionEphemeral)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc76-snd"), connectivity.SessionEphemeral)
 	snd := paho.NewSender(sess, paho.SenderOptions{
 		DefaultTopic: "uc76/qos0",
 		QoS:          0,
@@ -195,11 +197,11 @@ func TestUC76_QoS0FireAndForget(t *testing.T) {
 
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc76-qos0",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc76-bind", Address: "uc76/qos0"},
+			routing.DispatchPlan{BindingID: "uc76-bind", Address: "uc76/qos0"},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, sqsRcv, snd, sess, nil))
@@ -259,7 +261,7 @@ func TestUC77_QoS2UnderBrokerRestart(t *testing.T) {
 	// QoS 2 sender. KeepAlive=5 for fast reconnection after broker restart.
 	sess := setupMQTTSessionWithBroker(t, brokerURL,
 		mqttlocal.UniqueClientID("uc77-snd"),
-		domain.SessionPersistent,
+		connectivity.SessionPersistent,
 		10, // receiveMaximum
 		5,  // keepAlive
 	)
@@ -278,12 +280,12 @@ func TestUC77_QoS2UnderBrokerRestart(t *testing.T) {
 
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc77-qos2",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:      domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:      routing.DeliveryDirectHold,
 			MaxReplayAttempts: 50,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc77-bind", Address: "uc77/qos2"},
+			routing.DispatchPlan{BindingID: "uc77-bind", Address: "uc77/qos2"},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, sqsRcv, snd, sess, nil))

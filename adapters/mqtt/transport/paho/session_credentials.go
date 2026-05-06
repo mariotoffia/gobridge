@@ -4,7 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -37,9 +38,9 @@ import (
 // itself has no "re-authenticate with a new CONNECT" mechanism without
 // enhanced authentication packets, which Paho does not surface here.
 // A brief disconnect/reconnect is the portable, correct option.
-func (s *Session) ApplyCredentials(ctx context.Context, creds *domain.CredentialSet) error {
+func (s *Session) ApplyCredentials(ctx context.Context, creds *connectivity.CredentialSet) error {
 	if creds == nil {
-		return domain.ErrInvalidPayload.WithMessage("nil credential set")
+		return shared.ErrInvalidPayload.WithMessage("nil credential set")
 	}
 	var user, pass string
 	if creds.Password != nil {
@@ -50,7 +51,7 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *domain.Credential
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return domain.ErrUnavailable.WithMessage("session is closed")
+		return shared.ErrUnavailable.WithMessage("session is closed")
 	}
 	credsChanged := creds.Password != nil &&
 		(s.liveCreds.Username != user || s.liveCreds.Password != pass)
@@ -111,7 +112,7 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *domain.Credential
 	return nil
 }
 
-// applyTLSMaterial compares incoming *domain.TLSMaterial PEM bytes
+// applyTLSMaterial compares incoming *connectivity.TLSMaterial PEM bytes
 // against the session's current TLS config and updates the config
 // in-place if any field differs. Returns true when an actual change
 // was applied, so the caller can decide whether to Reload.
@@ -127,7 +128,7 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *domain.Credential
 //   - Previously-set *File fields are left alone; the next BuildTLSConfig
 //     will prefer PEM material over them. This keeps rollback simple:
 //     clearing the PEM fields reverts to file-based material.
-func applyTLSMaterial(opts **TLSConfig, mat *domain.TLSMaterial) bool {
+func applyTLSMaterial(opts **TLSConfig, mat *connectivity.TLSMaterial) bool {
 	if mat == nil {
 		return false
 	}

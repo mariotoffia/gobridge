@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
@@ -92,7 +92,7 @@ func TestReceiver_WaitAndReconnect_FastReconnect_DoesNotMissEvent(t *testing.T) 
 // SessionConnected event arrives.
 func TestReceiver_WaitAndReconnect_WaitsForEvent(t *testing.T) {
 	sess := NewSession(SessionOptions{Address: "amqp://localhost:5672"},
-		domain.SessionEphemeral, slog.Default())
+		connectivity.SessionEphemeral, slog.Default())
 
 	r, err := NewReceiver(ReceiverConfig{Address: "queue/x"}, sess)
 	if err != nil {
@@ -134,7 +134,7 @@ func TestReceiver_WaitAndReconnect_WaitsForEvent(t *testing.T) {
 // waitAndReconnect returns ctx.Err() when the context is cancelled.
 func TestReceiver_WaitAndReconnect_ContextCancel(t *testing.T) {
 	sess := NewSession(SessionOptions{Address: "amqp://localhost:5672"},
-		domain.SessionEphemeral, slog.Default())
+		connectivity.SessionEphemeral, slog.Default())
 
 	r, err := NewReceiver(ReceiverConfig{Address: "queue/x"}, sess)
 	if err != nil {

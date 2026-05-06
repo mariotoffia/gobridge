@@ -11,7 +11,8 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // Verifies Send maps envelope body, subject, and headers to SendMessage input.
@@ -25,7 +26,7 @@ func TestSender_Send_Basic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "env-1",
 		Subject: "test-subject",
 		Payload: []byte(`{"msg":"hello"}`),
@@ -69,12 +70,12 @@ func TestSender_Send_FIFO_WithHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "env-fifo",
 		Payload: []byte("fifo-msg"),
 		Headers: map[string]any{
-			domain.HeaderOrderingKey:     "group-A",
-			domain.HeaderDeduplicationID: "dedup-123",
+			messaging.HeaderOrderingKey:     "group-A",
+			messaging.HeaderDeduplicationID: "dedup-123",
 		},
 	}
 
@@ -103,7 +104,7 @@ func TestSender_Send_FIFO_DefaultGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "env-fifo-default",
 		Payload: []byte("msg"),
 	}
@@ -133,11 +134,11 @@ func TestSender_Send_FIFO_HeaderOverridesDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "env-fifo-override",
 		Payload: []byte("msg"),
 		Headers: map[string]any{
-			domain.HeaderOrderingKey: "override-group",
+			messaging.HeaderOrderingKey: "override-group",
 		},
 	}
 
@@ -162,7 +163,7 @@ func TestSender_Send_WithDelay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &domain.Envelope{ID: "env-delay", Payload: []byte("delayed")}
+	env := &messaging.Envelope{ID: "env-delay", Payload: []byte("delayed")}
 	if err := sender.Send(context.Background(), env); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -187,12 +188,12 @@ func TestSender_Send_Error(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &domain.Envelope{ID: "env-err", Payload: []byte("fail")}
+	env := &messaging.Envelope{ID: "env-err", Payload: []byte("fail")}
 	sendErr := sender.Send(context.Background(), env)
 	if sendErr == nil {
 		t.Fatal("expected error")
 	}
-	if !domain.IsRecoverableError(sendErr) {
+	if !shared.IsRecoverableError(sendErr) {
 		t.Fatal("ServiceUnavailable should be recoverable")
 	}
 }
@@ -219,9 +220,9 @@ func TestSender_SendBatch_Basic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	envs := make([]*domain.Envelope, 3)
+	envs := make([]*messaging.Envelope, 3)
 	for i := range envs {
-		envs[i] = &domain.Envelope{
+		envs[i] = &messaging.Envelope{
 			ID:      "batch-" + string(rune('0'+i)),
 			Payload: []byte("msg"),
 		}
@@ -259,7 +260,7 @@ func TestSender_SendBatch_PartialFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	envs := []*domain.Envelope{
+	envs := []*messaging.Envelope{
 		{ID: "ok", Payload: []byte("ok")},
 		{ID: "fail", Payload: []byte("fail")},
 	}
@@ -296,9 +297,9 @@ func TestSender_SendBatch_LargeBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	envs := make([]*domain.Envelope, 12)
+	envs := make([]*messaging.Envelope, 12)
 	for i := range envs {
-		envs[i] = &domain.Envelope{ID: "lg", Payload: []byte("x")}
+		envs[i] = &messaging.Envelope{ID: "lg", Payload: []byte("x")}
 	}
 
 	sent, err := sender.SendBatch(context.Background(), envs)
@@ -371,9 +372,9 @@ func TestSender_SendBatch_PartialFailure_ContinuesRemaining(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	envs := make([]*domain.Envelope, 4)
+	envs := make([]*messaging.Envelope, 4)
 	for i := range envs {
-		envs[i] = &domain.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("msg")}
+		envs[i] = &messaging.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("msg")}
 	}
 	sent, sendErr := sender.SendBatch(context.Background(), envs)
 	if sendErr == nil {
@@ -407,9 +408,9 @@ func TestSender_SendBatch_APIError_ContinuesRemaining(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	envs := make([]*domain.Envelope, 6)
+	envs := make([]*messaging.Envelope, 6)
 	for i := range envs {
-		envs[i] = &domain.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("x")}
+		envs[i] = &messaging.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("x")}
 	}
 	sent, sendErr := sender.SendBatch(context.Background(), envs)
 	if sendErr == nil {
@@ -421,7 +422,7 @@ func TestSender_SendBatch_APIError_ContinuesRemaining(t *testing.T) {
 	if callNum != 2 {
 		t.Fatalf("expected 2 batch API calls, got %d", callNum)
 	}
-	if !domain.IsRecoverableError(sendErr) {
+	if !shared.IsRecoverableError(sendErr) {
 		t.Fatal("ServiceUnavailable should be recoverable")
 	}
 }
@@ -448,9 +449,9 @@ func TestSender_SendBatch_PerBatchTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	envs := make([]*domain.Envelope, 4)
+	envs := make([]*messaging.Envelope, 4)
 	for i := range envs {
-		envs[i] = &domain.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("x")}
+		envs[i] = &messaging.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("x")}
 	}
 	sent, err := sender.SendBatch(context.Background(), envs)
 	if err != nil {
@@ -470,7 +471,7 @@ func TestSender_SendBatch_PerBatchTimeout(t *testing.T) {
 
 // Verifies generateDeduplicationID is stable for the same envelope content.
 func TestGenerateDeduplicationID_Deterministic(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "msg-1",
 		Subject: "test",
 		Payload: []byte("data"),
@@ -486,8 +487,8 @@ func TestGenerateDeduplicationID_Deterministic(t *testing.T) {
 
 // Verifies generateDeduplicationID changes when the payload differs.
 func TestGenerateDeduplicationID_DiffersOnPayload(t *testing.T) {
-	env1 := &domain.Envelope{ID: "msg-1", Payload: []byte("a")}
-	env2 := &domain.Envelope{ID: "msg-1", Payload: []byte("b")}
+	env1 := &messaging.Envelope{ID: "msg-1", Payload: []byte("a")}
+	env2 := &messaging.Envelope{ID: "msg-1", Payload: []byte("b")}
 
 	if generateDeduplicationID(env1) == generateDeduplicationID(env2) {
 		t.Fatal("different payloads should produce different dedup IDs")

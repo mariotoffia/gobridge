@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
 // PullCredentialStore fetches credentials on demand by URI. The URI
@@ -14,11 +14,11 @@ import (
 //
 // Implementations: native file, AWS SSM, HashiCorp Vault, etc.
 type PullCredentialStore interface {
-	Resolve(ctx context.Context, uri string) (*domain.CredentialSet, error)
+	Resolve(ctx context.Context, uri string) (*connectivity.CredentialSet, error)
 }
 
 // PushCredentialStore observes credential rotation for a given URI.
-// When the backing credential changes, a new *domain.CredentialSet is
+// When the backing credential changes, a new *connectivity.CredentialSet is
 // published on the returned channel. Callers are expected to apply the
 // new credentials to any long-lived session bound to the URI (usually
 // by forcing a reconnect or updating the next connect packet).
@@ -27,7 +27,7 @@ type PullCredentialStore interface {
 //   - The returned channel is closed when ctx is cancelled, the store
 //     is closed, or a terminal backend error occurs.
 //   - Implementations MUST dedup: emit only when credentials actually
-//     changed per domain.CredentialSet.Equal.
+//     changed per connectivity.CredentialSet.Equal.
 //   - The first value MAY be emitted eagerly (initial snapshot) or lazily
 //     on first rotation — both are acceptable; callers should not rely
 //     on either timing.
@@ -35,7 +35,7 @@ type PullCredentialStore interface {
 // Implementations: runtime.PollBasedWrapper (timer over a Pull store),
 // Vault lease watchers, Kubernetes secret informers, etc.
 type PushCredentialStore interface {
-	Watch(ctx context.Context, uri string) (<-chan *domain.CredentialSet, error)
+	Watch(ctx context.Context, uri string) (<-chan *connectivity.CredentialSet, error)
 }
 
 // CredentialStore is the historical alias for PullCredentialStore. It
@@ -72,15 +72,15 @@ type PollBasedWrapperConfig struct {
 type CredentialRepository interface {
 	Scheme() string
 	Namespace() string
-	Get(ctx context.Context, uri string) (*domain.CredentialSet, error)
+	Get(ctx context.Context, uri string) (*connectivity.CredentialSet, error)
 }
 
 // CredentialAdmin extends CredentialRepository with write operations
 // for credential lifecycle management.
 type CredentialAdmin interface {
 	CredentialRepository
-	Create(ctx context.Context, uri string, creds *domain.CredentialSet) error
-	Update(ctx context.Context, uri string, creds *domain.CredentialSet, version int64) error
+	Create(ctx context.Context, uri string, creds *connectivity.CredentialSet) error
+	Update(ctx context.Context, uri string, creds *connectivity.CredentialSet, version int64) error
 	Delete(ctx context.Context, uri string, version int64) error
 	List(ctx context.Context, prefix string) ([]string, error)
 }

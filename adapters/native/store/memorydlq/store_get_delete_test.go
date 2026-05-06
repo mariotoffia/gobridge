@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorydlq"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -24,10 +26,10 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
 
-	entry := domain.DLQEntry{
+	entry := routing.DLQEntry{
 		ID:      "g-1",
 		RouteID: "route-g",
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:      "env-g-1",
 			Subject: "test/get",
 			Payload: []byte(`{"data":"value"}`),
@@ -60,11 +62,11 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 }
 
 // TestGet_Missing_ReturnsErrNotFound validates Get returns
-// domain.ErrNotFound for nonexistent IDs.
+// shared.ErrNotFound for nonexistent IDs.
 func TestGet_Missing_ReturnsErrNotFound(t *testing.T) {
 	s := memorydlq.NewStore()
 	_, err := s.Get(context.Background(), "nope")
-	if !errors.Is(err, domain.ErrNotFound) {
+	if !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -79,7 +81,7 @@ func TestDeleteByFilter_ByRouteID(t *testing.T) {
 	write(t, s, "df-r2", "route-A", "timeout", time.Now().Add(time.Hour))
 	write(t, s, "df-r3", "route-B", "timeout", time.Now().Add(2*time.Hour))
 
-	n, err := s.DeleteByFilter(ctx, domain.DLQFilter{RouteID: "route-A"})
+	n, err := s.DeleteByFilter(ctx, routing.DLQFilter{RouteID: "route-A"})
 	if err != nil {
 		t.Fatalf("delete_by_filter: %v", err)
 	}
@@ -87,7 +89,7 @@ func TestDeleteByFilter_ByRouteID(t *testing.T) {
 		t.Fatalf("expected 2 deleted, got %d", n)
 	}
 
-	remaining, _ := s.List(ctx, domain.DLQFilter{})
+	remaining, _ := s.List(ctx, routing.DLQFilter{})
 	if len(remaining) != 1 {
 		t.Fatalf("expected 1 remaining, got %d", len(remaining))
 	}
@@ -104,7 +106,7 @@ func TestDeleteByFilter_ByCategory(t *testing.T) {
 	write(t, s, "df-c1", "route-A", "timeout", time.Now())
 	write(t, s, "df-c2", "route-A", "rejected", time.Now().Add(time.Hour))
 
-	n, err := s.DeleteByFilter(ctx, domain.DLQFilter{Category: "timeout"})
+	n, err := s.DeleteByFilter(ctx, routing.DLQFilter{Category: "timeout"})
 	if err != nil {
 		t.Fatalf("delete_by_filter: %v", err)
 	}
@@ -126,7 +128,7 @@ func TestDeleteByFilter_WithLimit(t *testing.T) {
 			base.Add(time.Duration(i)*time.Hour))
 	}
 
-	n, err := s.DeleteByFilter(ctx, domain.DLQFilter{RouteID: "route-A", Limit: 2})
+	n, err := s.DeleteByFilter(ctx, routing.DLQFilter{RouteID: "route-A", Limit: 2})
 	if err != nil {
 		t.Fatalf("delete_by_filter: %v", err)
 	}
@@ -134,7 +136,7 @@ func TestDeleteByFilter_WithLimit(t *testing.T) {
 		t.Fatalf("expected 2 deleted, got %d", n)
 	}
 
-	remaining, _ := s.List(ctx, domain.DLQFilter{RouteID: "route-A"})
+	remaining, _ := s.List(ctx, routing.DLQFilter{RouteID: "route-A"})
 	if len(remaining) != 3 {
 		t.Fatalf("expected 3 remaining, got %d", len(remaining))
 	}
@@ -149,7 +151,7 @@ func TestDeleteByFilter_EmptyFilter(t *testing.T) {
 	write(t, s, "df-e1", "route-A", "timeout", time.Now())
 	write(t, s, "df-e2", "route-B", "rejected", time.Now().Add(time.Hour))
 
-	n, err := s.DeleteByFilter(ctx, domain.DLQFilter{})
+	n, err := s.DeleteByFilter(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("delete_by_filter: %v", err)
 	}
@@ -157,7 +159,7 @@ func TestDeleteByFilter_EmptyFilter(t *testing.T) {
 		t.Fatalf("expected 2 deleted, got %d", n)
 	}
 
-	remaining, _ := s.List(ctx, domain.DLQFilter{})
+	remaining, _ := s.List(ctx, routing.DLQFilter{})
 	if len(remaining) != 0 {
 		t.Fatalf("expected 0 remaining, got %d", len(remaining))
 	}
@@ -170,7 +172,7 @@ func TestDeleteByFilter_NoMatch(t *testing.T) {
 
 	write(t, s, "df-n1", "route-A", "timeout", time.Now())
 
-	n, err := s.DeleteByFilter(ctx, domain.DLQFilter{RouteID: "route-NOPE"})
+	n, err := s.DeleteByFilter(ctx, routing.DLQFilter{RouteID: "route-NOPE"})
 	if err != nil {
 		t.Fatalf("delete_by_filter: %v", err)
 	}
@@ -196,7 +198,7 @@ func TestDeleteByFilter_BySinceAndBefore(t *testing.T) {
 	write(t, s, "df-t4", "route-A", "timeout", t4)
 
 	// Delete [t2, t4) → should remove df-t2 and df-t3
-	n, err := s.DeleteByFilter(ctx, domain.DLQFilter{Since: t2, Before: t4})
+	n, err := s.DeleteByFilter(ctx, routing.DLQFilter{Since: t2, Before: t4})
 	if err != nil {
 		t.Fatalf("delete_by_filter: %v", err)
 	}
@@ -207,9 +209,9 @@ func TestDeleteByFilter_BySinceAndBefore(t *testing.T) {
 
 func write(t *testing.T, s *memorydlq.Store, id, route, cat string, failedAt time.Time) {
 	t.Helper()
-	if err := s.Write(context.Background(), domain.DLQEntry{
+	if err := s.Write(context.Background(), routing.DLQEntry{
 		ID: id, RouteID: route, Category: cat, FailedAt: failedAt,
-		Envelope: domain.Envelope{ID: "env-" + id, Subject: "test"},
+		Envelope: messaging.Envelope{ID: "env-" + id, Subject: "test"},
 	}); err != nil {
 		t.Fatalf("write %s: %v", id, err)
 	}

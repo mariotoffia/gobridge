@@ -11,7 +11,11 @@ import (
 	dblease "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease"
 	dboutbox "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
@@ -37,18 +41,18 @@ func TestMain(m *testing.M) {
 // ---------------------------------------------------------------------------
 
 type fakeDelivery struct {
-	env        *domain.Envelope
+	env        *messaging.Envelope
 	mu         sync.Mutex
 	acked      bool
 	retried    bool
 	retryAfter time.Duration
 }
 
-func newFakeDelivery(env *domain.Envelope) *fakeDelivery {
+func newFakeDelivery(env *messaging.Envelope) *fakeDelivery {
 	return &fakeDelivery{env: env}
 }
 
-func (d *fakeDelivery) Envelope() *domain.Envelope { return d.env }
+func (d *fakeDelivery) Envelope() *messaging.Envelope { return d.env }
 
 func (d *fakeDelivery) Ack(_ context.Context) error {
 	d.mu.Lock()
@@ -102,13 +106,13 @@ func (r *fakeReceiver) Emit(ctx context.Context, del ports.Delivery) error {
 
 type fakeSender struct {
 	mu      sync.Mutex
-	sent    []*domain.Envelope
+	sent    []*messaging.Envelope
 	sendErr error
 }
 
 func newFakeSender() *fakeSender { return &fakeSender{} }
 
-func (s *fakeSender) Send(_ context.Context, env *domain.Envelope) error {
+func (s *fakeSender) Send(_ context.Context, env *messaging.Envelope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.sendErr != nil {
@@ -124,10 +128,10 @@ func (s *fakeSender) sentCount() int {
 	return len(s.sent)
 }
 
-func (s *fakeSender) getSent() []*domain.Envelope {
+func (s *fakeSender) getSent() []*messaging.Envelope {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := make([]*domain.Envelope, len(s.sent))
+	cp := make([]*messaging.Envelope, len(s.sent))
 	copy(cp, s.sent)
 	return cp
 }
@@ -150,7 +154,7 @@ func (s *fakeSession) Start(_ context.Context) error {
 	return nil
 }
 
-func (s *fakeSession) Reconcile(_ context.Context, _ domain.SessionPlan) error { return nil }
+func (s *fakeSession) Reconcile(_ context.Context, _ connectivity.SessionPlan) error { return nil }
 
 func (s *fakeSession) Health(_ context.Context) ports.SessionHealth {
 	return ports.SessionHealth{Connected: true, Ready: true, ServiceLevel: ports.ServiceLevelFull}
@@ -173,25 +177,25 @@ func (s *fakeSession) isStarted() bool {
 
 type fakeDLQStore struct {
 	mu      sync.Mutex
-	entries []domain.DLQEntry
+	entries []routing.DLQEntry
 }
 
-func (s *fakeDLQStore) Write(_ context.Context, entry domain.DLQEntry) error {
+func (s *fakeDLQStore) Write(_ context.Context, entry routing.DLQEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.entries = append(s.entries, entry)
 	return nil
 }
 
-func (s *fakeDLQStore) List(_ context.Context, _ domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *fakeDLQStore) List(_ context.Context, _ routing.DLQFilter) ([]routing.DLQEntry, error) {
 	return nil, nil
 }
 
-func (s *fakeDLQStore) Get(_ context.Context, _ string) (domain.DLQEntry, error) {
-	return domain.DLQEntry{}, domain.ErrNotFound
+func (s *fakeDLQStore) Get(_ context.Context, _ string) (routing.DLQEntry, error) {
+	return routing.DLQEntry{}, shared.ErrNotFound
 }
 func (s *fakeDLQStore) Delete(_ context.Context, _ []string) (int, error) { return 0, nil }
-func (s *fakeDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error) {
+func (s *fakeDLQStore) DeleteByFilter(_ context.Context, _ routing.DLQFilter) (int, error) {
 	return 0, nil
 }
 func (s *fakeDLQStore) Purge(_ context.Context, _ time.Time) (int, error) { return 0, nil }
@@ -218,7 +222,7 @@ func fastSessionConfig(sessionID string) goruntime.SessionConfig {
 	cfg.RenewInterval = 80 * time.Millisecond
 	cfg.RenewJitter = 10 * time.Millisecond
 	cfg.StepDownGrace = 100 * time.Millisecond
-	cfg.DrainStrategy = domain.NewFixedPoll(50 * time.Millisecond)
+	cfg.DrainStrategy = persistence.NewFixedPoll(50 * time.Millisecond)
 	cfg.DrainBatchSize = 50
 	return cfg
 }
@@ -262,15 +266,15 @@ func TestE2E_DynamoDB_SharedOutboxFlow(t *testing.T) {
 
 	cfgA := goruntime.RouteConfig{
 		ID: "ddb-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &staticResolver{
-			plans: []domain.DispatchPlan{
+			plans: []routing.DispatchPlan{
 				{BindingID: "mqtt-bind", Address: "devices/ddb/state"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "mqtt-bind", SessionID: sessionID},
 		},
 	}
@@ -291,15 +295,15 @@ func TestE2E_DynamoDB_SharedOutboxFlow(t *testing.T) {
 
 	cfgB := goruntime.RouteConfig{
 		ID: "ddb-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &staticResolver{
-			plans: []domain.DispatchPlan{
+			plans: []routing.DispatchPlan{
 				{BindingID: "mqtt-bind", Address: "devices/ddb/state"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "mqtt-bind", SessionID: sessionID},
 		},
 	}
@@ -322,7 +326,7 @@ func TestE2E_DynamoDB_SharedOutboxFlow(t *testing.T) {
 	const msgCount = 5
 	dels := make([]*fakeDelivery, msgCount)
 	for i := 0; i < msgCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      t.Name() + "-msg-" + string(rune('A'+i)),
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
 		}
@@ -390,14 +394,14 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 	sessCfgA := fastSessionConfig(sessionID)
 	sessCfgA.LeaseTTL = 400 * time.Millisecond
 	sessCfgA.RenewInterval = 80 * time.Millisecond
-	sessCfgA.DrainStrategy = domain.NewFixedPoll(10 * time.Second) // Long interval so A doesn't drain.
+	sessCfgA.DrainStrategy = persistence.NewFixedPoll(10 * time.Second) // Long interval so A doesn't drain.
 
 	cfgA := goruntime.RouteConfig{
 		ID: "transfer-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -414,7 +418,7 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 	})
 
 	// Persist messages via A.
-	env := &domain.Envelope{ID: t.Name() + "-transfer-msg", Payload: []byte("transfer")}
+	env := &messaging.Envelope{ID: t.Name() + "-transfer-msg", Payload: []byte("transfer")}
 	del := newFakeDelivery(env)
 	_ = receiverA.Emit(ctxA, del)
 	waitFor(t, 3*time.Second, "acked by A", func() bool { return del.isAcked() })
@@ -443,10 +447,10 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 
 	cfgB := goruntime.RouteConfig{
 		ID: "transfer-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -503,10 +507,10 @@ func TestE2E_MemoryLease_DynamoOutbox(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "mixed-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -526,7 +530,7 @@ func TestE2E_MemoryLease_DynamoOutbox(t *testing.T) {
 		return session.isStarted()
 	})
 
-	env := &domain.Envelope{ID: t.Name() + "-mixed-msg", Payload: []byte("mixed")}
+	env := &messaging.Envelope{ID: t.Name() + "-mixed-msg", Payload: []byte("mixed")}
 	del := newFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -581,19 +585,19 @@ func TestE2E_DynamoDB_CrashRecovery(t *testing.T) {
 	sessCfgA := fastSessionConfig(sessionID)
 	sessCfgA.LeaseTTL = 400 * time.Millisecond
 	sessCfgA.RenewInterval = 80 * time.Millisecond
-	sessCfgA.DrainStrategy = domain.NewFixedPoll(30 * time.Second)
+	sessCfgA.DrainStrategy = persistence.NewFixedPoll(30 * time.Second)
 
 	cfgA := goruntime.RouteConfig{
 		ID: "crash-recovery-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &staticResolver{
-			plans: []domain.DispatchPlan{
+			plans: []routing.DispatchPlan{
 				{BindingID: "mqtt-bind", Address: "devices/recovery/state"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "mqtt-bind", SessionID: sessionID},
 		},
 	}
@@ -605,7 +609,7 @@ func TestE2E_DynamoDB_CrashRecovery(t *testing.T) {
 	})
 
 	// Persist messages via A.
-	env := &domain.Envelope{ID: t.Name() + "-crash-msg", Payload: []byte("orphaned")}
+	env := &messaging.Envelope{ID: t.Name() + "-crash-msg", Payload: []byte("orphaned")}
 	del := newFakeDelivery(env)
 	_ = receiverA.Emit(ctxA, del)
 	waitFor(t, 3*time.Second, "acked by A", func() bool { return del.isAcked() })
@@ -634,15 +638,15 @@ func TestE2E_DynamoDB_CrashRecovery(t *testing.T) {
 
 	cfgB := goruntime.RouteConfig{
 		ID: "crash-recovery-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &staticResolver{
-			plans: []domain.DispatchPlan{
+			plans: []routing.DispatchPlan{
 				{BindingID: "mqtt-bind", Address: "devices/recovery/state"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "mqtt-bind", SessionID: sessionID},
 		},
 	}
@@ -699,21 +703,21 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 	}
 
 	// Persist a record and claim it with A's token.
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         "fencing-rec-1",
 		RouteID:    "fencing-route",
 		EnvelopeID: "fencing-env-1",
 		BindingID:  "bind-1",
 		SessionID:  leaseID,
 		Address:    "topic/fencing",
-		Status:     domain.OutboxPending,
-		Envelope:   domain.Envelope{ID: "fencing-env-1", Payload: []byte("data")},
+		Status:     persistence.OutboxPending,
+		Envelope:   messaging.Envelope{ID: "fencing-env-1", Payload: []byte("data")},
 	}
-	if err := outboxStore.Persist(ctx, []domain.OutboxRecord{rec}); err != nil {
+	if err := outboxStore.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
-	pk := domain.OutboxPartitionKey(leaseID, "bind-1")
+	pk := persistence.OutboxPartitionKey(leaseID, "bind-1")
 	claimed, err := outboxStore.Claim(ctx, pk, "owner-A", tokenA, 10)
 	if err != nil {
 		t.Fatalf("claim with A: %v", err)
@@ -747,7 +751,7 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected stale fencing token error on Complete with A's token after B reclaimed")
 	}
-	if be, ok := domain.AsBridgeError(err); ok {
+	if be, ok := shared.AsBridgeError(err); ok {
 		t.Logf("correctly rejected with bridge error: %s", be.Code)
 	}
 
@@ -802,20 +806,20 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 	// Sender always fails with transient error -> drainer retries until
 	// max replay count is exceeded.
 	sender := &fakeSender{
-		sendErr: domain.NewBridgeError("CRASH", domain.ErrorTransient, "always fails"),
+		sendErr: shared.NewBridgeError("CRASH", shared.ErrorTransient, "always fails"),
 	}
 
 	session := newFakeSession()
 	sessCfg := fastSessionConfig(sessionID)
-	sessCfg.DrainStrategy = domain.NewFixedPoll(50 * time.Millisecond)
+	sessCfg.DrainStrategy = persistence.NewFixedPoll(50 * time.Millisecond)
 
 	cfg := goruntime.RouteConfig{
 		ID: "poison-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:      domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:      routing.DeliverySharedOutbox,
 			MaxReplayAttempts: 3,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -831,7 +835,7 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 		return session.isStarted()
 	})
 
-	env := &domain.Envelope{ID: t.Name() + "-poison-msg", Payload: []byte("toxic")}
+	env := &messaging.Envelope{ID: t.Name() + "-poison-msg", Payload: []byte("toxic")}
 	del := newFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
@@ -889,16 +893,16 @@ func TestE2E_DynamoDB_FanOutAtomicity(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "fanout-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &staticResolver{
-			plans: []domain.DispatchPlan{
+			plans: []routing.DispatchPlan{
 				{BindingID: "bind-a", Address: "factory/a/orders/42"},
 				{BindingID: "bind-b", Address: "factory/b/orders/42"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "bind-a", SessionID: sessionID + "-a"},
 			{ID: "bind-b", SessionID: sessionID + "-b"},
 		},
@@ -916,7 +920,7 @@ func TestE2E_DynamoDB_FanOutAtomicity(t *testing.T) {
 	})
 
 	// Send a message that fans out to both sessions.
-	env := &domain.Envelope{ID: t.Name() + "-fanout-msg", Payload: []byte("multi")}
+	env := &messaging.Envelope{ID: t.Name() + "-fanout-msg", Payload: []byte("multi")}
 	del := newFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -937,7 +941,7 @@ func TestE2E_DynamoDB_FanOutAtomicity(t *testing.T) {
 	}
 
 	// Verify idempotent persist: re-emit the same envelope should not create duplicates.
-	env2 := &domain.Envelope{ID: t.Name() + "-fanout-msg", Payload: []byte("multi")}
+	env2 := &messaging.Envelope{ID: t.Name() + "-fanout-msg", Payload: []byte("multi")}
 	del2 := newFakeDelivery(env2)
 	_ = receiver.Emit(ctx, del2)
 	waitFor(t, 3*time.Second, "redelivery acked", func() bool { return del2.isAcked() })
@@ -947,9 +951,9 @@ func TestE2E_DynamoDB_FanOutAtomicity(t *testing.T) {
 
 // staticResolver always returns the same plans.
 type staticResolver struct {
-	plans []domain.DispatchPlan
+	plans []routing.DispatchPlan
 }
 
-func (r *staticResolver) Resolve(_ context.Context, _ *domain.Envelope) ([]domain.DispatchPlan, error) {
+func (r *staticResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]routing.DispatchPlan, error) {
 	return r.plans, nil
 }

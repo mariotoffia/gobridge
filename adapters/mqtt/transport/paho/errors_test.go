@@ -6,7 +6,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // verifies MapError returns nil for a nil input error.
@@ -22,7 +22,7 @@ func TestMapError_DeadlineExceeded(t *testing.T) {
 	if be == nil {
 		t.Fatal("expected BridgeError")
 	}
-	if !errors.Is(be, domain.ErrTimeout) {
+	if !errors.Is(be, shared.ErrTimeout) {
 		t.Fatalf("expected ErrTimeout, got code %s", be.Code)
 	}
 }
@@ -33,7 +33,7 @@ func TestMapError_Canceled(t *testing.T) {
 	if be == nil {
 		t.Fatal("expected BridgeError")
 	}
-	if !errors.Is(be, domain.ErrUnavailable) {
+	if !errors.Is(be, shared.ErrUnavailable) {
 		t.Fatalf("expected ErrUnavailable, got code %s", be.Code)
 	}
 }
@@ -49,7 +49,7 @@ var _ net.Error = (*fakeNetError)(nil)
 // verifies MapError maps net errors with Timeout() true to ErrTimeout.
 func TestMapError_NetTimeout(t *testing.T) {
 	be := MapError(&fakeNetError{timeout: true})
-	if !errors.Is(be, domain.ErrTimeout) {
+	if !errors.Is(be, shared.ErrTimeout) {
 		t.Fatalf("expected ErrTimeout, got code %s", be.Code)
 	}
 }
@@ -57,7 +57,7 @@ func TestMapError_NetTimeout(t *testing.T) {
 // verifies MapError maps non-timeout net errors to ErrConnectionLost.
 func TestMapError_NetNonTimeout(t *testing.T) {
 	be := MapError(&fakeNetError{timeout: false})
-	if !errors.Is(be, domain.ErrConnectionLost) {
+	if !errors.Is(be, shared.ErrConnectionLost) {
 		t.Fatalf("expected ErrConnectionLost, got code %s", be.Code)
 	}
 }
@@ -65,7 +65,7 @@ func TestMapError_NetNonTimeout(t *testing.T) {
 // verifies MapError maps connection refused strings to ErrConnectionLost.
 func TestMapError_ConnectionRefused(t *testing.T) {
 	be := MapError(errors.New("connection refused"))
-	if !errors.Is(be, domain.ErrConnectionLost) {
+	if !errors.Is(be, shared.ErrConnectionLost) {
 		t.Fatalf("expected ErrConnectionLost, got code %s", be.Code)
 	}
 }
@@ -73,7 +73,7 @@ func TestMapError_ConnectionRefused(t *testing.T) {
 // verifies MapError maps unrecognized errors to ErrUnavailable.
 func TestMapError_UnknownFallsToUnavailable(t *testing.T) {
 	be := MapError(errors.New("something weird"))
-	if !errors.Is(be, domain.ErrUnavailable) {
+	if !errors.Is(be, shared.ErrUnavailable) {
 		t.Fatalf("expected ErrUnavailable, got code %s", be.Code)
 	}
 }
@@ -83,18 +83,18 @@ func TestMapDisconnectReasonCode(t *testing.T) {
 	tests := []struct {
 		code     byte
 		wantNil  bool
-		wantCode domain.ErrorCode
+		wantCode shared.ErrorCode
 	}{
 		{0x00, true, ""},
-		{0x89, false, domain.ErrCodeBrokerBusy},
-		{0x8F, false, domain.ErrCodeConnectionLost},
-		{0x93, false, domain.ErrCodeThrottled},
-		{0x87, false, domain.ErrCodeNotAuthorized},
-		{0x90, false, domain.ErrCodeInvalidTopic},
-		{0x95, false, domain.ErrCodePayloadTooLarge},
-		{0x81, false, domain.ErrCodeProtocolError},
-		{0x9B, false, domain.ErrCodeQoSNotSupported},
-		{0xFF, false, domain.ErrCodeUnavailable},
+		{0x89, false, shared.ErrCodeBrokerBusy},
+		{0x8F, false, shared.ErrCodeConnectionLost},
+		{0x93, false, shared.ErrCodeThrottled},
+		{0x87, false, shared.ErrCodeNotAuthorized},
+		{0x90, false, shared.ErrCodeInvalidTopic},
+		{0x95, false, shared.ErrCodePayloadTooLarge},
+		{0x81, false, shared.ErrCodeProtocolError},
+		{0x9B, false, shared.ErrCodeQoSNotSupported},
+		{0xFF, false, shared.ErrCodeUnavailable},
 	}
 
 	for _, tt := range tests {
@@ -120,16 +120,16 @@ func TestMapPublishReasonCode(t *testing.T) {
 	tests := []struct {
 		code     byte
 		wantNil  bool
-		wantCode domain.ErrorCode
+		wantCode shared.ErrorCode
 	}{
 		{0x00, true, ""},
 		{0x10, true, ""},
-		{0x87, false, domain.ErrCodeForbidden},
-		{0x90, false, domain.ErrCodeInvalidTopic},
-		{0x97, false, domain.ErrCodeThrottled},
-		{0x99, false, domain.ErrCodeInvalidPayload},
-		{0x80, false, domain.ErrCodeUnavailable},
-		{0xFE, false, domain.ErrCodeUnavailable},
+		{0x87, false, shared.ErrCodeForbidden},
+		{0x90, false, shared.ErrCodeInvalidTopic},
+		{0x97, false, shared.ErrCodeThrottled},
+		{0x99, false, shared.ErrCodeInvalidPayload},
+		{0x80, false, shared.ErrCodeUnavailable},
+		{0xFE, false, shared.ErrCodeUnavailable},
 	}
 
 	for _, tt := range tests {
@@ -155,13 +155,13 @@ func TestMapSubscribeReasonCode(t *testing.T) {
 	tests := []struct {
 		code     byte
 		wantNil  bool
-		wantCode domain.ErrorCode
+		wantCode shared.ErrorCode
 	}{
 		{0x00, true, ""},
 		{0x01, true, ""},
 		{0x02, true, ""},
-		{0x87, false, domain.ErrCodeForbidden},
-		{0x80, false, domain.ErrCodeUnavailable},
+		{0x87, false, shared.ErrCodeForbidden},
+		{0x80, false, shared.ErrCodeUnavailable},
 	}
 
 	for _, tt := range tests {

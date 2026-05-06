@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -52,25 +52,25 @@ func New(ctx context.Context, namespace string, opts ...Option) (*Exporter, erro
 	return e, nil
 }
 
-func (e *Exporter) Counter(name string, value int64, tags ...domain.Tag) {
+func (e *Exporter) Counter(name string, value int64, tags ...shared.Tag) {
 	if e.batcher.addCounter(name, value, tags) {
 		go e.asyncFlush()
 	}
 }
 
-func (e *Exporter) Gauge(name string, value float64, tags ...domain.Tag) {
+func (e *Exporter) Gauge(name string, value float64, tags ...shared.Tag) {
 	if e.batcher.addGauge(name, value, tags) {
 		go e.asyncFlush()
 	}
 }
 
-func (e *Exporter) Histogram(name string, value float64, tags ...domain.Tag) {
+func (e *Exporter) Histogram(name string, value float64, tags ...shared.Tag) {
 	if e.batcher.addHistogram(name, value, tags) {
 		go e.asyncFlush()
 	}
 }
 
-func (e *Exporter) Timer(name string, duration time.Duration, tags ...domain.Tag) {
+func (e *Exporter) Timer(name string, duration time.Duration, tags ...shared.Tag) {
 	if e.batcher.addTimer(name, duration, tags) {
 		go e.asyncFlush()
 	}

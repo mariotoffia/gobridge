@@ -24,11 +24,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
-	"github.com/mariotoffia/gobridge/ports"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/ports"
+	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
 // helperMinimalRoute creates a minimal valid RouteConfig with a
@@ -36,8 +38,8 @@ import (
 func helperMinimalRoute(id string) (goruntime.RouteConfig, *FakeReceiver, *FakeSender) {
 	cfg := goruntime.RouteConfig{
 		ID: id,
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
@@ -49,8 +51,8 @@ func helperMinimalRoute(id string) (goruntime.RouteConfig, *FakeReceiver, *FakeS
 func helperInvalidRoute(id string) (goruntime.RouteConfig, *FakeReceiver, *FakeSender) {
 	cfg := goruntime.RouteConfig{
 		ID: id,
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		// No SourceCapabilities -- validation will reject this.
 	}
@@ -237,7 +239,7 @@ func TestRuntime_StopAfterStart(t *testing.T) {
 	assert.True(t, rt.IsRunning())
 
 	// Send a message through to verify the runtime is fully operational.
-	env := &domain.Envelope{ID: "lifecycle-msg", Payload: []byte("test")}
+	env := &messaging.Envelope{ID: "lifecycle-msg", Payload: []byte("test")}
 	del := NewFakeDelivery(env)
 	ctx := context.Background()
 	_ = receiver.Emit(ctx, del)
@@ -254,7 +256,7 @@ func TestRuntime_StopAfterStart(t *testing.T) {
 	assert.False(t, rt.IsRunning())
 
 	// After Stop, Inject should fail with "not running".
-	err = rt.Inject(ctx, "stop-after-start", &domain.Envelope{ID: "after-stop"})
+	err = rt.Inject(ctx, "stop-after-start", &messaging.Envelope{ID: "after-stop"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not running")
 }

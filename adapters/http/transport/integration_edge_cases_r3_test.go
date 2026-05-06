@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/shared"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -358,11 +360,11 @@ func TestEdgeR3_ForwarderContextCancelled(t *testing.T) {
 	defer remote.Close()
 	fwd := transport.NewHTTPForwarder("/transport/http", 10*time.Second)
 
-	peer := &domain.PeerInfo{
+	peer := &persistence.PeerInfo{
 		InstanceID: "slow-peer",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "ctx-cancel-1",
 		Subject: "test.cancel",
 		Payload: []byte(`{}`),
@@ -375,7 +377,7 @@ func TestEdgeR3_ForwarderContextCancelled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from cancelled context, got nil")
 	}
-	if !errors.Is(err, domain.ErrForwardFailed) {
+	if !errors.Is(err, shared.ErrForwardFailed) {
 		t.Fatalf("expected ErrForwardFailed, got %v", err)
 	}
 }
@@ -450,7 +452,7 @@ func TestEdgeR3_NilPayload(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdgeR3_RemoteRouteNoForwarderReturns502(t *testing.T) {
-	remotePeer := &domain.PeerInfo{
+	remotePeer := &persistence.PeerInfo{
 		InstanceID: "remote-nofwd",
 		Endpoints:  map[string]string{"http": "http://remote:9090"},
 	}
@@ -548,7 +550,7 @@ func TestEdgeR3_SSESendContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // immediately cancelled
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "ctx-1",
 		Subject: "test.ctx",
 		Payload: []byte(`{}`),

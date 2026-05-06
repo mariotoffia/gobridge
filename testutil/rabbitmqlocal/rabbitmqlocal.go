@@ -30,7 +30,6 @@ package rabbitmqlocal
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 	"io"
 	"net"
 	"net/http"
@@ -40,6 +39,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 )
 
 const (

@@ -11,8 +11,9 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -102,7 +103,7 @@ func BenchmarkSSE_Broadcast(b *testing.B) {
 				time.Sleep(time.Millisecond) // OTHER: polling for SSE client registration in benchmark
 			}
 
-			env := &domain.Envelope{
+			env := &messaging.Envelope{
 				ID:      "bench-evt",
 				Subject: "bench.broadcast",
 				Payload: []byte(`{"data":"test"}`),
@@ -132,11 +133,11 @@ func BenchmarkForwarder_Forward(b *testing.B) {
 	}))
 	defer remote.Close()
 	fwd := transport.NewHTTPForwarder("/transport/http", 30*time.Second)
-	peer := &domain.PeerInfo{
+	peer := &persistence.PeerInfo{
 		InstanceID: "bench-remote",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "bench-fwd",
 		Subject: "bench.forward",
 		Payload: []byte(`{"order":"123"}`),

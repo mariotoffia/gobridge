@@ -9,8 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -55,7 +56,7 @@ type CredentialResolver struct {
 }
 
 type credCacheEntry struct {
-	creds     *domain.CredentialSet
+	creds     *connectivity.CredentialSet
 	expiresAt time.Time
 }
 
@@ -84,7 +85,7 @@ func (r *CredentialResolver) Register(repo ports.CredentialRepository) {
 // Resolve looks up credentials for the given URI. It selects the best
 // matching repository by scheme and longest namespace prefix, fetches
 // credentials from it, and optionally caches the result.
-func (r *CredentialResolver) Resolve(ctx context.Context, uri string) (*domain.CredentialSet, error) {
+func (r *CredentialResolver) Resolve(ctx context.Context, uri string) (*connectivity.CredentialSet, error) {
 	if !r.cacheDisabled {
 		if creds := r.getCached(uri); creds != nil {
 			return creds, nil
@@ -148,14 +149,14 @@ func (r *CredentialResolver) resolveRepo(uri string) (ports.CredentialRepository
 	}
 
 	if best == nil {
-		return nil, domain.ErrNotFound.WithMessage(
+		return nil, shared.ErrNotFound.WithMessage(
 			fmt.Sprintf("no credential repository for URI %q", uri),
 		)
 	}
 	return best, nil
 }
 
-func (r *CredentialResolver) getCached(uri string) *domain.CredentialSet {
+func (r *CredentialResolver) getCached(uri string) *connectivity.CredentialSet {
 	r.mu.RLock()
 	entry, ok := r.cache[uri]
 	r.mu.RUnlock()
@@ -174,7 +175,7 @@ func (r *CredentialResolver) getCached(uri string) *domain.CredentialSet {
 	return cloneCredentialSet(entry.creds)
 }
 
-func cloneCredentialSet(c *domain.CredentialSet) *domain.CredentialSet {
+func cloneCredentialSet(c *connectivity.CredentialSet) *connectivity.CredentialSet {
 	if c == nil {
 		return nil
 	}
@@ -196,7 +197,7 @@ func cloneCredentialSet(c *domain.CredentialSet) *domain.CredentialSet {
 
 const maxCredentialCacheEntries = 1000
 
-func (r *CredentialResolver) setCached(uri string, creds *domain.CredentialSet) {
+func (r *CredentialResolver) setCached(uri string, creds *connectivity.CredentialSet) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cache[uri] = &credCacheEntry{

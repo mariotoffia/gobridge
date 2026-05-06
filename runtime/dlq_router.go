@@ -7,8 +7,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -18,7 +21,7 @@ import (
 // blocking route runner semaphore slots on slow DLQ writes.
 type DLQRouter struct {
 	store             ports.DLQStore
-	buffer            chan domain.DLQEntry
+	buffer            chan routing.DLQEntry
 	bufferSize        int
 	writeTimeout      time.Duration
 	enqTimeout        time.Duration
@@ -32,9 +35,9 @@ type DLQRouter struct {
 	stopped           bool
 	done              chan struct{}  // closed by Close() to signal Route() to exit select
 	sendWg            sync.WaitGroup // tracks goroutines in the Route select
-	tokenFn           func() (domain.LeaseToken, bool)
+	tokenFn           func() (persistence.LeaseToken, bool)
 	writeMaxAttempts  int
-	writeRetryBackoff domain.BackoffPolicy
+	writeRetryBackoff routing.BackoffPolicy
 }
 
 // DLQRouterConfig configures the async DLQ router.
@@ -49,7 +52,7 @@ type DLQRouterConfig struct {
 	Clock        clock.Clock
 
 	WriteMaxAttempts  int
-	WriteRetryBackoff domain.BackoffPolicy
+	WriteRetryBackoff routing.BackoffPolicy
 }
 
 const (
@@ -119,7 +122,7 @@ func (r *DLQRouter) HasStore() bool {
 }
 
 // SetTokenFn sets the function used to check lease validity before DLQ writes.
-func (r *DLQRouter) SetTokenFn(fn func() (domain.LeaseToken, bool)) {
+func (r *DLQRouter) SetTokenFn(fn func() (persistence.LeaseToken, bool)) {
 	r.mu.Lock()
 	r.tokenFn = fn
 	r.mu.Unlock()
@@ -133,7 +136,7 @@ func (r *DLQRouter) Start(ctx context.Context) {
 		return
 	}
 	r.mu.Lock()
-	r.buffer = make(chan domain.DLQEntry, r.bufferSize)
+	r.buffer = make(chan routing.DLQEntry, r.bufferSize)
 	r.started = true
 	r.stopped = false
 	r.done = make(chan struct{})
@@ -166,7 +169,7 @@ func (r *DLQRouter) Close() {
 // started, it writes synchronously (backward-compatible).
 func (r *DLQRouter) Route(
 	ctx context.Context,
-	env *domain.Envelope,
+	env *messaging.Envelope,
 	routeID, bindingID, sessionID, sourceID string,
 	err error,
 	attempts int,
@@ -197,22 +200,22 @@ func (r *DLQRouter) Route(
 	case <-r.done:
 		return r.writeDirect(ctx, entry)
 	case <-timer.C():
-		r.metrics.Counter(domain.MetricDLQBufferOverflow, 1)
+		r.metrics.Counter(shared.MetricDLQBufferOverflow, 1)
 		return fmt.Errorf("DLQ buffer full after %s", r.enqTimeout)
 	}
 }
 
 func (r *DLQRouter) buildEntry(
-	env *domain.Envelope,
+	env *messaging.Envelope,
 	routeID, bindingID, sessionID, sourceID string,
 	err error,
 	attempts int,
-) domain.DLQEntry {
+) routing.DLQEntry {
 	category, errorCode := classifyError(err)
-	correlationID, _ := domain.GetHeaderString(env.Headers, domain.HeaderCorrelationID)
+	correlationID, _ := messaging.GetHeaderString(env.Headers, messaging.HeaderCorrelationID)
 	reason := safeErrorReason(err)
 
-	return domain.DLQEntry{
+	return routing.DLQEntry{
 		ID:            generateID(),
 		Envelope:      *env,
 		RouteID:       routeID,
@@ -229,7 +232,7 @@ func (r *DLQRouter) buildEntry(
 	}
 }
 
-func (r *DLQRouter) writeDirect(ctx context.Context, entry domain.DLQEntry) error {
+func (r *DLQRouter) writeDirect(ctx context.Context, entry routing.DLQEntry) error {
 	writeCtx, cancel := context.WithTimeout(ctx, r.writeTimeout)
 	defer cancel()
 	return r.store.Write(writeCtx, entry)
@@ -246,7 +249,7 @@ func (r *DLQRouter) runWorker(_ context.Context) {
 						"route_id", entry.RouteID,
 					)
 				}
-				r.metrics.Counter(domain.MetricDLQWriteFailures, 1)
+				r.metrics.Counter(shared.MetricDLQWriteFailures, 1)
 				continue
 			}
 		}
@@ -274,7 +277,7 @@ func (r *DLQRouter) runWorker(_ context.Context) {
 			}
 		}
 		if writeErr != nil {
-			r.metrics.Counter(domain.MetricDLQWriteFailures, 1)
+			r.metrics.Counter(shared.MetricDLQWriteFailures, 1)
 			if r.logger != nil {
 				r.logger.Error("DLQ write failed after retries",
 					"entry_id", entry.ID,
@@ -289,7 +292,7 @@ func (r *DLQRouter) runWorker(_ context.Context) {
 
 // safeErrorReason returns a sanitized error reason suitable for persistence.
 func safeErrorReason(err error) string {
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	if ok {
 		return be.Message
 	}
@@ -297,7 +300,7 @@ func safeErrorReason(err error) string {
 }
 
 func classifyError(err error) (category string, code string) {
-	be, ok := domain.AsBridgeError(err)
+	be, ok := shared.AsBridgeError(err)
 	if !ok {
 		return "unknown", ""
 	}

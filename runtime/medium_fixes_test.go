@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -31,9 +34,9 @@ type varyingResolver struct {
 	counter int32
 }
 
-func (r *varyingResolver) Resolve(_ context.Context, _ *domain.Envelope) ([]domain.DispatchPlan, error) {
+func (r *varyingResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]routing.DispatchPlan, error) {
 	n := atomic.AddInt32(&r.counter, 1)
-	return []domain.DispatchPlan{{
+	return []routing.DispatchPlan{{
 		BindingID: fmt.Sprintf("bind-%d", n),
 		Address:   "topic/test",
 	}}, nil
@@ -60,12 +63,12 @@ func TestDepthCache_EvictionClearsOnBurst(t *testing.T) {
 
 	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
 		RouteID:       "burst-route",
-		Policy:        domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox, MaxOutboxDepth: 100000},
+		Policy:        routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox, MaxOutboxDepth: 100000},
 		Receiver:      receiver,
 		Sender:        sender,
 		OutboxStore:   countingOutbox,
 		Resolver:      resolver,
-		Bindings:      []domain.DestinationBinding{{ID: "b1", SessionID: "burst-sess"}},
+		Bindings:      []routing.DestinationBinding{{ID: "b1", SessionID: "burst-sess"}},
 		DepthCacheTTL: time.Minute,
 	})
 
@@ -75,7 +78,7 @@ func TestDepthCache_EvictionClearsOnBurst(t *testing.T) {
 	<-receiver.Ready()
 
 	for i := 0; i < 1050; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("burst-msg-%d", i),
 			Payload: []byte("x"),
 		}
@@ -123,12 +126,12 @@ func TestDepthCacheTTL_WiredFromPolicy(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "ttlwire-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:   domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:   routing.DeliverySharedOutbox,
 			MaxOutboxDepth: 10000,
 			DepthCacheTTL:  50 * time.Millisecond,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-ttlwire"},
 		},
 	}
@@ -144,7 +147,7 @@ func TestDepthCacheTTL_WiredFromPolicy(t *testing.T) {
 		return session.IsStarted()
 	})
 
-	env1 := &domain.Envelope{ID: "ttlwire-1", Payload: []byte("x")}
+	env1 := &messaging.Envelope{ID: "ttlwire-1", Payload: []byte("x")}
 	del1 := NewFakeDelivery(env1)
 	_ = receiver.Emit(ctx, del1)
 	waitFor(t, time.Second, "first acked", func() bool { return del1.IsAcked() })
@@ -153,7 +156,7 @@ func TestDepthCacheTTL_WiredFromPolicy(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond) // FIXED: wait for DepthCacheTTL (50ms) to expire
 
-	env2 := &domain.Envelope{ID: "ttlwire-2", Payload: []byte("x")}
+	env2 := &messaging.Envelope{ID: "ttlwire-2", Payload: []byte("x")}
 	del2 := NewFakeDelivery(env2)
 	_ = receiver.Emit(ctx, del2)
 	waitFor(t, time.Second, "second acked", func() bool { return del2.IsAcked() })
@@ -192,10 +195,10 @@ func TestDrainConfig_WiredFromSessionConfig(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "drainwire-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-drainwire"},
 		},
 	}
@@ -216,7 +219,7 @@ func TestDrainConfig_WiredFromSessionConfig(t *testing.T) {
 	})
 
 	for i := 0; i < 5; i++ {
-		env := &domain.Envelope{ID: fmt.Sprintf("drainwire-%d", i), Payload: []byte("x")}
+		env := &messaging.Envelope{ID: fmt.Sprintf("drainwire-%d", i), Payload: []byte("x")}
 		del := NewFakeDelivery(env)
 		_ = receiver.Emit(ctx, del)
 		waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
@@ -248,7 +251,7 @@ func NewErrorOutboxStore(qErr error) *ErrorOutboxStore {
 	}
 }
 
-func (s *ErrorOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]domain.OutboxRecord, error) {
+func (s *ErrorOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]persistence.OutboxRecord, error) {
 	if s.queryErr != nil {
 		return nil, s.queryErr
 	}
@@ -264,11 +267,11 @@ func TestQueryPendingError_FailsClosed(t *testing.T) {
 
 	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
 		RouteID:     "failclosed-route",
-		Policy:      domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox, MaxOutboxDepth: 100},
+		Policy:      routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox, MaxOutboxDepth: 100},
 		Receiver:    receiver,
 		Sender:      sender,
 		OutboxStore: errOutbox,
-		Bindings:    []domain.DestinationBinding{{ID: "b1", SessionID: "failclosed-sess"}},
+		Bindings:    []routing.DestinationBinding{{ID: "b1", SessionID: "failclosed-sess"}},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -276,7 +279,7 @@ func TestQueryPendingError_FailsClosed(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &domain.Envelope{ID: "failclosed-1", Payload: []byte("x")}
+	env := &messaging.Envelope{ID: "failclosed-1", Payload: []byte("x")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -294,11 +297,11 @@ func TestQueryPendingError_FailsClosed(t *testing.T) {
 // TestAbsoluteMaxBatchSize_Clamps validates that MaxBatchSize values
 // exceeding absoluteMaxBatchSize (10000) are clamped.
 func TestAbsoluteMaxBatchSize_Clamps(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox := NewFakeOutboxStore()
 	sender := NewFakeSender()
 	lease := NewFakeLeaseStore()
-	pk := domain.OutboxPartitionKey("sess-1", "")
+	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
@@ -310,26 +313,26 @@ func TestAbsoluteMaxBatchSize_Clamps(t *testing.T) {
 		PartitionKey:        pk,
 		LeaseID:             "sess-1",
 		OwnerID:             token.Owner,
-		Policy:              domain.RoutePolicy{}.WithDefaults(),
-		Strategy:            domain.NewFixedPoll(50 * time.Millisecond),
+		Policy:              routing.RoutePolicy{}.WithDefaults(),
+		Strategy:            persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:      100,
 		DrainMaxBatchSize:   1<<31 - 1,
 		DrainMaxConcurrency: 10,
-		TokenFn: func() (domain.LeaseToken, bool) {
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			return token, true
 		},
 	})
 
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		rec := domain.OutboxRecord{
+		rec := persistence.OutboxRecord{
 			ID: fmt.Sprintf("clamp-%d", i), RouteID: "clamp-route",
 			EnvelopeID: fmt.Sprintf("env-clamp-%d", i), BindingID: "bind-1",
 			SessionID: "sess-1",
-			Envelope:  domain.Envelope{ID: fmt.Sprintf("env-clamp-%d", i), Payload: []byte("data")},
-			Status:    domain.OutboxPending,
+			Envelope:  messaging.Envelope{ID: fmt.Sprintf("env-clamp-%d", i), Payload: []byte("data")},
+			Status:    persistence.OutboxPending,
 		}
-		_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+		_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 	}
 
 	drainCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
@@ -349,17 +352,17 @@ func TestAbsoluteMaxBatchSize_Clamps(t *testing.T) {
 // record fails to process (Complete returns a non-stale error),
 // MetricOutboxRecordFailures is emitted.
 func TestOutboxDrainer_EmitsRecordFailureMetric(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	rec := &ports.RecordingExporter{}
 
 	outbox := NewFakeOutboxStore()
-	outbox.CompleteFn = func(_ []string, _ domain.LeaseToken) error {
+	outbox.CompleteFn = func(_ []string, _ persistence.LeaseToken) error {
 		return errors.New("storage unavailable")
 	}
 	sender := NewFakeSender()
 
 	lease := NewFakeLeaseStore()
-	pk := domain.OutboxPartitionKey("sess-1", "")
+	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
@@ -371,37 +374,37 @@ func TestOutboxDrainer_EmitsRecordFailureMetric(t *testing.T) {
 		PartitionKey:   pk,
 		LeaseID:        "sess-1",
 		OwnerID:        token.Owner,
-		Policy:         domain.RoutePolicy{}.WithDefaults(),
-		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		Policy:         routing.RoutePolicy{}.WithDefaults(),
+		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		Metrics:        rec,
-		TokenFn: func() (domain.LeaseToken, bool) {
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			return token, true
 		},
 	})
 
 	ctx := context.Background()
-	outboxRec := domain.OutboxRecord{
+	outboxRec := persistence.OutboxRecord{
 		ID: "rec-fail", RouteID: "metric-route",
 		EnvelopeID: "env-fail", BindingID: "bind-1",
 		SessionID: "sess-1",
-		Envelope:  domain.Envelope{ID: "env-fail", Payload: []byte("data")},
-		Status:    domain.OutboxPending,
+		Envelope:  messaging.Envelope{ID: "env-fail", Payload: []byte("data")},
+		Status:    persistence.OutboxPending,
 	}
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{outboxRec})
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{outboxRec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
 	_ = drainer.Run(drainCtx)
 
-	failures := rec.FindEntries(domain.MetricOutboxRecordFailures)
+	failures := rec.FindEntries(shared.MetricOutboxRecordFailures)
 	if len(failures) == 0 {
 		t.Fatal("expected MetricOutboxRecordFailures to be emitted on record processing failure")
 	}
 
 	found := false
 	for _, tag := range failures[0].Tags {
-		if tag.Key == domain.TagKeyRouteID && tag.Value == "metric-route" {
+		if tag.Key == shared.TagKeyRouteID && tag.Value == "metric-route" {
 			found = true
 		}
 	}

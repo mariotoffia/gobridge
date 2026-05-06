@@ -5,7 +5,8 @@ import (
 	"errors"
 	"strconv"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -102,7 +103,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				rt.locator.RegisterRoute(entry.config.ID, sid)
 			}
 
-			if entry.config.Policy.DeliveryMode == domain.DeliverySharedOutbox && rt.outboxStore != nil && !drainerSessions[sid] {
+			if entry.config.Policy.DeliveryMode == routing.DeliverySharedOutbox && rt.outboxStore != nil && !drainerSessions[sid] {
 				drainerSessions[sid] = true
 				mgr := rt.sessionMgrs[sid]
 				sess := entry.session
@@ -112,7 +113,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					Sender:                entry.sender,
 					DLQ:                   dlq,
 					RouteID:               entry.config.ID,
-					PartitionKey:          domain.OutboxPartitionKey(sid, ""),
+					PartitionKey:          persistence.OutboxPartitionKey(sid, ""),
 					LeaseID:               sid,
 					OwnerID:               rt.instanceID,
 					Policy:                entry.config.Policy.WithDefaults(),
@@ -139,7 +140,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		// For SharedOutbox routes, create drainers for every target
 		// session referenced by bindings that was not already covered
 		// by the route's primary session.
-		if entry.config.Policy.DeliveryMode == domain.DeliverySharedOutbox && rt.outboxStore != nil {
+		if entry.config.Policy.DeliveryMode == routing.DeliverySharedOutbox && rt.outboxStore != nil {
 			for _, binding := range entry.config.Bindings {
 				sid := binding.SessionID
 				if sid == "" || drainerSessions[sid] {
@@ -167,7 +168,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					Sender:                sse.sender,
 					DLQ:                   dlq,
 					RouteID:               entry.config.ID,
-					PartitionKey:          domain.OutboxPartitionKey(sid, ""),
+					PartitionKey:          persistence.OutboxPartitionKey(sid, ""),
 					LeaseID:               sid,
 					OwnerID:               rt.instanceID,
 					Policy:                entry.config.Policy.WithDefaults(),
@@ -194,13 +195,13 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 	if len(rt.sessionMgrs) > 0 {
 		mgrs := rt.sessionMgrs
-		dlq.SetTokenFn(func() (domain.LeaseToken, bool) {
+		dlq.SetTokenFn(func() (persistence.LeaseToken, bool) {
 			for _, mgr := range mgrs {
 				if tok, held := mgr.Token(); held {
 					return tok, true
 				}
 			}
-			return domain.LeaseToken{}, false
+			return persistence.LeaseToken{}, false
 		})
 	}
 

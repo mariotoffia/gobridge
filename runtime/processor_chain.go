@@ -7,7 +7,9 @@ import (
 	goruntimedebug "runtime/debug"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -36,7 +38,7 @@ func WithChainMetrics(m ports.MetricsExporter) ChainOption {
 }
 
 // WithChainTimeout overrides the per-processor execution timeout.
-// Non-positive values fall back to domain.DefaultProcessorTimeout.
+// Non-positive values fall back to routing.DefaultProcessorTimeout.
 func WithChainTimeout(d time.Duration) ChainOption {
 	return func(o *chainOptions) { o.timeout = d }
 }
@@ -50,28 +52,28 @@ func WithChainRouteID(id string) ChainOption {
 //
 // Each processor runs under a deferred recover() and a per-processor
 // context deadline. If the underlying processor panics the chain returns
-// domain.ErrProcessorPanic (Permanent) without re-panicking. If the
+// shared.ErrProcessorPanic (Permanent) without re-panicking. If the
 // processor exceeds the configured timeout the chain returns
-// domain.ErrProcessorTimeout (Transient).
+// shared.ErrProcessorTimeout (Transient).
 //
 // If processors is empty, returns nil immediately.
-func RunChain(ctx context.Context, processors []ports.Processor, env *domain.Envelope, opts ...ChainOption) error {
+func RunChain(ctx context.Context, processors []ports.Processor, env *messaging.Envelope, opts ...ChainOption) error {
 	if len(processors) == 0 {
 		return nil
 	}
 
-	cfg := chainOptions{timeout: domain.DefaultProcessorTimeout}
+	cfg := chainOptions{timeout: routing.DefaultProcessorTimeout}
 	for _, o := range opts {
 		o(&cfg)
 	}
 	if cfg.timeout <= 0 {
-		cfg.timeout = domain.DefaultProcessorTimeout
+		cfg.timeout = routing.DefaultProcessorTimeout
 	}
 	if cfg.metrics == nil {
 		cfg.metrics = &ports.NoopExporter{}
 	}
 
-	var terminal ports.ProcessorFunc = func(_ context.Context, _ *domain.Envelope) error {
+	var terminal ports.ProcessorFunc = func(_ context.Context, _ *messaging.Envelope) error {
 		return nil
 	}
 
@@ -85,7 +87,7 @@ func buildChain(processors []ports.Processor, index int, terminal ports.Processo
 	}
 	next := buildChain(processors, index+1, terminal, cfg)
 	p := processors[index]
-	return func(ctx context.Context, env *domain.Envelope) error {
+	return func(ctx context.Context, env *messaging.Envelope) error {
 		return invokeProcessor(ctx, p, index, env, next, cfg)
 	}
 }
@@ -97,7 +99,7 @@ func invokeProcessor(
 	ctx context.Context,
 	p ports.Processor,
 	index int,
-	env *domain.Envelope,
+	env *messaging.Envelope,
 	next ports.ProcessorFunc,
 	cfg *chainOptions,
 ) (err error) {
@@ -143,14 +145,14 @@ func invokeProcessor(
 		emitTimeoutMetric(cfg)
 		// Do not wait for the runaway processor; the goroutine will exit when
 		// callCtx propagates or be leaked if it ignores cancellation.
-		return domain.ErrProcessorTimeout.
+		return shared.ErrProcessorTimeout.
 			With("processor", name).
 			With("timeout", cfg.timeout.String()).
 			With("envelope_id", env.ID)
 	}
 }
 
-func buildPanicError(name string, rv any, cfg *chainOptions, env *domain.Envelope) error {
+func buildPanicError(name string, rv any, cfg *chainOptions, env *messaging.Envelope) error {
 	stack := goruntimedebug.Stack()
 	if cfg.logger != nil {
 		cfg.logger.Error("processor panicked",
@@ -163,17 +165,17 @@ func buildPanicError(name string, rv any, cfg *chainOptions, env *domain.Envelop
 	}
 	if cfg.metrics != nil {
 		tags := processorTags(cfg, name)
-		cfg.metrics.Counter(domain.MetricProcessorPanics, 1, tags...)
+		cfg.metrics.Counter(shared.MetricProcessorPanics, 1, tags...)
 	}
 	// Wrap the recovered value so errors.Is(..., ErrProcessorPanic) works
 	// and the cause is preserved for observability.
-	return domain.ErrProcessorPanic.
+	return shared.ErrProcessorPanic.
 		With("processor", name).
 		With("envelope_id", env.ID).
 		Wrap(fmt.Errorf("panic: %v", rv))
 }
 
-func logTimeout(ctx context.Context, cfg *chainOptions, name string, env *domain.Envelope) {
+func logTimeout(ctx context.Context, cfg *chainOptions, name string, env *messaging.Envelope) {
 	if cfg.logger == nil {
 		return
 	}
@@ -189,16 +191,16 @@ func emitTimeoutMetric(cfg *chainOptions) {
 	if cfg.metrics == nil {
 		return
 	}
-	cfg.metrics.Counter(domain.MetricProcessorTimeouts, 1, processorTags(cfg, "")...)
+	cfg.metrics.Counter(shared.MetricProcessorTimeouts, 1, processorTags(cfg, "")...)
 }
 
-func processorTags(cfg *chainOptions, name string) []domain.Tag {
-	tags := make([]domain.Tag, 0, 2)
+func processorTags(cfg *chainOptions, name string) []shared.Tag {
+	tags := make([]shared.Tag, 0, 2)
 	if cfg.routeID != "" {
-		tags = append(tags, domain.Tag{Key: domain.TagKeyRouteID, Value: cfg.routeID})
+		tags = append(tags, shared.Tag{Key: shared.TagKeyRouteID, Value: cfg.routeID})
 	}
 	if name != "" {
-		tags = append(tags, domain.Tag{Key: "processor", Value: name})
+		tags = append(tags, shared.Tag{Key: "processor", Value: name})
 	}
 	return tags
 }

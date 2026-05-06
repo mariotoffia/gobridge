@@ -8,18 +8,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
-func makeDrainer(t *testing.T, token domain.LeaseToken, opts ...func(*goruntime.OutboxDrainerConfig)) (*FakeOutboxStore, *FakeSender, *FakeDLQStore, *goruntime.OutboxDrainer) {
+func makeDrainer(t *testing.T, token persistence.LeaseToken, opts ...func(*goruntime.OutboxDrainerConfig)) (*FakeOutboxStore, *FakeSender, *FakeDLQStore, *goruntime.OutboxDrainer) {
 	t.Helper()
 	outbox := NewFakeOutboxStore()
 	sender := NewFakeSender()
 	dlqStore := NewFakeDLQStore()
 	leaseStore := NewFakeLeaseStore()
 
-	pk := domain.OutboxPartitionKey("sess-1", "")
+	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	cfg := goruntime.OutboxDrainerConfig{
@@ -31,10 +34,10 @@ func makeDrainer(t *testing.T, token domain.LeaseToken, opts ...func(*goruntime.
 		PartitionKey:   pk,
 		LeaseID:        "sess-1",
 		OwnerID:        token.Owner,
-		Policy:         domain.RoutePolicy{}.WithDefaults(),
-		Strategy:       domain.NewFixedPoll(50 * time.Millisecond),
+		Policy:         routing.RoutePolicy{}.WithDefaults(),
+		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 100,
-		TokenFn: func() (domain.LeaseToken, bool) {
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			return token, true
 		},
 	}
@@ -47,20 +50,20 @@ func makeDrainer(t *testing.T, token domain.LeaseToken, opts ...func(*goruntime.
 
 // TestOutboxDrainer_HappyPath verifies a pending outbox record is sent and marked completed.
 func TestOutboxDrainer_HappyPath(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token)
 
 	ctx := context.Background()
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         "rec-1",
 		RouteID:    "route-1",
 		EnvelopeID: "env-1",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   domain.Envelope{ID: "env-1", Payload: []byte("data")},
-		Status:     domain.OutboxPending,
+		Envelope:   messaging.Envelope{ID: "env-1", Payload: []byte("data")},
+		Status:     persistence.OutboxPending,
 	}
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
@@ -76,20 +79,20 @@ func TestOutboxDrainer_HappyPath(t *testing.T) {
 
 // TestOutboxDrainer_ExpiredRecord verifies expired records skip send and are DLQed.
 func TestOutboxDrainer_ExpiredRecord(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, dlqStore, drainer := makeDrainer(t, token)
 
 	ctx := context.Background()
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         "rec-exp",
 		RouteID:    "route-1",
 		EnvelopeID: "env-exp",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   domain.Envelope{ID: "env-exp", ExpiresAt: time.Now().Add(-time.Second)},
-		Status:     domain.OutboxPending,
+		Envelope:   messaging.Envelope{ID: "env-exp", ExpiresAt: time.Now().Add(-time.Second)},
+		Status:     persistence.OutboxPending,
 	}
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
@@ -105,23 +108,23 @@ func TestOutboxDrainer_ExpiredRecord(t *testing.T) {
 
 // TestOutboxDrainer_PoisonMessage verifies replay count above max sends to DLQ without sending.
 func TestOutboxDrainer_PoisonMessage(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, dlqStore, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
 		cfg.Policy.MaxReplayAttempts = 2
 	})
 
 	ctx := context.Background()
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:          "rec-poison",
 		RouteID:     "route-1",
 		EnvelopeID:  "env-poison",
 		BindingID:   "bind-1",
 		SessionID:   "sess-1",
-		Envelope:    domain.Envelope{ID: "env-poison", Payload: []byte("bad")},
-		Status:      domain.OutboxPending,
+		Envelope:    messaging.Envelope{ID: "env-poison", Payload: []byte("bad")},
+		Status:      persistence.OutboxPending,
 		ReplayCount: 3,
 	}
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
@@ -138,21 +141,21 @@ func TestOutboxDrainer_PoisonMessage(t *testing.T) {
 // TestOutboxDrainer_StaleFencingToken verifies the drainer handles stale
 // fencing tokens gracefully by continuing to poll rather than crashing.
 func TestOutboxDrainer_StaleFencingToken(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token)
-	outbox.SetClaimErr(domain.ErrStaleFencingToken)
+	outbox.SetClaimErr(shared.ErrStaleFencingToken)
 
 	ctx := context.Background()
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         "rec-stale",
 		RouteID:    "route-1",
 		EnvelopeID: "env-stale",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   domain.Envelope{ID: "env-stale"},
-		Status:     domain.OutboxPending,
+		Envelope:   messaging.Envelope{ID: "env-stale"},
+		Status:     persistence.OutboxPending,
 	}
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
@@ -174,23 +177,23 @@ func TestOutboxDrainer_NoLease(t *testing.T) {
 		Sender:       sender,
 		DLQ:          goruntime.NewDLQRouter(dlqStore),
 		RouteID:      "route-1",
-		PartitionKey: domain.OutboxPartitionKey("sess-1", ""),
+		PartitionKey: persistence.OutboxPartitionKey("sess-1", ""),
 		OwnerID:      "bridge-1",
-		Policy:       domain.RoutePolicy{}.WithDefaults(),
-		Strategy:     domain.NewFixedPoll(50 * time.Millisecond),
-		TokenFn: func() (domain.LeaseToken, bool) {
-			return domain.LeaseToken{}, false
+		Policy:       routing.RoutePolicy{}.WithDefaults(),
+		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
+		TokenFn: func() (persistence.LeaseToken, bool) {
+			return persistence.LeaseToken{}, false
 		},
 	}
 	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
 
 	ctx := context.Background()
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID: "rec-nolease", RouteID: "route-1", EnvelopeID: "env-nolease",
 		BindingID: "bind-1", SessionID: "sess-1",
-		Envelope: domain.Envelope{ID: "env-nolease"}, Status: domain.OutboxPending,
+		Envelope: messaging.Envelope{ID: "env-nolease"}, Status: persistence.OutboxPending,
 	}
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
@@ -203,21 +206,21 @@ func TestOutboxDrainer_NoLease(t *testing.T) {
 
 // TestOutboxDrainer_AppliesAddress verifies the record address overrides the envelope subject on send.
 func TestOutboxDrainer_AppliesAddress(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token)
 
 	ctx := context.Background()
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         "rec-addr",
 		RouteID:    "route-1",
 		EnvelopeID: "env-addr",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
 		Address:    "factory/a/orders/42",
-		Envelope:   domain.Envelope{ID: "env-addr", Subject: "original-subject", Payload: []byte("data")},
-		Status:     domain.OutboxPending,
+		Envelope:   messaging.Envelope{ID: "env-addr", Subject: "original-subject", Payload: []byte("data")},
+		Status:     persistence.OutboxPending,
 	}
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
@@ -233,21 +236,21 @@ func TestOutboxDrainer_AppliesAddress(t *testing.T) {
 
 // TestOutboxDrainer_EmptyAddressPreservesSubject verifies an empty record address keeps the original subject.
 func TestOutboxDrainer_EmptyAddressPreservesSubject(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token)
 
 	ctx := context.Background()
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         "rec-noaddr",
 		RouteID:    "route-1",
 		EnvelopeID: "env-noaddr",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
 		Address:    "",
-		Envelope:   domain.Envelope{ID: "env-noaddr", Subject: "original", Payload: []byte("data")},
-		Status:     domain.OutboxPending,
+		Envelope:   messaging.Envelope{ID: "env-noaddr", Subject: "original", Payload: []byte("data")},
+		Status:     persistence.OutboxPending,
 	}
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
@@ -263,17 +266,17 @@ func TestOutboxDrainer_EmptyAddressPreservesSubject(t *testing.T) {
 
 // TestOutboxDrainer_PermanentSendError verifies permanent send failure produces a DLQ entry.
 func TestOutboxDrainer_PermanentSendError(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, dlqStore, drainer := makeDrainer(t, token)
-	sender.SendErr = domain.ErrNotAuthorized
+	sender.SendErr = shared.ErrNotAuthorized
 
 	ctx := context.Background()
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID: "rec-perm", RouteID: "route-1", EnvelopeID: "env-perm",
 		BindingID: "bind-1", SessionID: "sess-1",
-		Envelope: domain.Envelope{ID: "env-perm"}, Status: domain.OutboxPending,
+		Envelope: messaging.Envelope{ID: "env-perm"}, Status: persistence.OutboxPending,
 	}
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
@@ -321,7 +324,7 @@ func TestOutboxDrainer_PermanentSendError(t *testing.T) {
 //   - Run returns before the timeout guard
 //   - Fewer than 50 records are sent (batch was interrupted)
 func TestOutboxDrainer_CancelDuringBatch_ReturnsPromptly(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	var sendCount int32
 	cancelOnce := sync.Once{}
@@ -335,21 +338,21 @@ func TestOutboxDrainer_CancelDuringBatch_ReturnsPromptly(t *testing.T) {
 		outbox := NewFakeOutboxStore()
 		ctx := context.Background()
 		for i := 0; i < 50; i++ {
-			rec := domain.OutboxRecord{
+			rec := persistence.OutboxRecord{
 				ID:         fmt.Sprintf("rec-%d", i),
 				RouteID:    "route-1",
 				EnvelopeID: fmt.Sprintf("env-%d", i),
 				BindingID:  "bind-1",
 				SessionID:  "sess-1",
-				Envelope:   domain.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("data")},
-				Status:     domain.OutboxPending,
+				Envelope:   messaging.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("data")},
+				Status:     persistence.OutboxPending,
 			}
-			_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+			_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 		}
 		cfg.OutboxStore = outbox
 
 		sender := NewFakeSender()
-		sender.SendFn = func(_ *domain.Envelope) error {
+		sender.SendFn = func(_ *messaging.Envelope) error {
 			n := atomic.AddInt32(&sendCount, 1)
 			if n >= 2 {
 				cancelOnce.Do(func() {
@@ -394,24 +397,24 @@ func TestOutboxDrainer_CancelDuringBatch_ReturnsPromptly(t *testing.T) {
 // Assertions:
 //   - Run returns before the timeout guard (no deadlock)
 func TestOutboxDrainer_CancelBeforeBatch_ExitsPromptly(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
-		cfg.Strategy = domain.NewFixedPoll(10 * time.Millisecond)
+		cfg.Strategy = persistence.NewFixedPoll(10 * time.Millisecond)
 		cfg.DrainTimeout = 500 * time.Millisecond
 	})
 
 	ctx := context.Background()
 	for i := 0; i < 10; i++ {
-		rec := domain.OutboxRecord{
+		rec := persistence.OutboxRecord{
 			ID:         fmt.Sprintf("rec-pre-%d", i),
 			RouteID:    "route-1",
 			EnvelopeID: fmt.Sprintf("env-pre-%d", i),
 			BindingID:  "bind-1",
 			SessionID:  "sess-1",
-			Envelope:   domain.Envelope{ID: fmt.Sprintf("env-pre-%d", i), Payload: []byte("x")},
-			Status:     domain.OutboxPending,
+			Envelope:   messaging.Envelope{ID: fmt.Sprintf("env-pre-%d", i), Payload: []byte("x")},
+			Status:     persistence.OutboxPending,
 		}
-		_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+		_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 	}
 
 	cancelledCtx, cancel := context.WithCancel(ctx)
@@ -447,7 +450,7 @@ func TestOutboxDrainer_CancelBeforeBatch_ExitsPromptly(t *testing.T) {
 //   - Run returns before the timeout guard (no semaphore imbalance hang)
 //   - Some but not all records are sent
 func TestOutboxDrainer_ConcurrentBatch_SemaphoreConsistency(t *testing.T) {
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	var sendCount int32
 	cancelOnce := sync.Once{}
@@ -461,21 +464,21 @@ func TestOutboxDrainer_ConcurrentBatch_SemaphoreConsistency(t *testing.T) {
 		outbox := NewFakeOutboxStore()
 		ctx := context.Background()
 		for i := 0; i < 20; i++ {
-			rec := domain.OutboxRecord{
+			rec := persistence.OutboxRecord{
 				ID:         fmt.Sprintf("rec-c-%d", i),
 				RouteID:    "route-1",
 				EnvelopeID: fmt.Sprintf("env-c-%d", i),
 				BindingID:  "bind-1",
 				SessionID:  "sess-1",
-				Envelope:   domain.Envelope{ID: fmt.Sprintf("env-c-%d", i), Payload: []byte("data")},
-				Status:     domain.OutboxPending,
+				Envelope:   messaging.Envelope{ID: fmt.Sprintf("env-c-%d", i), Payload: []byte("data")},
+				Status:     persistence.OutboxPending,
 			}
-			_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+			_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 		}
 		cfg.OutboxStore = outbox
 
 		sender := NewFakeSender()
-		sender.SendFn = func(_ *domain.Envelope) error {
+		sender.SendFn = func(_ *messaging.Envelope) error {
 			n := atomic.AddInt32(&sendCount, 1)
 			if n >= 5 {
 				cancelOnce.Do(func() {

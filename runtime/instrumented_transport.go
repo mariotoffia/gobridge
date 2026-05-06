@@ -4,8 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -25,7 +26,7 @@ var _ ports.Sender = (*InstrumentedSender)(nil)
 
 // NewInstrumentedSender decorates inner with send-latency metrics.
 // metricName is the timer metric emitted on each Send (e.g.
-// domain.MetricMQTTPublishLatency or domain.MetricSQSDeleteLatency).
+// shared.MetricMQTTPublishLatency or shared.MetricSQSDeleteLatency).
 // tagKey and tagValue are the dimension added to each emission
 // (e.g. "session_id"/"my-session" or "queue_url"/"...").
 func NewInstrumentedSender(
@@ -44,11 +45,11 @@ func NewInstrumentedSender(
 	}
 }
 
-func (s *InstrumentedSender) Send(ctx context.Context, env *domain.Envelope) error {
+func (s *InstrumentedSender) Send(ctx context.Context, env *messaging.Envelope) error {
 	start := s.clk.Now()
 	err := s.inner.Send(ctx, env)
 	s.metrics.Timer(s.metricName, s.clk.Since(start),
-		domain.Tag{Key: s.tagKey, Value: s.tagValue})
+		shared.Tag{Key: s.tagKey, Value: s.tagValue})
 	return err
 }
 
@@ -94,7 +95,7 @@ func (r *InstrumentedReceiver) Run(ctx context.Context, emit func(context.Contex
 			clk:      r.clk,
 		})
 		r.metrics.Timer(r.metricName, r.clk.Since(start),
-			domain.Tag{Key: r.tagKey, Value: r.tagValue})
+			shared.Tag{Key: r.tagKey, Value: r.tagValue})
 		return err
 	})
 }
@@ -112,16 +113,16 @@ type instrumentedDelivery struct {
 func (d *instrumentedDelivery) Ack(ctx context.Context) error {
 	start := d.clk.Now()
 	err := d.Delivery.Ack(ctx)
-	d.metrics.Timer(domain.MetricAckLatency, d.clk.Since(start),
-		domain.Tag{Key: d.tagKey, Value: d.tagValue})
+	d.metrics.Timer(shared.MetricAckLatency, d.clk.Since(start),
+		shared.Tag{Key: d.tagKey, Value: d.tagValue})
 	return err
 }
 
 func (d *instrumentedDelivery) Extend(ctx context.Context, until time.Time) error {
 	err := d.Delivery.Extend(ctx, until)
 	if err == nil {
-		d.metrics.Counter(domain.MetricVisibilityExtensions, 1,
-			domain.Tag{Key: d.tagKey, Value: d.tagValue})
+		d.metrics.Counter(shared.MetricVisibilityExtensions, 1,
+			shared.Tag{Key: d.tagKey, Value: d.tagValue})
 	}
 	return err
 }

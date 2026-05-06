@@ -8,7 +8,8 @@ import (
 	"github.com/eclipse/paho.golang/autopaho"
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -41,7 +42,7 @@ func (s *Session) ConnectionManager() *autopaho.ConnectionManager {
 // SUBACK) are conservatively treated as accepted — matching the
 // previous implementation and avoiding gratuitous unsubscribe loops.
 func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
-	succeeded []subscribeSpec, firstErr *domain.BridgeError, errTopic string,
+	succeeded []subscribeSpec, firstErr *shared.BridgeError, errTopic string,
 ) {
 	succeeded = make([]subscribeSpec, 0, len(toSub))
 	for i, opt := range toSub {
@@ -77,7 +78,7 @@ func (s *Session) Start(ctx context.Context) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return domain.ErrUnavailable.WithMessage("mqtt session is closed; Start is not allowed after Close")
+		return shared.ErrUnavailable.WithMessage("mqtt session is closed; Start is not allowed after Close")
 	}
 	if s.cm != nil {
 		s.mu.Unlock()
@@ -104,7 +105,7 @@ func (s *Session) Start(ctx context.Context) error {
 		s.mu.Lock()
 		s.starting = false
 		s.mu.Unlock()
-		return domain.ErrInvalidPayload.Wrap(err).WithMessage("parse broker URLs")
+		return shared.ErrInvalidPayload.Wrap(err).WithMessage("parse broker URLs")
 	}
 
 	cfg := autopaho.ClientConfig{
@@ -198,12 +199,12 @@ func (s *Session) Start(ctx context.Context) error {
 	s.mu.Unlock()
 
 	switch s.mode {
-	case domain.SessionEphemeral:
+	case connectivity.SessionEphemeral:
 		cfg.CleanStartOnInitialConnection = true
 		cfg.SessionExpiryInterval = 0
 		ephemeralCleanStart = true
-	case domain.SessionPersistent, domain.SessionExclusive:
-		if s.opts.CleanStart && s.mode == domain.SessionExclusive {
+	case connectivity.SessionPersistent, connectivity.SessionExclusive:
+		if s.opts.CleanStart && s.mode == connectivity.SessionExclusive {
 			// CleanStart + Exclusive is a misconfiguration: autopaho reconnects
 			// with the same Client ID and CleanStart=true, causing the broker to
 			// disconnect the existing connection ("session taken over" loop).
@@ -254,7 +255,7 @@ func (s *Session) Start(ctx context.Context) error {
 			s.mu.Lock()
 			s.starting = false
 			s.mu.Unlock()
-			return domain.ErrUnavailable.Wrap(err).WithMessage("build TLS config")
+			return shared.ErrUnavailable.Wrap(err).WithMessage("build TLS config")
 		}
 		cfg.TlsCfg = tlsCfg
 	}
@@ -313,8 +314,8 @@ func (s *Session) Start(ctx context.Context) error {
 	s.mu.Unlock()
 
 	elapsed := s.clock().Since(connectStart)
-	s.metrics.Timer(domain.MetricMQTTConnectLatency, elapsed,
-		domain.Tag{Key: domain.TagKeySessionID, Value: s.opts.ClientID})
+	s.metrics.Timer(shared.MetricMQTTConnectLatency, elapsed,
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "mqtt: session connected",
 			"client_id", s.opts.ClientID, "connect_latency", elapsed)

@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -45,7 +47,7 @@ func TestRes_ConcurrentSendAndClose_NoPanicOrHang(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -89,7 +91,7 @@ func TestRes_ConcurrentSendAndClose_NoPanicOrHang(t *testing.T) {
 				if sendAttempts.Add(1) == int64(senders) {
 					close(midFlight)
 				}
-				err := sender.Send(ctx, &domain.Envelope{
+				err := sender.Send(ctx, &messaging.Envelope{
 					Subject: "res/send-close",
 					Payload: []byte(fmt.Sprintf("s%d-i%d", id, i)),
 				})
@@ -140,7 +142,7 @@ func TestRes_SendAfterClose_ReturnsErrorNoPanic(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -159,20 +161,20 @@ func TestRes_SendAfterClose_ReturnsErrorNoPanic(t *testing.T) {
 		}
 	}()
 
-	err := sender.Send(ctx, &domain.Envelope{
+	err := sender.Send(ctx, &messaging.Envelope{
 		Subject: "res/post-close",
 		Payload: []byte("after-close"),
 	})
 	if err == nil {
 		t.Fatal("Send after Close must return an error")
 	}
-	be, ok := err.(*domain.BridgeError)
+	be, ok := err.(*shared.BridgeError)
 	if !ok {
-		t.Fatalf("Send after Close should return *domain.BridgeError, got %T: %v", err, err)
+		t.Fatalf("Send after Close should return *shared.BridgeError, got %T: %v", err, err)
 	}
-	if be.Code != domain.ErrUnavailable.Code {
+	if be.Code != shared.ErrUnavailable.Code {
 		t.Errorf("Send after Close: code=%s, want %s",
-			be.Code, domain.ErrUnavailable.Code)
+			be.Code, shared.ErrUnavailable.Code)
 	}
 }
 
@@ -199,7 +201,7 @@ func TestRes_ConcurrentReconcileAndClose_NoHang(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -225,8 +227,8 @@ func TestRes_ConcurrentReconcileAndClose_NoHang(t *testing.T) {
 				}
 			}()
 			for i := 0; i < iters; i++ {
-				_ = sess.Reconcile(ctx, domain.SessionPlan{
-					Subscriptions: []domain.SubscriptionPlan{
+				_ = sess.Reconcile(ctx, connectivity.SessionPlan{
+					Subscriptions: []connectivity.SubscriptionPlan{
 						{Topic: fmt.Sprintf("res/recon/%d/%d", id, i), QoS: 1},
 					},
 				})
@@ -271,7 +273,7 @@ func TestRes_ReconcileAfterClose_NoPanicReturnsError(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -288,8 +290,8 @@ func TestRes_ReconcileAfterClose_NoPanicReturnsError(t *testing.T) {
 		}
 	}()
 
-	err := sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "res/post-close", QoS: 1}},
+	err := sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "res/post-close", QoS: 1}},
 	})
 	if err == nil {
 		t.Fatal("Reconcile after Close must return an error")
@@ -331,7 +333,7 @@ func TestRes_BrokerOutage_ReconnectResubscribesAndDelivers(t *testing.T) {
 		ReconnectDelay:   500 * time.Millisecond,
 		ReconnectTimeout: 10 * time.Second,
 		CleanStart:       true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -340,8 +342,8 @@ func TestRes_BrokerOutage_ReconnectResubscribesAndDelivers(t *testing.T) {
 
 	drainEvents(sess, 1, 3*time.Second)
 
-	if err := sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -367,7 +369,7 @@ func TestRes_BrokerOutage_ReconnectResubscribesAndDelivers(t *testing.T) {
 	defer func() { recvCancel(); rwg.Wait() }()
 
 	// Phase 1: send + receive against live broker.
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		Subject: topic,
 		Payload: []byte("phase-1"),
 	}); err != nil {
@@ -388,7 +390,7 @@ func TestRes_BrokerOutage_ReconnectResubscribesAndDelivers(t *testing.T) {
 
 	// Phase 4: subscription must have been restored — sending again
 	// should be received.
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		Subject: topic,
 		Payload: []byte("phase-2-after-recovery"),
 	}); err != nil {

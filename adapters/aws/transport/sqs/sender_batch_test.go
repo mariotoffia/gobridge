@@ -11,7 +11,8 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ---------------------------------------------------------------------------
@@ -146,7 +147,7 @@ func TestSendBatch_MiddleBatchAPIError_OtherBatchesExecute(t *testing.T) {
 	if callNum != 3 {
 		t.Fatalf("expected all 3 batch calls to execute, got %d", callNum)
 	}
-	if !domain.IsRecoverableError(sendErr) {
+	if !shared.IsRecoverableError(sendErr) {
 		t.Fatal("ServiceUnavailable should be recoverable")
 	}
 }
@@ -273,7 +274,7 @@ func TestSendBatch_SingleEnvelopeFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	envs := []*domain.Envelope{{ID: "solo", Payload: []byte("x")}}
+	envs := []*messaging.Envelope{{ID: "solo", Payload: []byte("x")}}
 	sent, sendErr := sender.SendBatch(context.Background(), envs)
 	if sendErr == nil {
 		t.Fatal("expected error for single-envelope failure")
@@ -312,7 +313,7 @@ func TestSendBatch_EmptyInput(t *testing.T) {
 	}
 
 	// Also test with empty slice (non-nil).
-	sent, err = sender.SendBatch(context.Background(), []*domain.Envelope{})
+	sent, err = sender.SendBatch(context.Background(), []*messaging.Envelope{})
 	if err != nil {
 		t.Fatalf("unexpected error for empty slice: %v", err)
 	}
@@ -325,10 +326,10 @@ func TestSendBatch_EmptyInput(t *testing.T) {
 // helpers
 // ---------------------------------------------------------------------------
 
-func makeEnvelopes(n int) []*domain.Envelope {
-	envs := make([]*domain.Envelope, n)
+func makeEnvelopes(n int) []*messaging.Envelope {
+	envs := make([]*messaging.Envelope, n)
 	for i := range envs {
-		envs[i] = &domain.Envelope{
+		envs[i] = &messaging.Envelope{
 			ID:      fmt.Sprintf("env-%d", i),
 			Payload: []byte(fmt.Sprintf("payload-%d", i)),
 		}

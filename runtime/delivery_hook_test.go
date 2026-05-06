@@ -24,7 +24,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -105,7 +107,7 @@ func TestDeliveryHook_DirectHold_Success(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{ID: "msg-1", Payload: []byte("hello")})
+	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-1", Payload: []byte("hello")})
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -154,7 +156,7 @@ func TestDeliveryHook_DirectHold_Success(t *testing.T) {
 // with the same error after DLQ routing.
 func TestDeliveryHook_DirectHold_PermanentFailure_DLQ(t *testing.T) {
 	hook := &recordingHook{}
-	permErr := domain.NewBridgeError("PERM", domain.ErrorPermanent, "permanent failure")
+	permErr := shared.NewBridgeError("PERM", shared.ErrorPermanent, "permanent failure")
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Hook = hook
 	})
@@ -164,7 +166,7 @@ func TestDeliveryHook_DirectHold_PermanentFailure_DLQ(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{ID: "msg-perm", Payload: []byte("fail")})
+	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-perm", Payload: []byte("fail")})
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -199,7 +201,7 @@ func TestDeliveryHook_DirectHold_NoHook_NoopSafe(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{ID: "msg-noop", Payload: []byte("safe")})
+	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-noop", Payload: []byte("safe")})
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -223,15 +225,15 @@ func TestDeliveryHook_DirectHold_TransientRetry_NoSettled(t *testing.T) {
 	hook := &recordingHook{}
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Hook = hook
-		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
+		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 	})
-	sender.SendErr = domain.ErrUnavailable
+	sender.SendErr = shared.ErrUnavailable
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{ID: "msg-transient", Payload: []byte("retry")})
+	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-transient", Payload: []byte("retry")})
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -268,7 +270,7 @@ func TestDeliveryHook_DirectHold_AttemptCarriesReceiveCount(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{
+	del := NewFakeDelivery(&messaging.Envelope{
 		ID:      "msg-rc3",
 		Payload: []byte("attempt"),
 		Headers: map[string]any{"sqs.ApproximateReceiveCount": 3},
@@ -304,7 +306,7 @@ func TestDeliveryHook_DirectHold_MaxAttemptFromPolicy(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{ID: "msg-max", Payload: []byte("max")})
+	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-max", Payload: []byte("max")})
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -337,12 +339,12 @@ func TestDeliveryHook_DirectHold_MaxAttemptFromPolicy(t *testing.T) {
 func TestDeliveryHook_DirectHold_Drop_NoDLQ_RetryUnsupported(t *testing.T) {
 	hook := &recordingHook{}
 	sender := NewFakeSender()
-	sender.SendErr = domain.ErrUnavailable
+	sender.SendErr = shared.ErrUnavailable
 	receiver := NewFakeReceiver()
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:    "test-route",
-		Policy:     domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
 		Sender:     sender,
 		DLQ:        runtime.NewDLQRouter(nil),
@@ -354,8 +356,8 @@ func TestDeliveryHook_DirectHold_Drop_NoDLQ_RetryUnsupported(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{ID: "msg-drop", Payload: []byte("drop")})
-	del.RetryFnErr = domain.ErrNotSupported
+	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-drop", Payload: []byte("drop")})
+	del.RetryFnErr = shared.ErrNotSupported
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -387,7 +389,7 @@ func TestDeliveryHook_DirectHold_ExpiredMessage_NoEgressHook(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{
+	del := NewFakeDelivery(&messaging.Envelope{
 		ID:        "msg-expired",
 		Payload:   []byte("old"),
 		ExpiresAt: time.Now().Add(-1 * time.Hour),
@@ -423,7 +425,7 @@ func TestDeliveryHook_DirectHold_SettledCarriesBindingID(t *testing.T) {
 	hook := &recordingHook{}
 	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Hook = hook
-		cfg.Bindings = []domain.DestinationBinding{
+		cfg.Bindings = []routing.DestinationBinding{
 			{ID: "bind-alpha", Address: "topic/alpha"},
 		}
 	})
@@ -432,7 +434,7 @@ func TestDeliveryHook_DirectHold_SettledCarriesBindingID(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&domain.Envelope{ID: "msg-bind", Payload: []byte("bind")})
+	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-bind", Payload: []byte("bind")})
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -463,7 +465,7 @@ func TestDeliveryHook_DirectHold_ConcurrentDeliveries(t *testing.T) {
 
 	const n = 10
 	for i := range n {
-		del := NewFakeDelivery(&domain.Envelope{
+		del := NewFakeDelivery(&messaging.Envelope{
 			ID:      "concurrent-" + string(rune('0'+i)),
 			Payload: []byte("data"),
 		})

@@ -8,21 +8,22 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
 func TestResolvePlans_NoResolver_RendersAddress(t *testing.T) {
 	sender := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "b1", Address: "devices/{tenant}/events"},
 	}
 
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "fallback-render",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
@@ -36,7 +37,7 @@ func TestResolvePlans_NoResolver_RendersAddress(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "render-fallback",
 		Subject: "test",
 		Headers: map[string]any{"tenant": "acme"},
@@ -55,14 +56,14 @@ func TestResolvePlans_NoResolver_RenderError_RoutesDLQ(t *testing.T) {
 	sender := NewFakeSender()
 	dlqStore := NewFakeDLQStore()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "b1", Address: "devices/{tenant}/events"},
 	}
 
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "fallback-render-err",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(dlqStore),
@@ -76,7 +77,7 @@ func TestResolvePlans_NoResolver_RenderError_RoutesDLQ(t *testing.T) {
 	<-receiver.Ready()
 
 	// No "tenant" header -> RenderAddress fails.
-	env := &domain.Envelope{ID: "render-fallback-err", Subject: "test"}
+	env := &messaging.Envelope{ID: "render-fallback-err", Subject: "test"}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)
@@ -90,7 +91,7 @@ func TestResolvePlans_NoResolver_RenderError_RoutesDLQ(t *testing.T) {
 func TestResolvePlans_NoResolver_CopiesBindingHeaders(t *testing.T) {
 	sender := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{
 			ID:      "b1",
 			Address: "topic/out",
@@ -101,7 +102,7 @@ func TestResolvePlans_NoResolver_CopiesBindingHeaders(t *testing.T) {
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "fallback-options",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
@@ -114,7 +115,7 @@ func TestResolvePlans_NoResolver_CopiesBindingHeaders(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &domain.Envelope{ID: "options-msg", Subject: "test"}
+	env := &messaging.Envelope{ID: "options-msg", Subject: "test"}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)
@@ -131,14 +132,14 @@ func TestResolvePlans_NoResolver_MQTTValidation(t *testing.T) {
 	sender := NewFakeSender()
 	dlqStore := NewFakeDLQStore()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "mqtt-b", Transport: "mqtt", Address: "devices/{topic}/events"},
 	}
 
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "fallback-mqtt-validate",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(dlqStore),
@@ -152,7 +153,7 @@ func TestResolvePlans_NoResolver_MQTTValidation(t *testing.T) {
 	<-receiver.Ready()
 
 	// Header produces invalid MQTT topic with wildcard.
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "mqtt-fallback-bad",
 		Subject: "test",
 		Headers: map[string]any{"topic": "factory/#"},

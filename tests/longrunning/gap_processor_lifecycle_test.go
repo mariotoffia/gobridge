@@ -15,7 +15,10 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/processors/circuitbreaker"
 	"github.com/mariotoffia/gobridge/processors/transform"
@@ -83,7 +86,7 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "gap-cb-col")
 
 	sessID := mqttlocal.UniqueClientID("gap-cb-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
 	snd := setupMQTTSender(t, sess)
 
 	// headerErrorProcessor returns transient errors for error_type=transient.
@@ -112,12 +115,12 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-cb-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  20,
 		},
 		Processors:         []ports.Processor{cbProc, errorByHeaderProc},
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "cb-bind", Address: outTopic}),
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "cb-bind", Address: outTopic}),
 		SourceCapabilities: []ports.Capability{ports.CapHTTPEndpoint},
 	}, &noopReceiver{}, snd, nil, nil))
 
@@ -130,7 +133,7 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 	t.Log("GAP-CB: Phase 1 — injecting 10 transient-error messages for tenant A")
 	var cbRejections int
 	for i := 0; i < 10; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("cb-fail-%d", i),
 			Subject: outTopic,
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
@@ -170,7 +173,7 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 
 	t.Log("GAP-CB: Phase 2 — injecting success probes for tenant A")
 	for probe := 0; probe < 5; probe++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("cb-probe-%d", probe),
 			Subject: outTopic,
 			Payload: []byte(fmt.Sprintf(`{"probe":%d}`, probe)),
@@ -204,7 +207,7 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 	prePhase3 := collector.count()
 	t.Log("GAP-CB: Phase 3 — injecting 20 normal messages for tenant A")
 	for i := 0; i < 20; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("cb-normal-%d", i),
 			Subject: outTopic,
 			Payload: []byte(fmt.Sprintf(`{"normal":%d}`, i)),
@@ -265,7 +268,7 @@ func TestGAP_TransformProcessor_JSONPathMapping(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "gap-tf-col")
 
 	sessID := mqttlocal.UniqueClientID("gap-tf-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
 	snd := setupMQTTSender(t, sess)
 
 	tfProc, err := transform.New(transform.Config{
@@ -286,11 +289,11 @@ func TestGAP_TransformProcessor_JSONPathMapping(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-tf-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Processors:         []ports.Processor{tfProc},
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "tf-bind", Address: outTopic}),
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "tf-bind", Address: outTopic}),
 		SourceCapabilities: directHoldCaps,
 	}, newSQSReceiver(t, sqsInURL), snd, sess, nil))
 
@@ -385,10 +388,10 @@ type headerErrorProcessor struct{}
 
 func (p *headerErrorProcessor) Name() string { return "header-error" }
 
-func (p *headerErrorProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *headerErrorProcessor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	if env.Headers != nil {
 		if et, ok := env.Headers["error_type"].(string); ok && et == "transient" {
-			return domain.ErrUnavailable.WithMessage("headerErrorProcessor: transient")
+			return shared.ErrUnavailable.WithMessage("headerErrorProcessor: transient")
 		}
 	}
 	return next(ctx, env)

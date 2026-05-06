@@ -10,7 +10,8 @@ import (
 
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 func nowPlus(secs int) time.Time { return time.Now().Add(time.Duration(secs) * time.Second) }
@@ -29,7 +30,7 @@ func TestAnaErr_MapError_Nil(t *testing.T) {
 // TestAnaErr_MapError_DeadlineExceeded maps to ErrTimeout.
 func TestAnaErr_MapError_DeadlineExceeded(t *testing.T) {
 	be := MapError(context.DeadlineExceeded)
-	if be == nil || be.Code != domain.ErrTimeout.Code {
+	if be == nil || be.Code != shared.ErrTimeout.Code {
 		t.Fatalf("DeadlineExceeded → %v, want ErrTimeout", be)
 	}
 }
@@ -37,7 +38,7 @@ func TestAnaErr_MapError_DeadlineExceeded(t *testing.T) {
 // TestAnaErr_MapError_Canceled maps to ErrUnavailable.
 func TestAnaErr_MapError_Canceled(t *testing.T) {
 	be := MapError(context.Canceled)
-	if be == nil || be.Code != domain.ErrUnavailable.Code {
+	if be == nil || be.Code != shared.ErrUnavailable.Code {
 		t.Fatalf("Canceled → %v, want ErrUnavailable", be)
 	}
 }
@@ -55,7 +56,7 @@ func (e *fakeNetErr) Temporary() bool { return false }
 // TestAnaErr_MapError_NetTimeout maps net.Error with Timeout()=true to ErrTimeout.
 func TestAnaErr_MapError_NetTimeout(t *testing.T) {
 	be := MapError(&fakeNetErr{msg: "io timeout", timeout: true})
-	if be == nil || be.Code != domain.ErrTimeout.Code {
+	if be == nil || be.Code != shared.ErrTimeout.Code {
 		t.Fatalf("net timeout → %v, want ErrTimeout", be)
 	}
 }
@@ -63,7 +64,7 @@ func TestAnaErr_MapError_NetTimeout(t *testing.T) {
 // TestAnaErr_MapError_NetNonTimeout maps to ErrConnectionLost.
 func TestAnaErr_MapError_NetNonTimeout(t *testing.T) {
 	be := MapError(&fakeNetErr{msg: "net error", timeout: false})
-	if be == nil || be.Code != domain.ErrConnectionLost.Code {
+	if be == nil || be.Code != shared.ErrConnectionLost.Code {
 		t.Fatalf("net non-timeout → %v, want ErrConnectionLost", be)
 	}
 }
@@ -78,7 +79,7 @@ func TestAnaErr_MapError_RealNetError(t *testing.T) {
 	}
 	// Either ErrConnectionLost (from net.Error branch) or
 	// ErrConnectionLost (from substring match) is acceptable.
-	if be.Code != domain.ErrConnectionLost.Code {
+	if be.Code != shared.ErrConnectionLost.Code {
 		t.Fatalf("real net error → %v, want ErrConnectionLost", be)
 	}
 }
@@ -87,7 +88,7 @@ func TestAnaErr_MapError_RealNetError(t *testing.T) {
 // match path.
 func TestAnaErr_MapError_BrokerUnavailableSubstring(t *testing.T) {
 	be := MapError(errors.New("the broker unavailable for now"))
-	if be == nil || be.Code != domain.ErrUnavailable.Code {
+	if be == nil || be.Code != shared.ErrUnavailable.Code {
 		t.Fatalf("broker unavailable string → %v, want ErrUnavailable", be)
 	}
 }
@@ -96,7 +97,7 @@ func TestAnaErr_MapError_BrokerUnavailableSubstring(t *testing.T) {
 // default classification for unknown errors.
 func TestAnaErr_MapError_UnknownErrorIsErrUnavailable(t *testing.T) {
 	be := MapError(errors.New("totally unknown failure mode"))
-	if be == nil || be.Code != domain.ErrUnavailable.Code {
+	if be == nil || be.Code != shared.ErrUnavailable.Code {
 		t.Fatalf("unknown → %v, want ErrUnavailable", be)
 	}
 }
@@ -105,7 +106,7 @@ func TestAnaErr_MapError_UnknownErrorIsErrUnavailable(t *testing.T) {
 // known recoverable rate-limit codes map to ErrThrottled.
 func TestAnaErr_MapPublishReasonCode_AllRecoverableQuotaSets(t *testing.T) {
 	be := MapPublishReasonCode(0x97)
-	if be == nil || be.Code != domain.ErrThrottled.Code {
+	if be == nil || be.Code != shared.ErrThrottled.Code {
 		t.Fatalf("0x97 → %v, want ErrThrottled", be)
 	}
 }
@@ -121,7 +122,7 @@ func TestAnaErr_MapPublishReasonCode_NoMatching_AcceptedAsNil(t *testing.T) {
 // TestAnaErr_MapPublishReasonCode_NotAuthorized maps to ErrForbidden.
 func TestAnaErr_MapPublishReasonCode_NotAuthorized(t *testing.T) {
 	be := MapPublishReasonCode(0x87)
-	if be == nil || be.Code != domain.ErrForbidden.Code {
+	if be == nil || be.Code != shared.ErrForbidden.Code {
 		t.Fatalf("0x87 → %v, want ErrForbidden", be)
 	}
 }
@@ -130,7 +131,7 @@ func TestAnaErr_MapPublishReasonCode_NotAuthorized(t *testing.T) {
 // the default branch for unknown reason codes.
 func TestAnaErr_MapPublishReasonCode_UnknownReturnsUnavailable(t *testing.T) {
 	be := MapPublishReasonCode(0xFE)
-	if be == nil || be.Code != domain.ErrUnavailable.Code {
+	if be == nil || be.Code != shared.ErrUnavailable.Code {
 		t.Fatalf("0xFE → %v, want ErrUnavailable", be)
 	}
 }
@@ -140,19 +141,19 @@ func TestAnaErr_MapPublishReasonCode_UnknownReturnsUnavailable(t *testing.T) {
 func TestAnaErr_MapDisconnectReasonCode_KnownCodes(t *testing.T) {
 	cases := []struct {
 		code byte
-		want domain.ErrorCode
+		want shared.ErrorCode
 	}{
 		{0x00, ""}, // success → nil
-		{0x89, domain.ErrBrokerBusy.Code},
-		{0x8E, domain.ErrTimeout.Code},
-		{0x8F, domain.ErrConnectionLost.Code},
-		{0x97, domain.ErrThrottled.Code},
-		{0x86, domain.ErrNotAuthorized.Code},
-		{0x87, domain.ErrNotAuthorized.Code},
-		{0x88, domain.ErrUnavailable.Code},
-		{0x91, domain.ErrInvalidTopic.Code},
-		{0x95, domain.ErrPayloadTooLarge.Code},
-		{0x9C, domain.ErrNotFound.Code},
+		{0x89, shared.ErrBrokerBusy.Code},
+		{0x8E, shared.ErrTimeout.Code},
+		{0x8F, shared.ErrConnectionLost.Code},
+		{0x97, shared.ErrThrottled.Code},
+		{0x86, shared.ErrNotAuthorized.Code},
+		{0x87, shared.ErrNotAuthorized.Code},
+		{0x88, shared.ErrUnavailable.Code},
+		{0x91, shared.ErrInvalidTopic.Code},
+		{0x95, shared.ErrPayloadTooLarge.Code},
+		{0x9C, shared.ErrNotFound.Code},
 	}
 	for _, tc := range cases {
 		be := MapDisconnectReasonCode(tc.code)
@@ -171,7 +172,7 @@ func TestAnaErr_MapDisconnectReasonCode_KnownCodes(t *testing.T) {
 // TestAnaErr_MapDisconnectReasonCode_Unknown maps to ErrUnavailable.
 func TestAnaErr_MapDisconnectReasonCode_Unknown(t *testing.T) {
 	be := MapDisconnectReasonCode(0xFE)
-	if be == nil || be.Code != domain.ErrUnavailable.Code {
+	if be == nil || be.Code != shared.ErrUnavailable.Code {
 		t.Fatalf("0xFE disconnect → %v, want ErrUnavailable", be)
 	}
 }
@@ -190,7 +191,7 @@ func TestAnaErr_MapSubscribeReasonCode_GrantedQoS(t *testing.T) {
 // ErrInvalidTopic.
 func TestAnaErr_MapSubscribeReasonCode_TopicFilterInvalid(t *testing.T) {
 	be := MapSubscribeReasonCode(0x8F)
-	if be == nil || be.Code != domain.ErrInvalidTopic.Code {
+	if be == nil || be.Code != shared.ErrInvalidTopic.Code {
 		t.Fatalf("0x8F → %v, want ErrInvalidTopic", be)
 	}
 }
@@ -210,7 +211,7 @@ func TestAnaErr_ContainsAnyEmptySubstrs(t *testing.T) {
 // TestAnaHdr_PublishFromEnvelope_NilEnvelopeHeaders_NoCrash validates
 // the helper against nil headers (common case).
 func TestAnaHdr_PublishFromEnvelope_NilEnvelopeHeaders_NoCrash(t *testing.T) {
-	env := &domain.Envelope{Subject: "t", Payload: []byte("p")}
+	env := &messaging.Envelope{Subject: "t", Payload: []byte("p")}
 	defer func() {
 		if rv := recover(); rv != nil {
 			t.Fatalf("PublishFromEnvelope panicked: %v", rv)
@@ -227,7 +228,7 @@ func TestAnaHdr_PublishFromEnvelope_NilEnvelopeHeaders_NoCrash(t *testing.T) {
 // properties; non-string values (int, struct, ...) are silently
 // dropped.
 func TestAnaHdr_PublishFromEnvelope_NonStringHeaderValueIsSkipped(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject: "t",
 		Payload: []byte("p"),
 		Headers: map[string]any{
@@ -310,7 +311,7 @@ func TestAnaHdr_EnvelopeFromPublish_AcceptsEmptyUserPropertyValue(t *testing.T) 
 		},
 	}
 	env := EnvelopeFromPublish(pub, nil)
-	if v, ok := domain.GetHeaderString(env.Headers, "k"); !ok || v != "" {
+	if v, ok := messaging.GetHeaderString(env.Headers, "k"); !ok || v != "" {
 		t.Fatalf("empty user property value should be accepted, got ok=%v v=%q", ok, v)
 	}
 }
@@ -318,7 +319,7 @@ func TestAnaHdr_EnvelopeFromPublish_AcceptsEmptyUserPropertyValue(t *testing.T) 
 // TestAnaHdr_PublishFromEnvelope_EmptyEnvelope_NoProperties verifies
 // the publish has nil Properties when no header-derived data exists.
 func TestAnaHdr_PublishFromEnvelope_EmptyEnvelope_NoProperties(t *testing.T) {
-	env := &domain.Envelope{Subject: "t", Payload: []byte{}}
+	env := &messaging.Envelope{Subject: "t", Payload: []byte{}}
 	pub := PublishFromEnvelope(env, SenderOptions{QoS: 0}, nil)
 	if pub.Properties != nil {
 		t.Errorf("expected nil Properties for empty envelope, got %+v", pub.Properties)
@@ -339,7 +340,7 @@ func TestAnaHdr_EnvelopeFromPublish_EmptyTopicAccepted(t *testing.T) {
 // verifies that an envelope with only ExpiresAt produces a publish
 // with Properties set (and only MessageExpiry populated).
 func TestAnaHdr_PublishFromEnvelope_OnlyMessageExpiry_HasProperties(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject:   "t",
 		Payload:   []byte("p"),
 		ExpiresAt: nowPlus(60),

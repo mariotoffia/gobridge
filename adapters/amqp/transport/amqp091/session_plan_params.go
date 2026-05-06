@@ -1,12 +1,12 @@
 package amqp091
 
-import "github.com/mariotoffia/gobridge/domain"
+import "github.com/mariotoffia/gobridge/domain/connectivity"
 
 // subscriptionParams extracts exchange/routing_key/exchange_type/
 // durable/auto_delete from a SubscriptionPlan. The values are read
 // from the typed Config attached to SubscriptionPlan.Config (post
 // PHASE3 there is no legacy Options carrier).
-func subscriptionParams(sub domain.SubscriptionPlan) (exchange, routingKey, exchangeType string, durable, autoDelete bool) {
+func subscriptionParams(sub connectivity.SubscriptionPlan) (exchange, routingKey, exchangeType string, durable, autoDelete bool) {
 	exchangeType = "direct"
 	cfg, ok := configFromPlan(sub.Config)
 	if !ok {
@@ -20,7 +20,7 @@ func subscriptionParams(sub domain.SubscriptionPlan) (exchange, routingKey, exch
 }
 
 // publisherParams mirrors subscriptionParams for PublisherPlan.
-func publisherParams(pub domain.PublisherPlan) (exchangeType string, durable, autoDelete bool) {
+func publisherParams(pub connectivity.PublisherPlan) (exchangeType string, durable, autoDelete bool) {
 	exchangeType = "direct"
 	cfg, ok := configFromPlan(pub.Config)
 	if !ok {

@@ -12,12 +12,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
-	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
-	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime"
 )
 
 // ---------------------------------------------------------------------------
@@ -282,29 +284,29 @@ type captureDLQStore struct {
 	purgeN      int
 	purgeErr    error
 
-	listEntries []domain.DLQEntry
+	listEntries []routing.DLQEntry
 }
 
-func (s *captureDLQStore) Write(_ context.Context, _ domain.DLQEntry) error {
+func (s *captureDLQStore) Write(_ context.Context, _ routing.DLQEntry) error {
 	return nil
 }
 
-func (s *captureDLQStore) List(_ context.Context, _ domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *captureDLQStore) List(_ context.Context, _ routing.DLQFilter) ([]routing.DLQEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.listEntries != nil {
 		return s.listEntries, nil
 	}
-	return []domain.DLQEntry{}, nil
+	return []routing.DLQEntry{}, nil
 }
 
-func (s *captureDLQStore) Get(_ context.Context, _ string) (domain.DLQEntry, error) {
-	return domain.DLQEntry{}, domain.ErrNotFound
+func (s *captureDLQStore) Get(_ context.Context, _ string) (routing.DLQEntry, error) {
+	return routing.DLQEntry{}, shared.ErrNotFound
 }
 
 func (s *captureDLQStore) Delete(_ context.Context, _ []string) (int, error) { return 0, nil }
 
-func (s *captureDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error) {
+func (s *captureDLQStore) DeleteByFilter(_ context.Context, _ routing.DLQFilter) (int, error) {
 	return 0, nil
 }
 

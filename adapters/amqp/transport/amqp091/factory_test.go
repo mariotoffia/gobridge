@@ -6,7 +6,8 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -46,11 +47,11 @@ func TestFactory_NewSession_MissingBrokerURL(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing broker_url")
 	}
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected BridgeError, got %T: %v", err, err)
 	}
-	if !errors.Is(be, domain.ErrInvalidPayload) {
+	if !errors.Is(be, shared.ErrInvalidPayload) {
 		t.Errorf("expected ErrInvalidPayload, got code %s", be.Code)
 	}
 }
@@ -78,7 +79,7 @@ func TestReceiverFactory_NewReceiver_NilSession(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nil session")
 	}
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}
@@ -100,11 +101,11 @@ func TestReceiverFactory_NewReceiver_WrongSessionType(t *testing.T) {
 func TestReceiverFactory_NewReceiver_QueueFromSubscription(t *testing.T) {
 	rf := NewReceiverFactory(slog.Default())
 
-	sess := NewSession(SessionOptions{BrokerURL: "amqp://localhost/"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{BrokerURL: "amqp://localhost/"}, connectivity.SessionEphemeral, slog.Default())
 	defer func() { _ = sess.Close(context.Background()) }()
 	r, err := rf.NewReceiver(context.Background(), ports.ReceiverSpec{
 		ID: "r3",
-		Subscriptions: []domain.SubscriptionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "events-queue"},
 		},
 	}, sess)
@@ -148,7 +149,7 @@ func TestSenderFactory_NewSender_WrongSessionType(t *testing.T) {
 func TestSenderFactory_NewSender_Valid(t *testing.T) {
 	sf := NewSenderFactory(slog.Default())
 
-	sess := NewSession(SessionOptions{BrokerURL: "amqp://localhost/"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{BrokerURL: "amqp://localhost/"}, connectivity.SessionEphemeral, slog.Default())
 	defer func() { _ = sess.Close(context.Background()) }()
 	s, err := sf.NewSender(context.Background(), ports.SenderSpec{
 		ID: "s3",
@@ -177,8 +178,8 @@ func TestSenderFactory_NewSender_Valid(t *testing.T) {
 // fakeSession implements ports.Session for type-mismatch tests.
 type fakeSession struct{}
 
-func (f *fakeSession) Start(context.Context) error                         { return nil }
-func (f *fakeSession) Reconcile(context.Context, domain.SessionPlan) error { return nil }
-func (f *fakeSession) Health(context.Context) ports.SessionHealth          { return ports.SessionHealth{} }
-func (f *fakeSession) Events() <-chan ports.SessionEvent                   { return nil }
-func (f *fakeSession) Close(context.Context) error                         { return nil }
+func (f *fakeSession) Start(context.Context) error                               { return nil }
+func (f *fakeSession) Reconcile(context.Context, connectivity.SessionPlan) error { return nil }
+func (f *fakeSession) Health(context.Context) ports.SessionHealth                { return ports.SessionHealth{} }
+func (f *fakeSession) Events() <-chan ports.SessionEvent                         { return nil }
+func (f *fakeSession) Close(context.Context) error                               { return nil }

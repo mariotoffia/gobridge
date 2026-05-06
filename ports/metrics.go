@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // MetricsExporter exports metrics to an external monitoring backend
@@ -13,13 +13,13 @@ import (
 // safe for concurrent use from multiple goroutines.
 type MetricsExporter interface {
 	// Counter increments a counter metric by the given value.
-	Counter(name string, value int64, tags ...domain.Tag)
+	Counter(name string, value int64, tags ...shared.Tag)
 	// Gauge sets the current value of a gauge metric.
-	Gauge(name string, value float64, tags ...domain.Tag)
+	Gauge(name string, value float64, tags ...shared.Tag)
 	// Histogram records a single observation into a distribution.
-	Histogram(name string, value float64, tags ...domain.Tag)
+	Histogram(name string, value float64, tags ...shared.Tag)
 	// Timer records a duration (stored as milliseconds).
-	Timer(name string, duration time.Duration, tags ...domain.Tag)
+	Timer(name string, duration time.Duration, tags ...shared.Tag)
 	// Flush sends all buffered metrics to the backend.
 	Flush(ctx context.Context) error
 	// Close stops the exporter and flushes remaining metrics.
@@ -32,10 +32,10 @@ type NoopExporter struct{}
 
 var _ MetricsExporter = (*NoopExporter)(nil)
 
-func (n *NoopExporter) Counter(string, int64, ...domain.Tag)       {}
-func (n *NoopExporter) Gauge(string, float64, ...domain.Tag)       {}
-func (n *NoopExporter) Histogram(string, float64, ...domain.Tag)   {}
-func (n *NoopExporter) Timer(string, time.Duration, ...domain.Tag) {}
+func (n *NoopExporter) Counter(string, int64, ...shared.Tag)       {}
+func (n *NoopExporter) Gauge(string, float64, ...shared.Tag)       {}
+func (n *NoopExporter) Histogram(string, float64, ...shared.Tag)   {}
+func (n *NoopExporter) Timer(string, time.Duration, ...shared.Tag) {}
 func (n *NoopExporter) Flush(context.Context) error                { return nil }
 func (n *NoopExporter) Close(context.Context) error                { return nil }
 
@@ -54,30 +54,30 @@ type MetricEntry struct {
 	IValue   int64
 	FValue   float64
 	Duration time.Duration
-	Tags     []domain.Tag
+	Tags     []shared.Tag
 }
 
 var _ MetricsExporter = (*RecordingExporter)(nil)
 
-func (r *RecordingExporter) Counter(name string, value int64, tags ...domain.Tag) {
+func (r *RecordingExporter) Counter(name string, value int64, tags ...shared.Tag) {
 	r.mu.Lock()
 	r.entries = append(r.entries, MetricEntry{Kind: "counter", Name: name, IValue: value, Tags: tags})
 	r.mu.Unlock()
 }
 
-func (r *RecordingExporter) Gauge(name string, value float64, tags ...domain.Tag) {
+func (r *RecordingExporter) Gauge(name string, value float64, tags ...shared.Tag) {
 	r.mu.Lock()
 	r.entries = append(r.entries, MetricEntry{Kind: "gauge", Name: name, FValue: value, Tags: tags})
 	r.mu.Unlock()
 }
 
-func (r *RecordingExporter) Histogram(name string, value float64, tags ...domain.Tag) {
+func (r *RecordingExporter) Histogram(name string, value float64, tags ...shared.Tag) {
 	r.mu.Lock()
 	r.entries = append(r.entries, MetricEntry{Kind: "histogram", Name: name, FValue: value, Tags: tags})
 	r.mu.Unlock()
 }
 
-func (r *RecordingExporter) Timer(name string, d time.Duration, tags ...domain.Tag) {
+func (r *RecordingExporter) Timer(name string, d time.Duration, tags ...shared.Tag) {
 	r.mu.Lock()
 	r.entries = append(r.entries, MetricEntry{Kind: "timer", Name: name, Duration: d, Tags: tags})
 	r.mu.Unlock()

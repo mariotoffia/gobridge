@@ -5,9 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -23,7 +25,7 @@ func TestInstrumentedLeaseStore_AcquireRecordsLatency(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	timers := rec.FindEntries(domain.MetricLeaseAcquireLatency)
+	timers := rec.FindEntries(shared.MetricLeaseAcquireLatency)
 	if len(timers) != 1 {
 		t.Fatalf("expected 1 timer entry, got %d", len(timers))
 	}
@@ -31,7 +33,7 @@ func TestInstrumentedLeaseStore_AcquireRecordsLatency(t *testing.T) {
 		t.Errorf("tag value = %q, want lease-1", timers[0].Tags[0].Value)
 	}
 
-	failures := rec.FindEntries(domain.MetricLeaseAcquireFailures)
+	failures := rec.FindEntries(shared.MetricLeaseAcquireFailures)
 	if len(failures) != 0 {
 		t.Errorf("expected 0 failure counters on success, got %d", len(failures))
 	}
@@ -48,7 +50,7 @@ func TestInstrumentedLeaseStore_AcquireFailureRecordsCounter(t *testing.T) {
 	store := runtime.NewInstrumentedLeaseStore(inner, rec, clock.System)
 	_, _ = store.Acquire(context.Background(), "lease-1", "me", 30*time.Second, nil)
 
-	failures := rec.FindEntries(domain.MetricLeaseAcquireFailures)
+	failures := rec.FindEntries(shared.MetricLeaseAcquireFailures)
 	if len(failures) != 1 {
 		t.Fatalf("expected 1 failure counter, got %d", len(failures))
 	}
@@ -68,7 +70,7 @@ func TestInstrumentedLeaseStore_RenewRecordsLatency(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	timers := rec.FindEntries(domain.MetricLeaseRenewLatency)
+	timers := rec.FindEntries(shared.MetricLeaseRenewLatency)
 	if len(timers) != 1 {
 		t.Fatalf("expected 1 renew timer, got %d", len(timers))
 	}
@@ -80,9 +82,9 @@ func TestInstrumentedOutboxStore_PersistRecordsLatency(t *testing.T) {
 	inner := NewFakeOutboxStore()
 	store := runtime.NewInstrumentedOutboxStore(inner, rec, clock.System)
 
-	records := []domain.OutboxRecord{{
+	records := []persistence.OutboxRecord{{
 		ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1",
-		Status: domain.OutboxPending, Envelope: domain.Envelope{ID: "env-1"},
+		Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"},
 	}}
 
 	err := store.Persist(context.Background(), records)
@@ -90,7 +92,7 @@ func TestInstrumentedOutboxStore_PersistRecordsLatency(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	timers := rec.FindEntries(domain.MetricOutboxPersistLatency)
+	timers := rec.FindEntries(shared.MetricOutboxPersistLatency)
 	if len(timers) != 1 {
 		t.Fatalf("expected 1 persist timer, got %d", len(timers))
 	}
@@ -105,14 +107,14 @@ func TestInstrumentedOutboxStore_CompleteDelegates(t *testing.T) {
 	inner := NewFakeOutboxStore()
 	store := runtime.NewInstrumentedOutboxStore(inner, rec, clock.System)
 
-	records := []domain.OutboxRecord{
+	records := []persistence.OutboxRecord{
 		{ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", SessionID: "s1",
-			Status: domain.OutboxPending, Envelope: domain.Envelope{ID: "env-1"}},
+			Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"}},
 	}
 	_ = store.Persist(context.Background(), records)
 
-	token := domain.LeaseToken{Version: 1, Owner: "me"}
-	claimed, _ := store.Claim(context.Background(), domain.OutboxPartitionKey("s1", "b1"), "me", token, 10)
+	token := persistence.LeaseToken{Version: 1, Owner: "me"}
+	claimed, _ := store.Claim(context.Background(), persistence.OutboxPartitionKey("s1", "b1"), "me", token, 10)
 	if len(claimed) == 0 {
 		t.Fatal("expected to claim at least 1 record")
 	}
@@ -129,7 +131,7 @@ func TestInstrumentedOutboxStore_CompleteDelegates(t *testing.T) {
 
 	// OutboxCompletions are emitted by OutboxDrainer, not the store
 	// decorator, to avoid double-counting.
-	completions := rec.FindEntries(domain.MetricOutboxCompletions)
+	completions := rec.FindEntries(shared.MetricOutboxCompletions)
 	if len(completions) != 0 {
 		t.Errorf("expected 0 completion counters from store decorator, got %d", len(completions))
 	}
@@ -141,17 +143,17 @@ func TestInstrumentedOutboxStore_QueryPendingRecordsDepth(t *testing.T) {
 	inner := NewFakeOutboxStore()
 	store := runtime.NewInstrumentedOutboxStore(inner, rec, clock.System)
 
-	pk := domain.OutboxPartitionKey("s1", "b1")
+	pk := persistence.OutboxPartitionKey("s1", "b1")
 
 	for i := 0; i < 3; i++ {
-		records := []domain.OutboxRecord{{
+		records := []persistence.OutboxRecord{{
 			ID:         "r" + string(rune('0'+i)),
 			RouteID:    "route-1",
 			EnvelopeID: "env-" + string(rune('0'+i)),
 			BindingID:  "b1",
 			SessionID:  "s1",
-			Status:     domain.OutboxPending,
-			Envelope:   domain.Envelope{ID: "env-" + string(rune('0'+i))},
+			Status:     persistence.OutboxPending,
+			Envelope:   messaging.Envelope{ID: "env-" + string(rune('0'+i))},
 		}}
 		_ = store.Persist(context.Background(), records)
 	}
@@ -161,7 +163,7 @@ func TestInstrumentedOutboxStore_QueryPendingRecordsDepth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	depths := rec.FindEntries(domain.MetricOutboxDepth)
+	depths := rec.FindEntries(shared.MetricOutboxDepth)
 	if len(depths) != 1 {
 		t.Fatalf("expected 1 depth gauge, got %d", len(depths))
 	}
@@ -175,15 +177,15 @@ func TestInstrumentedSender_RecordsSendLatency(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeSender()
 	sender := runtime.NewInstrumentedSender(inner, rec,
-		domain.MetricMQTTPublishLatency, domain.TagKeySessionID, "sess-1", clock.System)
+		shared.MetricMQTTPublishLatency, shared.TagKeySessionID, "sess-1", clock.System)
 
-	env := &domain.Envelope{ID: "msg-1", Payload: []byte("test")}
+	env := &messaging.Envelope{ID: "msg-1", Payload: []byte("test")}
 	err := sender.Send(context.Background(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	timers := rec.FindEntries(domain.MetricMQTTPublishLatency)
+	timers := rec.FindEntries(shared.MetricMQTTPublishLatency)
 	if len(timers) != 1 {
 		t.Fatalf("expected 1 publish timer, got %d", len(timers))
 	}
@@ -197,12 +199,12 @@ func TestInstrumentedReceiver_RecordsReceiveLatency(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeReceiver()
 	receiver := runtime.NewInstrumentedReceiver(inner, rec,
-		domain.MetricSQSReceiveLatency, domain.TagKeyQueueURL, "https://sqs/q1", clock.System)
+		shared.MetricSQSReceiveLatency, shared.TagKeyQueueURL, "https://sqs/q1", clock.System)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		env := &domain.Envelope{ID: "msg-1", Payload: []byte("data")}
+		env := &messaging.Envelope{ID: "msg-1", Payload: []byte("data")}
 		del := NewFakeDelivery(env)
 		_ = inner.Emit(ctx, del)
 		cancel()
@@ -212,7 +214,7 @@ func TestInstrumentedReceiver_RecordsReceiveLatency(t *testing.T) {
 		return nil
 	})
 
-	timers := rec.FindEntries(domain.MetricSQSReceiveLatency)
+	timers := rec.FindEntries(shared.MetricSQSReceiveLatency)
 	if len(timers) != 1 {
 		t.Fatalf("expected 1 receive timer, got %d", len(timers))
 	}
@@ -224,9 +226,9 @@ func TestInstrumentedOutboxStore_ExpireDelegates(t *testing.T) {
 	inner := NewFakeOutboxStore()
 	store := runtime.NewInstrumentedOutboxStore(inner, rec, clock.System)
 
-	records := []domain.OutboxRecord{
+	records := []persistence.OutboxRecord{
 		{ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", SessionID: "s1",
-			Status: domain.OutboxPending, Envelope: domain.Envelope{ID: "env-1"}},
+			Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"}},
 	}
 	_ = store.Persist(context.Background(), records)
 	rec.Reset()
@@ -243,12 +245,12 @@ func TestInstrumentedDelivery_ExtendCountsVisibilityExtension(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeReceiver()
 	receiver := runtime.NewInstrumentedReceiver(inner, rec,
-		domain.MetricSQSReceiveLatency, domain.TagKeyQueueURL, "https://sqs/q1", clock.System)
+		shared.MetricSQSReceiveLatency, shared.TagKeyQueueURL, "https://sqs/q1", clock.System)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		env := &domain.Envelope{ID: "msg-1", Payload: []byte("data")}
+		env := &messaging.Envelope{ID: "msg-1", Payload: []byte("data")}
 		del := NewFakeDelivery(env)
 		_ = inner.Emit(ctx, del)
 		cancel()
@@ -258,7 +260,7 @@ func TestInstrumentedDelivery_ExtendCountsVisibilityExtension(t *testing.T) {
 		return del.Extend(ctx, time.Now().Add(30*time.Second))
 	})
 
-	extensions := rec.FindEntries(domain.MetricVisibilityExtensions)
+	extensions := rec.FindEntries(shared.MetricVisibilityExtensions)
 	if len(extensions) != 1 {
 		t.Fatalf("expected 1 visibility extension counter, got %d", len(extensions))
 	}
@@ -275,7 +277,7 @@ func TestInstrumentedLeaseStore_AcquireLatencyUsesInjectedClock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	timers := rec.FindEntries(domain.MetricLeaseAcquireLatency)
+	timers := rec.FindEntries(shared.MetricLeaseAcquireLatency)
 	if len(timers) != 1 {
 		t.Fatalf("expected 1 acquire timer, got %d", len(timers))
 	}
@@ -300,7 +302,7 @@ func TestInstrumentedLeaseStore_RenewLatencyUsesInjectedClock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	timers := rec.FindEntries(domain.MetricLeaseRenewLatency)
+	timers := rec.FindEntries(shared.MetricLeaseRenewLatency)
 	if len(timers) != 1 {
 		t.Fatalf("expected 1 renew timer, got %d", len(timers))
 	}
@@ -315,14 +317,14 @@ func TestInstrumentedOutboxStore_PersistLatencyUsesInjectedClock(t *testing.T) {
 	inner := &advancingOutboxStore{OutboxStore: NewFakeOutboxStore(), clk: clk, advance: 90 * time.Millisecond}
 	store := runtime.NewInstrumentedOutboxStore(inner, rec, clk)
 
-	err := store.Persist(context.Background(), []domain.OutboxRecord{{
-		ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", Envelope: domain.Envelope{ID: "env-1"},
+	err := store.Persist(context.Background(), []persistence.OutboxRecord{{
+		ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", Envelope: messaging.Envelope{ID: "env-1"},
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	timers := rec.FindEntries(domain.MetricOutboxPersistLatency)
+	timers := rec.FindEntries(shared.MetricOutboxPersistLatency)
 	if len(timers) != 1 {
 		t.Fatalf("expected 1 persist timer, got %d", len(timers))
 	}
@@ -335,19 +337,19 @@ func TestInstrumentedSender_SendLatencyUsesInjectedClock(t *testing.T) {
 	clk := clocktest.NewAt(time.Unix(100, 0))
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeSender()
-	inner.SendFn = func(*domain.Envelope) error {
+	inner.SendFn = func(*messaging.Envelope) error {
 		clk.Advance(125 * time.Millisecond)
 		return nil
 	}
 	sender := runtime.NewInstrumentedSender(inner, rec,
-		domain.MetricMQTTPublishLatency, domain.TagKeySessionID, "sess-1", clk)
+		shared.MetricMQTTPublishLatency, shared.TagKeySessionID, "sess-1", clk)
 
-	err := sender.Send(context.Background(), &domain.Envelope{ID: "msg-1"})
+	err := sender.Send(context.Background(), &messaging.Envelope{ID: "msg-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	timers := rec.FindEntries(domain.MetricMQTTPublishLatency)
+	timers := rec.FindEntries(shared.MetricMQTTPublishLatency)
 	if len(timers) != 1 {
 		t.Fatalf("expected 1 send timer, got %d", len(timers))
 	}
@@ -361,11 +363,11 @@ func TestInstrumentedReceiver_RunLatencyUsesInjectedClock(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeReceiver()
 	receiver := runtime.NewInstrumentedReceiver(inner, rec,
-		domain.MetricSQSReceiveLatency, domain.TagKeyQueueURL, "https://sqs/q1", clk)
+		shared.MetricSQSReceiveLatency, shared.TagKeyQueueURL, "https://sqs/q1", clk)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		_ = inner.Emit(ctx, NewFakeDelivery(&domain.Envelope{ID: "msg-1"}))
+		_ = inner.Emit(ctx, NewFakeDelivery(&messaging.Envelope{ID: "msg-1"}))
 		cancel()
 	}()
 
@@ -374,7 +376,7 @@ func TestInstrumentedReceiver_RunLatencyUsesInjectedClock(t *testing.T) {
 		return nil
 	})
 
-	timers := rec.FindEntries(domain.MetricSQSReceiveLatency)
+	timers := rec.FindEntries(shared.MetricSQSReceiveLatency)
 	if len(timers) != 1 {
 		t.Fatalf("expected 1 receive timer, got %d", len(timers))
 	}
@@ -389,12 +391,12 @@ type advancingLeaseStore struct {
 	advance time.Duration
 }
 
-func (s *advancingLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *advancingLeaseStore) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	s.clk.Advance(s.advance)
 	return s.LeaseStore.Acquire(ctx, leaseID, ownerID, ttl, endpoints)
 }
 
-func (s *advancingLeaseStore) Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error) {
+func (s *advancingLeaseStore) Renew(ctx context.Context, leaseID string, token persistence.LeaseToken, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	s.clk.Advance(s.advance)
 	return s.LeaseStore.Renew(ctx, leaseID, token, ttl, endpoints)
 }
@@ -405,7 +407,7 @@ type advancingOutboxStore struct {
 	advance time.Duration
 }
 
-func (s *advancingOutboxStore) Persist(ctx context.Context, records []domain.OutboxRecord) error {
+func (s *advancingOutboxStore) Persist(ctx context.Context, records []persistence.OutboxRecord) error {
 	s.clk.Advance(s.advance)
 	return s.OutboxStore.Persist(ctx, records)
 }

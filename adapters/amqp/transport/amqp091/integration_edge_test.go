@@ -9,7 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
@@ -53,14 +54,14 @@ func edge091Setup(t *testing.T, logger *slog.Logger, prefix string) edge091Env {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, logger)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, logger)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("session Start: %v", err)
 	}
 	t.Cleanup(func() { _ = sess.Close(context.Background()) })
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{
 			Topic: queue,
 			Config: &Config{Subscription: SubscriptionParams{
 				Exchange:   exchange,
@@ -68,7 +69,7 @@ func edge091Setup(t *testing.T, logger *slog.Logger, prefix string) edge091Env {
 				Durable:    false,
 			}},
 		}},
-		Publishers: []domain.PublisherPlan{{
+		Publishers: []connectivity.PublisherPlan{{
 			Topic:  exchange,
 			Config: &Config{Publisher: PublisherParams{Durable: false}},
 		}},
@@ -80,8 +81,8 @@ func edge091Setup(t *testing.T, logger *slog.Logger, prefix string) edge091Env {
 	return edge091Env{sess: sess, exchange: exchange, queue: queue}
 }
 
-func edge091SendRecv(t *testing.T, e edge091Env, env *domain.Envelope,
-	timeout time.Duration) *domain.Envelope {
+func edge091SendRecv(t *testing.T, e edge091Env, env *messaging.Envelope,
+	timeout time.Duration) *messaging.Envelope {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -104,7 +105,7 @@ func edge091SendRecv(t *testing.T, e edge091Env, env *domain.Envelope,
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
 
-	var received *domain.Envelope
+	var received *messaging.Envelope
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -131,7 +132,7 @@ func TestIntegration_Edge_EmptyPayload(t *testing.T) {
 	e := edge091Setup(t, logger, "edge-empty")
 
 	t.Run("nil_payload", func(t *testing.T) {
-		got := edge091SendRecv(t, e, &domain.Envelope{
+		got := edge091SendRecv(t, e, &messaging.Envelope{
 			ID: "empty-nil", Subject: e.queue,
 		}, 15*time.Second)
 		if len(got.Payload) != 0 {
@@ -140,7 +141,7 @@ func TestIntegration_Edge_EmptyPayload(t *testing.T) {
 	})
 
 	t.Run("zero_length_payload", func(t *testing.T) {
-		got := edge091SendRecv(t, e, &domain.Envelope{
+		got := edge091SendRecv(t, e, &messaging.Envelope{
 			ID: "empty-zero", Subject: e.queue, Payload: []byte{},
 		}, 15*time.Second)
 		if len(got.Payload) != 0 {
@@ -165,7 +166,7 @@ func TestIntegration_Edge_LargePayload(t *testing.T) {
 	}
 	sentHash := sha256.Sum256(payload)
 
-	got := edge091SendRecv(t, e, &domain.Envelope{
+	got := edge091SendRecv(t, e, &messaging.Envelope{
 		ID: "large-msg", Subject: e.queue, Payload: payload,
 	}, 30*time.Second)
 
@@ -193,7 +194,7 @@ func TestIntegration_Edge_SendContextTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := sender.Send(ctx, &domain.Envelope{
+	err := sender.Send(ctx, &messaging.Envelope{
 		ID: "timeout-msg", Subject: e.queue, Payload: []byte("hello"),
 	})
 	if err == nil {
@@ -246,7 +247,7 @@ func TestIntegration_Edge_DoubleAck(t *testing.T) {
 	})
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID: "dbl-ack", Subject: e.queue, Payload: []byte("ack-me"),
 	}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -292,7 +293,7 @@ func TestIntegration_Edge_DoubleRetry(t *testing.T) {
 	})
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID: "dbl-retry", Subject: e.queue, Payload: []byte("retry-me"),
 	}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -344,7 +345,7 @@ func TestIntegration_Edge_AckThenRetry(t *testing.T) {
 	})
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID: "ack-then-retry", Subject: e.queue, Payload: []byte("test"),
 	}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -385,7 +386,7 @@ func TestIntegration_Edge_SendAfterSessionClose(t *testing.T) {
 	logger := traceLogger091(&buf)
 	ep := rabbitmqlocal.Endpoint(t)
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, logger)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, logger)
 	ctx := context.Background()
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -396,7 +397,7 @@ func TestIntegration_Edge_SendAfterSessionClose(t *testing.T) {
 	})
 	_ = sess.Close(ctx)
 
-	err := sender.Send(ctx, &domain.Envelope{
+	err := sender.Send(ctx, &messaging.Envelope{
 		ID: "after-close", Subject: "test", Payload: []byte("nope"),
 	})
 	if err == nil {
@@ -414,7 +415,7 @@ func TestIntegration_Edge_ReceiverOnClosedSession(t *testing.T) {
 	logger := traceLogger091(&buf)
 	ep := rabbitmqlocal.Endpoint(t)
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, logger)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, logger)
 	ctx := context.Background()
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -447,7 +448,7 @@ func TestIntegration_Edge_WrongCredentials(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURL:      "amqp://baduser:badpass@127.0.0.1:0/",
 		ConnectTimeout: 5 * time.Second,
-	}, domain.SessionEphemeral, slog.Default())
+	}, connectivity.SessionEphemeral, slog.Default())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

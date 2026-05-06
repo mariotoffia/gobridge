@@ -4,14 +4,15 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
 func BenchmarkRunChain_NoProcessors(b *testing.B) {
 	ctx := context.Background()
-	env := &domain.Envelope{ID: "1", Subject: "bench"}
+	env := &messaging.Envelope{ID: "1", Subject: "bench"}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -21,10 +22,10 @@ func BenchmarkRunChain_NoProcessors(b *testing.B) {
 
 func BenchmarkRunChain_OneProcessor(b *testing.B) {
 	ctx := context.Background()
-	env := &domain.Envelope{ID: "1", Subject: "bench"}
+	env := &messaging.Envelope{ID: "1", Subject: "bench"}
 	procs := []ports.Processor{&FakeProcessor{
 		NameVal: "passthrough",
-		ProcessFn: func(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+		ProcessFn: func(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 			return next(ctx, env)
 		},
 	}}
@@ -37,12 +38,12 @@ func BenchmarkRunChain_OneProcessor(b *testing.B) {
 
 func BenchmarkRunChain_FiveProcessors(b *testing.B) {
 	ctx := context.Background()
-	env := &domain.Envelope{ID: "1", Subject: "bench"}
+	env := &messaging.Envelope{ID: "1", Subject: "bench"}
 	var procs []ports.Processor
 	for i := 0; i < 5; i++ {
 		procs = append(procs, &FakeProcessor{
 			NameVal: "p",
-			ProcessFn: func(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+			ProcessFn: func(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 				return next(ctx, env)
 			},
 		})
@@ -58,13 +59,13 @@ func BenchmarkDLQRouter_Route(b *testing.B) {
 	store := NewFakeDLQStore()
 	dlq := runtime.NewDLQRouter(store)
 	ctx := context.Background()
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "bench-msg",
-		Headers: map[string]any{domain.HeaderCorrelationID: "corr-1"},
+		Headers: map[string]any{messaging.HeaderCorrelationID: "corr-1"},
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = dlq.Route(ctx, env, "route-1", "bind-1", "", "", domain.ErrNotFound, 1)
+		_ = dlq.Route(ctx, env, "route-1", "bind-1", "", "", shared.ErrNotFound, 1)
 	}
 }

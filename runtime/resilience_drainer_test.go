@@ -23,7 +23,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -40,12 +43,12 @@ import (
 // ───────────────────────────────────────────────
 func TestDrainer_StaleFencingToken_UsesMinBackoff(t *testing.T) {
 	outbox := NewFakeOutboxStore()
-	outbox.ClaimFn = func(_, _ string, _ domain.LeaseToken, _ int) ([]domain.OutboxRecord, error) {
-		return nil, domain.ErrStaleFencingToken
+	outbox.ClaimFn = func(_, _ string, _ persistence.LeaseToken, _ int) ([]persistence.OutboxRecord, error) {
+		return nil, shared.ErrStaleFencingToken
 	}
 
 	hasLease := true
-	token := domain.LeaseToken{Version: 1, Owner: "test"}
+	token := persistence.LeaseToken{Version: 1, Owner: "test"}
 
 	drainer := runtime.NewOutboxDrainerFromConfig(runtime.OutboxDrainerConfig{
 		OutboxStore:  outbox,
@@ -53,9 +56,9 @@ func TestDrainer_StaleFencingToken_UsesMinBackoff(t *testing.T) {
 		RouteID:      "route-1",
 		PartitionKey: "SESSION#s1",
 		OwnerID:      "test",
-		Policy:       domain.RoutePolicy{}.WithDefaults(),
-		Strategy:     domain.NewFixedPoll(100 * time.Millisecond),
-		TokenFn: func() (domain.LeaseToken, bool) {
+		Policy:       routing.RoutePolicy{}.WithDefaults(),
+		Strategy:     persistence.NewFixedPoll(100 * time.Millisecond),
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			return token, hasLease
 		},
 	})
@@ -87,11 +90,11 @@ func TestDrainer_StaleFencingToken_UsesMinBackoff(t *testing.T) {
 func TestRetryUnsupported_NilDLQ_AcksDelivery(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	sender.SendErr = domain.ErrConnectionLost
+	sender.SendErr = shared.ErrConnectionLost
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "retry-test",
-		Policy:   domain.RoutePolicy{}.WithDefaults(),
+		Policy:   routing.RoutePolicy{}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      nil,
@@ -103,14 +106,14 @@ func TestRetryUnsupported_NilDLQ_AcksDelivery(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "msg-1",
 		Subject: "test",
 		Payload: []byte("hello"),
 	}
 
 	del := NewFakeDelivery(env)
-	del.RetryFnErr = domain.ErrNotSupported
+	del.RetryFnErr = shared.ErrNotSupported
 
 	err := receiver.Emit(ctx, del)
 	if err != nil {
@@ -131,13 +134,13 @@ func TestRetryUnsupported_NilDLQ_AcksDelivery(t *testing.T) {
 func TestRetryUnsupported_WithDLQ_RoutesToDLQ(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	sender.SendErr = domain.ErrConnectionLost
+	sender.SendErr = shared.ErrConnectionLost
 
 	dlqStore := NewFakeDLQStore()
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "retry-dlq-test",
-		Policy:   domain.RoutePolicy{}.WithDefaults(),
+		Policy:   routing.RoutePolicy{}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(dlqStore),
@@ -149,14 +152,14 @@ func TestRetryUnsupported_WithDLQ_RoutesToDLQ(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "msg-2",
 		Subject: "test",
 		Payload: []byte("hello"),
 	}
 
 	del := NewFakeDelivery(env)
-	del.RetryFnErr = domain.ErrNotSupported
+	del.RetryFnErr = shared.ErrNotSupported
 
 	err := receiver.Emit(ctx, del)
 	if err != nil {
@@ -182,7 +185,7 @@ func TestDrainer_AdaptiveBatchSize(t *testing.T) {
 	}
 
 	t.Run("scales up on full batch", func(t *testing.T) {
-		strategy := domain.NewAdaptiveBackoff(50*time.Millisecond, time.Second, 2.0)
+		strategy := persistence.NewAdaptiveBackoff(50*time.Millisecond, time.Second, 2.0)
 		next := strategy.NextInterval(100)
 		if !withinJitter(next, 50*time.Millisecond) {
 			t.Fatalf("expected min interval ±25%% on records found, got %v", next)
@@ -190,7 +193,7 @@ func TestDrainer_AdaptiveBatchSize(t *testing.T) {
 	})
 
 	t.Run("backs off on empty batch", func(t *testing.T) {
-		strategy := domain.NewAdaptiveBackoff(50*time.Millisecond, time.Second, 2.0)
+		strategy := persistence.NewAdaptiveBackoff(50*time.Millisecond, time.Second, 2.0)
 		_ = strategy.NextInterval(0)
 		second := strategy.NextInterval(0)
 		// Second empty call: base is 200ms (50ms * 2 * 2), jitter minimum is 150ms
@@ -200,7 +203,7 @@ func TestDrainer_AdaptiveBatchSize(t *testing.T) {
 	})
 
 	t.Run("resets on records found", func(t *testing.T) {
-		strategy := domain.NewAdaptiveBackoff(50*time.Millisecond, time.Second, 2.0)
+		strategy := persistence.NewAdaptiveBackoff(50*time.Millisecond, time.Second, 2.0)
 		for i := 0; i < 10; i++ {
 			_ = strategy.NextInterval(0)
 		}

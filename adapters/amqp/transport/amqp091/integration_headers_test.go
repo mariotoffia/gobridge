@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 )
@@ -24,15 +26,15 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -41,7 +43,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName},
 		},
 	}
@@ -49,7 +51,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "hdr-msg-001",
 		Subject: queueName,
 		Payload: []byte(`{"round":"trip"}`),
@@ -132,15 +134,15 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -149,7 +151,7 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName},
 		},
 	}
@@ -157,7 +159,7 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        "ttl-msg-001",
 		Subject:   queueName,
 		Payload:   []byte("ttl-test"),
@@ -210,7 +212,7 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 }
 
 // TestIntegration_ExtendNotSupported validates that Extend returns
-// domain.ErrNotSupported on a real delivery.
+// shared.ErrNotSupported on a real delivery.
 func TestIntegration_ExtendNotSupported(t *testing.T) {
 	ep := rabbitmqlocal.Endpoint(t)
 
@@ -222,15 +224,15 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -239,7 +241,7 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName},
 		},
 	}
@@ -253,7 +255,7 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 		Session:    sess,
 		Timeout:    10 * time.Second,
 	})
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID: "extend-msg", Subject: queueName, Payload: []byte("extend-test"),
 	}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -280,8 +282,8 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 	select {
 	case del := <-received:
 		err := del.Extend(ctx, time.Now().Add(5*time.Minute))
-		if !errors.Is(err, domain.ErrNotSupported) {
-			t.Fatalf("Extend returned %v, want %v", err, domain.ErrNotSupported)
+		if !errors.Is(err, shared.ErrNotSupported) {
+			t.Fatalf("Extend returned %v, want %v", err, shared.ErrNotSupported)
 		}
 		if err := del.Ack(ctx); err != nil {
 			t.Fatalf("Ack: %v", err)

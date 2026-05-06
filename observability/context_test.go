@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/observability"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/mariotoffia/gobridge/observability"
 )
 
 // Verifies CorrelationIDFromContext returns the value set by WithCorrelationID.

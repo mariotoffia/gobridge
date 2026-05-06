@@ -14,7 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
@@ -62,7 +63,7 @@ func TestUC79_FIFOMultiGroupConcurrent(t *testing.T) {
 	collector := newMQTTCollector(t, "uc79/fifo/out", "uc79-col")
 
 	// MQTT sender.
-	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc79-snd"), domain.SessionEphemeral)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc79-snd"), connectivity.SessionEphemeral)
 	snd := setupMQTTSender(t, sess)
 
 	dlq := &lrDLQStore{}
@@ -74,12 +75,12 @@ func TestUC79_FIFOMultiGroupConcurrent(t *testing.T) {
 
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc79-fifo",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  1, // serialize: ElasticMQ lacks FIFO group locking
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc79-bind", Address: "uc79/fifo/out"},
+			routing.DispatchPlan{BindingID: "uc79-bind", Address: "uc79/fifo/out"},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, fifoRcv, snd, sess, nil))

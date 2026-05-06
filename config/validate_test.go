@@ -3,9 +3,10 @@ package config
 import (
 	"testing"
 
-	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 func validConfig() *ports.BridgeConfig {

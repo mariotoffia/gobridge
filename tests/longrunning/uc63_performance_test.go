@@ -12,7 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -51,7 +52,7 @@ func TestUC63_MemoryStability(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc63-col")
 
 	sessID := mqttlocal.UniqueClientID("uc63-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, connectivity.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessID)
@@ -65,14 +66,14 @@ func TestUC63_MemoryStability(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc63-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 			MaxInFlight:  200,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc63-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc63-bind", Address: outTopic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc63-bind", SessionID: sessID},
 		},
 	}, rx, snd, sess, &sc))
@@ -155,7 +156,7 @@ func TestUC64_LatencyPercentiles(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc64-col")
 
 	sessID := mqttlocal.UniqueClientID("uc64-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 
@@ -168,13 +169,13 @@ func TestUC64_LatencyPercentiles(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc64-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  100,
 		},
 		Processors: []ports.Processor{lr},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc64-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc64-bind", Address: outTopic},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, rx, snd, sess, nil))
@@ -233,7 +234,7 @@ func TestUC66_MultiTenantIsolation(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc66-col")
 
 	sessID := mqttlocal.UniqueClientID("uc66-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 
@@ -244,15 +245,15 @@ func TestUC66_MultiTenantIsolation(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc66-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  100,
 		},
 		Processors: []ports.Processor{
 			&tenantSlowProcessor{delay: 200 * time.Millisecond, slowTenant: "0"},
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc66-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc66-bind", Address: outTopic},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, rx, snd, sess, nil))
@@ -353,7 +354,7 @@ func TestUC65_ThroughputCeiling(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc65-col")
 
 	sessID := mqttlocal.UniqueClientID("uc65-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, connectivity.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessID)
@@ -367,14 +368,14 @@ func TestUC65_ThroughputCeiling(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc65-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 			MaxInFlight:  1000,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc65-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc65-bind", Address: outTopic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc65-bind", SessionID: sessID},
 		},
 	}, rx, snd, sess, &sc))

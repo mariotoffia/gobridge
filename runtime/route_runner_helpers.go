@@ -5,18 +5,21 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-func (r *RouteRunner) outboxPartitionKey(plans []domain.DispatchPlan) string {
+func (r *RouteRunner) outboxPartitionKey(plans []routing.DispatchPlan) string {
 	if len(plans) == 0 {
 		return ""
 	}
 	sessionID := r.sessionIDForBinding(plans[0].BindingID)
-	return domain.OutboxPartitionKey(sessionID, plans[0].BindingID)
+	return persistence.OutboxPartitionKey(sessionID, plans[0].BindingID)
 }
 
-func (r *RouteRunner) resolvePlans(ctx context.Context, env *domain.Envelope) ([]domain.DispatchPlan, error) {
+func (r *RouteRunner) resolvePlans(ctx context.Context, env *messaging.Envelope) ([]routing.DispatchPlan, error) {
 	if r.resolver != nil {
 		return r.resolver.Resolve(ctx, env)
 	}
@@ -25,33 +28,33 @@ func (r *RouteRunner) resolvePlans(ctx context.Context, env *domain.Envelope) ([
 
 		addr, err := RenderAddress(b.Address, env.Headers)
 		if err != nil {
-			return nil, domain.ErrInvalidTopic.
+			return nil, shared.ErrInvalidTopic.
 				WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
 		}
 
 		if strings.EqualFold(b.Transport, "mqtt") {
 			if err := ValidateMQTTTopic(addr); err != nil {
-				return nil, domain.ErrInvalidTopic.
+				return nil, shared.ErrInvalidTopic.
 					WithMessage(fmt.Sprintf("binding %q: %v", b.ID, err))
 			}
 		}
 
-		return []domain.DispatchPlan{{
+		return []routing.DispatchPlan{{
 			BindingID: b.ID,
 			Address:   addr,
 			Headers:   copyHeaders(b.Headers),
 		}}, nil
 	}
-	return []domain.DispatchPlan{{BindingID: r.routeID}}, nil
+	return []routing.DispatchPlan{{BindingID: r.routeID}}, nil
 }
 
-func (r *RouteRunner) buildOutboxRecords(env *domain.Envelope, plans []domain.DispatchPlan) []domain.OutboxRecord {
+func (r *RouteRunner) buildOutboxRecords(env *messaging.Envelope, plans []routing.DispatchPlan) []persistence.OutboxRecord {
 	now := r.clk.Now()
-	records := make([]domain.OutboxRecord, len(plans))
+	records := make([]persistence.OutboxRecord, len(plans))
 
 	for i, plan := range plans {
 		sessionID := r.sessionIDForBinding(plan.BindingID)
-		records[i] = domain.OutboxRecord{
+		records[i] = persistence.OutboxRecord{
 			ID:              generateID(),
 			RouteID:         r.routeID,
 			EnvelopeID:      env.ID,
@@ -60,7 +63,7 @@ func (r *RouteRunner) buildOutboxRecords(env *domain.Envelope, plans []domain.Di
 			Address:         plan.Address,
 			Envelope:        *env,
 			DispatchHeaders: plan.Headers,
-			Status:          domain.OutboxPending,
+			Status:          persistence.OutboxPending,
 			CreatedAt:       now,
 			ExpiresAt:       env.ExpiresAt,
 		}
@@ -68,15 +71,15 @@ func (r *RouteRunner) buildOutboxRecords(env *domain.Envelope, plans []domain.Di
 	return records
 }
 
-func (r *RouteRunner) injectHeaders(env *domain.Envelope) {
+func (r *RouteRunner) injectHeaders(env *messaging.Envelope) {
 	if env.Headers == nil {
 		env.Headers = make(map[string]any, 3)
 	}
-	if _, ok := env.Headers[domain.HeaderCorrelationID]; !ok {
-		env.Headers[domain.HeaderCorrelationID] = generateID()
+	if _, ok := env.Headers[messaging.HeaderCorrelationID]; !ok {
+		env.Headers[messaging.HeaderCorrelationID] = generateID()
 	}
-	env.Headers[domain.HeaderRouteID] = r.routeID
-	env.Headers[domain.HeaderSourceID] = r.instanceID
+	env.Headers[messaging.HeaderRouteID] = r.routeID
+	env.Headers[messaging.HeaderSourceID] = r.instanceID
 }
 
 func (r *RouteRunner) acquireSlots(ctx context.Context) error {

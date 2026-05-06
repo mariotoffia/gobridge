@@ -8,8 +8,8 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
@@ -30,7 +30,7 @@ func TestAutoExtend_Boundary_Timeout1_Disabled(t *testing.T) {
 	parentCtx, parentCancel := context.WithCancel(context.Background())
 	defer parentCancel()
 
-	env := &domain.Envelope{ID: "boundary-1", Subject: "test"}
+	env := &messaging.Envelope{ID: "boundary-1", Subject: "test"}
 	del := newDelivery(
 		parentCtx,
 		env,
@@ -78,7 +78,7 @@ func TestAutoExtend_Boundary_Timeout2_Enabled(t *testing.T) {
 	parentCtx, parentCancel := context.WithCancel(context.Background())
 	defer parentCancel()
 
-	env := &domain.Envelope{ID: "boundary-2", Subject: "test"}
+	env := &messaging.Envelope{ID: "boundary-2", Subject: "test"}
 	fake := clocktest.New()
 	del := newDelivery(
 		parentCtx,

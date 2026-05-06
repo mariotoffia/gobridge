@@ -8,7 +8,8 @@ import (
 	"time"
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // TestBreaker_PanicInNext_LeavesHalfOpenProbeStuck validates that when
@@ -51,7 +52,7 @@ func TestBreaker_PanicInNext_LeavesHalfOpenProbeStuck(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected rejection due to stuck half-open probe, got nil")
 	}
-	if !errors.Is(err, domain.ErrUnavailable) {
+	if !errors.Is(err, shared.ErrUnavailable) {
 		t.Fatalf("expected ErrUnavailable, got %v", err)
 	}
 }
@@ -82,7 +83,7 @@ func TestProcessor_PanicInNext_RecoversProperly(t *testing.T) {
 				t.Fatal("expected panic from next")
 			}
 		}()
-		_ = p.Process(ctx, env, func(_ context.Context, _ *domain.Envelope) error {
+		_ = p.Process(ctx, env, func(_ context.Context, _ *messaging.Envelope) error {
 			panic("simulated downstream panic")
 		})
 	}()

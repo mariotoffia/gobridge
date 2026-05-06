@@ -64,7 +64,12 @@ excludeFiles:
 #
 #   Layer 1 -- Enterprise Business Rules (Clean) / Domain (DDD) / Inside the
 #              hexagon (Hex)
-#       domain
+#       domain_shared        -- shared kernel value objects + errors
+#       domain_messaging     -- envelope, headers, transactions
+#       domain_persistence   -- outbox, lease, dlq value types
+#       domain_routing       -- route policy, slot allocation
+#       domain_connectivity  -- credentials, health
+#       domain_clock         -- time abstraction (stdlib-only)
 #
 #   Layer 2 -- Application Business Rules / Use Cases (Clean) /
 #              Application services (DDD) / Inside the hexagon (Hex)
@@ -105,8 +110,22 @@ excludeFiles:
 # another.
 # ============================================================================
 components:
-  # ---- Layer 1: Domain ----
-  domain: { in: [domain, domain/**] }
+  # ---- Layer 1: Domain (decomposed by bounded context) ----
+  # The catch-all `domain` component has been removed (FIX-004 Phase 5).
+  # Every domain type now belongs to exactly one bounded-context
+  # sub-package: shared, messaging, persistence, routing, connectivity,
+  # or clock. The cfgshape tests in scripts/lint-arch-mapping-test.sh
+  # assert each context has a sentinel package mapped to it so the YAML
+  # cannot drift from the package layout.
+  domain_shared: { in: [domain/shared, domain/shared/**] }
+  domain_messaging: { in: [domain/messaging, domain/messaging/**] }
+  domain_persistence: { in: [domain/persistence, domain/persistence/**] }
+  domain_routing: { in: [domain/routing, domain/routing/**] }
+  domain_connectivity: { in: [domain/connectivity, domain/connectivity/**] }
+  # domain/clock is a stdlib-only timing primitive shared across the
+  # core ring; clocktest helper lives outside this component (excluded
+  # at the top of the file).
+  domain_clock: { in: [domain/clock] }
 
   # ---- Layer 2: Ports + Application Services + Shared Kernel ----
   ports: { in: [ports, ports/**] }
@@ -258,7 +277,33 @@ deps:
   # Domain is the innermost layer. It has no project dependencies and no
   # external dependencies. The sentinel vendor entry makes the
   # zero-dependency claim machine-checked.
-  domain:
+  domain_shared:
+    canUse: [_no_external_deps_]
+  domain_messaging:
+    canUse: [_no_external_deps_]
+  domain_persistence:
+    mayDependOn:
+      - domain_shared
+      - domain_messaging
+    canUse: [_no_external_deps_]
+  domain_routing:
+    mayDependOn:
+      - domain_shared
+      - domain_messaging
+    canUse: [_no_external_deps_]
+  domain_connectivity:
+    mayDependOn:
+      - domain_shared
+    canUse: [_no_external_deps_]
+  # NOTE on domain_persistence (FIX-004 Phase 5):
+  # The strict reading of FIX-004 lists `domain_persistence: { mayDependOn:
+  # [domain_shared] }`. In practice OutboxRecord embeds a messaging.Envelope
+  # because an outbox record IS a persisted envelope; banning that edge
+  # would force the persistence model to carry an opaque payload-bytes +
+  # headers map and reconstruct an Envelope at every use site. We keep
+  # the persistence -> messaging edge as it expresses a real domain
+  # invariant. The other contexts follow the strict spec.
+  domain_clock:
     canUse: [_no_external_deps_]
 
   # ---- Layer 2: Ports + Application Services + Shared Kernel ----
@@ -270,7 +315,12 @@ deps:
   # dependencies. Wire-format marshalling lives in config/.
   ports:
     mayDependOn:
-      - domain
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - domain_connectivity
     canUse:
       - _no_external_deps_
 
@@ -283,7 +333,12 @@ deps:
   # (the consumers).
   config:
     mayDependOn:
-      - domain
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - domain_connectivity
       - ports
     canUse:
       - yaml
@@ -299,7 +354,12 @@ deps:
   # never on this package directly.
   circuitbreaker:
     mayDependOn:
-      - domain
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - domain_connectivity
       - ports
 
   # validate hosts invariants over ports + domain. It MUST NOT depend on
@@ -307,7 +367,12 @@ deps:
   # runtime, or bridge.
   validate:
     mayDependOn:
-      - domain
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - domain_connectivity
       - ports
 
   # runtime is the use-case engine. Per the Dependency Rule it depends
@@ -315,7 +380,12 @@ deps:
   # utilities; they carry no infrastructure.
   runtime:
     mayDependOn:
-      - domain
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - domain_connectivity
       - ports
       - logging
       - observability
@@ -326,7 +396,12 @@ deps:
   # via WithBlueprintValidator) and MUST NOT depend on any adapter.
   bridge:
     mayDependOn:
-      - domain
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - domain_connectivity
       - logging
       - ports
       - runtime
@@ -342,7 +417,12 @@ deps:
   # adapter.
   httpapi:
     mayDependOn:
-      - domain
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - domain_connectivity
       - logging
       - observability
       - ports
@@ -356,7 +436,12 @@ deps:
   processors:
     mayDependOn:
       - circuitbreaker
-      - domain
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - domain_connectivity
       - ports
     canUse:
       - ojg
@@ -376,28 +461,28 @@ deps:
   # consumes the ports.CircuitBreaker contract only — the implementation
   # is supplied by the composition root.
   adapter_transport_mqtt_paho:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [paho]
 
   adapter_transport_sqs:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [aws]
 
   adapter_transport_servicebus:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [asb]
 
   adapter_transport_amqp091:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [amqp091]
 
   adapter_transport_amqp10:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [amqp10]
 
   # HTTP transport is stdlib-only.
   adapter_transport_http:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
 
   # ---- Layer 3: Driven adapters -- store implementations ----
   #
@@ -406,25 +491,25 @@ deps:
   # the aggregator imports them, never the reverse.
 
   adapter_store_native_memorylease:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
   adapter_store_native_memoryoutbox:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
   adapter_store_native_memorydlq:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
   adapter_store_native_sqliteoutbox:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [sqlite]
   adapter_store_native_sqlitedlq:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [sqlite]
   adapter_store_aws_dynamodblease:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [aws]
   adapter_store_aws_dynamodboutbox:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [aws]
   adapter_store_aws_dynamodbdlq:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [aws]
 
   # ---- Layer 3: Store factory aggregators ----
@@ -436,7 +521,12 @@ deps:
   # leaf implementations.
   adapter_store_native_factory:
     mayDependOn:
-      - domain
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - domain_connectivity
       - logging
       - ports
       - adapter_store_native_memorylease
@@ -447,7 +537,12 @@ deps:
 
   adapter_store_aws_factory:
     mayDependOn:
-      - domain
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - domain_connectivity
       - logging
       - ports
       - adapter_store_aws_dynamodblease
@@ -464,35 +559,35 @@ deps:
   # shape (BridgeConfig + Loader/Watcher/Reloader contracts) and on
   # config for the parsing/serialization behavior.
   adapter_config_native_file:
-    mayDependOn: [config, domain, logging, ports]
+    mayDependOn: [config, domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [fsnotify]
   adapter_config_aws_dynamodb:
-    mayDependOn: [config, domain, logging, ports]
+    mayDependOn: [config, domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [aws]
 
   # ---- Layer 3: Credential adapters ----
   adapter_credentials_native_file:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
   adapter_credentials_aws_ssm:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [aws]
 
   # ---- Layer 3: Observability adapters ----
   adapter_metrics_cloudwatch:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [aws]
   adapter_metrics_otel:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [otel]
   adapter_tracing_otel:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [otel]
 
   # ---- Layer 3: Cluster resolver adapters ----
   adapter_cluster_native:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
   adapter_cluster_aws:
-    mayDependOn: [domain, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
     canUse: [aws]
 
   # ---- Layer 4: Composition root ----

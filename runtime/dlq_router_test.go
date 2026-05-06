@@ -6,17 +6,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
 // Verifies routing with a nil DLQ store is a no-op and returns no error.
 func TestDLQRouter_NilStore(t *testing.T) {
 	dlq := runtime.NewDLQRouter(nil)
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 
-	err := dlq.Route(context.Background(), env, "route-1", "", "", "", domain.ErrNotFound, 1)
+	err := dlq.Route(context.Background(), env, "route-1", "", "", "", shared.ErrNotFound, 1)
 	if err != nil {
 		t.Fatalf("nil store should be a no-op, got %v", err)
 	}
@@ -27,12 +28,12 @@ func TestDLQRouter_WritesEntry(t *testing.T) {
 	store := NewFakeDLQStore()
 	dlq := runtime.NewDLQRouter(store)
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "msg-1",
-		Headers: map[string]any{domain.HeaderCorrelationID: "corr-abc"},
+		Headers: map[string]any{messaging.HeaderCorrelationID: "corr-abc"},
 	}
 
-	err := dlq.Route(context.Background(), env, "route-1", "bind-1", "sess-1", "src-1", domain.ErrNotFound, 3)
+	err := dlq.Route(context.Background(), env, "route-1", "bind-1", "sess-1", "src-1", shared.ErrNotFound, 3)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -47,7 +48,7 @@ func TestDLQRouter_WritesEntry(t *testing.T) {
 	if entry.CorrelationID != "corr-abc" {
 		t.Fatalf("expected correlation ID 'corr-abc', got %q", entry.CorrelationID)
 	}
-	if entry.Category != string(domain.ErrorPermanent) {
+	if entry.Category != string(shared.ErrorPermanent) {
 		t.Fatalf("expected category 'permanent', got %q", entry.Category)
 	}
 	if entry.Attempts != 3 {
@@ -60,7 +61,7 @@ func TestDLQRouter_UnknownError(t *testing.T) {
 	store := NewFakeDLQStore()
 	dlq := runtime.NewDLQRouter(store)
 
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	_ = dlq.Route(context.Background(), env, "r", "", "", "", context.DeadlineExceeded, 0)
 
 	if store.Count() != 1 {
@@ -98,9 +99,9 @@ func TestDLQRouter_HasStore_False(t *testing.T) {
 func TestDLQRouter_Route_RedactsErrorDetails(t *testing.T) {
 	store := NewFakeDLQStore()
 	dlq := runtime.NewDLQRouter(store)
-	env := &domain.Envelope{ID: "msg-redact"}
+	env := &messaging.Envelope{ID: "msg-redact"}
 
-	rawErr := domain.ErrConnectionLost.Wrap(
+	rawErr := shared.ErrConnectionLost.Wrap(
 		fmt.Errorf("connection to db-prod.internal:5432 refused"),
 	)
 
@@ -144,9 +145,9 @@ func TestDLQRouter_Route_StoreWriteError_Propagated(t *testing.T) {
 	store := NewFakeDLQStore()
 	store.WriteErr = fmt.Errorf("disk full")
 	dlq := runtime.NewDLQRouter(store)
-	env := &domain.Envelope{ID: "msg-fail"}
+	env := &messaging.Envelope{ID: "msg-fail"}
 
-	err := dlq.Route(context.Background(), env, "r", "", "", "", domain.ErrNotFound, 1)
+	err := dlq.Route(context.Background(), env, "r", "", "", "", shared.ErrNotFound, 1)
 	if err == nil {
 		t.Fatal("expected store write error to be propagated")
 	}
@@ -165,14 +166,14 @@ func TestDLQRouter_Route_AllFieldsPopulated(t *testing.T) {
 		Clock: clk,
 	})
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "msg-all",
 		Subject: "test/topic",
 		Payload: []byte("payload-data"),
-		Headers: map[string]any{domain.HeaderCorrelationID: "corr-xyz"},
+		Headers: map[string]any{messaging.HeaderCorrelationID: "corr-xyz"},
 	}
 
-	routeErr := domain.ErrThrottled
+	routeErr := shared.ErrThrottled
 	err := dlq.Route(context.Background(), env, "route-all", "bind-all", "sess-all", "src-all", routeErr, 7)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -206,11 +207,11 @@ func TestDLQRouter_Route_AllFieldsPopulated(t *testing.T) {
 	if entry.Reason == "" {
 		t.Fatal("Reason should not be empty")
 	}
-	if entry.Category != string(domain.ErrorTransient) {
-		t.Fatalf("expected category %q, got %q", domain.ErrorTransient, entry.Category)
+	if entry.Category != string(shared.ErrorTransient) {
+		t.Fatalf("expected category %q, got %q", shared.ErrorTransient, entry.Category)
 	}
-	if entry.ErrorCode != string(domain.ErrCodeThrottled) {
-		t.Fatalf("expected error code %q, got %q", domain.ErrCodeThrottled, entry.ErrorCode)
+	if entry.ErrorCode != string(shared.ErrCodeThrottled) {
+		t.Fatalf("expected error code %q, got %q", shared.ErrCodeThrottled, entry.ErrorCode)
 	}
 	if entry.LastError == "" {
 		t.Fatal("LastError should not be empty")
@@ -228,9 +229,9 @@ func TestDLQRouter_Route_NoCorrelationID(t *testing.T) {
 	store := NewFakeDLQStore()
 	dlq := runtime.NewDLQRouter(store)
 
-	env := &domain.Envelope{ID: "msg-nocorr"}
+	env := &messaging.Envelope{ID: "msg-nocorr"}
 
-	err := dlq.Route(context.Background(), env, "route-nocorr", "", "", "", domain.ErrNotFound, 1)
+	err := dlq.Route(context.Background(), env, "route-nocorr", "", "", "", shared.ErrNotFound, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -246,7 +247,7 @@ func TestDLQRouter_Route_NoCorrelationID(t *testing.T) {
 func TestDLQRouter_ClassifyError_BridgeError(t *testing.T) {
 	store := NewFakeDLQStore()
 	dlq := runtime.NewDLQRouter(store)
-	env := &domain.Envelope{ID: "msg-bridge"}
+	env := &messaging.Envelope{ID: "msg-bridge"}
 
 	testCases := []struct {
 		name         string
@@ -256,27 +257,27 @@ func TestDLQRouter_ClassifyError_BridgeError(t *testing.T) {
 	}{
 		{
 			name:         "transient/throttled",
-			err:          domain.ErrThrottled,
-			wantCategory: string(domain.ErrorTransient),
-			wantCode:     string(domain.ErrCodeThrottled),
+			err:          shared.ErrThrottled,
+			wantCategory: string(shared.ErrorTransient),
+			wantCode:     string(shared.ErrCodeThrottled),
 		},
 		{
 			name:         "permanent/not_found",
-			err:          domain.ErrNotFound,
-			wantCategory: string(domain.ErrorPermanent),
-			wantCode:     string(domain.ErrCodeNotFound),
+			err:          shared.ErrNotFound,
+			wantCategory: string(shared.ErrorPermanent),
+			wantCode:     string(shared.ErrCodeNotFound),
 		},
 		{
 			name:         "rejected/invalid_payload",
-			err:          domain.ErrInvalidPayload,
-			wantCategory: string(domain.ErrorRejected),
-			wantCode:     string(domain.ErrCodeInvalidPayload),
+			err:          shared.ErrInvalidPayload,
+			wantCategory: string(shared.ErrorRejected),
+			wantCode:     string(shared.ErrCodeInvalidPayload),
 		},
 		{
 			name:         "expired/message_expired",
-			err:          domain.ErrMessageExpired,
-			wantCategory: string(domain.ErrorExpired),
-			wantCode:     string(domain.ErrCodeMessageExpired),
+			err:          shared.ErrMessageExpired,
+			wantCategory: string(shared.ErrorExpired),
+			wantCode:     string(shared.ErrCodeMessageExpired),
 		},
 	}
 

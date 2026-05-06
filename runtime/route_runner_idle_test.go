@@ -5,7 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -18,13 +19,13 @@ func newIdleTestRunner(t *testing.T) (*FakeReceiver, *runtime.RouteRunner, *Fake
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
 	release := make(chan struct{})
-	sender.SendFn = func(env *domain.Envelope) error {
+	sender.SendFn = func(env *messaging.Envelope) error {
 		<-release
 		return nil
 	}
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "idle-test",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
@@ -47,7 +48,7 @@ func TestRouteRunner_IdleChanged_FiresOnZeroTransition(t *testing.T) {
 	// Capture the idle channel BEFORE emitting (lost-wakeup safety).
 	idle := runner.IdleChanged()
 
-	env := &domain.Envelope{ID: "m1", Subject: "t"}
+	env := &messaging.Envelope{ID: "m1", Subject: "t"}
 	del := NewFakeDelivery(env)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit: %v", err)
@@ -78,7 +79,7 @@ func TestRouteRunner_IdleChanged_SwapsOnFire(t *testing.T) {
 	<-receiver.Ready()
 
 	first := runner.IdleChanged()
-	env := &domain.Envelope{ID: "m1", Subject: "t"}
+	env := &messaging.Envelope{ID: "m1", Subject: "t"}
 	if err := receiver.Emit(ctx, NewFakeDelivery(env)); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestRouteRunner_IdleChanged_NoFireWhenNotAtZero(t *testing.T) {
 	// Per-delivery release gates.
 	r1 := make(chan struct{})
 	r2 := make(chan struct{})
-	sender := NewConcurrentSender(func(env *domain.Envelope) error {
+	sender := NewConcurrentSender(func(env *messaging.Envelope) error {
 		switch env.ID {
 		case "m1":
 			<-r1
@@ -132,7 +133,7 @@ func TestRouteRunner_IdleChanged_NoFireWhenNotAtZero(t *testing.T) {
 	})
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "idle-test-multi",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold, MaxInFlight: 4}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold, MaxInFlight: 4}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
@@ -146,10 +147,10 @@ func TestRouteRunner_IdleChanged_NoFireWhenNotAtZero(t *testing.T) {
 
 	idle := runner.IdleChanged()
 
-	if err := receiver.Emit(ctx, NewFakeDelivery(&domain.Envelope{ID: "m1", Subject: "t"})); err != nil {
+	if err := receiver.Emit(ctx, NewFakeDelivery(&messaging.Envelope{ID: "m1", Subject: "t"})); err != nil {
 		t.Fatalf("Emit m1: %v", err)
 	}
-	if err := receiver.Emit(ctx, NewFakeDelivery(&domain.Envelope{ID: "m2", Subject: "t"})); err != nil {
+	if err := receiver.Emit(ctx, NewFakeDelivery(&messaging.Envelope{ID: "m2", Subject: "t"})); err != nil {
 		t.Fatalf("Emit m2: %v", err)
 	}
 	waitFor(t, 2*time.Second, "inflight=2", func() bool { return runner.InFlight() == 2 })

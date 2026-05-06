@@ -8,7 +8,7 @@ import (
 	"time"
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -21,10 +21,10 @@ func TestProcessor_EvictsOldestWhenAtCapacity(t *testing.T) {
 
 	p := New("evict-test", cfg, WithKeyExtractor(SubjectKey))
 
-	next := func(_ context.Context, _ *domain.Envelope) error { return nil }
+	next := func(_ context.Context, _ *messaging.Envelope) error { return nil }
 
 	for i := 0; i < maxBreakers; i++ {
-		env := &domain.Envelope{Subject: fmt.Sprintf("key-%d", i)}
+		env := &messaging.Envelope{Subject: fmt.Sprintf("key-%d", i)}
 		_ = p.Process(context.Background(), env, next)
 	}
 
@@ -33,7 +33,7 @@ func TestProcessor_EvictsOldestWhenAtCapacity(t *testing.T) {
 		t.Fatalf("expected %d breakers, got %d", maxBreakers, len(m))
 	}
 
-	env := &domain.Envelope{Subject: "new-key-beyond-cap"}
+	env := &messaging.Envelope{Subject: "new-key-beyond-cap"}
 	_ = p.Process(context.Background(), env, next)
 
 	m = p.Metrics()
@@ -55,13 +55,13 @@ func TestProcessor_EvictsClosedBreakerPreferentially(t *testing.T) {
 
 	p := New("evict-pref", cfg, WithKeyExtractor(SubjectKey))
 
-	next := func(_ context.Context, _ *domain.Envelope) error { return nil }
-	failNext := func(_ context.Context, _ *domain.Envelope) error { return errors.New("fail") }
+	next := func(_ context.Context, _ *messaging.Envelope) error { return nil }
+	failNext := func(_ context.Context, _ *messaging.Envelope) error { return errors.New("fail") }
 
-	_ = p.Process(context.Background(), &domain.Envelope{Subject: "closed-key"}, next)
+	_ = p.Process(context.Background(), &messaging.Envelope{Subject: "closed-key"}, next)
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
-		_ = p.Process(context.Background(), &domain.Envelope{Subject: "open-key"}, failNext)
+		_ = p.Process(context.Background(), &messaging.Envelope{Subject: "open-key"}, failNext)
 	}
 
 	m := p.Metrics()
@@ -81,7 +81,7 @@ func TestProcessor_EvictsClosedBreakerPreferentially(t *testing.T) {
 	}
 	p.mu.Unlock()
 
-	_ = p.Process(context.Background(), &domain.Envelope{Subject: "trigger-evict"}, next)
+	_ = p.Process(context.Background(), &messaging.Envelope{Subject: "trigger-evict"}, next)
 
 	m = p.Metrics()
 	if _, ok := m["open-key"]; !ok {
@@ -92,4 +92,4 @@ func TestProcessor_EvictsClosedBreakerPreferentially(t *testing.T) {
 	}
 }
 
-var _ ports.ProcessorFunc = func(_ context.Context, _ *domain.Envelope) error { return nil }
+var _ ports.ProcessorFunc = func(_ context.Context, _ *messaging.Envelope) error { return nil }

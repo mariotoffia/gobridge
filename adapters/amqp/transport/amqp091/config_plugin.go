@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -102,7 +102,7 @@ func (c *Config) CredentialsURI() string {
 // password credential populates Session.Username/Password and the TLS
 // material populates Session.TLS PEM fields. Pre-existing inline
 // values are left untouched ("config wins" precedence).
-func (c *Config) ApplyCredentials(set *domain.CredentialSet) error {
+func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 	if c == nil {
 		return errors.New("amqp091: nil config")
 	}

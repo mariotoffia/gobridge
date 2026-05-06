@@ -6,7 +6,8 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/circuitbreaker"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -35,7 +36,7 @@ func TestBugRES008_CBSender_CircuitOpen_EmitsMetric(t *testing.T) {
 
 	// Trigger a failure to open the circuit.
 	_ = breaker.BeforeRequest()
-	breaker.AfterRequest(domain.ErrUnavailable)
+	breaker.AfterRequest(shared.ErrUnavailable)
 
 	cbs := &CircuitBreakerSender{
 		inner:   &Sender{metrics: rec},
@@ -43,13 +44,13 @@ func TestBugRES008_CBSender_CircuitOpen_EmitsMetric(t *testing.T) {
 		metrics: rec,
 	}
 
-	env := &domain.Envelope{ID: "e1", Subject: "t/1", Payload: []byte("p")}
+	env := &messaging.Envelope{ID: "e1", Subject: "t/1", Payload: []byte("p")}
 	err := cbs.Send(context.Background(), env)
 	if err == nil {
 		t.Fatal("expected error from open circuit, got nil")
 	}
 
-	entries := rec.FindEntries(domain.MetricMQTTPublishFailures)
+	entries := rec.FindEntries(shared.MetricMQTTPublishFailures)
 	if len(entries) == 0 {
 		t.Fatal("expected MetricMQTTPublishFailures counter when circuit is open, got none")
 	}
@@ -78,7 +79,7 @@ func TestBugRES008_CBSender_CircuitClosed_NoExtraMetric(t *testing.T) {
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
 		ResetTimeout:     30 * time.Second,
-		CountError:       domain.IsRecoverableError,
+		CountError:       shared.IsRecoverableError,
 	}
 	breaker := circuitbreaker.NewBreaker("test-cb", cfg, nil)
 
@@ -96,11 +97,11 @@ func TestBugRES008_CBSender_CircuitClosed_NoExtraMetric(t *testing.T) {
 		metrics: rec,
 	}
 
-	env := &domain.Envelope{ID: "e2", Subject: "t/2", Payload: []byte("p")}
+	env := &messaging.Envelope{ID: "e2", Subject: "t/2", Payload: []byte("p")}
 	_ = cbs.Send(context.Background(), env)
 
 	// There should be no circuit_open failure metrics.
-	entries := rec.FindEntries(domain.MetricMQTTPublishFailures)
+	entries := rec.FindEntries(shared.MetricMQTTPublishFailures)
 	for _, e := range entries {
 		for _, tag := range e.Tags {
 			if tag.Key == "reason" && tag.Value == "circuit_open" {

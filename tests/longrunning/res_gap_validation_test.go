@@ -14,7 +14,10 @@ import (
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/circuitbreaker"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -55,7 +58,7 @@ func TestRES003_MQTTSourceDropWithoutDLQ(t *testing.T) {
 
 	// --- Publisher session: sends messages to the source topic ---
 	pubSessID := mqttlocal.UniqueClientID("res003-pub")
-	pubSess := setupMQTTSession(t, pubSessID, domain.SessionEphemeral)
+	pubSess := setupMQTTSession(t, pubSessID, connectivity.SessionEphemeral)
 	pubSender := paho.NewSender(pubSess, paho.SenderOptions{
 		DefaultTopic: srcTopic,
 		QoS:          1,
@@ -64,11 +67,11 @@ func TestRES003_MQTTSourceDropWithoutDLQ(t *testing.T) {
 
 	// --- Bridge: MQTT source -> alwaysFailSender, NO DLQ ---
 	rxSessID := mqttlocal.UniqueClientID("res003-rx")
-	rxSess := setupMQTTSession(t, rxSessID, domain.SessionEphemeral)
+	rxSess := setupMQTTSession(t, rxSessID, connectivity.SessionEphemeral)
 
 	// Subscribe to source topic before creating bridge.
-	reconcileErr := rxSess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	reconcileErr := rxSess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: srcTopic, QoS: 1},
 		},
 	})
@@ -93,11 +96,11 @@ func TestRES003_MQTTSourceDropWithoutDLQ(t *testing.T) {
 
 	routeCfg := goruntime.RouteConfig{
 		ID: "res003-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "res003-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "res003-bind", Address: outTopic},
 		),
 		SourceCapabilities: nil, // MQTT has no source capabilities
 	}
@@ -122,7 +125,7 @@ func TestRES003_MQTTSourceDropWithoutDLQ(t *testing.T) {
 	// Publish 100 messages to the MQTT source topic.
 	t.Logf("RES-003: publishing %d messages to MQTT source topic %q", msgCount, srcTopic)
 	for i := 0; i < msgCount; i++ {
-		env := &domain.Envelope{
+		env := &messaging.Envelope{
 			ID:      fmt.Sprintf("res003-msg-%d", i),
 			Subject: srcTopic,
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
@@ -209,7 +212,7 @@ func TestRES005_AutoExtendFailureDuplicates(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "res005-col")
 
 	sessID := mqttlocal.UniqueClientID("res005-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
 	mqttSnd := setupMQTTSender(t, sess)
 
 	// SQS receiver with short visibility + auto-extend enabled.
@@ -233,15 +236,15 @@ func TestRES005_AutoExtendFailureDuplicates(t *testing.T) {
 
 	routeCfg := goruntime.RouteConfig{
 		ID: "res005-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  5,
 		},
 		Processors: []ports.Processor{
 			newSlowProcessor("res005-slow", 8*time.Second),
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "res005-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "res005-bind", Address: outTopic},
 		),
 		SourceCapabilities: directHoldCaps,
 	}
@@ -310,7 +313,7 @@ func TestRES001_NoCircuitBreakerOnSender(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "res001-col")
 
 	sessID := mqttlocal.UniqueClientID("res001-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
 	baseSnd := setupMQTTSender(t, sess)
 	// Wrap in CB sender + degradedSender: 80% fail, 5s latency per send.
 	// CB opens after 5 consecutive failures and fails-fast with ErrUnavailable.
@@ -318,7 +321,7 @@ func TestRES001_NoCircuitBreakerOnSender(t *testing.T) {
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
 		ResetTimeout:     5 * time.Second,
-		CountError:       domain.IsRecoverableError,
+		CountError:       shared.IsRecoverableError,
 	}, nil)
 	cbSnd := paho.NewCircuitBreakerSender(baseSnd, br)
 	snd := newDegradedSender(cbSnd, 80, 5*time.Second)
@@ -330,12 +333,12 @@ func TestRES001_NoCircuitBreakerOnSender(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "res001-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  10,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "res001-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "res001-bind", Address: outTopic},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, newSQSReceiver(t, sqsInURL), snd, sess, nil))
@@ -385,7 +388,7 @@ func TestRES006_DLQWriteBlocksSemaphore(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "res006-col")
 
 	sessID := mqttlocal.UniqueClientID("res006-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionExclusive)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("res006-bridge"),
@@ -394,12 +397,12 @@ func TestRES006_DLQWriteBlocksSemaphore(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "res006-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  10,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "res006-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "res006-bind", Address: outTopic},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, newSQSReceiver(t, sqsInURL), &permanentFailSender{}, sess, nil))
@@ -452,7 +455,7 @@ func TestRES011_RouterPanicSwallowsMessages(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "res011-col")
 
 	sessID := mqttlocal.UniqueClientID("res011-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
 	snd := setupMQTTSender(t, sess)
 
 	rt := goruntime.New(
@@ -462,13 +465,13 @@ func TestRES011_RouterPanicSwallowsMessages(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "res011-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  20,
 		},
 		Processors: []ports.Processor{&panicProcessor{panicEvery: 10}},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "res011-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "res011-bind", Address: outTopic},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, newSQSReceiver(t, sqsInURL), snd, sess, nil))

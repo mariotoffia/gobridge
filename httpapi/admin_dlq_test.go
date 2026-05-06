@@ -11,10 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
-	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/runtime"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -25,21 +28,21 @@ import (
 // ═══════════════════════════════════════════════════════════════════
 
 type mockDLQStore struct {
-	getFunc          func(ctx context.Context, id string) (domain.DLQEntry, error)
-	listFunc         func(ctx context.Context, f domain.DLQFilter) ([]domain.DLQEntry, error)
+	getFunc          func(ctx context.Context, id string) (routing.DLQEntry, error)
+	listFunc         func(ctx context.Context, f routing.DLQFilter) ([]routing.DLQEntry, error)
 	deleteFunc       func(ctx context.Context, ids []string) (int, error)
-	deleteByFilterFn func(ctx context.Context, f domain.DLQFilter) (int, error)
-	writeFunc        func(ctx context.Context, e domain.DLQEntry) error
+	deleteByFilterFn func(ctx context.Context, f routing.DLQFilter) (int, error)
+	writeFunc        func(ctx context.Context, e routing.DLQEntry) error
 	purgeFunc        func(ctx context.Context, before time.Time) (int, error)
 }
 
-func (m *mockDLQStore) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
+func (m *mockDLQStore) Get(ctx context.Context, id string) (routing.DLQEntry, error) {
 	if m.getFunc != nil {
 		return m.getFunc(ctx, id)
 	}
-	return domain.DLQEntry{}, domain.ErrNotFound
+	return routing.DLQEntry{}, shared.ErrNotFound
 }
-func (m *mockDLQStore) List(ctx context.Context, f domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (m *mockDLQStore) List(ctx context.Context, f routing.DLQFilter) ([]routing.DLQEntry, error) {
 	if m.listFunc != nil {
 		return m.listFunc(ctx, f)
 	}
@@ -51,13 +54,13 @@ func (m *mockDLQStore) Delete(ctx context.Context, ids []string) (int, error) {
 	}
 	return len(ids), nil
 }
-func (m *mockDLQStore) DeleteByFilter(ctx context.Context, f domain.DLQFilter) (int, error) {
+func (m *mockDLQStore) DeleteByFilter(ctx context.Context, f routing.DLQFilter) (int, error) {
 	if m.deleteByFilterFn != nil {
 		return m.deleteByFilterFn(ctx, f)
 	}
 	return 0, nil
 }
-func (m *mockDLQStore) Write(ctx context.Context, e domain.DLQEntry) error {
+func (m *mockDLQStore) Write(ctx context.Context, e routing.DLQEntry) error {
 	if m.writeFunc != nil {
 		return m.writeFunc(ctx, e)
 	}
@@ -103,12 +106,12 @@ func dlqDo(mux *http.ServeMux, req *http.Request) *httptest.ResponseRecorder {
 // TestToDLQEntryView_MapsAllFields validates that toDLQEntryView
 // correctly maps all domain fields including Subject from Envelope.
 func TestToDLQEntryView_MapsAllFields(t *testing.T) {
-	e := domain.DLQEntry{
+	e := routing.DLQEntry{
 		ID: "v-1", RouteID: "r1", BindingID: "b1", SessionID: "s1",
 		SourceID: "src1", CorrelationID: "c1", Reason: "timeout",
 		Category: "transient", ErrorCode: "TIMEOUT", LastError: "dial err",
 		FailedAt: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC), Attempts: 5,
-		Envelope: domain.Envelope{Subject: "test/topic"},
+		Envelope: messaging.Envelope{Subject: "test/topic"},
 	}
 	v := toDLQEntryView(e)
 	assert.Equal(t, "v-1", v.ID)
@@ -121,8 +124,8 @@ func TestToDLQEntryView_MapsAllFields(t *testing.T) {
 // TestToDLQEntryDetailView_IncludesBase64Payload validates that the
 // detail view includes the envelope payload as base64.
 func TestToDLQEntryDetailView_IncludesBase64Payload(t *testing.T) {
-	e := domain.DLQEntry{
-		Envelope: domain.Envelope{Payload: []byte(`{"msg":"hello"}`)},
+	e := routing.DLQEntry{
+		Envelope: messaging.Envelope{Payload: []byte(`{"msg":"hello"}`)},
 	}
 	v := toDLQEntryDetailView(e)
 	decoded, err := base64.StdEncoding.DecodeString(v.Payload)
@@ -133,7 +136,7 @@ func TestToDLQEntryDetailView_IncludesBase64Payload(t *testing.T) {
 // TestToDLQEntryDetailView_EmptyPayload validates empty payload produces
 // empty base64 string.
 func TestToDLQEntryDetailView_EmptyPayload(t *testing.T) {
-	v := toDLQEntryDetailView(domain.DLQEntry{})
+	v := toDLQEntryDetailView(routing.DLQEntry{})
 	assert.Equal(t, "", v.Payload)
 }
 
@@ -144,20 +147,20 @@ func TestToDLQEntryDetailView_EmptyPayload(t *testing.T) {
 // TestHandleDLQMessageByID_ReturnsEntry validates a successful get-by-id
 // returns 200 with all dlqEntryDetailView fields including base64 payload.
 func TestHandleDLQMessageByID_ReturnsEntry(t *testing.T) {
-	entry := domain.DLQEntry{
+	entry := routing.DLQEntry{
 		ID: "msg-1", RouteID: "r1", Category: "timeout",
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			Subject: "test/sub",
 			Payload: []byte("binary-data"),
 		},
 		FailedAt: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC),
 	}
 	store := &mockDLQStore{
-		getFunc: func(_ context.Context, id string) (domain.DLQEntry, error) {
+		getFunc: func(_ context.Context, id string) (routing.DLQEntry, error) {
 			if id == "msg-1" {
 				return entry, nil
 			}
-			return domain.DLQEntry{}, domain.ErrNotFound
+			return routing.DLQEntry{}, shared.ErrNotFound
 		},
 	}
 	_, mux := dlqServer(store)
@@ -183,8 +186,8 @@ func TestHandleDLQMessageByID_NotFound(t *testing.T) {
 // TestHandleDLQMessageByID_StoreError validates 500 for non-ErrNotFound errors.
 func TestHandleDLQMessageByID_StoreError(t *testing.T) {
 	store := &mockDLQStore{
-		getFunc: func(_ context.Context, _ string) (domain.DLQEntry, error) {
-			return domain.DLQEntry{}, fmt.Errorf("connection lost")
+		getFunc: func(_ context.Context, _ string) (routing.DLQEntry, error) {
+			return routing.DLQEntry{}, fmt.Errorf("connection lost")
 		},
 	}
 	_, mux := dlqServer(store)
@@ -258,9 +261,9 @@ func TestHandleDLQDeleteByIDs_StoreError(t *testing.T) {
 
 // TestHandleDLQDeleteByFilter_ByRouteID validates filtering by route_id.
 func TestHandleDLQDeleteByFilter_ByRouteID(t *testing.T) {
-	var captured domain.DLQFilter
+	var captured routing.DLQFilter
 	store := &mockDLQStore{
-		deleteByFilterFn: func(_ context.Context, f domain.DLQFilter) (int, error) {
+		deleteByFilterFn: func(_ context.Context, f routing.DLQFilter) (int, error) {
 			captured = f
 			return 3, nil
 		},
@@ -289,7 +292,7 @@ func TestHandleDLQDeleteByFilter_EmptyRequiresConfirm(t *testing.T) {
 // confirm_delete_all=true allows unfiltered delete.
 func TestHandleDLQDeleteByFilter_EmptyWithConfirm(t *testing.T) {
 	store := &mockDLQStore{
-		deleteByFilterFn: func(_ context.Context, _ domain.DLQFilter) (int, error) {
+		deleteByFilterFn: func(_ context.Context, _ routing.DLQFilter) (int, error) {
 			return 42, nil
 		},
 	}
@@ -321,7 +324,7 @@ func TestHandleDLQDeleteByFilter_InvalidBefore(t *testing.T) {
 // TestHandleDLQDeleteByFilter_StoreError validates 500 on store failure.
 func TestHandleDLQDeleteByFilter_StoreError(t *testing.T) {
 	store := &mockDLQStore{
-		deleteByFilterFn: func(_ context.Context, _ domain.DLQFilter) (int, error) {
+		deleteByFilterFn: func(_ context.Context, _ routing.DLQFilter) (int, error) {
 			return 0, fmt.Errorf("db error")
 		},
 	}
@@ -334,9 +337,9 @@ func TestHandleDLQDeleteByFilter_StoreError(t *testing.T) {
 // TestHandleDLQDeleteByFilter_WithTimeRange validates Since and Before
 // are correctly parsed and passed to the store.
 func TestHandleDLQDeleteByFilter_WithTimeRange(t *testing.T) {
-	var captured domain.DLQFilter
+	var captured routing.DLQFilter
 	store := &mockDLQStore{
-		deleteByFilterFn: func(_ context.Context, f domain.DLQFilter) (int, error) {
+		deleteByFilterFn: func(_ context.Context, f routing.DLQFilter) (int, error) {
 			captured = f
 			return 1, nil
 		},
@@ -357,15 +360,15 @@ func TestHandleDLQDeleteByFilter_WithTimeRange(t *testing.T) {
 // TestHandleDLQMessages_Pagination validates total reflects pre-slice
 // count and offset/limit are applied correctly.
 func TestHandleDLQMessages_Pagination(t *testing.T) {
-	entries := make([]domain.DLQEntry, 10)
+	entries := make([]routing.DLQEntry, 10)
 	for i := range entries {
-		entries[i] = domain.DLQEntry{
+		entries[i] = routing.DLQEntry{
 			ID:       fmt.Sprintf("p-%d", i),
 			FailedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Hour),
 		}
 	}
 	store := &mockDLQStore{
-		listFunc: func(_ context.Context, _ domain.DLQFilter) ([]domain.DLQEntry, error) {
+		listFunc: func(_ context.Context, _ routing.DLQFilter) ([]routing.DLQEntry, error) {
 			return entries, nil
 		},
 	}

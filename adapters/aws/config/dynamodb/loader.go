@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/config"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -145,7 +145,7 @@ func (l *Loader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 		return nil, err
 	}
 	if !found {
-		return nil, domain.ErrNotFound.WithMessage("config not found for bridge " + l.bridgeID)
+		return nil, shared.ErrNotFound.WithMessage("config not found for bridge " + l.bridgeID)
 	}
 
 	cfg, err := config.Parse(bytes.NewReader([]byte(rawData)), config.FormatJSON)

@@ -8,8 +8,8 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // headersToPublishing maps envelope headers back to an amqp091.Publishing.
@@ -61,7 +61,7 @@ func headersToPublishing(headers map[string]any) amqp.Publishing {
 		if amqp091WellKnown[k] || strings.HasPrefix(k, amqp091Prefix) {
 			continue
 		}
-		if domain.IsReservedHeader(k) {
+		if messaging.IsReservedHeader(k) {
 			continue
 		}
 		if table == nil {
@@ -74,9 +74,9 @@ func headersToPublishing(headers map[string]any) amqp.Publishing {
 	return pub
 }
 
-// envelopeToPublishing builds an amqp091.Publishing from a domain.Envelope.
+// envelopeToPublishing builds an amqp091.Publishing from a messaging.Envelope.
 // It maps the envelope body, ID, subject, TTL, and headers.
-func envelopeToPublishing(env *domain.Envelope, cfg SenderConfig, clk clock.Clock) amqp.Publishing {
+func envelopeToPublishing(env *messaging.Envelope, cfg SenderConfig, clk clock.Clock) amqp.Publishing {
 	if clk == nil {
 		clk = clock.System
 	}
@@ -94,7 +94,7 @@ func envelopeToPublishing(env *domain.Envelope, cfg SenderConfig, clk clock.Cloc
 	}
 
 	if pub.ContentType == "" && env.Headers != nil {
-		if ct, ok := env.Headers[domain.HeaderContentType].(string); ok {
+		if ct, ok := env.Headers[messaging.HeaderContentType].(string); ok {
 			pub.ContentType = ct
 		}
 	}
@@ -104,7 +104,7 @@ func envelopeToPublishing(env *domain.Envelope, cfg SenderConfig, clk clock.Cloc
 
 // unroutableError is returned by senderChannel.PublishConfirmed when the
 // broker emits a basic.return for a Mandatory publish (i.e. the message
-// matched no queue). It is mapped to domain.ErrNotFound at the seam.
+// matched no queue). It is mapped to shared.ErrNotFound at the seam.
 type unroutableError struct {
 	ReplyCode  uint16
 	ReplyText  string
@@ -201,7 +201,7 @@ func (sc *senderChannel) PublishConfirmed(
 	ctx context.Context,
 	exchange, routingKey string,
 	mandatory, immediate bool,
-	env *domain.Envelope,
+	env *messaging.Envelope,
 	cfg SenderConfig,
 	clk clock.Clock,
 ) (publishResult, error) {

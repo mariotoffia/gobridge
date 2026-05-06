@@ -9,9 +9,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsssm "github.com/aws/aws-sdk-go-v2/service/ssm"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ---------------------------------------------------------------------------
@@ -184,8 +186,8 @@ func TestParseCredentials_MissingUsername(t *testing.T) {
 
 // Verifies serializeCredentialSet and parseCredentials round-trip password credentials.
 func TestSerializeAndParseRoundTrip_Password(t *testing.T) {
-	original := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	original := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	}
 	s, err := serializeCredentialSet(original)
 	require.NoError(t, err)
@@ -199,8 +201,8 @@ func TestSerializeAndParseRoundTrip_Password(t *testing.T) {
 
 // Verifies serializeCredentialSet and parseCredentials round-trip TLS material.
 func TestSerializeAndParseRoundTrip_TLS(t *testing.T) {
-	original := &domain.CredentialSet{
-		TLS: &domain.TLSMaterial{
+	original := &connectivity.CredentialSet{
+		TLS: &connectivity.TLSMaterial{
 			CertPEM:            "cert-data",
 			KeyPEM:             "key-data",
 			CAPEMs:             []string{"ca1", "ca2"},
@@ -333,7 +335,7 @@ func TestRepository_Get_NotFound(t *testing.T) {
 	r := New(WithClient(mock))
 	_, err := r.Get(context.Background(), "pms://prod/missing")
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrNotFound))
+	assert.True(t, errors.Is(err, shared.ErrNotFound))
 }
 
 // Verifies Get treats a nil parameter value as ErrNotFound.
@@ -349,7 +351,7 @@ func TestRepository_Get_NilValue(t *testing.T) {
 	r := New(WithClient(mock))
 	_, err := r.Get(context.Background(), "pms://x")
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrNotFound))
+	assert.True(t, errors.Is(err, shared.ErrNotFound))
 }
 
 // Verifies Create writes a SecureString parameter without overwrite.
@@ -363,8 +365,8 @@ func TestRepository_Create(t *testing.T) {
 	}
 
 	r := New(WithClient(mock))
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	}
 	err := r.Create(context.Background(), "pms://ns/path", creds)
 	require.NoError(t, err)
@@ -382,11 +384,11 @@ func TestRepository_Create_AlreadyExists(t *testing.T) {
 	}
 
 	r := New(WithClient(mock))
-	err := r.Create(context.Background(), "pms://ns/path", &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	err := r.Create(context.Background(), "pms://ns/path", &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	})
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrAlreadyExists))
+	assert.True(t, errors.Is(err, shared.ErrAlreadyExists))
 }
 
 // Verifies Update overwrites the parameter with serialized credentials.
@@ -400,8 +402,8 @@ func TestRepository_Update(t *testing.T) {
 	}
 
 	r := New(WithClient(mock))
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u2", Password: "p2"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u2", Password: "p2"},
 	}
 	err := r.Update(context.Background(), "pms://ns/path", creds, 0)
 	require.NoError(t, err)
@@ -420,11 +422,11 @@ func TestRepository_Update_VersionMismatch(t *testing.T) {
 	}
 
 	r := New(WithClient(mock))
-	err := r.Update(context.Background(), "pms://ns/path", &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	err := r.Update(context.Background(), "pms://ns/path", &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	}, 3)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrVersionMismatch))
+	assert.True(t, errors.Is(err, shared.ErrVersionMismatch))
 }
 
 // Verifies Delete removes the parameter at the resolved path.
@@ -463,7 +465,7 @@ func TestRepository_Delete_VersionCheck(t *testing.T) {
 
 	err = r.Delete(context.Background(), "pms://ns/path", 99)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrVersionMismatch))
+	assert.True(t, errors.Is(err, shared.ErrVersionMismatch))
 }
 
 // Verifies List returns pms:// URIs for parameters under the namespace.
@@ -544,19 +546,19 @@ func TestMapAWSError_Nil(t *testing.T) {
 // Verifies ParameterNotFound maps to ErrNotFound.
 func TestMapAWSError_ParameterNotFound(t *testing.T) {
 	err := mapAWSError(&ssmtypes.ParameterNotFound{})
-	assert.True(t, errors.Is(err, domain.ErrNotFound))
+	assert.True(t, errors.Is(err, shared.ErrNotFound))
 }
 
 // Verifies ParameterAlreadyExists maps to ErrAlreadyExists.
 func TestMapAWSError_ParameterAlreadyExists(t *testing.T) {
 	err := mapAWSError(&ssmtypes.ParameterAlreadyExists{})
-	assert.True(t, errors.Is(err, domain.ErrAlreadyExists))
+	assert.True(t, errors.Is(err, shared.ErrAlreadyExists))
 }
 
 // Verifies unknown AWS errors map to ErrUnavailable.
 func TestMapAWSError_GenericError(t *testing.T) {
 	err := mapAWSError(fmt.Errorf("some AWS error"))
-	assert.True(t, errors.Is(err, domain.ErrUnavailable))
+	assert.True(t, errors.Is(err, shared.ErrUnavailable))
 }
 
 // ---------------------------------------------------------------------------
@@ -573,8 +575,8 @@ func TestRepository_Get_InvalidURI(t *testing.T) {
 // Verifies Create rejects invalid URIs before calling SSM.
 func TestRepository_Create_InvalidURI(t *testing.T) {
 	r := New(WithClient(&mockSSM{}))
-	err := r.Create(context.Background(), "bad://uri", &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	err := r.Create(context.Background(), "bad://uri", &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	})
 	assert.Error(t, err)
 }

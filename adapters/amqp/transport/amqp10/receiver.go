@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -122,7 +122,7 @@ func (r *Receiver) ensureLink(ctx context.Context) error {
 func (r *Receiver) createLink(ctx context.Context) error {
 	sess := r.session.AMQPSession()
 	if sess == nil {
-		return domain.ErrUnavailable.WithMessage("amqp10: session not connected")
+		return shared.ErrUnavailable.WithMessage("amqp10: session not connected")
 	}
 	conn := r.session.Conn()
 
@@ -169,7 +169,7 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 			}
 
 			bridgeErr := MapError(err)
-			if bridgeErr != nil && bridgeErr.Class != domain.ErrorTransient {
+			if bridgeErr != nil && bridgeErr.Class != shared.ErrorTransient {
 				r.handleLinkError(err)
 				return bridgeErr
 			}
@@ -193,8 +193,8 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 			continue
 		}
 
-		r.metrics.Timer(domain.MetricAMQP10ReceiveLatency, r.clock().Since(start),
-			domain.Tag{Key: domain.TagKeyEntity, Value: r.cfg.Address})
+		r.metrics.Timer(shared.MetricAMQP10ReceiveLatency, r.clock().Since(start),
+			shared.Tag{Key: shared.TagKeyEntity, Value: r.cfg.Address})
 		backoff.reset()
 
 		if logging.TraceEnabled(r.logger) {
@@ -234,8 +234,8 @@ func (r *Receiver) handleLinkError(err error) {
 
 	if r.session != nil {
 		bridgeErr := MapError(err)
-		if bridgeErr != nil && (bridgeErr.Code == domain.ErrCodeConnectionLost ||
-			bridgeErr.Code == domain.ErrCodeUnavailable) {
+		if bridgeErr != nil && (bridgeErr.Code == shared.ErrCodeConnectionLost ||
+			bridgeErr.Code == shared.ErrCodeUnavailable) {
 			r.session.notifyDisconnect(failedConn, err)
 		}
 	}
@@ -250,7 +250,7 @@ func (r *Receiver) waitAndReconnect(ctx context.Context) error {
 	r.mu.Unlock()
 
 	if r.session == nil {
-		return domain.ErrUnavailable.WithMessage("amqp10: no session")
+		return shared.ErrUnavailable.WithMessage("amqp10: no session")
 	}
 
 	events, unsub := r.session.Subscribe()
@@ -269,7 +269,7 @@ func (r *Receiver) waitAndReconnect(ctx context.Context) error {
 				return ctx.Err()
 			case ev, ok := <-events:
 				if !ok {
-					return domain.ErrUnavailable.WithMessage("amqp10: session closed")
+					return shared.ErrUnavailable.WithMessage("amqp10: session closed")
 				}
 				if ev.Type == ports.SessionConnected || ev.Type == ports.SessionReconciled {
 					if logging.TraceEnabled(r.logger) {
@@ -301,7 +301,7 @@ connected:
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if !domain.IsRecoverableError(err) {
+		if !shared.IsRecoverableError(err) {
 			return err
 		}
 	} else if logging.TraceEnabled(r.logger) {

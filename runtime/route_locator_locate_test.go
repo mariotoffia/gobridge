@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -41,7 +41,7 @@ func TestRouteLocator_Locate_NonExclusive(t *testing.T) {
 
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID:                 "non-exclusive-route",
-		Policy:             domain.RoutePolicy{}.WithDefaults(),
+		Policy:             routing.RoutePolicy{}.WithDefaults(),
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}, receiver, sender, nil, nil)
 	if err != nil {
@@ -93,8 +93,8 @@ func TestRouteLocator_Locate_Exclusive_LocalOwner(t *testing.T) {
 	sessCfg := runtime.DefaultSessionConfig("sess-1", true)
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID: "exclusive-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		}.WithDefaults(),
 	}, receiver, sender, session, &sessCfg)
 	if err != nil {
@@ -159,8 +159,8 @@ func TestRouteLocator_Locate_Exclusive_RemoteOwner(t *testing.T) {
 	sessCfg := runtime.DefaultSessionConfig("sess-1", true)
 	err = rt.AddRoute(runtime.RouteConfig{
 		ID: "exclusive-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		}.WithDefaults(),
 	}, receiver, sender, session, &sessCfg)
 	if err != nil {
@@ -223,8 +223,8 @@ func TestRouteLocator_Locate_LeaseStoreError(t *testing.T) {
 	sessCfg := runtime.DefaultSessionConfig("sess-err", true)
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID: "err-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		}.WithDefaults(),
 	}, receiver, sender, session, &sessCfg)
 	if err != nil {
@@ -266,7 +266,7 @@ func TestRouteLocator_NilWhenNoLeaseStore(t *testing.T) {
 
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID:                 "route-1",
-		Policy:             domain.RoutePolicy{}.WithDefaults(),
+		Policy:             routing.RoutePolicy{}.WithDefaults(),
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}, receiver, sender, nil, nil)
 	if err != nil {

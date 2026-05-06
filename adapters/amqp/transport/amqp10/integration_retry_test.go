@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 )
@@ -24,7 +26,7 @@ func TestIntegration_RetryRelease(t *testing.T) {
 		Username:       user,
 		Password:       pass,
 		ConnectTimeout: 15 * time.Second,
-	}, domain.SessionEphemeral, slog.Default())
+	}, connectivity.SessionEphemeral, slog.Default())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -43,7 +45,7 @@ func TestIntegration_RetryRelease(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "retry-release-1",
 		Subject: "test.retry.release",
 		Payload: []byte(`{"action":"release"}`),
@@ -105,7 +107,7 @@ func TestIntegration_RetryModify(t *testing.T) {
 		Username:       user,
 		Password:       pass,
 		ConnectTimeout: 15 * time.Second,
-	}, domain.SessionEphemeral, slog.Default())
+	}, connectivity.SessionEphemeral, slog.Default())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -124,7 +126,7 @@ func TestIntegration_RetryModify(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "retry-modify-1",
 		Subject: "test.retry.modify",
 		Payload: []byte(`{"action":"modify"}`),
@@ -176,7 +178,7 @@ func TestIntegration_RetryModify(t *testing.T) {
 }
 
 // TestIntegration_ExtendNotSupported validates that Extend returns
-// domain.ErrNotSupported on a real delivery.
+// shared.ErrNotSupported on a real delivery.
 func TestIntegration_ExtendNotSupported(t *testing.T) {
 	ep := artemislocal.Endpoint(t)
 	user, pass := artemislocal.Credentials()
@@ -187,7 +189,7 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 		Username:       user,
 		Password:       pass,
 		ConnectTimeout: 15 * time.Second,
-	}, domain.SessionEphemeral, slog.Default())
+	}, connectivity.SessionEphemeral, slog.Default())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -206,7 +208,7 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "extend-1",
 		Subject: "test.extend",
 		Payload: []byte(`{"action":"extend"}`),
@@ -229,7 +231,7 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 
 	runErr := recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
 		err := del.Extend(recvCtx, time.Now().Add(time.Minute))
-		if !errors.Is(err, domain.ErrNotSupported) {
+		if !errors.Is(err, shared.ErrNotSupported) {
 			t.Errorf("Extend() error = %v, want ErrNotSupported", err)
 		}
 		if ackErr := del.Ack(recvCtx); ackErr != nil {

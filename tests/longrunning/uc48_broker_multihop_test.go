@@ -12,7 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -61,7 +62,7 @@ func TestUC48_BrokerDownMultiHop(t *testing.T) {
 	// --- Bridge-A: SQS-IN → SharedOutbox → MQTT ---
 	sessIDA := mqttlocal.UniqueClientID("uc48-sess-a")
 	sessA := setupMQTTSessionWithBroker(t, brokerURL, sessIDA,
-		domain.SessionExclusive, 65535, 5)
+		connectivity.SessionExclusive, 65535, 5)
 	mqttSndA := setupMQTTSender(t, sessA)
 	sqsRxA := newSQSReceiver(t, sqsInURL)
 	scA := lrSessionConfig(sessIDA)
@@ -75,13 +76,13 @@ func TestUC48_BrokerDownMultiHop(t *testing.T) {
 	)
 	require.NoError(t, rtA.AddRoute(goruntime.RouteConfig{
 		ID: "uc48-route-a",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc48-bind-a", Address: hopTopic},
+			routing.DispatchPlan{BindingID: "uc48-bind-a", Address: hopTopic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc48-bind-a", SessionID: sessIDA},
 		},
 	}, sqsRxA, mqttSndA, sessA, &scA))
@@ -94,9 +95,9 @@ func TestUC48_BrokerDownMultiHop(t *testing.T) {
 	leaseStoreB, outboxStoreB := setupDynamoStores(t)
 	rxSessIDB := mqttlocal.UniqueClientID("uc48-rxb")
 	rxSessB := setupMQTTSessionWithBroker(t, brokerURL, rxSessIDB,
-		domain.SessionExclusive, 65535, 5)
-	require.NoError(t, rxSessB.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: hopTopic, QoS: 1}},
+		connectivity.SessionExclusive, 65535, 5)
+	require.NoError(t, rxSessB.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: hopTopic, QoS: 1}},
 	}))
 	waitSubReady(t, rxSessB, 5*time.Second)
 
@@ -113,13 +114,13 @@ func TestUC48_BrokerDownMultiHop(t *testing.T) {
 	)
 	require.NoError(t, rtB.AddRoute(goruntime.RouteConfig{
 		ID: "uc48-route-b",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc48-bind-b", Address: sqsOutURL},
+			routing.DispatchPlan{BindingID: "uc48-bind-b", Address: sqsOutURL},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc48-bind-b", SessionID: rxSessIDB},
 		},
 	}, mqttRxB, sqsSndB, rxSessB, &scB))
@@ -204,7 +205,7 @@ func TestUC49_SharedOutboxVsDirectHold_BrokerFlapping(t *testing.T) {
 	// --- Path A: SharedOutbox ---
 	sessIDA := mqttlocal.UniqueClientID("uc49-sess-a")
 	sessA := setupMQTTSessionWithBroker(t, brokerURL, sessIDA,
-		domain.SessionExclusive, 65535, 5)
+		connectivity.SessionExclusive, 65535, 5)
 	sndA := setupMQTTSender(t, sessA)
 	rxA := newSQSReceiver(t, sqsInA)
 	scA := lrSessionConfig(sessIDA)
@@ -218,14 +219,14 @@ func TestUC49_SharedOutboxVsDirectHold_BrokerFlapping(t *testing.T) {
 	)
 	require.NoError(t, rtA.AddRoute(goruntime.RouteConfig{
 		ID: "uc49-route-a",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 			MaxInFlight:  100,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc49-bind-a", Address: topicA},
+			routing.DispatchPlan{BindingID: "uc49-bind-a", Address: topicA},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc49-bind-a", SessionID: sessIDA},
 		},
 	}, rxA, sndA, sessA, &scA))
@@ -235,7 +236,7 @@ func TestUC49_SharedOutboxVsDirectHold_BrokerFlapping(t *testing.T) {
 	// --- Path B: DirectHold ---
 	sessIDB := mqttlocal.UniqueClientID("uc49-sess-b")
 	sessB := setupMQTTSessionWithBroker(t, brokerURL, sessIDB,
-		domain.SessionExclusive, 65535, 5)
+		connectivity.SessionExclusive, 65535, 5)
 	sndB := setupMQTTSender(t, sessB)
 	rxB := newSQSReceiver(t, sqsInB)
 
@@ -246,12 +247,12 @@ func TestUC49_SharedOutboxVsDirectHold_BrokerFlapping(t *testing.T) {
 	)
 	require.NoError(t, rtB.AddRoute(goruntime.RouteConfig{
 		ID: "uc49-route-b",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  100,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc49-bind-b", Address: topicB},
+			routing.DispatchPlan{BindingID: "uc49-bind-b", Address: topicB},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, rxB, sndB, sessB, nil))
@@ -345,7 +346,7 @@ func TestUC50_SessionExpiryDuringProcessing(t *testing.T) {
 		CleanStart:            true,
 		SessionExpiryInterval: 5,
 		ReceiveMaximum:        65535,
-	}, domain.SessionExclusive, nil)
+	}, connectivity.SessionExclusive, nil)
 	require.NoError(t, sess.Start(ctx))
 	select {
 	case <-sess.Events():
@@ -363,12 +364,12 @@ func TestUC50_SessionExpiryDuringProcessing(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc50-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  10,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc50-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc50-bind", Address: outTopic},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, rx, snd, sess, nil))
@@ -428,14 +429,14 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 		ConnectTimeout:        15 * time.Second,
 		CleanStart:            false,
 		SessionExpiryInterval: 300,
-	}, domain.SessionPersistent, testLogger(t))
+	}, connectivity.SessionPersistent, testLogger(t))
 	require.NoError(t, colSess.Start(ctx))
 	select {
 	case <-colSess.Events():
 	case <-time.After(5 * time.Second):
 	}
-	require.NoError(t, colSess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: outTopic, QoS: 1}},
+	require.NoError(t, colSess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: outTopic, QoS: 1}},
 	}))
 	waitSubReady(t, colSess, 5*time.Second)
 
@@ -461,7 +462,7 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 	// Bridge with SharedOutbox. KeepAlive=5 for fast reconnection.
 	sessID := mqttlocal.UniqueClientID("uc51-sess")
 	sess := setupMQTTSessionWithBroker(t, brokerURL, sessID,
-		domain.SessionExclusive, 65535, 5)
+		connectivity.SessionExclusive, 65535, 5)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessID)
@@ -475,14 +476,14 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc51-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:      domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:      routing.DeliverySharedOutbox,
 			MaxReplayAttempts: 50,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc51-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc51-bind", Address: outTopic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc51-bind", SessionID: sessID},
 		},
 	}, rx, snd, sess, &sc))

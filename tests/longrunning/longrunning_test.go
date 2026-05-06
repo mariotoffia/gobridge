@@ -20,7 +20,11 @@ import (
 	dboutbox "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
@@ -179,7 +183,7 @@ func newSQSSender(t *testing.T, queueURL string) *sqsadapter.Sender {
 // ---------------------------------------------------------------------------
 
 func setupMQTTSession(
-	t *testing.T, clientID string, mode domain.SessionMode,
+	t *testing.T, clientID string, mode connectivity.SessionMode,
 ) *paho.Session {
 	t.Helper()
 	url := mqttlocal.BrokerURL(t)
@@ -218,7 +222,7 @@ func setupMQTTSender(t *testing.T, sess *paho.Session) *paho.Sender {
 
 type mqttCollector struct {
 	mu       sync.Mutex
-	messages []*domain.Envelope
+	messages []*messaging.Envelope
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 }
@@ -237,7 +241,7 @@ func newMQTTCollector(
 		ConnectTimeout: 15 * time.Second,
 		CleanStart:     true,
 		ReceiveMaximum: 65534,
-	}, domain.SessionEphemeral, testLogger(t))
+	}, connectivity.SessionEphemeral, testLogger(t))
 
 	ctx := context.Background()
 	require.NoError(t, sess.Start(ctx), "collector Start")
@@ -266,8 +270,8 @@ func newMQTTCollector(
 		})
 	}()
 
-	require.NoError(t, sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	require.NoError(t, sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}), "collector Reconcile")
 	waitSubReady(t, sess, 5*time.Second)
 
@@ -286,10 +290,10 @@ func (c *mqttCollector) count() int {
 	return len(c.messages)
 }
 
-func (c *mqttCollector) getMessages() []*domain.Envelope {
+func (c *mqttCollector) getMessages() []*messaging.Envelope {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	cp := make([]*domain.Envelope, len(c.messages))
+	cp := make([]*messaging.Envelope, len(c.messages))
 	copy(cp, c.messages)
 	return cp
 }
@@ -360,7 +364,7 @@ func lrSessionConfig(sessionID string) goruntime.SessionConfig {
 	cfg.RenewInterval = 400 * time.Millisecond
 	cfg.RenewJitter = 50 * time.Millisecond
 	cfg.StepDownGrace = 500 * time.Millisecond
-	cfg.DrainStrategy = domain.NewFixedPoll(200 * time.Millisecond)
+	cfg.DrainStrategy = persistence.NewFixedPoll(200 * time.Millisecond)
 	cfg.DrainBatchSize = 100
 	return cfg
 }
@@ -488,20 +492,20 @@ func assertMessageCount(t *testing.T, name string, got, want int) {
 
 type lrDLQStore struct {
 	mu      sync.Mutex
-	entries []domain.DLQEntry
+	entries []routing.DLQEntry
 }
 
-func (s *lrDLQStore) Write(_ context.Context, entry domain.DLQEntry) error {
+func (s *lrDLQStore) Write(_ context.Context, entry routing.DLQEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.entries = append(s.entries, entry)
 	return nil
 }
 
-func (s *lrDLQStore) List(_ context.Context, _ domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *lrDLQStore) List(_ context.Context, _ routing.DLQFilter) ([]routing.DLQEntry, error) {
 	return nil, nil
 }
-func (s *lrDLQStore) Get(_ context.Context, id string) (domain.DLQEntry, error) {
+func (s *lrDLQStore) Get(_ context.Context, id string) (routing.DLQEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, e := range s.entries {
@@ -509,11 +513,11 @@ func (s *lrDLQStore) Get(_ context.Context, id string) (domain.DLQEntry, error) 
 			return e, nil
 		}
 	}
-	return domain.DLQEntry{}, domain.ErrNotFound
+	return routing.DLQEntry{}, shared.ErrNotFound
 }
 
 func (s *lrDLQStore) Delete(_ context.Context, _ []string) (int, error) { return 0, nil }
-func (s *lrDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error) {
+func (s *lrDLQStore) DeleteByFilter(_ context.Context, _ routing.DLQFilter) (int, error) {
 	return 0, nil
 }
 func (s *lrDLQStore) Purge(_ context.Context, _ time.Time) (int, error) { return 0, nil }
@@ -524,10 +528,10 @@ func (s *lrDLQStore) count() int {
 	return len(s.entries)
 }
 
-func (s *lrDLQStore) getEntries() []domain.DLQEntry {
+func (s *lrDLQStore) getEntries() []routing.DLQEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := make([]domain.DLQEntry, len(s.entries))
+	cp := make([]routing.DLQEntry, len(s.entries))
 	copy(cp, s.entries)
 	return cp
 }

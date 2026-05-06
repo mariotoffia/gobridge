@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 )
@@ -31,7 +32,7 @@ func TestIntegration_SendReceive(t *testing.T) {
 		Password:       pass,
 		ConnectTimeout: 15 * time.Second,
 		IdleTimeout:    1 * time.Minute,
-	}, domain.SessionEphemeral, slog.Default())
+	}, connectivity.SessionEphemeral, slog.Default())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -51,7 +52,7 @@ func TestIntegration_SendReceive(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        "integ-msg-1",
 		Subject:   "test.integration",
 		Payload:   []byte(`{"key":"value"}`),
@@ -77,7 +78,7 @@ func TestIntegration_SendReceive(t *testing.T) {
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
 
-	var received *domain.Envelope
+	var received *messaging.Envelope
 	runErr := recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
 		received = del.Envelope()
 		if err := del.Ack(recvCtx); err != nil {
@@ -114,7 +115,7 @@ func TestIntegration_SendBatch(t *testing.T) {
 		Username:       user,
 		Password:       pass,
 		ConnectTimeout: 15 * time.Second,
-	}, domain.SessionEphemeral, slog.Default())
+	}, connectivity.SessionEphemeral, slog.Default())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -133,7 +134,7 @@ func TestIntegration_SendBatch(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	envs := []*domain.Envelope{
+	envs := []*messaging.Envelope{
 		{ID: "batch-1", Payload: []byte("one")},
 		{ID: "batch-2", Payload: []byte("two")},
 		{ID: "batch-3", Payload: []byte("three")},
@@ -159,7 +160,7 @@ func TestIntegration_SendBatch(t *testing.T) {
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
 
-	var received []*domain.Envelope
+	var received []*messaging.Envelope
 	_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
 		received = append(received, del.Envelope())
 		if err := del.Ack(recvCtx); err != nil {
@@ -195,7 +196,7 @@ func TestIntegration_SessionHealth(t *testing.T) {
 		Username:       user,
 		Password:       pass,
 		ConnectTimeout: 15 * time.Second,
-	}, domain.SessionEphemeral, slog.Default())
+	}, connectivity.SessionEphemeral, slog.Default())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

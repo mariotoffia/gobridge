@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -131,7 +131,7 @@ func TestNumericCompare_LargeInt64Precision(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Headers: map[string]any{"val": v1},
 	}
 	ctx := newEvalContext()
@@ -156,7 +156,7 @@ func TestConditionEval_Equals_StringFastPath(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Headers: map[string]any{"type": "order"},
 	}
 	ctx := newEvalContext()
@@ -181,7 +181,7 @@ func TestConditionEval_In_StringSlice(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Headers: map[string]any{"status": "active"},
 	}
 	ctx := newEvalContext()
@@ -206,7 +206,7 @@ func TestConditionEval_Exists_True(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Headers: map[string]any{"key": "val"},
 	}
 	ctx := newEvalContext()
@@ -231,7 +231,7 @@ func TestConditionEval_Exists_False(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Headers: map[string]any{},
 	}
 	ctx := newEvalContext()
@@ -255,7 +255,7 @@ func TestConditionEval_PayloadPath(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Payload: []byte(`{"order": {"status": "shipped", "id": 123}}`),
 	}
 	ctx := newEvalContext()
@@ -280,7 +280,7 @@ func TestConditionEval_UnsupportedOperator(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Headers: map[string]any{"key": "val"},
 	}
 	ctx := newEvalContext()

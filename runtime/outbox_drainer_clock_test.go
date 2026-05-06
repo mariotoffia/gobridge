@@ -7,8 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -50,29 +53,29 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 	const interval = 1 * time.Second
 	const ownerID = "bridge-1"
 	const sessionID = "sess-clock-poll"
-	token := domain.LeaseToken{Version: 1, Owner: ownerID}
+	token := persistence.LeaseToken{Version: 1, Owner: ownerID}
 
 	outbox := NewFakeOutboxStore()
 	sender := NewFakeSender()
 	leaseStore := NewFakeLeaseStore()
 	dlqStore := NewFakeDLQStore()
 
-	pk := domain.OutboxPartitionKey(sessionID, "")
+	pk := persistence.OutboxPartitionKey(sessionID, "")
 	if _, err := leaseStore.Acquire(context.Background(), sessionID, ownerID, 30*time.Second, nil); err != nil {
 		t.Fatalf("acquire lease: %v", err)
 	}
 
 	persistRecord := func(id, envID string) {
-		rec := domain.OutboxRecord{
+		rec := persistence.OutboxRecord{
 			ID:         id,
 			RouteID:    "route-1",
 			EnvelopeID: envID,
 			BindingID:  "bind-1",
 			SessionID:  sessionID,
-			Envelope:   domain.Envelope{ID: envID, Payload: []byte("payload")},
-			Status:     domain.OutboxPending,
+			Envelope:   messaging.Envelope{ID: envID, Payload: []byte("payload")},
+			Status:     persistence.OutboxPending,
 		}
-		if err := outbox.Persist(context.Background(), []domain.OutboxRecord{rec}); err != nil {
+		if err := outbox.Persist(context.Background(), []persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist %s: %v", id, err)
 		}
 	}
@@ -89,14 +92,14 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 		PartitionKey:        pk,
 		LeaseID:             sessionID,
 		OwnerID:             ownerID,
-		Policy:              domain.RoutePolicy{}.WithDefaults(),
+		Policy:              routing.RoutePolicy{}.WithDefaults(),
 		Strategy:            fixedNoJitterStrategy{d: interval},
 		DrainBatchSize:      100,
 		DrainMaxBatchSize:   100,
 		DrainMaxConcurrency: 4,
 		DrainTimeout:        5 * time.Second,
 		Clock:               fake,
-		TokenFn:             func() (domain.LeaseToken, bool) { return token, true },
+		TokenFn:             func() (persistence.LeaseToken, bool) { return token, true },
 		OnBatchComplete:     func(n int) { batchCh <- n },
 	}
 	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
@@ -174,32 +177,32 @@ func TestOutboxDrainer_DrainLatencyUsesInjectedClock(t *testing.T) {
 	const sendDuration = 250 * time.Millisecond
 	const ownerID = "bridge-1"
 	const sessionID = "sess-clock-latency"
-	token := domain.LeaseToken{Version: 1, Owner: ownerID}
+	token := persistence.LeaseToken{Version: 1, Owner: ownerID}
 
 	outbox := NewFakeOutboxStore()
 	sender := NewFakeSender()
-	sender.SendFn = func(*domain.Envelope) error {
+	sender.SendFn = func(*messaging.Envelope) error {
 		fake.Advance(sendDuration)
 		return nil
 	}
 	leaseStore := NewFakeLeaseStore()
 	dlqStore := NewFakeDLQStore()
 
-	pk := domain.OutboxPartitionKey(sessionID, "")
+	pk := persistence.OutboxPartitionKey(sessionID, "")
 	if _, err := leaseStore.Acquire(context.Background(), sessionID, ownerID, 30*time.Second, nil); err != nil {
 		t.Fatalf("acquire lease: %v", err)
 	}
 
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         "rec-1",
 		RouteID:    "route-1",
 		EnvelopeID: "env-1",
 		BindingID:  "bind-1",
 		SessionID:  sessionID,
-		Envelope:   domain.Envelope{ID: "env-1", Payload: []byte("payload")},
-		Status:     domain.OutboxPending,
+		Envelope:   messaging.Envelope{ID: "env-1", Payload: []byte("payload")},
+		Status:     persistence.OutboxPending,
 	}
-	if err := outbox.Persist(context.Background(), []domain.OutboxRecord{rec}); err != nil {
+	if err := outbox.Persist(context.Background(), []persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist record: %v", err)
 	}
 
@@ -213,7 +216,7 @@ func TestOutboxDrainer_DrainLatencyUsesInjectedClock(t *testing.T) {
 		PartitionKey:        pk,
 		LeaseID:             sessionID,
 		OwnerID:             ownerID,
-		Policy:              domain.RoutePolicy{}.WithDefaults(),
+		Policy:              routing.RoutePolicy{}.WithDefaults(),
 		Strategy:            fixedNoJitterStrategy{d: interval},
 		DrainBatchSize:      100,
 		DrainMaxBatchSize:   100,
@@ -221,7 +224,7 @@ func TestOutboxDrainer_DrainLatencyUsesInjectedClock(t *testing.T) {
 		DrainTimeout:        5 * time.Second,
 		Metrics:             metrics,
 		Clock:               fake,
-		TokenFn:             func() (domain.LeaseToken, bool) { return token, true },
+		TokenFn:             func() (persistence.LeaseToken, bool) { return token, true },
 		OnBatchComplete:     func(n int) { batchCh <- n },
 	})
 
@@ -250,7 +253,7 @@ func TestOutboxDrainer_DrainLatencyUsesInjectedClock(t *testing.T) {
 		t.Fatal("batch did not fire after fake-clock advance")
 	}
 
-	entries := metrics.FindEntries(domain.MetricOutboxDrainLatency)
+	entries := metrics.FindEntries(shared.MetricOutboxDrainLatency)
 	if len(entries) != 1 {
 		t.Fatalf("expected one drain latency metric, got %d", len(entries))
 	}

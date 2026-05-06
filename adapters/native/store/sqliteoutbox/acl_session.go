@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/shared"
 
 	// Driver registration. The blank import lives in this ACL file so
 	// it never leaks into the port-side outbox.go.
@@ -54,9 +55,9 @@ func (s *sqlSession) close() error {
 }
 
 // persist inserts records under a single transaction. Duplicate
-// records are translated to domain.ErrDuplicateRecord at the SDK
+// records are translated to shared.ErrDuplicateRecord at the SDK
 // boundary.
-func (s *sqlSession) persist(ctx context.Context, records []domain.OutboxRecord, clk clock.Clock) error {
+func (s *sqlSession) persist(ctx context.Context, records []persistence.OutboxRecord, clk clock.Clock) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return wrapErr(err, "sqliteoutbox: begin tx", "recordCount", len(records))
@@ -101,7 +102,7 @@ func (s *sqlSession) persist(ctx context.Context, records []domain.OutboxRecord,
 		)
 		if err != nil {
 			if isUniqueViolation(err) {
-				return domain.ErrDuplicateRecord.
+				return shared.ErrDuplicateRecord.
 					WithMessage("duplicate outbox record").
 					With("envelopeID", r.EnvelopeID).
 					With("bindingID", r.BindingID)
@@ -112,7 +113,7 @@ func (s *sqlSession) persist(ctx context.Context, records []domain.OutboxRecord,
 
 		n, _ := res.RowsAffected()
 		if n == 0 {
-			return domain.ErrDuplicateRecord.
+			return shared.ErrDuplicateRecord.
 				WithMessage("duplicate outbox record").
 				With("envelopeID", r.EnvelopeID).
 				With("bindingID", r.BindingID)
@@ -127,7 +128,7 @@ func (s *sqlSession) persist(ctx context.Context, records []domain.OutboxRecord,
 
 // claim selects up to limit claimable IDs and atomically flips them to
 // claimed under the supplied owner+version, then hydrates the rows.
-func (s *sqlSession) claim(ctx context.Context, pk string, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error) {
+func (s *sqlSession) claim(ctx context.Context, pk string, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, wrapErr(err, "sqliteoutbox: begin tx claim", "partitionKey", pk)
@@ -177,7 +178,7 @@ func (s *sqlSession) claim(ctx context.Context, pk string, ownerID string, token
 }
 
 // fetchByIDs hydrates records by ID using the canonical column list.
-func (s *sqlSession) fetchByIDs(ctx context.Context, ids []string) ([]domain.OutboxRecord, error) {
+func (s *sqlSession) fetchByIDs(ctx context.Context, ids []string) ([]persistence.OutboxRecord, error) {
 	args := make([]any, len(ids))
 	for i, id := range ids {
 		args[i] = id
@@ -195,7 +196,7 @@ func (s *sqlSession) fetchByIDs(ctx context.Context, ids []string) ([]domain.Out
 // complete marks records as completed iff their claim_version still
 // matches token.Version. If fewer rows were updated than requested
 // the claim has been preempted and ErrStaleFencingToken is returned.
-func (s *sqlSession) complete(ctx context.Context, recordIDs []string, token domain.LeaseToken, now time.Time) error {
+func (s *sqlSession) complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken, now time.Time) error {
 	if len(recordIDs) == 0 {
 		return nil
 	}
@@ -215,7 +216,7 @@ func (s *sqlSession) complete(ctx context.Context, recordIDs []string, token dom
 
 	n, _ := res.RowsAffected()
 	if n < int64(len(recordIDs)) {
-		return domain.ErrStaleFencingToken.
+		return shared.ErrStaleFencingToken.
 			WithMessage("claim version mismatch on complete")
 	}
 	return nil
@@ -233,7 +234,7 @@ func (s *sqlSession) expire(ctx context.Context, before time.Time) (int, error) 
 }
 
 // queryPending returns up to limit pending records under partition pk.
-func (s *sqlSession) queryPending(ctx context.Context, pk string, limit int) ([]domain.OutboxRecord, error) {
+func (s *sqlSession) queryPending(ctx context.Context, pk string, limit int) ([]persistence.OutboxRecord, error) {
 	rows, err := s.db.QueryContext(ctx, selectPendingByPartitionSQL, pk, limit)
 	if err != nil {
 		return nil, wrapErr(err, "sqliteoutbox: query pending", "partitionKey", pk)

@@ -14,7 +14,9 @@ import (
 	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
@@ -254,7 +256,7 @@ func newCfgFakeSession() *cfgFakeSession {
 }
 
 func (s *cfgFakeSession) Start(_ context.Context) error { return nil }
-func (s *cfgFakeSession) Reconcile(_ context.Context, _ domain.SessionPlan) error {
+func (s *cfgFakeSession) Reconcile(_ context.Context, _ connectivity.SessionPlan) error {
 	return nil
 }
 func (s *cfgFakeSession) Health(_ context.Context) ports.SessionHealth {
@@ -274,7 +276,7 @@ func (r *cfgFakeReceiver) Run(ctx context.Context, _ func(context.Context, ports
 // cfgFakeSender implements ports.Sender. No-op send.
 type cfgFakeSender struct{}
 
-func (s *cfgFakeSender) Send(_ context.Context, _ *domain.Envelope) error { return nil }
+func (s *cfgFakeSender) Send(_ context.Context, _ *messaging.Envelope) error { return nil }
 
 // cfgFakeTransportFactory implements ports.TransportFactory for test configs
 // that use transport="fake".
@@ -346,31 +348,33 @@ func (f *cfgExclusiveTransportFactory) Capabilities() []ports.Capability {
 
 type cfgFakeLeaseStore struct{}
 
-func (s *cfgFakeLeaseStore) Acquire(_ context.Context, _ string, _ string, _ time.Duration, _ map[string]string) (domain.LeaseToken, error) {
-	return domain.LeaseToken{Version: 1, Owner: "test"}, nil
+func (s *cfgFakeLeaseStore) Acquire(_ context.Context, _ string, _ string, _ time.Duration, _ map[string]string) (persistence.LeaseToken, error) {
+	return persistence.LeaseToken{Version: 1, Owner: "test"}, nil
 }
-func (s *cfgFakeLeaseStore) Renew(_ context.Context, _ string, tok domain.LeaseToken, _ time.Duration, _ map[string]string) (domain.LeaseToken, error) {
+func (s *cfgFakeLeaseStore) Renew(_ context.Context, _ string, tok persistence.LeaseToken, _ time.Duration, _ map[string]string) (persistence.LeaseToken, error) {
 	tok.Version++
 	return tok, nil
 }
-func (s *cfgFakeLeaseStore) Release(_ context.Context, _ string, _ domain.LeaseToken) error {
+func (s *cfgFakeLeaseStore) Release(_ context.Context, _ string, _ persistence.LeaseToken) error {
 	return nil
 }
-func (s *cfgFakeLeaseStore) Current(_ context.Context, _ string) (domain.LeaseInfo, error) {
-	return domain.LeaseInfo{}, nil
+func (s *cfgFakeLeaseStore) Current(_ context.Context, _ string) (persistence.LeaseInfo, error) {
+	return persistence.LeaseInfo{}, nil
 }
 
 type cfgFakeOutboxStore struct{}
 
-func (s *cfgFakeOutboxStore) Persist(_ context.Context, _ []domain.OutboxRecord) error { return nil }
-func (s *cfgFakeOutboxStore) Claim(_ context.Context, _ string, _ string, _ domain.LeaseToken, _ int) ([]domain.OutboxRecord, error) {
+func (s *cfgFakeOutboxStore) Persist(_ context.Context, _ []persistence.OutboxRecord) error {
+	return nil
+}
+func (s *cfgFakeOutboxStore) Claim(_ context.Context, _ string, _ string, _ persistence.LeaseToken, _ int) ([]persistence.OutboxRecord, error) {
 	return nil, nil
 }
-func (s *cfgFakeOutboxStore) Complete(_ context.Context, _ []string, _ domain.LeaseToken) error {
+func (s *cfgFakeOutboxStore) Complete(_ context.Context, _ []string, _ persistence.LeaseToken) error {
 	return nil
 }
 func (s *cfgFakeOutboxStore) Expire(_ context.Context, _ time.Time) (int, error) { return 0, nil }
-func (s *cfgFakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]domain.OutboxRecord, error) {
+func (s *cfgFakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]persistence.OutboxRecord, error) {
 	return nil, nil
 }
 

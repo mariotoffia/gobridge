@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // mockT captures Errorf/Fatalf calls for verification.
@@ -40,7 +40,7 @@ func (m *mockT) errCount() int {
 // -----------------------------------------------------------------------
 
 func TestTag_SetsHeaderAndPayloadTID(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Subject: "test-topic",
 		Payload: []byte(`{"key":"value"}`),
 	}
@@ -65,7 +65,7 @@ func TestTag_SetsHeaderAndPayloadTID(t *testing.T) {
 }
 
 func TestTag_EmptyPayload(t *testing.T) {
-	env := &domain.Envelope{Payload: nil}
+	env := &messaging.Envelope{Payload: nil}
 	tid, _ := Tag(env)
 	if tid == "" {
 		t.Fatal("Tag returned empty TID for nil payload")
@@ -77,7 +77,7 @@ func TestTag_EmptyPayload(t *testing.T) {
 }
 
 func TestTag_NonJSONPayload(t *testing.T) {
-	env := &domain.Envelope{Payload: []byte("plain text")}
+	env := &messaging.Envelope{Payload: []byte("plain text")}
 	tid, _ := Tag(env)
 	got := ExtractTID(env)
 	if got != tid {
@@ -90,7 +90,7 @@ func TestTag_NonJSONPayload(t *testing.T) {
 }
 
 func TestExtractTID_HeaderFallback(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Payload: []byte(`{"_tid":"from-payload","key":"value"}`),
 	}
 	got := ExtractTID(env)
@@ -100,7 +100,7 @@ func TestExtractTID_HeaderFallback(t *testing.T) {
 }
 
 func TestExtractTID_Empty(t *testing.T) {
-	env := &domain.Envelope{Payload: []byte("not json")}
+	env := &messaging.Envelope{Payload: []byte("not json")}
 	got := ExtractTID(env)
 	if got != "" {
 		t.Fatalf("ExtractTID should be empty for no-header+no-json, got %q", got)
@@ -108,9 +108,9 @@ func TestExtractTID_Empty(t *testing.T) {
 }
 
 func TestTagN(t *testing.T) {
-	envs := make([]*domain.Envelope, 5)
+	envs := make([]*messaging.Envelope, 5)
 	for i := range envs {
-		envs[i] = &domain.Envelope{
+		envs[i] = &messaging.Envelope{
 			Subject: fmt.Sprintf("topic-%d", i),
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
 		}
@@ -133,12 +133,12 @@ func TestTagN(t *testing.T) {
 // -----------------------------------------------------------------------
 
 func TestReceivedFromEnvelopes(t *testing.T) {
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		Payload: []byte(`{"key":"val"}`),
 		Subject: "s",
 	}
 	tid, _ := Tag(env)
-	rx := ReceivedFromEnvelopes([]*domain.Envelope{env})
+	rx := ReceivedFromEnvelopes([]*messaging.Envelope{env})
 	if len(rx) != 1 {
 		t.Fatalf("len=%d, want 1", len(rx))
 	}

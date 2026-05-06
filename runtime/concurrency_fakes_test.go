@@ -5,7 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // ConcurrentSender is a test sender that does NOT hold a mutex during
@@ -13,17 +13,17 @@ import (
 // required for tests that measure concurrency peaks — the standard
 // FakeSender serializes through its mu.Lock.
 type ConcurrentSender struct {
-	sendFn    func(*domain.Envelope) error
+	sendFn    func(*messaging.Envelope) error
 	mu        sync.Mutex
-	sent      []*domain.Envelope
+	sent      []*messaging.Envelope
 	sentCount int64
 }
 
-func NewConcurrentSender(fn func(*domain.Envelope) error) *ConcurrentSender {
+func NewConcurrentSender(fn func(*messaging.Envelope) error) *ConcurrentSender {
 	return &ConcurrentSender{sendFn: fn}
 }
 
-func (s *ConcurrentSender) Send(_ context.Context, env *domain.Envelope) error {
+func (s *ConcurrentSender) Send(_ context.Context, env *messaging.Envelope) error {
 	if err := s.sendFn(env); err != nil {
 		return err
 	}
@@ -38,10 +38,10 @@ func (s *ConcurrentSender) SentCount() int {
 	return int(atomic.LoadInt64(&s.sentCount))
 }
 
-func (s *ConcurrentSender) GetSent() []*domain.Envelope {
+func (s *ConcurrentSender) GetSent() []*messaging.Envelope {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := make([]*domain.Envelope, len(s.sent))
+	cp := make([]*messaging.Envelope, len(s.sent))
 	copy(cp, s.sent)
 	return cp
 }

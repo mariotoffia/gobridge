@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -42,7 +45,7 @@ func TestOutboxDrainer_WorkCtxNotCappedBySendTimeout(t *testing.T) {
 	var sendInvoked atomic.Bool
 
 	ctxSender := &ContextAwareSender{
-		sendFn: func(ctx context.Context, _ *domain.Envelope) error {
+		sendFn: func(ctx context.Context, _ *messaging.Envelope) error {
 			sendInvoked.Store(true)
 			select {
 			case <-time.After(800 * time.Millisecond):
@@ -53,12 +56,12 @@ func TestOutboxDrainer_WorkCtxNotCappedBySendTimeout(t *testing.T) {
 		},
 	}
 
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox := NewFakeOutboxStore()
 	dlqStore := NewFakeDLQStore()
 	leaseStore := NewFakeLeaseStore()
 
-	pk := domain.OutboxPartitionKey("sess-1", "")
+	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	var tokenCalls atomic.Int32
@@ -71,32 +74,32 @@ func TestOutboxDrainer_WorkCtxNotCappedBySendTimeout(t *testing.T) {
 		PartitionKey: pk,
 		LeaseID:      "sess-1",
 		OwnerID:      token.Owner,
-		Policy: domain.RoutePolicy{
+		Policy: routing.RoutePolicy{
 			SendTimeout: 2 * time.Second,
 		}.WithDefaults(),
-		Strategy:     domain.NewFixedPoll(50 * time.Millisecond),
+		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainTimeout: 5 * time.Second,
 		// Threshold: 1 (Run loop) + 1 (pre-send check) = 2.
-		TokenFn: func() (domain.LeaseToken, bool) {
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			if tokenCalls.Add(1) <= 2 {
 				return token, true
 			}
-			return domain.LeaseToken{}, false
+			return persistence.LeaseToken{}, false
 		},
 	}
 	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
 
 	ctx := context.Background()
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         "rec-m1",
 		RouteID:    "route-1",
 		EnvelopeID: "env-m1",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   domain.Envelope{ID: "env-m1", Payload: []byte("data")},
-		Status:     domain.OutboxPending,
+		Envelope:   messaging.Envelope{ID: "env-m1", Payload: []byte("data")},
+		Status:     persistence.OutboxPending,
 	}
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{rec})
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -128,17 +131,17 @@ func TestOutboxDrainer_WorkCtxNotCappedBySendTimeout(t *testing.T) {
 func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 
-	token := domain.LeaseToken{Version: 1, Owner: "bridge-1"}
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox := NewFakeOutboxStore()
 	dlqStore := NewFakeDLQStore()
 	leaseStore := NewFakeLeaseStore()
 	sender := NewFakeSender()
 
-	pk := domain.OutboxPartitionKey("sess-1", "")
+	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
-	outbox.CompleteFn = func(_ []string, _ domain.LeaseToken) error {
-		return domain.ErrStaleFencingToken
+	outbox.CompleteFn = func(_ []string, _ persistence.LeaseToken) error {
+		return shared.ErrStaleFencingToken
 	}
 
 	var tokenCalls atomic.Int32
@@ -151,30 +154,30 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 		PartitionKey: pk,
 		LeaseID:      "sess-1",
 		OwnerID:      token.Owner,
-		Policy:       domain.RoutePolicy{}.WithDefaults(),
-		Strategy:     domain.NewFixedPoll(50 * time.Millisecond),
+		Policy:       routing.RoutePolicy{}.WithDefaults(),
+		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
 		Metrics:      rec,
 		// Threshold: 1 (Run loop) + 1 (pre-send check) = 2.
-		TokenFn: func() (domain.LeaseToken, bool) {
+		TokenFn: func() (persistence.LeaseToken, bool) {
 			if tokenCalls.Add(1) <= 2 {
 				return token, true
 			}
-			return domain.LeaseToken{}, false
+			return persistence.LeaseToken{}, false
 		},
 	}
 	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
 
 	ctx := context.Background()
-	outboxRec := domain.OutboxRecord{
+	outboxRec := persistence.OutboxRecord{
 		ID:         "rec-m3",
 		RouteID:    "route-1",
 		EnvelopeID: "env-m3",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   domain.Envelope{ID: "env-m3", Payload: []byte("data")},
-		Status:     domain.OutboxPending,
+		Envelope:   messaging.Envelope{ID: "env-m3", Payload: []byte("data")},
+		Status:     persistence.OutboxPending,
 	}
-	_ = outbox.Persist(ctx, []domain.OutboxRecord{outboxRec})
+	_ = outbox.Persist(ctx, []persistence.OutboxRecord{outboxRec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
@@ -184,7 +187,7 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 		t.Fatal("sender should have been invoked")
 	}
 
-	completions := rec.FindEntries(domain.MetricOutboxCompletions)
+	completions := rec.FindEntries(shared.MetricOutboxCompletions)
 	if len(completions) != 0 {
 		t.Fatalf("MetricOutboxCompletions should NOT be emitted when Complete fails, got %d", len(completions))
 	}
@@ -199,8 +202,8 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 // TestRoutePolicy_WithDefaults_GuardsNegativeSendTimeout validates that
 // a negative SendTimeout is replaced by the default.
 func TestRoutePolicy_WithDefaults_GuardsNegativeSendTimeout(t *testing.T) {
-	p := domain.RoutePolicy{SendTimeout: -1 * time.Second}.WithDefaults()
-	if p.SendTimeout != domain.DefaultSendTimeout {
-		t.Fatalf("expected SendTimeout=%v for negative input, got %v", domain.DefaultSendTimeout, p.SendTimeout)
+	p := routing.RoutePolicy{SendTimeout: -1 * time.Second}.WithDefaults()
+	if p.SendTimeout != routing.DefaultSendTimeout {
+		t.Fatalf("expected SendTimeout=%v for negative input, got %v", routing.DefaultSendTimeout, p.SendTimeout)
 	}
 }

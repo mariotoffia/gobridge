@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -56,26 +56,26 @@ func TestBug5_MapError_MissesUpperCaseConnectionRefused(t *testing.T) {
 	tests := []struct {
 		name        string
 		errMsg      string
-		wantCode    domain.ErrorCode // what the buggy code actually returns
-		correctCode domain.ErrorCode // what it should return
+		wantCode    shared.ErrorCode // what the buggy code actually returns
+		correctCode shared.ErrorCode // what it should return
 	}{
 		{
 			"exact lowercase",
 			"connection refused",
-			domain.ErrConnectionLost.Code,
-			domain.ErrConnectionLost.Code,
+			shared.ErrConnectionLost.Code,
+			shared.ErrConnectionLost.Code,
 		},
 		{
 			"Title Case (fixed)",
 			"Connection Refused",
-			domain.ErrConnectionLost.Code, // fixed: case-insensitive match
-			domain.ErrConnectionLost.Code,
+			shared.ErrConnectionLost.Code, // fixed: case-insensitive match
+			shared.ErrConnectionLost.Code,
 		},
 		{
 			"embedded Title (fixed)",
 			"dial tcp: Connection Refused by peer",
-			domain.ErrConnectionLost.Code, // fixed: case-insensitive match
-			domain.ErrConnectionLost.Code,
+			shared.ErrConnectionLost.Code, // fixed: case-insensitive match
+			shared.ErrConnectionLost.Code,
 		},
 	}
 

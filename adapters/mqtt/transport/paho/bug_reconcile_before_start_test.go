@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -65,10 +65,10 @@ func TestBugA_ReconcileBeforeStart_DoesNotLeaveStartCtxNilOnFirstCallback(t *tes
 		ClientID:       "bug-a-startctx-invariant",
 		KeepAlive:      5,
 		ConnectTimeout: 400 * time.Millisecond,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
-	if err := s.Reconcile(context.Background(), domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "bug-a/inv", QoS: 1}},
+	if err := s.Reconcile(context.Background(), connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "bug-a/inv", QoS: 1}},
 	}); err == nil {
 		t.Fatal("Reconcile-before-Start must error")
 	}
@@ -120,11 +120,11 @@ func TestBugA_StartCtx_AssignedBeforeAwaitConnection(t *testing.T) {
 		ClientID:       "bug-a-startctx-assigned",
 		KeepAlive:      5,
 		ConnectTimeout: 600 * time.Millisecond,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	// Set a plan first, mirroring the Reconcile-before-Start ordering.
-	if err := s.Reconcile(context.Background(), domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "bug-a/x", QoS: 1}},
+	if err := s.Reconcile(context.Background(), connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "bug-a/x", QoS: 1}},
 	}); err == nil {
 		t.Fatal("Reconcile before Start must error")
 	}
@@ -200,12 +200,12 @@ func TestBugA_Integration_ReconcileBeforeStart(t *testing.T) {
 		ConnectTimeout:   5 * time.Second,
 		ReconnectTimeout: 5 * time.Second,
 		CleanStart:       true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	// Stash a plan BEFORE Start. This sets s.plan and returns
 	// "session not started".
-	if err := sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "bug-a/integ/topic", QoS: 1},
 		},
 	}); err == nil {

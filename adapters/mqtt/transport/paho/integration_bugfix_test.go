@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -41,7 +42,7 @@ func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess1.Start(ctx); err != nil {
 		t.Fatalf("Start sess1: %v", err)
@@ -49,8 +50,8 @@ func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
 
 	drainEvent(t, sess1)
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: topic, QoS: 1},
 		},
 	}
@@ -74,7 +75,7 @@ func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
 		})
 	}()
 
-	if err := sender1.Send(ctx, &domain.Envelope{
+	if err := sender1.Send(ctx, &messaging.Envelope{
 		Subject: topic,
 		Payload: []byte("phase1-msg"),
 	}); err != nil {
@@ -99,7 +100,7 @@ func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess2.Start(ctx); err != nil {
 		t.Fatalf("Start sess2: %v", err)
@@ -128,7 +129,7 @@ func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
 		})
 	}()
 
-	if err := sender2.Send(ctx, &domain.Envelope{
+	if err := sender2.Send(ctx, &messaging.Envelope{
 		Subject: topic,
 		Payload: []byte("phase2-msg"),
 	}); err != nil {
@@ -169,7 +170,7 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -179,8 +180,8 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 	drainEvent(t, sess)
 
 	// Subscribe to topicA first.
-	planA := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	planA := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: topicA, QoS: 1},
 		},
 	}
@@ -190,8 +191,8 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 	waitSubActive(t, sess, 5*time.Second)
 
 	// Update plan: remove topicA, add topicB.
-	planB := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	planB := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: topicB, QoS: 1},
 		},
 	}
@@ -217,7 +218,7 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 
 	// Send to both topics.
 	for _, topic := range []string{topicA, topicB} {
-		if err := sender.Send(ctx, &domain.Envelope{
+		if err := sender.Send(ctx, &messaging.Envelope{
 			Subject: topic,
 			Payload: []byte("test-" + topic),
 		}); err != nil {
@@ -266,7 +267,7 @@ func TestIntegration_CancelContext_ReconcileDoesNotHang(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(parentCtx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -275,8 +276,8 @@ func TestIntegration_CancelContext_ReconcileDoesNotHang(t *testing.T) {
 
 	drainEvent(t, sess)
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "bug4/cancel/test", QoS: 1},
 		},
 	}
@@ -290,8 +291,8 @@ func TestIntegration_CancelContext_ReconcileDoesNotHang(t *testing.T) {
 	// Reconcile with the cancelled context should fail promptly.
 	done := make(chan error, 1)
 	go func() {
-		done <- sess.Reconcile(parentCtx, domain.SessionPlan{
-			Subscriptions: []domain.SubscriptionPlan{
+		done <- sess.Reconcile(parentCtx, connectivity.SessionPlan{
+			Subscriptions: []connectivity.SubscriptionPlan{
 				{Topic: "bug4/cancel/new", QoS: 0},
 			},
 		})
@@ -322,7 +323,7 @@ func TestIntegration_SessionStartStoresContext(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -356,7 +357,7 @@ func TestIntegration_ConcurrentReconcile_ActiveSubsIntegrity(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -374,8 +375,8 @@ func TestIntegration_ConcurrentReconcile_ActiveSubsIntegrity(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			for iter := 0; iter < 3; iter++ {
-				plan := domain.SessionPlan{
-					Subscriptions: []domain.SubscriptionPlan{
+				plan := connectivity.SessionPlan{
+					Subscriptions: []connectivity.SubscriptionPlan{
 						{Topic: fmt.Sprintf("bug3/race/%d/%d", idx, iter), QoS: 1},
 					},
 				}
@@ -394,8 +395,8 @@ func TestIntegration_ConcurrentReconcile_ActiveSubsIntegrity(t *testing.T) {
 
 	// Apply a final known plan and verify messages arrive.
 	verifyTopic := fmt.Sprintf("bug3/race/verify/%d", time.Now().UnixNano())
-	if err := sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: verifyTopic, QoS: 1},
 		},
 	}); err != nil {
@@ -419,7 +420,7 @@ func TestIntegration_ConcurrentReconcile_ActiveSubsIntegrity(t *testing.T) {
 	}()
 
 	wait.RequireClosed(t, recv.Started(), 5*time.Second)
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		Subject: verifyTopic,
 		Payload: []byte("verify"),
 	}); err != nil {

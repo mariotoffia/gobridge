@@ -27,7 +27,6 @@ package asblocal
 
 import (
 	"fmt"
-	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 	"net"
 	"os"
 	"os/exec"
@@ -35,6 +34,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 )
 
 // Pre-defined entity names available in the emulator.

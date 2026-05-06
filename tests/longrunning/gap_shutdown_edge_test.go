@@ -11,7 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -71,7 +72,7 @@ func TestGAP_ShutdownWithOutboxInFlight(t *testing.T) {
 	dlq := &lrDLQStore{}
 
 	sessID := mqttlocal.UniqueClientID("gap-sd1-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, connectivity.SessionExclusive)
 	baseSnd := setupMQTTSender(t, sess)
 	snd := newSlowSender(baseSnd, 100*time.Millisecond)
 	sc := lrSessionConfig(sessID)
@@ -87,14 +88,14 @@ func TestGAP_ShutdownWithOutboxInFlight(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-sd1-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			AckAfter:     domain.AckAfterOutboxPersist,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			AckAfter:     routing.AckAfterOutboxPersist,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "sd1-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "sd1-bind", Address: outTopic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "sd1-bind", SessionID: sessID},
 		},
 	}, newSQSReceiver(t, sqsInURL), snd, sess, &sc))
@@ -170,7 +171,7 @@ func TestGAP_DoubleStopSafety(t *testing.T) {
 	dlq := &lrDLQStore{}
 
 	sessID := mqttlocal.UniqueClientID("gap-sd2-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
 	snd := setupMQTTSender(t, sess)
 
 	collector := newMQTTCollector(t, outTopic, "gap-sd2-col")
@@ -182,11 +183,11 @@ func TestGAP_DoubleStopSafety(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-sd2-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "sd2-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "sd2-bind", Address: outTopic},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, newSQSReceiver(t, sqsInURL), snd, sess, nil))

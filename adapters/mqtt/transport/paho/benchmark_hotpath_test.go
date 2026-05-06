@@ -7,7 +7,7 @@ import (
 	"github.com/eclipse/paho.golang/packets"
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -115,7 +115,7 @@ func BenchmarkEnvelopeFromPublish(b *testing.B) {
 // Publish conversion for the send path.
 func BenchmarkPublishFromEnvelope(b *testing.B) {
 	now := time.Now()
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "bench-id-123",
 		Subject: "bench/topic",
 		Payload: make([]byte, 1024),

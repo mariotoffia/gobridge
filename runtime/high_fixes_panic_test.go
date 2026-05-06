@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -50,7 +50,7 @@ func TestRuntime_PanicRecovery_MarksUnhealthy(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID:                 "panic-route",
-		Policy:             domain.RoutePolicy{}.WithDefaults(),
+		Policy:             routing.RoutePolicy{}.WithDefaults(),
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 
@@ -109,7 +109,7 @@ func TestRuntime_PanicRecovery_DoesNotCrash(t *testing.T) {
 	panicReceiver := &PanickingReceiver{PanicMsg: "deliberate test panic"}
 	cfg := goruntime.RouteConfig{
 		ID:                 "no-crash-route",
-		Policy:             domain.RoutePolicy{}.WithDefaults(),
+		Policy:             routing.RoutePolicy{}.WithDefaults(),
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 

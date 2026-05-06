@@ -11,7 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -63,7 +64,7 @@ func TestUC57_StaleClaimRecovery(t *testing.T) {
 
 	mqttIDA := mqttlocal.UniqueClientID("uc57-a")
 	sessA := setupMQTTSessionWithBroker(t, brokerURL, mqttIDA,
-		domain.SessionExclusive, 65535)
+		connectivity.SessionExclusive, 65535)
 	sndA := setupMQTTSender(t, sessA)
 	rxA := newSQSReceiver(t, sqsInURL)
 	scA := lrSessionConfig(leaseSessionID)
@@ -77,14 +78,14 @@ func TestUC57_StaleClaimRecovery(t *testing.T) {
 	)
 	require.NoError(t, rtA.AddRoute(goruntime.RouteConfig{
 		ID: "uc57-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			AckAfter:     domain.AckAfterOutboxPersist,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			AckAfter:     routing.AckAfterOutboxPersist,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc57-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc57-bind", Address: outTopic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc57-bind", SessionID: leaseSessionID},
 		},
 	}, rxA, sndA, sessA, &scA))
@@ -112,7 +113,7 @@ func TestUC57_StaleClaimRecovery(t *testing.T) {
 
 	mqttIDB := mqttlocal.UniqueClientID("uc57-b")
 	sessB := setupMQTTSessionWithBroker(t, brokerURL, mqttIDB,
-		domain.SessionExclusive, 65535)
+		connectivity.SessionExclusive, 65535)
 	sndB := setupMQTTSender(t, sessB)
 	rxB := newSQSReceiver(t, sqsInURL)     // Same queue — picks up remaining msgs.
 	scB := lrSessionConfig(leaseSessionID) // Same lease — competes for ownership.
@@ -126,14 +127,14 @@ func TestUC57_StaleClaimRecovery(t *testing.T) {
 	)
 	require.NoError(t, rtB.AddRoute(goruntime.RouteConfig{
 		ID: "uc57-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			AckAfter:     domain.AckAfterOutboxPersist,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			AckAfter:     routing.AckAfterOutboxPersist,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc57-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc57-bind", Address: outTopic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc57-bind", SessionID: leaseSessionID},
 		},
 	}, rxB, sndB, sessB, &scB))
@@ -198,13 +199,13 @@ func TestUC58_DoubleDrainPrevention(t *testing.T) {
 	routeCfg := func(id string) goruntime.RouteConfig {
 		return goruntime.RouteConfig{
 			ID: "uc58-route",
-			Policy: domain.RoutePolicy{
-				DeliveryMode: domain.DeliverySharedOutbox,
+			Policy: routing.RoutePolicy{
+				DeliveryMode: routing.DeliverySharedOutbox,
 			},
 			Resolver: goruntime.NewStaticResolver(
-				domain.DispatchPlan{BindingID: "uc58-bind", Address: outTopic},
+				routing.DispatchPlan{BindingID: "uc58-bind", Address: outTopic},
 			),
-			Bindings: []domain.DestinationBinding{
+			Bindings: []routing.DestinationBinding{
 				{ID: "uc58-bind", SessionID: leaseSessionID},
 			},
 		}
@@ -213,7 +214,7 @@ func TestUC58_DoubleDrainPrevention(t *testing.T) {
 	// --- Bridge-A ---
 	mqttIDA := mqttlocal.UniqueClientID("uc58-a")
 	sessA := setupMQTTSessionWithBroker(t, brokerURL, mqttIDA,
-		domain.SessionExclusive, 65535)
+		connectivity.SessionExclusive, 65535)
 	sndA := setupMQTTSender(t, sessA)
 	rxA := newSQSReceiver(t, sqsInURL)
 	scA := lrSessionConfig(leaseSessionID)
@@ -232,7 +233,7 @@ func TestUC58_DoubleDrainPrevention(t *testing.T) {
 	// --- Bridge-B ---
 	mqttIDB := mqttlocal.UniqueClientID("uc58-b")
 	sessB := setupMQTTSessionWithBroker(t, brokerURL, mqttIDB,
-		domain.SessionExclusive, 65535)
+		connectivity.SessionExclusive, 65535)
 	sndB := setupMQTTSender(t, sessB)
 	rxB := newSQSReceiver(t, sqsInURL)     // Same SQS queue — competing consumers.
 	scB := lrSessionConfig(leaseSessionID) // Same lease — competing for ownership.

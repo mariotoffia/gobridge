@@ -5,7 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -14,7 +15,7 @@ import (
 // sender registry for testing content-based DirectHold dispatch.
 func makeRunnerWithSenders(
 	t *testing.T,
-	bindings []domain.DestinationBinding,
+	bindings []routing.DestinationBinding,
 	resolver ports.DestinationResolver,
 	senders map[string]ports.Sender,
 	defaultSender *FakeSender,
@@ -27,7 +28,7 @@ func makeRunnerWithSenders(
 
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "test-multi-sender",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   defaultSender,
 		Senders:  senders,
@@ -47,7 +48,7 @@ func TestDirectHold_SenderRegistry_SelectsByBinding(t *testing.T) {
 	senderA := NewFakeSender()
 	senderB := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", Address: "topic-a"},
 		{ID: "bind-b", Address: "topic-b"},
 	}
@@ -77,7 +78,7 @@ func TestDirectHold_SenderRegistry_SelectsByBinding(t *testing.T) {
 	<-receiver.Ready()
 
 	// Send message targeting binding A.
-	envA := &domain.Envelope{
+	envA := &messaging.Envelope{
 		ID:      "msg-a",
 		Subject: "test",
 		Headers: map[string]any{"target": "a"},
@@ -89,7 +90,7 @@ func TestDirectHold_SenderRegistry_SelectsByBinding(t *testing.T) {
 	waitFor(t, 2*time.Second, "delivery A acked", delA.IsAcked)
 
 	// Send message targeting binding B.
-	envB := &domain.Envelope{
+	envB := &messaging.Envelope{
 		ID:      "msg-b",
 		Subject: "test",
 		Headers: map[string]any{"target": "b"},
@@ -126,7 +127,7 @@ func TestDirectHold_SenderRegistry_FallsBackToDefault(t *testing.T) {
 	specificSender := NewFakeSender()
 	defaultSender := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "specific", Address: "specific-topic"},
 		{ID: "fallback", Address: "fallback-topic"},
 	}
@@ -148,7 +149,7 @@ func TestDirectHold_SenderRegistry_FallsBackToDefault(t *testing.T) {
 	<-receiver.Ready()
 
 	// Send a message that matches no rule → falls through to default binding.
-	env := &domain.Envelope{ID: "msg-fb", Subject: "normal"}
+	env := &messaging.Envelope{ID: "msg-fb", Subject: "normal"}
 	del := NewFakeDelivery(env)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit: %v", err)
@@ -173,7 +174,7 @@ func TestDirectHold_SenderRegistry_FallsBackToDefault(t *testing.T) {
 
 func TestDirectHold_SenderRegistry_NilRegistry_UsesDefault(t *testing.T) {
 	defaultSender := NewFakeSender()
-	bindings := []domain.DestinationBinding{{ID: "only", Address: "topic"}}
+	bindings := []routing.DestinationBinding{{ID: "only", Address: "topic"}}
 
 	// No sender registry, no resolver → uses default sender for first binding.
 	receiver, runner := makeRunnerWithSenders(t, bindings, nil, nil, defaultSender)
@@ -183,7 +184,7 @@ func TestDirectHold_SenderRegistry_NilRegistry_UsesDefault(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &domain.Envelope{ID: "msg-1", Subject: "test"}
+	env := &messaging.Envelope{ID: "msg-1", Subject: "test"}
 	del := NewFakeDelivery(env)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit: %v", err)

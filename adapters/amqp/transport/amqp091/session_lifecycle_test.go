@@ -13,7 +13,8 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -148,11 +149,11 @@ func TestSession_Reconcile_OverwritePlan_ReplacesSubscriptions(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = s.Close(context.Background()) }()
-	first := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "queue-A"}},
+	first := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "queue-A"}},
 	}
-	second := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	second := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "queue-B"}, {Topic: "queue-C"},
 		},
 	}
@@ -200,11 +201,11 @@ func TestSession_Reconcile_PublisherOnlyPlan_StoresAndRuns(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = s.Close(context.Background()) }()
-	prior := domain.SessionPlan{Subscriptions: []domain.SubscriptionPlan{{Topic: "q"}}}
+	prior := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: "q"}}}
 	_ = s.Reconcile(context.Background(), prior)
 	beforePub := channelCalls.Load()
 
-	pubOnly := domain.SessionPlan{Publishers: []domain.PublisherPlan{{Topic: "exch"}}}
+	pubOnly := connectivity.SessionPlan{Publishers: []connectivity.PublisherPlan{{Topic: "exch"}}}
 	_ = s.Reconcile(context.Background(), pubOnly)
 
 	if channelCalls.Load() == beforePub {
@@ -283,7 +284,7 @@ func runReceiverSelect(
 			if !ok {
 				return
 			}
-			env := &domain.Envelope{ID: "x", Payload: d.Body}
+			env := &messaging.Envelope{ID: "x", Payload: d.Body}
 			if err := emit(ctx, &Delivery{env: env, raw: d}); err != nil {
 				return
 			}

@@ -5,7 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -36,10 +39,10 @@ func TestEdge_StaleFencingTokenRejected(t *testing.T) {
 
 	cfgA := goruntime.RouteConfig{
 		ID: "fenced-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -52,7 +55,7 @@ func TestEdge_StaleFencingTokenRejected(t *testing.T) {
 	})
 
 	// A persists a message.
-	env := &domain.Envelope{ID: "fenced-msg-1", Payload: []byte("data")}
+	env := &messaging.Envelope{ID: "fenced-msg-1", Payload: []byte("data")}
 	del := NewFakeDelivery(env)
 	_ = receiverA.Emit(ctxA, del)
 	waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
@@ -81,10 +84,10 @@ func TestEdge_StaleFencingTokenRejected(t *testing.T) {
 
 	cfgB := goruntime.RouteConfig{
 		ID: "fenced-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -114,21 +117,21 @@ func TestEdge_StaleFencingTokenRejected(t *testing.T) {
 	}
 
 	// Attempt to complete with A's stale token should fail.
-	staleToken := domain.LeaseToken{Version: 1, Owner: "bridge-A-fenced"}
+	staleToken := persistence.LeaseToken{Version: 1, Owner: "bridge-A-fenced"}
 	_ = outbox.Complete(context.Background(), []string{"nonexistent"}, staleToken)
 	// For existing records with mismatched claim version, this returns ErrStaleFencingToken.
 	// For nonexistent records, it's a no-op in the fake store.
 
 	// Persist a new record and try to claim with stale token.
-	rec := domain.OutboxRecord{
+	rec := persistence.OutboxRecord{
 		ID:         "stale-test-rec",
 		EnvelopeID: "stale-test-env",
 		BindingID:  "b1",
 		SessionID:  sessionID,
-		Status:     domain.OutboxPending,
-		Envelope:   domain.Envelope{ID: "stale-test-env", Payload: []byte("x")},
+		Status:     persistence.OutboxPending,
+		Envelope:   messaging.Envelope{ID: "stale-test-env", Payload: []byte("x")},
 	}
-	_ = outbox.Persist(context.Background(), []domain.OutboxRecord{rec})
+	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{rec})
 
 	// B should be able to claim and complete it with the correct token.
 	waitFor(t, 3*time.Second, "B claims new record", func() bool {
@@ -159,10 +162,10 @@ func TestEdge_IdempotentPersist(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "idemp-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-idemp"},
 		},
 	}
@@ -179,7 +182,7 @@ func TestEdge_IdempotentPersist(t *testing.T) {
 	})
 
 	// First delivery.
-	env1 := &domain.Envelope{ID: "idemp-msg", Payload: []byte("data")}
+	env1 := &messaging.Envelope{ID: "idemp-msg", Payload: []byte("data")}
 	del1 := NewFakeDelivery(env1)
 	_ = receiver.Emit(ctx, del1)
 	waitFor(t, time.Second, "first acked", func() bool { return del1.IsAcked() })
@@ -187,7 +190,7 @@ func TestEdge_IdempotentPersist(t *testing.T) {
 	initialCount := outbox.RecordCount()
 
 	// Simulate redelivery of the same envelope ID.
-	env2 := &domain.Envelope{ID: "idemp-msg", Payload: []byte("data")}
+	env2 := &messaging.Envelope{ID: "idemp-msg", Payload: []byte("data")}
 	del2 := NewFakeDelivery(env2)
 	_ = receiver.Emit(ctx, del2)
 
@@ -225,11 +228,11 @@ func TestEdge_ExpiredOutboxEntry(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "expiry-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			OnExpired:    domain.ExpiredDLQ,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			OnExpired:    routing.ExpiredDLQ,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-expiry"},
 		},
 	}
@@ -246,7 +249,7 @@ func TestEdge_ExpiredOutboxEntry(t *testing.T) {
 	})
 
 	// Send a message that is already expired.
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        "expired-msg",
 		Payload:   []byte("stale"),
 		ExpiresAt: time.Now().Add(-1 * time.Hour),
@@ -281,11 +284,11 @@ func TestEdge_ExpiredOutboxEntryDuringDrain(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "drain-exp-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			OnExpired:    domain.ExpiredDLQ,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			OnExpired:    routing.ExpiredDLQ,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-drain-exp"},
 		},
 	}
@@ -304,14 +307,14 @@ func TestEdge_ExpiredOutboxEntryDuringDrain(t *testing.T) {
 	// Send a message that will expire in 100ms — it will be persisted
 	// to the outbox, but by the time the drainer picks it up it should
 	// have expired.
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:        "short-lived-msg",
 		Payload:   []byte("fleeting"),
 		ExpiresAt: time.Now().Add(100 * time.Millisecond),
 	}
 
 	// Block the sender so the drainer can't send before expiry.
-	sender.SetSendErr(domain.NewBridgeError("BLOCKED", domain.ErrorTransient, "blocked"))
+	sender.SetSendErr(shared.NewBridgeError("BLOCKED", shared.ErrorTransient, "blocked"))
 
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
@@ -341,17 +344,17 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	sender.SendErr = domain.NewBridgeError("CRASH", domain.ErrorTransient, "always fails")
+	sender.SendErr = shared.NewBridgeError("CRASH", shared.ErrorTransient, "always fails")
 	session := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-poison")
 
 	cfg := goruntime.RouteConfig{
 		ID: "poison-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:      domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:      routing.DeliverySharedOutbox,
 			MaxReplayAttempts: 3,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-poison"},
 		},
 	}
@@ -367,7 +370,7 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 		return session.IsStarted()
 	})
 
-	env := &domain.Envelope{ID: "poison-msg", Payload: []byte("toxic")}
+	env := &messaging.Envelope{ID: "poison-msg", Payload: []byte("toxic")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
@@ -396,7 +399,7 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 // before persisting to outbox, the source redelivers with no message loss.
 func TestEdge_CrashBeforeOutboxPersist(t *testing.T) {
 	outbox := NewFakeOutboxStore()
-	outbox.PersistErr = domain.NewBridgeError("STORE_DOWN", domain.ErrorTransient, "unavailable")
+	outbox.PersistErr = shared.NewBridgeError("STORE_DOWN", shared.ErrorTransient, "unavailable")
 	lease := NewFakeLeaseStore()
 
 	rt := newTestRuntime("bridge-crash-pre", outbox, lease, nil)
@@ -408,10 +411,10 @@ func TestEdge_CrashBeforeOutboxPersist(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "crash-pre-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-crash-pre"},
 		},
 	}
@@ -427,7 +430,7 @@ func TestEdge_CrashBeforeOutboxPersist(t *testing.T) {
 		return session.IsStarted()
 	})
 
-	env := &domain.Envelope{ID: "crash-pre-msg", Payload: []byte("data")}
+	env := &messaging.Envelope{ID: "crash-pre-msg", Payload: []byte("data")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -455,10 +458,10 @@ func TestEdge_CrashAfterPersistBeforeAck(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "crash-mid-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-crash-mid"},
 		},
 	}
@@ -475,13 +478,13 @@ func TestEdge_CrashAfterPersistBeforeAck(t *testing.T) {
 	})
 
 	// First delivery: persists, acked.
-	env1 := &domain.Envelope{ID: "crash-mid-msg", Payload: []byte("data")}
+	env1 := &messaging.Envelope{ID: "crash-mid-msg", Payload: []byte("data")}
 	del1 := NewFakeDelivery(env1)
 	_ = receiver.Emit(ctx, del1)
 	waitFor(t, time.Second, "first acked", func() bool { return del1.IsAcked() })
 
 	// Simulate: source redelivers the same message (ack was lost).
-	env2 := &domain.Envelope{ID: "crash-mid-msg", Payload: []byte("data")}
+	env2 := &messaging.Envelope{ID: "crash-mid-msg", Payload: []byte("data")}
 	del2 := NewFakeDelivery(env2)
 	_ = receiver.Emit(ctx, del2)
 
@@ -514,14 +517,14 @@ func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 	sessCfgA := fastSessionConfig(sessionID)
 	sessCfgA.LeaseTTL = 300 * time.Millisecond
 	sessCfgA.RenewInterval = 60 * time.Millisecond
-	sessCfgA.DrainStrategy = domain.NewFixedPoll(10 * time.Second)
+	sessCfgA.DrainStrategy = persistence.NewFixedPoll(10 * time.Second)
 
 	cfgA := goruntime.RouteConfig{
 		ID: "crash-ack-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -533,7 +536,7 @@ func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 		return sessionA.IsStarted()
 	})
 
-	env := &domain.Envelope{ID: "crash-ack-msg", Payload: []byte("important")}
+	env := &messaging.Envelope{ID: "crash-ack-msg", Payload: []byte("important")}
 	del := NewFakeDelivery(env)
 	_ = receiverA.Emit(ctxA, del)
 	waitFor(t, time.Second, "acked by A", func() bool { return del.IsAcked() })
@@ -556,10 +559,10 @@ func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 
 	cfgB := goruntime.RouteConfig{
 		ID: "crash-ack-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -576,7 +579,7 @@ func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 		return senderA.SentCount() >= 1 || senderB.SentCount() >= 1
 	})
 
-	var sentMsg *domain.Envelope
+	var sentMsg *messaging.Envelope
 	if senderA.SentCount() >= 1 {
 		sentMsg = senderA.GetSent()[0]
 	} else {
@@ -600,16 +603,16 @@ func TestEdge_PermanentSendErrorGoesToDLQ(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	sender.SendErr = domain.NewBridgeError("INVALID_PAYLOAD", domain.ErrorPermanent, "bad data")
+	sender.SendErr = shared.NewBridgeError("INVALID_PAYLOAD", shared.ErrorPermanent, "bad data")
 	session := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-perm")
 
 	cfg := goruntime.RouteConfig{
 		ID: "perm-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-perm"},
 		},
 	}
@@ -625,7 +628,7 @@ func TestEdge_PermanentSendErrorGoesToDLQ(t *testing.T) {
 		return session.IsStarted()
 	})
 
-	env := &domain.Envelope{ID: "perm-msg", Payload: []byte("bad")}
+	env := &messaging.Envelope{ID: "perm-msg", Payload: []byte("bad")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
@@ -658,9 +661,9 @@ func TestEdge_CrashAfterSendBeforeCompletion(t *testing.T) {
 	ctxA, cancelA := context.WithCancel(context.Background())
 
 	completeCallCount := 0
-	outbox.CompleteFn = func(_ []string, _ domain.LeaseToken) error {
+	outbox.CompleteFn = func(_ []string, _ persistence.LeaseToken) error {
 		completeCallCount++
-		return domain.NewBridgeError("DDB_TIMEOUT", domain.ErrorTransient, "completion timeout")
+		return shared.NewBridgeError("DDB_TIMEOUT", shared.ErrorTransient, "completion timeout")
 	}
 
 	rtA := newTestRuntime("bridge-A-crash-complete", outbox, lease, dlq)
@@ -674,10 +677,10 @@ func TestEdge_CrashAfterSendBeforeCompletion(t *testing.T) {
 
 	cfgA := goruntime.RouteConfig{
 		ID: "crash-complete-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -689,7 +692,7 @@ func TestEdge_CrashAfterSendBeforeCompletion(t *testing.T) {
 		return sessionA.IsStarted()
 	})
 
-	env := &domain.Envelope{ID: "crash-complete-msg", Payload: []byte("data")}
+	env := &messaging.Envelope{ID: "crash-complete-msg", Payload: []byte("data")}
 	del := NewFakeDelivery(env)
 	_ = receiverA.Emit(ctxA, del)
 	waitFor(t, time.Second, "acked by A", func() bool { return del.IsAcked() })
@@ -722,10 +725,10 @@ func TestEdge_CrashAfterSendBeforeCompletion(t *testing.T) {
 
 	cfgB := goruntime.RouteConfig{
 		ID: "crash-complete-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -770,16 +773,16 @@ func TestEdge_FanOutPartialPersist(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "fanout-partial-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &FakeResolver{
-			Plans: []domain.DispatchPlan{
+			Plans: []routing.DispatchPlan{
 				{BindingID: "bind-a", Address: "topic/a"},
 				{BindingID: "bind-b", Address: "topic/b"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "bind-a", SessionID: "mqtt-fanout-partial"},
 			{ID: "bind-b", SessionID: "mqtt-fanout-partial"},
 		},
@@ -797,9 +800,9 @@ func TestEdge_FanOutPartialPersist(t *testing.T) {
 	})
 
 	// Make Persist fail atomically — the whole batch is rejected.
-	outbox.PersistErr = domain.NewBridgeError("STORE_DOWN", domain.ErrorTransient, "unavailable")
+	outbox.PersistErr = shared.NewBridgeError("STORE_DOWN", shared.ErrorTransient, "unavailable")
 
-	env := &domain.Envelope{ID: "fanout-partial-msg", Payload: []byte("data")}
+	env := &messaging.Envelope{ID: "fanout-partial-msg", Payload: []byte("data")}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -820,10 +823,10 @@ func TestEdge_FanOutPartialPersist(t *testing.T) {
 // Helper: DLQ store entry access
 // ---------------------------------------------------------------------------
 
-func (s *FakeDLQStore) GetEntries() []domain.DLQEntry {
+func (s *FakeDLQStore) GetEntries() []routing.DLQEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := make([]domain.DLQEntry, len(s.Entries))
+	cp := make([]routing.DLQEntry, len(s.Entries))
 	copy(cp, s.Entries)
 	return cp
 }

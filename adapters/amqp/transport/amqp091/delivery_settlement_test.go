@@ -17,7 +17,8 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -28,7 +29,7 @@ func TestDelivery091_AckFails_ThenRetry_ReportsError(t *testing.T) {
 		return errors.New("channel closed during ack")
 	}
 
-	env := &domain.Envelope{ID: "bug2-091"}
+	env := &messaging.Envelope{ID: "bug2-091"}
 	raw := amqp.Delivery{
 		Acknowledger: acker,
 		DeliveryTag:  1,
@@ -53,7 +54,7 @@ func TestDelivery091_RetryFails_ThenAck_ReportsError(t *testing.T) {
 		return errors.New("channel closed during nack")
 	}
 
-	env := &domain.Envelope{ID: "bug2-091-rev"}
+	env := &messaging.Envelope{ID: "bug2-091-rev"}
 	raw := amqp.Delivery{
 		Acknowledger: acker,
 		DeliveryTag:  2,
@@ -74,7 +75,7 @@ func TestDelivery091_RetryFails_ThenAck_ReportsError(t *testing.T) {
 // TestDelivery091_ConcurrentSettlement validates concurrent safety.
 func TestDelivery091_ConcurrentSettlement(t *testing.T) {
 	acker := newMockAcknowledger()
-	env := &domain.Envelope{ID: "concurrent-091"}
+	env := &messaging.Envelope{ID: "concurrent-091"}
 	raw := amqp.Delivery{
 		Acknowledger: acker,
 		DeliveryTag:  3,
@@ -109,7 +110,7 @@ func TestDelivery091_ConcurrentSettlement(t *testing.T) {
 func TestDelivery091_Extend_NotSupported(t *testing.T) {
 	d, _ := makeTestDelivery(newMockAcknowledger(), 1)
 	err := d.Extend(context.Background(), time.Now().Add(time.Minute))
-	if !errors.Is(err, domain.ErrNotSupported) {
+	if !errors.Is(err, shared.ErrNotSupported) {
 		t.Fatalf("Extend() = %v, want ErrNotSupported", err)
 	}
 }

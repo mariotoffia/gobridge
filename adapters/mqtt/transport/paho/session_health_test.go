@@ -9,7 +9,7 @@ import (
 	pahov5 "github.com/eclipse/paho.golang/paho"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -94,7 +94,7 @@ func TestHealth_ServiceLevel(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			logger := slog.Default()
-			s := NewSession(SessionOptions{}, domain.SessionEphemeral, logger)
+			s := NewSession(SessionOptions{}, connectivity.SessionEphemeral, logger)
 
 			// Simulate connection state.
 			if tc.connected {
@@ -106,11 +106,11 @@ func TestHealth_ServiceLevel(t *testing.T) {
 
 			// Set plan with desired subscription count.
 			if tc.wantedSubs > 0 {
-				plan := domain.SessionPlan{
-					Subscriptions: make([]domain.SubscriptionPlan, tc.wantedSubs),
+				plan := connectivity.SessionPlan{
+					Subscriptions: make([]connectivity.SubscriptionPlan, tc.wantedSubs),
 				}
 				for i := range plan.Subscriptions {
-					plan.Subscriptions[i] = domain.SubscriptionPlan{
+					plan.Subscriptions[i] = connectivity.SubscriptionPlan{
 						Topic: "test/topic/" + string(rune('a'+i)),
 						QoS:   1,
 					}

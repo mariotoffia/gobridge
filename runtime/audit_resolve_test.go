@@ -5,7 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -135,20 +136,20 @@ func TestRenderAddress_RendersToEmpty(t *testing.T) {
 // TestStaticResolver_ReturnsCopy_Audit validates that StaticResolver
 // returns independent copies on each call.
 func TestStaticResolver_ReturnsCopy_Audit(t *testing.T) {
-	plans := []domain.DispatchPlan{
+	plans := []routing.DispatchPlan{
 		{BindingID: "b1", Address: "topic/1"},
 	}
 
 	resolver := NewStaticResolver(plans...)
 
-	result1, err := resolver.Resolve(context.Background(), &domain.Envelope{})
+	result1, err := resolver.Resolve(context.Background(), &messaging.Envelope{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	result1[0].Address = "mutated"
 
-	result2, err := resolver.Resolve(context.Background(), &domain.Envelope{})
+	result2, err := resolver.Resolve(context.Background(), &messaging.Envelope{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -162,11 +163,11 @@ func TestStaticResolver_ReturnsCopy_Audit(t *testing.T) {
 // ErrNoBindingMatch when no binding matches.
 func TestBindingResolver_NoMatch(t *testing.T) {
 	resolver := NewBindingResolver(
-		[]domain.DestinationBinding{{ID: "b1", Address: "topic"}},
-		func(_ *domain.Envelope, _ domain.DestinationBinding) bool { return false },
+		[]routing.DestinationBinding{{ID: "b1", Address: "topic"}},
+		func(_ *messaging.Envelope, _ routing.DestinationBinding) bool { return false },
 	)
 
-	_, err := resolver.Resolve(context.Background(), &domain.Envelope{})
+	_, err := resolver.Resolve(context.Background(), &messaging.Envelope{})
 	if err == nil {
 		t.Fatal("expected error for no matching binding")
 	}

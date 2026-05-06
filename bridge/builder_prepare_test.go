@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/mariotoffia/gobridge/config"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 
 	"github.com/stretchr/testify/assert"
@@ -104,7 +104,7 @@ func TestBuilder_PrepareComplete_DirectHold(t *testing.T) {
 	buildRoutes := rtBuild.Routes()
 	pcRoutes := rtPC.Routes()
 	require.Len(t, pcRoutes, len(buildRoutes))
-	assert.Equal(t, domain.DeliveryDirectHold, pcRoutes[0].DeliveryMode)
+	assert.Equal(t, routing.DeliveryDirectHold, pcRoutes[0].DeliveryMode)
 	assert.Equal(t, buildRoutes[0].ID, pcRoutes[0].ID)
 }
 
@@ -135,7 +135,7 @@ func TestBuilder_PrepareComplete_SharedOutbox(t *testing.T) {
 	buildRoutes := rtBuild.Routes()
 	pcRoutes := rtPC.Routes()
 	require.Len(t, pcRoutes, len(buildRoutes))
-	assert.Equal(t, domain.DeliverySharedOutbox, pcRoutes[0].DeliveryMode)
+	assert.Equal(t, routing.DeliverySharedOutbox, pcRoutes[0].DeliveryMode)
 	assert.Equal(t, buildRoutes[0].ID, pcRoutes[0].ID)
 }
 

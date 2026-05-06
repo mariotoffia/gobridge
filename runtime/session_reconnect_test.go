@@ -33,7 +33,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -145,14 +145,14 @@ func TestSessionManager_ReconnectReconcileError_EmitsMetric(t *testing.T) {
 		t.Fatal("Run should exit after reconcile failure")
 	}
 
-	entries := rec.FindEntries(domain.MetricReconcileFailures)
+	entries := rec.FindEntries(shared.MetricReconcileFailures)
 	if len(entries) == 0 {
 		t.Fatal("expected MetricReconcileFailures counter emission")
 	}
 
 	found := false
 	for _, tag := range entries[0].Tags {
-		if tag.Key == domain.TagKeySessionID && tag.Value == "sess-recon-metric" {
+		if tag.Key == shared.TagKeySessionID && tag.Value == "sess-recon-metric" {
 			found = true
 		}
 	}
@@ -227,12 +227,12 @@ func TestSessionManager_ReconnectReconcileOK_NoError(t *testing.T) {
 		t.Fatal("Run should exit after context cancellation")
 	}
 
-	failEntries := rec.FindEntries(domain.MetricReconcileFailures)
+	failEntries := rec.FindEntries(shared.MetricReconcileFailures)
 	if len(failEntries) != 0 {
 		t.Fatalf("expected 0 MetricReconcileFailures, got %d", len(failEntries))
 	}
 
-	reconnects := rec.FindEntries(domain.MetricMQTTReconnects)
+	reconnects := rec.FindEntries(shared.MetricMQTTReconnects)
 	if len(reconnects) != 1 {
 		t.Fatalf("expected 1 MQTTReconnects (second connect counts), got %d", len(reconnects))
 	}

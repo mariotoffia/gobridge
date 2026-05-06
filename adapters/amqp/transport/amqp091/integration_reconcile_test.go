@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 )
@@ -31,7 +32,7 @@ func TestIntegration_Reconcile_FirstFailureDoesNotPoisonSubsequentReconciles(t *
 	conflicting := rabbitmqlocal.UniqueQueue("recon-conflict")
 	rabbitmqlocal.CreateQueue(t, conflicting)
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, nil)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, nil)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -39,8 +40,8 @@ func TestIntegration_Reconcile_FirstFailureDoesNotPoisonSubsequentReconciles(t *
 	// First reconcile: ask for a queue that exists with default
 	// parameters but with durable=true (mismatch -> broker returns
 	// PRECONDITION_FAILED and closes the channel).
-	badPlan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	badPlan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: conflicting, Config: &Config{Subscription: SubscriptionParams{Durable: true}}},
 		},
 	}
@@ -52,13 +53,13 @@ func TestIntegration_Reconcile_FirstFailureDoesNotPoisonSubsequentReconciles(t *
 	// regardless of the previous failure.
 	freshQueue := rabbitmqlocal.UniqueQueue("recon-fresh")
 	freshExch := rabbitmqlocal.UniqueExchange("recon-fresh-ex")
-	goodPlan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	goodPlan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: freshQueue, Config: &Config{Subscription: SubscriptionParams{
 				Exchange: freshExch, RoutingKey: freshQueue,
 			}}},
 		},
-		Publishers: []domain.PublisherPlan{{Topic: freshExch}},
+		Publishers: []connectivity.PublisherPlan{{Topic: freshExch}},
 	}
 	if err := sess.Reconcile(ctx, goodPlan); err != nil {
 		t.Fatalf("second Reconcile (fresh queue) failed after first error: %v", err)
@@ -69,7 +70,7 @@ func TestIntegration_Reconcile_FirstFailureDoesNotPoisonSubsequentReconciles(t *
 		Session: sess, Timeout: 5 * time.Second,
 	})
 	defer func() { _ = sender.Close(ctx) }()
-	if err := sender.Send(ctx, &domain.Envelope{
+	if err := sender.Send(ctx, &messaging.Envelope{
 		ID: "post-recon", Subject: freshQueue, Payload: []byte("ok"),
 	}); err != nil {
 		t.Fatalf("send after recovered Reconcile: %v", err)
@@ -113,13 +114,13 @@ func TestIntegration_Reconcile_PartialFailure_ReportsErrorWithoutChannelLeak(t *
 	bad := rabbitmqlocal.UniqueQueue("recon-bad")
 	rabbitmqlocal.CreateQueue(t, bad) // exists with durable=false
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, nil)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, nil)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: bad, Config: &Config{Subscription: SubscriptionParams{Durable: true}}},
 		},
 	}

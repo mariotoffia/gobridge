@@ -9,8 +9,8 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // TestAutoExtendRetriesTransientThenSucceeds verifies the auto-extend loop
@@ -29,7 +29,7 @@ func TestAutoExtendRetriesTransientThenSucceeds(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
 	fake := clocktest.New()
 	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, fake)
@@ -62,7 +62,7 @@ func TestAutoExtendStopsAfterMaxConsecutiveFailures(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
 	fake := clocktest.New()
 	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, fake)
@@ -105,7 +105,7 @@ func TestAutoExtendInterleavedFailSuccessASB(t *testing.T) {
 		},
 	}
 
-	env := &domain.Envelope{ID: "msg-1"}
+	env := &messaging.Envelope{ID: "msg-1"}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
 	fake := clocktest.New()
 	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, fake)

@@ -26,8 +26,8 @@
 // Standard bridge headers (x-bridge.*) are mapped to/from SQS message
 // attributes. At ingress, headers with the reserved x-bridge.* prefix are
 // stripped to prevent injection from external sources. At egress,
-// domain.HeaderOrderingKey maps to MessageGroupId and
-// domain.HeaderDeduplicationID maps to MessageDeduplicationId for FIFO
+// messaging.HeaderOrderingKey maps to MessageGroupId and
+// messaging.HeaderDeduplicationID maps to MessageDeduplicationId for FIFO
 // queues.
 //
 // # SQS Native DLQ

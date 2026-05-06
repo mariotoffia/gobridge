@@ -6,7 +6,7 @@ import (
 	"time"
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -46,12 +46,12 @@ func BenchmarkProcessor_PerKey_Lookup(b *testing.B) {
 	}
 	p := New("bench", cfg)
 
-	next := func(_ context.Context, _ *domain.Envelope) error {
+	next := func(_ context.Context, _ *messaging.Envelope) error {
 		return nil
 	}
 
 	ctx := context.Background()
-	env := &domain.Envelope{ID: "1", Subject: "bench-subject"}
+	env := &messaging.Envelope{ID: "1", Subject: "bench-subject"}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -67,7 +67,7 @@ func BenchmarkProcessor_MultiKey(b *testing.B) {
 	}
 	p := New("bench", cfg, WithKeyExtractor(SubjectKey))
 
-	next := func(_ context.Context, _ *domain.Envelope) error {
+	next := func(_ context.Context, _ *messaging.Envelope) error {
 		return nil
 	}
 
@@ -76,7 +76,7 @@ func BenchmarkProcessor_MultiKey(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		env := &domain.Envelope{ID: "1", Subject: subjects[i%len(subjects)]}
+		env := &messaging.Envelope{ID: "1", Subject: subjects[i%len(subjects)]}
 		_ = p.Process(ctx, env, next)
 	}
 }

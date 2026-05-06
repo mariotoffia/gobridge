@@ -6,7 +6,7 @@
 // breaker; only the call-site contract is exposed.
 //
 // The two-call shape (BeforeRequest / AfterRequest) is intentional: an
-// open-circuit rejection returns a *domain.BridgeError that carries a
+// open-circuit rejection returns a *shared.BridgeError that carries a
 // RetryAfter hint, which a bool-returning Allow() variant would drop
 // on the floor. Adapters surface that hint to the route runner so
 // retries respect the breaker's cool-down window.
@@ -18,7 +18,7 @@ package ports
 // implementation.
 type CircuitBreaker interface {
 	// BeforeRequest returns nil when the request may proceed, or an
-	// error (typically domain.ErrUnavailable with a RetryAfter hint)
+	// error (typically shared.ErrUnavailable with a RetryAfter hint)
 	// when the circuit is open and the request must be rejected.
 	BeforeRequest() error
 

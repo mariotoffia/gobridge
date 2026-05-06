@@ -3,7 +3,7 @@ package paho
 import (
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -53,7 +53,7 @@ func TestBugRPS_ClassifyMixedReasons_PersistsAllSuccesses(t *testing.T) {
 	if firstErr == nil {
 		t.Fatal("BUG-RPS: expected firstErr non-nil for rejected topic")
 	}
-	if firstErr.Code != domain.ErrUnavailable.Code {
+	if firstErr.Code != shared.ErrUnavailable.Code {
 		t.Errorf("BUG-RPS: first err code = %s, want ErrUnavailable", firstErr.Code)
 	}
 	if errTopic != "b" {
@@ -166,7 +166,7 @@ func TestBugRPS_ClassifyFirstErrorPriority(t *testing.T) {
 	if errTopic != "b" {
 		t.Errorf("errTopic = %q, want %q (first rejected)", errTopic, "b")
 	}
-	if firstErr.Code != domain.ErrForbidden.Code {
+	if firstErr.Code != shared.ErrForbidden.Code {
 		t.Errorf("err code = %s, want ErrForbidden (first rejection)", firstErr.Code)
 	}
 }

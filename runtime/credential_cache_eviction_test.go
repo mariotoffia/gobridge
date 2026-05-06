@@ -24,29 +24,30 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
 // stubEvictionRepo is a minimal credential repository for eviction tests.
 type stubEvictionRepo struct {
 	scheme    string
 	namespace string
-	creds     *domain.CredentialSet
+	creds     *connectivity.CredentialSet
 }
 
 func (s *stubEvictionRepo) Scheme() string    { return s.scheme }
 func (s *stubEvictionRepo) Namespace() string { return s.namespace }
-func (s *stubEvictionRepo) Get(_ context.Context, _ string) (*domain.CredentialSet, error) {
+func (s *stubEvictionRepo) Get(_ context.Context, _ string) (*connectivity.CredentialSet, error) {
 	return s.creds, nil
 }
 
 // newEvictionResolver creates a CredentialResolver with a stub repo and
 // the given cache TTL, ready for eviction tests.
 func newEvictionResolver(ttl time.Duration) *CredentialResolver {
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	}
 	repo := &stubEvictionRepo{scheme: "file", namespace: "", creds: creds}
 	r := NewCredentialResolver(WithCredentialCacheTTL(ttl))

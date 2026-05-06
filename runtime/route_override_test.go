@@ -7,7 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -20,8 +21,8 @@ type overrideProcessor struct {
 
 func (p *overrideProcessor) Name() string { return "test-override" }
 
-func (p *overrideProcessor) Process(_ context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
-	env.Headers = domain.SetHeader(env.Headers, domain.HeaderRouteOverride, p.targetBinding)
+func (p *overrideProcessor) Process(_ context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
+	env.Headers = messaging.SetHeader(env.Headers, messaging.HeaderRouteOverride, p.targetBinding)
 	return next(context.Background(), env)
 }
 
@@ -33,7 +34,7 @@ func TestDirectHold_HeaderRouteOverride_SelectsBinding(t *testing.T) {
 	senderA := NewFakeSender()
 	senderB := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", Address: "topic-a"},
 		{ID: "bind-b", Address: "topic-b"},
 	}
@@ -50,7 +51,7 @@ func TestDirectHold_HeaderRouteOverride_SelectsBinding(t *testing.T) {
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:    "override-route",
-		Policy:     domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
 		Sender:     senderA,
 		Senders:    map[string]ports.Sender{"bind-a": senderA, "bind-b": senderB},
@@ -66,7 +67,7 @@ func TestDirectHold_HeaderRouteOverride_SelectsBinding(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &domain.Envelope{ID: "override-msg", Subject: "test"}
+	env := &messaging.Envelope{ID: "override-msg", Subject: "test"}
 	del := NewFakeDelivery(env)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit: %v", err)
@@ -89,14 +90,14 @@ func TestDirectHold_HeaderRouteOverride_SelectsBinding(t *testing.T) {
 func TestDirectHold_HeaderRouteOverride_StrippedAfterUse(t *testing.T) {
 	senderB := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-b", Address: "topic-b"},
 	}
 
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:    "strip-route",
-		Policy:     domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
 		Sender:     senderB,
 		Senders:    map[string]ports.Sender{"bind-b": senderB},
@@ -111,7 +112,7 @@ func TestDirectHold_HeaderRouteOverride_StrippedAfterUse(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &domain.Envelope{ID: "strip-msg", Subject: "test"}
+	env := &messaging.Envelope{ID: "strip-msg", Subject: "test"}
 	del := NewFakeDelivery(env)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit: %v", err)
@@ -123,7 +124,7 @@ func TestDirectHold_HeaderRouteOverride_StrippedAfterUse(t *testing.T) {
 		t.Fatalf("expected 1 sent, got %d", len(sent))
 	}
 	// The override header should have been stripped before sending.
-	if _, exists := sent[0].Headers[domain.HeaderRouteOverride]; exists {
+	if _, exists := sent[0].Headers[messaging.HeaderRouteOverride]; exists {
 		t.Fatal("HeaderRouteOverride was not stripped from outbound envelope")
 	}
 }
@@ -135,7 +136,7 @@ func TestDirectHold_HeaderRouteOverride_StrippedAfterUse(t *testing.T) {
 func TestDirectHold_HeaderRouteOverride_InvalidBinding_FallsThrough(t *testing.T) {
 	defaultSender := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "real-bind", Address: "topic"},
 	}
 
@@ -147,11 +148,11 @@ func TestDirectHold_HeaderRouteOverride_InvalidBinding_FallsThrough(t *testing.T
 	<-receiver.Ready()
 
 	// Override references a binding that doesn't exist on this route.
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "bad-override",
 		Subject: "test",
 		Headers: map[string]any{
-			domain.HeaderRouteOverride: "nonexistent-bind",
+			messaging.HeaderRouteOverride: "nonexistent-bind",
 		},
 	}
 	del := NewFakeDelivery(env)
@@ -174,14 +175,14 @@ func TestDirectHold_Override_RenderAddressError_RoutesDLQ(t *testing.T) {
 	sender := NewFakeSender()
 	dlqStore := NewFakeDLQStore()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-template", Address: "devices/{tenant}/events"},
 	}
 
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "render-err-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		Senders:  map[string]ports.Sender{"bind-template": sender},
@@ -199,7 +200,7 @@ func TestDirectHold_Override_RenderAddressError_RoutesDLQ(t *testing.T) {
 	<-receiver.Ready()
 
 	// Envelope has no "tenant" header -> RenderAddress fails.
-	env := &domain.Envelope{ID: "missing-header-msg", Subject: "test"}
+	env := &messaging.Envelope{ID: "missing-header-msg", Subject: "test"}
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)
@@ -219,14 +220,14 @@ func TestDirectHold_Override_MQTTValidation_RoutesDLQ(t *testing.T) {
 	sender := NewFakeSender()
 	dlqStore := NewFakeDLQStore()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "mqtt-bind", Transport: "mqtt", Address: "devices/{topic}/events"},
 	}
 
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "mqtt-validate-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		Senders:  map[string]ports.Sender{"mqtt-bind": sender},
@@ -244,7 +245,7 @@ func TestDirectHold_Override_MQTTValidation_RoutesDLQ(t *testing.T) {
 	<-receiver.Ready()
 
 	// Header value produces invalid MQTT topic (contains wildcard).
-	env := &domain.Envelope{
+	env := &messaging.Envelope{
 		ID:      "bad-mqtt-msg",
 		Subject: "test",
 		Headers: map[string]any{"topic": "factory/+/data"},
@@ -266,7 +267,7 @@ func TestDirectHold_Override_MQTTValidation_RoutesDLQ(t *testing.T) {
 func TestDirectHold_NoOverrideHeader_NormalResolution(t *testing.T) {
 	senderA := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", Address: "topic-a"},
 	}
 
@@ -284,7 +285,7 @@ func TestDirectHold_NoOverrideHeader_NormalResolution(t *testing.T) {
 	<-receiver.Ready()
 
 	// No override header — normal resolution path.
-	env := &domain.Envelope{ID: "normal-msg", Subject: "test"}
+	env := &messaging.Envelope{ID: "normal-msg", Subject: "test"}
 	del := NewFakeDelivery(env)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit: %v", err)

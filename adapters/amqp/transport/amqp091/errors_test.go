@@ -8,7 +8,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // verifies MapError returns nil for a nil input.
@@ -23,22 +23,22 @@ func TestMapError_AMQPCodes(t *testing.T) {
 	tests := []struct {
 		name string
 		code int
-		want *domain.BridgeError
+		want *shared.BridgeError
 	}{
-		{"connection-forced", 320, domain.ErrConnectionLost},
-		{"access-refused", 403, domain.ErrNotAuthorized},
-		{"not-found", 404, domain.ErrNotFound},
-		{"not-allowed", 405, domain.ErrForbidden},
-		{"not-implemented-406", 406, domain.ErrNotSupported},
-		{"frame-error", 501, domain.ErrProtocolError},
-		{"syntax-error", 502, domain.ErrProtocolError},
-		{"command-invalid", 503, domain.ErrProtocolError},
-		{"channel-error", 504, domain.ErrUnavailable},
-		{"unexpected-frame", 505, domain.ErrProtocolError},
-		{"not-allowed-530", 530, domain.ErrForbidden},
-		{"not-implemented-540", 540, domain.ErrNotSupported},
-		{"internal-error", 541, domain.ErrUnavailable},
-		{"unknown-code", 999, domain.ErrUnavailable},
+		{"connection-forced", 320, shared.ErrConnectionLost},
+		{"access-refused", 403, shared.ErrNotAuthorized},
+		{"not-found", 404, shared.ErrNotFound},
+		{"not-allowed", 405, shared.ErrForbidden},
+		{"not-implemented-406", 406, shared.ErrNotSupported},
+		{"frame-error", 501, shared.ErrProtocolError},
+		{"syntax-error", 502, shared.ErrProtocolError},
+		{"command-invalid", 503, shared.ErrProtocolError},
+		{"channel-error", 504, shared.ErrUnavailable},
+		{"unexpected-frame", 505, shared.ErrProtocolError},
+		{"not-allowed-530", 530, shared.ErrForbidden},
+		{"not-implemented-540", 540, shared.ErrNotSupported},
+		{"internal-error", 541, shared.ErrUnavailable},
+		{"unknown-code", 999, shared.ErrUnavailable},
 	}
 
 	for _, tt := range tests {
@@ -59,7 +59,7 @@ func TestMapError_AMQPCodes(t *testing.T) {
 // verifies MapError maps context.DeadlineExceeded to ErrTimeout.
 func TestMapError_ContextDeadlineExceeded(t *testing.T) {
 	got := MapError(context.DeadlineExceeded)
-	if !errors.Is(got, domain.ErrTimeout) {
+	if !errors.Is(got, shared.ErrTimeout) {
 		t.Fatalf("expected ErrTimeout, got %v", got)
 	}
 }
@@ -67,7 +67,7 @@ func TestMapError_ContextDeadlineExceeded(t *testing.T) {
 // verifies MapError maps context.Canceled to ErrUnavailable.
 func TestMapError_ContextCanceled(t *testing.T) {
 	got := MapError(context.Canceled)
-	if !errors.Is(got, domain.ErrUnavailable) {
+	if !errors.Is(got, shared.ErrUnavailable) {
 		t.Fatalf("expected ErrUnavailable, got %v", got)
 	}
 }
@@ -77,14 +77,14 @@ func TestMapError_StringPatterns(t *testing.T) {
 	tests := []struct {
 		name   string
 		errMsg string
-		want   *domain.BridgeError
+		want   *shared.BridgeError
 	}{
-		{"connection_refused", "connection refused", domain.ErrConnectionLost},
-		{"no_route", "no route to host", domain.ErrConnectionLost},
-		{"network_unreachable", "network unreachable", domain.ErrConnectionLost},
-		{"connection_reset", "connection reset by peer", domain.ErrConnectionLost},
-		{"timeout", "operation timeout", domain.ErrTimeout},
-		{"timed_out", "request timed out", domain.ErrTimeout},
+		{"connection_refused", "connection refused", shared.ErrConnectionLost},
+		{"no_route", "no route to host", shared.ErrConnectionLost},
+		{"network_unreachable", "network unreachable", shared.ErrConnectionLost},
+		{"connection_reset", "connection reset by peer", shared.ErrConnectionLost},
+		{"timeout", "operation timeout", shared.ErrTimeout},
+		{"timed_out", "request timed out", shared.ErrTimeout},
 	}
 
 	for _, tt := range tests {
@@ -101,7 +101,7 @@ func TestMapError_StringPatterns(t *testing.T) {
 // verifies MapError defaults unrecognized errors to ErrUnavailable.
 func TestMapError_UnknownError(t *testing.T) {
 	got := MapError(fmt.Errorf("something completely unexpected"))
-	if !errors.Is(got, domain.ErrUnavailable) {
+	if !errors.Is(got, shared.ErrUnavailable) {
 		t.Fatalf("expected ErrUnavailable, got code %s", got.Code)
 	}
 }
@@ -110,12 +110,12 @@ func TestMapError_UnknownError(t *testing.T) {
 func TestMapError_WrappedContextError(t *testing.T) {
 	wrapped := fmt.Errorf("dial: %w", context.DeadlineExceeded)
 	got := MapError(wrapped)
-	if !errors.Is(got, domain.ErrTimeout) {
+	if !errors.Is(got, shared.ErrTimeout) {
 		t.Fatalf("expected ErrTimeout for wrapped deadline, got code %s", got.Code)
 	}
 }
 
-// verifies domain.IsRecoverableError for errors produced by MapError.
+// verifies shared.IsRecoverableError for errors produced by MapError.
 func TestMapError_IsRecoverable(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -134,7 +134,7 @@ func TestMapError_IsRecoverable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := domain.IsRecoverableError(tt.err); got != tt.recoverable {
+			if got := shared.IsRecoverableError(tt.err); got != tt.recoverable {
 				t.Fatalf("IsRecoverableError = %v, want %v", got, tt.recoverable)
 			}
 		})

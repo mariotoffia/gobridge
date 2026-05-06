@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -20,7 +21,7 @@ func testSession(opts ...func(*SessionOptions)) *Session {
 	for _, fn := range opts {
 		fn(&o)
 	}
-	return NewSession(o, domain.SessionEphemeral, slog.Default())
+	return NewSession(o, connectivity.SessionEphemeral, slog.Default())
 }
 
 func connectSession(t *testing.T, s *Session) *mockConnection {
@@ -61,11 +62,11 @@ func TestSession_Start_Closed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Start on closed session")
 	}
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}
-	if !errors.Is(be, domain.ErrUnavailable) {
+	if !errors.Is(be, shared.ErrUnavailable) {
 		t.Errorf("expected ErrUnavailable, got code %s", be.Code)
 	}
 }
@@ -189,8 +190,8 @@ func TestSession_Health_FullSubscriptions(t *testing.T) {
 	s.mu.Lock()
 	s.connected = true
 	s.conn = newMockConnection()
-	s.plan = &domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	s.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "q1"},
 			{Topic: "q2"},
 		},
@@ -216,8 +217,8 @@ func TestSession_Health_Degraded(t *testing.T) {
 	s.mu.Lock()
 	s.connected = true
 	s.conn = newMockConnection()
-	s.plan = &domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	s.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "q1"},
 			{Topic: "q2"},
 			{Topic: "q3"},
@@ -238,8 +239,8 @@ func TestSession_Health_ConnectedZeroActiveSubs(t *testing.T) {
 	s.mu.Lock()
 	s.connected = true
 	s.conn = newMockConnection()
-	s.plan = &domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "q1"}},
+	s.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "q1"}},
 	}
 	s.activeSubs = map[string]bool{}
 	s.mu.Unlock()
@@ -304,18 +305,18 @@ func TestSession_PushEvent_ClosedNoop(t *testing.T) {
 func TestSession_Reconcile_NotStarted(t *testing.T) {
 	s := testSession()
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "q1"}},
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "q1"}},
 	}
 	err := s.Reconcile(context.Background(), plan)
 	if err == nil {
 		t.Fatal("expected error from Reconcile on un-started session")
 	}
-	var be *domain.BridgeError
+	var be *shared.BridgeError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected BridgeError, got %T", err)
 	}
-	if !errors.Is(be, domain.ErrUnavailable) {
+	if !errors.Is(be, shared.ErrUnavailable) {
 		t.Errorf("expected ErrUnavailable, got code %s", be.Code)
 	}
 }

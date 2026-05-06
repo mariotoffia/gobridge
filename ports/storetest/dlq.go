@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -18,8 +20,8 @@ var (
 	dlqT5 = time.Date(2024, 1, 1, 14, 0, 0, 0, time.UTC)
 )
 
-func makeDLQEntry(id, routeID, category string, failedAt time.Time) domain.DLQEntry {
-	return domain.DLQEntry{
+func makeDLQEntry(id, routeID, category string, failedAt time.Time) routing.DLQEntry {
+	return routing.DLQEntry{
 		ID:            id,
 		RouteID:       routeID,
 		BindingID:     "bind-" + id,
@@ -32,7 +34,7 @@ func makeDLQEntry(id, routeID, category string, failedAt time.Time) domain.DLQEn
 		LastError:     "something went wrong",
 		FailedAt:      failedAt,
 		Attempts:      1,
-		Envelope: domain.Envelope{
+		Envelope: messaging.Envelope{
 			ID:      "env-" + id,
 			Subject: "test/subject",
 			Payload: []byte(`{"key":"value"}`),
@@ -41,7 +43,7 @@ func makeDLQEntry(id, routeID, category string, failedAt time.Time) domain.DLQEn
 	}
 }
 
-func dlqEntryIDs(entries []domain.DLQEntry) map[string]bool {
+func dlqEntryIDs(entries []routing.DLQEntry) map[string]bool {
 	m := make(map[string]bool, len(entries))
 	for _, e := range entries {
 		m[e.ID] = true
@@ -88,7 +90,7 @@ func dlqWriteAndList(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("write e2: %v", err)
 	}
 
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-wal"})
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-wal"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -104,7 +106,7 @@ func dlqWriteAndList(t *testing.T, store ports.DLQStore) {
 		t.Fatal("missing entry wal-2")
 	}
 
-	var found *domain.DLQEntry
+	var found *routing.DLQEntry
 	for i := range results {
 		if results[i].ID == "wal-1" {
 			found = &results[i]
@@ -176,7 +178,7 @@ func dlqListFilterByRouteID(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("write lfr-3: %v", err)
 	}
 
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-alpha"})
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-alpha"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -209,7 +211,7 @@ func dlqListFilterByCategory(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("write lfc-3: %v", err)
 	}
 
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-lfc", Category: "timeout"})
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-lfc", Category: "timeout"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -242,7 +244,7 @@ func dlqListFilterBySince(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("write lfs-3: %v", err)
 	}
 
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-lfs", Since: dlqT2})
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-lfs", Since: dlqT2})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -281,7 +283,7 @@ func dlqListFilterByBefore(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("write lfb-3: %v", err)
 	}
 
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-lfb", Before: dlqT2})
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-lfb", Before: dlqT2})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -312,7 +314,7 @@ func dlqListRespectsLimit(t *testing.T, store ports.DLQStore) {
 		}
 	}
 
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-lrl", Limit: 2})
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-lrl", Limit: 2})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -330,11 +332,11 @@ func dlqWriteIdempotent(t *testing.T, store ports.DLQStore) {
 	}
 
 	err := store.Write(ctx, e)
-	if !errors.Is(err, domain.ErrDuplicateRecord) {
+	if !errors.Is(err, shared.ErrDuplicateRecord) {
 		t.Fatalf("expected ErrDuplicateRecord, got %v", err)
 	}
 
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-wi"})
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-wi"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -366,7 +368,7 @@ func dlqPurgeRemovesOld(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("expected at least 2 purged, got %d", n)
 	}
 
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-pro"})
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-pro"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -396,7 +398,7 @@ func dlqPurgeSkipsRecent(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("expected 0 purged (all entries >= cutoff), got %d", n)
 	}
 
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-psr"})
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-psr"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -408,7 +410,7 @@ func dlqPurgeSkipsRecent(t *testing.T, store ports.DLQStore) {
 func dlqFullLifecycle(t *testing.T, store ports.DLQStore) {
 	ctx := context.Background()
 
-	entries := []domain.DLQEntry{
+	entries := []routing.DLQEntry{
 		makeDLQEntry("flc-1", "route-flc", "timeout", dlqT1),
 		makeDLQEntry("flc-2", "route-flc", "rejected", dlqT2),
 		makeDLQEntry("flc-3", "route-flc", "timeout", dlqT3),
@@ -420,7 +422,7 @@ func dlqFullLifecycle(t *testing.T, store ports.DLQStore) {
 		}
 	}
 
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-flc"})
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-flc"})
 	if err != nil {
 		t.Fatalf("list all: %v", err)
 	}
@@ -455,7 +457,7 @@ func dlqFullLifecycle(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("expected at least 1 purged, got %d", pn)
 	}
 
-	results, err = store.List(ctx, domain.DLQFilter{RouteID: "route-flc"})
+	results, err = store.List(ctx, routing.DLQFilter{RouteID: "route-flc"})
 	if err != nil {
 		t.Fatalf("list after purge: %v", err)
 	}
