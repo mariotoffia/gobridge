@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -46,7 +46,7 @@ func TestBugSAC_StartAfterClose_ReturnsErrorAndDoesNotConnect(t *testing.T) {
 		BrokerURLs:     []string{"tcp://192.0.2.1:1883"}, // RFC 5737 unreachable
 		ClientID:       "bug-sac-1",
 		ConnectTimeout: 200 * time.Millisecond,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := s.Close(context.Background()); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -102,7 +102,7 @@ func TestBugSAC_HealthAfterStartAfterClose_StillReportsDisconnected(t *testing.T
 		BrokerURLs:     []string{"tcp://192.0.2.1:1883"},
 		ClientID:       "bug-sac-2",
 		ConnectTimeout: 200 * time.Millisecond,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	_ = s.Close(context.Background())
 
@@ -128,7 +128,7 @@ func TestBugSAC_StartAfterClose_DoesNotLeakConnectionManager(t *testing.T) {
 		BrokerURLs:     []string{"tcp://192.0.2.1:1883"},
 		ClientID:       "bug-sac-3",
 		ConnectTimeout: 200 * time.Millisecond,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	_ = s.Close(context.Background())
 
@@ -150,7 +150,7 @@ func TestBugSAC_ReconcileAfterStartAfterClose_ReturnsError(t *testing.T) {
 		BrokerURLs:     []string{"tcp://192.0.2.1:1883"},
 		ClientID:       "bug-sac-4",
 		ConnectTimeout: 200 * time.Millisecond,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	_ = s.Close(context.Background())
 
@@ -158,8 +158,8 @@ func TestBugSAC_ReconcileAfterStartAfterClose_ReturnsError(t *testing.T) {
 	defer cancel()
 	_ = s.Start(ctx)
 
-	err := s.Reconcile(context.Background(), domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "t/x", QoS: 1}},
+	err := s.Reconcile(context.Background(), connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "t/x", QoS: 1}},
 	})
 	if err == nil {
 		t.Fatal("BUG-SAC: Reconcile after Start-on-closed must error")

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -185,7 +185,7 @@ func TestOutboxDrainer_FinalDrainCompletesPendingRecords(t *testing.T) {
 		PartitionKey: "SESSION#s1",
 		LeaseID:      "s1",
 		OwnerID:      "me",
-		Policy:       domain.RoutePolicy{}.WithDefaults(),
+		Policy:       routing.RoutePolicy{}.WithDefaults(),
 		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainTimeout: 5 * time.Second,
 		TokenFn:      func() (persistence.LeaseToken, bool) { return token, true },

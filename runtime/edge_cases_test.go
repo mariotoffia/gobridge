@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -39,10 +39,10 @@ func TestEdge_StaleFencingTokenRejected(t *testing.T) {
 
 	cfgA := goruntime.RouteConfig{
 		ID: "fenced-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -84,10 +84,10 @@ func TestEdge_StaleFencingTokenRejected(t *testing.T) {
 
 	cfgB := goruntime.RouteConfig{
 		ID: "fenced-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -162,10 +162,10 @@ func TestEdge_IdempotentPersist(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "idemp-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-idemp"},
 		},
 	}
@@ -228,11 +228,11 @@ func TestEdge_ExpiredOutboxEntry(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "expiry-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			OnExpired:    domain.ExpiredDLQ,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			OnExpired:    routing.ExpiredDLQ,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-expiry"},
 		},
 	}
@@ -284,11 +284,11 @@ func TestEdge_ExpiredOutboxEntryDuringDrain(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "drain-exp-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			OnExpired:    domain.ExpiredDLQ,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			OnExpired:    routing.ExpiredDLQ,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-drain-exp"},
 		},
 	}
@@ -350,11 +350,11 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "poison-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:      domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:      routing.DeliverySharedOutbox,
 			MaxReplayAttempts: 3,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-poison"},
 		},
 	}
@@ -411,10 +411,10 @@ func TestEdge_CrashBeforeOutboxPersist(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "crash-pre-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-crash-pre"},
 		},
 	}
@@ -458,10 +458,10 @@ func TestEdge_CrashAfterPersistBeforeAck(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "crash-mid-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-crash-mid"},
 		},
 	}
@@ -521,10 +521,10 @@ func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 
 	cfgA := goruntime.RouteConfig{
 		ID: "crash-ack-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -559,10 +559,10 @@ func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 
 	cfgB := goruntime.RouteConfig{
 		ID: "crash-ack-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -609,10 +609,10 @@ func TestEdge_PermanentSendErrorGoesToDLQ(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "perm-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-perm"},
 		},
 	}
@@ -677,10 +677,10 @@ func TestEdge_CrashAfterSendBeforeCompletion(t *testing.T) {
 
 	cfgA := goruntime.RouteConfig{
 		ID: "crash-complete-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -725,10 +725,10 @@ func TestEdge_CrashAfterSendBeforeCompletion(t *testing.T) {
 
 	cfgB := goruntime.RouteConfig{
 		ID: "crash-complete-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -773,16 +773,16 @@ func TestEdge_FanOutPartialPersist(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "fanout-partial-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &FakeResolver{
-			Plans: []domain.DispatchPlan{
+			Plans: []routing.DispatchPlan{
 				{BindingID: "bind-a", Address: "topic/a"},
 				{BindingID: "bind-b", Address: "topic/b"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "bind-a", SessionID: "mqtt-fanout-partial"},
 			{ID: "bind-b", SessionID: "mqtt-fanout-partial"},
 		},
@@ -823,10 +823,10 @@ func TestEdge_FanOutPartialPersist(t *testing.T) {
 // Helper: DLQ store entry access
 // ---------------------------------------------------------------------------
 
-func (s *FakeDLQStore) GetEntries() []domain.DLQEntry {
+func (s *FakeDLQStore) GetEntries() []routing.DLQEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := make([]domain.DLQEntry, len(s.Entries))
+	cp := make([]routing.DLQEntry, len(s.Entries))
 	copy(cp, s.Entries)
 	return cp
 }

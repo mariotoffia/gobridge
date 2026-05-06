@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -82,7 +82,7 @@ func TestAdaptBatchSize_HalvesOnConsecutiveZeroSuccess(t *testing.T) {
 		PartitionKey:        pk,
 		LeaseID:             "sess-1",
 		OwnerID:             token.Owner,
-		Policy:              domain.RoutePolicy{}.WithDefaults(),
+		Policy:              routing.RoutePolicy{}.WithDefaults(),
 		Strategy:            persistence.NewFixedPoll(30 * time.Millisecond),
 		DrainBatchSize:      5,
 		DrainMaxBatchSize:   50,
@@ -261,11 +261,11 @@ func TestQueryPendingSuccess_PersistsNormally(t *testing.T) {
 
 	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
 		RouteID:     "query-ok-route",
-		Policy:      domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox, MaxOutboxDepth: 1000},
+		Policy:      routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox, MaxOutboxDepth: 1000},
 		Receiver:    receiver,
 		Sender:      sender,
 		OutboxStore: outbox,
-		Bindings:    []domain.DestinationBinding{{ID: "b1", SessionID: "query-ok-sess"}},
+		Bindings:    []routing.DestinationBinding{{ID: "b1", SessionID: "query-ok-sess"}},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -318,7 +318,7 @@ func TestNormalMaxBatchSize_NotClamped(t *testing.T) {
 		PartitionKey:      pk,
 		LeaseID:           "sess-1",
 		OwnerID:           token.Owner,
-		Policy:            domain.RoutePolicy{}.WithDefaults(),
+		Policy:            routing.RoutePolicy{}.WithDefaults(),
 		Strategy:          persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:    100,
 		DrainMaxBatchSize: 500,
@@ -362,7 +362,7 @@ func TestOutboxDrainer_SuccessEmitsCompletion(t *testing.T) {
 		PartitionKey:   pk,
 		LeaseID:        "sess-1",
 		OwnerID:        token.Owner,
-		Policy:         domain.RoutePolicy{}.WithDefaults(),
+		Policy:         routing.RoutePolicy{}.WithDefaults(),
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		Metrics:        rec,
@@ -432,7 +432,7 @@ func TestBatchSizeClamped_PreventsAbsoluteMaxBypass(t *testing.T) {
 		PartitionKey:      pk,
 		LeaseID:           "sess-1",
 		OwnerID:           token.Owner,
-		Policy:            domain.RoutePolicy{}.WithDefaults(),
+		Policy:            routing.RoutePolicy{}.WithDefaults(),
 		Strategy:          persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:    50000,
 		DrainMaxBatchSize: 500,
@@ -479,7 +479,7 @@ func TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric(t *testing.T) {
 		PartitionKey:   pk,
 		LeaseID:        "sess-1",
 		OwnerID:        token.Owner,
-		Policy:         domain.RoutePolicy{}.WithDefaults(),
+		Policy:         routing.RoutePolicy{}.WithDefaults(),
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		Metrics:        rec,

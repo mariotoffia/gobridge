@@ -35,8 +35,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -55,18 +55,18 @@ func NewFailOnceDLQStore() *FailOnceDLQStore {
 	return &FailOnceDLQStore{inner: NewFakeDLQStore(), failsLeft: 1}
 }
 
-func (s *FailOnceDLQStore) Write(ctx context.Context, entry domain.DLQEntry) error {
+func (s *FailOnceDLQStore) Write(ctx context.Context, entry routing.DLQEntry) error {
 	if atomic.AddInt32(&s.failsLeft, -1) >= 0 {
 		return errors.New("store temporarily down")
 	}
 	return s.inner.Write(ctx, entry)
 }
 
-func (s *FailOnceDLQStore) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *FailOnceDLQStore) List(ctx context.Context, filter routing.DLQFilter) ([]routing.DLQEntry, error) {
 	return s.inner.List(ctx, filter)
 }
 
-func (s *FailOnceDLQStore) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
+func (s *FailOnceDLQStore) Get(ctx context.Context, id string) (routing.DLQEntry, error) {
 	return s.inner.Get(ctx, id)
 }
 
@@ -74,7 +74,7 @@ func (s *FailOnceDLQStore) Delete(ctx context.Context, ids []string) (int, error
 	return s.inner.Delete(ctx, ids)
 }
 
-func (s *FailOnceDLQStore) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error) {
+func (s *FailOnceDLQStore) DeleteByFilter(ctx context.Context, filter routing.DLQFilter) (int, error) {
 	return s.inner.DeleteByFilter(ctx, filter)
 }
 
@@ -109,7 +109,7 @@ func (s *FailOnceDLQStore) Count() int { return s.inner.Count() }
 func TestDirectHold_RetryUnsupported_FallsToDLQ(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
+		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 		cfg.Metrics = rec
 	})
 	sender.SendErr = shared.ErrUnavailable
@@ -166,7 +166,7 @@ func TestDirectHold_RetryUnsupported_FallsToDLQ(t *testing.T) {
 //   - DLQ has no entries
 func TestDirectHold_RetryUnsupported_DLQAlsoFails_ReturnsError(t *testing.T) {
 	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
+		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 	})
 	sender.SendErr = shared.ErrUnavailable
 	dlqStore.WriteErr = errors.New("store down")
@@ -214,7 +214,7 @@ func TestDirectHold_RetryUnsupported_DLQAlsoFails_ReturnsError(t *testing.T) {
 //   - DLQ contains 1 entry
 func TestHandleProcessorError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
+		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 		cfg.Processors = []ports.Processor{
 			&FakeProcessor{
 				NameVal:    "throttle-sim",
@@ -262,7 +262,7 @@ func TestHandleProcessorError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 //   - DLQ contains 1 entry
 func TestSharedOutbox_RetryUnsupported_FallsToDLQ(t *testing.T) {
 	receiver, _, dlqStore, outbox, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliverySharedOutbox
+		cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
 	})
 	outbox.PersistErr = errors.New("outbox persist failed")
 
@@ -312,11 +312,11 @@ func TestHandleExpired_RetryUnsupported_FallsToDLQ(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "route-expired-retry",
-		Policy:   domain.RoutePolicy{OnExpired: domain.ExpiredDLQ}.WithDefaults(),
+		Policy:   routing.RoutePolicy{OnExpired: routing.ExpiredDLQ}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(failOnceDLQ),
-		Bindings: []domain.DestinationBinding{{ID: "b1"}},
+		Bindings: []routing.DestinationBinding{{ID: "b1"}},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -359,7 +359,7 @@ func TestHandleExpired_RetryUnsupported_FallsToDLQ(t *testing.T) {
 //   - DLQ contains 1 entry
 func TestHandleResolveError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
+		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 		cfg.Resolver = &FakeResolver{ResolveErr: shared.ErrUnavailable}
 	})
 
@@ -402,7 +402,7 @@ func TestHandleResolveError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 //   - DLQ has no entries
 func TestDirectHold_RetrySupported_NoFallback(t *testing.T) {
 	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
+		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 	})
 	sender.SendErr = shared.ErrUnavailable
 

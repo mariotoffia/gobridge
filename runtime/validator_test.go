@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -13,9 +13,9 @@ import (
 func validDirectHoldEntry() (runtime.RouteConfig, ports.Receiver, ports.Sender, ports.Session, *runtime.SessionConfig) {
 	cfg := runtime.RouteConfig{
 		ID: "sqs-to-mqtt-dh",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
-			DispatchMode: domain.DispatchSingle,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
+			DispatchMode: routing.DispatchSingle,
 		},
 		SourceCapabilities: []ports.Capability{
 			ports.CapSourceRedelivery,
@@ -47,7 +47,7 @@ func TestValidator_DirectHold_Valid(t *testing.T) {
 func TestValidator_DirectHold_RejectsFanOut(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
-	cfg.Policy.DispatchMode = domain.DispatchFanOut
+	cfg.Policy.DispatchMode = routing.DispatchFanOut
 
 	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestValidator_DirectHold_RejectsMissingVisibilityExtension(t *testing.T) {
 func TestValidator_DirectHold_RejectsMultipleBindings(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
-	cfg.Bindings = []domain.DestinationBinding{
+	cfg.Bindings = []routing.DestinationBinding{
 		{ID: "bind-a", SessionID: "sess-a"},
 		{ID: "bind-b", SessionID: "sess-b"},
 	}
@@ -126,7 +126,7 @@ func TestValidator_DirectHold_RejectsMultipleBindings(t *testing.T) {
 func TestValidator_DirectHold_CollectsMultipleErrors(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, _ := validDirectHoldEntry()
-	cfg.Policy.DispatchMode = domain.DispatchFanOut
+	cfg.Policy.DispatchMode = routing.DispatchFanOut
 	cfg.SourceCapabilities = nil
 	exclusiveCfg := runtime.DefaultSessionConfig("mqtt-exclusive", true)
 
@@ -181,11 +181,11 @@ func TestValidator_SharedOutbox_Valid(t *testing.T) {
 
 	cfg := runtime.RouteConfig{
 		ID: "sqs-to-mqtt-so",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &FakeResolver{
-			Plans: []domain.DispatchPlan{{BindingID: "b1", Address: "topic/a"}},
+			Plans: []routing.DispatchPlan{{BindingID: "b1", Address: "topic/a"}},
 		},
 	}
 	sessCfg := runtime.DefaultSessionConfig("mqtt-sess", true)
@@ -208,8 +208,8 @@ func TestValidator_SharedOutbox_RejectsMissingOutboxStore(t *testing.T) {
 
 	cfg := runtime.RouteConfig{
 		ID: "sqs-to-mqtt-no-outbox",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 	}
 
@@ -232,7 +232,7 @@ func TestValidator_DirectHold_DefaultDeliveryMode(t *testing.T) {
 
 	cfg := runtime.RouteConfig{
 		ID:                 "default-mode",
-		Policy:             domain.RoutePolicy{},
+		Policy:             routing.RoutePolicy{},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 
@@ -254,16 +254,16 @@ func TestValidator_MultipleRouteErrors(t *testing.T) {
 
 	cfg1 := runtime.RouteConfig{
 		ID: "bad-route-1",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
-			DispatchMode: domain.DispatchFanOut,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
+			DispatchMode: routing.DispatchFanOut,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 	cfg2 := runtime.RouteConfig{
 		ID: "bad-route-2",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 	}
 
@@ -294,8 +294,8 @@ func TestValidator_SharedOutbox_NonExclusiveNoLeaseStore(t *testing.T) {
 
 	cfg := runtime.RouteConfig{
 		ID: "non-exclusive-so",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 	}
 	nonExclusiveCfg := runtime.DefaultSessionConfig("mqtt-persistent", false)
@@ -319,9 +319,9 @@ func TestValidationError_Errors_ReturnsAllErrors(t *testing.T) {
 
 	cfg1 := runtime.RouteConfig{
 		ID: "bad-1",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
-			DispatchMode: domain.DispatchFanOut,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
+			DispatchMode: routing.DispatchFanOut,
 		},
 	}
 	_ = rt.AddRoute(cfg1, NewFakeReceiver(), NewFakeSender(), nil, nil)
@@ -360,8 +360,8 @@ func TestValidator_SharedOutbox_RejectsMissingLeaseStoreForExclusive(t *testing.
 
 	cfg := runtime.RouteConfig{
 		ID: "sqs-to-mqtt-no-lease",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 	}
 	exclusiveCfg := runtime.DefaultSessionConfig("mqtt-exclusive", true)
@@ -384,12 +384,12 @@ func TestValidator_SharedOutbox_RejectsMissingLeaseStoreForExclusive(t *testing.
 func TestValidator_DirectHold_MultiBindingsWithResolver(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
-	cfg.Bindings = []domain.DestinationBinding{
+	cfg.Bindings = []routing.DestinationBinding{
 		{ID: "bind-a", SessionID: "sess-a"},
 		{ID: "bind-b", SessionID: "sess-b"},
 	}
 	// Setting a resolver relaxes the multi-binding validation.
-	cfg.Resolver = runtime.NewStaticResolver(domain.DispatchPlan{
+	cfg.Resolver = runtime.NewStaticResolver(routing.DispatchPlan{
 		BindingID: "bind-a", Address: "topic-a",
 	})
 
@@ -411,8 +411,8 @@ func TestValidator_DirectHold_MultiBindingsWithResolver(t *testing.T) {
 func TestValidator_DirectHold_FanOutStillRejectedWithResolver(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
-	cfg.Policy.DispatchMode = domain.DispatchFanOut
-	cfg.Resolver = runtime.NewStaticResolver(domain.DispatchPlan{BindingID: "b"})
+	cfg.Policy.DispatchMode = routing.DispatchFanOut
+	cfg.Resolver = runtime.NewStaticResolver(routing.DispatchPlan{BindingID: "b"})
 
 	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
 		t.Fatal(err)
@@ -438,9 +438,9 @@ func TestValidator_SharedOutbox_FanOutExceedsTransactionLimit(t *testing.T) {
 		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
-	bindings := make([]domain.DestinationBinding, 101)
+	bindings := make([]routing.DestinationBinding, 101)
 	for i := range bindings {
-		bindings[i] = domain.DestinationBinding{
+		bindings[i] = routing.DestinationBinding{
 			ID:       "b" + strings.Repeat("x", i),
 			SenderID: "sender-1",
 		}
@@ -448,9 +448,9 @@ func TestValidator_SharedOutbox_FanOutExceedsTransactionLimit(t *testing.T) {
 
 	cfg := runtime.RouteConfig{
 		ID: "fanout-overflow",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			DispatchMode: domain.DispatchFanOut,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			DispatchMode: routing.DispatchFanOut,
 		},
 		Bindings: bindings,
 	}
@@ -479,9 +479,9 @@ func TestValidator_SharedOutbox_FanOutAtLimit(t *testing.T) {
 		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
-	bindings := make([]domain.DestinationBinding, 100)
+	bindings := make([]routing.DestinationBinding, 100)
 	for i := range bindings {
-		bindings[i] = domain.DestinationBinding{
+		bindings[i] = routing.DestinationBinding{
 			ID:       "b" + strings.Repeat("x", i),
 			SenderID: "sender-1",
 		}
@@ -489,9 +489,9 @@ func TestValidator_SharedOutbox_FanOutAtLimit(t *testing.T) {
 
 	cfg := runtime.RouteConfig{
 		ID: "fanout-at-limit",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			DispatchMode: domain.DispatchFanOut,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			DispatchMode: routing.DispatchFanOut,
 		},
 		Bindings: bindings,
 	}

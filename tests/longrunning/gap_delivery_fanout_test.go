@@ -11,7 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -76,26 +77,26 @@ func TestGAP_FanOutSharedOutbox_ThreeTargets(t *testing.T) {
 
 	// Primary session + sender (for the route).
 	sessIDA := mqttlocal.UniqueClientID("gap-fo-sa")
-	sessA := newMQTTSession(t, sessIDA, domain.SessionExclusive)
+	sessA := newMQTTSession(t, sessIDA, connectivity.SessionExclusive)
 	sndA := setupMQTTSender(t, sessA)
 	scA := lrSessionConfig(sessIDA)
 
 	// Secondary sessions registered via RegisterSessionSender.
 	sessIDB := mqttlocal.UniqueClientID("gap-fo-sb")
-	sessB := newMQTTSession(t, sessIDB, domain.SessionExclusive)
+	sessB := newMQTTSession(t, sessIDB, connectivity.SessionExclusive)
 	sndB := setupMQTTSender(t, sessB)
 	scB := lrSessionConfig(sessIDB)
 
 	sessIDC := mqttlocal.UniqueClientID("gap-fo-sc")
-	sessC := newMQTTSession(t, sessIDC, domain.SessionExclusive)
+	sessC := newMQTTSession(t, sessIDC, connectivity.SessionExclusive)
 	sndC := setupMQTTSender(t, sessC)
 	scC := lrSessionConfig(sessIDC)
 
 	// Resolver that returns 3 dispatch plans — each references a binding.
 	resolver := goruntime.NewStaticResolver(
-		domain.DispatchPlan{BindingID: "fo-bind-a", Address: topicA},
-		domain.DispatchPlan{BindingID: "fo-bind-b", Address: topicB},
-		domain.DispatchPlan{BindingID: "fo-bind-c", Address: topicC},
+		routing.DispatchPlan{BindingID: "fo-bind-a", Address: topicA},
+		routing.DispatchPlan{BindingID: "fo-bind-b", Address: topicB},
+		routing.DispatchPlan{BindingID: "fo-bind-c", Address: topicC},
 	)
 
 	rt := goruntime.New(
@@ -112,14 +113,14 @@ func TestGAP_FanOutSharedOutbox_ThreeTargets(t *testing.T) {
 
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-fo-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			DispatchMode: domain.DispatchFanOut,
-			AckAfter:     domain.AckAfterOutboxPersist,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			DispatchMode: routing.DispatchFanOut,
+			AckAfter:     routing.AckAfterOutboxPersist,
 		},
 		Resolver: resolver,
 		// Bindings map DispatchPlan.BindingID → session for outbox partitioning.
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "fo-bind-a", SessionID: sessIDA},
 			{ID: "fo-bind-b", SessionID: sessIDB},
 			{ID: "fo-bind-c", SessionID: sessIDC},

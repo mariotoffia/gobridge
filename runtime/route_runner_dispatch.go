@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -37,7 +37,7 @@ func (r *RouteRunner) sendDirectHoldForBinding(ctx context.Context, del ports.De
 					return r.handleResolveError(ctx, del, env, topicErr)
 				}
 			}
-			return r.sendDirectHold(ctx, del, env, domain.DispatchPlan{
+			return r.sendDirectHold(ctx, del, env, routing.DispatchPlan{
 				BindingID: b.ID,
 				Address:   addr,
 				Headers:   copyHeaders(b.Headers),
@@ -57,7 +57,7 @@ func (r *RouteRunner) hasBinding(bindingID string) bool {
 	return false
 }
 
-func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, env *messaging.Envelope, plan domain.DispatchPlan) error {
+func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, env *messaging.Envelope, plan routing.DispatchPlan) error {
 	if plan.Address != "" {
 		env.Subject = plan.Address
 	}
@@ -240,7 +240,7 @@ func (r *RouteRunner) sessionIDForBinding(bindingID string) string {
 }
 
 func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env *messaging.Envelope) error {
-	if r.policy.OnExpired == domain.ExpiredDLQ {
+	if r.policy.OnExpired == routing.ExpiredDLQ {
 		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", shared.ErrMessageExpired, 0); dlqErr != nil {
 			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 		}
@@ -251,7 +251,7 @@ func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env
 
 func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delivery, env *messaging.Envelope, err error) error {
 	if errors.Is(err, shared.ErrMessageFiltered) {
-		if r.policy.OnPermanentFailure == domain.FailureDLQ {
+		if r.policy.OnPermanentFailure == routing.FailureDLQ {
 			if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", err, 0); dlqErr != nil {
 				return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 			}
@@ -351,7 +351,7 @@ func (r *RouteRunner) emitDLQ(category string) {
 }
 
 func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env *messaging.Envelope) error {
-	var plans []domain.DispatchPlan
+	var plans []routing.DispatchPlan
 
 	// Consume HeaderRouteOverride set by processor chain.
 	if override, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderRouteOverride); ok {
@@ -376,7 +376,7 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 							return r.handleResolveError(ctx, del, env, topicErr)
 						}
 					}
-					plans = []domain.DispatchPlan{{
+					plans = []routing.DispatchPlan{{
 						BindingID: b.ID, Address: addr, Headers: copyHeaders(b.Headers),
 					}}
 					break

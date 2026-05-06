@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -92,7 +92,7 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 		PartitionKey:        pk,
 		LeaseID:             sessionID,
 		OwnerID:             ownerID,
-		Policy:              domain.RoutePolicy{}.WithDefaults(),
+		Policy:              routing.RoutePolicy{}.WithDefaults(),
 		Strategy:            fixedNoJitterStrategy{d: interval},
 		DrainBatchSize:      100,
 		DrainMaxBatchSize:   100,
@@ -216,7 +216,7 @@ func TestOutboxDrainer_DrainLatencyUsesInjectedClock(t *testing.T) {
 		PartitionKey:        pk,
 		LeaseID:             sessionID,
 		OwnerID:             ownerID,
-		Policy:              domain.RoutePolicy{}.WithDefaults(),
+		Policy:              routing.RoutePolicy{}.WithDefaults(),
 		Strategy:            fixedNoJitterStrategy{d: interval},
 		DrainBatchSize:      100,
 		DrainMaxBatchSize:   100,

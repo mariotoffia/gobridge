@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -24,7 +24,7 @@ const (
 // with exponential backoff and health monitoring.
 type Session struct {
 	opts    SessionOptions
-	mode    domain.SessionMode
+	mode    connectivity.SessionMode
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
 	dial    dialFunc
@@ -37,7 +37,7 @@ type Session struct {
 	closed    bool
 	connected bool
 	starting  bool
-	plan      *domain.SessionPlan
+	plan      *connectivity.SessionPlan
 
 	// stopMonitor cancels the background health-monitoring goroutine.
 	stopMonitor context.CancelFunc
@@ -75,7 +75,7 @@ type amqp10Credentials struct {
 var _ ports.Session = (*Session)(nil)
 
 // NewSession creates an AMQP 1.0 Session from the given options.
-func NewSession(opts SessionOptions, mode domain.SessionMode, logger *slog.Logger, metrics ...ports.MetricsExporter) *Session {
+func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog.Logger, metrics ...ports.MetricsExporter) *Session {
 	var m ports.MetricsExporter = &ports.NoopExporter{}
 	if len(metrics) > 0 && metrics[0] != nil {
 		m = metrics[0]
@@ -262,7 +262,7 @@ func (s *Session) connect(ctx context.Context) error {
 // Reconcile stores the desired SessionPlan. AMQP 1.0 has no
 // queue/exchange declare operations — links are created lazily when
 // receivers and senders start.
-func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error {
+func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) error {
 	reconcileStart := s.clock().Now()
 
 	s.mu.Lock()

@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -187,7 +188,7 @@ type FakeSession struct {
 	mu           sync.Mutex
 	Started      bool
 	Closed       bool
-	Plans        []domain.SessionPlan
+	Plans        []connectivity.SessionPlan
 	events       chan ports.SessionEvent
 	closeOnce    sync.Once
 	StartErr     error
@@ -206,7 +207,7 @@ func (s *FakeSession) Start(_ context.Context) error {
 	return s.StartErr
 }
 
-func (s *FakeSession) Reconcile(_ context.Context, plan domain.SessionPlan) error {
+func (s *FakeSession) Reconcile(_ context.Context, plan connectivity.SessionPlan) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Plans = append(s.Plans, plan)
@@ -555,7 +556,7 @@ func (s *FakeOutboxStore) CompletedCount() int {
 
 type FakeDLQStore struct {
 	mu       sync.Mutex
-	Entries  []domain.DLQEntry
+	Entries  []routing.DLQEntry
 	WriteErr error
 }
 
@@ -563,7 +564,7 @@ func NewFakeDLQStore() *FakeDLQStore {
 	return &FakeDLQStore{}
 }
 
-func (s *FakeDLQStore) Write(_ context.Context, entry domain.DLQEntry) error {
+func (s *FakeDLQStore) Write(_ context.Context, entry routing.DLQEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.WriteErr != nil {
@@ -573,11 +574,11 @@ func (s *FakeDLQStore) Write(_ context.Context, entry domain.DLQEntry) error {
 	return nil
 }
 
-func (s *FakeDLQStore) List(_ context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *FakeDLQStore) List(_ context.Context, filter routing.DLQFilter) ([]routing.DLQEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var result []domain.DLQEntry
+	var result []routing.DLQEntry
 	for _, e := range s.Entries {
 		if filter.RouteID != "" && e.RouteID != filter.RouteID {
 			continue
@@ -593,7 +594,7 @@ func (s *FakeDLQStore) List(_ context.Context, filter domain.DLQFilter) ([]domai
 	return result, nil
 }
 
-func (s *FakeDLQStore) Get(_ context.Context, id string) (domain.DLQEntry, error) {
+func (s *FakeDLQStore) Get(_ context.Context, id string) (routing.DLQEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, e := range s.Entries {
@@ -601,7 +602,7 @@ func (s *FakeDLQStore) Get(_ context.Context, id string) (domain.DLQEntry, error
 			return e, nil
 		}
 	}
-	return domain.DLQEntry{}, shared.ErrNotFound
+	return routing.DLQEntry{}, shared.ErrNotFound
 }
 
 func (s *FakeDLQStore) Delete(_ context.Context, ids []string) (int, error) {
@@ -611,7 +612,7 @@ func (s *FakeDLQStore) Delete(_ context.Context, ids []string) (int, error) {
 	for _, id := range ids {
 		idSet[id] = struct{}{}
 	}
-	var remaining []domain.DLQEntry
+	var remaining []routing.DLQEntry
 	var count int
 	for _, e := range s.Entries {
 		if _, ok := idSet[e.ID]; ok {
@@ -624,7 +625,7 @@ func (s *FakeDLQStore) Delete(_ context.Context, ids []string) (int, error) {
 	return count, nil
 }
 
-func (s *FakeDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error) {
+func (s *FakeDLQStore) DeleteByFilter(_ context.Context, _ routing.DLQFilter) (int, error) {
 	return 0, nil
 }
 
@@ -724,11 +725,11 @@ func (t *FakeTracer) LastSpan() *FakeSpan {
 // ---------------------------------------------------------------------------
 
 type FakeResolver struct {
-	Plans      []domain.DispatchPlan
+	Plans      []routing.DispatchPlan
 	ResolveErr error
 }
 
-func (r *FakeResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]domain.DispatchPlan, error) {
+func (r *FakeResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]routing.DispatchPlan, error) {
 	if r.ResolveErr != nil {
 		return nil, r.ResolveErr
 	}

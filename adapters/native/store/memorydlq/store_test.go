@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorydlq"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 )
@@ -21,8 +21,8 @@ func TestDLQStoreConformance(t *testing.T) {
 	storetest.RunDLQStoreTests(t, s)
 }
 
-func makeEntry(id, routeID, category string, failedAt time.Time) domain.DLQEntry {
-	return domain.DLQEntry{
+func makeEntry(id, routeID, category string, failedAt time.Time) routing.DLQEntry {
+	return routing.DLQEntry{
 		ID:       id,
 		RouteID:  routeID,
 		Category: category,
@@ -55,7 +55,7 @@ func TestWriteAndList(t *testing.T) {
 		t.Fatalf("unexpected write error: %v", err)
 	}
 
-	entries, err := s.List(ctx, domain.DLQFilter{})
+	entries, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("unexpected list error: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestListFilterByRouteID(t *testing.T) {
 	_ = s.Write(ctx, makeEntry("e2", "route-B", "timeout", now))
 	_ = s.Write(ctx, makeEntry("e3", "route-A", "timeout", now))
 
-	entries, err := s.List(ctx, domain.DLQFilter{RouteID: "route-A"})
+	entries, err := s.List(ctx, routing.DLQFilter{RouteID: "route-A"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestListFilterByCategory(t *testing.T) {
 	_ = s.Write(ctx, makeEntry("e2", "route-A", "schema", now))
 	_ = s.Write(ctx, makeEntry("e3", "route-A", "timeout", now))
 
-	entries, err := s.List(ctx, domain.DLQFilter{Category: "schema"})
+	entries, err := s.List(ctx, routing.DLQFilter{Category: "schema"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestListFilterBySince(t *testing.T) {
 	_ = s.Write(ctx, makeEntry("e2", "route-A", "timeout", t2))
 	_ = s.Write(ctx, makeEntry("e3", "route-A", "timeout", t3))
 
-	entries, err := s.List(ctx, domain.DLQFilter{Since: t2})
+	entries, err := s.List(ctx, routing.DLQFilter{Since: t2})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestListFilterByBefore(t *testing.T) {
 	_ = s.Write(ctx, makeEntry("e2", "route-A", "timeout", t2))
 	_ = s.Write(ctx, makeEntry("e3", "route-A", "timeout", t3))
 
-	entries, err := s.List(ctx, domain.DLQFilter{Before: t2})
+	entries, err := s.List(ctx, routing.DLQFilter{Before: t2})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestListRespectsLimit(t *testing.T) {
 		_ = s.Write(ctx, makeEntry(fmt.Sprintf("e%d", i), "route-A", "timeout", now.Add(time.Duration(i)*time.Minute)))
 	}
 
-	entries, err := s.List(ctx, domain.DLQFilter{Limit: 2})
+	entries, err := s.List(ctx, routing.DLQFilter{Limit: 2})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestListSortedByFailedAtDescending(t *testing.T) {
 	_ = s.Write(ctx, makeEntry("e-mid", "route-A", "timeout", now.Add(1*time.Hour)))
 	_ = s.Write(ctx, makeEntry("e-new", "route-A", "timeout", now.Add(2*time.Hour)))
 
-	entries, err := s.List(ctx, domain.DLQFilter{})
+	entries, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestDeleteRemovesEntries(t *testing.T) {
 		t.Fatalf("deleted count: got %d, want 2", n)
 	}
 
-	entries, err := s.List(ctx, domain.DLQFilter{})
+	entries, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("unexpected list error: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestDeletePartialReturnsCount(t *testing.T) {
 		t.Fatalf("deleted count: got %d, want 1", n)
 	}
 
-	entries, err := s.List(ctx, domain.DLQFilter{})
+	entries, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("unexpected list error: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestPurgeRemovesOld(t *testing.T) {
 		t.Fatalf("purged count: got %d, want 2", n)
 	}
 
-	entries, err := s.List(ctx, domain.DLQFilter{})
+	entries, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("unexpected list error: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestPurgeSkipsRecent(t *testing.T) {
 		t.Fatalf("purged count: got %d, want 1", n)
 	}
 
-	entries, err := s.List(ctx, domain.DLQFilter{})
+	entries, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("unexpected list error: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestFullLifecycle(t *testing.T) {
 	_ = s.Write(ctx, makeEntry("e3", "route-B", "timeout", now.Add(-1*time.Hour)))
 	_ = s.Write(ctx, makeEntry("e4", "route-B", "auth", now))
 
-	entries, err := s.List(ctx, domain.DLQFilter{})
+	entries, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("initial list: %v", err)
 	}
@@ -425,7 +425,7 @@ func TestFullLifecycle(t *testing.T) {
 		t.Fatalf("purged count: got %d, want 1", n)
 	}
 
-	entries, err = s.List(ctx, domain.DLQFilter{})
+	entries, err = s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("final list: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestConcurrentWrite(t *testing.T) {
 	}
 	wg.Wait()
 
-	entries, err := s.List(ctx, domain.DLQFilter{})
+	entries, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("unexpected list error: %v", err)
 	}
@@ -472,7 +472,7 @@ func TestListEmptyStore(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
 
-	entries, err := s.List(ctx, domain.DLQFilter{})
+	entries, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

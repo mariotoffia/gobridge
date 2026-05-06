@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
@@ -35,7 +35,7 @@ func newTestStore(t *testing.T, prefix string) *dynamodbdlq.Store {
 
 func writeTestEntry(t *testing.T, store *dynamodbdlq.Store, id, route, cat string, failedAt time.Time) {
 	t.Helper()
-	if err := store.Write(context.Background(), domain.DLQEntry{
+	if err := store.Write(context.Background(), routing.DLQEntry{
 		ID: id, RouteID: route, Category: cat, FailedAt: failedAt,
 		Envelope: messaging.Envelope{ID: "env-" + id, Subject: "test"},
 	}); err != nil {
@@ -52,7 +52,7 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 	store := newTestStore(t, "dlq-get")
 	ctx := context.Background()
 
-	entry := domain.DLQEntry{
+	entry := routing.DLQEntry{
 		ID: "dg-1", RouteID: "route-g", Category: "timeout",
 		Envelope: messaging.Envelope{
 			ID:      "env-dg-1",
@@ -108,7 +108,7 @@ func TestDeleteByFilter_ByRouteID(t *testing.T) {
 	writeTestEntry(t, store, "dbf-r2", "route-A", "timeout", base.Add(time.Hour))
 	writeTestEntry(t, store, "dbf-r3", "route-B", "timeout", base.Add(2*time.Hour))
 
-	n, err := store.DeleteByFilter(ctx, domain.DLQFilter{RouteID: "route-A"})
+	n, err := store.DeleteByFilter(ctx, routing.DLQFilter{RouteID: "route-A"})
 	if err != nil {
 		t.Fatalf("delete_by_filter: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestDeleteByFilter_ByRouteID(t *testing.T) {
 		t.Fatalf("expected 2 deleted, got %d", n)
 	}
 
-	remaining, _ := store.List(ctx, domain.DLQFilter{})
+	remaining, _ := store.List(ctx, routing.DLQFilter{})
 	if len(remaining) != 1 {
 		t.Fatalf("expected 1 remaining, got %d", len(remaining))
 	}
@@ -139,7 +139,7 @@ func TestDeleteByFilter_ByCategory(t *testing.T) {
 	writeTestEntry(t, store, "dbf-c2", "route-A", "rejected", base.Add(time.Hour))
 	writeTestEntry(t, store, "dbf-c3", "route-A", "timeout", base.Add(2*time.Hour))
 
-	n, err := store.DeleteByFilter(ctx, domain.DLQFilter{Category: "timeout"})
+	n, err := store.DeleteByFilter(ctx, routing.DLQFilter{Category: "timeout"})
 	if err != nil {
 		t.Fatalf("delete_by_filter: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestDeleteByFilter_EmptyFilter(t *testing.T) {
 	writeTestEntry(t, store, "dbf-e1", "route-A", "timeout", base)
 	writeTestEntry(t, store, "dbf-e2", "route-B", "rejected", base.Add(time.Hour))
 
-	n, err := store.DeleteByFilter(ctx, domain.DLQFilter{})
+	n, err := store.DeleteByFilter(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("delete_by_filter: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestDeleteByFilter_EmptyFilter(t *testing.T) {
 		t.Fatalf("expected 2 deleted, got %d", n)
 	}
 
-	remaining, _ := store.List(ctx, domain.DLQFilter{})
+	remaining, _ := store.List(ctx, routing.DLQFilter{})
 	if len(remaining) != 0 {
 		t.Fatalf("expected 0 remaining, got %d", len(remaining))
 	}
@@ -210,7 +210,7 @@ func TestListByRouteIndex_SinceAndBefore(t *testing.T) {
 	t3 := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
 	t4 := time.Date(2024, 1, 15, 13, 0, 0, 0, time.UTC)
 
-	for _, e := range []domain.DLQEntry{
+	for _, e := range []routing.DLQEntry{
 		makeEntry("kce-1", "route-kce-reg", "timeout", t1),
 		makeEntry("kce-2", "route-kce-reg", "timeout", t2),
 		makeEntry("kce-3", "route-kce-reg", "timeout", t3),
@@ -221,7 +221,7 @@ func TestListByRouteIndex_SinceAndBefore(t *testing.T) {
 		}
 	}
 
-	entries, err := store.List(ctx, domain.DLQFilter{
+	entries, err := store.List(ctx, routing.DLQFilter{
 		RouteID: "route-kce-reg",
 		Since:   t2,
 		Before:  t4,
@@ -266,7 +266,7 @@ func TestListByCategoryIndex_SinceAndBefore(t *testing.T) {
 	t3 := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
 	t4 := time.Date(2024, 1, 15, 13, 0, 0, 0, time.UTC)
 
-	for _, e := range []domain.DLQEntry{
+	for _, e := range []routing.DLQEntry{
 		makeEntry("cat-1", "route-X", "timeout", t1),
 		makeEntry("cat-2", "route-Y", "timeout", t2),
 		makeEntry("cat-3", "route-Z", "timeout", t3),
@@ -278,7 +278,7 @@ func TestListByCategoryIndex_SinceAndBefore(t *testing.T) {
 	}
 
 	// Category-only filter → CategoryIndex GSI path
-	entries, err := store.List(ctx, domain.DLQFilter{
+	entries, err := store.List(ctx, routing.DLQFilter{
 		Category: "timeout",
 		Since:    t2,
 		Before:   t4,

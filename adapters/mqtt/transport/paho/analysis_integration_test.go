@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -31,7 +31,7 @@ func makeSession(t *testing.T, ctx context.Context, url, prefix string) *paho.Se
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("Start (%s): %v", prefix, err)
 	}
@@ -58,7 +58,7 @@ func TestAnaIntg_StartAfterClose_RealBroker_DoesNotReconnect(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -103,15 +103,15 @@ func TestAnaIntg_ReconcileEmptyPlan_DoesNotUnsubscribe(t *testing.T) {
 	sess := makeSession(t, ctx, url, "ana-empty-recon")
 	defer func() { _ = sess.Close(context.Background()) }()
 
-	if err := sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}); err != nil {
 		t.Fatalf("initial Reconcile: %v", err)
 	}
 	waitSubActive(t, sess, 5*time.Second)
 
 	// Empty plan must be a no-op.
-	if err := sess.Reconcile(ctx, domain.SessionPlan{}); err != nil {
+	if err := sess.Reconcile(ctx, connectivity.SessionPlan{}); err != nil {
 		t.Fatalf("empty Reconcile must succeed (no-op): %v", err)
 	}
 
@@ -159,8 +159,8 @@ func TestAnaIntg_LargePayload_RoundTrip(t *testing.T) {
 	sess := makeSession(t, ctx, url, "ana-large")
 	defer func() { _ = sess.Close(context.Background()) }()
 
-	if err := sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -225,8 +225,8 @@ func TestAnaIntg_MultipleReceivers_SameTopic_AllReceive(t *testing.T) {
 	sess := makeSession(t, ctx, url, "ana-fanout")
 	defer func() { _ = sess.Close(context.Background()) }()
 
-	if err := sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -282,8 +282,8 @@ func TestAnaIntg_HighConcurrencyPublish_NoLoss(t *testing.T) {
 	sess := makeSession(t, ctx, url, "ana-conc-pub")
 	defer func() { _ = sess.Close(context.Background()) }()
 
-	if err := sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -348,8 +348,8 @@ func TestAnaIntg_ReconcileSameTopicTwice_Idempotent(t *testing.T) {
 	sess := makeSession(t, ctx, url, "ana-idemp")
 	defer func() { _ = sess.Close(context.Background()) }()
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}
 	for i := 0; i < 3; i++ {
 		if err := sess.Reconcile(ctx, plan); err != nil {
@@ -403,8 +403,8 @@ func TestAnaIntg_HealthDuringTraffic_RemainsStable(t *testing.T) {
 	sess := makeSession(t, ctx, url, "ana-health-traffic")
 	defer func() { _ = sess.Close(context.Background()) }()
 
-	if err := sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -15,7 +15,7 @@ import (
 // sender registry for testing content-based DirectHold dispatch.
 func makeRunnerWithSenders(
 	t *testing.T,
-	bindings []domain.DestinationBinding,
+	bindings []routing.DestinationBinding,
 	resolver ports.DestinationResolver,
 	senders map[string]ports.Sender,
 	defaultSender *FakeSender,
@@ -28,7 +28,7 @@ func makeRunnerWithSenders(
 
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "test-multi-sender",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   defaultSender,
 		Senders:  senders,
@@ -48,7 +48,7 @@ func TestDirectHold_SenderRegistry_SelectsByBinding(t *testing.T) {
 	senderA := NewFakeSender()
 	senderB := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", Address: "topic-a"},
 		{ID: "bind-b", Address: "topic-b"},
 	}
@@ -127,7 +127,7 @@ func TestDirectHold_SenderRegistry_FallsBackToDefault(t *testing.T) {
 	specificSender := NewFakeSender()
 	defaultSender := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "specific", Address: "specific-topic"},
 		{ID: "fallback", Address: "fallback-topic"},
 	}
@@ -174,7 +174,7 @@ func TestDirectHold_SenderRegistry_FallsBackToDefault(t *testing.T) {
 
 func TestDirectHold_SenderRegistry_NilRegistry_UsesDefault(t *testing.T) {
 	defaultSender := NewFakeSender()
-	bindings := []domain.DestinationBinding{{ID: "only", Address: "topic"}}
+	bindings := []routing.DestinationBinding{{ID: "only", Address: "topic"}}
 
 	// No sender registry, no resolver → uses default sender for first binding.
 	receiver, runner := makeRunnerWithSenders(t, bindings, nil, nil, defaultSender)

@@ -10,7 +10,7 @@ import (
 
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -34,7 +34,7 @@ func TestAnaRecv_RunReturnsCtxErrOnParentCancel(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recv-cancel",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-cancel", sess)
 
@@ -71,7 +71,7 @@ func TestAnaRecv_EmitError_PropagatedAndCancelsRun(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recv-emit-err",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-emit-err", sess)
 
@@ -111,7 +111,7 @@ func TestAnaRecv_HandlerUnregisteredAfterRunReturns(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recv-unreg",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-unreg", sess)
 
@@ -144,7 +144,7 @@ func TestAnaRecv_MessagesArriveAsDeliveries(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recv-happy",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-happy", sess)
 
@@ -232,7 +232,7 @@ func TestAnaRecv_EmitErrorWithMultipleDeliveries_OnlyFirstErrorReturned(t *testi
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recv-multi-err",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-multi-err", sess)
 
@@ -279,7 +279,7 @@ func TestAnaRecv_RouterRoutingWithoutAnyReceiver_DropsAndCounts(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recv-no-handler",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	const n = 5
 	for i := 0; i < n; i++ {
@@ -297,7 +297,7 @@ func TestAnaRecv_HandlerSeesIndependentEnvelope(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recv-unique-env",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-unique", sess)
 
@@ -363,7 +363,7 @@ func TestAnaRecv_HandlerCount_TracksRunLifecycle(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recv-lifecycle",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-life", sess)
 

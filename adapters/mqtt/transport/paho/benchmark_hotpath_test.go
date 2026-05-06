@@ -6,6 +6,7 @@ import (
 
 	"github.com/eclipse/paho.golang/packets"
 	pahov5 "github.com/eclipse/paho.golang/paho"
+
 	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 

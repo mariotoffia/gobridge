@@ -12,13 +12,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/wait"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func testRuntime() *runtime.Runtime {
@@ -686,8 +687,8 @@ func injectRuntime(t *testing.T) (*runtime.Runtime, *stubSender) {
 	rt := runtime.New(runtime.WithInstanceID("inject-http-test"))
 	cfg := runtime.RouteConfig{
 		ID: "test-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}

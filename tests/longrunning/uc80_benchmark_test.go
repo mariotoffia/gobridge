@@ -11,7 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -47,7 +48,7 @@ func TestUC80_SmoothThroughputBaseline(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc80-col")
 
 	sessID := mqttlocal.UniqueClientID("uc80-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 
@@ -59,12 +60,12 @@ func TestUC80_SmoothThroughputBaseline(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc80-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  20,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc80-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc80-bind", Address: outTopic},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, rx, snd, nil, nil))
@@ -137,7 +138,7 @@ func TestUC81_StrainedThroughput(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc81-col")
 
 	sessID := mqttlocal.UniqueClientID("uc81-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
 	rawSnd := setupMQTTSender(t, sess)
 	faulty := newFaultySender(rawSnd, 10)
 	rx := newSQSReceiver(t, sqsInURL)
@@ -151,15 +152,15 @@ func TestUC81_StrainedThroughput(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc81-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:       domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:       routing.DeliveryDirectHold,
 			MaxInFlight:        20,
-			OnExpired:          domain.ExpiredDLQ,
-			OnPermanentFailure: domain.FailureDLQ,
+			OnExpired:          routing.ExpiredDLQ,
+			OnPermanentFailure: routing.FailureDLQ,
 		},
 		Processors: []ports.Processor{slow},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc81-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc81-bind", Address: outTopic},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, rx, faulty, nil, nil))
@@ -228,7 +229,7 @@ func TestUC82_MemoryStabilityUnderLoad(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc82-col")
 
 	sessID := mqttlocal.UniqueClientID("uc82-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 
@@ -240,12 +241,12 @@ func TestUC82_MemoryStabilityUnderLoad(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc82-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  20,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc82-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc82-bind", Address: outTopic},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, rx, snd, nil, nil))

@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -28,10 +28,10 @@ const (
 )
 
 type storedCredentials struct {
-	Credentials *domain.CredentialSet `json:"credentials"`
-	Version     int64                 `json:"version"`
-	CreatedAt   time.Time             `json:"createdAt"`
-	UpdatedAt   time.Time             `json:"updatedAt"`
+	Credentials *connectivity.CredentialSet `json:"credentials"`
+	Version     int64                       `json:"version"`
+	CreatedAt   time.Time                   `json:"createdAt"`
+	UpdatedAt   time.Time                   `json:"updatedAt"`
 }
 
 type Repository struct {
@@ -76,7 +76,7 @@ func New(basePath string, opts ...Option) (*Repository, error) {
 func (r *Repository) Scheme() string    { return Scheme }
 func (r *Repository) Namespace() string { return r.namespace }
 
-func (r *Repository) Get(ctx context.Context, uri string) (*domain.CredentialSet, error) {
+func (r *Repository) Get(ctx context.Context, uri string) (*connectivity.CredentialSet, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -101,7 +101,7 @@ func (r *Repository) Get(ctx context.Context, uri string) (*domain.CredentialSet
 	return stored.Credentials, nil
 }
 
-func (r *Repository) Create(ctx context.Context, uri string, creds *domain.CredentialSet) error {
+func (r *Repository) Create(ctx context.Context, uri string, creds *connectivity.CredentialSet) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -130,7 +130,7 @@ func (r *Repository) Create(ctx context.Context, uri string, creds *domain.Crede
 	return r.writeCredentials(filePath, &stored)
 }
 
-func (r *Repository) Update(ctx context.Context, uri string, creds *domain.CredentialSet, version int64) error {
+func (r *Repository) Update(ctx context.Context, uri string, creds *connectivity.CredentialSet, version int64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

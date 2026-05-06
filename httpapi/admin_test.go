@@ -10,10 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain/shared"
-	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/runtime"
 )
 
 func adminRequest(method, path string) *http.Request {

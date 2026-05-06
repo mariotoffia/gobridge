@@ -3,7 +3,7 @@ package paho
 import (
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -29,7 +29,7 @@ func TestBugRES011_PushEvent_NormalDropOldest_NoMetric(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	s := NewSession(
 		SessionOptions{BrokerURLs: []string{"tcp://localhost:1883"}, ClientID: "test"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 		rec,
 	)

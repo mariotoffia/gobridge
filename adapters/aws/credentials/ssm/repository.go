@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -81,7 +81,7 @@ func (r *Repository) Scheme() string    { return scheme }
 func (r *Repository) Namespace() string { return r.cfg.Namespace }
 
 // Get retrieves credentials from AWS Parameter Store.
-func (r *Repository) Get(ctx context.Context, uri string) (*domain.CredentialSet, error) {
+func (r *Repository) Get(ctx context.Context, uri string) (*connectivity.CredentialSet, error) {
 	paramPath, err := parseURI(uri)
 	if err != nil {
 		return nil, err
@@ -101,7 +101,7 @@ func (r *Repository) Get(ctx context.Context, uri string) (*domain.CredentialSet
 }
 
 // Create creates new credentials in AWS Parameter Store.
-func (r *Repository) Create(ctx context.Context, uri string, creds *domain.CredentialSet) error {
+func (r *Repository) Create(ctx context.Context, uri string, creds *connectivity.CredentialSet) error {
 	if creds == nil {
 		return fmt.Errorf("ssm: credential set must not be nil")
 	}
@@ -121,7 +121,7 @@ func (r *Repository) Create(ctx context.Context, uri string, creds *domain.Crede
 
 // Update updates existing credentials in AWS Parameter Store.
 // If version > 0, optimistic concurrency is enforced.
-func (r *Repository) Update(ctx context.Context, uri string, creds *domain.CredentialSet, version int64) error {
+func (r *Repository) Update(ctx context.Context, uri string, creds *connectivity.CredentialSet, version int64) error {
 	if creds == nil {
 		return fmt.Errorf("ssm: credential set must not be nil")
 	}

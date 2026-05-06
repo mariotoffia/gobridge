@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain/shared"
 	amqp "github.com/rabbitmq/amqp091-go"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // verifies MapError returns nil for a nil input.

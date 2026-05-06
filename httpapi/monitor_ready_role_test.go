@@ -7,10 +7,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/httpapi"
-	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/httpapi"
+	"github.com/mariotoffia/gobridge/runtime"
 )
 
 func testRuntimeForMonitor() *runtime.Runtime {

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	pahov5 "github.com/eclipse/paho.golang/paho"
+
 	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 

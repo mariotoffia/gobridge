@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/observability"
 	"github.com/mariotoffia/gobridge/ports"
@@ -23,7 +23,7 @@ func makeRunner(t *testing.T, opts ...func(*runtime.RouteRunnerConfig)) (*FakeRe
 
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:     "test-route",
-		Policy:      domain.RoutePolicy{}.WithDefaults(),
+		Policy:      routing.RoutePolicy{}.WithDefaults(),
 		Receiver:    receiver,
 		Sender:      sender,
 		OutboxStore: outbox,
@@ -68,7 +68,7 @@ func TestRouteRunner_DirectHold_HappyPath(t *testing.T) {
 // TestRouteRunner_DirectHold_TransientSendError verifies transient send failure retries the delivery without acking.
 func TestRouteRunner_DirectHold_TransientSendError(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
+		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 	})
 	sender.SendErr = shared.ErrUnavailable
 
@@ -231,7 +231,7 @@ func TestRouteRunner_ProcessorError_Transient(t *testing.T) {
 // without send, retry, or DLQ when OnPermanentFailure is set to Drop.
 func TestRouteRunner_ProcessorError_MessageFiltered_Drop(t *testing.T) {
 	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.OnPermanentFailure = domain.FailureDrop
+		cfg.Policy.OnPermanentFailure = routing.FailureDrop
 		cfg.Processors = []ports.Processor{
 			&FakeProcessor{NameVal: "filter", ProcessErr: shared.ErrMessageFiltered},
 		}
@@ -264,7 +264,7 @@ func TestRouteRunner_ProcessorError_MessageFiltered_Drop(t *testing.T) {
 // written to DLQ and acked when OnPermanentFailure is set to DLQ.
 func TestRouteRunner_ProcessorError_MessageFiltered_DLQ(t *testing.T) {
 	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.OnPermanentFailure = domain.FailureDLQ
+		cfg.Policy.OnPermanentFailure = routing.FailureDLQ
 		cfg.Processors = []ports.Processor{
 			&FakeProcessor{NameVal: "filter", ProcessErr: shared.ErrMessageFiltered},
 		}
@@ -543,9 +543,9 @@ func TestRouteRunner_Tracer_FilteredNoError(t *testing.T) {
 // TestRouteRunner_SharedOutbox_HappyPath verifies shared outbox persists one record and acks the source delivery.
 func TestRouteRunner_SharedOutbox_HappyPath(t *testing.T) {
 	receiver, _, _, outbox, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliverySharedOutbox
+		cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
 		cfg.Resolver = &FakeResolver{
-			Plans: []domain.DispatchPlan{
+			Plans: []routing.DispatchPlan{
 				{BindingID: "bind-1", Address: "topic/a"},
 			},
 		}
@@ -574,10 +574,10 @@ func TestRouteRunner_SharedOutbox_HappyPath(t *testing.T) {
 func TestRouteRunner_SharedOutbox_DuplicatePersist(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliverySharedOutbox
+		cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
 		cfg.OutboxStore = outbox
 		cfg.Resolver = &FakeResolver{
-			Plans: []domain.DispatchPlan{
+			Plans: []routing.DispatchPlan{
 				{BindingID: "bind-dup", Address: "topic/dup"},
 			},
 		}
@@ -605,8 +605,8 @@ func TestRouteRunner_SharedOutbox_DuplicatePersist(t *testing.T) {
 // TestRouteRunner_DirectHold_WithResolver verifies header-driven resolver output becomes the outbound subject.
 func TestRouteRunner_DirectHold_WithResolver(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
-		cfg.Bindings = []domain.DestinationBinding{
+		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
+		cfg.Bindings = []routing.DestinationBinding{
 			{ID: "bind-a", Transport: "mqtt", SessionID: "sess-a", Address: "factory/a/orders/{device_id}"},
 			{ID: "bind-b", Transport: "mqtt", SessionID: "sess-b", Address: "factory/b/orders/{device_id}"},
 		}
@@ -645,7 +645,7 @@ func TestRouteRunner_DirectHold_WithResolver(t *testing.T) {
 // TestRouteRunner_DirectHold_ResolverError_Rejected verifies rejected resolve skips send, DLQs, and acks.
 func TestRouteRunner_DirectHold_ResolverError_Rejected(t *testing.T) {
 	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
+		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 		cfg.Resolver = &FakeResolver{
 			ResolveErr: shared.NewBridgeError("NO_MATCH", shared.ErrorRejected, "no binding"),
 		}
@@ -676,7 +676,7 @@ func TestRouteRunner_DirectHold_ResolverError_Rejected(t *testing.T) {
 // TestRouteRunner_DirectHold_ResolverError_Transient verifies transient resolve errors retry without sending.
 func TestRouteRunner_DirectHold_ResolverError_Transient(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
+		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 		cfg.Resolver = &FakeResolver{
 			ResolveErr: shared.ErrUnavailable,
 		}
@@ -702,9 +702,9 @@ func TestRouteRunner_DirectHold_ResolverError_Transient(t *testing.T) {
 // TestRouteRunner_DirectHold_ResolverHeaders verifies dispatch plan headers merge with envelope headers on send.
 func TestRouteRunner_DirectHold_ResolverHeaders(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
+		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 		cfg.Resolver = &FakeResolver{
-			Plans: []domain.DispatchPlan{
+			Plans: []routing.DispatchPlan{
 				{
 					BindingID: "bind-hdr",
 					Address:   "topic/resolved",
@@ -744,13 +744,13 @@ func TestRouteRunner_DirectHold_ResolverHeaders(t *testing.T) {
 // TestRouteRunner_SharedOutbox_FanOut verifies resolver fan-out writes one outbox record per plan and acks.
 func TestRouteRunner_SharedOutbox_FanOut(t *testing.T) {
 	receiver, _, _, outbox, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliverySharedOutbox
-		cfg.Bindings = []domain.DestinationBinding{
+		cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
+		cfg.Bindings = []routing.DestinationBinding{
 			{ID: "bind-a", SessionID: "sess-a"},
 			{ID: "bind-b", SessionID: "sess-b"},
 		}
 		cfg.Resolver = &FakeResolver{
-			Plans: []domain.DispatchPlan{
+			Plans: []routing.DispatchPlan{
 				{BindingID: "bind-a", Address: "topic/a"},
 				{BindingID: "bind-b", Address: "topic/b"},
 			},
@@ -779,7 +779,7 @@ func TestRouteRunner_SharedOutbox_FanOut(t *testing.T) {
 // TestRouteRunner_SharedOutbox_ResolverError_Rejected verifies rejected resolve with shared outbox DLQs and acks.
 func TestRouteRunner_SharedOutbox_ResolverError_Rejected(t *testing.T) {
 	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliverySharedOutbox
+		cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
 		cfg.Resolver = &FakeResolver{
 			ResolveErr: shared.NewBridgeError("NO_MATCH", shared.ErrorRejected, "no binding"),
 		}
@@ -859,9 +859,9 @@ func TestRouteRunner_Backpressure(t *testing.T) {
 // processor chain and is sent to an SQS-style sender via direct_hold.
 func TestRouteRunner_MQTTToSQS_DirectHold(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
+		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 		cfg.Resolver = &FakeResolver{
-			Plans: []domain.DispatchPlan{
+			Plans: []routing.DispatchPlan{
 				{BindingID: "sqs-bind", Address: "arn:aws:sqs:eu-west-1:123456789:orders"},
 			},
 		}
@@ -912,9 +912,9 @@ func TestRouteRunner_MQTTToSQS_DirectHold(t *testing.T) {
 // with shared_outbox delivery mode: MQTT source -> outbox persist -> SQS send.
 func TestRouteRunner_MQTTToSQS_SharedOutbox(t *testing.T) {
 	receiver, _, _, outbox, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = domain.DeliverySharedOutbox
+		cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
 		cfg.Resolver = &FakeResolver{
-			Plans: []domain.DispatchPlan{
+			Plans: []routing.DispatchPlan{
 				{BindingID: "sqs-bind", Address: "arn:aws:sqs:eu-west-1:123456789:events"},
 			},
 		}

@@ -24,8 +24,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain/shared"
 	amqp "github.com/rabbitmq/amqp091-go"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // TestSender_CheckReturned_NonBlocking_DetectsBufferedReturn validates

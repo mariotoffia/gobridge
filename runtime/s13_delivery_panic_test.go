@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -59,7 +59,7 @@ func TestRouteRunner_ProcessorPanic_DoesNotCrash(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "panic-proc-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
 		Processors: []ports.Processor{
@@ -106,7 +106,7 @@ func TestRouteRunner_ProcessorPanic_RoutesToDLQ(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "panic-proc-retry",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(dlqStore),
@@ -134,7 +134,7 @@ func TestRouteRunner_ProcessorPanic_RoutesToDLQ(t *testing.T) {
 	}
 
 	dlqStore.mu.Lock()
-	entries := append([]domain.DLQEntry(nil), dlqStore.Entries...)
+	entries := append([]routing.DLQEntry(nil), dlqStore.Entries...)
 	dlqStore.mu.Unlock()
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 DLQ entry, got %d", len(entries))
@@ -155,7 +155,7 @@ func TestRouteRunner_SenderPanic_DoesNotCrash(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "panic-send-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
 	})
@@ -190,7 +190,7 @@ func TestRouteRunner_SenderPanic_RetriesDelivery(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "panic-send-retry",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
 	})
@@ -221,7 +221,7 @@ func TestRouteRunner_ProcessorPanic_EmitsMetric(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "panic-metric-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
 		Metrics:  rec,
@@ -273,7 +273,7 @@ func TestRouteRunner_DeliveryPanic_SlotsReleased(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "panic-slot-route",
-		Policy:   domain.RoutePolicy{MaxInFlight: 1, DeliveryMode: domain.DeliveryDirectHold},
+		Policy:   routing.RoutePolicy{MaxInFlight: 1, DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
 		Processors: []ports.Processor{
@@ -325,7 +325,7 @@ func TestRouteRunner_DeliveryPanic_OtherMessagesUnaffected(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "panic-concurrent-route",
-		Policy:   domain.RoutePolicy{MaxInFlight: 5, DeliveryMode: domain.DeliveryDirectHold},
+		Policy:   routing.RoutePolicy{MaxInFlight: 5, DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
 	})
@@ -372,7 +372,7 @@ func TestRouteRunner_ProcessorPanic_DLQWriteFails_NoCrash(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "panic-retry-fail",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(dlqStore),
@@ -419,7 +419,7 @@ func TestRouteRunner_ProcessorPanic_RetryPanics_NoProcessCrash(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "panic-retry-panic",
-		Policy:   domain.RoutePolicy{MaxInFlight: 1, DeliveryMode: domain.DeliveryDirectHold},
+		Policy:   routing.RoutePolicy{MaxInFlight: 1, DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(dlqStore),

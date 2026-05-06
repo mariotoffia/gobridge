@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/circuitbreaker"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -48,7 +48,7 @@ func TestRes_CBSender_CircuitOpen_TagsSessionID(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   clientID,
-	}, domain.SessionEphemeral, nil, rec)
+	}, connectivity.SessionEphemeral, nil, rec)
 
 	inner := NewSender(sess, SenderOptions{Timeout: 1 * time.Second})
 

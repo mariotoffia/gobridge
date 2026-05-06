@@ -11,8 +11,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -42,7 +43,7 @@ func TestUC68_FiveMinuteSoak(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc68-col")
 
 	sessID := mqttlocal.UniqueClientID("uc68-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 
 	rt := goruntime.New(
@@ -51,12 +52,12 @@ func TestUC68_FiveMinuteSoak(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc68-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  200,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc68-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc68-bind", Address: outTopic},
 		),
 		SourceCapabilities: []ports.Capability{ports.CapHTTPEndpoint},
 	}, &noopReceiver{}, snd, sess, nil))
@@ -162,7 +163,7 @@ func TestUC67_ConcurrentReconcile(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc67-col")
 
 	sessID := mqttlocal.UniqueClientID("uc67-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 
@@ -173,12 +174,12 @@ func TestUC67_ConcurrentReconcile(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc67-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  100,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc67-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc67-bind", Address: outTopic},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, rx, snd, sess, nil))
@@ -197,8 +198,8 @@ func TestUC67_ConcurrentReconcile(t *testing.T) {
 			func() bool { return collector.count() >= target })
 
 		t.Logf("UC67: reconcile %d at collector=%d", i+1, collector.count())
-		err := sess.Reconcile(ctx, domain.SessionPlan{
-			Subscriptions: []domain.SubscriptionPlan{
+		err := sess.Reconcile(ctx, connectivity.SessionPlan{
+			Subscriptions: []connectivity.SubscriptionPlan{
 				{Topic: outTopic, QoS: 1},
 			},
 		})

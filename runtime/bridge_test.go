@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -42,7 +42,7 @@ func TestRuntime_StartStop(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID:                 "route-1",
-		Policy:             domain.RoutePolicy{}.WithDefaults(),
+		Policy:             routing.RoutePolicy{}.WithDefaults(),
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 
@@ -109,8 +109,8 @@ func TestRuntime_DirectHoldEndToEnd(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "e2e-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
@@ -151,8 +151,8 @@ func TestRuntime_Inject_HappyPath(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "inject-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
@@ -229,8 +229,8 @@ func TestRuntime_Inject_AssignsIDWhenEmpty(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "id-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
@@ -269,8 +269,8 @@ func TestRuntime_Inject_DoesNotMutateOriginal(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "clone-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
@@ -324,15 +324,15 @@ func TestRuntime_SharedOutboxEndToEnd(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "outbox-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &FakeResolver{
-			Plans: []domain.DispatchPlan{
+			Plans: []routing.DispatchPlan{
 				{BindingID: "bind-e2e", Address: "topic/e2e"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "bind-e2e", SessionID: "sess-e2e"},
 		},
 	}

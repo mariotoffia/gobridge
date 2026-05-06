@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -27,7 +27,7 @@ func TestRouteRunner_E2ELatencyUsesInjectedClock(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "route-clocked-latency",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
 		Metrics:  rec,
@@ -72,11 +72,11 @@ func TestRouteRunner_SharedOutboxCreatedAtUsesInjectedClock(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:     "route-clocked-outbox",
-		Policy:      domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy:      routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Receiver:    receiver,
 		Sender:      NewFakeSender(),
 		OutboxStore: outbox,
-		Resolver: &FakeResolver{Plans: []domain.DispatchPlan{{
+		Resolver: &FakeResolver{Plans: []routing.DispatchPlan{{
 			BindingID: "bind-clocked",
 			Address:   "topic/clocked",
 		}}},

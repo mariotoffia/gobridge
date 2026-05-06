@@ -6,10 +6,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/config"
-	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 func TestHandleConfigTxnCommit_VersionConflict(t *testing.T) {

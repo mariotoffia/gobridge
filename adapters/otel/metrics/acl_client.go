@@ -6,13 +6,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // meterClient is the adapter-internal mock seam shielding the

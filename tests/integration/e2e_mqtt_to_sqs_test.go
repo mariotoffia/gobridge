@@ -7,9 +7,10 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -20,9 +21,9 @@ func TestE2E_MQTTToSQS_SingleTopic(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "m1")
 	topic := "sensors/temp"
 
-	bridgeSess := setupMQTTSession(t, mqttlocal.UniqueClientID("m1-bridge"), domain.SessionEphemeral)
-	if err := bridgeSess.Reconcile(context.Background(), domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	bridgeSess := setupMQTTSession(t, mqttlocal.UniqueClientID("m1-bridge"), connectivity.SessionEphemeral)
+	if err := bridgeSess.Reconcile(context.Background(), connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -37,8 +38,8 @@ func TestE2E_MQTTToSQS_SingleTopic(t *testing.T) {
 	)
 	cfg := goruntime.RouteConfig{
 		ID:                 "m1-route",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "sqs-bind", Address: queueURL}),
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "sqs-bind", Address: queueURL}),
 		SourceCapabilities: directHoldCaps,
 	}
 	if err := rt.AddRoute(cfg, mqttRx, sqsTx, nil, nil); err != nil {
@@ -52,7 +53,7 @@ func TestE2E_MQTTToSQS_SingleTopic(t *testing.T) {
 	}
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("m1-pub"), domain.SessionEphemeral)
+	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("m1-pub"), connectivity.SessionEphemeral)
 	pubTx := paho.NewSender(pubSess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
 	for i := 0; i < 5; i++ {
@@ -79,12 +80,12 @@ func TestE2E_MQTTToSQS_MultiTopicMerge(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "m2")
 	topics := []string{"devices/temp", "devices/humid", "devices/press"}
 
-	bridgeSess := setupMQTTSession(t, mqttlocal.UniqueClientID("m2-bridge"), domain.SessionEphemeral)
-	subs := make([]domain.SubscriptionPlan, len(topics))
+	bridgeSess := setupMQTTSession(t, mqttlocal.UniqueClientID("m2-bridge"), connectivity.SessionEphemeral)
+	subs := make([]connectivity.SubscriptionPlan, len(topics))
 	for i, tp := range topics {
-		subs[i] = domain.SubscriptionPlan{Topic: tp, QoS: 1}
+		subs[i] = connectivity.SubscriptionPlan{Topic: tp, QoS: 1}
 	}
-	if err := bridgeSess.Reconcile(context.Background(), domain.SessionPlan{Subscriptions: subs}); err != nil {
+	if err := bridgeSess.Reconcile(context.Background(), connectivity.SessionPlan{Subscriptions: subs}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	waitSubReady(t, bridgeSess)
@@ -99,8 +100,8 @@ func TestE2E_MQTTToSQS_MultiTopicMerge(t *testing.T) {
 		rx := paho.NewReceiver(fmt.Sprintf("m2-rx-%d", i), bridgeSess)
 		cfg := goruntime.RouteConfig{
 			ID:                 fmt.Sprintf("m2-route-%d", i),
-			Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
-			Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "sqs-bind", Address: queueURL}),
+			Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
+			Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "sqs-bind", Address: queueURL}),
 			SourceCapabilities: directHoldCaps,
 		}
 		if err := rt.AddRoute(cfg, rx, sqsTx, nil, nil); err != nil {
@@ -115,7 +116,7 @@ func TestE2E_MQTTToSQS_MultiTopicMerge(t *testing.T) {
 	}
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("m2-pub"), domain.SessionEphemeral)
+	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("m2-pub"), connectivity.SessionEphemeral)
 	pubTx := paho.NewSender(pubSess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
 	for i, tp := range topics {
@@ -143,9 +144,9 @@ func TestE2E_MQTTToSQS_HeaderBasedRouting(t *testing.T) {
 	alertsTopic := "events/alerts"
 
 	reconcileTopic := func(clientPrefix, topic string) *paho.Session {
-		s := setupMQTTSession(t, mqttlocal.UniqueClientID(clientPrefix), domain.SessionEphemeral)
-		if err := s.Reconcile(context.Background(), domain.SessionPlan{
-			Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+		s := setupMQTTSession(t, mqttlocal.UniqueClientID(clientPrefix), connectivity.SessionEphemeral)
+		if err := s.Reconcile(context.Background(), connectivity.SessionPlan{
+			Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 		}); err != nil {
 			t.Fatalf("Reconcile %s: %v", topic, err)
 		}
@@ -163,8 +164,8 @@ func TestE2E_MQTTToSQS_HeaderBasedRouting(t *testing.T) {
 
 	ordersCfg := goruntime.RouteConfig{
 		ID:                 "m3-orders",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "orders-bind", Address: ordersQueue}),
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "orders-bind", Address: ordersQueue}),
 		SourceCapabilities: directHoldCaps,
 	}
 	if err := rt.AddRoute(ordersCfg, paho.NewReceiver("m3-orders-rx", ordersSess), newSQSSender(t, ordersQueue), nil, nil); err != nil {
@@ -173,8 +174,8 @@ func TestE2E_MQTTToSQS_HeaderBasedRouting(t *testing.T) {
 
 	alertsCfg := goruntime.RouteConfig{
 		ID:                 "m3-alerts",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "alerts-bind", Address: alertsQueue}),
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "alerts-bind", Address: alertsQueue}),
 		SourceCapabilities: directHoldCaps,
 	}
 	if err := rt.AddRoute(alertsCfg, paho.NewReceiver("m3-alerts-rx", alertsSess), newSQSSender(t, alertsQueue), nil, nil); err != nil {
@@ -188,7 +189,7 @@ func TestE2E_MQTTToSQS_HeaderBasedRouting(t *testing.T) {
 	}
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("m3-pub"), domain.SessionEphemeral)
+	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("m3-pub"), connectivity.SessionEphemeral)
 	pubTx := paho.NewSender(pubSess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
 	_ = pubTx.Send(context.Background(), &messaging.Envelope{ID: "m3-order", Subject: ordersTopic, Payload: []byte(`{"order":"123"}`)})
@@ -215,7 +216,7 @@ func TestE2E_MQTTToSQS_RoundTripWithFailover(t *testing.T) {
 	topic := "e2e/m4/roundtrip"
 
 	// Bridge A: SQS-A -> outbox -> MQTT (long drain prevents drain before crash).
-	sessA := setupMQTTSession(t, mqttlocal.UniqueClientID("m4-a"), domain.SessionEphemeral)
+	sessA := setupMQTTSession(t, mqttlocal.UniqueClientID("m4-a"), connectivity.SessionEphemeral)
 	mqttTxA := setupMQTTSender(t, sessA)
 	sqsRxA := newSQSReceiver(t, queueA)
 
@@ -230,9 +231,9 @@ func TestE2E_MQTTToSQS_RoundTripWithFailover(t *testing.T) {
 	)
 	routeCfg := goruntime.RouteConfig{
 		ID:       "m4-sqs-to-mqtt",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
-		Resolver: goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "mqtt-bind", Address: topic}),
-		Bindings: []domain.DestinationBinding{{ID: "mqtt-bind", SessionID: sessionID}},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
+		Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "mqtt-bind", Address: topic}),
+		Bindings: []routing.DestinationBinding{{ID: "mqtt-bind", SessionID: sessionID}},
 	}
 	if err := rtA.AddRoute(routeCfg, sqsRxA, mqttTxA, sessA, &sessCfgA); err != nil {
 		t.Fatalf("AddRoute A: %v", err)
@@ -254,9 +255,9 @@ func TestE2E_MQTTToSQS_RoundTripWithFailover(t *testing.T) {
 	_ = rtA.Stop(context.Background())
 
 	// Bridge B: drains orphaned outbox -> MQTT; MQTT receiver -> SQS-B.
-	sessB := setupMQTTSession(t, mqttlocal.UniqueClientID("m4-b"), domain.SessionEphemeral)
-	if err := sessB.Reconcile(context.Background(), domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	sessB := setupMQTTSession(t, mqttlocal.UniqueClientID("m4-b"), connectivity.SessionEphemeral)
+	if err := sessB.Reconcile(context.Background(), connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}); err != nil {
 		t.Fatalf("Reconcile B: %v", err)
 	}
@@ -278,8 +279,8 @@ func TestE2E_MQTTToSQS_RoundTripWithFailover(t *testing.T) {
 
 	mqttToSqs := goruntime.RouteConfig{
 		ID:                 "m4-mqtt-to-sqs",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "sqs-bind", Address: queueB}),
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "sqs-bind", Address: queueB}),
 		SourceCapabilities: directHoldCaps,
 	}
 	if err := rtB.AddRoute(mqttToSqs, paho.NewReceiver("m4-rx", sessB), newSQSSender(t, queueB), nil, nil); err != nil {
@@ -304,9 +305,9 @@ func TestE2E_MQTTToSQS_BackpressureSQSSlow(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "m5")
 	topic := "e2e/m5/pressure"
 
-	bridgeSess := setupMQTTSession(t, mqttlocal.UniqueClientID("m5-bridge"), domain.SessionEphemeral)
-	if err := bridgeSess.Reconcile(context.Background(), domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	bridgeSess := setupMQTTSession(t, mqttlocal.UniqueClientID("m5-bridge"), connectivity.SessionEphemeral)
+	if err := bridgeSess.Reconcile(context.Background(), connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -321,8 +322,8 @@ func TestE2E_MQTTToSQS_BackpressureSQSSlow(t *testing.T) {
 	)
 	cfg := goruntime.RouteConfig{
 		ID:                 "m5-route",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "sqs-bind", Address: queueURL}),
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "sqs-bind", Address: queueURL}),
 		SourceCapabilities: directHoldCaps,
 	}
 	if err := rt.AddRoute(cfg, mqttRx, sqsTx, nil, nil); err != nil {
@@ -336,7 +337,7 @@ func TestE2E_MQTTToSQS_BackpressureSQSSlow(t *testing.T) {
 	}
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("m5-pub"), domain.SessionEphemeral)
+	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("m5-pub"), connectivity.SessionEphemeral)
 	pubTx := paho.NewSender(pubSess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
 	const msgCount = 10

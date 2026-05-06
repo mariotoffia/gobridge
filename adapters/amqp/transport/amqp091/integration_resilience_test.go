@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
@@ -48,19 +48,19 @@ func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 			BrokerURL:      ep,
 			ReconnectDelay: 100 * time.Millisecond,
 		},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(context.Background()) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: queueA, Config: &Config{Subscription: SubscriptionParams{Exchange: exchange, RoutingKey: queueA}}},
 			{Topic: queueB, Config: &Config{Subscription: SubscriptionParams{Exchange: exchange, RoutingKey: queueB}}},
 		},
-		Publishers: []domain.PublisherPlan{{Topic: exchange}},
+		Publishers: []connectivity.PublisherPlan{{Topic: exchange}},
 	}
 	if err := sess.Reconcile(ctx, plan); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -162,13 +162,13 @@ func TestIntegration_Sender_MandatoryUnroutable_ReturnsError(t *testing.T) {
 
 	exchange := rabbitmqlocal.UniqueExchange("mand-unrouted-ex")
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, nil)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, nil)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Publishers: []domain.PublisherPlan{{Topic: exchange}},
+	plan := connectivity.SessionPlan{
+		Publishers: []connectivity.PublisherPlan{{Topic: exchange}},
 	}
 	if err := sess.Reconcile(ctx, plan); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -205,16 +205,16 @@ func TestIntegration_Sender_MandatoryRouted_Succeeds(t *testing.T) {
 	queue := rabbitmqlocal.UniqueQueue("mand-routed")
 	exchange := rabbitmqlocal.UniqueExchange("mand-routed-ex")
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, nil)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, nil)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: queue, Config: &Config{Subscription: SubscriptionParams{Exchange: exchange, RoutingKey: queue}}},
 		},
-		Publishers: []domain.PublisherPlan{{Topic: exchange}},
+		Publishers: []connectivity.PublisherPlan{{Topic: exchange}},
 	}
 	if err := sess.Reconcile(ctx, plan); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -253,18 +253,18 @@ func TestIntegration_ConsumerTag_ReuseAfterReconnect(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep, ReconnectDelay: 100 * time.Millisecond},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(context.Background()) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: queue, Config: &Config{Subscription: SubscriptionParams{Exchange: exchange, RoutingKey: queue}}},
 		},
-		Publishers: []domain.PublisherPlan{{Topic: exchange}},
+		Publishers: []connectivity.PublisherPlan{{Topic: exchange}},
 	}
 	if err := sess.Reconcile(ctx, plan); err != nil {
 		t.Fatalf("Reconcile: %v", err)

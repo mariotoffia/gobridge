@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 )
@@ -52,9 +52,9 @@ func TestUC96_CrossProtocol_RabbitMQ_Artemis(t *testing.T) {
 	rabbitmqlocal.CreateQueue(t, queue)
 	rabbitmqlocal.BindQueue(t, queue, exchange, routingKey)
 
-	rmqSess := setupRabbitMQSession(t, domain.SessionEphemeral)
-	require.NoError(t, rmqSess.Reconcile(ctx, domain.SessionPlan{
-		Publishers: []domain.PublisherPlan{
+	rmqSess := setupRabbitMQSession(t, connectivity.SessionEphemeral)
+	require.NoError(t, rmqSess.Reconcile(ctx, connectivity.SessionPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchange},
 		},
 	}))
@@ -81,7 +81,7 @@ func TestUC96_CrossProtocol_RabbitMQ_Artemis(t *testing.T) {
 	address := artemislocal.UniqueAddress("uc96-addr")
 
 	artCollector := newArtemisCollector(t, address)
-	artSess := setupArtemisSession(t, domain.SessionEphemeral)
+	artSess := setupArtemisSession(t, connectivity.SessionEphemeral)
 	artSender := newArtemisSender(t, artSess, address)
 
 	t.Logf("UC96: Phase 2 — sending %d messages to Artemis", msgCount)

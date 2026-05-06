@@ -16,9 +16,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -49,7 +50,7 @@ func TestUC38_OutboxDepthLimit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	mqttSess := newMQTTSession(t, sessionID, domain.SessionExclusive)
+	mqttSess := newMQTTSession(t, sessionID, connectivity.SessionExclusive)
 	realSender := setupMQTTSender(t, mqttSess)
 	paused := newPausableSender(realSender)
 	sqsRx := newSQSReceiver(t, sqsInURL)
@@ -63,15 +64,15 @@ func TestUC38_OutboxDepthLimit(t *testing.T) {
 	)
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc38-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:   domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:   routing.DeliverySharedOutbox,
 			MaxOutboxDepth: maxDepth,
 			DepthCacheTTL:  200 * time.Millisecond,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc38-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc38-bind", Address: outTopic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc38-bind", SessionID: sessionID},
 		},
 	}
@@ -135,7 +136,7 @@ func TestUC39_AckAfterOutboxPersist(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	mqttSess := newMQTTSession(t, sessionID, domain.SessionExclusive)
+	mqttSess := newMQTTSession(t, sessionID, connectivity.SessionExclusive)
 	realSender := setupMQTTSender(t, mqttSess)
 	slow := newSlowSender(realSender, 200*time.Millisecond)
 	sqsRx := newSQSReceiver(t, sqsInURL)
@@ -149,14 +150,14 @@ func TestUC39_AckAfterOutboxPersist(t *testing.T) {
 	)
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc39-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			AckAfter:     domain.AckAfterOutboxPersist,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			AckAfter:     routing.AckAfterOutboxPersist,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc39-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc39-bind", Address: outTopic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc39-bind", SessionID: sessionID},
 		},
 	}
@@ -245,7 +246,7 @@ func TestUC40_AdaptiveDrain_Backoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	mqttSess := newMQTTSession(t, sessionID, domain.SessionExclusive)
+	mqttSess := newMQTTSession(t, sessionID, connectivity.SessionExclusive)
 	mqttSnd := setupMQTTSender(t, mqttSess)
 	sqsRx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessionID)
@@ -261,13 +262,13 @@ func TestUC40_AdaptiveDrain_Backoff(t *testing.T) {
 	)
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc40-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc40-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc40-bind", Address: outTopic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc40-bind", SessionID: sessionID},
 		},
 	}
@@ -367,7 +368,7 @@ func TestUC41_IdempotentOutbox_Persist(t *testing.T) {
 
 	sqsSnd := newSQSSender(t, sqsOutURL)
 	slowProc := &uc41SlowFirstN{delay: 4 * time.Second, limit: 50}
-	mqttSess := newMQTTSession(t, sessionID, domain.SessionExclusive)
+	mqttSess := newMQTTSession(t, sessionID, connectivity.SessionExclusive)
 	sc := lrSessionConfig(sessionID)
 
 	rt := goruntime.New(
@@ -378,14 +379,14 @@ func TestUC41_IdempotentOutbox_Persist(t *testing.T) {
 	)
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc41-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Processors: []ports.Processor{slowProc},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc41-bind", Address: sqsOutURL},
+			routing.DispatchPlan{BindingID: "uc41-bind", Address: sqsOutURL},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc41-bind", SessionID: sessionID},
 		},
 	}

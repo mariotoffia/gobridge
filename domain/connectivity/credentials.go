@@ -1,4 +1,4 @@
-package domain
+package connectivity
 
 // CredentialKind identifies the type of credential material.
 type CredentialKind string

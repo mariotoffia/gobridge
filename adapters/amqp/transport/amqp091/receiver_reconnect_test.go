@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -68,7 +68,7 @@ func TestReceiver_IsEmitError_PlainError(t *testing.T) {
 func TestReceiver_WaitForReconnect_ContextCancel(t *testing.T) {
 	sess := NewSession(
 		SessionOptions{BrokerURL: "amqp://localhost/"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		slog.Default(),
 	)
 	r := &Receiver{
@@ -94,7 +94,7 @@ func TestReceiver_WaitForReconnect_ContextCancel(t *testing.T) {
 func TestReceiver_WaitForReconnect_EventReceived(t *testing.T) {
 	sess := NewSession(
 		SessionOptions{BrokerURL: "amqp://localhost/"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		slog.Default(),
 	)
 	r := &Receiver{
@@ -127,7 +127,7 @@ func TestReceiver_WaitForReconnect_EventReceived(t *testing.T) {
 func TestReceiver_WaitForReconnect_ChannelClosed(t *testing.T) {
 	sess := NewSession(
 		SessionOptions{BrokerURL: "amqp://localhost/"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		slog.Default(),
 	)
 	r := &Receiver{

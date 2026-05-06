@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -128,7 +128,7 @@ type ControllableSession struct {
 	mu           sync.Mutex
 	startCount   int
 	closeCount   int
-	plans        []domain.SessionPlan
+	plans        []connectivity.SessionPlan
 	events       chan ports.SessionEvent
 	connected    bool
 	startErr     error
@@ -152,7 +152,7 @@ func (s *ControllableSession) Start(_ context.Context) error {
 	return nil
 }
 
-func (s *ControllableSession) Reconcile(_ context.Context, plan domain.SessionPlan) error {
+func (s *ControllableSession) Reconcile(_ context.Context, plan connectivity.SessionPlan) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.plans = append(s.plans, plan)

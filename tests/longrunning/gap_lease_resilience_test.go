@@ -12,8 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -103,7 +104,7 @@ func TestGAP_DynamoDBOutage_LeaseRenewal(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "gap-lr-col")
 
 	sessID := mqttlocal.UniqueClientID("gap-lr-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, connectivity.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	sc := lrSessionConfig(sessID)
 
@@ -116,14 +117,14 @@ func TestGAP_DynamoDBOutage_LeaseRenewal(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-lr-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			AckAfter:     domain.AckAfterOutboxPersist,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			AckAfter:     routing.AckAfterOutboxPersist,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "lr-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "lr-bind", Address: outTopic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "lr-bind", SessionID: sessID},
 		},
 	}, newSQSReceiver(t, sqsInURL), snd, sess, &sc))

@@ -1,10 +1,6 @@
-package domain
+package routing
 
-import (
-	"time"
-
-	"github.com/mariotoffia/gobridge/domain/messaging"
-)
+import "time"
 
 // DeliveryMode determines how a route handles message ownership transfer.
 type DeliveryMode string
@@ -20,15 +16,6 @@ type DispatchMode string
 const (
 	DispatchSingle DispatchMode = "single"
 	DispatchFanOut DispatchMode = "fan_out"
-)
-
-// SessionMode determines session lifecycle and ownership semantics.
-type SessionMode string
-
-const (
-	SessionEphemeral  SessionMode = "ephemeral"
-	SessionPersistent SessionMode = "persistent"
-	SessionExclusive  SessionMode = "exclusive"
 )
 
 // AckBoundary determines when the source delivery is acknowledged.
@@ -190,54 +177,4 @@ type DispatchPlan struct {
 	BindingID string
 	Address   string
 	Headers   map[string]any
-}
-
-// SubscriptionPlan describes a desired subscription in a session.
-type SubscriptionPlan struct {
-	Topic string
-	QoS   int
-	// Config is the typed plugin config attached to the subscription.
-	// Adapters type-assert to their own concrete config (e.g.
-	// amqp091.Config).
-	Config any
-}
-
-// PublisherPlan describes a desired publisher in a session.
-type PublisherPlan struct {
-	Topic string
-	QoS   int
-	// Config is the typed plugin config attached to the publisher.
-	Config any
-}
-
-// SessionPlan describes the desired state of a session for reconciliation.
-type SessionPlan struct {
-	Subscriptions []SubscriptionPlan
-	Publishers    []PublisherPlan
-}
-
-// DLQEntry represents a dead-letter queue record.
-type DLQEntry struct {
-	ID            string
-	Envelope      messaging.Envelope
-	RouteID       string
-	BindingID     string
-	SessionID     string
-	SourceID      string
-	CorrelationID string
-	Reason        string
-	Category      string
-	ErrorCode     string
-	LastError     string
-	FailedAt      time.Time
-	Attempts      int
-}
-
-// DLQFilter specifies criteria for querying DLQ entries.
-type DLQFilter struct {
-	RouteID  string
-	Category string
-	Since    time.Time
-	Before   time.Time
-	Limit    int
 }

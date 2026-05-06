@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -18,9 +18,9 @@ type fakePushStore struct {
 	watched int32
 }
 
-func (f *fakePushStore) Watch(ctx context.Context, _ string) (<-chan *domain.CredentialSet, error) {
+func (f *fakePushStore) Watch(ctx context.Context, _ string) (<-chan *connectivity.CredentialSet, error) {
 	atomic.AddInt32(&f.watched, 1)
-	ch := make(chan *domain.CredentialSet)
+	ch := make(chan *connectivity.CredentialSet)
 	go func() {
 		<-ctx.Done()
 		close(ch)
@@ -34,8 +34,8 @@ func (f *fakePushStore) Watch(ctx context.Context, _ string) (<-chan *domain.Cre
 func TestWithCredentialStore_BackwardCompat(t *testing.T) {
 	t.Parallel()
 
-	cs := &fakeCredentialStore{creds: map[string]*domain.CredentialSet{
-		"file://creds/a": {Password: &domain.PasswordCredential{Username: "u", Password: "p"}},
+	cs := &fakeCredentialStore{creds: map[string]*connectivity.CredentialSet{
+		"file://creds/a": {Password: &connectivity.PasswordCredential{Username: "u", Password: "p"}},
 	}}
 
 	cfg := &ports.BridgeConfig{}
@@ -82,8 +82,8 @@ func TestWithPolledCredentialStore_WrapsPullStore(t *testing.T) {
 	t.Parallel()
 
 	pull := &fakeCredentialStore{
-		creds: map[string]*domain.CredentialSet{
-			"file://x": {Password: &domain.PasswordCredential{Username: "u"}},
+		creds: map[string]*connectivity.CredentialSet{
+			"file://x": {Password: &connectivity.PasswordCredential{Username: "u"}},
 		},
 	}
 
@@ -118,10 +118,10 @@ func TestCredentialRefresher_NoopWithoutPush(t *testing.T) {
 // prove the refresher routes rotation events to ApplyCredentials.
 type credAwareFakeSession struct {
 	*fakeSession
-	applied chan *domain.CredentialSet
+	applied chan *connectivity.CredentialSet
 }
 
-func (c *credAwareFakeSession) ApplyCredentials(_ context.Context, creds *domain.CredentialSet) error {
+func (c *credAwareFakeSession) ApplyCredentials(_ context.Context, creds *connectivity.CredentialSet) error {
 	c.applied <- creds
 	return nil
 }
@@ -129,12 +129,12 @@ func (c *credAwareFakeSession) ApplyCredentials(_ context.Context, creds *domain
 // inlinePushStore is a hand-driven push store: callers push rotations
 // via Emit, and every Watch call gets its own channel.
 type inlinePushStore struct {
-	out chan *domain.CredentialSet
+	out chan *connectivity.CredentialSet
 }
 
-func (p *inlinePushStore) Watch(ctx context.Context, _ string) (<-chan *domain.CredentialSet, error) {
+func (p *inlinePushStore) Watch(ctx context.Context, _ string) (<-chan *connectivity.CredentialSet, error) {
 	// Proxy ctx cancellation to close the channel per the contract.
-	proxy := make(chan *domain.CredentialSet, 1)
+	proxy := make(chan *connectivity.CredentialSet, 1)
 	go func() {
 		defer close(proxy)
 		for {
@@ -162,17 +162,17 @@ func (p *inlinePushStore) Watch(ctx context.Context, _ string) (<-chan *domain.C
 func TestCredentialRefresher_RoutesRotationToSession(t *testing.T) {
 	t.Parallel()
 
-	push := &inlinePushStore{out: make(chan *domain.CredentialSet, 1)}
+	push := &inlinePushStore{out: make(chan *connectivity.CredentialSet, 1)}
 	r := NewCredentialRefresher(push, nil)
 	defer r.Close()
 	sess := &credAwareFakeSession{
 		fakeSession: &fakeSession{},
-		applied:     make(chan *domain.CredentialSet, 2),
+		applied:     make(chan *connectivity.CredentialSet, 2),
 	}
 
 	r.Watch(t.Context(), "file://creds", sess)
 
-	want := &domain.CredentialSet{Password: &domain.PasswordCredential{Username: "u2", Password: "p2"}}
+	want := &connectivity.CredentialSet{Password: &connectivity.PasswordCredential{Username: "u2", Password: "p2"}}
 	push.out <- want
 
 	select {

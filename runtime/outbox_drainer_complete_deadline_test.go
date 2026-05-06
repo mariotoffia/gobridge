@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -55,7 +55,7 @@ func TestOutboxDrainer_CompleteSurvivesNearBatchDeadline(t *testing.T) {
 		return nil
 	}
 
-	policy := domain.RoutePolicy{}.WithDefaults()
+	policy := routing.RoutePolicy{}.WithDefaults()
 	policy.SendTimeout = 300 * time.Millisecond
 	batchCh := make(chan int, 1)
 	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
@@ -156,7 +156,7 @@ func TestOutboxDrainer_CompleteRespectsRuntimeShutdown(t *testing.T) {
 		return nil
 	})
 
-	policy := domain.RoutePolicy{}.WithDefaults()
+	policy := routing.RoutePolicy{}.WithDefaults()
 	policy.SendTimeout = 40 * time.Millisecond
 	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
 		OutboxStore:         outbox,

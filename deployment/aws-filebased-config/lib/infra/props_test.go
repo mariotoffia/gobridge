@@ -3,9 +3,10 @@ package infra
 import (
 	"testing"
 
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/model"
 )
 
 func TestServiceProps_Normalized_AppliesDefaults(t *testing.T) {

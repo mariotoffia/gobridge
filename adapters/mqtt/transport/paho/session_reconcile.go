@@ -4,7 +4,7 @@ import (
 	"context"
 	"maps"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
@@ -15,7 +15,7 @@ import (
 // When the new plan has no subscriptions and a plan is already set (from a
 // prior Reconcile call), the call is a no-op. This prevents a SessionManager
 // with an empty plan from unsubscribing externally-managed topics.
-func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error {
+func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) error {
 	s.mu.Lock()
 	hasPriorPlan := s.plan != nil
 	if len(plan.Subscriptions) > 0 || !hasPriorPlan {
@@ -35,7 +35,7 @@ func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error 
 	return s.reconcile(ctx, cm, plan)
 }
 
-func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan domain.SessionPlan) error {
+func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connectivity.SessionPlan) error {
 	reconcileStart := s.clock().Now()
 	s.reconcileMu.Lock()
 	defer s.reconcileMu.Unlock()

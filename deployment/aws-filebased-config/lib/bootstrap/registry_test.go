@@ -5,8 +5,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // stubFactory is a minimal ports.TransportFactory for swap mode detection tests.

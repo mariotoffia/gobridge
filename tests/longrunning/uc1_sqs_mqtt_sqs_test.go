@@ -12,7 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -57,7 +58,7 @@ func TestUC1_SQS_MQTT_SharedSub_FanOut_SQS(t *testing.T) {
 	for i := range ingressRTs {
 		label := string(rune('A' + i))
 		sessID := mqttlocal.UniqueClientID(fmt.Sprintf("uc1-ingress-%s", label))
-		sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+		sess := newMQTTSession(t, sessID, connectivity.SessionExclusive)
 		mqttSnd := setupMQTTSender(t, sess)
 		sqsRx := newSQSReceiver(t, sqsInURL)
 		sc := lrSessionConfig(sessID)
@@ -71,13 +72,13 @@ func TestUC1_SQS_MQTT_SharedSub_FanOut_SQS(t *testing.T) {
 
 		routeCfg := goruntime.RouteConfig{
 			ID: fmt.Sprintf("uc1-ingress-route-%s", label),
-			Policy: domain.RoutePolicy{
-				DeliveryMode: domain.DeliverySharedOutbox,
+			Policy: routing.RoutePolicy{
+				DeliveryMode: routing.DeliverySharedOutbox,
 			},
 			Resolver: goruntime.NewStaticResolver(
-				domain.DispatchPlan{BindingID: "uc1-pub", Address: uc1Topic},
+				routing.DispatchPlan{BindingID: "uc1-pub", Address: uc1Topic},
 			),
-			Bindings: []domain.DestinationBinding{
+			Bindings: []routing.DestinationBinding{
 				{ID: "uc1-pub", SessionID: sessID},
 			},
 		}
@@ -148,11 +149,11 @@ func buildEgressBridge(
 	t.Helper()
 
 	sessID := mqttlocal.UniqueClientID(fmt.Sprintf("uc1-egress-%s", label))
-	sess := setupMQTTSession(t, sessID, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
 
 	// Subscribe to the topic.
-	require.NoError(t, sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	require.NoError(t, sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: mqttTopic, QoS: 1},
 		},
 	}), "Reconcile egress %s", label)
@@ -168,11 +169,11 @@ func buildEgressBridge(
 
 	routeCfg := goruntime.RouteConfig{
 		ID: fmt.Sprintf("uc1-egress-route-%s", label),
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "sqs-out", Address: sqsQueueURL},
+			routing.DispatchPlan{BindingID: "sqs-out", Address: sqsQueueURL},
 		),
 		SourceCapabilities: directHoldCaps,
 	}

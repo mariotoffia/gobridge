@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/observability"
@@ -25,7 +25,7 @@ import (
 // optional global semaphore provides host-level throttling across routes.
 type RouteRunner struct {
 	routeID              string
-	policy               domain.RoutePolicy
+	policy               routing.RoutePolicy
 	receiver             ports.Receiver
 	sender               ports.Sender
 	senders              map[string]ports.Sender // binding ID -> sender (optional)
@@ -33,7 +33,7 @@ type RouteRunner struct {
 	dlq                  *DLQRouter
 	resolver             ports.DestinationResolver
 	processors           []ports.Processor
-	bindings             []domain.DestinationBinding
+	bindings             []routing.DestinationBinding
 	instanceID           string
 	metrics              ports.MetricsExporter
 	tracer               ports.Tracer
@@ -57,7 +57,7 @@ type RouteRunner struct {
 // RouteRunnerConfig holds the configuration for a RouteRunner.
 type RouteRunnerConfig struct {
 	RouteID              string
-	Policy               domain.RoutePolicy
+	Policy               routing.RoutePolicy
 	Receiver             ports.Receiver
 	Sender               ports.Sender
 	Senders              map[string]ports.Sender // binding ID -> sender (optional)
@@ -65,7 +65,7 @@ type RouteRunnerConfig struct {
 	DLQ                  *DLQRouter
 	Resolver             ports.DestinationResolver
 	Processors           []ports.Processor
-	Bindings             []domain.DestinationBinding
+	Bindings             []routing.DestinationBinding
 	InstanceID           string
 	Metrics              ports.MetricsExporter
 	Tracer               ports.Tracer
@@ -125,10 +125,10 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 	}
 
 	var dc *outboxDepthCache
-	if policy.DeliveryMode == domain.DeliverySharedOutbox {
+	if policy.DeliveryMode == routing.DeliverySharedOutbox {
 		depthTTL := cfg.DepthCacheTTL
 		if depthTTL <= 0 {
-			depthTTL = domain.DefaultDepthCacheTTL
+			depthTTL = routing.DefaultDepthCacheTTL
 		}
 		dc = newOutboxDepthCache(depthTTL, clk)
 	}
@@ -408,7 +408,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 
 	var deliveryErr error
 	switch r.policy.DeliveryMode {
-	case domain.DeliverySharedOutbox:
+	case routing.DeliverySharedOutbox:
 		deliveryErr = r.sharedOutbox(ctx, del, env)
 	default:
 		deliveryErr = r.directHold(ctx, del, env)

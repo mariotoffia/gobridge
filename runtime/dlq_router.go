@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -21,7 +21,7 @@ import (
 // blocking route runner semaphore slots on slow DLQ writes.
 type DLQRouter struct {
 	store             ports.DLQStore
-	buffer            chan domain.DLQEntry
+	buffer            chan routing.DLQEntry
 	bufferSize        int
 	writeTimeout      time.Duration
 	enqTimeout        time.Duration
@@ -37,7 +37,7 @@ type DLQRouter struct {
 	sendWg            sync.WaitGroup // tracks goroutines in the Route select
 	tokenFn           func() (persistence.LeaseToken, bool)
 	writeMaxAttempts  int
-	writeRetryBackoff domain.BackoffPolicy
+	writeRetryBackoff routing.BackoffPolicy
 }
 
 // DLQRouterConfig configures the async DLQ router.
@@ -52,7 +52,7 @@ type DLQRouterConfig struct {
 	Clock        clock.Clock
 
 	WriteMaxAttempts  int
-	WriteRetryBackoff domain.BackoffPolicy
+	WriteRetryBackoff routing.BackoffPolicy
 }
 
 const (
@@ -136,7 +136,7 @@ func (r *DLQRouter) Start(ctx context.Context) {
 		return
 	}
 	r.mu.Lock()
-	r.buffer = make(chan domain.DLQEntry, r.bufferSize)
+	r.buffer = make(chan routing.DLQEntry, r.bufferSize)
 	r.started = true
 	r.stopped = false
 	r.done = make(chan struct{})
@@ -210,12 +210,12 @@ func (r *DLQRouter) buildEntry(
 	routeID, bindingID, sessionID, sourceID string,
 	err error,
 	attempts int,
-) domain.DLQEntry {
+) routing.DLQEntry {
 	category, errorCode := classifyError(err)
 	correlationID, _ := messaging.GetHeaderString(env.Headers, messaging.HeaderCorrelationID)
 	reason := safeErrorReason(err)
 
-	return domain.DLQEntry{
+	return routing.DLQEntry{
 		ID:            generateID(),
 		Envelope:      *env,
 		RouteID:       routeID,
@@ -232,7 +232,7 @@ func (r *DLQRouter) buildEntry(
 	}
 }
 
-func (r *DLQRouter) writeDirect(ctx context.Context, entry domain.DLQEntry) error {
+func (r *DLQRouter) writeDirect(ctx context.Context, entry routing.DLQEntry) error {
 	writeCtx, cancel := context.WithTimeout(ctx, r.writeTimeout)
 	defer cancel()
 	return r.store.Write(writeCtx, entry)

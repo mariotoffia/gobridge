@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
@@ -32,7 +32,7 @@ func TestIntegration_Edge_SessionHealthTransitions(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address: ep, Username: user, Password: pass,
 		ConnectTimeout: 15 * time.Second,
-	}, domain.SessionEphemeral, logger)
+	}, connectivity.SessionEphemeral, logger)
 
 	ctx := context.Background()
 

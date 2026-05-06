@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -34,7 +34,7 @@ func makeDrainer(t *testing.T, token persistence.LeaseToken, opts ...func(*gorun
 		PartitionKey:   pk,
 		LeaseID:        "sess-1",
 		OwnerID:        token.Owner,
-		Policy:         domain.RoutePolicy{}.WithDefaults(),
+		Policy:         routing.RoutePolicy{}.WithDefaults(),
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 100,
 		TokenFn: func() (persistence.LeaseToken, bool) {
@@ -179,7 +179,7 @@ func TestOutboxDrainer_NoLease(t *testing.T) {
 		RouteID:      "route-1",
 		PartitionKey: persistence.OutboxPartitionKey("sess-1", ""),
 		OwnerID:      "bridge-1",
-		Policy:       domain.RoutePolicy{}.WithDefaults(),
+		Policy:       routing.RoutePolicy{}.WithDefaults(),
 		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
 		TokenFn: func() (persistence.LeaseToken, bool) {
 			return persistence.LeaseToken{}, false

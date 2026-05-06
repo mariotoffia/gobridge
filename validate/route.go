@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -30,8 +31,8 @@ func validateStructural(r *RouteConfig, cfg *BridgeConfig, errs *ValidationError
 			Rule:    "structural",
 			Message: "route must specify a delivery mode",
 		})
-	} else if r.Policy.DeliveryMode != domain.DeliveryDirectHold &&
-		r.Policy.DeliveryMode != domain.DeliverySharedOutbox {
+	} else if r.Policy.DeliveryMode != routing.DeliveryDirectHold &&
+		r.Policy.DeliveryMode != routing.DeliverySharedOutbox {
 		*errs = append(*errs, ValidationError{
 			RouteID: r.ID,
 			Rule:    "structural",
@@ -40,8 +41,8 @@ func validateStructural(r *RouteConfig, cfg *BridgeConfig, errs *ValidationError
 	}
 
 	if r.Policy.DispatchMode != "" &&
-		r.Policy.DispatchMode != domain.DispatchSingle &&
-		r.Policy.DispatchMode != domain.DispatchFanOut {
+		r.Policy.DispatchMode != routing.DispatchSingle &&
+		r.Policy.DispatchMode != routing.DispatchFanOut {
 		*errs = append(*errs, ValidationError{
 			RouteID: r.ID,
 			Rule:    "structural",
@@ -72,7 +73,7 @@ func validateDirectHold(r *RouteConfig, cfg *BridgeConfig, errs *ValidationError
 		})
 	}
 
-	if r.Policy.DispatchMode == domain.DispatchFanOut {
+	if r.Policy.DispatchMode == routing.DispatchFanOut {
 		*errs = append(*errs, ValidationError{
 			RouteID: r.ID,
 			Rule:    "direct_hold",
@@ -84,7 +85,7 @@ func validateDirectHold(r *RouteConfig, cfg *BridgeConfig, errs *ValidationError
 		if b.SessionID == "" {
 			continue
 		}
-		if sess, ok := cfg.Sessions[b.SessionID]; ok && sess.Mode == domain.SessionExclusive {
+		if sess, ok := cfg.Sessions[b.SessionID]; ok && sess.Mode == connectivity.SessionExclusive {
 			*errs = append(*errs, ValidationError{
 				RouteID: r.ID,
 				Rule:    "direct_hold",
@@ -108,7 +109,7 @@ func validateSharedOutbox(r *RouteConfig, cfg *BridgeConfig, errs *ValidationErr
 		if b.SessionID == "" {
 			continue
 		}
-		if sess, ok := cfg.Sessions[b.SessionID]; ok && sess.Mode == domain.SessionExclusive {
+		if sess, ok := cfg.Sessions[b.SessionID]; ok && sess.Mode == connectivity.SessionExclusive {
 			if !cfg.HasLeaseStore {
 				*errs = append(*errs, ValidationError{
 					RouteID: r.ID,
@@ -133,7 +134,7 @@ func validateSharedOutbox(r *RouteConfig, cfg *BridgeConfig, errs *ValidationErr
 		txLimit = DefaultOutboxTransactionLimit
 	}
 
-	if r.Policy.DispatchMode == domain.DispatchFanOut && len(r.Bindings) > txLimit {
+	if r.Policy.DispatchMode == routing.DispatchFanOut && len(r.Bindings) > txLimit {
 		*errs = append(*errs, ValidationError{
 			RouteID: r.ID,
 			Rule:    "shared_outbox",
@@ -147,7 +148,7 @@ func validateMQTTQoS(r *RouteConfig, errs *ValidationErrors) {
 		return
 	}
 
-	isReliable := r.Policy.DeliveryMode == domain.DeliverySharedOutbox ||
+	isReliable := r.Policy.DeliveryMode == routing.DeliverySharedOutbox ||
 		r.Policy.RequireDurableEgress
 
 	if isReliable && r.TargetQoS == 0 {

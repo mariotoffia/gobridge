@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -24,7 +24,7 @@ type OutboxDrainer struct {
 	partitionKey   string
 	leaseID        string
 	ownerID        string
-	policy         domain.RoutePolicy
+	policy         routing.RoutePolicy
 	strategy       persistence.DrainStrategy
 	batchSize      int
 	maxBatchSize   int
@@ -79,7 +79,7 @@ type OutboxDrainerConfig struct {
 	PartitionKey        string
 	LeaseID             string
 	OwnerID             string
-	Policy              domain.RoutePolicy
+	Policy              routing.RoutePolicy
 	Strategy            persistence.DrainStrategy
 	DrainBatchSize      int
 	DrainMaxBatchSize   int

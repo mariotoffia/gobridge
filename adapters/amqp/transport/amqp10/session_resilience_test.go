@@ -12,7 +12,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -193,7 +193,7 @@ done:
 // ErrUnavailable when session is not connected.
 func TestSession_Reconcile_NotConnected(t *testing.T) {
 	s := newTestSession()
-	err := s.Reconcile(context.Background(), domain.SessionPlan{})
+	err := s.Reconcile(context.Background(), connectivity.SessionPlan{})
 	if err == nil {
 		t.Fatal("expected error from Reconcile when not connected")
 	}

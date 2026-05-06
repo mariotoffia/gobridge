@@ -23,9 +23,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -56,7 +56,7 @@ func TestDrainer_StaleFencingToken_UsesMinBackoff(t *testing.T) {
 		RouteID:      "route-1",
 		PartitionKey: "SESSION#s1",
 		OwnerID:      "test",
-		Policy:       domain.RoutePolicy{}.WithDefaults(),
+		Policy:       routing.RoutePolicy{}.WithDefaults(),
 		Strategy:     persistence.NewFixedPoll(100 * time.Millisecond),
 		TokenFn: func() (persistence.LeaseToken, bool) {
 			return token, hasLease
@@ -94,7 +94,7 @@ func TestRetryUnsupported_NilDLQ_AcksDelivery(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "retry-test",
-		Policy:   domain.RoutePolicy{}.WithDefaults(),
+		Policy:   routing.RoutePolicy{}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      nil,
@@ -140,7 +140,7 @@ func TestRetryUnsupported_WithDLQ_RoutesToDLQ(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "retry-dlq-test",
-		Policy:   domain.RoutePolicy{}.WithDefaults(),
+		Policy:   routing.RoutePolicy{}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(dlqStore),

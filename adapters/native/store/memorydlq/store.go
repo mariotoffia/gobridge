@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -19,7 +19,7 @@ var _ ports.DLQStore = (*Store)(nil)
 // single-process mode. It is not safe for clustered production deployments.
 type Store struct {
 	mu      sync.Mutex
-	entries map[string]domain.DLQEntry
+	entries map[string]routing.DLQEntry
 	logger  *slog.Logger
 }
 
@@ -34,7 +34,7 @@ func WithLogger(l *slog.Logger) Option {
 // NewStore creates a new in-memory DLQStore.
 func NewStore(opts ...Option) *Store {
 	s := &Store{
-		entries: make(map[string]domain.DLQEntry),
+		entries: make(map[string]routing.DLQEntry),
 	}
 	for _, o := range opts {
 		o(s)
@@ -42,7 +42,7 @@ func NewStore(opts ...Option) *Store {
 	return s
 }
 
-func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
+func (s *Store) Write(ctx context.Context, entry routing.DLQEntry) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memorydlq: store", "entryID", entry.ID)
 	}
@@ -60,7 +60,7 @@ func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
 	return nil
 }
 
-func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
+func (s *Store) Get(ctx context.Context, id string) (routing.DLQEntry, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memorydlq: get", "entryID", id)
 	}
@@ -70,7 +70,7 @@ func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
 
 	e, ok := s.entries[id]
 	if !ok {
-		return domain.DLQEntry{}, shared.ErrNotFound.
+		return routing.DLQEntry{}, shared.ErrNotFound.
 			WithMessage("dlq entry not found").
 			With("entryID", id)
 	}
@@ -78,7 +78,7 @@ func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
 	return e, nil
 }
 
-func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *Store) List(ctx context.Context, filter routing.DLQFilter) ([]routing.DLQEntry, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memorydlq: query",
 			"routeID", filter.RouteID, "category", filter.Category, "limit", filter.Limit)
@@ -87,7 +87,7 @@ func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQ
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var result []domain.DLQEntry
+	var result []routing.DLQEntry
 	for _, e := range s.entries {
 		if matchesFilter(e, filter) {
 			result = append(result, e)
@@ -124,7 +124,7 @@ func (s *Store) Delete(ctx context.Context, ids []string) (int, error) {
 	return count, nil
 }
 
-func (s *Store) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error) {
+func (s *Store) DeleteByFilter(ctx context.Context, filter routing.DLQFilter) (int, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memorydlq: delete_by_filter",
 			"routeID", filter.RouteID, "category", filter.Category)
@@ -135,7 +135,7 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (in
 
 	// Collect matching IDs, sorted by FailedAt descending (newest first)
 	// to match SQLite/DynamoDB ordering when Limit is applied.
-	var matched []domain.DLQEntry
+	var matched []routing.DLQEntry
 	for _, e := range s.entries {
 		if matchesFilter(e, filter) {
 			matched = append(matched, e)
@@ -175,7 +175,7 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
 	return count, nil
 }
 
-func matchesFilter(e domain.DLQEntry, filter domain.DLQFilter) bool {
+func matchesFilter(e routing.DLQEntry, filter routing.DLQFilter) bool {
 	if filter.RouteID != "" && e.RouteID != filter.RouteID {
 		return false
 	}

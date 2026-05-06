@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -39,14 +39,14 @@ func TestRouteRunner_SharedOutbox_DepthCacheExercised(t *testing.T) {
 		RouteID:  "route-shared",
 		Receiver: receiver,
 		Sender:   sender,
-		Policy: domain.RoutePolicy{
-			DeliveryMode:   domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:   routing.DeliverySharedOutbox,
 			MaxOutboxDepth: 100,
 		},
 		OutboxStore: outbox,
 		DLQ:         goruntime.NewDLQRouter(NewFakeDLQStore()),
 		InstanceID:  "bridge-1",
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "sess-1", Address: "dest"},
 		},
 		DepthCacheTTL: time.Hour,
@@ -81,8 +81,8 @@ func TestRouteRunner_DirectHold_NoQueryPending(t *testing.T) {
 		RouteID:  "route-direct",
 		Receiver: receiver,
 		Sender:   sender,
-		Policy: domain.RoutePolicy{
-			DeliveryMode:   domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:   routing.DeliveryDirectHold,
 			MaxOutboxDepth: 100, // deliberately set to prove depth check is not exercised for DirectHold
 		},
 		OutboxStore: outbox,
@@ -425,14 +425,14 @@ func TestRouteRunner_SharedOutbox_NilOutboxStore_Retries(t *testing.T) {
 		RouteID:  "route-nil-outbox",
 		Receiver: receiver,
 		Sender:   sender,
-		Policy: domain.RoutePolicy{
-			DeliveryMode:   domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:   routing.DeliverySharedOutbox,
 			MaxOutboxDepth: 100,
 		},
 		OutboxStore: nil,
 		DLQ:         goruntime.NewDLQRouter(NewFakeDLQStore()),
 		InstanceID:  "bridge-1",
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "sess-1", Address: "dest"},
 		},
 	})

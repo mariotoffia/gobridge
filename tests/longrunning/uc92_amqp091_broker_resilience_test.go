@@ -15,7 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	amqp091adapter "github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 )
@@ -79,7 +80,7 @@ func TestUC92_RabbitMQ_BrokerKillRestart(t *testing.T) {
 		BrokerURL:      rabbitmqlocal.Endpoint(t),
 		Heartbeat:      5 * time.Second,
 		ConnectTimeout: 30 * time.Second,
-	}, domain.SessionExclusive, testLogger(t))
+	}, connectivity.SessionExclusive, testLogger(t))
 	t.Cleanup(func() { _ = amqpSess.Close(context.Background()) })
 
 	amqpSnd := newRabbitMQSender(t, amqpSess, exchangeName, routingKey)
@@ -96,13 +97,13 @@ func TestUC92_RabbitMQ_BrokerKillRestart(t *testing.T) {
 	)
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc92-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc92-bind", Address: exchangeName},
+			routing.DispatchPlan{BindingID: "uc92-bind", Address: exchangeName},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc92-bind", SessionID: sessionID},
 		},
 	}

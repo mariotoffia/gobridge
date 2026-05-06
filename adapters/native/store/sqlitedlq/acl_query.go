@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 )
 
 // SQL strings and dynamic-clause builders for the DLQ table.
@@ -38,7 +38,7 @@ CREATE INDEX IF NOT EXISTS idx_dlq_failed_at ON dlq(failed_at);
 `
 
 // dlqColumns is the canonical column list used for SELECTs that
-// hydrate full domain.DLQEntry values via scanEntries.
+// hydrate full routing.DLQEntry values via scanEntries.
 const dlqColumns = `id, route_id, binding_id, session_id, source_id, correlation_id,
 		reason, category, error_code, last_error, envelope_json, failed_at, attempts`
 
@@ -53,9 +53,9 @@ const (
 	purgeBeforeSQL = `DELETE FROM dlq WHERE failed_at < ?`
 )
 
-// filterClauses translates a domain.DLQFilter into SQL WHERE fragments
+// filterClauses translates a routing.DLQFilter into SQL WHERE fragments
 // + their bound arguments. Returns an empty slice if no clauses apply.
-func filterClauses(filter domain.DLQFilter) (clauses []string, args []any) {
+func filterClauses(filter routing.DLQFilter) (clauses []string, args []any) {
 	if filter.RouteID != "" {
 		clauses = append(clauses, "route_id = ?")
 		args = append(args, filter.RouteID)
@@ -77,7 +77,7 @@ func filterClauses(filter domain.DLQFilter) (clauses []string, args []any) {
 
 // listSQL builds the SELECT statement that drives Store.List from a
 // filter, returning the SQL string and the appended argument list.
-func listSQL(filter domain.DLQFilter) (string, []any) {
+func listSQL(filter routing.DLQFilter) (string, []any) {
 	clauses, args := filterClauses(filter)
 
 	q := "SELECT " + dlqColumns + " FROM dlq"
@@ -95,7 +95,7 @@ func listSQL(filter domain.DLQFilter) (string, []any) {
 // deleteByFilterSQL builds the DELETE statement that drives
 // Store.DeleteByFilter. SQLite's DELETE does not always support LIMIT,
 // so a bounded delete is expressed via a sub-SELECT.
-func deleteByFilterSQL(filter domain.DLQFilter) (string, []any) {
+func deleteByFilterSQL(filter routing.DLQFilter) (string, []any) {
 	clauses, args := filterClauses(filter)
 
 	if filter.Limit > 0 {

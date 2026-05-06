@@ -13,8 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -44,15 +45,15 @@ func TestUC4_Bidirectional_SQS_MQTT(t *testing.T) {
 
 	// -- MQTT sessions for bridges -----------------------------------------
 	sessAID := mqttlocal.UniqueClientID("uc4-bridge-a")
-	sessA := setupMQTTSession(t, sessAID, domain.SessionEphemeral)
+	sessA := setupMQTTSession(t, sessAID, connectivity.SessionEphemeral)
 	mqttSenderA := setupMQTTSender(t, sessA)
 
 	sessBID := mqttlocal.UniqueClientID("uc4-bridge-b")
-	sessB := setupMQTTSession(t, sessBID, domain.SessionEphemeral)
+	sessB := setupMQTTSession(t, sessBID, connectivity.SessionEphemeral)
 
 	// Reconcile Bridge-B subscription on uc4/north/data.
-	err := sessB.Reconcile(context.Background(), domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	err := sessB.Reconcile(context.Background(), connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "uc4/north/data", QoS: 1},
 		},
 	})
@@ -78,11 +79,11 @@ func TestUC4_Bidirectional_SQS_MQTT(t *testing.T) {
 
 	routeA := goruntime.RouteConfig{
 		ID: "uc4-route-a",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "mqtt-south", Address: "uc4/south/data"},
+			routing.DispatchPlan{BindingID: "mqtt-south", Address: "uc4/south/data"},
 		),
 		SourceCapabilities: []ports.Capability{
 			ports.CapSourceRedelivery,
@@ -99,11 +100,11 @@ func TestUC4_Bidirectional_SQS_MQTT(t *testing.T) {
 
 	routeB := goruntime.RouteConfig{
 		ID: "uc4-route-b",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "sqs-south", Address: southQueueURL},
+			routing.DispatchPlan{BindingID: "sqs-south", Address: southQueueURL},
 		),
 		SourceCapabilities: directHoldCaps,
 	}
@@ -139,7 +140,7 @@ func TestUC4_Bidirectional_SQS_MQTT(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc4-pub-b"), domain.SessionEphemeral)
+		pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc4-pub-b"), connectivity.SessionEphemeral)
 		pubTx := paho.NewSender(pubSess, paho.SenderOptions{
 			QoS:     1,
 			Timeout: 10 * time.Second,

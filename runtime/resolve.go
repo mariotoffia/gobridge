@@ -5,19 +5,19 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // MatchFunc determines whether a binding should be selected for a given envelope.
-type MatchFunc func(env *messaging.Envelope, b domain.DestinationBinding) bool
+type MatchFunc func(env *messaging.Envelope, b routing.DestinationBinding) bool
 
 // BindingResolver is a production DestinationResolver that selects bindings
 // using a MatchFunc, renders address templates from envelope headers, and
 // validates MQTT topics when the binding transport is "mqtt".
 type BindingResolver struct {
-	bindings []domain.DestinationBinding
+	bindings []routing.DestinationBinding
 	matchFn  MatchFunc
 }
 
@@ -25,7 +25,7 @@ type BindingResolver struct {
 // configured binding. Bindings whose Address contains {key} placeholders are
 // rendered using envelope headers. MQTT bindings have their rendered addresses
 // validated for wildcard safety.
-func NewBindingResolver(bindings []domain.DestinationBinding, matchFn MatchFunc) *BindingResolver {
+func NewBindingResolver(bindings []routing.DestinationBinding, matchFn MatchFunc) *BindingResolver {
 	return &BindingResolver{
 		bindings: bindings,
 		matchFn:  matchFn,
@@ -34,8 +34,8 @@ func NewBindingResolver(bindings []domain.DestinationBinding, matchFn MatchFunc)
 
 // Resolve selects matching bindings, renders address templates, and returns
 // one DispatchPlan per match. Returns a Rejected error when no binding matches.
-func (r *BindingResolver) Resolve(_ context.Context, env *messaging.Envelope) ([]domain.DispatchPlan, error) {
-	var plans []domain.DispatchPlan
+func (r *BindingResolver) Resolve(_ context.Context, env *messaging.Envelope) ([]routing.DispatchPlan, error) {
+	var plans []routing.DispatchPlan
 
 	for _, b := range r.bindings {
 		if !r.matchFn(env, b) {
@@ -55,7 +55,7 @@ func (r *BindingResolver) Resolve(_ context.Context, env *messaging.Envelope) ([
 			}
 		}
 
-		plans = append(plans, domain.DispatchPlan{
+		plans = append(plans, routing.DispatchPlan{
 			BindingID: b.ID,
 			Address:   addr,
 			Headers:   copyHeaders(b.Headers),
@@ -75,20 +75,20 @@ func (r *BindingResolver) Resolve(_ context.Context, env *messaging.Envelope) ([
 // StaticResolver always returns the same pre-configured dispatch plans.
 // Use for routes with a fixed single binding or a constant fan-out set.
 type StaticResolver struct {
-	plans []domain.DispatchPlan
+	plans []routing.DispatchPlan
 }
 
 // NewStaticResolver creates a resolver that returns plans on every call.
-func NewStaticResolver(plans ...domain.DispatchPlan) *StaticResolver {
-	cp := make([]domain.DispatchPlan, len(plans))
+func NewStaticResolver(plans ...routing.DispatchPlan) *StaticResolver {
+	cp := make([]routing.DispatchPlan, len(plans))
 	copy(cp, plans)
 	return &StaticResolver{plans: cp}
 }
 
 // Resolve returns a copy of the pre-configured plans to prevent callers
 // from mutating the resolver's internal state.
-func (r *StaticResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]domain.DispatchPlan, error) {
-	cp := make([]domain.DispatchPlan, len(r.plans))
+func (r *StaticResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]routing.DispatchPlan, error) {
+	cp := make([]routing.DispatchPlan, len(r.plans))
 	copy(cp, r.plans)
 	return cp, nil
 }
@@ -98,7 +98,7 @@ func (r *StaticResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]do
 // in bindingMap. This implements the SQS-to-factory pattern: header "factory"
 // value "A" maps to binding ID "mqtt-factory-a-orders".
 func MatchByHeader(headerKey string, bindingMap map[string]string) MatchFunc {
-	return func(env *messaging.Envelope, b domain.DestinationBinding) bool {
+	return func(env *messaging.Envelope, b routing.DestinationBinding) bool {
 		val, ok := messaging.GetHeaderString(env.Headers, headerKey)
 		if !ok {
 			return false
@@ -110,14 +110,14 @@ func MatchByHeader(headerKey string, bindingMap map[string]string) MatchFunc {
 
 // MatchAll returns a MatchFunc that selects every binding (static fan-out).
 func MatchAll() MatchFunc {
-	return func(_ *messaging.Envelope, _ domain.DestinationBinding) bool {
+	return func(_ *messaging.Envelope, _ routing.DestinationBinding) bool {
 		return true
 	}
 }
 
 // MatchByID returns a MatchFunc that selects only the binding with the given ID.
 func MatchByID(bindingID string) MatchFunc {
-	return func(_ *messaging.Envelope, b domain.DestinationBinding) bool {
+	return func(_ *messaging.Envelope, b routing.DestinationBinding) bool {
 		return b.ID == bindingID
 	}
 }
@@ -126,7 +126,7 @@ func MatchByID(bindingID string) MatchFunc {
 // envelope's Subject starts with a prefix that maps to the binding's ID.
 // The prefixMap keys are subject prefixes, values are binding IDs.
 func MatchBySubjectPrefix(prefixMap map[string]string) MatchFunc {
-	return func(env *messaging.Envelope, b domain.DestinationBinding) bool {
+	return func(env *messaging.Envelope, b routing.DestinationBinding) bool {
 		for prefix, targetID := range prefixMap {
 			if strings.HasPrefix(env.Subject, prefix) && targetID == b.ID {
 				return true
@@ -176,8 +176,8 @@ func CompileMatchRules(rules []MatchRule) ([]MatchRule, error) {
 // Unlike MatchFunc-based resolvers, RuleResolver guarantees that exactly
 // one binding is selected per envelope, providing true first-match semantics.
 type RuleResolver struct {
-	bindings       []domain.DestinationBinding
-	bindingIndex   map[string]domain.DestinationBinding
+	bindings       []routing.DestinationBinding
+	bindingIndex   map[string]routing.DestinationBinding
 	rules          []MatchRule
 	defaultBinding string
 }
@@ -186,11 +186,11 @@ type RuleResolver struct {
 // via CompileMatchRules. Returns an error if a rule references a binding
 // not present in the bindings list.
 func NewRuleResolver(
-	bindings []domain.DestinationBinding,
+	bindings []routing.DestinationBinding,
 	rules []MatchRule,
 	defaultBinding string,
 ) (*RuleResolver, error) {
-	idx := make(map[string]domain.DestinationBinding, len(bindings))
+	idx := make(map[string]routing.DestinationBinding, len(bindings))
 	for _, b := range bindings {
 		idx[b.ID] = b
 	}
@@ -218,7 +218,7 @@ func NewRuleResolver(
 // the first matching rule. Condition evaluation errors are treated as
 // non-matching; if all rules fail with errors, the message goes to the
 // default binding or returns ErrNoBindingMatch.
-func (r *RuleResolver) Resolve(_ context.Context, env *messaging.Envelope) ([]domain.DispatchPlan, error) {
+func (r *RuleResolver) Resolve(_ context.Context, env *messaging.Envelope) ([]routing.DispatchPlan, error) {
 	ctx := newEvalContext()
 
 	for _, rule := range r.rules {
@@ -249,7 +249,7 @@ func (r *RuleResolver) Resolve(_ context.Context, env *messaging.Envelope) ([]do
 	)
 }
 
-func (r *RuleResolver) planForBinding(bindingID string, env *messaging.Envelope) ([]domain.DispatchPlan, error) {
+func (r *RuleResolver) planForBinding(bindingID string, env *messaging.Envelope) ([]routing.DispatchPlan, error) {
 	b := r.bindingIndex[bindingID]
 
 	addr, err := RenderAddress(b.Address, env.Headers)
@@ -265,7 +265,7 @@ func (r *RuleResolver) planForBinding(bindingID string, env *messaging.Envelope)
 		}
 	}
 
-	return []domain.DispatchPlan{{
+	return []routing.DispatchPlan{{
 		BindingID: b.ID,
 		Address:   addr,
 		Headers:   copyHeaders(b.Headers),

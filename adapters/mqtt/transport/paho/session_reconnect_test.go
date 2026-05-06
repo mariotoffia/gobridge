@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -50,15 +50,15 @@ func TestActiveSubsRestore_OnReconcileFailure(t *testing.T) {
 			KeepAlive:        10,
 			ReconnectTimeout: 100 * time.Millisecond,
 		},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
 	// Simulate existing subscription state as if previously reconciled.
 	s.mu.Lock()
 	s.activeSubs = map[string]byte{"topic/a": 1, "topic/c": 0}
-	s.plan = &domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	s.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "topic/a", QoS: 1},
 			{Topic: "topic/b", QoS: 0},
 		},
@@ -132,7 +132,7 @@ func TestActiveSubsNotRestored_OnReconcileSuccess(t *testing.T) {
 			KeepAlive:        10,
 			ReconnectTimeout: 100 * time.Millisecond,
 		},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -141,8 +141,8 @@ func TestActiveSubsNotRestored_OnReconcileSuccess(t *testing.T) {
 	s.startCtx = parentCtx
 	// Simulate having subs that exactly match the plan.
 	s.activeSubs = map[string]byte{"topic/a": 1}
-	s.plan = &domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	s.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "topic/a", QoS: 1},
 		},
 	}
@@ -198,7 +198,7 @@ func TestOldSubsBackup_IsIndependentCopy(t *testing.T) {
 			BrokerURLs: []string{"tcp://localhost:1883"},
 			ClientID:   "test-copy",
 		},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -254,7 +254,7 @@ func TestStartCtx_StoredInSession(t *testing.T) {
 			BrokerURLs: []string{"tcp://localhost:1883"},
 			ClientID:   "test-ctx",
 		},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -358,7 +358,7 @@ func TestOnConnectionUp_RestorePattern_EndToEnd(t *testing.T) {
 			ClientID:         "test-e2e-restore",
 			ReconnectTimeout: 50 * time.Millisecond,
 		},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -369,8 +369,8 @@ func TestOnConnectionUp_RestorePattern_EndToEnd(t *testing.T) {
 	for k, v := range original {
 		s.activeSubs[k] = v
 	}
-	s.plan = &domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	s.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "sensors/temp", QoS: 1},
 			{Topic: "sensors/hum", QoS: 0},
 			{Topic: "sensors/press", QoS: 1},

@@ -15,9 +15,10 @@ import (
 	dboutbox "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -170,7 +171,7 @@ func strPtr(s string) *string { return &s }
 // MQTT helpers
 // ---------------------------------------------------------------------------
 
-func setupMQTTSession(t *testing.T, clientID string, mode domain.SessionMode) *paho.Session {
+func setupMQTTSession(t *testing.T, clientID string, mode connectivity.SessionMode) *paho.Session {
 	t.Helper()
 	url := mqttlocal.BrokerURL(t)
 	sess := paho.NewSession(paho.SessionOptions{
@@ -223,7 +224,7 @@ func newMQTTCollector(t *testing.T, topic string, clientIDPrefix string) *mqttCo
 		KeepAlive:      10,
 		ConnectTimeout: 10 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	ctx := context.Background()
 	if err := sess.Start(ctx); err != nil {
@@ -235,8 +236,8 @@ func newMQTTCollector(t *testing.T, topic string, clientIDPrefix string) *mqttCo
 	case <-time.After(3 * time.Second):
 	}
 
-	if err := sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}); err != nil {
 		_ = sess.Close(ctx)
 		t.Fatalf("collector Reconcile: %v", err)
@@ -345,21 +346,21 @@ func e2eWaitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool
 
 type e2eDLQStore struct {
 	mu      sync.Mutex
-	entries []domain.DLQEntry
+	entries []routing.DLQEntry
 }
 
-func (s *e2eDLQStore) Write(_ context.Context, entry domain.DLQEntry) error {
+func (s *e2eDLQStore) Write(_ context.Context, entry routing.DLQEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.entries = append(s.entries, entry)
 	return nil
 }
 
-func (s *e2eDLQStore) List(_ context.Context, _ domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *e2eDLQStore) List(_ context.Context, _ routing.DLQFilter) ([]routing.DLQEntry, error) {
 	return nil, nil
 }
 
-func (s *e2eDLQStore) Get(_ context.Context, id string) (domain.DLQEntry, error) {
+func (s *e2eDLQStore) Get(_ context.Context, id string) (routing.DLQEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, e := range s.entries {
@@ -367,11 +368,11 @@ func (s *e2eDLQStore) Get(_ context.Context, id string) (domain.DLQEntry, error)
 			return e, nil
 		}
 	}
-	return domain.DLQEntry{}, shared.ErrNotFound
+	return routing.DLQEntry{}, shared.ErrNotFound
 }
 
 func (s *e2eDLQStore) Delete(_ context.Context, _ []string) (int, error) { return 0, nil }
-func (s *e2eDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error) {
+func (s *e2eDLQStore) DeleteByFilter(_ context.Context, _ routing.DLQFilter) (int, error) {
 	return 0, nil
 }
 func (s *e2eDLQStore) Purge(_ context.Context, _ time.Time) (int, error) { return 0, nil }

@@ -4,9 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════

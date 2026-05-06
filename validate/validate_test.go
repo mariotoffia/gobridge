@@ -6,7 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/validate"
 )
@@ -18,11 +19,11 @@ import (
 func validDirectHoldRoute() validate.RouteConfig {
 	return validate.RouteConfig{
 		ID: "dh-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
-			DispatchMode: domain.DispatchSingle,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
+			DispatchMode: routing.DispatchSingle,
 		},
-		Bindings: []domain.DestinationBinding{{
+		Bindings: []routing.DestinationBinding{{
 			ID:        "b1",
 			SessionID: "sess-persistent",
 			SenderID:  "sender-1",
@@ -40,11 +41,11 @@ func validDirectHoldRoute() validate.RouteConfig {
 func validSharedOutboxRoute() validate.RouteConfig {
 	return validate.RouteConfig{
 		ID: "so-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			DispatchMode: domain.DispatchSingle,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			DispatchMode: routing.DispatchSingle,
 		},
-		Bindings: []domain.DestinationBinding{{
+		Bindings: []routing.DestinationBinding{{
 			ID:        "b1",
 			SessionID: "sess-persistent",
 			SenderID:  "sender-1",
@@ -58,9 +59,9 @@ func validSharedOutboxRoute() validate.RouteConfig {
 
 func baseSessions() map[string]validate.SessionConfig {
 	return map[string]validate.SessionConfig{
-		"sess-persistent": {ID: "sess-persistent", Mode: domain.SessionPersistent},
-		"sess-exclusive":  {ID: "sess-exclusive", Mode: domain.SessionExclusive},
-		"sess-ephemeral":  {ID: "sess-ephemeral", Mode: domain.SessionEphemeral},
+		"sess-persistent": {ID: "sess-persistent", Mode: connectivity.SessionPersistent},
+		"sess-exclusive":  {ID: "sess-exclusive", Mode: connectivity.SessionExclusive},
+		"sess-ephemeral":  {ID: "sess-ephemeral", Mode: connectivity.SessionEphemeral},
 	}
 }
 
@@ -126,7 +127,7 @@ func TestValidate_DirectHold_NoVisibilityExtension(t *testing.T) {
 // Verifies Validate rejects direct_hold when fan-out dispatch is enabled.
 func TestValidate_DirectHold_FanOutEnabled(t *testing.T) {
 	r := validDirectHoldRoute()
-	r.Policy.DispatchMode = domain.DispatchFanOut
+	r.Policy.DispatchMode = routing.DispatchFanOut
 
 	cfg := validate.BridgeConfig{
 		Routes:   []validate.RouteConfig{r},
@@ -203,11 +204,11 @@ func TestValidate_SharedOutbox_NoIdempotencyKey(t *testing.T) {
 // Verifies Validate rejects shared_outbox fan-out when binding count exceeds the outbox transaction limit.
 func TestValidate_SharedOutbox_FanOutExceedsTransactionLimit(t *testing.T) {
 	r := validSharedOutboxRoute()
-	r.Policy.DispatchMode = domain.DispatchFanOut
+	r.Policy.DispatchMode = routing.DispatchFanOut
 
-	bindings := make([]domain.DestinationBinding, 101)
+	bindings := make([]routing.DestinationBinding, 101)
 	for i := range bindings {
-		bindings[i] = domain.DestinationBinding{
+		bindings[i] = routing.DestinationBinding{
 			ID:        fmt.Sprintf("b%d", i),
 			SessionID: "sess-persistent",
 			SenderID:  fmt.Sprintf("sender-%d", i),
@@ -230,11 +231,11 @@ func TestValidate_SharedOutbox_FanOutExceedsTransactionLimit(t *testing.T) {
 // Verifies Validate accepts shared_outbox fan-out when binding count equals the outbox transaction limit.
 func TestValidate_SharedOutbox_FanOutAtLimit_OK(t *testing.T) {
 	r := validSharedOutboxRoute()
-	r.Policy.DispatchMode = domain.DispatchFanOut
+	r.Policy.DispatchMode = routing.DispatchFanOut
 
-	bindings := make([]domain.DestinationBinding, 100)
+	bindings := make([]routing.DestinationBinding, 100)
 	for i := range bindings {
-		bindings[i] = domain.DestinationBinding{
+		bindings[i] = routing.DestinationBinding{
 			ID:        fmt.Sprintf("b%d", i),
 			SessionID: "sess-persistent",
 			SenderID:  fmt.Sprintf("sender-%d", i),
@@ -420,7 +421,7 @@ func TestValidate_BindingEmptySessionID_OK(t *testing.T) {
 func TestValidate_MultipleErrors(t *testing.T) {
 	r := validDirectHoldRoute()
 	r.SourceCapabilities = nil
-	r.Policy.DispatchMode = domain.DispatchFanOut
+	r.Policy.DispatchMode = routing.DispatchFanOut
 
 	cfg := validate.BridgeConfig{
 		Routes:   []validate.RouteConfig{r},
@@ -515,7 +516,7 @@ func TestValidate_DirectHold_MQTT_QoS0_NotReliable_OK(t *testing.T) {
 // Verifies Validate accepts shared_outbox with an empty binding session_id when no exclusive lease is needed.
 func TestValidate_SharedOutbox_EmptyBindingSessionID(t *testing.T) {
 	r := validSharedOutboxRoute()
-	r.Bindings = []domain.DestinationBinding{{
+	r.Bindings = []routing.DestinationBinding{{
 		ID:        "b-no-session",
 		SessionID: "",
 		SenderID:  "sender-1",
@@ -535,11 +536,11 @@ func TestValidate_SharedOutbox_EmptyBindingSessionID(t *testing.T) {
 // Verifies Validate enforces fan-out cardinality against a custom outbox transaction limit.
 func TestValidate_SharedOutbox_CustomTransactionLimit(t *testing.T) {
 	r := validSharedOutboxRoute()
-	r.Policy.DispatchMode = domain.DispatchFanOut
+	r.Policy.DispatchMode = routing.DispatchFanOut
 
-	bindings := make([]domain.DestinationBinding, 51)
+	bindings := make([]routing.DestinationBinding, 51)
 	for i := range bindings {
-		bindings[i] = domain.DestinationBinding{
+		bindings[i] = routing.DestinationBinding{
 			ID:        fmt.Sprintf("b%d", i),
 			SessionID: "sess-persistent",
 			SenderID:  fmt.Sprintf("sender-%d", i),
@@ -603,11 +604,11 @@ func TestValidate_EmptyID_CollectsMultipleStructuralErrors(t *testing.T) {
 // Verifies Validate applies the default outbox transaction limit of 100 when the limit field is zero.
 func TestValidate_DefaultTransactionLimit(t *testing.T) {
 	r := validSharedOutboxRoute()
-	r.Policy.DispatchMode = domain.DispatchFanOut
+	r.Policy.DispatchMode = routing.DispatchFanOut
 
-	bindings := make([]domain.DestinationBinding, 101)
+	bindings := make([]routing.DestinationBinding, 101)
 	for i := range bindings {
-		bindings[i] = domain.DestinationBinding{
+		bindings[i] = routing.DestinationBinding{
 			ID:        fmt.Sprintf("b%d", i),
 			SessionID: "sess-persistent",
 			SenderID:  fmt.Sprintf("sender-%d", i),

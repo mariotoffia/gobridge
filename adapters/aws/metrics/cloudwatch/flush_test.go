@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
+
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 

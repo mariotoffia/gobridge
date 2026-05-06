@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -29,14 +30,14 @@ func TestE2E_Routing_FanOutMatchAll_ThreeClients(t *testing.T) {
 	sidA := mqttlocal.UniqueClientID("r1-a")
 	sidB := mqttlocal.UniqueClientID("r1-b")
 	sidC := mqttlocal.UniqueClientID("r1-c")
-	sessA := setupMQTTSession(t, sidA, domain.SessionEphemeral)
-	sessB := setupMQTTSession(t, sidB, domain.SessionEphemeral)
-	sessC := setupMQTTSession(t, sidC, domain.SessionEphemeral)
+	sessA := setupMQTTSession(t, sidA, connectivity.SessionEphemeral)
+	sessB := setupMQTTSession(t, sidB, connectivity.SessionEphemeral)
+	sessC := setupMQTTSession(t, sidC, connectivity.SessionEphemeral)
 	sndA := setupMQTTSender(t, sessA)
 	sndB := setupMQTTSender(t, sessB)
 	sndC := setupMQTTSender(t, sessC)
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", SessionID: sidA, Address: topicA, Transport: "mqtt"},
 		{ID: "bind-b", SessionID: sidB, Address: topicB, Transport: "mqtt"},
 		{ID: "bind-c", SessionID: sidC, Address: topicC, Transport: "mqtt"},
@@ -59,7 +60,7 @@ func TestE2E_Routing_FanOutMatchAll_ThreeClients(t *testing.T) {
 	}
 	if err := rt.AddRoute(goruntime.RouteConfig{
 		ID:       "r1-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewBindingResolver(bindings, goruntime.MatchAll()),
 		Bindings: bindings,
 	}, newSQSReceiver(t, queueURL), sndA, sessA, &cfgA); err != nil {
@@ -97,14 +98,14 @@ func TestE2E_Routing_MatchByHeader_SelectsCorrectClient(t *testing.T) {
 	sidA := mqttlocal.UniqueClientID("r2-a")
 	sidB := mqttlocal.UniqueClientID("r2-b")
 	sidC := mqttlocal.UniqueClientID("r2-c")
-	sessA := setupMQTTSession(t, sidA, domain.SessionEphemeral)
-	sessB := setupMQTTSession(t, sidB, domain.SessionEphemeral)
-	sessC := setupMQTTSession(t, sidC, domain.SessionEphemeral)
+	sessA := setupMQTTSession(t, sidA, connectivity.SessionEphemeral)
+	sessB := setupMQTTSession(t, sidB, connectivity.SessionEphemeral)
+	sessC := setupMQTTSession(t, sidC, connectivity.SessionEphemeral)
 	sndA := setupMQTTSender(t, sessA)
 	sndB := setupMQTTSender(t, sessB)
 	sndC := setupMQTTSender(t, sessC)
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", SessionID: sidA, Address: topicA, Transport: "mqtt"},
 		{ID: "bind-b", SessionID: sidB, Address: topicB, Transport: "mqtt"},
 		{ID: "bind-c", SessionID: sidC, Address: topicC, Transport: "mqtt"},
@@ -124,7 +125,7 @@ func TestE2E_Routing_MatchByHeader_SelectsCorrectClient(t *testing.T) {
 
 	if err := rt.AddRoute(goruntime.RouteConfig{
 		ID:     "r2-route",
-		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy: routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewBindingResolver(bindings, goruntime.MatchByHeader("factory", map[string]string{
 			"A": "bind-a",
 			"B": "bind-b",
@@ -171,14 +172,14 @@ func TestE2E_Routing_MatchByHeader_EachClientGetsOwnMessage(t *testing.T) {
 	sidA := mqttlocal.UniqueClientID("r3-a")
 	sidB := mqttlocal.UniqueClientID("r3-b")
 	sidC := mqttlocal.UniqueClientID("r3-c")
-	sessA := setupMQTTSession(t, sidA, domain.SessionEphemeral)
-	sessB := setupMQTTSession(t, sidB, domain.SessionEphemeral)
-	sessC := setupMQTTSession(t, sidC, domain.SessionEphemeral)
+	sessA := setupMQTTSession(t, sidA, connectivity.SessionEphemeral)
+	sessB := setupMQTTSession(t, sidB, connectivity.SessionEphemeral)
+	sessC := setupMQTTSession(t, sidC, connectivity.SessionEphemeral)
 	sndA := setupMQTTSender(t, sessA)
 	sndB := setupMQTTSender(t, sessB)
 	sndC := setupMQTTSender(t, sessC)
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", SessionID: sidA, Address: topicA, Transport: "mqtt"},
 		{ID: "bind-b", SessionID: sidB, Address: topicB, Transport: "mqtt"},
 		{ID: "bind-c", SessionID: sidC, Address: topicC, Transport: "mqtt"},
@@ -198,7 +199,7 @@ func TestE2E_Routing_MatchByHeader_EachClientGetsOwnMessage(t *testing.T) {
 
 	if err := rt.AddRoute(goruntime.RouteConfig{
 		ID:     "r3-route",
-		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy: routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewBindingResolver(bindings, goruntime.MatchByHeader("factory", map[string]string{
 			"A": "bind-a",
 			"B": "bind-b",
@@ -246,10 +247,10 @@ func TestE2E_Routing_AddressTemplate_DynamicTopic(t *testing.T) {
 	col := newMQTTCollector(t, rendered, "r4-sub")
 
 	sid := mqttlocal.UniqueClientID("r4-mqtt")
-	sess := setupMQTTSession(t, sid, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sid, connectivity.SessionEphemeral)
 	snd := setupMQTTSender(t, sess)
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-1", SessionID: sid, Address: "devices/{device_id}/telemetry", Transport: "mqtt"},
 	}
 	scfg := e2eFastSessionConfig(sid)
@@ -262,7 +263,7 @@ func TestE2E_Routing_AddressTemplate_DynamicTopic(t *testing.T) {
 	)
 	if err := rt.AddRoute(goruntime.RouteConfig{
 		ID:       "r4-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewBindingResolver(bindings, goruntime.MatchByID("bind-1")),
 		Bindings: bindings,
 	}, newSQSReceiver(t, queueURL), snd, sess, &scfg); err != nil {
@@ -297,10 +298,10 @@ func TestE2E_Routing_AddressTemplate_MultiPlaceholder(t *testing.T) {
 	col := newMQTTCollector(t, rendered, "r5-sub")
 
 	sid := mqttlocal.UniqueClientID("r5-mqtt")
-	sess := setupMQTTSession(t, sid, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sid, connectivity.SessionEphemeral)
 	snd := setupMQTTSender(t, sess)
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-1", SessionID: sid, Address: "{region}/{device_id}/status", Transport: "mqtt"},
 	}
 	scfg := e2eFastSessionConfig(sid)
@@ -313,7 +314,7 @@ func TestE2E_Routing_AddressTemplate_MultiPlaceholder(t *testing.T) {
 	)
 	if err := rt.AddRoute(goruntime.RouteConfig{
 		ID:       "r5-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewBindingResolver(bindings, goruntime.MatchByID("bind-1")),
 		Bindings: bindings,
 	}, newSQSReceiver(t, queueURL), snd, sess, &scfg); err != nil {
@@ -349,10 +350,10 @@ func TestE2E_Routing_FanOutSameSession_DifferentTopics(t *testing.T) {
 	colY := newMQTTCollector(t, topicY, "r6-sub-y")
 
 	sid := mqttlocal.UniqueClientID("r6-mqtt")
-	sess := setupMQTTSession(t, sid, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sid, connectivity.SessionEphemeral)
 	snd := setupMQTTSender(t, sess)
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-x", SessionID: sid, Address: topicX, Transport: "mqtt"},
 		{ID: "bind-y", SessionID: sid, Address: topicY, Transport: "mqtt"},
 	}
@@ -366,7 +367,7 @@ func TestE2E_Routing_FanOutSameSession_DifferentTopics(t *testing.T) {
 	)
 	if err := rt.AddRoute(goruntime.RouteConfig{
 		ID:       "r6-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewBindingResolver(bindings, goruntime.MatchAll()),
 		Bindings: bindings,
 	}, newSQSReceiver(t, queueURL), snd, sess, &scfg); err != nil {
@@ -403,10 +404,10 @@ func TestE2E_Routing_FanOutPartialAvailability(t *testing.T) {
 	sidA := mqttlocal.UniqueClientID("r7-a")
 	sidB := mqttlocal.UniqueClientID("r7-b")
 
-	sessA := setupMQTTSession(t, sidA, domain.SessionEphemeral)
+	sessA := setupMQTTSession(t, sidA, connectivity.SessionEphemeral)
 	sndA := setupMQTTSender(t, sessA)
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", SessionID: sidA, Address: topicA, Transport: "mqtt"},
 		{ID: "bind-b", SessionID: sidB, Address: topicB, Transport: "mqtt"},
 	}
@@ -422,7 +423,7 @@ func TestE2E_Routing_FanOutPartialAvailability(t *testing.T) {
 	)
 	if err := rtA.AddRoute(goruntime.RouteConfig{
 		ID:       "r7-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewBindingResolver(bindings, goruntime.MatchAll()),
 		Bindings: bindings,
 	}, newSQSReceiver(t, queueURL), sndA, sessA, &cfgA); err != nil {
@@ -445,7 +446,7 @@ func TestE2E_Routing_FanOutPartialAvailability(t *testing.T) {
 	}
 
 	// Runtime B takes over session B and drains the orphaned record.
-	sessB := setupMQTTSession(t, sidB, domain.SessionEphemeral)
+	sessB := setupMQTTSession(t, sidB, connectivity.SessionEphemeral)
 	sndB := setupMQTTSender(t, sessB)
 	cfgB := e2eFastSessionConfig(sidB)
 
@@ -457,7 +458,7 @@ func TestE2E_Routing_FanOutPartialAvailability(t *testing.T) {
 	)
 	if err := rtB.AddRoute(goruntime.RouteConfig{
 		ID:       "r7-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewBindingResolver(bindings, goruntime.MatchAll()),
 		Bindings: bindings,
 	}, newFakeReceiver(), sndB, sessB, &cfgB); err != nil {
@@ -481,7 +482,7 @@ func TestE2E_Routing_NoMatchingBinding_DLQ(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "r8")
 	dlq := &e2eDLQStore{}
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", Address: "e2e/r8/a", Transport: "mqtt"},
 		{ID: "bind-b", Address: "e2e/r8/b", Transport: "mqtt"},
 	}
@@ -493,7 +494,7 @@ func TestE2E_Routing_NoMatchingBinding_DLQ(t *testing.T) {
 	)
 	if err := rt.AddRoute(goruntime.RouteConfig{
 		ID:                 "r8-route",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		SourceCapabilities: directHoldCaps,
 		Resolver: goruntime.NewBindingResolver(bindings, goruntime.MatchByHeader("factory", map[string]string{
 			"A": "bind-a",
@@ -525,7 +526,7 @@ func TestE2E_Routing_MissingTemplatePlaceholder_DLQ(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "r9")
 	dlq := &e2eDLQStore{}
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-1", Address: "devices/{device_id}/data", Transport: "mqtt"},
 	}
 
@@ -536,7 +537,7 @@ func TestE2E_Routing_MissingTemplatePlaceholder_DLQ(t *testing.T) {
 	)
 	if err := rt.AddRoute(goruntime.RouteConfig{
 		ID:                 "r9-route",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		SourceCapabilities: directHoldCaps,
 		Resolver:           goruntime.NewBindingResolver(bindings, goruntime.MatchAll()),
 	}, newSQSReceiver(t, queueURL), sender, nil, nil); err != nil {
@@ -576,13 +577,13 @@ func TestE2E_Routing_FanOutToFiveClients_TenMessages(t *testing.T) {
 	}
 
 	clients := make([]client, nClients)
-	bindings := make([]domain.DestinationBinding, nClients)
+	bindings := make([]routing.DestinationBinding, nClients)
 
 	for i := range clients {
 		clients[i].sessID = mqttlocal.UniqueClientID(fmt.Sprintf("r10-%d", i))
 		clients[i].topic = fmt.Sprintf("e2e/r10/client-%d", i)
 		clients[i].collector = newMQTTCollector(t, clients[i].topic, fmt.Sprintf("r10-sub-%d", i))
-		bindings[i] = domain.DestinationBinding{
+		bindings[i] = routing.DestinationBinding{
 			ID:        fmt.Sprintf("bind-%d", i),
 			SessionID: clients[i].sessID,
 			Address:   clients[i].topic,
@@ -597,12 +598,12 @@ func TestE2E_Routing_FanOutToFiveClients_TenMessages(t *testing.T) {
 		goruntime.WithDLQStore(dlq),
 	)
 
-	sess0 := setupMQTTSession(t, clients[0].sessID, domain.SessionEphemeral)
+	sess0 := setupMQTTSession(t, clients[0].sessID, connectivity.SessionEphemeral)
 	snd0 := setupMQTTSender(t, sess0)
 	scfg0 := e2eFastSessionConfig(clients[0].sessID)
 
 	for i := 1; i < nClients; i++ {
-		s := setupMQTTSession(t, clients[i].sessID, domain.SessionEphemeral)
+		s := setupMQTTSession(t, clients[i].sessID, connectivity.SessionEphemeral)
 		snd := setupMQTTSender(t, s)
 		sc := e2eFastSessionConfig(clients[i].sessID)
 		if err := rt.RegisterSessionSender(sc, s, snd); err != nil {
@@ -612,7 +613,7 @@ func TestE2E_Routing_FanOutToFiveClients_TenMessages(t *testing.T) {
 
 	if err := rt.AddRoute(goruntime.RouteConfig{
 		ID:       "r10-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Resolver: goruntime.NewBindingResolver(bindings, goruntime.MatchAll()),
 		Bindings: bindings,
 	}, newSQSReceiver(t, queueURL), snd0, sess0, &scfg0); err != nil {

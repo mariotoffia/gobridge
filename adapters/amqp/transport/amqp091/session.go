@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -21,7 +21,7 @@ import (
 // declaration during Reconcile.
 type Session struct {
 	opts    SessionOptions
-	mode    domain.SessionMode
+	mode    connectivity.SessionMode
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
 	dial    dialFunc
@@ -34,7 +34,7 @@ type Session struct {
 	connected bool
 	starting  bool
 
-	plan       *domain.SessionPlan
+	plan       *connectivity.SessionPlan
 	activeSubs map[string]bool // queue names successfully declared
 
 	// cancel stops the reconnection goroutine on Close.
@@ -72,7 +72,7 @@ type Session struct {
 // amqpCredentials is the mutable subset of SessionOptions that can be
 // rotated at runtime. TLS material requires a full reconnect with a
 // new dialer and is out of scope here; see TLSMaterial on
-// domain.CredentialSet for the future extension point.
+// connectivity.CredentialSet for the future extension point.
 type amqpCredentials struct {
 	Username string
 	Password string
@@ -82,7 +82,7 @@ var _ ports.Session = (*Session)(nil)
 
 // NewSession creates an AMQP 0-9-1 Session from the given options.
 // metrics may be nil; a no-op exporter is used in that case.
-func NewSession(opts SessionOptions, mode domain.SessionMode, logger *slog.Logger, metrics ...ports.MetricsExporter) *Session {
+func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog.Logger, metrics ...ports.MetricsExporter) *Session {
 	var m ports.MetricsExporter = &ports.NoopExporter{}
 	if len(metrics) > 0 && metrics[0] != nil {
 		m = metrics[0]
@@ -262,7 +262,7 @@ func (s *Session) Start(ctx context.Context) error {
 // subscriptions. Pass an empty SessionPlan{} to clear; pass a plan with
 // only Publishers to declare exchanges without changing subscriptions
 // from a prior call (the prior plan's subscriptions are dropped).
-func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error {
+func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) error {
 	s.mu.Lock()
 	s.plan = &plan
 	conn := s.conn
@@ -275,7 +275,7 @@ func (s *Session) Reconcile(ctx context.Context, plan domain.SessionPlan) error 
 	return s.reconcile(ctx, conn, plan)
 }
 
-func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan domain.SessionPlan) error {
+func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan connectivity.SessionPlan) error {
 	reconcileStart := s.clock().Now()
 
 	if logging.DebugEnabled(s.logger) {
@@ -324,7 +324,7 @@ func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan domai
 // ensures that a PRECONDITION_FAILED error on one declaration does not
 // poison the channel for subsequent subscriptions in the same plan, since
 // AMQP closes the channel on any soft error.
-func (s *Session) declareSubscription(conn amqpConnection, sub domain.SubscriptionPlan) error {
+func (s *Session) declareSubscription(conn amqpConnection, sub connectivity.SubscriptionPlan) error {
 	queueName := sub.Topic
 	exchangeName, routingKey, exchangeType, durable, autoDelete := subscriptionParams(sub)
 
@@ -361,7 +361,7 @@ func (s *Session) declareSubscription(conn amqpConnection, sub domain.Subscripti
 
 // declarePublisher opens a fresh channel for a single publisher's exchange
 // declaration. See declareSubscription for the rationale.
-func (s *Session) declarePublisher(conn amqpConnection, pub domain.PublisherPlan) error {
+func (s *Session) declarePublisher(conn amqpConnection, pub connectivity.PublisherPlan) error {
 	exchangeName := pub.Topic
 	if exchangeName == "" {
 		return nil

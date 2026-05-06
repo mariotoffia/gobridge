@@ -3,10 +3,11 @@ package bootstrap
 import (
 	"testing"
 
-	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
-	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 func TestValidateFilesystemProfile_AdditionalCases(t *testing.T) {

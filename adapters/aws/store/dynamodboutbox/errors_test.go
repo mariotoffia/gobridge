@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 

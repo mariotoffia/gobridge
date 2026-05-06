@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -24,15 +24,15 @@ var (
 	_ ports.CredentialAdmin      = (*Repository)(nil)
 )
 
-func passwordCreds(username, password string) *domain.CredentialSet {
-	return &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: username, Password: password},
+func passwordCreds(username, password string) *connectivity.CredentialSet {
+	return &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: username, Password: password},
 	}
 }
 
-func tlsCreds() *domain.CredentialSet {
-	return &domain.CredentialSet{
-		TLS: &domain.TLSMaterial{
+func tlsCreds() *connectivity.CredentialSet {
+	return &connectivity.CredentialSet{
+		TLS: &connectivity.TLSMaterial{
 			CertPEM: "-----BEGIN CERTIFICATE-----\ntest-cert\n-----END CERTIFICATE-----",
 			KeyPEM:  "-----BEGIN PRIVATE KEY-----\ntest-key\n-----END PRIVATE KEY-----",
 			CAPEMs:  []string{"-----BEGIN CERTIFICATE-----\nca1\n-----END CERTIFICATE-----"},
@@ -40,10 +40,10 @@ func tlsCreds() *domain.CredentialSet {
 	}
 }
 
-func combinedCreds() *domain.CredentialSet {
-	return &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "admin", Password: "s3cret"},
-		TLS: &domain.TLSMaterial{
+func combinedCreds() *connectivity.CredentialSet {
+	return &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "admin", Password: "s3cret"},
+		TLS: &connectivity.TLSMaterial{
 			CertPEM:            "-----BEGIN CERTIFICATE-----\ncert\n-----END CERTIFICATE-----",
 			KeyPEM:             "-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----",
 			CAPEMs:             []string{"-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----"},

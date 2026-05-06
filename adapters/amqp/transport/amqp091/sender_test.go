@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -46,7 +46,7 @@ func TestSender_Send_NoSession(t *testing.T) {
 func TestSender_Send_NoConnection(t *testing.T) {
 	sess := NewSession(
 		SessionOptions{BrokerURL: "amqp://localhost/"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		slog.Default(),
 	)
 	defer func() { _ = sess.Close(context.Background()) }()
@@ -107,7 +107,7 @@ func TestNewSender_InheritsSessionLogger(t *testing.T) {
 	logger := slog.Default()
 	sess := NewSession(
 		SessionOptions{BrokerURL: "amqp://localhost/"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		logger,
 	)
 	defer func() { _ = sess.Close(context.Background()) }()

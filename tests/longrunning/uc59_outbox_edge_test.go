@@ -11,7 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -38,7 +39,7 @@ func TestUC59_PartitionHotspot(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc59-col")
 
 	sessID := mqttlocal.UniqueClientID("uc59-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, connectivity.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessID)
@@ -54,15 +55,15 @@ func TestUC59_PartitionHotspot(t *testing.T) {
 	require.NoError(t, rt.AddRoute(
 		goruntime.RouteConfig{
 			ID: "uc59-route",
-			Policy: domain.RoutePolicy{
-				DeliveryMode: domain.DeliverySharedOutbox,
+			Policy: routing.RoutePolicy{
+				DeliveryMode: routing.DeliverySharedOutbox,
 				MaxInFlight:  200,
 			},
-			Resolver: goruntime.NewStaticResolver(domain.DispatchPlan{
+			Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{
 				BindingID: "uc59-bind",
 				Address:   outTopic,
 			}),
-			Bindings: []domain.DestinationBinding{
+			Bindings: []routing.DestinationBinding{
 				{ID: "uc59-bind", SessionID: sessID},
 			},
 		}, rx, snd, sess, &sc,
@@ -115,7 +116,7 @@ func TestUC60_OutboxPlusBrokerDown(t *testing.T) {
 	collector := newPersistentCollectorWithBroker(t, brokerURL, outTopic, "uc60-col")
 
 	sessID := mqttlocal.UniqueClientID("uc60-sess")
-	sess := newMQTTSessionWithBroker(t, brokerURL, sessID, domain.SessionExclusive, 50, 5)
+	sess := newMQTTSessionWithBroker(t, brokerURL, sessID, connectivity.SessionExclusive, 50, 5)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessID)
@@ -131,16 +132,16 @@ func TestUC60_OutboxPlusBrokerDown(t *testing.T) {
 	require.NoError(t, rt.AddRoute(
 		goruntime.RouteConfig{
 			ID: "uc60-route",
-			Policy: domain.RoutePolicy{
-				DeliveryMode: domain.DeliverySharedOutbox,
-				AckAfter:     domain.AckAfterOutboxPersist,
+			Policy: routing.RoutePolicy{
+				DeliveryMode: routing.DeliverySharedOutbox,
+				AckAfter:     routing.AckAfterOutboxPersist,
 				MaxInFlight:  100,
 			},
-			Resolver: goruntime.NewStaticResolver(domain.DispatchPlan{
+			Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{
 				BindingID: "uc60-bind",
 				Address:   outTopic,
 			}),
-			Bindings: []domain.DestinationBinding{
+			Bindings: []routing.DestinationBinding{
 				{ID: "uc60-bind", SessionID: sessID},
 			},
 		}, rx, snd, sess, &sc,
@@ -201,7 +202,7 @@ func TestUC61_MaxReplayAttempts(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc61-col")
 
 	sessID := mqttlocal.UniqueClientID("uc61-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, connectivity.SessionExclusive)
 	mqttSnd := setupMQTTSender(t, sess)
 	snd := newFailFirstNSender(mqttSnd, failCount)
 	rx := newSQSReceiver(t, sqsInURL)
@@ -218,16 +219,16 @@ func TestUC61_MaxReplayAttempts(t *testing.T) {
 	require.NoError(t, rt.AddRoute(
 		goruntime.RouteConfig{
 			ID: "uc61-route",
-			Policy: domain.RoutePolicy{
-				DeliveryMode:      domain.DeliverySharedOutbox,
+			Policy: routing.RoutePolicy{
+				DeliveryMode:      routing.DeliverySharedOutbox,
 				MaxInFlight:       50,
 				MaxReplayAttempts: 5,
 			},
-			Resolver: goruntime.NewStaticResolver(domain.DispatchPlan{
+			Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{
 				BindingID: "uc61-bind",
 				Address:   outTopic,
 			}),
-			Bindings: []domain.DestinationBinding{
+			Bindings: []routing.DestinationBinding{
 				{ID: "uc61-bind", SessionID: sessID},
 			},
 		}, rx, snd, sess, &sc,
@@ -275,7 +276,7 @@ func TestUC62_LeaseRenewalHighLoad(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "uc62-col")
 
 	sessID := mqttlocal.UniqueClientID("uc62-sess")
-	sess := newMQTTSession(t, sessID, domain.SessionExclusive)
+	sess := newMQTTSession(t, sessID, connectivity.SessionExclusive)
 	snd := setupMQTTSender(t, sess)
 	rx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessID)
@@ -291,15 +292,15 @@ func TestUC62_LeaseRenewalHighLoad(t *testing.T) {
 	require.NoError(t, rt.AddRoute(
 		goruntime.RouteConfig{
 			ID: "uc62-route",
-			Policy: domain.RoutePolicy{
-				DeliveryMode: domain.DeliverySharedOutbox,
+			Policy: routing.RoutePolicy{
+				DeliveryMode: routing.DeliverySharedOutbox,
 				MaxInFlight:  200, // reduced from 500: DynamoDB Local locks up under high concurrent writes
 			},
-			Resolver: goruntime.NewStaticResolver(domain.DispatchPlan{
+			Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{
 				BindingID: "uc62-bind",
 				Address:   outTopic,
 			}),
-			Bindings: []domain.DestinationBinding{
+			Bindings: []routing.DestinationBinding{
 				{ID: "uc62-bind", SessionID: sessID},
 			},
 		}, rx, snd, sess, &sc,

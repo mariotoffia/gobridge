@@ -13,9 +13,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
@@ -75,7 +75,7 @@ func WithStaleClaimDuration(d time.Duration) Option {
 
 // WithMaxReplayCount sets the maximum number of times a record may be
 // claimed before it is excluded from future claims (poison message
-// protection). A value of 0 means no limit. Default: domain.DefaultMaxReplayAttempts.
+// protection). A value of 0 means no limit. Default: routing.DefaultMaxReplayAttempts.
 func WithMaxReplayCount(n int) Option {
 	return func(s *Store) { s.maxReplayCount = n }
 }
@@ -102,7 +102,7 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 		table:          defaultTableName,
 		compactGrace:   defaultCompactionGrace,
 		staleClaim:     defaultStaleClaimDuration,
-		maxReplayCount: domain.DefaultMaxReplayAttempts,
+		maxReplayCount: routing.DefaultMaxReplayAttempts,
 		clk:            clock.System,
 	}
 	for _, o := range opts {

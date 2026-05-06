@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -34,7 +34,7 @@ func TestDirectHold_HeaderRouteOverride_SelectsBinding(t *testing.T) {
 	senderA := NewFakeSender()
 	senderB := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", Address: "topic-a"},
 		{ID: "bind-b", Address: "topic-b"},
 	}
@@ -51,7 +51,7 @@ func TestDirectHold_HeaderRouteOverride_SelectsBinding(t *testing.T) {
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:    "override-route",
-		Policy:     domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
 		Sender:     senderA,
 		Senders:    map[string]ports.Sender{"bind-a": senderA, "bind-b": senderB},
@@ -90,14 +90,14 @@ func TestDirectHold_HeaderRouteOverride_SelectsBinding(t *testing.T) {
 func TestDirectHold_HeaderRouteOverride_StrippedAfterUse(t *testing.T) {
 	senderB := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-b", Address: "topic-b"},
 	}
 
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:    "strip-route",
-		Policy:     domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
 		Sender:     senderB,
 		Senders:    map[string]ports.Sender{"bind-b": senderB},
@@ -136,7 +136,7 @@ func TestDirectHold_HeaderRouteOverride_StrippedAfterUse(t *testing.T) {
 func TestDirectHold_HeaderRouteOverride_InvalidBinding_FallsThrough(t *testing.T) {
 	defaultSender := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "real-bind", Address: "topic"},
 	}
 
@@ -175,14 +175,14 @@ func TestDirectHold_Override_RenderAddressError_RoutesDLQ(t *testing.T) {
 	sender := NewFakeSender()
 	dlqStore := NewFakeDLQStore()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-template", Address: "devices/{tenant}/events"},
 	}
 
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "render-err-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		Senders:  map[string]ports.Sender{"bind-template": sender},
@@ -220,14 +220,14 @@ func TestDirectHold_Override_MQTTValidation_RoutesDLQ(t *testing.T) {
 	sender := NewFakeSender()
 	dlqStore := NewFakeDLQStore()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "mqtt-bind", Transport: "mqtt", Address: "devices/{topic}/events"},
 	}
 
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "mqtt-validate-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		Senders:  map[string]ports.Sender{"mqtt-bind": sender},
@@ -267,7 +267,7 @@ func TestDirectHold_Override_MQTTValidation_RoutesDLQ(t *testing.T) {
 func TestDirectHold_NoOverrideHeader_NormalResolution(t *testing.T) {
 	senderA := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", Address: "topic-a"},
 	}
 

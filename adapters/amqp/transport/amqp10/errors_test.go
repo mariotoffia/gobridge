@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Azure/go-amqp"
+
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 

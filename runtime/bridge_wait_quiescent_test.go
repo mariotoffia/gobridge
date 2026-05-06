@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -25,8 +25,8 @@ func closeOnce(ch chan struct{}) func() {
 func helperQuiescentRoute(id string, release <-chan struct{}) (goruntime.RouteConfig, *FakeReceiver, *FakeSender) {
 	cfg := goruntime.RouteConfig{
 		ID: id,
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  4,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},

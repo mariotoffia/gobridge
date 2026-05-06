@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -73,8 +73,10 @@ func newStubSessionForClockTest() *stubSessionForClockTest {
 	return &stubSessionForClockTest{events: make(chan ports.SessionEvent)}
 }
 
-func (s *stubSessionForClockTest) Start(context.Context) error                         { return nil }
-func (s *stubSessionForClockTest) Reconcile(context.Context, domain.SessionPlan) error { return nil }
+func (s *stubSessionForClockTest) Start(context.Context) error { return nil }
+func (s *stubSessionForClockTest) Reconcile(context.Context, connectivity.SessionPlan) error {
+	return nil
+}
 func (s *stubSessionForClockTest) Health(context.Context) ports.SessionHealth {
 	return ports.SessionHealth{Connected: true, Ready: true, ServiceLevel: ports.ServiceLevelFull}
 }

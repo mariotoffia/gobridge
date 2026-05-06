@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -25,7 +25,7 @@ func TestAnaSession_HealthAfterClose_ReportsDisconnected(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-close-health",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	_ = s.Close(context.Background())
 
@@ -47,7 +47,7 @@ func TestAnaSession_HealthBeforeStart_ReportsDisconnected(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-fresh-health",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	h := s.Health(context.Background())
 	if h.Connected {
@@ -66,7 +66,7 @@ func TestAnaSession_HealthRespectsConfiguredReceiveMaximum(t *testing.T) {
 		BrokerURLs:     []string{"tcp://192.0.2.1:1883"},
 		ClientID:       "ana-rm",
 		ReceiveMaximum: 1234,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	h := s.Health(context.Background())
 	if h.ReceiveMaximum != 1234 {
@@ -86,7 +86,7 @@ func TestAnaSession_StartCtxCancelled_ReturnsClassifiedError(t *testing.T) {
 		BrokerURLs:     []string{"tcp://192.0.2.1:1883"},
 		ClientID:       "ana-ctx-cancel",
 		ConnectTimeout: 5 * time.Second,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -118,7 +118,7 @@ func TestAnaSession_DoubleClose_NoPanic_NoEventChannelDoublyClosed(t *testing.T)
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-2x-close",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	defer func() {
 		if rv := recover(); rv != nil {
@@ -152,10 +152,10 @@ func TestAnaSession_ReconcileBeforeStart_ReturnsErrUnavailable(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recon-pre",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
-	err := s.Reconcile(context.Background(), domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "t/x", QoS: 1}},
+	err := s.Reconcile(context.Background(), connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "t/x", QoS: 1}},
 	})
 	if err == nil {
 		t.Fatal("expected error from Reconcile-before-Start")
@@ -177,10 +177,10 @@ func TestAnaSession_ReconcileBeforeStart_StashesPlanForOnConnectionUp(t *testing
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recon-stash",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "t/stash", QoS: 1}},
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "t/stash", QoS: 1}},
 	}
 	_ = s.Reconcile(context.Background(), plan)
 
@@ -204,16 +204,16 @@ func TestAnaSession_ReconcileEmptyPlanWithPriorPlan_IsNoOp(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recon-empty",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	s.mu.Lock()
 	s.cm = &pahoConn{cm: fakeCM}
-	s.plan = &domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "kept", QoS: 1}},
+	s.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "kept", QoS: 1}},
 	}
 	s.activeSubs = map[string]byte{"kept": 1}
 	s.mu.Unlock()
 
-	if err := s.Reconcile(context.Background(), domain.SessionPlan{}); err != nil {
+	if err := s.Reconcile(context.Background(), connectivity.SessionPlan{}); err != nil {
 		t.Fatalf("empty Reconcile with prior plan must be a silent no-op, got %v", err)
 	}
 
@@ -235,10 +235,10 @@ func TestAnaSession_HealthReadAfterReconcileStashesPlan_NoCrash(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-health-stash",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
-	_ = s.Reconcile(context.Background(), domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	_ = s.Reconcile(context.Background(), connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "x/1", QoS: 0},
 			{Topic: "x/2", QoS: 1},
 		},
@@ -266,7 +266,7 @@ func TestAnaSession_PushEvent_ManyConcurrent_NoPanic(t *testing.T) {
 		s := NewSession(SessionOptions{
 			BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 			ClientID:   "ana-pushevent-" + strconv.Itoa(trial),
-		}, domain.SessionEphemeral, nil)
+		}, connectivity.SessionEphemeral, nil)
 
 		var wg sync.WaitGroup
 		const pushers = 16
@@ -302,7 +302,7 @@ func TestAnaSession_HealthDuringConcurrentPushEvent_NoRace(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-health-race",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
@@ -343,7 +343,7 @@ func TestAnaSession_ConcurrentReconcileAndHealth_NoRace(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recon-health",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
@@ -357,8 +357,8 @@ func TestAnaSession_ConcurrentReconcileAndHealth_NoRace(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				_ = s.Reconcile(context.Background(), domain.SessionPlan{
-					Subscriptions: []domain.SubscriptionPlan{
+				_ = s.Reconcile(context.Background(), connectivity.SessionPlan{
+					Subscriptions: []connectivity.SubscriptionPlan{
 						{Topic: "t/" + strconv.Itoa(i%4), QoS: 1},
 					},
 				})
@@ -390,7 +390,7 @@ func TestAnaSession_EventsChannelDeliversInOrder(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-events-fifo",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	// pushEvent uses a buffered channel; pushing a few events should
 	// preserve order.
@@ -421,7 +421,7 @@ func TestAnaSession_PushEvent_TimestampSet(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-events-ts",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	before := time.Now()
 	s.pushEvent(ports.SessionConnected, nil)
@@ -439,7 +439,7 @@ func TestAnaSession_ConnectionManagerAccessor_LockSafe(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-cm-accessor",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -471,7 +471,7 @@ func TestAnaSession_RouterAccessor_NotNil(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-router-accessor",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	if s.Router() == nil {
 		t.Fatal("Router() should be non-nil after construction")
 	}

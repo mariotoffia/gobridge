@@ -10,9 +10,9 @@ import (
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
@@ -97,7 +97,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_FullCycle(t *testing.T) {
 		RouteID:        "route-sq1",
 		PartitionKey:   pk,
 		OwnerID:        "drainer-sq1",
-		Policy:         domain.RoutePolicy{SendTimeout: 10 * time.Second, MaxReplayAttempts: 3},
+		Policy:         routing.RoutePolicy{SendTimeout: 10 * time.Second, MaxReplayAttempts: 3},
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		TokenFn:        func() (persistence.LeaseToken, bool) { return tok, true },
@@ -206,7 +206,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_ExpiredToDLQ(t *testing.T) {
 		RouteID:        "route-sq2",
 		PartitionKey:   pk,
 		OwnerID:        "drainer-sq2",
-		Policy:         domain.RoutePolicy{SendTimeout: 10 * time.Second, MaxReplayAttempts: 3, OnExpired: domain.ExpiredDLQ},
+		Policy:         routing.RoutePolicy{SendTimeout: 10 * time.Second, MaxReplayAttempts: 3, OnExpired: routing.ExpiredDLQ},
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		TokenFn:        func() (persistence.LeaseToken, bool) { return tok, true },
@@ -301,7 +301,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_HeaderPreservation(t *testing.T
 		RouteID:        "route-sq3",
 		PartitionKey:   pk,
 		OwnerID:        "drainer-sq3",
-		Policy:         domain.RoutePolicy{SendTimeout: 10 * time.Second, MaxReplayAttempts: 3},
+		Policy:         routing.RoutePolicy{SendTimeout: 10 * time.Second, MaxReplayAttempts: 3},
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		TokenFn:        func() (persistence.LeaseToken, bool) { return tok, true },

@@ -6,9 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // Verifies Parse unmarshals a representative YAML bridge config into the expected struct fields.

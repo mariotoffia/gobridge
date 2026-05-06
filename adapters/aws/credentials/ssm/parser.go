@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
 type credentialType int
@@ -19,7 +19,7 @@ const (
 // parseCredentials parses a parameter value into a CredentialSet.
 // Supports JSON objects (username/password or TLS) and simple
 // username:password format.
-func parseCredentials(value string) (*domain.CredentialSet, error) {
+func parseCredentials(value string) (*connectivity.CredentialSet, error) {
 	value = strings.TrimSpace(value)
 
 	if strings.HasPrefix(value, "{") {
@@ -33,7 +33,7 @@ func parseCredentials(value string) (*domain.CredentialSet, error) {
 	return nil, fmt.Errorf("ssm: unsupported credentials format")
 }
 
-func parseJSONCredentials(value string) (*domain.CredentialSet, error) {
+func parseJSONCredentials(value string) (*connectivity.CredentialSet, error) {
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(value), &raw); err != nil {
 		return nil, fmt.Errorf("ssm: invalid JSON credentials: %w", err)
@@ -77,7 +77,7 @@ func detectCredentialType(raw map[string]any) credentialType {
 	return credTypeUnknown
 }
 
-func parseUsernamePasswordJSON(raw map[string]any) (*domain.CredentialSet, error) {
+func parseUsernamePasswordJSON(raw map[string]any) (*connectivity.CredentialSet, error) {
 	username := getStringField(raw, "username", "user")
 	password := getStringField(raw, "password", "pass", "secret")
 
@@ -85,15 +85,15 @@ func parseUsernamePasswordJSON(raw map[string]any) (*domain.CredentialSet, error
 		return nil, fmt.Errorf("ssm: missing username field")
 	}
 
-	return &domain.CredentialSet{
-		Password: &domain.PasswordCredential{
+	return &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{
 			Username: username,
 			Password: password,
 		},
 	}, nil
 }
 
-func parseTLSJSON(raw map[string]any) (*domain.CredentialSet, error) {
+func parseTLSJSON(raw map[string]any) (*connectivity.CredentialSet, error) {
 	certPEM := getStringField(raw, "certPem", "cert", "certificate")
 	keyPEM := getStringField(raw, "keyPem", "key", "privateKey")
 	insecure := getBoolField(raw, "insecure", "insecureSkipVerify")
@@ -115,8 +115,8 @@ func parseTLSJSON(raw map[string]any) (*domain.CredentialSet, error) {
 		caPEMs = []string{ca}
 	}
 
-	return &domain.CredentialSet{
-		TLS: &domain.TLSMaterial{
+	return &connectivity.CredentialSet{
+		TLS: &connectivity.TLSMaterial{
 			CertPEM:            certPEM,
 			KeyPEM:             keyPEM,
 			CAPEMs:             caPEMs,
@@ -125,14 +125,14 @@ func parseTLSJSON(raw map[string]any) (*domain.CredentialSet, error) {
 	}, nil
 }
 
-func parseSimpleCredentials(value string) (*domain.CredentialSet, error) {
+func parseSimpleCredentials(value string) (*connectivity.CredentialSet, error) {
 	parts := strings.SplitN(value, ":", 2)
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("ssm: invalid simple credentials format, expected username:password")
 	}
 
-	return &domain.CredentialSet{
-		Password: &domain.PasswordCredential{
+	return &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{
 			Username: parts[0],
 			Password: parts[1],
 		},
@@ -140,7 +140,7 @@ func parseSimpleCredentials(value string) (*domain.CredentialSet, error) {
 }
 
 // serializeCredentialSet converts a CredentialSet to JSON for storage.
-func serializeCredentialSet(creds *domain.CredentialSet) (string, error) {
+func serializeCredentialSet(creds *connectivity.CredentialSet) (string, error) {
 	m := make(map[string]any)
 
 	if creds.Password != nil {

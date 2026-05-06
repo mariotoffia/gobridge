@@ -13,8 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -35,14 +36,14 @@ func TestUC22_TenRule_MatchRule_Routing(t *testing.T) {
 
 	// Create 10 SQS queues and their bindings.
 	queueURLs := make([]string, ruleCount)
-	bindings := make([]domain.DestinationBinding, ruleCount)
+	bindings := make([]routing.DestinationBinding, ruleCount)
 	senders := make(map[string]ports.Sender, ruleCount)
 
 	for i := 0; i < ruleCount; i++ {
 		url, _ := setupSQSQueue(t, fmt.Sprintf("uc22-q%d", i))
 		bid := fmt.Sprintf("bind-%d", i)
 		queueURLs[i] = url
-		bindings[i] = domain.DestinationBinding{
+		bindings[i] = routing.DestinationBinding{
 			ID: bid, Transport: "sqs", Address: url,
 		}
 		senders[bid] = newSQSSender(t, url)
@@ -100,7 +101,7 @@ func TestUC22_TenRule_MatchRule_Routing(t *testing.T) {
 	rt := goruntime.New(goruntime.WithInstanceID("uc22-bridge"), goruntime.WithDLQStore(dlq), goruntime.WithLogger(testLogger(t)))
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID:                 "uc22-route",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Resolver:           resolver,
 		Senders:            senders,
 		Bindings:           bindings,
@@ -178,7 +179,7 @@ func TestUC23_SubjectPrefix_Routing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "b-orders", Transport: "sqs", Address: qOrders},
 		{ID: "b-events", Transport: "sqs", Address: qEvents},
 		{ID: "b-metrics", Transport: "sqs", Address: qMetrics},
@@ -196,9 +197,9 @@ func TestUC23_SubjectPrefix_Routing(t *testing.T) {
 		}))
 
 	sessID := mqttlocal.UniqueClientID("uc23-rx")
-	rxSess := setupMQTTSession(t, sessID, domain.SessionEphemeral)
-	require.NoError(t, rxSess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "uc23/#", QoS: 1}},
+	rxSess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
+	require.NoError(t, rxSess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "uc23/#", QoS: 1}},
 	}))
 	waitSubReady(t, rxSess, 5*time.Second)
 	mqttRx := paho.NewReceiver("uc23-rx", rxSess)
@@ -206,7 +207,7 @@ func TestUC23_SubjectPrefix_Routing(t *testing.T) {
 	rt := goruntime.New(goruntime.WithInstanceID("uc23-bridge"), goruntime.WithDLQStore(dlq))
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID:                 "uc23-route",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Resolver:           resolver,
 		Senders:            senders,
 		Bindings:           bindings,
@@ -218,7 +219,7 @@ func TestUC23_SubjectPrefix_Routing(t *testing.T) {
 
 	// Publish to 3 subject prefixes.
 	prefixes := []string{"uc23/orders/", "uc23/events/", "uc23/metrics/"}
-	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc23-pub"), domain.SessionEphemeral)
+	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc23-pub"), connectivity.SessionEphemeral)
 	pubSnd := paho.NewSender(pubSess, paho.SenderOptions{QoS: 1, Timeout: 10 * time.Second})
 	for _, pfx := range prefixes {
 		for i := 0; i < perPrefix; i++ {
@@ -269,19 +270,19 @@ func TestUC24_DynamicAddress_Templates(t *testing.T) {
 		collectors[i] = newMQTTCollector(t, topic, fmt.Sprintf("uc24-col-%d", i))
 	}
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "b-mqtt", Transport: "mqtt", Address: "uc24/{tenant}/{region}/data"},
 	}
 	resolver := goruntime.NewBindingResolver(bindings, goruntime.MatchAll())
 
-	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc24-b"), domain.SessionEphemeral)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc24-b"), connectivity.SessionEphemeral)
 	mqttSnd := setupMQTTSender(t, sess)
 	sqsRx := newSQSReceiver(t, inURL)
 
 	rt := goruntime.New(goruntime.WithInstanceID("uc24-bridge"), goruntime.WithDLQStore(dlq))
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID:                 "uc24-route",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Resolver:           resolver,
 		Bindings:           bindings,
 		SourceCapabilities: directHoldCaps,
@@ -329,7 +330,7 @@ func TestUC25_FilterProcessor_90Percent_Drop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc25-b"), domain.SessionEphemeral)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc25-b"), connectivity.SessionEphemeral)
 	mqttSnd := setupMQTTSender(t, sess)
 	sqsRx := newSQSReceiver(t, inURL)
 
@@ -350,13 +351,13 @@ func TestUC25_FilterProcessor_90Percent_Drop(t *testing.T) {
 	rt := goruntime.New(goruntime.WithInstanceID("uc25-bridge"), goruntime.WithDLQStore(dlqStore))
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc25-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:       domain.DeliveryDirectHold,
-			OnPermanentFailure: domain.FailureDLQ,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:       routing.DeliveryDirectHold,
+			OnPermanentFailure: routing.FailureDLQ,
 		},
 		Processors: []ports.Processor{filter},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "mqtt-out", Address: "uc25/data"},
+			routing.DispatchPlan{BindingID: "mqtt-out", Address: "uc25/data"},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, sqsRx, mqttSnd, nil, nil))
@@ -406,22 +407,22 @@ func TestUC26_FiveStage_ProcessorChain(t *testing.T) {
 
 	// SQS-IN -> MQTT uc26/data (bridge 1 with 5 processors).
 	topic := "uc26/data"
-	sess1 := setupMQTTSession(t, mqttlocal.UniqueClientID("uc26-b1"), domain.SessionEphemeral)
+	sess1 := setupMQTTSession(t, mqttlocal.UniqueClientID("uc26-b1"), connectivity.SessionEphemeral)
 	mqttSnd := setupMQTTSender(t, sess1)
 	sqsRx := newSQSReceiver(t, inURL)
 	rt1 := goruntime.New(goruntime.WithInstanceID("uc26-b1"), goruntime.WithDLQStore(dlq))
 	require.NoError(t, rt1.AddRoute(goruntime.RouteConfig{
 		ID:                 "uc26-r1",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Processors:         processors,
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "mqtt", Address: topic}),
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "mqtt", Address: topic}),
 		SourceCapabilities: directHoldCaps,
 	}, sqsRx, mqttSnd, nil, nil))
 
 	// MQTT uc26/data -> SQS-OUT (bridge 2).
-	sess2 := setupMQTTSession(t, mqttlocal.UniqueClientID("uc26-b2"), domain.SessionEphemeral)
-	require.NoError(t, sess2.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	sess2 := setupMQTTSession(t, mqttlocal.UniqueClientID("uc26-b2"), connectivity.SessionEphemeral)
+	require.NoError(t, sess2.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}))
 	waitSubReady(t, sess2, 5*time.Second)
 	mqttRx := paho.NewReceiver("uc26-rx", sess2)
@@ -429,8 +430,8 @@ func TestUC26_FiveStage_ProcessorChain(t *testing.T) {
 	rt2 := goruntime.New(goruntime.WithInstanceID("uc26-b2"), goruntime.WithDLQStore(dlq))
 	require.NoError(t, rt2.AddRoute(goruntime.RouteConfig{
 		ID:                 "uc26-r2",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "sqs", Address: outURL}),
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "sqs", Address: outURL}),
 		SourceCapabilities: directHoldCaps,
 	}, mqttRx, sqsSndOut, nil, nil))
 

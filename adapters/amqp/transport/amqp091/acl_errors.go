@@ -6,8 +6,9 @@ import (
 	"net"
 	"strings"
 
-	"github.com/mariotoffia/gobridge/domain/shared"
 	amqp "github.com/rabbitmq/amqp091-go"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // MapError converts AMQP 0-9-1 / network errors into classified

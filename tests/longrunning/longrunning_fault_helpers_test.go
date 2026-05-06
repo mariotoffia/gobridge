@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -110,7 +110,7 @@ func newSlowDLQStore(inner ports.DLQStore, delay time.Duration) *slowDLQStore {
 	return &slowDLQStore{inner: inner, delay: delay}
 }
 
-func (s *slowDLQStore) Write(ctx context.Context, entry domain.DLQEntry) error {
+func (s *slowDLQStore) Write(ctx context.Context, entry routing.DLQEntry) error {
 	select {
 	case <-time.After(s.delay):
 	case <-ctx.Done():
@@ -119,11 +119,11 @@ func (s *slowDLQStore) Write(ctx context.Context, entry domain.DLQEntry) error {
 	return s.inner.Write(ctx, entry)
 }
 
-func (s *slowDLQStore) List(ctx context.Context, f domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *slowDLQStore) List(ctx context.Context, f routing.DLQFilter) ([]routing.DLQEntry, error) {
 	return s.inner.List(ctx, f)
 }
 
-func (s *slowDLQStore) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
+func (s *slowDLQStore) Get(ctx context.Context, id string) (routing.DLQEntry, error) {
 	return s.inner.Get(ctx, id)
 }
 
@@ -131,7 +131,7 @@ func (s *slowDLQStore) Delete(ctx context.Context, ids []string) (int, error) {
 	return s.inner.Delete(ctx, ids)
 }
 
-func (s *slowDLQStore) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error) {
+func (s *slowDLQStore) DeleteByFilter(ctx context.Context, filter routing.DLQFilter) (int, error) {
 	return s.inner.DeleteByFilter(ctx, filter)
 }
 
@@ -147,9 +147,9 @@ type replayableDLQStore struct {
 	lrDLQStore
 }
 
-func (s *replayableDLQStore) List(_ context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *replayableDLQStore) List(_ context.Context, filter routing.DLQFilter) ([]routing.DLQEntry, error) {
 	entries := s.getEntries()
-	var result []domain.DLQEntry
+	var result []routing.DLQEntry
 	for _, e := range entries {
 		if filter.RouteID != "" && e.RouteID != filter.RouteID {
 			continue
@@ -172,7 +172,7 @@ func (s *replayableDLQStore) Delete(_ context.Context, ids []string) (int, error
 	for _, id := range ids {
 		idSet[id] = struct{}{}
 	}
-	var remaining []domain.DLQEntry
+	var remaining []routing.DLQEntry
 	var count int
 	for _, e := range s.entries {
 		if _, ok := idSet[e.ID]; ok {

@@ -7,8 +7,8 @@ import (
 	"net/url"
 	"sync"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -16,7 +16,7 @@ import (
 // ClientID identity, and subscription reconciliation.
 type Session struct {
 	opts    SessionOptions
-	mode    domain.SessionMode
+	mode    connectivity.SessionMode
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
 	clk     clock.Clock
@@ -43,7 +43,7 @@ type Session struct {
 	router *router
 
 	// plan is the last reconciled session plan, re-applied on reconnect.
-	plan *domain.SessionPlan
+	plan *connectivity.SessionPlan
 
 	// activeSubs tracks topics for which SUBSCRIBE has been issued.
 	activeSubs map[string]byte // topic -> qos
@@ -74,7 +74,7 @@ var _ ports.Session = (*Session)(nil)
 
 // NewSession creates an MQTT Session from the given options.
 // metrics may be nil; a no-op exporter is used in that case.
-func NewSession(opts SessionOptions, mode domain.SessionMode, logger *slog.Logger, metrics ...ports.MetricsExporter) *Session {
+func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog.Logger, metrics ...ports.MetricsExporter) *Session {
 	var m ports.MetricsExporter = &ports.NoopExporter{}
 	if len(metrics) > 0 && metrics[0] != nil {
 		m = metrics[0]

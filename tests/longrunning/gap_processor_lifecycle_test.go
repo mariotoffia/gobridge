@@ -15,8 +15,9 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/processors/circuitbreaker"
@@ -85,7 +86,7 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "gap-cb-col")
 
 	sessID := mqttlocal.UniqueClientID("gap-cb-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
 	snd := setupMQTTSender(t, sess)
 
 	// headerErrorProcessor returns transient errors for error_type=transient.
@@ -114,12 +115,12 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-cb-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  20,
 		},
 		Processors:         []ports.Processor{cbProc, errorByHeaderProc},
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "cb-bind", Address: outTopic}),
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "cb-bind", Address: outTopic}),
 		SourceCapabilities: []ports.Capability{ports.CapHTTPEndpoint},
 	}, &noopReceiver{}, snd, nil, nil))
 
@@ -267,7 +268,7 @@ func TestGAP_TransformProcessor_JSONPathMapping(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "gap-tf-col")
 
 	sessID := mqttlocal.UniqueClientID("gap-tf-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
 	snd := setupMQTTSender(t, sess)
 
 	tfProc, err := transform.New(transform.Config{
@@ -288,11 +289,11 @@ func TestGAP_TransformProcessor_JSONPathMapping(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-tf-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Processors:         []ports.Processor{tfProc},
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "tf-bind", Address: outTopic}),
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "tf-bind", Address: outTopic}),
 		SourceCapabilities: directHoldCaps,
 	}, newSQSReceiver(t, sqsInURL), snd, sess, nil))
 

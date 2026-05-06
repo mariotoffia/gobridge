@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -80,9 +80,9 @@ func (rt *Runtime) AddRoute(
 // RouteInfo describes a registered route for introspection.
 type RouteInfo struct {
 	ID           string
-	DeliveryMode domain.DeliveryMode
-	DispatchMode domain.DispatchMode
-	Policy       domain.RoutePolicy
+	DeliveryMode routing.DeliveryMode
+	DispatchMode routing.DispatchMode
+	Policy       routing.RoutePolicy
 }
 
 // Routes returns information about all registered routes.

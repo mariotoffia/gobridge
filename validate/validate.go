@@ -1,6 +1,6 @@
 package validate
 
-import "github.com/mariotoffia/gobridge/domain"
+import "github.com/mariotoffia/gobridge/domain/routing"
 
 // Validate checks the bridge configuration for invalid route, session,
 // binding, and store combinations. It returns a ValidationErrors value
@@ -18,9 +18,9 @@ func Validate(cfg BridgeConfig) error {
 		validateStructural(r, &cfg, &errs)
 
 		switch r.Policy.DeliveryMode {
-		case domain.DeliveryDirectHold:
+		case routing.DeliveryDirectHold:
 			validateDirectHold(r, &cfg, &errs)
-		case domain.DeliverySharedOutbox:
+		case routing.DeliverySharedOutbox:
 			validateSharedOutbox(r, &cfg, &errs)
 		}
 

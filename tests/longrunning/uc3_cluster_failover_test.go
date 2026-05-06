@@ -12,7 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -63,13 +64,13 @@ func TestUC3_ClusterFailover_ThreeInstances(t *testing.T) {
 	// --- Build route config (shared across all instances) ---
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc3-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc3-bind", Address: uc3Topic},
+			routing.DispatchPlan{BindingID: "uc3-bind", Address: uc3Topic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc3-bind", SessionID: sessionID},
 		},
 	}
@@ -85,7 +86,7 @@ func TestUC3_ClusterFailover_ThreeInstances(t *testing.T) {
 	mkInstance := func(label string) *instance {
 		mqttSessID := mqttlocal.UniqueClientID(
 			fmt.Sprintf("uc3-%s", label))
-		sess := newMQTTSession(t, mqttSessID, domain.SessionExclusive)
+		sess := newMQTTSession(t, mqttSessID, connectivity.SessionExclusive)
 		mqttSnd := setupMQTTSender(t, sess)
 		sqsRx := newSQSReceiver(t, sqsInURL)
 		sc := lrSessionConfig(sessionID)

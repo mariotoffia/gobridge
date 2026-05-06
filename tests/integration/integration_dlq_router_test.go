@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
@@ -66,7 +66,7 @@ func TestIntegration_DLQRouter_RouteStoresEntry(t *testing.T) {
 		t.Fatalf("Route: %v", err)
 	}
 
-	entries, err := store.List(ctx, domain.DLQFilter{RouteID: "route-dr1"})
+	entries, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dr1"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -133,14 +133,14 @@ func TestIntegration_DLQRouter_AsyncBufferDrains(t *testing.T) {
 	}
 
 	e2eWaitFor(t, 10*time.Second, "async DLQ entries drained", func() bool {
-		entries, err := store.List(ctx, domain.DLQFilter{RouteID: "route-dr2"})
+		entries, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dr2"})
 		if err != nil {
 			return false
 		}
 		return len(entries) >= entryCount
 	})
 
-	entries, _ := store.List(ctx, domain.DLQFilter{RouteID: "route-dr2"})
+	entries, _ := store.List(ctx, routing.DLQFilter{RouteID: "route-dr2"})
 	if len(entries) != entryCount {
 		t.Fatalf("expected %d DLQ entries, got %d", entryCount, len(entries))
 	}
@@ -180,7 +180,7 @@ func TestIntegration_DLQRouter_ErrorClassification(t *testing.T) {
 		t.Fatalf("Route trans: %v", err)
 	}
 
-	entries, err := store.List(ctx, domain.DLQFilter{RouteID: "route-dr3"})
+	entries, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dr3"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestIntegration_DLQRouter_CloseDrainsBuffer(t *testing.T) {
 
 	router.Close()
 
-	entries, err := store.List(ctx, domain.DLQFilter{RouteID: "route-dr4"})
+	entries, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dr4"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestIntegration_DLQRouter_ConcurrentRoutes(t *testing.T) {
 	wg.Wait()
 	router.Close()
 
-	entries, err := store.List(ctx, domain.DLQFilter{RouteID: "route-dr5"})
+	entries, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dr5"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -21,11 +21,11 @@ func TestRouteRunner_EmitsE2ELatency(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "route-e2e",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
 		Metrics:  rec,
-		Bindings: []domain.DestinationBinding{{ID: "b1"}},
+		Bindings: []routing.DestinationBinding{{ID: "b1"}},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -64,12 +64,12 @@ func TestRouteRunner_EmitsDLQEntries(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:  "route-dlq",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(dlqStore),
 		Metrics:  rec,
-		Bindings: []domain.DestinationBinding{{ID: "b1"}},
+		Bindings: []routing.DestinationBinding{{ID: "b1"}},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -113,7 +113,7 @@ func TestOutboxDrainer_EmitsDrainLatency(t *testing.T) {
 		PartitionKey:   persistence.OutboxPartitionKey("session-1", "b1"),
 		LeaseID:        "session-1",
 		OwnerID:        "owner-1",
-		Policy:         domain.RoutePolicy{}.WithDefaults(),
+		Policy:         routing.RoutePolicy{}.WithDefaults(),
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		Metrics:        rec,
@@ -164,7 +164,7 @@ func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 		PartitionKey:   persistence.OutboxPartitionKey("s1", "b1"),
 		LeaseID:        "s1",
 		OwnerID:        "owner-1",
-		Policy:         domain.RoutePolicy{OnExpired: domain.ExpiredDLQ}.WithDefaults(),
+		Policy:         routing.RoutePolicy{OnExpired: routing.ExpiredDLQ}.WithDefaults(),
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		Metrics:        rec,

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -54,14 +54,14 @@ func edge091Setup(t *testing.T, logger *slog.Logger, prefix string) edge091Env {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, logger)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, logger)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("session Start: %v", err)
 	}
 	t.Cleanup(func() { _ = sess.Close(context.Background()) })
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{
 			Topic: queue,
 			Config: &Config{Subscription: SubscriptionParams{
 				Exchange:   exchange,
@@ -69,7 +69,7 @@ func edge091Setup(t *testing.T, logger *slog.Logger, prefix string) edge091Env {
 				Durable:    false,
 			}},
 		}},
-		Publishers: []domain.PublisherPlan{{
+		Publishers: []connectivity.PublisherPlan{{
 			Topic:  exchange,
 			Config: &Config{Publisher: PublisherParams{Durable: false}},
 		}},
@@ -386,7 +386,7 @@ func TestIntegration_Edge_SendAfterSessionClose(t *testing.T) {
 	logger := traceLogger091(&buf)
 	ep := rabbitmqlocal.Endpoint(t)
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, logger)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, logger)
 	ctx := context.Background()
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -415,7 +415,7 @@ func TestIntegration_Edge_ReceiverOnClosedSession(t *testing.T) {
 	logger := traceLogger091(&buf)
 	ep := rabbitmqlocal.Endpoint(t)
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, logger)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, logger)
 	ctx := context.Background()
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -448,7 +448,7 @@ func TestIntegration_Edge_WrongCredentials(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURL:      "amqp://baduser:badpass@127.0.0.1:0/",
 		ConnectTimeout: 5 * time.Second,
-	}, domain.SessionEphemeral, slog.Default())
+	}, connectivity.SessionEphemeral, slog.Default())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

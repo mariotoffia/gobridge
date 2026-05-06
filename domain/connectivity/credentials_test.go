@@ -1,19 +1,19 @@
-package domain_test
+package connectivity_test
 
 import (
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
 // TestCredentialKind_Constants validates that CredentialPassword and CredentialTLS
 // are distinct, non-empty string values.
 func TestCredentialKind_Constants(t *testing.T) {
-	kinds := []domain.CredentialKind{
-		domain.CredentialPassword,
-		domain.CredentialTLS,
+	kinds := []connectivity.CredentialKind{
+		connectivity.CredentialPassword,
+		connectivity.CredentialTLS,
 	}
-	seen := make(map[domain.CredentialKind]bool, len(kinds))
+	seen := make(map[connectivity.CredentialKind]bool, len(kinds))
 	for _, k := range kinds {
 		if k == "" {
 			t.Fatal("credential kind constant must not be empty")
@@ -27,7 +27,7 @@ func TestCredentialKind_Constants(t *testing.T) {
 
 // TestCredentialSet_ZeroValue validates that a zero-value CredentialSet has nil Password and TLS fields.
 func TestCredentialSet_ZeroValue(t *testing.T) {
-	var cs domain.CredentialSet
+	var cs connectivity.CredentialSet
 	if cs.Password != nil {
 		t.Fatal("zero-value CredentialSet.Password should be nil")
 	}
@@ -38,7 +38,7 @@ func TestCredentialSet_ZeroValue(t *testing.T) {
 
 // TestPasswordCredential_Fields validates field assignment on PasswordCredential.
 func TestPasswordCredential_Fields(t *testing.T) {
-	pc := domain.PasswordCredential{
+	pc := connectivity.PasswordCredential{
 		Username: "admin",
 		Password: "s3cret",
 	}
@@ -53,7 +53,7 @@ func TestPasswordCredential_Fields(t *testing.T) {
 // TestTLSMaterial_Fields validates field assignment on TLSMaterial including CAPEMs slice
 // and InsecureSkipVerify flag.
 func TestTLSMaterial_Fields(t *testing.T) {
-	tls := domain.TLSMaterial{
+	tls := connectivity.TLSMaterial{
 		CertPEM:            "cert-data",
 		KeyPEM:             "key-data",
 		CAPEMs:             []string{"ca1", "ca2"},

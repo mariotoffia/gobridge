@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
@@ -29,8 +29,8 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func makeEntry(id, routeID, category string, failedAt time.Time) domain.DLQEntry {
-	return domain.DLQEntry{
+func makeEntry(id, routeID, category string, failedAt time.Time) routing.DLQEntry {
+	return routing.DLQEntry{
 		ID: id,
 		Envelope: messaging.Envelope{
 			ID:      "env-" + id,
@@ -76,7 +76,7 @@ func TestWriteAndList(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	entries, err := store.List(ctx, domain.DLQFilter{})
+	entries, err := store.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestListFilterByRouteID(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
 
-	for _, e := range []domain.DLQEntry{
+	for _, e := range []routing.DLQEntry{
 		makeEntry("fr-1", "route-A", "timeout", base),
 		makeEntry("fr-2", "route-B", "timeout", base.Add(1*time.Minute)),
 		makeEntry("fr-3", "route-A", "timeout", base.Add(2*time.Minute)),
@@ -155,7 +155,7 @@ func TestListFilterByRouteID(t *testing.T) {
 		}
 	}
 
-	entries, err := store.List(ctx, domain.DLQFilter{RouteID: "route-A"})
+	entries, err := store.List(ctx, routing.DLQFilter{RouteID: "route-A"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestListFilterByCategory(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
 
-	for _, e := range []domain.DLQEntry{
+	for _, e := range []routing.DLQEntry{
 		makeEntry("fc-1", "route-A", "timeout", base),
 		makeEntry("fc-2", "route-A", "schema", base.Add(1*time.Minute)),
 		makeEntry("fc-3", "route-A", "timeout", base.Add(2*time.Minute)),
@@ -185,7 +185,7 @@ func TestListFilterByCategory(t *testing.T) {
 		}
 	}
 
-	entries, err := store.List(ctx, domain.DLQFilter{Category: "schema"})
+	entries, err := store.List(ctx, routing.DLQFilter{Category: "schema"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestListFilterBySince(t *testing.T) {
 	t2 := time.Date(2024, 1, 15, 11, 0, 0, 0, time.UTC)
 	t3 := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
 
-	for _, e := range []domain.DLQEntry{
+	for _, e := range []routing.DLQEntry{
 		makeEntry("fs-1", "route-A", "timeout", t1),
 		makeEntry("fs-2", "route-A", "timeout", t2),
 		makeEntry("fs-3", "route-A", "timeout", t3),
@@ -216,7 +216,7 @@ func TestListFilterBySince(t *testing.T) {
 		}
 	}
 
-	entries, err := store.List(ctx, domain.DLQFilter{Since: t2})
+	entries, err := store.List(ctx, routing.DLQFilter{Since: t2})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestListFilterByBefore(t *testing.T) {
 	t2 := time.Date(2024, 1, 15, 11, 0, 0, 0, time.UTC)
 	t3 := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
 
-	for _, e := range []domain.DLQEntry{
+	for _, e := range []routing.DLQEntry{
 		makeEntry("fb-1", "route-A", "timeout", t1),
 		makeEntry("fb-2", "route-A", "timeout", t2),
 		makeEntry("fb-3", "route-A", "timeout", t3),
@@ -249,7 +249,7 @@ func TestListFilterByBefore(t *testing.T) {
 		}
 	}
 
-	entries, err := store.List(ctx, domain.DLQFilter{Before: t2})
+	entries, err := store.List(ctx, routing.DLQFilter{Before: t2})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestListRespectsLimit(t *testing.T) {
 		}
 	}
 
-	entries, err := store.List(ctx, domain.DLQFilter{Limit: 2})
+	entries, err := store.List(ctx, routing.DLQFilter{Limit: 2})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestDeleteRemovesEntries(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
 
-	for _, e := range []domain.DLQEntry{
+	for _, e := range []routing.DLQEntry{
 		makeEntry("del-1", "route-A", "timeout", base),
 		makeEntry("del-2", "route-A", "timeout", base.Add(1*time.Minute)),
 		makeEntry("del-3", "route-A", "timeout", base.Add(2*time.Minute)),
@@ -328,7 +328,7 @@ func TestDeleteRemovesEntries(t *testing.T) {
 		t.Fatalf("delete count: got %d, want 2", n)
 	}
 
-	entries, err := store.List(ctx, domain.DLQFilter{})
+	entries, err := store.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("list after delete: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestPurgeRemovesOld(t *testing.T) {
 	mid := time.Date(2024, 1, 12, 10, 0, 0, 0, time.UTC)
 	recent := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
 
-	for _, e := range []domain.DLQEntry{
+	for _, e := range []routing.DLQEntry{
 		makeEntry("po-old", "route-A", "timeout", old),
 		makeEntry("po-mid", "route-A", "timeout", mid),
 		makeEntry("po-new", "route-A", "timeout", recent),
@@ -382,7 +382,7 @@ func TestPurgeRemovesOld(t *testing.T) {
 		t.Fatalf("purged count: got %d, want 2", n)
 	}
 
-	entries, err := store.List(ctx, domain.DLQFilter{})
+	entries, err := store.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("list after purge: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestPurgeSkipsRecent(t *testing.T) {
 	recent := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
 	future := time.Date(2024, 1, 20, 10, 0, 0, 0, time.UTC)
 
-	for _, e := range []domain.DLQEntry{
+	for _, e := range []routing.DLQEntry{
 		makeEntry("ps-1", "route-A", "timeout", old),
 		makeEntry("ps-2", "route-A", "timeout", recent),
 		makeEntry("ps-3", "route-A", "timeout", future),
@@ -422,7 +422,7 @@ func TestPurgeSkipsRecent(t *testing.T) {
 		t.Fatalf("purged count: got %d, want 1", n)
 	}
 
-	entries, err := store.List(ctx, domain.DLQFilter{})
+	entries, err := store.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("list after purge: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestFullLifecycle(t *testing.T) {
 	t3 := time.Date(2024, 1, 14, 10, 0, 0, 0, time.UTC)
 	t4 := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
 
-	for _, e := range []domain.DLQEntry{
+	for _, e := range []routing.DLQEntry{
 		makeEntry("lc-1", "route-A", "timeout", t1),
 		makeEntry("lc-2", "route-A", "schema", t2),
 		makeEntry("lc-3", "route-B", "timeout", t3),
@@ -452,7 +452,7 @@ func TestFullLifecycle(t *testing.T) {
 		}
 	}
 
-	entries, err := store.List(ctx, domain.DLQFilter{})
+	entries, err := store.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("initial list: %v", err)
 	}
@@ -479,7 +479,7 @@ func TestFullLifecycle(t *testing.T) {
 		t.Fatalf("purged count: got %d, want 1", n)
 	}
 
-	entries, err = store.List(ctx, domain.DLQFilter{})
+	entries, err = store.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("final list: %v", err)
 	}
@@ -522,7 +522,7 @@ func TestListBothRouteAndCategory(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
 
-	for _, e := range []domain.DLQEntry{
+	for _, e := range []routing.DLQEntry{
 		makeEntry("rc-1", "route-A", "timeout", base),
 		makeEntry("rc-2", "route-A", "schema", base.Add(1*time.Minute)),
 		makeEntry("rc-3", "route-B", "timeout", base.Add(2*time.Minute)),
@@ -533,7 +533,7 @@ func TestListBothRouteAndCategory(t *testing.T) {
 		}
 	}
 
-	entries, err := store.List(ctx, domain.DLQFilter{
+	entries, err := store.List(ctx, routing.DLQFilter{
 		RouteID:  "route-A",
 		Category: "timeout",
 	})

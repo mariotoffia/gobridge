@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -26,15 +26,15 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -43,7 +43,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName},
 		},
 	}
@@ -134,15 +134,15 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -151,7 +151,7 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName},
 		},
 	}
@@ -224,15 +224,15 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -241,7 +241,7 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName},
 		},
 	}

@@ -11,8 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -83,7 +84,7 @@ func TestGap_AMQP091_To_SQS_CrossTransport(t *testing.T) {
 	defer cancel()
 
 	// --- AMQP 0-9-1 receiver session (started by the runtime) ---
-	amqpSess := setupRabbitMQSession(t, domain.SessionEphemeral)
+	amqpSess := setupRabbitMQSession(t, connectivity.SessionEphemeral)
 	amqpRx := newRabbitMQReceiver(t, amqpSess, queueName)
 
 	// --- SQS sender ---
@@ -97,12 +98,12 @@ func TestGap_AMQP091_To_SQS_CrossTransport(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-cross-amqp-sqs-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
-			DispatchMode: domain.DispatchSingle,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
+			DispatchMode: routing.DispatchSingle,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "sqs-out", Address: sqsOutURL},
+			routing.DispatchPlan{BindingID: "sqs-out", Address: sqsOutURL},
 		),
 		SourceCapabilities: []ports.Capability{
 			ports.CapSourceRedelivery,
@@ -115,7 +116,7 @@ func TestGap_AMQP091_To_SQS_CrossTransport(t *testing.T) {
 	gobridgesync(t, 15*time.Second, rt)
 
 	// --- Publish messages to RabbitMQ via a separate sender ---
-	pubSess := setupRabbitMQSession(t, domain.SessionEphemeral)
+	pubSess := setupRabbitMQSession(t, connectivity.SessionEphemeral)
 	pubSnd := newRabbitMQSender(t, pubSess, exchangeName, routingKey)
 
 	t.Logf("GAP-CROSS-SQS: publishing %d messages to RabbitMQ", gapCrossMsgCount)
@@ -204,13 +205,13 @@ func TestGap_AMQP091_To_MQTT_CrossTransport(t *testing.T) {
 	collector := newMQTTCollector(t, mqttTopic, "gap-cross-mqtt-col")
 
 	// --- AMQP 0-9-1 receiver session ---
-	amqpSess := setupRabbitMQSession(t, domain.SessionEphemeral)
+	amqpSess := setupRabbitMQSession(t, connectivity.SessionEphemeral)
 	amqpRx := newRabbitMQReceiver(t, amqpSess, queueName)
 
 	// --- MQTT sender session ---
 	mqttSess := setupMQTTSession(t,
 		mqttlocal.UniqueClientID("gap-cross-mqtt-tx"),
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 	)
 	mqttSnd := setupMQTTSender(t, mqttSess)
 
@@ -222,12 +223,12 @@ func TestGap_AMQP091_To_MQTT_CrossTransport(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-cross-amqp-mqtt-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
-			DispatchMode: domain.DispatchSingle,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
+			DispatchMode: routing.DispatchSingle,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "mqtt-out", Address: mqttTopic},
+			routing.DispatchPlan{BindingID: "mqtt-out", Address: mqttTopic},
 		),
 		SourceCapabilities: []ports.Capability{
 			ports.CapSourceRedelivery,
@@ -240,7 +241,7 @@ func TestGap_AMQP091_To_MQTT_CrossTransport(t *testing.T) {
 	gobridgesync(t, 15*time.Second, rt)
 
 	// --- Publish messages to RabbitMQ ---
-	pubSess := setupRabbitMQSession(t, domain.SessionEphemeral)
+	pubSess := setupRabbitMQSession(t, connectivity.SessionEphemeral)
 	pubSnd := newRabbitMQSender(t, pubSess, exchangeName, routingKey)
 
 	t.Logf("GAP-CROSS-MQTT: publishing %d messages to RabbitMQ", gapCrossMsgCount)

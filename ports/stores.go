@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 )
 
 // LeaseStore manages distributed lease ownership for single-active scenarios.
@@ -38,11 +38,11 @@ type OutboxStore interface {
 
 // DLQStore manages dead-letter queue entries for failed or rejected messages.
 type DLQStore interface {
-	Write(ctx context.Context, entry domain.DLQEntry) error
-	Get(ctx context.Context, id string) (domain.DLQEntry, error)
-	List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error)
+	Write(ctx context.Context, entry routing.DLQEntry) error
+	Get(ctx context.Context, id string) (routing.DLQEntry, error)
+	List(ctx context.Context, filter routing.DLQFilter) ([]routing.DLQEntry, error)
 	Delete(ctx context.Context, ids []string) (int, error)
-	DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error)
+	DeleteByFilter(ctx context.Context, filter routing.DLQFilter) (int, error)
 	Purge(ctx context.Context, before time.Time) (int, error)
 }
 

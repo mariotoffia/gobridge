@@ -4,27 +4,27 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
-func toRoutePolicy(r ports.RouteDef) domain.RoutePolicy {
+func toRoutePolicy(r ports.RouteDef) routing.RoutePolicy {
 	p, _ := toRoutePolicyE(r)
 	return p
 }
 
-func toRoutePolicyE(r ports.RouteDef) (domain.RoutePolicy, error) {
-	p := domain.RoutePolicy{
-		DeliveryMode:       domain.DeliveryMode(r.DeliveryMode),
-		DispatchMode:       domain.DispatchMode(r.DispatchMode),
+func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
+	p := routing.RoutePolicy{
+		DeliveryMode:       routing.DeliveryMode(r.DeliveryMode),
+		DispatchMode:       routing.DispatchMode(r.DispatchMode),
 		MaxInFlight:        r.Policy.MaxInFlight,
 		MaxReplayAttempts:  r.Policy.MaxReplayAttempts,
 		MaxOutboxDepth:     r.Policy.MaxOutboxDepth,
-		AckAfter:           domain.AckBoundary(r.Policy.AckAfter),
-		OnExpired:          domain.ExpiredAction(r.Policy.OnExpired),
-		OnPermanentFailure: domain.FailureAction(r.Policy.OnPermanentFailure),
+		AckAfter:           routing.AckBoundary(r.Policy.AckAfter),
+		OnExpired:          routing.ExpiredAction(r.Policy.OnExpired),
+		OnPermanentFailure: routing.FailureAction(r.Policy.OnPermanentFailure),
 		AllowUnfenced:      r.Policy.AllowUnfenced,
 		AllowRetryDrop:     r.Policy.AllowRetryDrop,
 	}
@@ -191,14 +191,14 @@ func buildDrainStrategyE(ds *ports.DrainStrategyDef) (persistence.DrainStrategy,
 	}
 }
 
-func toBindings(cfg *ports.BridgeConfig, bindingIDs []string) []domain.DestinationBinding {
-	out := make([]domain.DestinationBinding, 0, len(bindingIDs))
+func toBindings(cfg *ports.BridgeConfig, bindingIDs []string) []routing.DestinationBinding {
+	out := make([]routing.DestinationBinding, 0, len(bindingIDs))
 	for _, id := range bindingIDs {
 		bd := findBinding(cfg, id)
 		if bd == nil {
 			continue
 		}
-		out = append(out, domain.DestinationBinding{
+		out = append(out, routing.DestinationBinding{
 			ID:        bd.ID,
 			SessionID: bd.SessionID,
 			SenderID:  bd.SenderID,
@@ -237,7 +237,7 @@ func findReceiver(cfg *ports.BridgeConfig, id string) *ports.ReceiverDef {
 }
 
 // buildResolver constructs a DestinationResolver from a config ResolverDef.
-func buildResolver(def *ports.ResolverDef, bindings []domain.DestinationBinding) (ports.DestinationResolver, error) {
+func buildResolver(def *ports.ResolverDef, bindings []routing.DestinationBinding) (ports.DestinationResolver, error) {
 	switch def.Type {
 	case "header_map":
 		return runtime.NewBindingResolver(bindings,

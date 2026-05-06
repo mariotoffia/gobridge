@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -25,7 +25,7 @@ func newIdleTestRunner(t *testing.T) (*FakeReceiver, *runtime.RouteRunner, *Fake
 	}
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "idle-test",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
@@ -133,7 +133,7 @@ func TestRouteRunner_IdleChanged_NoFireWhenNotAtZero(t *testing.T) {
 	})
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "idle-test-multi",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold, MaxInFlight: 4}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold, MaxInFlight: 4}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),

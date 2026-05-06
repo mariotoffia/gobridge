@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -58,7 +58,7 @@ func TestIntegration_ConcurrentReconcile_NoCorruption(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -80,8 +80,8 @@ func TestIntegration_ConcurrentReconcile_NoCorruption(t *testing.T) {
 			defer wg.Done()
 
 			for iter := 0; iter < 3; iter++ {
-				plan := domain.SessionPlan{
-					Subscriptions: []domain.SubscriptionPlan{
+				plan := connectivity.SessionPlan{
+					Subscriptions: []connectivity.SubscriptionPlan{
 						{Topic: "conc/shared", QoS: 1},
 						{Topic: topicForGoroutine(idx, iter), QoS: 0},
 					},
@@ -102,8 +102,8 @@ func TestIntegration_ConcurrentReconcile_NoCorruption(t *testing.T) {
 	// Apply a definitive final plan and verify subscription state by
 	// publishing a message to the subscribed topic and confirming receipt.
 	verifyTopic := "conc/verify/" + mqttlocal.UniqueClientID("v")
-	finalPlan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	finalPlan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: verifyTopic, QoS: 1},
 		},
 	}
@@ -196,7 +196,7 @@ func TestIntegration_ReconnectTimeout_Configurable(t *testing.T) {
 		ConnectTimeout:   5 * time.Second,
 		ReconnectTimeout: 5 * time.Second,
 		CleanStart:       true,
-	}, domain.SessionEphemeral, logger)
+	}, connectivity.SessionEphemeral, logger)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -212,8 +212,8 @@ func TestIntegration_ReconnectTimeout_Configurable(t *testing.T) {
 		t.Fatal("timed out waiting for SessionConnected event")
 	}
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "recon/test/a", QoS: 1},
 		},
 	}
@@ -241,7 +241,7 @@ func TestIntegration_ReconnectTimeout_ZeroUsesDefault(t *testing.T) {
 		ConnectTimeout:   5 * time.Second,
 		ReconnectTimeout: 0, // Should default to 30s
 		CleanStart:       true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -254,8 +254,8 @@ func TestIntegration_ReconnectTimeout_ZeroUsesDefault(t *testing.T) {
 		t.Fatal("timed out waiting for event")
 	}
 
-	if err := sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "recon/zero/a", QoS: 0},
 		},
 	}); err != nil {

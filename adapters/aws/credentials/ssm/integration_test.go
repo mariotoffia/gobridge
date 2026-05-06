@@ -8,11 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
-	"github.com/mariotoffia/gobridge/domain/shared"
-	"github.com/mariotoffia/gobridge/testutil/localstack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/testutil/localstack"
 )
 
 func TestMain(m *testing.M) {
@@ -36,8 +37,8 @@ func TestIntegration_SSM_CreateAndGet_Password(t *testing.T) {
 	ctx := context.Background()
 	uri := uniqueURI("password")
 
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{
 			Username: "admin",
 			Password: "s3cret!",
 		},
@@ -59,8 +60,8 @@ func TestIntegration_SSM_CreateAndGet_TLS(t *testing.T) {
 	ctx := context.Background()
 	uri := uniqueURI("tls")
 
-	creds := &domain.CredentialSet{
-		TLS: &domain.TLSMaterial{
+	creds := &connectivity.CredentialSet{
+		TLS: &connectivity.TLSMaterial{
 			CertPEM:            "-----BEGIN CERTIFICATE-----\ntest-cert\n-----END CERTIFICATE-----",
 			KeyPEM:             "-----BEGIN PRIVATE KEY-----\ntest-key\n-----END PRIVATE KEY-----",
 			CAPEMs:             []string{"-----BEGIN CERTIFICATE-----\nca1\n-----END CERTIFICATE-----"},
@@ -86,8 +87,8 @@ func TestIntegration_SSM_Create_AlreadyExists(t *testing.T) {
 	ctx := context.Background()
 	uri := uniqueURI("dup")
 
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	}
 
 	require.NoError(t, repo.Create(ctx, uri, creds))
@@ -103,13 +104,13 @@ func TestIntegration_SSM_Update(t *testing.T) {
 	ctx := context.Background()
 	uri := uniqueURI("update")
 
-	original := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u1", Password: "p1"},
+	original := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u1", Password: "p1"},
 	}
 	require.NoError(t, repo.Create(ctx, uri, original))
 
-	updated := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u2", Password: "p2"},
+	updated := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u2", Password: "p2"},
 	}
 	require.NoError(t, repo.Update(ctx, uri, updated, 0))
 
@@ -127,8 +128,8 @@ func TestIntegration_SSM_Delete(t *testing.T) {
 	ctx := context.Background()
 	uri := uniqueURI("delete")
 
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	}
 	require.NoError(t, repo.Create(ctx, uri, creds))
 
@@ -157,8 +158,8 @@ func TestIntegration_SSM_List(t *testing.T) {
 	repo := New(WithEndpoint(ep), WithRegion("us-west-1"), WithNamespace(ns))
 	ctx := context.Background()
 
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	}
 
 	uri1 := fmt.Sprintf("pms://%s/db/primary", ns)
@@ -185,13 +186,13 @@ func TestIntegration_SSM_Update_VersionMismatch(t *testing.T) {
 	ctx := context.Background()
 	uri := uniqueURI("vcheck")
 
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	}
 	require.NoError(t, repo.Create(ctx, uri, creds))
 
-	updated := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u2", Password: "p2"},
+	updated := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u2", Password: "p2"},
 	}
 	err := repo.Update(ctx, uri, updated, 999)
 	require.Error(t, err)

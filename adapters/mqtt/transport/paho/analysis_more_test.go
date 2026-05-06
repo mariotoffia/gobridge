@@ -10,7 +10,7 @@ import (
 
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -102,7 +102,7 @@ func TestAnaMore_Sender_NilEnvelope_ReturnsInvalidPayload(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-nil-env",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	sess.mu.Lock()
 	sess.cm = &pahoConn{cm: fakeCM}
 	sess.mu.Unlock()
@@ -130,14 +130,14 @@ func TestAnaMore_ReconcileMetric_NotEmittedOnNoOp(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recon-metric-noop",
-	}, domain.SessionEphemeral, nil, rec)
+	}, connectivity.SessionEphemeral, nil, rec)
 	s.mu.Lock()
 	s.cm = &pahoConn{cm: fakeCM}
-	s.plan = &domain.SessionPlan{Subscriptions: []domain.SubscriptionPlan{{Topic: "kept"}}}
+	s.plan = &connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: "kept"}}}
 	s.mu.Unlock()
 
 	// Empty plan + prior plan = no-op short-circuit BEFORE reconcile().
-	if err := s.Reconcile(context.Background(), domain.SessionPlan{}); err != nil {
+	if err := s.Reconcile(context.Background(), connectivity.SessionPlan{}); err != nil {
 		t.Fatalf("no-op Reconcile error: %v", err)
 	}
 	if entries := rec.FindEntries(shared.MetricMQTTReconcileLatency); len(entries) != 0 {
@@ -153,14 +153,14 @@ func TestAnaMore_Reconcile_DesiredEqualsCurrent_NoBrokerCallNeeded(t *testing.T)
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recon-delta-zero",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	s.mu.Lock()
 	s.cm = &pahoConn{cm: fakeCM}
 	s.activeSubs = map[string]byte{"a": 0, "b": 1}
 	s.mu.Unlock()
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "a", QoS: 0},
 			{Topic: "b", QoS: 1},
 		},
@@ -181,7 +181,7 @@ func TestAnaMore_PushEvent_ManyDifferentTypes_PreservesEventKind(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-pushevent-types",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	types := []ports.SessionEventType{
 		ports.SessionConnected,
@@ -253,7 +253,7 @@ func TestAnaMore_PushEvent_BurstUnderClose_NoLostCloseSemantics(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-pushevent-close",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	var wg sync.WaitGroup
 	const pushers = 8
@@ -290,7 +290,7 @@ func TestAnaMore_Receiver_BlockedEmit_BackpressureCancelOnRunCtxDone(t *testing.
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recv-bp-cancel",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-bp-cancel", sess)
 
@@ -335,7 +335,7 @@ func TestAnaMore_Receiver_RunningGuard_DoesNotLeakAfterPanic(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recv-panic-clear",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-panic-clear", sess)
 

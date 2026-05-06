@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
+
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 

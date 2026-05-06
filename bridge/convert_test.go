@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -26,11 +26,11 @@ func TestToRoutePolicy_FieldMapping(t *testing.T) {
 
 	p := toRoutePolicy(rd)
 
-	if p.DeliveryMode != domain.DeliverySharedOutbox {
-		t.Fatalf("DeliveryMode: got %q, want %q", p.DeliveryMode, domain.DeliverySharedOutbox)
+	if p.DeliveryMode != routing.DeliverySharedOutbox {
+		t.Fatalf("DeliveryMode: got %q, want %q", p.DeliveryMode, routing.DeliverySharedOutbox)
 	}
-	if p.DispatchMode != domain.DispatchFanOut {
-		t.Fatalf("DispatchMode: got %q, want %q", p.DispatchMode, domain.DispatchFanOut)
+	if p.DispatchMode != routing.DispatchFanOut {
+		t.Fatalf("DispatchMode: got %q, want %q", p.DispatchMode, routing.DispatchFanOut)
 	}
 	if p.MaxInFlight != 50 {
 		t.Fatalf("MaxInFlight: got %d, want 50", p.MaxInFlight)
@@ -41,14 +41,14 @@ func TestToRoutePolicy_FieldMapping(t *testing.T) {
 	if p.MaxOutboxDepth != 500 {
 		t.Fatalf("MaxOutboxDepth: got %d, want 500", p.MaxOutboxDepth)
 	}
-	if p.AckAfter != domain.AckAfterOutboxPersist {
-		t.Fatalf("AckAfter: got %q, want %q", p.AckAfter, domain.AckAfterOutboxPersist)
+	if p.AckAfter != routing.AckAfterOutboxPersist {
+		t.Fatalf("AckAfter: got %q, want %q", p.AckAfter, routing.AckAfterOutboxPersist)
 	}
-	if p.OnExpired != domain.ExpiredDrop {
-		t.Fatalf("OnExpired: got %q, want %q", p.OnExpired, domain.ExpiredDrop)
+	if p.OnExpired != routing.ExpiredDrop {
+		t.Fatalf("OnExpired: got %q, want %q", p.OnExpired, routing.ExpiredDrop)
 	}
-	if p.OnPermanentFailure != domain.FailureDrop {
-		t.Fatalf("OnPermanentFailure: got %q, want %q", p.OnPermanentFailure, domain.FailureDrop)
+	if p.OnPermanentFailure != routing.FailureDrop {
+		t.Fatalf("OnPermanentFailure: got %q, want %q", p.OnPermanentFailure, routing.FailureDrop)
 	}
 }
 

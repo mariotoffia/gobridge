@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/Azure/go-amqp"
+
 	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 )
 

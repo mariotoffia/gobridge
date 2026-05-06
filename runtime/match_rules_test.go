@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -15,7 +15,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestMatchBySubjectPrefix_SelectsCorrectBinding(t *testing.T) {
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "orders-out", Address: "orders-queue"},
 		{ID: "alerts-out", Address: "alerts-queue"},
 	}
@@ -70,7 +70,7 @@ func compileRules(t *testing.T, rules []runtime.MatchRule) []runtime.MatchRule {
 	return compiled
 }
 
-func makeRuleResolver(t *testing.T, bindings []domain.DestinationBinding, rules []runtime.MatchRule, defaultBinding string) *runtime.RuleResolver {
+func makeRuleResolver(t *testing.T, bindings []routing.DestinationBinding, rules []runtime.MatchRule, defaultBinding string) *runtime.RuleResolver {
 	t.Helper()
 	compiled := compileRules(t, rules)
 	resolver, err := runtime.NewRuleResolver(bindings, compiled, defaultBinding)
@@ -81,7 +81,7 @@ func makeRuleResolver(t *testing.T, bindings []domain.DestinationBinding, rules 
 }
 
 func TestRuleResolver_FirstMatchWins(t *testing.T) {
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "first"}, {ID: "second"},
 	}
 	rules := []runtime.MatchRule{
@@ -108,7 +108,7 @@ func TestRuleResolver_FirstMatchWins(t *testing.T) {
 }
 
 func TestRuleResolver_SecondRuleMatches(t *testing.T) {
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "first"}, {ID: "second"},
 	}
 	rules := []runtime.MatchRule{
@@ -132,7 +132,7 @@ func TestRuleResolver_SecondRuleMatches(t *testing.T) {
 }
 
 func TestRuleResolver_DefaultBinding(t *testing.T) {
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "specific"}, {ID: "fallback"},
 	}
 	rules := []runtime.MatchRule{
@@ -153,7 +153,7 @@ func TestRuleResolver_DefaultBinding(t *testing.T) {
 }
 
 func TestRuleResolver_NoMatch_NoDefault_Error(t *testing.T) {
-	bindings := []domain.DestinationBinding{{ID: "only"}}
+	bindings := []routing.DestinationBinding{{ID: "only"}}
 	rules := []runtime.MatchRule{
 		{BindingID: "only", Conditions: []runtime.MatchCondition{
 			{Field: "subject", Operator: "eq", Value: "exact"},
@@ -169,7 +169,7 @@ func TestRuleResolver_NoMatch_NoDefault_Error(t *testing.T) {
 }
 
 func TestRuleResolver_MultiConditionRule_AND(t *testing.T) {
-	bindings := []domain.DestinationBinding{{ID: "target"}, {ID: "fallback"}}
+	bindings := []routing.DestinationBinding{{ID: "target"}, {ID: "fallback"}}
 	rules := []runtime.MatchRule{
 		{BindingID: "target", Conditions: []runtime.MatchCondition{
 			{Field: "subject", Operator: "prefix", Value: "orders."},
@@ -208,7 +208,7 @@ func TestRuleResolver_MultiConditionRule_AND(t *testing.T) {
 }
 
 func TestRuleResolver_EmptyRules_DefaultOnly(t *testing.T) {
-	bindings := []domain.DestinationBinding{{ID: "default-bind"}}
+	bindings := []routing.DestinationBinding{{ID: "default-bind"}}
 	resolver := makeRuleResolver(t, bindings, nil, "default-bind")
 
 	env := &messaging.Envelope{Subject: "anything"}
@@ -222,7 +222,7 @@ func TestRuleResolver_EmptyRules_DefaultOnly(t *testing.T) {
 }
 
 func TestRuleResolver_NoConditions_AlwaysMatch(t *testing.T) {
-	bindings := []domain.DestinationBinding{{ID: "catch-all"}}
+	bindings := []routing.DestinationBinding{{ID: "catch-all"}}
 	rules := []runtime.MatchRule{
 		{BindingID: "catch-all", Conditions: nil},
 	}
@@ -239,7 +239,7 @@ func TestRuleResolver_NoConditions_AlwaysMatch(t *testing.T) {
 }
 
 func TestRuleResolver_JSONPayloadCondition(t *testing.T) {
-	bindings := []domain.DestinationBinding{{ID: "high-prio"}, {ID: "low-prio"}}
+	bindings := []routing.DestinationBinding{{ID: "high-prio"}, {ID: "low-prio"}}
 	rules := []runtime.MatchRule{
 		{BindingID: "high-prio", Conditions: []runtime.MatchCondition{
 			{Field: "$.priority", Operator: "gt", Value: float64(5)},
@@ -265,7 +265,7 @@ func TestRuleResolver_JSONPayloadCondition(t *testing.T) {
 }
 
 func TestRuleResolver_RegexCondition(t *testing.T) {
-	bindings := []domain.DestinationBinding{{ID: "order-match"}, {ID: "other"}}
+	bindings := []routing.DestinationBinding{{ID: "order-match"}, {ID: "other"}}
 	rules := []runtime.MatchRule{
 		{BindingID: "order-match", Conditions: []runtime.MatchCondition{
 			{Field: "subject", Operator: "regex", Value: `^order-\d+$`},
@@ -281,7 +281,7 @@ func TestRuleResolver_RegexCondition(t *testing.T) {
 }
 
 func TestRuleResolver_WithAddressTemplate(t *testing.T) {
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "dynamic", Address: "events/{region}/stream"},
 	}
 	rules := []runtime.MatchRule{
@@ -309,7 +309,7 @@ func TestRuleResolver_UnknownBindingInRule_ReturnsError(t *testing.T) {
 		{BindingID: "nonexistent", Conditions: nil},
 	})
 	_, err := runtime.NewRuleResolver(
-		[]domain.DestinationBinding{{ID: "real"}},
+		[]routing.DestinationBinding{{ID: "real"}},
 		compiled,
 		"",
 	)
@@ -323,7 +323,7 @@ func TestRuleResolver_UnknownBindingInRule_ReturnsError(t *testing.T) {
 
 func TestRuleResolver_UnknownDefaultBinding_ReturnsError(t *testing.T) {
 	_, err := runtime.NewRuleResolver(
-		[]domain.DestinationBinding{{ID: "real"}},
+		[]routing.DestinationBinding{{ID: "real"}},
 		nil,
 		"nonexistent",
 	)
@@ -347,7 +347,7 @@ func TestCompileMatchRules_InvalidRegex_ReturnsError(t *testing.T) {
 }
 
 func TestRuleResolver_ConditionEvalError_TreatedAsNoMatch(t *testing.T) {
-	bindings := []domain.DestinationBinding{{ID: "target"}, {ID: "fallback"}}
+	bindings := []routing.DestinationBinding{{ID: "target"}, {ID: "fallback"}}
 	rules := []runtime.MatchRule{
 		{BindingID: "target", Conditions: []runtime.MatchCondition{
 			// Numeric compare on non-numeric string -> error -> treated as no-match

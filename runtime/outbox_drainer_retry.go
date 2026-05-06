@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -120,7 +120,7 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *persistence.Outb
 
 func (d *OutboxDrainer) handleExpired(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
 	env := &rec.Envelope
-	if d.policy.OnExpired == domain.ExpiredDLQ {
+	if d.policy.OnExpired == routing.ExpiredDLQ {
 		if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID, rec.SessionID, "", shared.ErrMessageExpired, rec.ReplayCount); dlqErr != nil {
 			return dlqErr
 		}

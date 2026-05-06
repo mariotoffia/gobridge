@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -26,7 +26,7 @@ func TestIntegration_RetryRelease(t *testing.T) {
 		Username:       user,
 		Password:       pass,
 		ConnectTimeout: 15 * time.Second,
-	}, domain.SessionEphemeral, slog.Default())
+	}, connectivity.SessionEphemeral, slog.Default())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -107,7 +107,7 @@ func TestIntegration_RetryModify(t *testing.T) {
 		Username:       user,
 		Password:       pass,
 		ConnectTimeout: 15 * time.Second,
-	}, domain.SessionEphemeral, slog.Default())
+	}, connectivity.SessionEphemeral, slog.Default())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -189,7 +189,7 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 		Username:       user,
 		Password:       pass,
 		ConnectTimeout: 15 * time.Second,
-	}, domain.SessionEphemeral, slog.Default())
+	}, connectivity.SessionEphemeral, slog.Default())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

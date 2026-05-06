@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
@@ -46,7 +46,7 @@ type SessionManager struct {
 	ownerID           string
 	exclusive         bool
 	connectAfterLease bool
-	plan              domain.SessionPlan
+	plan              connectivity.SessionPlan
 	leaseTTL          time.Duration
 	renewInterval     time.Duration
 	renewJitter       time.Duration

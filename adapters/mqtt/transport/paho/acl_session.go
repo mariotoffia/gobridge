@@ -8,7 +8,7 @@ import (
 	"github.com/eclipse/paho.golang/autopaho"
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -199,12 +199,12 @@ func (s *Session) Start(ctx context.Context) error {
 	s.mu.Unlock()
 
 	switch s.mode {
-	case domain.SessionEphemeral:
+	case connectivity.SessionEphemeral:
 		cfg.CleanStartOnInitialConnection = true
 		cfg.SessionExpiryInterval = 0
 		ephemeralCleanStart = true
-	case domain.SessionPersistent, domain.SessionExclusive:
-		if s.opts.CleanStart && s.mode == domain.SessionExclusive {
+	case connectivity.SessionPersistent, connectivity.SessionExclusive:
+		if s.opts.CleanStart && s.mode == connectivity.SessionExclusive {
 			// CleanStart + Exclusive is a misconfiguration: autopaho reconnects
 			// with the same Client ID and CleanStart=true, causing the broker to
 			// disconnect the existing connection ("session taken over" loop).

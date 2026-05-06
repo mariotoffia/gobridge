@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -61,7 +61,7 @@ func (c *Config) CredentialsURI() string {
 // Pre-existing inline values would take precedence here too, but
 // since SQS Config carries no inline auth fields the contract is
 // degenerate.
-func (c *Config) ApplyCredentials(_ *domain.CredentialSet) error {
+func (c *Config) ApplyCredentials(_ *connectivity.CredentialSet) error {
 	if c == nil {
 		return errors.New("sqs: nil config")
 	}

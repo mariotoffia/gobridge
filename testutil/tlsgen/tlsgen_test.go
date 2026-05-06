@@ -7,9 +7,10 @@ import (
 	"encoding/pem"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/testutil/tlsgen"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/testutil/tlsgen"
 )
 
 // Verifies default Generate options produce an ECDSA key and localhost SANs.

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -50,8 +50,8 @@ func TestF2_StopReleasesLeaseWithValidContext(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID:     "f2-route",
-		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
-		Bindings: []domain.DestinationBinding{
+		Policy: routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "sess-f2"},
 		},
 	}
@@ -178,8 +178,8 @@ func TestF4_DirectHoldSharedConsumerRejected(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "f4-reject",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		SourceCapabilities: []ports.Capability{
 			ports.CapVisibilityExtension,
@@ -204,8 +204,8 @@ func TestF4_DirectHoldAllowUnfenced(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "f4-allow",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:  domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:  routing.DeliveryDirectHold,
 			AllowUnfenced: true,
 		},
 		SourceCapabilities: []ports.Capability{
@@ -247,7 +247,7 @@ func TestF5_DrainBatchSkipsTOCTOUCheck(t *testing.T) {
 		PartitionKey: persistence.OutboxPartitionKey("sess-1", ""),
 		LeaseID:      "sess-1",
 		OwnerID:      token.Owner,
-		Policy:       domain.RoutePolicy{}.WithDefaults(),
+		Policy:       routing.RoutePolicy{}.WithDefaults(),
 		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
 		TokenFn:      func() (persistence.LeaseToken, bool) { return token, true },
 	}
@@ -293,8 +293,8 @@ func TestF6_StaleFencingTokenDoesNotKillRuntime(t *testing.T) {
 
 	cfgA := goruntime.RouteConfig{
 		ID:     "route-f6a",
-		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox},
-		Bindings: []domain.DestinationBinding{
+		Policy: routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "sess-f6a"},
 		},
 	}
@@ -305,7 +305,7 @@ func TestF6_StaleFencingTokenDoesNotKillRuntime(t *testing.T) {
 
 	cfgB := goruntime.RouteConfig{
 		ID:                 "route-f6b",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 	_ = rt.AddRoute(cfgB, receiverB, senderB, nil, nil)
@@ -351,7 +351,7 @@ func TestF6_CriticalErrorStillKillsRuntime(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID:                 "crit-route",
-		Policy:             domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 

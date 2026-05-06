@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 func TestNewSender_Validates(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 
 	_, err := NewSender(SenderConfig{}, sess)
 	if err == nil {
@@ -24,7 +24,7 @@ func TestNewSender_Validates(t *testing.T) {
 }
 
 func TestNewSender_AppliesDefaults(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 
 	s, err := NewSender(SenderConfig{Address: "queue/out"}, sess)
 	if err != nil {
@@ -39,7 +39,7 @@ func TestNewSender_AppliesDefaults(t *testing.T) {
 }
 
 func TestSender_Send_NoSession(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 
 	s, err := NewSender(SenderConfig{Address: "queue/out"}, sess)
 	if err != nil {
@@ -64,7 +64,7 @@ func TestSender_Send_NoSession(t *testing.T) {
 }
 
 func TestSender_SendBatch_NoSession(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 
 	s, err := NewSender(SenderConfig{Address: "queue/out"}, sess)
 	if err != nil {
@@ -86,7 +86,7 @@ func TestSender_SendBatch_NoSession(t *testing.T) {
 }
 
 func TestSender_BuildMessage(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 
 	if _, err := NewSender(SenderConfig{Address: "queue/out"}, sess); err != nil {
 		t.Fatalf("NewSender() error = %v", err)
@@ -129,7 +129,7 @@ func TestSender_BuildMessage(t *testing.T) {
 }
 
 func TestSender_BuildMessage_NoExpiry(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 
 	if _, err := NewSender(SenderConfig{Address: "queue/out"}, sess); err != nil {
 		t.Fatalf("NewSender() error = %v", err)
@@ -148,7 +148,7 @@ func TestSender_BuildMessage_NoExpiry(t *testing.T) {
 }
 
 func TestSender_Close_NoLink(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 
 	s, err := NewSender(SenderConfig{Address: "queue/out"}, sess)
 	if err != nil {
@@ -161,7 +161,7 @@ func TestSender_Close_NoLink(t *testing.T) {
 }
 
 func TestSender_SendBatch_ContextCancel(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 
 	s, err := NewSender(SenderConfig{Address: "queue/out"}, sess)
 	if err != nil {
@@ -182,7 +182,7 @@ func TestSender_SendBatch_ContextCancel(t *testing.T) {
 }
 
 func TestSender_NilLogger(t *testing.T) {
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, nil)
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, nil)
 
 	s, err := NewSender(SenderConfig{Address: "queue/out"}, sess)
 	if err != nil {
@@ -195,7 +195,7 @@ func TestSender_NilLogger(t *testing.T) {
 
 func TestSender_CustomMetrics(t *testing.T) {
 	rec := &ports.RecordingExporter{}
-	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, domain.SessionEphemeral, slog.Default())
+	sess := NewSession(SessionOptions{Address: "amqp://localhost"}, connectivity.SessionEphemeral, slog.Default())
 
 	s, err := NewSender(SenderConfig{
 		Address: "queue/out",

@@ -12,7 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
@@ -55,7 +56,7 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 	// KeepAlive=5 for fast disconnect detection after broker restart.
 	sessionID := mqttlocal.UniqueClientID("uc42-session")
 	sess := newMQTTSessionWithBroker(t, brokerURL, sessionID,
-		domain.SessionExclusive, 65535, 5)
+		connectivity.SessionExclusive, 65535, 5)
 	mqttSnd := setupMQTTSender(t, sess)
 	sqsRx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessionID)
@@ -69,13 +70,13 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 	)
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc42-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc42-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc42-bind", Address: outTopic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc42-bind", SessionID: sessionID},
 		},
 	}
@@ -163,7 +164,7 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 
 	sessionID := mqttlocal.UniqueClientID("uc43-session")
 	sess := setupMQTTSessionWithBroker(t, brokerURL, sessionID,
-		domain.SessionExclusive, 65535, 5)
+		connectivity.SessionExclusive, 65535, 5)
 	mqttSnd := setupMQTTSender(t, sess)
 
 	sqsRx, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
@@ -182,14 +183,14 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 	)
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc43-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:      domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:      routing.DeliveryDirectHold,
 			MaxReplayAttempts: 50,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc43-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc43-bind", Address: outTopic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc43-bind", SessionID: sessionID},
 		},
 		SourceCapabilities: directHoldCaps,
@@ -264,7 +265,7 @@ func TestUC44_BrokerLowInflightQuota(t *testing.T) {
 
 	sessionID := mqttlocal.UniqueClientID("uc44-session")
 	sess := newMQTTSessionWithBroker(t, brokerURL, sessionID,
-		domain.SessionExclusive, 5) // ReceiveMaximum=5
+		connectivity.SessionExclusive, 5) // ReceiveMaximum=5
 	mqttSnd := setupMQTTSender(t, sess)
 	sqsRx := newSQSReceiver(t, sqsInURL)
 	sc := lrSessionConfig(sessionID)
@@ -278,14 +279,14 @@ func TestUC44_BrokerLowInflightQuota(t *testing.T) {
 	)
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc44-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 			MaxInFlight:  100,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc44-bind", Address: outTopic},
+			routing.DispatchPlan{BindingID: "uc44-bind", Address: outTopic},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc44-bind", SessionID: sessionID},
 		},
 	}
@@ -355,7 +356,7 @@ func TestUC45_BrokerQuota_SharedOutbox_vs_DirectHold(t *testing.T) {
 	// --- Path A: SharedOutbox ---
 	sessIDA := mqttlocal.UniqueClientID("uc45-sess-a")
 	sessA := newMQTTSessionWithBroker(t, brokerURL, sessIDA,
-		domain.SessionExclusive, 10)
+		connectivity.SessionExclusive, 10)
 	sndA := setupMQTTSender(t, sessA)
 	rxA := newSQSReceiver(t, sqsInA)
 	scA := lrSessionConfig(sessIDA)
@@ -369,14 +370,14 @@ func TestUC45_BrokerQuota_SharedOutbox_vs_DirectHold(t *testing.T) {
 	)
 	require.NoError(t, rtA.AddRoute(goruntime.RouteConfig{
 		ID: "uc45-route-a",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 			MaxInFlight:  50,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc45-bind-a", Address: topicA},
+			routing.DispatchPlan{BindingID: "uc45-bind-a", Address: topicA},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc45-bind-a", SessionID: sessIDA},
 		},
 	}, rxA, sndA, sessA, &scA))
@@ -386,7 +387,7 @@ func TestUC45_BrokerQuota_SharedOutbox_vs_DirectHold(t *testing.T) {
 	// --- Path B: DirectHold ---
 	sessIDB := mqttlocal.UniqueClientID("uc45-sess-b")
 	sessB := setupMQTTSessionWithBroker(t, brokerURL, sessIDB,
-		domain.SessionExclusive, 10)
+		connectivity.SessionExclusive, 10)
 	sndB := setupMQTTSender(t, sessB)
 	rxB := newSQSReceiver(t, sqsInB)
 
@@ -397,12 +398,12 @@ func TestUC45_BrokerQuota_SharedOutbox_vs_DirectHold(t *testing.T) {
 	)
 	require.NoError(t, rtB.AddRoute(goruntime.RouteConfig{
 		ID: "uc45-route-b",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			MaxInFlight:  50,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc45-bind-b", Address: topicB},
+			routing.DispatchPlan{BindingID: "uc45-bind-b", Address: topicB},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, rxB, sndB, sessB, nil))

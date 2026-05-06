@@ -29,7 +29,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 )
 
 // TestRenderAddress_SelfReference validates that a header value containing
@@ -183,7 +183,7 @@ func TestRenderAddress_AdjacentBraces(t *testing.T) {
 // TestStaticResolver_ReturnsCopy validates that Resolve returns an
 // independent copy, not the internal slice (GO-4).
 func TestStaticResolver_ReturnsCopy(t *testing.T) {
-	plans := []domain.DispatchPlan{
+	plans := []routing.DispatchPlan{
 		{BindingID: "b1", Address: "addr1"},
 		{BindingID: "b2", Address: "addr2"},
 	}

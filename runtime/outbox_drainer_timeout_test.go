@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -199,7 +199,7 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 		PartitionKey:        pk,
 		LeaseID:             "sess-slow",
 		OwnerID:             token.Owner,
-		Policy:              domain.RoutePolicy{}.WithDefaults(),
+		Policy:              routing.RoutePolicy{}.WithDefaults(),
 		Strategy:            persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:      recordCount,
 		DrainMaxBatchSize:   recordCount,
@@ -307,7 +307,7 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 		PartitionKey:        pk,
 		LeaseID:             "sess-legacy",
 		OwnerID:             token.Owner,
-		Policy:              domain.RoutePolicy{}.WithDefaults(),
+		Policy:              routing.RoutePolicy{}.WithDefaults(),
 		Strategy:            persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:      recordCount,
 		DrainMaxBatchSize:   recordCount,

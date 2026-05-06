@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -24,7 +24,7 @@ func TestSession_ConcurrentPushEventAndClose(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "close-race-test",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	var wg sync.WaitGroup
 	const pushers = 10
@@ -58,7 +58,7 @@ func TestSession_CloseIdempotent(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "close-idempotent-test",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	// Close twice — second should be a no-op (no panic on double channel close).
 	err1 := sess.Close(context.Background())

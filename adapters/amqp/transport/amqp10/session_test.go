@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -18,7 +18,7 @@ func newTestSession() *Session {
 		ConnectTimeout: 2 * time.Second,
 		ReconnectDelay: 100 * time.Millisecond,
 	}
-	return NewSession(opts, domain.SessionPersistent, slog.Default())
+	return NewSession(opts, connectivity.SessionPersistent, slog.Default())
 }
 
 func TestSession_Start_ClosedSession(t *testing.T) {
@@ -144,8 +144,8 @@ func TestSession_Health_Connected_WithPlan(t *testing.T) {
 		t.Fatalf("Start() error: %v", err)
 	}
 	defer func() { _ = s.Close(context.Background()) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "test/topic"}},
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "test/topic"}},
 	}
 	if err := s.Reconcile(context.Background(), plan); err != nil {
 		t.Fatalf("Reconcile() error: %v", err)
@@ -177,8 +177,8 @@ func TestSession_Reconcile_NotStarted(t *testing.T) {
 	// verifies Reconcile returns ErrUnavailable when session is not started
 	s := newTestSession()
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "test/topic"}},
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "test/topic"}},
 	}
 	err := s.Reconcile(context.Background(), plan)
 	if err == nil {

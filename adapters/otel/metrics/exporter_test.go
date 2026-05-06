@@ -4,8 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // Verifies applyDefaults fills zero Config fields with documented defaults.

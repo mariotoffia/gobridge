@@ -12,8 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -53,11 +54,11 @@ func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {
 
 	// --- Bridge: MQTT receiver -> 3 SQS senders via content routing ---
 	rxSessID := mqttlocal.UniqueClientID("uc2-rx")
-	rxSess := setupMQTTSession(t, rxSessID, domain.SessionEphemeral)
+	rxSess := setupMQTTSession(t, rxSessID, connectivity.SessionEphemeral)
 
 	// Subscribe to wildcard topic.
-	require.NoError(t, rxSess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	require.NoError(t, rxSess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "uc2/devices/+/telemetry", QoS: 1},
 		},
 	}), "Reconcile rx session")
@@ -78,7 +79,7 @@ func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {
 	sidB := uniqueID("uc2-sqs-b")
 	sidC := uniqueID("uc2-sqs-c")
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", SessionID: sidA, Address: sqsAURL, Transport: "sqs"},
 		{ID: "bind-b", SessionID: sidB, Address: sqsBURL, Transport: "sqs"},
 		{ID: "bind-c", SessionID: sidC, Address: sqsCURL, Transport: "sqs"},
@@ -108,8 +109,8 @@ func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {
 
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc2-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewBindingResolver(bindings,
 			goruntime.MatchByHeader("factory", map[string]string{
@@ -133,7 +134,7 @@ func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {
 	for _, factory := range factories {
 		pubSessID := mqttlocal.UniqueClientID(
 			fmt.Sprintf("uc2-pub-%s", factory))
-		pubSess := setupMQTTSession(t, pubSessID, domain.SessionEphemeral)
+		pubSess := setupMQTTSession(t, pubSessID, connectivity.SessionEphemeral)
 		pubSnd := paho.NewSender(pubSess, paho.SenderOptions{
 			QoS:     1,
 			Timeout: 10 * time.Second,
@@ -225,7 +226,7 @@ func newNoopSession() *noopSession {
 func (s *noopSession) Start(_ context.Context) error { return nil }
 func (s *noopSession) Close(_ context.Context) error { return nil }
 func (s *noopSession) Reconcile(
-	_ context.Context, _ domain.SessionPlan,
+	_ context.Context, _ connectivity.SessionPlan,
 ) error {
 	return nil
 }

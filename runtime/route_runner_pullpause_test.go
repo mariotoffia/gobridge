@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -76,9 +76,9 @@ func TestRouteRunner_PullPause_EmitBlocksWhenSaturated(t *testing.T) {
 	receiver := NewFakeReceiver()
 	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
 		RouteID: "pullpause-route",
-		Policy: domain.RoutePolicy{
+		Policy: routing.RoutePolicy{
 			MaxInFlight:  maxInFlight,
-			DeliveryMode: domain.DeliveryDirectHold,
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Receiver: receiver,
 		Sender:   sender,
@@ -213,9 +213,9 @@ func TestRouteRunner_PullPause_ThroughputResumesAfterSlowSender(t *testing.T) {
 	receiver := NewFakeReceiver()
 	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
 		RouteID: "pullpause-throughput-route",
-		Policy: domain.RoutePolicy{
+		Policy: routing.RoutePolicy{
 			MaxInFlight:  maxInFlight,
-			DeliveryMode: domain.DeliveryDirectHold,
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Receiver: receiver,
 		Sender:   sender,

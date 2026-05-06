@@ -1,11 +1,11 @@
-package domain_test
+package routing_test
 
 import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -27,16 +27,16 @@ import (
 // NewDefaultBackoffPolicy(), mutating the global no longer affects
 // WithDefaults() output.
 func TestDefaultBackoffPolicy_MutableGlobalDoesNotAffectWithDefaults(t *testing.T) {
-	orig := domain.DefaultBackoffPolicy
+	orig := routing.DefaultBackoffPolicy
 
 	defer func() {
-		domain.DefaultBackoffPolicy = orig
+		routing.DefaultBackoffPolicy = orig
 	}()
 
-	domain.DefaultBackoffPolicy.Multiplier = 99.0
+	routing.DefaultBackoffPolicy.Multiplier = 99.0
 
-	p := domain.RoutePolicy{}.WithDefaults()
-	expected := domain.NewDefaultBackoffPolicy().Multiplier
+	p := routing.RoutePolicy{}.WithDefaults()
+	expected := routing.NewDefaultBackoffPolicy().Multiplier
 	if p.Backoff.Multiplier != expected {
 		t.Fatalf("expected immutable default multiplier %f, got %f", expected, p.Backoff.Multiplier)
 	}
@@ -63,18 +63,18 @@ func TestOutboxPartitionKey_SessionTakesPrecedence(t *testing.T) {
 // TestRoutePolicy_WithDefaults_AllFieldsSet validates that WithDefaults
 // does not overwrite explicitly set values.
 func TestRoutePolicy_WithDefaults_AllFieldsSet(t *testing.T) {
-	p := domain.RoutePolicy{
+	p := routing.RoutePolicy{
 		MaxInFlight:        50,
 		MaxReplayAttempts:  3,
 		MaxOutboxDepth:     500,
-		OnExpired:          domain.ExpiredDrop,
-		OnPermanentFailure: domain.FailureDrop,
-		DispatchMode:       domain.DispatchFanOut,
-		DeliveryMode:       domain.DeliverySharedOutbox,
-		AckAfter:           domain.AckAfterOutboxPersist,
+		OnExpired:          routing.ExpiredDrop,
+		OnPermanentFailure: routing.FailureDrop,
+		DispatchMode:       routing.DispatchFanOut,
+		DeliveryMode:       routing.DeliverySharedOutbox,
+		AckAfter:           routing.AckAfterOutboxPersist,
 		SendTimeout:        10 * time.Second,
 		DepthCacheTTL:      5 * time.Second,
-		Backoff: domain.BackoffPolicy{
+		Backoff: routing.BackoffPolicy{
 			InitialInterval: 2 * time.Second,
 			MaxInterval:     60 * time.Second,
 			Multiplier:      3.0,
@@ -89,10 +89,10 @@ func TestRoutePolicy_WithDefaults_AllFieldsSet(t *testing.T) {
 	if result.MaxReplayAttempts != 3 {
 		t.Fatalf("MaxReplayAttempts overwritten: got %d", result.MaxReplayAttempts)
 	}
-	if result.OnExpired != domain.ExpiredDrop {
+	if result.OnExpired != routing.ExpiredDrop {
 		t.Fatalf("OnExpired overwritten: got %s", result.OnExpired)
 	}
-	if result.OnPermanentFailure != domain.FailureDrop {
+	if result.OnPermanentFailure != routing.FailureDrop {
 		t.Fatalf("OnPermanentFailure overwritten: got %s", result.OnPermanentFailure)
 	}
 	if result.Backoff.Multiplier != 3.0 {
@@ -106,21 +106,21 @@ func TestRoutePolicy_WithDefaults_AllFieldsSet(t *testing.T) {
 // TestRoutePolicy_WithDefaults_ZeroValue validates that a zero-value
 // RoutePolicy gets all defaults applied.
 func TestRoutePolicy_WithDefaults_ZeroValue(t *testing.T) {
-	p := domain.RoutePolicy{}.WithDefaults()
+	p := routing.RoutePolicy{}.WithDefaults()
 
-	if p.MaxInFlight != domain.DefaultMaxInFlight {
-		t.Fatalf("expected MaxInFlight=%d, got %d", domain.DefaultMaxInFlight, p.MaxInFlight)
+	if p.MaxInFlight != routing.DefaultMaxInFlight {
+		t.Fatalf("expected MaxInFlight=%d, got %d", routing.DefaultMaxInFlight, p.MaxInFlight)
 	}
-	if p.MaxReplayAttempts != domain.DefaultMaxReplayAttempts {
-		t.Fatalf("expected MaxReplayAttempts=%d, got %d", domain.DefaultMaxReplayAttempts, p.MaxReplayAttempts)
+	if p.MaxReplayAttempts != routing.DefaultMaxReplayAttempts {
+		t.Fatalf("expected MaxReplayAttempts=%d, got %d", routing.DefaultMaxReplayAttempts, p.MaxReplayAttempts)
 	}
-	if p.SendTimeout != domain.DefaultSendTimeout {
-		t.Fatalf("expected SendTimeout=%v, got %v", domain.DefaultSendTimeout, p.SendTimeout)
+	if p.SendTimeout != routing.DefaultSendTimeout {
+		t.Fatalf("expected SendTimeout=%v, got %v", routing.DefaultSendTimeout, p.SendTimeout)
 	}
-	if p.OnExpired != domain.ExpiredDLQ {
+	if p.OnExpired != routing.ExpiredDLQ {
 		t.Fatalf("expected OnExpired=dlq, got %s", p.OnExpired)
 	}
-	if p.OnPermanentFailure != domain.FailureDLQ {
+	if p.OnPermanentFailure != routing.FailureDLQ {
 		t.Fatalf("expected OnPermanentFailure=dlq, got %s", p.OnPermanentFailure)
 	}
 }

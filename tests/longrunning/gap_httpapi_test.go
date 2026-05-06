@@ -15,8 +15,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/httpapi"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -107,7 +108,7 @@ func TestGAP_HTTPFullSuite(t *testing.T) {
 	defer cancel()
 
 	sessID := mqttlocal.UniqueClientID("gap-ha1-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
 	snd := setupMQTTSender(t, sess)
 
 	rt := goruntime.New(
@@ -117,10 +118,10 @@ func TestGAP_HTTPFullSuite(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-ha1-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "ha1-bind", Address: "gap-ha1/out"}),
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "ha1-bind", Address: "gap-ha1/out"}),
 		SourceCapabilities: []ports.Capability{ports.CapHTTPEndpoint},
 	}, &noopReceiver{}, snd, nil, nil))
 
@@ -209,7 +210,7 @@ func TestGAP_HTTPBridgeStartStop(t *testing.T) {
 	collector := newMQTTCollector(t, "gap-ha2/out", "gap-ha2-col")
 
 	sessID := mqttlocal.UniqueClientID("gap-ha2-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
 	snd := setupMQTTSender(t, sess)
 
 	rt := goruntime.New(
@@ -219,10 +220,10 @@ func TestGAP_HTTPBridgeStartStop(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-ha2-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "ha2-bind", Address: "gap-ha2/out"}),
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "ha2-bind", Address: "gap-ha2/out"}),
 		SourceCapabilities: []ports.Capability{ports.CapHTTPEndpoint},
 	}, &noopReceiver{}, snd, nil, nil))
 
@@ -303,7 +304,7 @@ func TestGAP_HTTPDLQManagement(t *testing.T) {
 	dlq := &replayableDLQStore{}
 
 	sessID := mqttlocal.UniqueClientID("gap-ha3-sess")
-	sess := setupMQTTSession(t, sessID, domain.SessionEphemeral)
+	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("gap-ha3"),
@@ -312,10 +313,10 @@ func TestGAP_HTTPDLQManagement(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "gap-ha3-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
-		Resolver:           goruntime.NewStaticResolver(domain.DispatchPlan{BindingID: "ha3-bind", Address: "gap-ha3/out"}),
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "ha3-bind", Address: "gap-ha3/out"}),
 		SourceCapabilities: directHoldCaps,
 	}, newSQSReceiver(t, sqsInURL), &permanentFailSender{}, sess, nil))
 

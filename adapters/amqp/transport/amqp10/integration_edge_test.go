@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
@@ -51,7 +51,7 @@ func edgeSession(t *testing.T, logger *slog.Logger) *Session {
 		Password:       pass,
 		ConnectTimeout: 15 * time.Second,
 		IdleTimeout:    1 * time.Minute,
-	}, domain.SessionEphemeral, logger)
+	}, connectivity.SessionEphemeral, logger)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -372,7 +372,7 @@ func TestIntegration_Edge_SendAfterSessionClose(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address: ep, Username: user, Password: pass,
 		ConnectTimeout: 15 * time.Second,
-	}, domain.SessionEphemeral, logger)
+	}, connectivity.SessionEphemeral, logger)
 
 	ctx := context.Background()
 	if err := sess.Start(ctx); err != nil {
@@ -406,7 +406,7 @@ func TestIntegration_Edge_ReceiverOnClosedSession(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address: ep, Username: user, Password: pass,
 		ConnectTimeout: 15 * time.Second,
-	}, domain.SessionEphemeral, logger)
+	}, connectivity.SessionEphemeral, logger)
 
 	ctx := context.Background()
 	if err := sess.Start(ctx); err != nil {
@@ -438,7 +438,7 @@ func TestIntegration_Edge_WrongCredentials(t *testing.T) {
 		Username:       "wrong-user",
 		Password:       "wrong-pass",
 		ConnectTimeout: 10 * time.Second,
-	}, domain.SessionEphemeral, slog.Default())
+	}, connectivity.SessionEphemeral, slog.Default())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

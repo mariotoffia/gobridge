@@ -21,8 +21,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -75,7 +75,7 @@ func TestGlobalMaxInFlight_NegativeClamp(t *testing.T) {
 
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID:                 "route-1",
-		Policy:             domain.RoutePolicy{MaxInFlight: 2}.WithDefaults(),
+		Policy:             routing.RoutePolicy{MaxInFlight: 2}.WithDefaults(),
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}, receiver, sender, nil, nil)
 	if err != nil {
@@ -131,7 +131,7 @@ func TestGlobalMaxInFlight_LimitsAcrossRoutes(t *testing.T) {
 
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID:                 "route-1",
-		Policy:             domain.RoutePolicy{MaxInFlight: 5}.WithDefaults(),
+		Policy:             routing.RoutePolicy{MaxInFlight: 5}.WithDefaults(),
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}, receiver1, sender, nil, nil)
 	if err != nil {
@@ -140,7 +140,7 @@ func TestGlobalMaxInFlight_LimitsAcrossRoutes(t *testing.T) {
 
 	err = rt.AddRoute(runtime.RouteConfig{
 		ID:                 "route-2",
-		Policy:             domain.RoutePolicy{MaxInFlight: 5}.WithDefaults(),
+		Policy:             routing.RoutePolicy{MaxInFlight: 5}.WithDefaults(),
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}, receiver2, sender, nil, nil)
 	if err != nil {

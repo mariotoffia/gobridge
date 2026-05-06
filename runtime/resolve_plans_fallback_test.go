@@ -8,22 +8,22 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
 func TestResolvePlans_NoResolver_RendersAddress(t *testing.T) {
 	sender := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "b1", Address: "devices/{tenant}/events"},
 	}
 
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "fallback-render",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
@@ -56,14 +56,14 @@ func TestResolvePlans_NoResolver_RenderError_RoutesDLQ(t *testing.T) {
 	sender := NewFakeSender()
 	dlqStore := NewFakeDLQStore()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "b1", Address: "devices/{tenant}/events"},
 	}
 
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "fallback-render-err",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(dlqStore),
@@ -91,7 +91,7 @@ func TestResolvePlans_NoResolver_RenderError_RoutesDLQ(t *testing.T) {
 func TestResolvePlans_NoResolver_CopiesBindingHeaders(t *testing.T) {
 	sender := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{
 			ID:      "b1",
 			Address: "topic/out",
@@ -102,7 +102,7 @@ func TestResolvePlans_NoResolver_CopiesBindingHeaders(t *testing.T) {
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "fallback-options",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
@@ -132,14 +132,14 @@ func TestResolvePlans_NoResolver_MQTTValidation(t *testing.T) {
 	sender := NewFakeSender()
 	dlqStore := NewFakeDLQStore()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "mqtt-b", Transport: "mqtt", Address: "devices/{topic}/events"},
 	}
 
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "fallback-mqtt-validate",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(dlqStore),

@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
 // TestApplyCredentials_Sender_SwapsClient verifies that ApplyCredentials
@@ -24,8 +24,8 @@ func TestApplyCredentials_Sender_SwapsClient(t *testing.T) {
 	s.client = nil
 	s.initMu.Unlock()
 
-	err = s.ApplyCredentials(t.Context(), &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "AKIA_NEW", Password: "SECRET_NEW"},
+	err = s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "AKIA_NEW", Password: "SECRET_NEW"},
 	})
 	require.NoError(t, err)
 
@@ -43,8 +43,8 @@ func TestApplyCredentials_Receiver_SwapsClient(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	err = r.ApplyCredentials(t.Context(), &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "AKIA_NEW", Password: "SECRET_NEW"},
+	err = r.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "AKIA_NEW", Password: "SECRET_NEW"},
 	})
 	require.NoError(t, err)
 
@@ -65,5 +65,5 @@ func TestApplyCredentials_Sender_NilSet_NoOp(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, s.ApplyCredentials(t.Context(), nil))
-	require.NoError(t, s.ApplyCredentials(t.Context(), &domain.CredentialSet{}))
+	require.NoError(t, s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{}))
 }

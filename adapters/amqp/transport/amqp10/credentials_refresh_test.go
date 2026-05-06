@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -17,11 +17,11 @@ func TestApplyCredentials_BeforeStart_UpdatesLiveCreds(t *testing.T) {
 		Address:  "amqp://broker.example:5672/",
 		Username: "u-old",
 		Password: "p-old",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	defer func() { _ = s.Close(t.Context()) }()
 
-	err := s.ApplyCredentials(t.Context(), &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u-new", Password: "p-new"},
+	err := s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u-new", Password: "p-new"},
 	})
 	require.NoError(t, err)
 
@@ -37,7 +37,7 @@ func TestApplyCredentials_BeforeStart_UpdatesLiveCreds(t *testing.T) {
 // TestApplyCredentials_NilSet_Rejected pins the boundary check.
 func TestApplyCredentials_NilSet_Rejected(t *testing.T) {
 	s := NewSession(SessionOptions{Address: "amqp://broker.example:5672/"},
-		domain.SessionEphemeral, nil)
+		connectivity.SessionEphemeral, nil)
 	defer func() { _ = s.Close(t.Context()) }()
 
 	err := s.ApplyCredentials(t.Context(), nil)
@@ -55,11 +55,11 @@ func TestApplyCredentials_TLSMaterial_StashesOnOpts(t *testing.T) {
 		Address:  "amqp://broker.example:5672/",
 		Username: "u",
 		Password: "p",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	defer func() { _ = s.Close(t.Context()) }()
 
-	require.NoError(t, s.ApplyCredentials(t.Context(), &domain.CredentialSet{
-		TLS: &domain.TLSMaterial{
+	require.NoError(t, s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
+		TLS: &connectivity.TLSMaterial{
 			CertPEM: "--- CERT ---",
 			KeyPEM:  "--- KEY ---",
 			CAPEMs:  []string{"--- CA ---"},
@@ -86,7 +86,7 @@ func TestApplyAMQP10TLSMaterial_ChangeDetection(t *testing.T) {
 	})
 	t.Run("first-time enable", func(t *testing.T) {
 		var tls *TLSConfig
-		require.True(t, applyAMQP10TLSMaterial(&tls, &domain.TLSMaterial{
+		require.True(t, applyAMQP10TLSMaterial(&tls, &connectivity.TLSMaterial{
 			CertPEM: "c", KeyPEM: "k",
 		}))
 		require.NotNil(t, tls)
@@ -96,7 +96,7 @@ func TestApplyAMQP10TLSMaterial_ChangeDetection(t *testing.T) {
 		tls := &TLSConfig{
 			Enable: true, CertPEM: "c", KeyPEM: "k", CACertPEM: "ca",
 		}
-		require.False(t, applyAMQP10TLSMaterial(&tls, &domain.TLSMaterial{
+		require.False(t, applyAMQP10TLSMaterial(&tls, &connectivity.TLSMaterial{
 			CertPEM: "c", KeyPEM: "k", CAPEMs: []string{"ca"},
 		}))
 	})
@@ -106,11 +106,11 @@ func TestApplyAMQP10TLSMaterial_ChangeDetection(t *testing.T) {
 // path.
 func TestApplyCredentials_ClosedSession_Rejected(t *testing.T) {
 	s := NewSession(SessionOptions{Address: "amqp://broker.example:5672/"},
-		domain.SessionEphemeral, nil)
+		connectivity.SessionEphemeral, nil)
 	require.NoError(t, s.Close(t.Context()))
 
-	err := s.ApplyCredentials(t.Context(), &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	err := s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	})
 	require.Error(t, err)
 	be, ok := shared.AsBridgeError(err)

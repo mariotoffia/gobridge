@@ -9,7 +9,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -86,7 +86,7 @@ func TestReceiver_ConvertMessage_ZeroTimestamp(t *testing.T) {
 func TestReceiver_Run_ContextCancel(t *testing.T) {
 	sess := NewSession(
 		SessionOptions{BrokerURL: "amqp://localhost/"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		slog.Default(),
 	)
 	defer func() { _ = sess.Close(context.Background()) }()
@@ -121,7 +121,7 @@ func TestNewReceiver_InheritsSessionLogger(t *testing.T) {
 	logger := slog.Default()
 	sess := NewSession(
 		SessionOptions{BrokerURL: "amqp://localhost/"},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		logger,
 	)
 	defer func() { _ = sess.Close(context.Background()) }()

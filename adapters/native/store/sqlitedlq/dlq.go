@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -40,7 +40,7 @@ func (s *Store) Close() error {
 
 // Write inserts a single DLQ entry. Duplicates surface as
 // shared.ErrDuplicateRecord.
-func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
+func (s *Store) Write(ctx context.Context, entry routing.DLQEntry) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: write",
 			"route_id", entry.RouteID, "entry_id", entry.ID)
@@ -49,7 +49,7 @@ func (s *Store) Write(ctx context.Context, entry domain.DLQEntry) error {
 }
 
 // List returns DLQ entries matching the supplied filter, newest first.
-func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *Store) List(ctx context.Context, filter routing.DLQFilter) ([]routing.DLQEntry, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: list",
 			"route_id", filter.RouteID, "limit", filter.Limit)
@@ -58,7 +58,7 @@ func (s *Store) List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQ
 }
 
 // Get returns the entry with id or shared.ErrNotFound.
-func (s *Store) Get(ctx context.Context, id string) (domain.DLQEntry, error) {
+func (s *Store) Get(ctx context.Context, id string) (routing.DLQEntry, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: get", "entry_id", id)
 	}
@@ -78,7 +78,7 @@ func (s *Store) Delete(ctx context.Context, ids []string) (int, error) {
 }
 
 // DeleteByFilter removes every entry matching the filter.
-func (s *Store) DeleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error) {
+func (s *Store) DeleteByFilter(ctx context.Context, filter routing.DLQFilter) (int, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: delete_by_filter",
 			"route_id", filter.RouteID, "category", filter.Category)

@@ -3,7 +3,7 @@ package transport
 import (
 	"errors"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -23,7 +23,7 @@ func (c *Config) CredentialsURI() string {
 // PasswordCredential.Password populates APIKey when it is empty
 // ("inline config wins"). TLS material has no current consumer at
 // build time and is therefore ignored here.
-func (c *Config) ApplyCredentials(set *domain.CredentialSet) error {
+func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 	if c == nil {
 		return errors.New("http: nil config")
 	}

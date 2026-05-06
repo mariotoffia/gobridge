@@ -12,8 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -131,7 +132,7 @@ func TestUC5_PipelineChain(t *testing.T) {
 
 	// -- Bridge-1: SQS(stage-0) -> MQTT(uc5/stage/1) ----------------------
 	sess1ID := mqttlocal.UniqueClientID("uc5-b1")
-	sess1 := setupMQTTSession(t, sess1ID, domain.SessionEphemeral)
+	sess1 := setupMQTTSession(t, sess1ID, connectivity.SessionEphemeral)
 	mqttSender1 := setupMQTTSender(t, sess1)
 	sqsRx0 := newSQSReceiver(t, stage0URL)
 
@@ -143,12 +144,12 @@ func TestUC5_PipelineChain(t *testing.T) {
 	)
 	route1 := goruntime.RouteConfig{
 		ID: "uc5-route-1",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Processors: []ports.Processor{&stageProcessor{stage: "1"}},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "mqtt-stage1", Address: "uc5/stage/1"},
+			routing.DispatchPlan{BindingID: "mqtt-stage1", Address: "uc5/stage/1"},
 		),
 		SourceCapabilities: directHoldCaps,
 	}
@@ -156,9 +157,9 @@ func TestUC5_PipelineChain(t *testing.T) {
 
 	// -- Bridge-2: MQTT(uc5/stage/1) -> SQS(stage-2) ----------------------
 	sess2ID := mqttlocal.UniqueClientID("uc5-b2")
-	sess2 := setupMQTTSession(t, sess2ID, domain.SessionEphemeral)
-	err := sess2.Reconcile(context.Background(), domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	sess2 := setupMQTTSession(t, sess2ID, connectivity.SessionEphemeral)
+	err := sess2.Reconcile(context.Background(), connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "uc5/stage/1", QoS: 1},
 		},
 	})
@@ -175,12 +176,12 @@ func TestUC5_PipelineChain(t *testing.T) {
 	)
 	route2 := goruntime.RouteConfig{
 		ID: "uc5-route-2",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Processors: []ports.Processor{&stageProcessor{stage: "2"}},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "sqs-stage2", Address: stage2URL},
+			routing.DispatchPlan{BindingID: "sqs-stage2", Address: stage2URL},
 		),
 		SourceCapabilities: directHoldCaps,
 	}
@@ -188,7 +189,7 @@ func TestUC5_PipelineChain(t *testing.T) {
 
 	// -- Bridge-3: SQS(stage-2) -> MQTT(uc5/stage/3) ----------------------
 	sess3ID := mqttlocal.UniqueClientID("uc5-b3")
-	sess3 := setupMQTTSession(t, sess3ID, domain.SessionEphemeral)
+	sess3 := setupMQTTSession(t, sess3ID, connectivity.SessionEphemeral)
 	mqttSender3 := setupMQTTSender(t, sess3)
 	sqsRx2 := newSQSReceiver(t, stage2URL)
 
@@ -199,12 +200,12 @@ func TestUC5_PipelineChain(t *testing.T) {
 	)
 	route3 := goruntime.RouteConfig{
 		ID: "uc5-route-3",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Processors: []ports.Processor{&stageProcessor{stage: "3"}},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "mqtt-stage3", Address: "uc5/stage/3"},
+			routing.DispatchPlan{BindingID: "mqtt-stage3", Address: "uc5/stage/3"},
 		),
 		SourceCapabilities: directHoldCaps,
 	}
@@ -212,9 +213,9 @@ func TestUC5_PipelineChain(t *testing.T) {
 
 	// -- Bridge-4: MQTT(uc5/stage/3) -> SQS(final) ------------------------
 	sess4ID := mqttlocal.UniqueClientID("uc5-b4")
-	sess4 := setupMQTTSession(t, sess4ID, domain.SessionEphemeral)
-	err = sess4.Reconcile(context.Background(), domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	sess4 := setupMQTTSession(t, sess4ID, connectivity.SessionEphemeral)
+	err = sess4.Reconcile(context.Background(), connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "uc5/stage/3", QoS: 1},
 		},
 	})
@@ -231,12 +232,12 @@ func TestUC5_PipelineChain(t *testing.T) {
 	)
 	route4 := goruntime.RouteConfig{
 		ID: "uc5-route-4",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		Processors: []ports.Processor{&stageProcessor{stage: "4"}},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "sqs-final", Address: finalURL},
+			routing.DispatchPlan{BindingID: "sqs-final", Address: finalURL},
 		),
 		SourceCapabilities: directHoldCaps,
 	}

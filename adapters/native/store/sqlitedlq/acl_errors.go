@@ -7,9 +7,10 @@ import (
 	"io"
 	"strings"
 
-	"github.com/mariotoffia/gobridge/domain/shared"
 	sqlite3 "modernc.org/sqlite"
 	sqlite3lib "modernc.org/sqlite/lib"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // SQLite error classification helpers.

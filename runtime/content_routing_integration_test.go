@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -21,7 +21,7 @@ func TestIntegration_ContentRouting_HeaderMatch_DirectHold(t *testing.T) {
 	senderAlerts := NewFakeSender()
 	senderDefault := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-orders", Address: "topic-orders"},
 		{ID: "bind-alerts", Address: "topic-alerts"},
 		{ID: "bind-default", Address: "topic-default"},
@@ -40,7 +40,7 @@ func TestIntegration_ContentRouting_HeaderMatch_DirectHold(t *testing.T) {
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "header-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   senderDefault,
 		Senders: map[string]ports.Sender{
@@ -99,7 +99,7 @@ func TestIntegration_ContentRouting_SubjectPrefix_DirectHold(t *testing.T) {
 	senderEU := NewFakeSender()
 	senderUS := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-eu", Address: "eu-events"},
 		{ID: "bind-us", Address: "us-events"},
 	}
@@ -117,7 +117,7 @@ func TestIntegration_ContentRouting_SubjectPrefix_DirectHold(t *testing.T) {
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "subject-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   senderEU,
 		Senders:  map[string]ports.Sender{"bind-eu": senderEU, "bind-us": senderUS},
@@ -152,7 +152,7 @@ func TestIntegration_ContentRouting_JSONPayload_DirectHold(t *testing.T) {
 	senderHigh := NewFakeSender()
 	senderLow := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "high-prio", Address: "high-queue"},
 		{ID: "low-prio", Address: "low-queue"},
 	}
@@ -167,7 +167,7 @@ func TestIntegration_ContentRouting_JSONPayload_DirectHold(t *testing.T) {
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "json-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   senderLow,
 		Senders:  map[string]ports.Sender{"high-prio": senderHigh, "low-prio": senderLow},
@@ -212,7 +212,7 @@ func TestIntegration_ContentRouting_ProcessorThenRouting(t *testing.T) {
 	senderVIP := NewFakeSender()
 	senderNormal := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-vip", Address: "vip-stream"},
 		{ID: "bind-normal", Address: "normal-stream"},
 	}
@@ -234,7 +234,7 @@ func TestIntegration_ContentRouting_ProcessorThenRouting(t *testing.T) {
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:    "proc-route",
-		Policy:     domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
 		Sender:     senderNormal,
 		Senders:    map[string]ports.Sender{"bind-vip": senderVIP, "bind-normal": senderNormal},
@@ -286,7 +286,7 @@ func TestIntegration_ContentRouting_Concurrent(t *testing.T) {
 	senderA := NewFakeSender()
 	senderB := NewFakeSender()
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", Address: "topic-a"},
 		{ID: "bind-b", Address: "topic-b"},
 	}
@@ -304,7 +304,7 @@ func TestIntegration_ContentRouting_Concurrent(t *testing.T) {
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
 		RouteID:  "concurrent-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold, MaxInFlight: 20}.WithDefaults(),
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold, MaxInFlight: 20}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   senderA,
 		Senders:  map[string]ports.Sender{"bind-a": senderA, "bind-b": senderB},

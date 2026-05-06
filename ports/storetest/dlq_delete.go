@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -70,7 +70,7 @@ func dlqDeleteByIDs(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("expected 2 deleted, got %d", n)
 	}
 
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-del"})
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-del"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -126,7 +126,7 @@ func dlqDeleteByFilterRoute(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("write dfr-3: %v", err)
 	}
 
-	n, err := store.DeleteByFilter(ctx, domain.DLQFilter{RouteID: "route-dfr-a"})
+	n, err := store.DeleteByFilter(ctx, routing.DLQFilter{RouteID: "route-dfr-a"})
 	if err != nil {
 		t.Fatalf("delete_by_filter: %v", err)
 	}
@@ -134,7 +134,7 @@ func dlqDeleteByFilterRoute(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("expected 2 deleted, got %d", n)
 	}
 
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-dfr-b"})
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dfr-b"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -159,7 +159,7 @@ func dlqDeleteByFilterCategory(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("write dfc-3: %v", err)
 	}
 
-	n, err := store.DeleteByFilter(ctx, domain.DLQFilter{RouteID: "route-dfc", Category: "timeout"})
+	n, err := store.DeleteByFilter(ctx, routing.DLQFilter{RouteID: "route-dfc", Category: "timeout"})
 	if err != nil {
 		t.Fatalf("delete_by_filter: %v", err)
 	}
@@ -167,7 +167,7 @@ func dlqDeleteByFilterCategory(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("expected 2 deleted, got %d", n)
 	}
 
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-dfc"})
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dfc"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -196,7 +196,7 @@ func dlqDeleteByFilterTimeRange(t *testing.T, store ports.DLQStore) {
 	}
 
 	// Delete entries in the [dlqT2, dlqT4) range — should remove dft-2 and dft-3
-	n, err := store.DeleteByFilter(ctx, domain.DLQFilter{
+	n, err := store.DeleteByFilter(ctx, routing.DLQFilter{
 		RouteID: "route-dft",
 		Since:   dlqT2,
 		Before:  dlqT4,
@@ -208,7 +208,7 @@ func dlqDeleteByFilterTimeRange(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("expected 2 deleted, got %d", n)
 	}
 
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-dft"})
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dft"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -236,7 +236,7 @@ func dlqDeleteByFilterWithLimit(t *testing.T, store ports.DLQStore) {
 		}
 	}
 
-	n, err := store.DeleteByFilter(ctx, domain.DLQFilter{
+	n, err := store.DeleteByFilter(ctx, routing.DLQFilter{
 		RouteID: "route-dfl",
 		Limit:   2,
 	})
@@ -247,7 +247,7 @@ func dlqDeleteByFilterWithLimit(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("expected 2 deleted (limited), got %d", n)
 	}
 
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-dfl"})
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dfl"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -266,7 +266,7 @@ func dlqDeleteByFilterAll(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("write dfa-2: %v", err)
 	}
 
-	n, err := store.DeleteByFilter(ctx, domain.DLQFilter{RouteID: "route-dfa"})
+	n, err := store.DeleteByFilter(ctx, routing.DLQFilter{RouteID: "route-dfa"})
 	if err != nil {
 		t.Fatalf("delete_by_filter: %v", err)
 	}
@@ -274,7 +274,7 @@ func dlqDeleteByFilterAll(t *testing.T, store ports.DLQStore) {
 		t.Fatalf("expected 2 deleted, got %d", n)
 	}
 
-	results, err := store.List(ctx, domain.DLQFilter{RouteID: "route-dfa"})
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dfa"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}

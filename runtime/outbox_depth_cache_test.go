@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -76,11 +76,11 @@ func TestDepthCache_PreventsRepeatedQueries(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "cache-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:   domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:   routing.DeliverySharedOutbox,
 			MaxOutboxDepth: 1000,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-cache"},
 		},
 	}
@@ -138,11 +138,11 @@ func TestDepthCache_ExpiresAfterTTL(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "ttl-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:   domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:   routing.DeliverySharedOutbox,
 			MaxOutboxDepth: 1000,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-ttl"},
 		},
 	}
@@ -213,11 +213,11 @@ func TestDepthCache_AtCapacityCachedImmediately(t *testing.T) {
 
 	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
 		RouteID:     "cap-route",
-		Policy:      domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox, MaxOutboxDepth: 3},
+		Policy:      routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox, MaxOutboxDepth: 3},
 		Receiver:    receiver,
 		Sender:      sender,
 		OutboxStore: countingOutbox,
-		Bindings:    []domain.DestinationBinding{{ID: "b1", SessionID: "mqtt-cap"}},
+		Bindings:    []routing.DestinationBinding{{ID: "b1", SessionID: "mqtt-cap"}},
 	})
 
 	runCtx, cancel := context.WithCancel(ctx)

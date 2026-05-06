@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -394,12 +394,12 @@ func validateStaleClaimDuration(ve *ValidationError, cfg *ports.BridgeConfig) {
 		return
 	}
 
-	maxGrace := domain.DefaultStepDownGrace
+	maxGrace := routing.DefaultStepDownGrace
 	for _, r := range cfg.Routes {
 		if r.Session == nil {
 			continue
 		}
-		grace := domain.DefaultStepDownGrace
+		grace := routing.DefaultStepDownGrace
 		if r.Session.StepDownGrace != "" {
 			if d, err := time.ParseDuration(r.Session.StepDownGrace); err == nil {
 				grace = d

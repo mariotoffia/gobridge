@@ -8,12 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
 	"github.com/mariotoffia/gobridge/config"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 type staticParameterResolver map[string]string

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -68,15 +68,15 @@ func TestSharedOutbox_BasicFlow(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "basic-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &FakeResolver{
-			Plans: []domain.DispatchPlan{
+			Plans: []routing.DispatchPlan{
 				{BindingID: "binding-1", Address: "devices/1/state"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "binding-1", SessionID: "mqtt-sess-basic"},
 		},
 	}
@@ -155,16 +155,16 @@ func TestSharedOutbox_ProcessorChainRuns(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "proc-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Processors: []ports.Processor{enricher},
 		Resolver: &FakeResolver{
-			Plans: []domain.DispatchPlan{
+			Plans: []routing.DispatchPlan{
 				{BindingID: "b1", Address: "topic/proc"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-sess-proc"},
 		},
 	}
@@ -212,10 +212,10 @@ func TestSharedOutbox_CorrelationIDInjected(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "corr-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-sess-corr"},
 		},
 	}
@@ -262,10 +262,10 @@ func TestSharedOutbox_ReservedHeadersStripped(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "hdr-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-sess-hdr"},
 		},
 	}

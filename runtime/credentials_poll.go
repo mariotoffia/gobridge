@@ -6,8 +6,8 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -85,7 +85,7 @@ func NewPollBasedWrapper(pull ports.PullCredentialStore, cfg ports.PollBasedWrap
 //
 // If pull is nil, Watch returns context.Canceled-style error so the
 // caller can fail fast.
-func (w *PollBasedWrapper) Watch(ctx context.Context, uri string) (<-chan *domain.CredentialSet, error) {
+func (w *PollBasedWrapper) Watch(ctx context.Context, uri string) (<-chan *connectivity.CredentialSet, error) {
 	if w.pull == nil {
 		return nil, shared.ErrUnavailable.WithMessage("PollBasedWrapper: nil pull store")
 	}
@@ -96,7 +96,7 @@ func (w *PollBasedWrapper) Watch(ctx context.Context, uri string) (<-chan *domai
 	// Buffered: the receiver may be slow applying credentials. One slot
 	// is enough — a second rotation during an in-flight apply replaces
 	// the first (coalescing) before the receiver wakes up.
-	out := make(chan *domain.CredentialSet, 1)
+	out := make(chan *connectivity.CredentialSet, 1)
 
 	go w.runWatch(ctx, uri, out)
 	// Cast away the directionality: the goroutine needs bidirectional
@@ -107,10 +107,10 @@ func (w *PollBasedWrapper) Watch(ctx context.Context, uri string) (<-chan *domai
 // runWatch is the per-watch loop. It is structured so the very first
 // iteration fires immediately (so EmitOnStart works even with a tiny
 // PollInterval), after which polls happen on the cadence.
-func (w *PollBasedWrapper) runWatch(ctx context.Context, uri string, out chan *domain.CredentialSet) {
+func (w *PollBasedWrapper) runWatch(ctx context.Context, uri string, out chan *connectivity.CredentialSet) {
 	defer close(out)
 
-	var last *domain.CredentialSet
+	var last *connectivity.CredentialSet
 
 	// Seed: resolve once so dedup has a baseline AND so EmitOnStart can
 	// publish the initial value. A resolve failure is logged but non-fatal;
@@ -177,7 +177,7 @@ func (w *PollBasedWrapper) nextDelay() time.Duration {
 // send publishes creds with coalescing semantics: if the previous value
 // has not been read yet, it is discarded in favour of the newer one.
 // Returns false when ctx is cancelled while attempting to send.
-func send(ctx context.Context, out chan *domain.CredentialSet, creds *domain.CredentialSet) bool {
+func send(ctx context.Context, out chan *connectivity.CredentialSet, creds *connectivity.CredentialSet) bool {
 	for {
 		select {
 		case <-ctx.Done():

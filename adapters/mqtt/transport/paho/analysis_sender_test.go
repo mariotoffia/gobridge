@@ -8,7 +8,7 @@ import (
 	"github.com/eclipse/paho.golang/autopaho"
 
 	"github.com/mariotoffia/gobridge/circuitbreaker"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -31,7 +31,7 @@ func TestAnaSender_NoSession_NoCM_ReturnsErrUnavailable(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-no-cm",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	s := NewSender(sess, SenderOptions{Timeout: time.Second, DefaultTopic: "t/x"})
 
@@ -56,7 +56,7 @@ func TestAnaSender_EmptyTopicAndNoDefault_ReturnsErrInvalidTopic(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-empty-topic",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	sess.mu.Lock()
 	// Use the unexported sentinel — tests are in-package so this is OK.
 	sess.cm = &pahoConn{cm: fakeCM}
@@ -188,7 +188,7 @@ func TestAnaCBSender_NonRecoverableError_DoesNotTripCircuit(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-cb-nonrec",
-	}, domain.SessionEphemeral, nil, rec)
+	}, connectivity.SessionEphemeral, nil, rec)
 	sess.mu.Lock()
 	sess.cm = &pahoConn{cm: fakeCM}
 	sess.mu.Unlock()
@@ -290,7 +290,7 @@ func TestAnaSender_ContextDoneBeforeSend_ReturnsClassifiedError(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-send-ctx-done",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	sess.mu.Lock()
 	sess.cm = &pahoConn{cm: fakeCM}
 	sess.mu.Unlock()

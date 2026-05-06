@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -37,7 +37,7 @@ func TestActiveSubsRestore_SecondReconcileUsesRestoredState(t *testing.T) {
 			ClientID:         "test-second-reconcile",
 			ReconnectTimeout: 50 * time.Millisecond,
 		},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -48,8 +48,8 @@ func TestActiveSubsRestore_SecondReconcileUsesRestoredState(t *testing.T) {
 	for k, v := range original {
 		s.activeSubs[k] = v
 	}
-	s.plan = &domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	s.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "topic/a", QoS: 1},
 			{Topic: "topic/b", QoS: 0},
 			{Topic: "topic/c", QoS: 1}, // new topic
@@ -135,7 +135,7 @@ func TestActiveSubsRestore_ConcurrentReconnections(t *testing.T) {
 			ClientID:         "test-concurrent-restore",
 			ReconnectTimeout: 50 * time.Millisecond,
 		},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -145,8 +145,8 @@ func TestActiveSubsRestore_ConcurrentReconnections(t *testing.T) {
 	for k, v := range original {
 		s.activeSubs[k] = v
 	}
-	s.plan = &domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	s.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "x", QoS: 0},
 			{Topic: "y", QoS: 1},
 			{Topic: "z", QoS: 0},
@@ -219,14 +219,14 @@ func TestActiveSubsRestore_EmptyActiveSubs(t *testing.T) {
 			ClientID:         "test-empty-restore",
 			ReconnectTimeout: 50 * time.Millisecond,
 		},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
 	// activeSubs starts empty (from NewSession).
 	s.mu.Lock()
-	s.plan = &domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	s.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "new/topic", QoS: 1},
 		},
 	}
@@ -271,7 +271,7 @@ func TestActiveSubsRestore_ExactTopicQoSPairs(t *testing.T) {
 			ClientID:         "test-exact-pairs",
 			ReconnectTimeout: 50 * time.Millisecond,
 		},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -287,8 +287,8 @@ func TestActiveSubsRestore_ExactTopicQoSPairs(t *testing.T) {
 	for k, v := range original {
 		s.activeSubs[k] = v
 	}
-	s.plan = &domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	s.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "new/plan", QoS: 1},
 		},
 	}

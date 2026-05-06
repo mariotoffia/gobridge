@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -18,12 +18,12 @@ import (
 // so swapping the client on the next call picks up rotated keys with
 // no connection churn.
 //
-// The session token is left empty: gobridge's domain.CredentialSet
+// The session token is left empty: gobridge's connectivity.CredentialSet
 // models only username/password; SSO/STS rotation requires richer
 // material, which should be added alongside a CredentialKind when
 // needed. This keeps the MVP safe: existing static-key users see
 // rotation work; SSO users keep using the SDK's own provider chain.
-func rebuildSQSClient(ctx context.Context, region, endpoint, profile string, creds *domain.PasswordCredential) (sqsAPI, error) {
+func rebuildSQSClient(ctx context.Context, region, endpoint, profile string, creds *connectivity.PasswordCredential) (sqsAPI, error) {
 	opts := []func(*awsconfig.LoadOptions) error{}
 	if region != "" {
 		opts = append(opts, awsconfig.WithRegion(region))
@@ -55,7 +55,7 @@ func rebuildSQSClient(ctx context.Context, region, endpoint, profile string, cre
 // TLS material on CredentialSet is ignored: SQS runs over HTTPS with
 // the SDK's default trust store. Leaf-cert pinning would be configured
 // on the awshttp client and is out of scope here.
-func (s *Sender) ApplyCredentials(ctx context.Context, set *domain.CredentialSet) error {
+func (s *Sender) ApplyCredentials(ctx context.Context, set *connectivity.CredentialSet) error {
 	if set == nil || set.Password == nil {
 		return nil
 	}
@@ -72,7 +72,7 @@ func (s *Sender) ApplyCredentials(ctx context.Context, set *domain.CredentialSet
 
 // ApplyCredentials rotates the Receiver's AWS credentials. Same
 // contract as Sender.ApplyCredentials.
-func (r *Receiver) ApplyCredentials(ctx context.Context, set *domain.CredentialSet) error {
+func (r *Receiver) ApplyCredentials(ctx context.Context, set *connectivity.CredentialSet) error {
 	if set == nil || set.Password == nil {
 		return nil
 	}

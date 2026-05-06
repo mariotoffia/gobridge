@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
@@ -26,15 +26,15 @@ func TestIntegration_CompetingConsumers(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -43,7 +43,7 @@ func TestIntegration_CompetingConsumers(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName},
 		},
 	}
@@ -142,15 +142,15 @@ func TestIntegration_AutoAck(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -159,7 +159,7 @@ func TestIntegration_AutoAck(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName},
 		},
 	}
@@ -255,15 +255,15 @@ func TestIntegration_PrefetchCount(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(ctx) }()
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -272,7 +272,7 @@ func TestIntegration_PrefetchCount(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName},
 		},
 	}

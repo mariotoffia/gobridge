@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 )
 
 // ---------------------------------------------------------------------------
@@ -100,12 +100,12 @@ func BenchmarkRuleResolver_100Rules_MidMatch(b *testing.B) {
 func benchRuleResolver(b *testing.B, numRules int, matchIdx int) {
 	b.Helper()
 
-	bindings := make([]domain.DestinationBinding, numRules+1)
+	bindings := make([]routing.DestinationBinding, numRules+1)
 	rules := make([]MatchRule, numRules)
 
 	for i := 0; i < numRules; i++ {
 		bid := fmt.Sprintf("bind-%d", i)
-		bindings[i] = domain.DestinationBinding{ID: bid, Address: fmt.Sprintf("topic-%d", i)}
+		bindings[i] = routing.DestinationBinding{ID: bid, Address: fmt.Sprintf("topic-%d", i)}
 		rules[i] = MatchRule{
 			BindingID: bid,
 			Conditions: []MatchCondition{
@@ -113,7 +113,7 @@ func benchRuleResolver(b *testing.B, numRules int, matchIdx int) {
 			},
 		}
 	}
-	bindings[numRules] = domain.DestinationBinding{ID: "default", Address: "default-topic"}
+	bindings[numRules] = routing.DestinationBinding{ID: "default", Address: "default-topic"}
 
 	compiled, _ := CompileMatchRules(rules)
 	resolver, _ := NewRuleResolver(bindings, compiled, "default")

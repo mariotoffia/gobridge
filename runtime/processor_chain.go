@@ -7,8 +7,8 @@ import (
 	goruntimedebug "runtime/debug"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -38,7 +38,7 @@ func WithChainMetrics(m ports.MetricsExporter) ChainOption {
 }
 
 // WithChainTimeout overrides the per-processor execution timeout.
-// Non-positive values fall back to domain.DefaultProcessorTimeout.
+// Non-positive values fall back to routing.DefaultProcessorTimeout.
 func WithChainTimeout(d time.Duration) ChainOption {
 	return func(o *chainOptions) { o.timeout = d }
 }
@@ -62,12 +62,12 @@ func RunChain(ctx context.Context, processors []ports.Processor, env *messaging.
 		return nil
 	}
 
-	cfg := chainOptions{timeout: domain.DefaultProcessorTimeout}
+	cfg := chainOptions{timeout: routing.DefaultProcessorTimeout}
 	for _, o := range opts {
 		o(&cfg)
 	}
 	if cfg.timeout <= 0 {
-		cfg.timeout = domain.DefaultProcessorTimeout
+		cfg.timeout = routing.DefaultProcessorTimeout
 	}
 	if cfg.metrics == nil {
 		cfg.metrics = &ports.NoopExporter{}

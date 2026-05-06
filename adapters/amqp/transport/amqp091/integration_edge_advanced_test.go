@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
@@ -28,7 +28,7 @@ func TestIntegration_Edge_SessionHealthTransitions(t *testing.T) {
 	logger := traceLogger091(&buf)
 	ep := rabbitmqlocal.Endpoint(t)
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, logger)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, logger)
 	ctx := context.Background()
 
 	h := sess.Health(ctx)
@@ -81,21 +81,21 @@ func TestIntegration_Edge_ExchangeRouting(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, logger)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, logger)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(context.Background()) }()
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{
 			Topic: queue,
 			Config: &Config{Subscription: SubscriptionParams{
 				Exchange:   exchange,
 				RoutingKey: routingKey,
 			}},
 		}},
-		Publishers: []domain.PublisherPlan{{Topic: exchange}},
+		Publishers: []connectivity.PublisherPlan{{Topic: exchange}},
 	}
 	if err := sess.Reconcile(ctx, plan); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -156,18 +156,18 @@ func TestIntegration_Edge_ReconcilePlan(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	sess := NewSession(SessionOptions{BrokerURL: ep}, domain.SessionEphemeral, logger)
+	sess := NewSession(SessionOptions{BrokerURL: ep}, connectivity.SessionEphemeral, logger)
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = sess.Close(context.Background()) }()
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: q1, Config: &Config{Subscription: SubscriptionParams{Exchange: ex, RoutingKey: q1}}},
 			{Topic: q2, Config: &Config{Subscription: SubscriptionParams{Exchange: ex, RoutingKey: q2}}},
 		},
-		Publishers: []domain.PublisherPlan{{Topic: ex}},
+		Publishers: []connectivity.PublisherPlan{{Topic: ex}},
 	}
 	if err := sess.Reconcile(ctx, plan); err != nil {
 		t.Fatalf("Reconcile: %v", err)

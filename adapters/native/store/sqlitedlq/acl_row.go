@@ -6,20 +6,20 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 )
 
-// Row-scanning ACL: translate *sql.Rows into domain.DLQEntry values.
+// Row-scanning ACL: translate *sql.Rows into routing.DLQEntry values.
 // Lives here (not in acl_session.go) so the SDK→domain mapping is
 // reviewable in isolation.
 
 // scanDLQEntries drains rows into a slice of DLQEntry. The caller is
 // responsible for closing rows.
-func scanDLQEntries(rows *sql.Rows) ([]domain.DLQEntry, error) {
-	result := make([]domain.DLQEntry, 0)
+func scanDLQEntries(rows *sql.Rows) ([]routing.DLQEntry, error) {
+	result := make([]routing.DLQEntry, 0)
 	for rows.Next() {
 		var (
-			e          domain.DLQEntry
+			e          routing.DLQEntry
 			envJSON    string
 			failedAtMs int64
 		)

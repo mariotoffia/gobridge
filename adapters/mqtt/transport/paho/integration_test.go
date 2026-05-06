@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -36,7 +36,7 @@ func TestIntegration_SessionStartAndClose(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -63,7 +63,7 @@ func TestIntegration_SessionCloseIdempotent(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -88,7 +88,7 @@ func TestIntegration_SessionEvents(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -116,7 +116,7 @@ func TestIntegration_SessionReconcile(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -129,8 +129,8 @@ func TestIntegration_SessionReconcile(t *testing.T) {
 	case <-time.After(3 * time.Second):
 	}
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "test/a", QoS: 1},
 			{Topic: "test/b", QoS: 0},
 		},
@@ -140,8 +140,8 @@ func TestIntegration_SessionReconcile(t *testing.T) {
 	}
 
 	// Update: remove test/a, add test/c, change test/b QoS
-	plan2 := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan2 := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "test/b", QoS: 1},
 			{Topic: "test/c", QoS: 1},
 		},
@@ -167,7 +167,7 @@ func TestIntegration_PubSubRoundTrip(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -180,8 +180,8 @@ func TestIntegration_PubSubRoundTrip(t *testing.T) {
 	case <-time.After(3 * time.Second):
 	}
 
-	if err := sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "roundtrip/test", QoS: 1}},
+	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "roundtrip/test", QoS: 1}},
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestIntegration_BackpressureNoDrops(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -287,8 +287,8 @@ func TestIntegration_BackpressureNoDrops(t *testing.T) {
 	case <-time.After(3 * time.Second):
 	}
 
-	if err := sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "bp/test", QoS: 1}},
+	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "bp/test", QoS: 1}},
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestIntegration_QoS1Completion(t *testing.T) {
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -418,7 +418,7 @@ func TestIntegration_Factory(t *testing.T) {
 	sess, err := factory.NewSession(ctx, ports.SessionSpec{
 		ID:          "factory-sess",
 		Transport:   "mqtt",
-		SessionMode: domain.SessionEphemeral,
+		SessionMode: connectivity.SessionEphemeral,
 		Config: paho.Config{
 			Session: paho.SessionOptions{
 				BrokerURLs: []string{url},

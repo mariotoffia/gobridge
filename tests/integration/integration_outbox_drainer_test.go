@@ -8,9 +8,9 @@ import (
 	"time"
 
 	dboutbox "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
@@ -82,7 +82,7 @@ func TestIntegration_OutboxDrainer_FullLifecycle(t *testing.T) {
 		RouteID:        "route-od1",
 		PartitionKey:   persistence.OutboxPartitionKey("sess-od1", ""),
 		OwnerID:        "drainer-od1",
-		Policy:         domain.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 3},
+		Policy:         routing.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 3},
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		TokenFn:        func() (persistence.LeaseToken, bool) { return tok, true },
@@ -206,7 +206,7 @@ func TestIntegration_OutboxDrainer_ExpiredRecordRoutesDLQ(t *testing.T) {
 		RouteID:        "route-od3",
 		PartitionKey:   persistence.OutboxPartitionKey("sess-od3", ""),
 		OwnerID:        "drainer-od3",
-		Policy:         domain.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 3, OnExpired: domain.ExpiredDLQ},
+		Policy:         routing.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 3, OnExpired: routing.ExpiredDLQ},
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		TokenFn:        func() (persistence.LeaseToken, bool) { return tok, true },
@@ -282,7 +282,7 @@ func TestIntegration_OutboxDrainer_PoisonMessageRoutesDLQ(t *testing.T) {
 		RouteID:        "route-od4",
 		PartitionKey:   pk,
 		OwnerID:        "drainer-od4",
-		Policy:         domain.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 2},
+		Policy:         routing.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 2},
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		TokenFn:        func() (persistence.LeaseToken, bool) { return finalTok, true },
@@ -363,7 +363,7 @@ func TestIntegration_OutboxDrainer_ConcurrentDrainers(t *testing.T) {
 			RouteID:        "route-od5",
 			PartitionKey:   pk,
 			OwnerID:        owner,
-			Policy:         domain.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 5},
+			Policy:         routing.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 5},
 			Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 			DrainBatchSize: 5,
 			TokenFn:        func() (persistence.LeaseToken, bool) { return tok, true },
@@ -431,7 +431,7 @@ func TestIntegration_OutboxDrainer_AdaptiveBatchSize(t *testing.T) {
 		RouteID:           "route-od6",
 		PartitionKey:      pk,
 		OwnerID:           "drainer-od6",
-		Policy:            domain.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 5},
+		Policy:            routing.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 5},
 		Strategy:          persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:    batchSize,
 		DrainMaxBatchSize: batchSize * 4,

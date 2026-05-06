@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -31,14 +31,14 @@ type fakeCredRepo struct {
 	scheme    string
 	namespace string
 	calls     int
-	creds     *domain.CredentialSet
+	creds     *connectivity.CredentialSet
 	err       error
 }
 
 func (r *fakeCredRepo) Scheme() string    { return r.scheme }
 func (r *fakeCredRepo) Namespace() string { return r.namespace }
 
-func (r *fakeCredRepo) Get(_ context.Context, _ string) (*domain.CredentialSet, error) {
+func (r *fakeCredRepo) Get(_ context.Context, _ string) (*connectivity.CredentialSet, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
@@ -60,8 +60,8 @@ func TestCredentialResolver_ConcurrentResolve(t *testing.T) {
 	repo := &fakeCredRepo{
 		scheme:    "test",
 		namespace: "",
-		creds: &domain.CredentialSet{
-			Password: &domain.PasswordCredential{
+		creds: &connectivity.CredentialSet{
+			Password: &connectivity.PasswordCredential{
 				Username: "user",
 				Password: "pass",
 			},
@@ -104,8 +104,8 @@ func TestCredentialResolver_CacheExpiry(t *testing.T) {
 	repo := &fakeCredRepo{
 		scheme:    "test",
 		namespace: "",
-		creds: &domain.CredentialSet{
-			Password: &domain.PasswordCredential{
+		creds: &connectivity.CredentialSet{
+			Password: &connectivity.PasswordCredential{
 				Username: "user",
 				Password: "secret",
 			},
@@ -151,8 +151,8 @@ func TestCredentialResolver_CacheDisabled(t *testing.T) {
 	repo := &fakeCredRepo{
 		scheme:    "test",
 		namespace: "",
-		creds: &domain.CredentialSet{
-			Password: &domain.PasswordCredential{
+		creds: &connectivity.CredentialSet{
+			Password: &connectivity.PasswordCredential{
 				Username: "user",
 				Password: "pass",
 			},

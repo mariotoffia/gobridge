@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -30,16 +30,16 @@ import (
 // TestRoutePolicy_WithDefaults_SetsSendTimeout validates WithDefaults
 // applies DefaultSendTimeout when SendTimeout is zero.
 func TestRoutePolicy_WithDefaults_SetsSendTimeout(t *testing.T) {
-	p := domain.RoutePolicy{}.WithDefaults()
-	if p.SendTimeout != domain.DefaultSendTimeout {
-		t.Fatalf("expected SendTimeout=%v, got %v", domain.DefaultSendTimeout, p.SendTimeout)
+	p := routing.RoutePolicy{}.WithDefaults()
+	if p.SendTimeout != routing.DefaultSendTimeout {
+		t.Fatalf("expected SendTimeout=%v, got %v", routing.DefaultSendTimeout, p.SendTimeout)
 	}
 }
 
 // TestRoutePolicy_WithDefaults_PreservesExplicitSendTimeout validates
 // an explicit SendTimeout is not overwritten by WithDefaults.
 func TestRoutePolicy_WithDefaults_PreservesExplicitSendTimeout(t *testing.T) {
-	p := domain.RoutePolicy{SendTimeout: 5 * time.Second}.WithDefaults()
+	p := routing.RoutePolicy{SendTimeout: 5 * time.Second}.WithDefaults()
 	if p.SendTimeout != 5*time.Second {
 		t.Fatalf("expected SendTimeout=5s, got %v", p.SendTimeout)
 	}
@@ -82,7 +82,7 @@ func TestOutboxDrainer_SendTimeout(t *testing.T) {
 		PartitionKey: pk,
 		LeaseID:      "sess-1",
 		OwnerID:      token.Owner,
-		Policy: domain.RoutePolicy{
+		Policy: routing.RoutePolicy{
 			SendTimeout: 100 * time.Millisecond,
 		}.WithDefaults(),
 		Strategy: persistence.NewFixedPoll(50 * time.Millisecond),
@@ -134,8 +134,8 @@ func TestRouteRunner_SendTimeout(t *testing.T) {
 
 	cfg := goruntime.RouteRunnerConfig{
 		RouteID: "test-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 			SendTimeout:  100 * time.Millisecond,
 		}.WithDefaults(),
 		Receiver:    receiver,
@@ -242,7 +242,7 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 		PartitionKey:        pk,
 		LeaseID:             "sess-1",
 		OwnerID:             token.Owner,
-		Policy:              domain.RoutePolicy{}.WithDefaults(),
+		Policy:              routing.RoutePolicy{}.WithDefaults(),
 		Strategy:            persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainMaxConcurrency: 2,
 		TokenFn: func() (persistence.LeaseToken, bool) {
@@ -327,7 +327,7 @@ func TestOutboxDrainer_StaleFencingToken_PropagatedToRunLoop(t *testing.T) {
 		PartitionKey: pk,
 		LeaseID:      "sess-1",
 		OwnerID:      token.Owner,
-		Policy:       domain.RoutePolicy{}.WithDefaults(),
+		Policy:       routing.RoutePolicy{}.WithDefaults(),
 		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
 		TokenFn: func() (persistence.LeaseToken, bool) {
 			if tokenCalls.Add(1) <= 2 {

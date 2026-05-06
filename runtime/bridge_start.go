@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strconv"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -103,7 +103,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				rt.locator.RegisterRoute(entry.config.ID, sid)
 			}
 
-			if entry.config.Policy.DeliveryMode == domain.DeliverySharedOutbox && rt.outboxStore != nil && !drainerSessions[sid] {
+			if entry.config.Policy.DeliveryMode == routing.DeliverySharedOutbox && rt.outboxStore != nil && !drainerSessions[sid] {
 				drainerSessions[sid] = true
 				mgr := rt.sessionMgrs[sid]
 				sess := entry.session
@@ -140,7 +140,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		// For SharedOutbox routes, create drainers for every target
 		// session referenced by bindings that was not already covered
 		// by the route's primary session.
-		if entry.config.Policy.DeliveryMode == domain.DeliverySharedOutbox && rt.outboxStore != nil {
+		if entry.config.Policy.DeliveryMode == routing.DeliverySharedOutbox && rt.outboxStore != nil {
 			for _, binding := range entry.config.Bindings {
 				sid := binding.SessionID
 				if sid == "" || drainerSessions[sid] {

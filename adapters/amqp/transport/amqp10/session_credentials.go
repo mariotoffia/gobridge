@@ -3,7 +3,7 @@ package amqp10
 import (
 	"context"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
@@ -25,7 +25,7 @@ import (
 //     re-reads s.opts.TLS on every dial and calls BuildTLSConfig
 //     freshly, so mutating fields in place suffices for both
 //     cert/CA swap and first-time TLS enable.
-func (s *Session) ApplyCredentials(ctx context.Context, set *domain.CredentialSet) error {
+func (s *Session) ApplyCredentials(ctx context.Context, set *connectivity.CredentialSet) error {
 	if set == nil {
 		return shared.ErrInvalidPayload.WithMessage("amqp10: nil credential set")
 	}
@@ -81,7 +81,7 @@ func (s *Session) ApplyCredentials(ctx context.Context, set *domain.CredentialSe
 
 // applyAMQP10TLSMaterial mirrors the paho/amqp091 helpers. See the
 // paho analogue for the full rationale.
-func applyAMQP10TLSMaterial(opts **TLSConfig, mat *domain.TLSMaterial) bool {
+func applyAMQP10TLSMaterial(opts **TLSConfig, mat *connectivity.TLSMaterial) bool {
 	if mat == nil {
 		return false
 	}

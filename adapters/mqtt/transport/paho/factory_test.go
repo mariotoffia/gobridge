@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -62,7 +62,7 @@ func TestFactory_NewSession_ValidOptions(t *testing.T) {
 				BrokerURLs: []string{"tcp://broker:1883"},
 			},
 		},
-		SessionMode: domain.SessionEphemeral,
+		SessionMode: connectivity.SessionEphemeral,
 	}
 
 	session, err := f.NewSession(context.Background(), spec)
@@ -165,7 +165,7 @@ func TestFactory_NewSession_BrokerURLSingular(t *testing.T) {
 				BrokerURLs: []string{"tcp://broker:1883"},
 			},
 		},
-		SessionMode: domain.SessionEphemeral,
+		SessionMode: connectivity.SessionEphemeral,
 	}
 
 	session, err := f.NewSession(context.Background(), spec)

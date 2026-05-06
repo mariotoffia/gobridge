@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain/messaging"
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 func TestInject_SyntheticDeliveryRetry_ReturnsErrNotSupported(t *testing.T) {

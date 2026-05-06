@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -165,7 +165,7 @@ func TestValidateMQTTTopic_TrailingSlash(t *testing.T) {
 
 // Verifies MatchByHeader selects one binding from a header map and renders the address template.
 func TestBindingResolver_MatchByHeader_SingleMatch(t *testing.T) {
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", Transport: "mqtt", SessionID: "sess-a", Address: "factory/a/orders/{device_id}"},
 		{ID: "bind-b", Transport: "mqtt", SessionID: "sess-b", Address: "factory/b/orders/{device_id}"},
 	}
@@ -194,7 +194,7 @@ func TestBindingResolver_MatchByHeader_SingleMatch(t *testing.T) {
 
 // Verifies MatchByHeader returns a rejected BridgeError when the header value maps to no binding.
 func TestBindingResolver_MatchByHeader_NoMatch(t *testing.T) {
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", Transport: "mqtt", Address: "topic/a"},
 	}
 	headerMap := map[string]string{"A": "bind-a"}
@@ -220,7 +220,7 @@ func TestBindingResolver_MatchByHeader_NoMatch(t *testing.T) {
 
 // Verifies MatchByHeader errors when the selector header is absent from the envelope.
 func TestBindingResolver_MatchByHeader_MissingHeader(t *testing.T) {
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", Transport: "mqtt", Address: "topic/a"},
 	}
 	headerMap := map[string]string{"A": "bind-a"}
@@ -240,7 +240,7 @@ func TestBindingResolver_MatchByHeader_MissingHeader(t *testing.T) {
 
 // Verifies MatchAll returns one dispatch plan per binding including mixed transports.
 func TestBindingResolver_MatchAll_FanOut(t *testing.T) {
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", Transport: "mqtt", Address: "topic/a"},
 		{ID: "bind-b", Transport: "mqtt", Address: "topic/b"},
 		{ID: "bind-c", Transport: "sqs", Address: "https://sqs.example.com/queue"},
@@ -274,7 +274,7 @@ func TestBindingResolver_MatchAll_FanOut(t *testing.T) {
 
 // Verifies MatchByID resolves only the binding with the configured ID.
 func TestBindingResolver_MatchByID(t *testing.T) {
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", Address: "topic/a"},
 		{ID: "bind-b", Address: "topic/b"},
 	}
@@ -299,7 +299,7 @@ func TestBindingResolver_MatchByID(t *testing.T) {
 
 // Verifies MatchByID errors when the binding ID is not in the list.
 func TestBindingResolver_MatchByID_NotFound(t *testing.T) {
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-a", Address: "topic/a"},
 	}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchByID("nonexistent"))
@@ -316,7 +316,7 @@ func TestBindingResolver_MatchByID_NotFound(t *testing.T) {
 
 // Verifies rendered MQTT addresses are validated and wildcard characters in values yield ErrInvalidTopic.
 func TestBindingResolver_MQTTTopicValidation(t *testing.T) {
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-bad", Transport: "mqtt", Address: "devices/{wildcard}/data"},
 	}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchAll())
@@ -337,7 +337,7 @@ func TestBindingResolver_MQTTTopicValidation(t *testing.T) {
 
 // Verifies non-MQTT transports skip MQTT topic validation so plus signs in addresses are allowed.
 func TestBindingResolver_NonMQTTSkipsTopicValidation(t *testing.T) {
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-sqs", Transport: "sqs", Address: "queue+name"},
 	}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchAll())
@@ -359,7 +359,7 @@ func TestBindingResolver_NonMQTTSkipsTopicValidation(t *testing.T) {
 
 // Verifies Resolve errors when a template variable is missing from the envelope headers.
 func TestBindingResolver_AddressTemplateError(t *testing.T) {
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-tmpl", Transport: "mqtt", Address: "factory/{missing}/data"},
 	}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchAll())
@@ -378,7 +378,7 @@ func TestBindingResolver_AddressTemplateError(t *testing.T) {
 
 // Verifies binding Headers are copied into dispatch plan headers with correct values.
 func TestBindingResolver_HeadersAsDispatchHeaders(t *testing.T) {
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{
 			ID:      "bind-opts",
 			Address: "topic/a",
@@ -407,7 +407,7 @@ func TestBindingResolver_HeadersAsDispatchHeaders(t *testing.T) {
 // Verifies mutating returned dispatch headers does not alter the original binding Headers map.
 func TestBindingResolver_HeadersNotShared(t *testing.T) {
 	opts := map[string]any{"qos": 1}
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-shared", Address: "topic/a", Headers: opts},
 	}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchAll())
@@ -426,7 +426,7 @@ func TestBindingResolver_HeadersNotShared(t *testing.T) {
 
 // Verifies StaticResolver returns all configured plans unchanged.
 func TestStaticResolver_ReturnsSamePlans(t *testing.T) {
-	plans := []domain.DispatchPlan{
+	plans := []routing.DispatchPlan{
 		{BindingID: "bind-1", Address: "topic/1"},
 		{BindingID: "bind-2", Address: "topic/2"},
 	}
@@ -446,7 +446,7 @@ func TestStaticResolver_ReturnsSamePlans(t *testing.T) {
 
 // Verifies StaticResolver yields identical plans for different envelope IDs.
 func TestStaticResolver_IndependentOfEnvelope(t *testing.T) {
-	resolver := runtime.NewStaticResolver(domain.DispatchPlan{BindingID: "b", Address: "t"})
+	resolver := runtime.NewStaticResolver(routing.DispatchPlan{BindingID: "b", Address: "t"})
 
 	p1, _ := resolver.Resolve(context.Background(), &messaging.Envelope{ID: "msg-1"})
 	p2, _ := resolver.Resolve(context.Background(), &messaging.Envelope{ID: "msg-2"})

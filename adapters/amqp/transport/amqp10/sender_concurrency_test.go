@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -85,7 +85,7 @@ func (m *mockSenderLink) release() {
 // link.Send, which serialised throughput to one publish at a time.
 func TestSender_ConcurrentSends_DoNotSerialiseOnNetwork(t *testing.T) {
 	sess := NewSession(SessionOptions{Address: "amqp://localhost:5672"},
-		domain.SessionEphemeral, slog.Default())
+		connectivity.SessionEphemeral, slog.Default())
 
 	s, err := NewSender(SenderConfig{Address: "queue/x", Session: sess}, sess)
 	if err != nil {
@@ -131,7 +131,7 @@ func TestSender_ConcurrentSends_DoNotSerialiseOnNetwork(t *testing.T) {
 // Otherwise repeated link.Close calls would race the broker.
 func TestSender_ConcurrentSendFailure_OnlyClosesLinkOnce(t *testing.T) {
 	sess := NewSession(SessionOptions{Address: "amqp://localhost:5672"},
-		domain.SessionEphemeral, slog.Default())
+		connectivity.SessionEphemeral, slog.Default())
 
 	s, err := NewSender(SenderConfig{Address: "queue/x", Session: sess}, sess)
 	if err != nil {
@@ -178,7 +178,7 @@ func TestSender_ConcurrentSendFailure_OnlyClosesLinkOnce(t *testing.T) {
 // can acquire the Sender mutex (e.g., via Close).
 func TestSender_Send_ReleasesLockBeforeNetworkIO(t *testing.T) {
 	sess := NewSession(SessionOptions{Address: "amqp://localhost:5672"},
-		domain.SessionEphemeral, slog.Default())
+		connectivity.SessionEphemeral, slog.Default())
 
 	s, err := NewSender(SenderConfig{Address: "queue/x", Session: sess}, sess)
 	if err != nil {
@@ -229,7 +229,7 @@ func TestSender_Send_ReleasesLockBeforeNetworkIO(t *testing.T) {
 // Confirms the off-mutex close does not break the recovery path.
 func TestSender_NoLink_AfterFailure(t *testing.T) {
 	sess := NewSession(SessionOptions{Address: "amqp://localhost:5672"},
-		domain.SessionEphemeral, slog.Default())
+		connectivity.SessionEphemeral, slog.Default())
 
 	s, err := NewSender(SenderConfig{Address: "queue/x", Session: sess}, sess)
 	if err != nil {
@@ -282,7 +282,7 @@ func TestSender_NoLink_AfterFailure(t *testing.T) {
 // regressing memory race shows up in CI.
 func TestSender_ConcurrentSends_RaceDetector(t *testing.T) {
 	sess := NewSession(SessionOptions{Address: "amqp://localhost:5672"},
-		domain.SessionEphemeral, slog.Default())
+		connectivity.SessionEphemeral, slog.Default())
 
 	s, err := NewSender(SenderConfig{Address: "queue/x",
 		Session: sess, Metrics: &ports.NoopExporter{}}, sess)

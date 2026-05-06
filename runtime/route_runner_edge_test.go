@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -14,8 +14,8 @@ import (
 
 type emptyResolver struct{}
 
-func (emptyResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]domain.DispatchPlan, error) {
-	return []domain.DispatchPlan{}, nil
+func (emptyResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]routing.DispatchPlan, error) {
+	return []routing.DispatchPlan{}, nil
 }
 
 func TestDirectHold_EmptyPlans_DoesNotPanic(t *testing.T) {
@@ -25,7 +25,7 @@ func TestDirectHold_EmptyPlans_DoesNotPanic(t *testing.T) {
 
 	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
 		RouteID:  "empty-plans-route",
-		Policy:   domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
 		Resolver: emptyResolver{},

@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -340,7 +340,7 @@ func resolveKeepAlive(vals []uint16) uint16 {
 // reconnection delay after broker.Restart().
 func setupMQTTSessionWithBroker(
 	t *testing.T, brokerURL, clientID string,
-	mode domain.SessionMode, receiveMax uint16,
+	mode connectivity.SessionMode, receiveMax uint16,
 	keepAlive ...uint16,
 ) *paho.Session {
 	t.Helper()
@@ -376,7 +376,7 @@ func setupMQTTSessionWithBroker(
 // reconnection delay after broker.Restart().
 func newMQTTSessionWithBroker(
 	t *testing.T, brokerURL, clientID string,
-	mode domain.SessionMode, receiveMax uint16,
+	mode connectivity.SessionMode, receiveMax uint16,
 	keepAlive ...uint16,
 ) *paho.Session {
 	t.Helper()
@@ -385,7 +385,7 @@ func newMQTTSessionWithBroker(
 		ClientID:       clientID,
 		KeepAlive:      resolveKeepAlive(keepAlive),
 		ConnectTimeout: 15 * time.Second,
-		CleanStart:     mode == domain.SessionEphemeral,
+		CleanStart:     mode == connectivity.SessionEphemeral,
 		ReceiveMaximum: receiveMax,
 	}, mode, testLogger(t))
 
@@ -414,7 +414,7 @@ func newMQTTCollectorWithBroker(
 		KeepAlive:      resolveKeepAlive(keepAlive),
 		ConnectTimeout: 15 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, testLogger(t))
+	}, connectivity.SessionEphemeral, testLogger(t))
 
 	ctx := context.Background()
 	require.NoError(t, sess.Start(ctx), "collector Start at %s", brokerURL)
@@ -424,8 +424,8 @@ func newMQTTCollectorWithBroker(
 	case <-time.After(5 * time.Second):
 	}
 
-	require.NoError(t, sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	require.NoError(t, sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}), "collector Reconcile")
 	waitSubReady(t, sess, 5*time.Second)
 
@@ -591,7 +591,7 @@ func newPersistentCollectorWithBroker(
 		ConnectTimeout:        15 * time.Second,
 		CleanStart:            false,
 		SessionExpiryInterval: 300,
-	}, domain.SessionPersistent, testLogger(t))
+	}, connectivity.SessionPersistent, testLogger(t))
 
 	ctx := context.Background()
 	require.NoError(t, sess.Start(ctx), "persistent collector Start at %s", brokerURL)
@@ -599,8 +599,8 @@ func newPersistentCollectorWithBroker(
 	case <-sess.Events():
 	case <-time.After(5 * time.Second):
 	}
-	require.NoError(t, sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	require.NoError(t, sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}), "persistent collector Reconcile")
 	waitSubReady(t, sess, 5*time.Second)
 

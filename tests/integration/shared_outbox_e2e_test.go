@@ -11,9 +11,10 @@ import (
 	dblease "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease"
 	dboutbox "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -153,7 +154,7 @@ func (s *fakeSession) Start(_ context.Context) error {
 	return nil
 }
 
-func (s *fakeSession) Reconcile(_ context.Context, _ domain.SessionPlan) error { return nil }
+func (s *fakeSession) Reconcile(_ context.Context, _ connectivity.SessionPlan) error { return nil }
 
 func (s *fakeSession) Health(_ context.Context) ports.SessionHealth {
 	return ports.SessionHealth{Connected: true, Ready: true, ServiceLevel: ports.ServiceLevelFull}
@@ -176,25 +177,25 @@ func (s *fakeSession) isStarted() bool {
 
 type fakeDLQStore struct {
 	mu      sync.Mutex
-	entries []domain.DLQEntry
+	entries []routing.DLQEntry
 }
 
-func (s *fakeDLQStore) Write(_ context.Context, entry domain.DLQEntry) error {
+func (s *fakeDLQStore) Write(_ context.Context, entry routing.DLQEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.entries = append(s.entries, entry)
 	return nil
 }
 
-func (s *fakeDLQStore) List(_ context.Context, _ domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *fakeDLQStore) List(_ context.Context, _ routing.DLQFilter) ([]routing.DLQEntry, error) {
 	return nil, nil
 }
 
-func (s *fakeDLQStore) Get(_ context.Context, _ string) (domain.DLQEntry, error) {
-	return domain.DLQEntry{}, shared.ErrNotFound
+func (s *fakeDLQStore) Get(_ context.Context, _ string) (routing.DLQEntry, error) {
+	return routing.DLQEntry{}, shared.ErrNotFound
 }
 func (s *fakeDLQStore) Delete(_ context.Context, _ []string) (int, error) { return 0, nil }
-func (s *fakeDLQStore) DeleteByFilter(_ context.Context, _ domain.DLQFilter) (int, error) {
+func (s *fakeDLQStore) DeleteByFilter(_ context.Context, _ routing.DLQFilter) (int, error) {
 	return 0, nil
 }
 func (s *fakeDLQStore) Purge(_ context.Context, _ time.Time) (int, error) { return 0, nil }
@@ -265,15 +266,15 @@ func TestE2E_DynamoDB_SharedOutboxFlow(t *testing.T) {
 
 	cfgA := goruntime.RouteConfig{
 		ID: "ddb-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &staticResolver{
-			plans: []domain.DispatchPlan{
+			plans: []routing.DispatchPlan{
 				{BindingID: "mqtt-bind", Address: "devices/ddb/state"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "mqtt-bind", SessionID: sessionID},
 		},
 	}
@@ -294,15 +295,15 @@ func TestE2E_DynamoDB_SharedOutboxFlow(t *testing.T) {
 
 	cfgB := goruntime.RouteConfig{
 		ID: "ddb-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &staticResolver{
-			plans: []domain.DispatchPlan{
+			plans: []routing.DispatchPlan{
 				{BindingID: "mqtt-bind", Address: "devices/ddb/state"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "mqtt-bind", SessionID: sessionID},
 		},
 	}
@@ -397,10 +398,10 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 
 	cfgA := goruntime.RouteConfig{
 		ID: "transfer-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -446,10 +447,10 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 
 	cfgB := goruntime.RouteConfig{
 		ID: "transfer-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -506,10 +507,10 @@ func TestE2E_MemoryLease_DynamoOutbox(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "mixed-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -588,15 +589,15 @@ func TestE2E_DynamoDB_CrashRecovery(t *testing.T) {
 
 	cfgA := goruntime.RouteConfig{
 		ID: "crash-recovery-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &staticResolver{
-			plans: []domain.DispatchPlan{
+			plans: []routing.DispatchPlan{
 				{BindingID: "mqtt-bind", Address: "devices/recovery/state"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "mqtt-bind", SessionID: sessionID},
 		},
 	}
@@ -637,15 +638,15 @@ func TestE2E_DynamoDB_CrashRecovery(t *testing.T) {
 
 	cfgB := goruntime.RouteConfig{
 		ID: "crash-recovery-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &staticResolver{
-			plans: []domain.DispatchPlan{
+			plans: []routing.DispatchPlan{
 				{BindingID: "mqtt-bind", Address: "devices/recovery/state"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "mqtt-bind", SessionID: sessionID},
 		},
 	}
@@ -814,11 +815,11 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "poison-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:      domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:      routing.DeliverySharedOutbox,
 			MaxReplayAttempts: 3,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: sessionID},
 		},
 	}
@@ -892,16 +893,16 @@ func TestE2E_DynamoDB_FanOutAtomicity(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "fanout-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: &staticResolver{
-			plans: []domain.DispatchPlan{
+			plans: []routing.DispatchPlan{
 				{BindingID: "bind-a", Address: "factory/a/orders/42"},
 				{BindingID: "bind-b", Address: "factory/b/orders/42"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "bind-a", SessionID: sessionID + "-a"},
 			{ID: "bind-b", SessionID: sessionID + "-b"},
 		},
@@ -950,9 +951,9 @@ func TestE2E_DynamoDB_FanOutAtomicity(t *testing.T) {
 
 // staticResolver always returns the same plans.
 type staticResolver struct {
-	plans []domain.DispatchPlan
+	plans []routing.DispatchPlan
 }
 
-func (r *staticResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]domain.DispatchPlan, error) {
+func (r *staticResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]routing.DispatchPlan, error) {
 	return r.plans, nil
 }

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -74,7 +74,7 @@ func TestOutboxDrainer_WorkCtxNotCappedBySendTimeout(t *testing.T) {
 		PartitionKey: pk,
 		LeaseID:      "sess-1",
 		OwnerID:      token.Owner,
-		Policy: domain.RoutePolicy{
+		Policy: routing.RoutePolicy{
 			SendTimeout: 2 * time.Second,
 		}.WithDefaults(),
 		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
@@ -154,7 +154,7 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 		PartitionKey: pk,
 		LeaseID:      "sess-1",
 		OwnerID:      token.Owner,
-		Policy:       domain.RoutePolicy{}.WithDefaults(),
+		Policy:       routing.RoutePolicy{}.WithDefaults(),
 		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
 		Metrics:      rec,
 		// Threshold: 1 (Run loop) + 1 (pre-send check) = 2.
@@ -202,8 +202,8 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 // TestRoutePolicy_WithDefaults_GuardsNegativeSendTimeout validates that
 // a negative SendTimeout is replaced by the default.
 func TestRoutePolicy_WithDefaults_GuardsNegativeSendTimeout(t *testing.T) {
-	p := domain.RoutePolicy{SendTimeout: -1 * time.Second}.WithDefaults()
-	if p.SendTimeout != domain.DefaultSendTimeout {
-		t.Fatalf("expected SendTimeout=%v for negative input, got %v", domain.DefaultSendTimeout, p.SendTimeout)
+	p := routing.RoutePolicy{SendTimeout: -1 * time.Second}.WithDefaults()
+	if p.SendTimeout != routing.DefaultSendTimeout {
+		t.Fatalf("expected SendTimeout=%v for negative input, got %v", routing.DefaultSendTimeout, p.SendTimeout)
 	}
 }

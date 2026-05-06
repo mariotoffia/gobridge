@@ -24,8 +24,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -225,7 +225,7 @@ func TestDeliveryHook_DirectHold_TransientRetry_NoSettled(t *testing.T) {
 	hook := &recordingHook{}
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Hook = hook
-		cfg.Policy.DeliveryMode = domain.DeliveryDirectHold
+		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 	})
 	sender.SendErr = shared.ErrUnavailable
 
@@ -344,7 +344,7 @@ func TestDeliveryHook_DirectHold_Drop_NoDLQ_RetryUnsupported(t *testing.T) {
 
 	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
 		RouteID:    "test-route",
-		Policy:     domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold}.WithDefaults(),
+		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
 		Sender:     sender,
 		DLQ:        runtime.NewDLQRouter(nil),
@@ -425,7 +425,7 @@ func TestDeliveryHook_DirectHold_SettledCarriesBindingID(t *testing.T) {
 	hook := &recordingHook{}
 	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
 		cfg.Hook = hook
-		cfg.Bindings = []domain.DestinationBinding{
+		cfg.Bindings = []routing.DestinationBinding{
 			{ID: "bind-alpha", Address: "topic/alpha"},
 		}
 	})

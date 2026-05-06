@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -46,7 +46,7 @@ func TestBugRDR_ConcurrentRunOnSameReceiver_ReturnsError(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "bug-rdr-1",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-rdr", sess)
 
@@ -114,7 +114,7 @@ func TestBugRDR_HandlerRemainsForFirstRun_DespiteSecondRunRejection(t *testing.T
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "bug-rdr-2",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-rdr-2", sess)
 
@@ -182,7 +182,7 @@ func TestBugRDR_SequentialRunOnSameReceiver_AllowedAfterFirstReturns(t *testing.
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "bug-rdr-3",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	r := NewReceiver("rx-rdr-3", sess)
 

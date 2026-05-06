@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -34,9 +34,9 @@ type varyingResolver struct {
 	counter int32
 }
 
-func (r *varyingResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]domain.DispatchPlan, error) {
+func (r *varyingResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]routing.DispatchPlan, error) {
 	n := atomic.AddInt32(&r.counter, 1)
-	return []domain.DispatchPlan{{
+	return []routing.DispatchPlan{{
 		BindingID: fmt.Sprintf("bind-%d", n),
 		Address:   "topic/test",
 	}}, nil
@@ -63,12 +63,12 @@ func TestDepthCache_EvictionClearsOnBurst(t *testing.T) {
 
 	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
 		RouteID:       "burst-route",
-		Policy:        domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox, MaxOutboxDepth: 100000},
+		Policy:        routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox, MaxOutboxDepth: 100000},
 		Receiver:      receiver,
 		Sender:        sender,
 		OutboxStore:   countingOutbox,
 		Resolver:      resolver,
-		Bindings:      []domain.DestinationBinding{{ID: "b1", SessionID: "burst-sess"}},
+		Bindings:      []routing.DestinationBinding{{ID: "b1", SessionID: "burst-sess"}},
 		DepthCacheTTL: time.Minute,
 	})
 
@@ -126,12 +126,12 @@ func TestDepthCacheTTL_WiredFromPolicy(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "ttlwire-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:   domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:   routing.DeliverySharedOutbox,
 			MaxOutboxDepth: 10000,
 			DepthCacheTTL:  50 * time.Millisecond,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-ttlwire"},
 		},
 	}
@@ -195,10 +195,10 @@ func TestDrainConfig_WiredFromSessionConfig(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "drainwire-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-drainwire"},
 		},
 	}
@@ -267,11 +267,11 @@ func TestQueryPendingError_FailsClosed(t *testing.T) {
 
 	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
 		RouteID:     "failclosed-route",
-		Policy:      domain.RoutePolicy{DeliveryMode: domain.DeliverySharedOutbox, MaxOutboxDepth: 100},
+		Policy:      routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox, MaxOutboxDepth: 100},
 		Receiver:    receiver,
 		Sender:      sender,
 		OutboxStore: errOutbox,
-		Bindings:    []domain.DestinationBinding{{ID: "b1", SessionID: "failclosed-sess"}},
+		Bindings:    []routing.DestinationBinding{{ID: "b1", SessionID: "failclosed-sess"}},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -313,7 +313,7 @@ func TestAbsoluteMaxBatchSize_Clamps(t *testing.T) {
 		PartitionKey:        pk,
 		LeaseID:             "sess-1",
 		OwnerID:             token.Owner,
-		Policy:              domain.RoutePolicy{}.WithDefaults(),
+		Policy:              routing.RoutePolicy{}.WithDefaults(),
 		Strategy:            persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:      100,
 		DrainMaxBatchSize:   1<<31 - 1,
@@ -374,7 +374,7 @@ func TestOutboxDrainer_EmitsRecordFailureMetric(t *testing.T) {
 		PartitionKey:   pk,
 		LeaseID:        "sess-1",
 		OwnerID:        token.Owner,
-		Policy:         domain.RoutePolicy{}.WithDefaults(),
+		Policy:         routing.RoutePolicy{}.WithDefaults(),
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		Metrics:        rec,

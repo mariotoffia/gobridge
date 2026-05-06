@@ -1,11 +1,11 @@
-package domain_test
+package connectivity_test
 
 import (
 	"fmt"
 	"strings"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -22,7 +22,7 @@ import (
 // TestPasswordCredential_String_Redacted validates that String() returns
 // a redacted representation that does not contain the actual password.
 func TestPasswordCredential_String_Redacted(t *testing.T) {
-	pc := domain.PasswordCredential{
+	pc := connectivity.PasswordCredential{
 		Username: "admin",
 		Password: "super-secret-password-123",
 	}
@@ -40,7 +40,7 @@ func TestPasswordCredential_String_Redacted(t *testing.T) {
 // TestPasswordCredential_GoString_Redacted validates that GoString()
 // does not contain the actual password value.
 func TestPasswordCredential_GoString_Redacted(t *testing.T) {
-	pc := domain.PasswordCredential{
+	pc := connectivity.PasswordCredential{
 		Username: "admin",
 		Password: "super-secret-password-123",
 	}
@@ -55,7 +55,7 @@ func TestPasswordCredential_GoString_Redacted(t *testing.T) {
 // TestTLSMaterial_String_Redacted validates that String() does not
 // expose certificate or key PEM material.
 func TestTLSMaterial_String_Redacted(t *testing.T) {
-	tls := domain.TLSMaterial{
+	tls := connectivity.TLSMaterial{
 		CertPEM: "-----BEGIN CERTIFICATE-----\nMIIBxTCCAW...",
 		KeyPEM:  "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADA...",
 		CAPEMs:  []string{"-----BEGIN CERTIFICATE-----\nCA-CERT..."},
@@ -74,7 +74,7 @@ func TestTLSMaterial_String_Redacted(t *testing.T) {
 // TestTLSMaterial_GoString_Redacted validates that GoString() does not
 // expose PEM material.
 func TestTLSMaterial_GoString_Redacted(t *testing.T) {
-	tls := domain.TLSMaterial{
+	tls := connectivity.TLSMaterial{
 		CertPEM: "-----BEGIN CERTIFICATE-----\ndata...",
 		KeyPEM:  "-----BEGIN PRIVATE KEY-----\ndata...",
 	}

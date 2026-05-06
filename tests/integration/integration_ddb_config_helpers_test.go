@@ -14,7 +14,7 @@ import (
 	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
@@ -256,7 +256,7 @@ func newCfgFakeSession() *cfgFakeSession {
 }
 
 func (s *cfgFakeSession) Start(_ context.Context) error { return nil }
-func (s *cfgFakeSession) Reconcile(_ context.Context, _ domain.SessionPlan) error {
+func (s *cfgFakeSession) Reconcile(_ context.Context, _ connectivity.SessionPlan) error {
 	return nil
 }
 func (s *cfgFakeSession) Health(_ context.Context) ports.SessionHealth {

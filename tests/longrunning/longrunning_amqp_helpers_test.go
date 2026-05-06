@@ -14,7 +14,7 @@ import (
 
 	amqp091adapter "github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091"
 	amqp10adapter "github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
@@ -26,7 +26,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func setupRabbitMQSession(
-	t *testing.T, mode domain.SessionMode,
+	t *testing.T, mode connectivity.SessionMode,
 ) *amqp091adapter.Session {
 	t.Helper()
 	ep := rabbitmqlocal.Endpoint(t)
@@ -77,7 +77,7 @@ func newRabbitMQReceiver(
 // ---------------------------------------------------------------------------
 
 func setupArtemisSession(
-	t *testing.T, mode domain.SessionMode,
+	t *testing.T, mode connectivity.SessionMode,
 ) *amqp10adapter.Session {
 	t.Helper()
 	ep := artemislocal.Endpoint(t)
@@ -145,7 +145,7 @@ func newRabbitMQCollector(
 	t *testing.T, queueName string,
 ) *amqpCollector {
 	t.Helper()
-	sess := setupRabbitMQSession(t, domain.SessionEphemeral)
+	sess := setupRabbitMQSession(t, connectivity.SessionEphemeral)
 	recv := newRabbitMQReceiver(t, sess, queueName)
 	recvCtx, recvCancel := context.WithCancel(context.Background())
 
@@ -173,7 +173,7 @@ func newArtemisCollector(
 	t *testing.T, address string,
 ) *amqpCollector {
 	t.Helper()
-	sess := setupArtemisSession(t, domain.SessionEphemeral)
+	sess := setupArtemisSession(t, connectivity.SessionEphemeral)
 	recv := newArtemisReceiver(t, sess, address)
 	recvCtx, recvCancel := context.WithCancel(context.Background())
 

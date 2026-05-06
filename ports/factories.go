@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
 // SessionSpec holds transport connection identity and remote session
@@ -13,7 +13,7 @@ import (
 type SessionSpec struct {
 	ID          string
 	Transport   string
-	SessionMode domain.SessionMode
+	SessionMode connectivity.SessionMode
 	Config      PluginConfig
 }
 
@@ -22,7 +22,7 @@ type SessionSpec struct {
 type ReceiverSpec struct {
 	ID            string
 	SessionID     string
-	Subscriptions []domain.SubscriptionPlan
+	Subscriptions []connectivity.SubscriptionPlan
 	Config        PluginConfig
 }
 
@@ -50,7 +50,7 @@ type CredentialedConfig interface {
 	// ApplyCredentials merges the resolved credential set into the
 	// concrete config. Pre-existing inline values must take
 	// precedence over resolved material.
-	ApplyCredentials(creds *domain.CredentialSet) error
+	ApplyCredentials(creds *connectivity.CredentialSet) error
 }
 
 // SessionFactory creates Session instances for stateful transports.

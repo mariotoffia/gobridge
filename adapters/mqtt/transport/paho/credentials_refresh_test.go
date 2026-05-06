@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -19,7 +19,7 @@ func TestApplyCredentials_BeforeStart_UpdatesLiveCreds(t *testing.T) {
 		ClientID:   "creds-before-start",
 		Username:   "u-old",
 		Password:   "p-old",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	defer func() { _ = s.Close(context.Background()) }()
 
 	// Seed liveCreds manually — Start() is what normally does this, but
@@ -28,8 +28,8 @@ func TestApplyCredentials_BeforeStart_UpdatesLiveCreds(t *testing.T) {
 	s.liveCreds = mqttCredentials{Username: "u-old", Password: "p-old"}
 	s.mu.Unlock()
 
-	err := s.ApplyCredentials(t.Context(), &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u-new", Password: "p-new"},
+	err := s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u-new", Password: "p-new"},
 	})
 	require.NoError(t, err)
 
@@ -48,7 +48,7 @@ func TestApplyCredentials_NilSet_Rejected(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "creds-nil",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	defer func() { _ = s.Close(context.Background()) }()
 
 	err := s.ApplyCredentials(t.Context(), nil)
@@ -64,11 +64,11 @@ func TestApplyCredentials_ClosedSession_Rejected(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "creds-closed",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	_ = s.Close(context.Background())
 
-	err := s.ApplyCredentials(t.Context(), &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	err := s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	})
 	require.Error(t, err)
 	be, ok := shared.AsBridgeError(err)
@@ -85,7 +85,7 @@ func TestApplyCredentials_Dedup(t *testing.T) {
 		ClientID:   "creds-dedup",
 		Username:   "u",
 		Password:   "p",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	defer func() { _ = s.Close(context.Background()) }()
 
 	s.mu.Lock()
@@ -94,8 +94,8 @@ func TestApplyCredentials_Dedup(t *testing.T) {
 	// on the no-change-then-return-nil path to execute.
 	s.mu.Unlock()
 
-	err := s.ApplyCredentials(t.Context(), &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	err := s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	})
 	require.NoError(t, err)
 }
@@ -107,7 +107,7 @@ func TestReload_ClosedSession_Rejected(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "reload-closed",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	require.NoError(t, s.Close(context.Background()))
 
 	err := s.Reload(t.Context())
@@ -126,11 +126,11 @@ func TestApplyCredentials_TLSMaterial_BeforeStart_StashesOnOpts(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "creds-tls-prestart",
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	defer func() { _ = s.Close(context.Background()) }()
 
-	err := s.ApplyCredentials(t.Context(), &domain.CredentialSet{
-		TLS: &domain.TLSMaterial{
+	err := s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
+		TLS: &connectivity.TLSMaterial{
 			CertPEM: "--- CERT ---",
 			KeyPEM:  "--- KEY ---",
 			CAPEMs:  []string{"--- CA ---"},
@@ -159,11 +159,11 @@ func TestApplyCredentials_TLSMaterial_Dedup(t *testing.T) {
 			KeyPEM:    "--- KEY ---",
 			CACertPEM: "--- CA ---",
 		},
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 	defer func() { _ = s.Close(context.Background()) }()
 
-	err := s.ApplyCredentials(t.Context(), &domain.CredentialSet{
-		TLS: &domain.TLSMaterial{
+	err := s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
+		TLS: &connectivity.TLSMaterial{
 			CertPEM: "--- CERT ---",
 			KeyPEM:  "--- KEY ---",
 			CAPEMs:  []string{"--- CA ---"},
@@ -183,7 +183,7 @@ func TestApplyTLSMaterial_ChangeDetection(t *testing.T) {
 	})
 	t.Run("first-time enable", func(t *testing.T) {
 		var tls *TLSConfig
-		require.True(t, applyTLSMaterial(&tls, &domain.TLSMaterial{
+		require.True(t, applyTLSMaterial(&tls, &connectivity.TLSMaterial{
 			CertPEM: "c", KeyPEM: "k",
 		}))
 		require.NotNil(t, tls)
@@ -191,7 +191,7 @@ func TestApplyTLSMaterial_ChangeDetection(t *testing.T) {
 	})
 	t.Run("cert rotation", func(t *testing.T) {
 		tls := &TLSConfig{Enable: true, CertPEM: "old", KeyPEM: "old"}
-		changed := applyTLSMaterial(&tls, &domain.TLSMaterial{
+		changed := applyTLSMaterial(&tls, &connectivity.TLSMaterial{
 			CertPEM: "new", KeyPEM: "new",
 		})
 		require.True(t, changed)
@@ -199,7 +199,7 @@ func TestApplyTLSMaterial_ChangeDetection(t *testing.T) {
 	})
 	t.Run("CA-only rotation", func(t *testing.T) {
 		tls := &TLSConfig{Enable: true, CACertPEM: "old-ca"}
-		changed := applyTLSMaterial(&tls, &domain.TLSMaterial{
+		changed := applyTLSMaterial(&tls, &connectivity.TLSMaterial{
 			CAPEMs: []string{"new-ca"},
 		})
 		require.True(t, changed)
@@ -207,7 +207,7 @@ func TestApplyTLSMaterial_ChangeDetection(t *testing.T) {
 	})
 	t.Run("multi-CA joined", func(t *testing.T) {
 		var tls *TLSConfig
-		require.True(t, applyTLSMaterial(&tls, &domain.TLSMaterial{
+		require.True(t, applyTLSMaterial(&tls, &connectivity.TLSMaterial{
 			CAPEMs: []string{"ca1", "ca2"},
 		}))
 		require.Equal(t, "ca1\nca2", tls.CACertPEM)
@@ -216,7 +216,7 @@ func TestApplyTLSMaterial_ChangeDetection(t *testing.T) {
 		tls := &TLSConfig{
 			Enable: true, CertPEM: "c", KeyPEM: "k", CACertPEM: "ca",
 		}
-		require.False(t, applyTLSMaterial(&tls, &domain.TLSMaterial{
+		require.False(t, applyTLSMaterial(&tls, &connectivity.TLSMaterial{
 			CertPEM: "c", KeyPEM: "k", CAPEMs: []string{"ca"},
 		}))
 	})

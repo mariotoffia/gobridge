@@ -8,31 +8,32 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
-	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 type stubRepo struct {
 	scheme    string
 	namespace string
-	creds     *domain.CredentialSet
+	creds     *connectivity.CredentialSet
 	callCount atomic.Int32
 }
 
 func (s *stubRepo) Scheme() string    { return s.scheme }
 func (s *stubRepo) Namespace() string { return s.namespace }
-func (s *stubRepo) Get(_ context.Context, _ string) (*domain.CredentialSet, error) {
+func (s *stubRepo) Get(_ context.Context, _ string) (*connectivity.CredentialSet, error) {
 	s.callCount.Add(1)
 	return s.creds, nil
 }
 
 // Verifies Resolve dispatches to the registered repository for the URI scheme and returns credentials.
 func TestCredentialResolver_SingleSchemeDispatch(t *testing.T) {
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	}
 	repo := &stubRepo{scheme: "file", creds: creds}
 
@@ -47,11 +48,11 @@ func TestCredentialResolver_SingleSchemeDispatch(t *testing.T) {
 
 // Verifies Resolve selects the correct repository per scheme without cross-calling other schemes.
 func TestCredentialResolver_MultiSchemeDispatch(t *testing.T) {
-	fileCreds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "file-user", Password: "fp"},
+	fileCreds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "file-user", Password: "fp"},
 	}
-	pmsCreds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "pms-user", Password: "pp"},
+	pmsCreds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "pms-user", Password: "pp"},
 	}
 	fileRepo := &stubRepo{scheme: "file", creds: fileCreds}
 	pmsRepo := &stubRepo{scheme: "pms", creds: pmsCreds}
@@ -74,14 +75,14 @@ func TestCredentialResolver_MultiSchemeDispatch(t *testing.T) {
 
 // Verifies namespace matching picks the longest registered prefix for the same scheme.
 func TestCredentialResolver_NamespaceLongestPrefix(t *testing.T) {
-	rootCreds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "root"},
+	rootCreds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "root"},
 	}
-	tenantACreds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "tenantA"},
+	tenantACreds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "tenantA"},
 	}
-	app1Creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "app1"},
+	app1Creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "app1"},
 	}
 
 	rootRepo := &stubRepo{scheme: "pms", namespace: "", creds: rootCreds}
@@ -139,8 +140,8 @@ func TestCredentialResolver_NotFoundError(t *testing.T) {
 
 // Verifies a second Resolve for the same URI with TTL cache hits the store only once.
 func TestCredentialResolver_CacheHitMiss(t *testing.T) {
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "cached"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "cached"},
 	}
 	repo := &stubRepo{scheme: "file", creds: creds}
 
@@ -160,8 +161,8 @@ func TestCredentialResolver_CacheHitMiss(t *testing.T) {
 
 // Verifies after cache TTL elapses Resolve fetches credentials from the repository again.
 func TestCredentialResolver_CacheExpiry(t *testing.T) {
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "expiring"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "expiring"},
 	}
 	repo := &stubRepo{scheme: "file", creds: creds}
 
@@ -183,8 +184,8 @@ func TestCredentialResolver_CacheExpiry(t *testing.T) {
 
 // Verifies WithCredentialCacheDisabled causes every Resolve to call the underlying repository.
 func TestCredentialResolver_CacheDisabled(t *testing.T) {
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "nocache"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "nocache"},
 	}
 	repo := &stubRepo{scheme: "file", creds: creds}
 
@@ -201,8 +202,8 @@ func TestCredentialResolver_CacheDisabled(t *testing.T) {
 
 // Verifies InvalidateCache forces the next Resolve for that URI to refetch from the repository.
 func TestCredentialResolver_InvalidateCache(t *testing.T) {
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "inv"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "inv"},
 	}
 	repo := &stubRepo{scheme: "file", creds: creds}
 
@@ -222,8 +223,8 @@ func TestCredentialResolver_InvalidateCache(t *testing.T) {
 
 // Verifies ClearCache empties all cached entries as reflected by cache stats size.
 func TestCredentialResolver_ClearCache(t *testing.T) {
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "clear"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "clear"},
 	}
 	repo := &stubRepo{scheme: "pms", creds: creds}
 
@@ -243,8 +244,8 @@ func TestCredentialResolver_ClearCache(t *testing.T) {
 
 // Verifies the credential cache never holds more than maxCredentialCacheEntries (1000) after many distinct URIs.
 func TestCredentialResolver_CacheMaxSize(t *testing.T) {
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	}
 	repo := &stubRepo{scheme: "file", creds: creds}
 
@@ -265,8 +266,8 @@ func TestCredentialResolver_CacheMaxSize(t *testing.T) {
 
 // Verifies when over capacity, expired entries are evicted before LRU-by-expiry eviction runs.
 func TestCredentialResolver_CacheEvictsExpired(t *testing.T) {
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	}
 	repo := &stubRepo{scheme: "file", creds: creds}
 
@@ -296,8 +297,8 @@ func TestCredentialResolver_CacheEvictsExpired(t *testing.T) {
 // Verifies when still over capacity after removing expired entries, a batch
 // of ~10% oldest entries (by expiry) is evicted, providing headroom.
 func TestCredentialResolver_CacheEvictsOldestWhenFull(t *testing.T) {
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	}
 	repo := &stubRepo{scheme: "file", creds: creds}
 
@@ -338,8 +339,8 @@ func TestCredentialResolver_CacheEvictsOldestWhenFull(t *testing.T) {
 // Verifies batch eviction removes ~10% entries to provide headroom for burst
 // traffic, not just a single entry.
 func TestCredentialResolver_BatchEvictionProvidesHeadroom(t *testing.T) {
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	}
 	repo := &stubRepo{scheme: "file", creds: creds}
 
@@ -384,8 +385,8 @@ func TestCredentialResolver_BatchEvictionProvidesHeadroom(t *testing.T) {
 // consecutive Resolve calls return independent deep copies so callers cannot
 // corrupt cached state by mutating the returned CredentialSet.
 func TestCredentialResolver_CachedCredentials_ReturnSharedPointer(t *testing.T) {
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "shared", Password: "secret"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "shared", Password: "secret"},
 	}
 	repo := &stubRepo{scheme: "file", creds: creds}
 
@@ -413,8 +414,8 @@ func TestCredentialResolver_ResolveRepo_InvalidURI(t *testing.T) {
 
 // Verifies CacheStats accurately reports expired entries.
 func TestCredentialResolver_CacheStats_AccurateExpiredCount(t *testing.T) {
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "stats-user"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "stats-user"},
 	}
 	repo := &stubRepo{scheme: "file", creds: creds}
 
@@ -447,11 +448,11 @@ func TestCredentialResolver_CacheStats_AccurateExpiredCount(t *testing.T) {
 // The first registered repo wins because resolveRepo uses strict > comparison,
 // so equal-length namespaces do not replace an existing best match.
 func TestCredentialResolver_Register_MultipleRepos_SameSchemeNamespace(t *testing.T) {
-	credsA := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "repoA"},
+	credsA := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "repoA"},
 	}
-	credsB := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "repoB"},
+	credsB := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "repoB"},
 	}
 	repoA := &stubRepo{scheme: "pms", namespace: "tenant", creds: credsA}
 	repoB := &stubRepo{scheme: "pms", namespace: "tenant", creds: credsB}
@@ -476,7 +477,7 @@ func TestNewCredentialResolver_NilClockOptionKeepsDefault(t *testing.T) {
 	// default, otherwise the first cache touch panics on r.clk.Now().
 	r := NewCredentialResolver(WithCredentialClock(nil))
 
-	creds := &domain.CredentialSet{Password: &domain.PasswordCredential{Username: "x"}}
+	creds := &connectivity.CredentialSet{Password: &connectivity.PasswordCredential{Username: "x"}}
 	repo := &stubRepo{scheme: "pms", namespace: "tenant", creds: creds}
 	r.Register(repo)
 

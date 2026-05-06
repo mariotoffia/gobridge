@@ -11,8 +11,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -22,12 +22,12 @@ import (
 // value, mirroring a stable backend.
 type fakePullStore struct {
 	mu    sync.Mutex
-	queue []*domain.CredentialSet
+	queue []*connectivity.CredentialSet
 	calls int64
 	err   error
 }
 
-func (f *fakePullStore) Resolve(_ context.Context, _ string) (*domain.CredentialSet, error) {
+func (f *fakePullStore) Resolve(_ context.Context, _ string) (*connectivity.CredentialSet, error) {
 	atomic.AddInt64(&f.calls, 1)
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -44,8 +44,8 @@ func (f *fakePullStore) Resolve(_ context.Context, _ string) (*domain.Credential
 	return head, nil
 }
 
-func pwd(user, pass string) *domain.CredentialSet {
-	return &domain.CredentialSet{Password: &domain.PasswordCredential{Username: user, Password: pass}}
+func pwd(user, pass string) *connectivity.CredentialSet {
+	return &connectivity.CredentialSet{Password: &connectivity.PasswordCredential{Username: user, Password: pass}}
 }
 
 // TestPollBasedWrapper_EmitsOnChange verifies that the wrapper publishes
@@ -55,7 +55,7 @@ func TestPollBasedWrapper_EmitsOnChange(t *testing.T) {
 	t.Parallel()
 
 	fake := clocktest.New()
-	pull := &fakePullStore{queue: []*domain.CredentialSet{
+	pull := &fakePullStore{queue: []*connectivity.CredentialSet{
 		pwd("u1", "p1"), // seed
 		pwd("u1", "p1"), // dup
 		pwd("u2", "p2"), // change
@@ -131,7 +131,7 @@ func TestPollBasedWrapper_EmitsOnChange(t *testing.T) {
 func TestPollBasedWrapper_ContextCancel(t *testing.T) {
 	t.Parallel()
 
-	pull := &fakePullStore{queue: []*domain.CredentialSet{pwd("u", "p")}}
+	pull := &fakePullStore{queue: []*connectivity.CredentialSet{pwd("u", "p")}}
 	fake := clocktest.New()
 	w := NewPollBasedWrapper(pull, ports.PollBasedWrapperConfig{
 		PollInterval: time.Second,

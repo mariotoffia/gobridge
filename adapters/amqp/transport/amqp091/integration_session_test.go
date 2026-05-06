@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
@@ -21,7 +21,7 @@ func TestIntegration_SessionHealth(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -48,8 +48,8 @@ func TestIntegration_SessionHealth(t *testing.T) {
 	queueName := rabbitmqlocal.UniqueQueue("sess-health")
 	exchangeName := rabbitmqlocal.UniqueExchange("sess-health-ex")
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -59,7 +59,7 @@ func TestIntegration_SessionHealth(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName, Config: &Config{Publisher: PublisherParams{Durable: false}}},
 		},
 	}
@@ -98,7 +98,7 @@ func TestIntegration_SessionEvents(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -141,8 +141,8 @@ checkConnected:
 
 	queueName := rabbitmqlocal.UniqueQueue("sess-events")
 	exchangeName := rabbitmqlocal.UniqueExchange("sess-events-ex")
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -151,7 +151,7 @@ checkConnected:
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName},
 		},
 	}
@@ -195,7 +195,7 @@ func TestIntegration_SessionReconcile_MultipleQueues(t *testing.T) {
 
 	sess := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess.Start(ctx); err != nil {
@@ -207,8 +207,8 @@ func TestIntegration_SessionReconcile_MultipleQueues(t *testing.T) {
 	fanoutQueue := rabbitmqlocal.UniqueQueue("multi-fanout")
 	fanoutExchange := rabbitmqlocal.UniqueExchange("multi-fanout-ex")
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: directQueue,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -225,7 +225,7 @@ func TestIntegration_SessionReconcile_MultipleQueues(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: directExchange},
 			{Topic: fanoutExchange, Config: &Config{Publisher: PublisherParams{ExchangeType: "fanout"}}},
 		},
@@ -320,8 +320,8 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 	queueName := rabbitmqlocal.UniqueQueue("sess-restart")
 	exchangeName := rabbitmqlocal.UniqueExchange("sess-restart-ex")
 
-	plan := domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{
 				Topic: queueName,
 				Config: &Config{Subscription: SubscriptionParams{
@@ -330,14 +330,14 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 				}},
 			},
 		},
-		Publishers: []domain.PublisherPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchangeName},
 		},
 	}
 
 	sess1 := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess1.Start(ctx); err != nil {
@@ -365,7 +365,7 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 
 	sess2 := NewSession(
 		SessionOptions{BrokerURL: ep},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 	if err := sess2.Start(ctx); err != nil {

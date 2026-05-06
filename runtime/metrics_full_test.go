@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -28,11 +28,11 @@ func TestMetrics_FullPipeline_DirectHold(t *testing.T) {
 
 	cfg := runtime.RouteConfig{
 		ID: "direct-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
-			DispatchMode: domain.DispatchSingle,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
+			DispatchMode: routing.DispatchSingle,
 		},
-		Bindings:           []domain.DestinationBinding{{ID: "b1"}},
+		Bindings:           []routing.DestinationBinding{{ID: "b1"}},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 
@@ -88,11 +88,11 @@ func TestMetrics_FullPipeline_SharedOutbox(t *testing.T) {
 
 	cfg := runtime.RouteConfig{
 		ID: "outbox-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			DispatchMode: domain.DispatchSingle,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			DispatchMode: routing.DispatchSingle,
 		},
-		Bindings: []domain.DestinationBinding{{ID: "b1", SessionID: "s1"}},
+		Bindings: []routing.DestinationBinding{{ID: "b1", SessionID: "s1"}},
 	}
 
 	err := rt.AddRoute(cfg, receiver, sender, session, &runtime.SessionConfig{

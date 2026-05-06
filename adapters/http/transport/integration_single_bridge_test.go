@@ -14,9 +14,9 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -89,9 +89,9 @@ func (p *filterProcessor) Process(ctx context.Context, env *messaging.Envelope, 
 func directHoldRouteConfig(id string, procs []ports.Processor) runtime.RouteConfig {
 	return runtime.RouteConfig{
 		ID: id,
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
-			DispatchMode: domain.DispatchSingle,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
+			DispatchMode: routing.DispatchSingle,
 		},
 		SourceCapabilities: []ports.Capability{
 			ports.CapSourceRedelivery,

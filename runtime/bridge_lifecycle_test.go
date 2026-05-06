@@ -24,12 +24,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
-	"github.com/mariotoffia/gobridge/domain/messaging"
-	"github.com/mariotoffia/gobridge/ports"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/ports"
+	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
 // helperMinimalRoute creates a minimal valid RouteConfig with a
@@ -37,8 +38,8 @@ import (
 func helperMinimalRoute(id string) (goruntime.RouteConfig, *FakeReceiver, *FakeSender) {
 	cfg := goruntime.RouteConfig{
 		ID: id,
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
@@ -50,8 +51,8 @@ func helperMinimalRoute(id string) (goruntime.RouteConfig, *FakeReceiver, *FakeS
 func helperInvalidRoute(id string) (goruntime.RouteConfig, *FakeReceiver, *FakeSender) {
 	cfg := goruntime.RouteConfig{
 		ID: id,
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		// No SourceCapabilities -- validation will reject this.
 	}

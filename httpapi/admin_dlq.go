@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -38,7 +38,7 @@ type dlqEntryDetailView struct {
 	Payload string `json:"payload"` // base64-encoded
 }
 
-func toDLQEntryView(e domain.DLQEntry) dlqEntryView {
+func toDLQEntryView(e routing.DLQEntry) dlqEntryView {
 	return dlqEntryView{
 		ID:            e.ID,
 		RouteID:       e.RouteID,
@@ -56,7 +56,7 @@ func toDLQEntryView(e domain.DLQEntry) dlqEntryView {
 	}
 }
 
-func toDLQEntryViews(entries []domain.DLQEntry) []dlqEntryView {
+func toDLQEntryViews(entries []routing.DLQEntry) []dlqEntryView {
 	views := make([]dlqEntryView, len(entries))
 	for i, e := range entries {
 		views[i] = toDLQEntryView(e)
@@ -64,7 +64,7 @@ func toDLQEntryViews(entries []domain.DLQEntry) []dlqEntryView {
 	return views
 }
 
-func toDLQEntryDetailView(e domain.DLQEntry) dlqEntryDetailView {
+func toDLQEntryDetailView(e routing.DLQEntry) dlqEntryDetailView {
 	return dlqEntryDetailView{
 		dlqEntryView: toDLQEntryView(e),
 		Payload:      base64.StdEncoding.EncodeToString(e.Envelope.Payload),
@@ -89,7 +89,7 @@ func (s *Server) handleDLQ(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
 	}
-	entries, err := store.List(r.Context(), domain.DLQFilter{Limit: 100})
+	entries, err := store.List(r.Context(), routing.DLQFilter{Limit: 100})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "failed to list DLQ entries")
 		return
@@ -136,7 +136,7 @@ func (s *Server) handleDLQMessages(w http.ResponseWriter, r *http.Request) {
 		offset = n
 	}
 
-	filter := domain.DLQFilter{
+	filter := routing.DLQFilter{
 		RouteID:  q.Get("route_id"),
 		Category: q.Get("category"),
 		Limit:    limit + offset, // fetch enough to slice
@@ -385,7 +385,7 @@ func (s *Server) handleDLQDeleteByFilter(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	filter := domain.DLQFilter{
+	filter := routing.DLQFilter{
 		RouteID:  body.RouteID,
 		Category: body.Category,
 		Limit:    body.Limit,

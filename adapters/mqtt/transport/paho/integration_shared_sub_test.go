@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -182,8 +182,8 @@ func TestIntegration_SharedSubscription_PayloadIntegrity(t *testing.T) {
 	sess := newSessionWithEvents(t, ctx, brokerURL, "payload-sub")
 	t.Cleanup(func() { _ = sess.Close(context.Background()) })
 
-	if err := sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: shareTopic, QoS: 1}},
+	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: shareTopic, QoS: 1}},
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -281,8 +281,8 @@ func startSubscriber(t *testing.T, ctx context.Context, brokerURL, prefix, topic
 	t.Helper()
 	sess := newSessionWithEvents(t, ctx, brokerURL, prefix)
 
-	if err := sess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}); err != nil {
 		_ = sess.Close(context.Background())
 		t.Fatalf("Reconcile (%s): %v", prefix, err)
@@ -317,7 +317,7 @@ func newSessionWithEvents(t *testing.T, ctx context.Context, brokerURL, prefix s
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
 		CleanStart:     true,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {
 		t.Fatalf("Start (%s): %v", prefix, err)

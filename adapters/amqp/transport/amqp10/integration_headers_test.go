@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
@@ -24,7 +24,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 		Username:       user,
 		Password:       pass,
 		ConnectTimeout: 15 * time.Second,
-	}, domain.SessionEphemeral, slog.Default())
+	}, connectivity.SessionEphemeral, slog.Default())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -111,7 +111,7 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 		Username:       user,
 		Password:       pass,
 		ConnectTimeout: 15 * time.Second,
-	}, domain.SessionEphemeral, slog.Default())
+	}, connectivity.SessionEphemeral, slog.Default())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -193,7 +193,7 @@ func TestIntegration_ApplicationProperties(t *testing.T) {
 		Username:       user,
 		Password:       pass,
 		ConnectTimeout: 15 * time.Second,
-	}, domain.SessionEphemeral, slog.Default())
+	}, connectivity.SessionEphemeral, slog.Default())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

@@ -3,7 +3,7 @@ package paho
 import (
 	"errors"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -47,7 +47,7 @@ func (c *Config) CredentialsURI() string {
 // ApplyCredentials implements ports.CredentialedConfig. The resolved
 // password populates Session.Username/Password (when empty) and TLS
 // material populates Session.TLS PEM fields.
-func (c *Config) ApplyCredentials(set *domain.CredentialSet) error {
+func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 	if c == nil {
 		return errors.New("mqtt: nil config")
 	}

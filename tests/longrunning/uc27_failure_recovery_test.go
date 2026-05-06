@@ -13,8 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -41,7 +42,7 @@ func TestUC27_Intermittent_SendFailures(t *testing.T) {
 
 	dlqStore := &lrDLQStore{}
 
-	sess := setupMQTTSession(t, uniqueID("uc27-bridge"), domain.SessionEphemeral)
+	sess := setupMQTTSession(t, uniqueID("uc27-bridge"), connectivity.SessionEphemeral)
 	realSender := setupMQTTSender(t, sess)
 	faulty := newFaultySender(realSender, 20)
 	sqsRx, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
@@ -60,14 +61,14 @@ func TestUC27_Intermittent_SendFailures(t *testing.T) {
 
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc27-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:       domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:       routing.DeliveryDirectHold,
 			MaxInFlight:        100,
 			MaxReplayAttempts:  50,
-			OnPermanentFailure: domain.FailureDLQ,
+			OnPermanentFailure: routing.FailureDLQ,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "mqtt-out", Address: "uc27/output/data"},
+			routing.DispatchPlan{BindingID: "mqtt-out", Address: "uc27/output/data"},
 		),
 		SourceCapabilities: directHoldCaps,
 	}
@@ -185,7 +186,7 @@ func TestUC28_VisibilityTimeout_Race(t *testing.T) {
 	}, slog.Default())
 	require.NoError(t, err, "newSQSReceiver for UC28")
 
-	sess := setupMQTTSession(t, uniqueID("uc28-bridge"), domain.SessionEphemeral)
+	sess := setupMQTTSession(t, uniqueID("uc28-bridge"), connectivity.SessionEphemeral)
 	mqttSender := setupMQTTSender(t, sess)
 
 	rt := goruntime.New(
@@ -195,14 +196,14 @@ func TestUC28_VisibilityTimeout_Race(t *testing.T) {
 
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc28-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:       domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:       routing.DeliveryDirectHold,
 			MaxInFlight:        50,
-			OnPermanentFailure: domain.FailureDLQ,
+			OnPermanentFailure: routing.FailureDLQ,
 		},
 		Processors: []ports.Processor{&variableDelayProcessor{modulo: 8}},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "mqtt-out", Address: "uc28/output/data"},
+			routing.DispatchPlan{BindingID: "mqtt-out", Address: "uc28/output/data"},
 		),
 		SourceCapabilities: directHoldCaps,
 	}
@@ -258,7 +259,7 @@ func TestUC29_MessageTTL_Expiry(t *testing.T) {
 
 	dlqStore := &lrDLQStore{}
 
-	sess := setupMQTTSession(t, uniqueID("uc29-bridge"), domain.SessionEphemeral)
+	sess := setupMQTTSession(t, uniqueID("uc29-bridge"), connectivity.SessionEphemeral)
 	mqttSender := setupMQTTSender(t, sess)
 
 	rt := goruntime.New(
@@ -268,14 +269,14 @@ func TestUC29_MessageTTL_Expiry(t *testing.T) {
 
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc29-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode:       domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode:       routing.DeliveryDirectHold,
 			MaxInFlight:        50,
-			OnExpired:          domain.ExpiredDLQ,
-			OnPermanentFailure: domain.FailureDLQ,
+			OnExpired:          routing.ExpiredDLQ,
+			OnPermanentFailure: routing.FailureDLQ,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "mqtt-out", Address: "uc29/output/data"},
+			routing.DispatchPlan{BindingID: "mqtt-out", Address: "uc29/output/data"},
 		),
 		SourceCapabilities: directHoldCaps,
 	}

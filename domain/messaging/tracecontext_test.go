@@ -3,9 +3,10 @@ package messaging_test
 import (
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // TestParseTraceparent validates ParseTraceparent for valid W3C traceparent values and common invalid inputs.

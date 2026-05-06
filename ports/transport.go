@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 )
@@ -111,7 +111,7 @@ func (h SessionHealth) HasTopic(topic string) bool {
 // Stateless transports do not require a Session.
 type Session interface {
 	Start(ctx context.Context) error
-	Reconcile(ctx context.Context, plan domain.SessionPlan) error
+	Reconcile(ctx context.Context, plan connectivity.SessionPlan) error
 	Health(ctx context.Context) SessionHealth
 	Events() <-chan SessionEvent
 	Close(ctx context.Context) error

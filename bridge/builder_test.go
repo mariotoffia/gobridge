@@ -6,9 +6,10 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/config"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 
@@ -20,11 +21,11 @@ import (
 
 type fakeSession struct{}
 
-func (f *fakeSession) Start(ctx context.Context) error                              { return nil }
-func (f *fakeSession) Reconcile(ctx context.Context, plan domain.SessionPlan) error { return nil }
-func (f *fakeSession) Health(ctx context.Context) ports.SessionHealth               { return ports.SessionHealth{} }
-func (f *fakeSession) Events() <-chan ports.SessionEvent                            { return nil }
-func (f *fakeSession) Close(ctx context.Context) error                              { return nil }
+func (f *fakeSession) Start(ctx context.Context) error                                    { return nil }
+func (f *fakeSession) Reconcile(ctx context.Context, plan connectivity.SessionPlan) error { return nil }
+func (f *fakeSession) Health(ctx context.Context) ports.SessionHealth                     { return ports.SessionHealth{} }
+func (f *fakeSession) Events() <-chan ports.SessionEvent                                  { return nil }
+func (f *fakeSession) Close(ctx context.Context) error                                    { return nil }
 
 type fakeReceiver struct{}
 
@@ -94,10 +95,10 @@ func (f *fakeStoreFactory) NewDLQStore(_ context.Context, _ ports.PluginConfig) 
 }
 
 type fakeCredentialStore struct {
-	creds map[string]*domain.CredentialSet
+	creds map[string]*connectivity.CredentialSet
 }
 
-func (f *fakeCredentialStore) Resolve(_ context.Context, uri string) (*domain.CredentialSet, error) {
+func (f *fakeCredentialStore) Resolve(_ context.Context, uri string) (*connectivity.CredentialSet, error) {
 	if cs, ok := f.creds[uri]; ok {
 		return cs, nil
 	}
@@ -127,7 +128,7 @@ type testCredConfig struct {
 func (c *testCredConfig) Kind() string           { return "test.cred" }
 func (c *testCredConfig) Validate() error        { return nil }
 func (c *testCredConfig) CredentialsURI() string { return c.URI }
-func (c *testCredConfig) ApplyCredentials(creds *domain.CredentialSet) error {
+func (c *testCredConfig) ApplyCredentials(creds *connectivity.CredentialSet) error {
 	if creds != nil && creds.Password != nil {
 		if c.Username == "" {
 			c.Username = creds.Password.Username
@@ -192,7 +193,7 @@ func TestBuilder_Build(t *testing.T) {
 	routes := rt.Routes()
 	require.Len(t, routes, 1)
 	assert.Equal(t, "r1", routes[0].ID)
-	assert.Equal(t, domain.DeliverySharedOutbox, routes[0].DeliveryMode)
+	assert.Equal(t, routing.DeliverySharedOutbox, routes[0].DeliveryMode)
 }
 
 // Verifies Build fails when a configured transport has no registered factory.
@@ -265,7 +266,7 @@ func TestBuilder_DirectHoldRoute(t *testing.T) {
 
 	routes := rt.Routes()
 	require.Len(t, routes, 1)
-	assert.Equal(t, domain.DeliveryDirectHold, routes[0].DeliveryMode)
+	assert.Equal(t, routing.DeliveryDirectHold, routes[0].DeliveryMode)
 }
 
 // Verifies WithCredentialStore resolves credentials_uri into the typed
@@ -276,9 +277,9 @@ func TestBuilder_WithCredentialStore(t *testing.T) {
 	cfg.Sessions[0].Config = sessCfg
 
 	cs := &fakeCredentialStore{
-		creds: map[string]*domain.CredentialSet{
+		creds: map[string]*connectivity.CredentialSet{
 			"file://test/creds": {
-				Password: &domain.PasswordCredential{
+				Password: &connectivity.PasswordCredential{
 					Username: "resolved-user",
 					Password: "resolved-pass",
 				},
@@ -311,9 +312,9 @@ func TestBuilder_CredentialInlineOverride(t *testing.T) {
 	cfg.Sessions[0].Config = sessCfg
 
 	cs := &fakeCredentialStore{
-		creds: map[string]*domain.CredentialSet{
+		creds: map[string]*connectivity.CredentialSet{
 			"file://test/creds": {
-				Password: &domain.PasswordCredential{
+				Password: &connectivity.PasswordCredential{
 					Username: "resolved-user",
 					Password: "resolved-pass",
 				},

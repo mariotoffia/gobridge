@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -24,7 +24,7 @@ func TestStartCtx_IsNilBeforeStart(t *testing.T) {
 			BrokerURLs: []string{"tcp://localhost:1883"},
 			ClientID:   "test-nil-ctx",
 		},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -47,7 +47,7 @@ func TestStartCtx_SetDuringStartSimulation(t *testing.T) {
 			BrokerURLs: []string{"tcp://localhost:1883"},
 			ClientID:   "test-set-ctx",
 		},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -148,7 +148,7 @@ func TestStartCtx_FullOnConnectionUpSimulation(t *testing.T) {
 			ClientID:         "test-full-ctx",
 			ReconnectTimeout: 5 * time.Second,
 		},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -156,8 +156,8 @@ func TestStartCtx_FullOnConnectionUpSimulation(t *testing.T) {
 
 	s.mu.Lock()
 	s.activeSubs = map[string]byte{"topic/x": 1}
-	s.plan = &domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	s.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "topic/x", QoS: 1},
 			{Topic: "topic/y", QoS: 0},
 		},
@@ -220,7 +220,7 @@ func TestStartCtx_NotCancelled_ReconSucceeds(t *testing.T) {
 			ClientID:         "test-ctx-alive",
 			ReconnectTimeout: 5 * time.Second,
 		},
-		domain.SessionEphemeral,
+		connectivity.SessionEphemeral,
 		nil,
 	)
 
@@ -229,8 +229,8 @@ func TestStartCtx_NotCancelled_ReconSucceeds(t *testing.T) {
 
 	s.mu.Lock()
 	s.activeSubs = map[string]byte{"topic/a": 0}
-	s.plan = &domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{
+	s.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "topic/a", QoS: 0},
 		},
 	}

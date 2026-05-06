@@ -56,6 +56,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+
 	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 )
 

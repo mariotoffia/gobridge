@@ -13,8 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -48,7 +49,7 @@ func TestUC7_SQS_FIFO_Ordering_Through_MQTT(t *testing.T) {
 	defer cancel()
 
 	// Ingress: SQS-IN -> MQTT uc7/ordered
-	sess1 := setupMQTTSession(t, mqttlocal.UniqueClientID("uc7-ingress"), domain.SessionEphemeral)
+	sess1 := setupMQTTSession(t, mqttlocal.UniqueClientID("uc7-ingress"), connectivity.SessionEphemeral)
 	mqttSnd := setupMQTTSender(t, sess1)
 	sqsRx := newSQSReceiver(t, sqsInURL)
 
@@ -58,9 +59,9 @@ func TestUC7_SQS_FIFO_Ordering_Through_MQTT(t *testing.T) {
 	)
 	require.NoError(t, rtIn.AddRoute(goruntime.RouteConfig{
 		ID:     "uc7-ingress-route",
-		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy: routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "mqtt-pub", Address: "uc7/ordered"},
+			routing.DispatchPlan{BindingID: "mqtt-pub", Address: "uc7/ordered"},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, sqsRx, mqttSnd, nil, nil))
@@ -124,14 +125,14 @@ func TestUC8_MultiProtocol_FanOut(t *testing.T) {
 
 	// Primary session+sender targets MQTT alpha.
 	sidAlpha := uniqueID("uc8-alpha")
-	sessAlpha := setupMQTTSession(t, mqttlocal.UniqueClientID("uc8-alpha"), domain.SessionEphemeral)
+	sessAlpha := setupMQTTSession(t, mqttlocal.UniqueClientID("uc8-alpha"), connectivity.SessionEphemeral)
 	sndAlpha := paho.NewSender(sessAlpha, paho.SenderOptions{QoS: 1, Timeout: 10 * time.Second})
 	fSessAlpha := newNoopSession()
 	scAlpha := lrSessionConfig(sidAlpha)
 
 	// Secondary session+sender targets MQTT beta.
 	sidBeta := uniqueID("uc8-beta")
-	sessBeta := setupMQTTSession(t, mqttlocal.UniqueClientID("uc8-beta"), domain.SessionEphemeral)
+	sessBeta := setupMQTTSession(t, mqttlocal.UniqueClientID("uc8-beta"), connectivity.SessionEphemeral)
 	sndBeta := paho.NewSender(sessBeta, paho.SenderOptions{QoS: 1, Timeout: 10 * time.Second})
 	fSessBeta := newNoopSession()
 	scBeta := lrSessionConfig(sidBeta)
@@ -142,7 +143,7 @@ func TestUC8_MultiProtocol_FanOut(t *testing.T) {
 	fSessSQS := newNoopSession()
 	scSQS := lrSessionConfig(sidSQS)
 
-	bindings := []domain.DestinationBinding{
+	bindings := []routing.DestinationBinding{
 		{ID: "bind-alpha", SessionID: sidAlpha, Address: "uc8/alpha", Transport: "mqtt"},
 		{ID: "bind-beta", SessionID: sidBeta, Address: "uc8/beta", Transport: "mqtt"},
 		{ID: "bind-sqs", SessionID: sidSQS, Address: sqsOutURL, Transport: "sqs"},
@@ -159,9 +160,9 @@ func TestUC8_MultiProtocol_FanOut(t *testing.T) {
 
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc8-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
-			DispatchMode: domain.DispatchFanOut,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			DispatchMode: routing.DispatchFanOut,
 		},
 		Resolver: goruntime.NewBindingResolver(bindings, goruntime.MatchAll()),
 		Bindings: bindings,
@@ -216,16 +217,16 @@ func TestUC9_MQTT_QoS2_Stress(t *testing.T) {
 
 	// Bridge session: subscribe uc9/input, publish to uc9/output.
 	rxSessID := mqttlocal.UniqueClientID("uc9-rx")
-	rxSess := setupMQTTSession(t, rxSessID, domain.SessionEphemeral)
-	require.NoError(t, rxSess.Reconcile(ctx, domain.SessionPlan{
-		Subscriptions: []domain.SubscriptionPlan{{Topic: "uc9/input", QoS: 2}},
+	rxSess := setupMQTTSession(t, rxSessID, connectivity.SessionEphemeral)
+	require.NoError(t, rxSess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "uc9/input", QoS: 2}},
 	}))
 	waitSubReady(t, rxSess, 5*time.Second)
 
 	mqttRx := paho.NewReceiver("uc9-rx", rxSess)
 
 	txSessID := mqttlocal.UniqueClientID("uc9-tx")
-	txSess := setupMQTTSession(t, txSessID, domain.SessionEphemeral)
+	txSess := setupMQTTSession(t, txSessID, connectivity.SessionEphemeral)
 	mqttSnd := paho.NewSender(txSess, paho.SenderOptions{QoS: 2, Timeout: 10 * time.Second})
 
 	rt := goruntime.New(
@@ -234,9 +235,9 @@ func TestUC9_MQTT_QoS2_Stress(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID:     "uc9-route",
-		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy: routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "mqtt-out", Address: "uc9/output"},
+			routing.DispatchPlan{BindingID: "mqtt-out", Address: "uc9/output"},
 		),
 		SourceCapabilities: directHoldCaps,
 	}, mqttRx, mqttSnd, nil, nil))
@@ -246,7 +247,7 @@ func TestUC9_MQTT_QoS2_Stress(t *testing.T) {
 	gobridgesync(t, 10*time.Second, rt)
 
 	// Publish 5,000 messages at QoS 2.
-	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc9-pub"), domain.SessionEphemeral)
+	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc9-pub"), connectivity.SessionEphemeral)
 	pubSnd := paho.NewSender(pubSess, paho.SenderOptions{QoS: 2, Timeout: 10 * time.Second})
 	for i := 0; i < msgCount; i++ {
 		env := &messaging.Envelope{
@@ -304,7 +305,7 @@ func TestUC10_HTTP_Inject_To_MQTT(t *testing.T) {
 
 	collector := newMQTTCollector(t, "uc10/output", "uc10-col")
 
-	txSess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc10-tx"), domain.SessionEphemeral)
+	txSess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc10-tx"), connectivity.SessionEphemeral)
 	mqttSnd := setupMQTTSender(t, txSess)
 
 	rt := goruntime.New(
@@ -313,9 +314,9 @@ func TestUC10_HTTP_Inject_To_MQTT(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID:     "uc10-route",
-		Policy: domain.RoutePolicy{DeliveryMode: domain.DeliveryDirectHold},
+		Policy: routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "mqtt-out", Address: "uc10/output"},
+			routing.DispatchPlan{BindingID: "mqtt-out", Address: "uc10/output"},
 		),
 		SourceCapabilities: []ports.Capability{ports.CapHTTPEndpoint},
 	}, &noopReceiver{}, mqttSnd, nil, nil))
@@ -393,13 +394,13 @@ func TestUC11_SQS_To_SQS_Direct(t *testing.T) {
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "uc11-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "sqs-out", Address: sqsOutURL},
+			routing.DispatchPlan{BindingID: "sqs-out", Address: sqsOutURL},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "sqs-out", SessionID: sessionID, Address: sqsOutURL, Transport: "sqs"},
 		},
 	}, sqsRx, sqsSnd, fSess, &sc))

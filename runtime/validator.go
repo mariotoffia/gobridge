@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -54,9 +54,9 @@ func validateRoute(ve *ValidationError, entry *routeEntry, hasOutboxStore, hasLe
 	prefix := fmt.Sprintf("route %q: ", cfg.ID)
 
 	switch policy.DeliveryMode {
-	case domain.DeliveryDirectHold:
+	case routing.DeliveryDirectHold:
 		validateDirectHold(ve, prefix, entry, policy)
-	case domain.DeliverySharedOutbox:
+	case routing.DeliverySharedOutbox:
 		validateSharedOutbox(ve, prefix, entry, policy, hasOutboxStore, hasLeaseStore)
 	}
 
@@ -64,8 +64,8 @@ func validateRoute(ve *ValidationError, entry *routeEntry, hasOutboxStore, hasLe
 	validateTimeouts(ve, prefix, entry)
 }
 
-func validateDirectHold(ve *ValidationError, prefix string, entry *routeEntry, policy domain.RoutePolicy) {
-	if policy.DispatchMode == domain.DispatchFanOut {
+func validateDirectHold(ve *ValidationError, prefix string, entry *routeEntry, policy routing.RoutePolicy) {
+	if policy.DispatchMode == routing.DispatchFanOut {
 		ve.add(prefix + "direct_hold invalid: resolver fan-out is enabled")
 	}
 
@@ -94,7 +94,7 @@ func validateDirectHold(ve *ValidationError, prefix string, entry *routeEntry, p
 // persisted in a single OutboxStore.Persist call (DynamoDB BatchWriteItem).
 const outboxTransactionLimit = 100
 
-func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry, policy domain.RoutePolicy, hasOutboxStore, hasLeaseStore bool) {
+func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry, policy routing.RoutePolicy, hasOutboxStore, hasLeaseStore bool) {
 	if !hasOutboxStore {
 		ve.add(prefix + "shared_outbox invalid: no OutboxStore configured")
 	}
@@ -103,7 +103,7 @@ func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry,
 		ve.add(prefix + "shared_outbox invalid: no LeaseStore configured for exclusive session")
 	}
 
-	if policy.DispatchMode == domain.DispatchFanOut && len(entry.config.Bindings) > outboxTransactionLimit {
+	if policy.DispatchMode == routing.DispatchFanOut && len(entry.config.Bindings) > outboxTransactionLimit {
 		ve.add(prefix + fmt.Sprintf(
 			"shared_outbox invalid: fan-out cardinality (%d) exceeds OutboxStore transaction limit (%d)",
 			len(entry.config.Bindings), outboxTransactionLimit))

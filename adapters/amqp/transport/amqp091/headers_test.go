@@ -4,8 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain/messaging"
 	amqp "github.com/rabbitmq/amqp091-go"
+
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 func requireHeaderEqual(t *testing.T, headers map[string]any, key string, want any) {

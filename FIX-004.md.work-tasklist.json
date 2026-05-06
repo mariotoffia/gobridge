@@ -1,8 +1,8 @@
 {
   "$schema": "v2",
   "source": "FIX-004.md",
-  "source_sha": "0b663c6f15475631db29a4b3472eac6dd53756bd63342701a122b4460936f0b4",
-  "indexed_at": "2026-05-06T06:24:17Z",
+  "source_sha": "5680a6f33a28d9a27f48205cda9a5ee2b5759f4060d3bec2aa94f5c67df4a79e",
+  "indexed_at": "2026-05-06T08:32:04Z",
   "status_convention": "- DONE suffix on Phase H3 headings",
   "tasks": [
     {
@@ -50,7 +50,7 @@
     {
       "id": "phase-4",
       "title": "Move domain/routing and domain/connectivity",
-      "status": "pending",
+      "status": "done",
       "category_hint": "clean-arch refactor",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "Split route.go; credentials \u2192 connectivity.",

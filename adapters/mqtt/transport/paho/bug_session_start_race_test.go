@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -36,7 +36,7 @@ func TestBug2_Start_ConcurrentCallers_OnlyOneEnters(t *testing.T) {
 		ClientID:       "bug2-test",
 		KeepAlive:      5,
 		ConnectTimeout: 500 * time.Millisecond,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -91,7 +91,7 @@ func TestBug2_Start_IdempotentAfterSuccess(t *testing.T) {
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "bug2-idempotent",
 		KeepAlive:  5,
-	}, domain.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil)
 
 	// Simulate a started session by setting cm to non-nil via Start's
 	// success path. We can't do a real connection in a unit test, so we

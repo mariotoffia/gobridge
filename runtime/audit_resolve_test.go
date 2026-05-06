@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -136,7 +136,7 @@ func TestRenderAddress_RendersToEmpty(t *testing.T) {
 // TestStaticResolver_ReturnsCopy_Audit validates that StaticResolver
 // returns independent copies on each call.
 func TestStaticResolver_ReturnsCopy_Audit(t *testing.T) {
-	plans := []domain.DispatchPlan{
+	plans := []routing.DispatchPlan{
 		{BindingID: "b1", Address: "topic/1"},
 	}
 
@@ -163,8 +163,8 @@ func TestStaticResolver_ReturnsCopy_Audit(t *testing.T) {
 // ErrNoBindingMatch when no binding matches.
 func TestBindingResolver_NoMatch(t *testing.T) {
 	resolver := NewBindingResolver(
-		[]domain.DestinationBinding{{ID: "b1", Address: "topic"}},
-		func(_ *messaging.Envelope, _ domain.DestinationBinding) bool { return false },
+		[]routing.DestinationBinding{{ID: "b1", Address: "topic"}},
+		func(_ *messaging.Envelope, _ routing.DestinationBinding) bool { return false },
 	)
 
 	_, err := resolver.Resolve(context.Background(), &messaging.Envelope{})

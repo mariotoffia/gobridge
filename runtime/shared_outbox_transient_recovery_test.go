@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
@@ -110,18 +110,18 @@ func TestSharedOutbox_TransientSenderFailure_RecoversOnRetry(t *testing.T) {
 
 	cfg := goruntime.RouteConfig{
 		ID: "transient-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 			// A generous MaxReplayAttempts so transient retries don't
 			// flip to poison/DLQ during this test.
 			MaxReplayAttempts: 20,
 		},
 		Resolver: &FakeResolver{
-			Plans: []domain.DispatchPlan{
+			Plans: []routing.DispatchPlan{
 				{BindingID: "b1", Address: "devices/out"},
 			},
 		},
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-sess-transient"},
 		},
 	}

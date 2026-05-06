@@ -5,14 +5,14 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 // CredentialAware is implemented by transport sessions that can rotate
 // their authentication material at runtime. When a PushCredentialStore
-// emits a new *domain.CredentialSet on a URI bound to such a session,
+// emits a new *connectivity.CredentialSet on a URI bound to such a session,
 // the CredentialRefresher calls ApplyCredentials on it.
 //
 // Why a capability interface instead of a method on ports.Session: not
@@ -20,7 +20,7 @@ import (
 // have no concept of session auth). Keeping this as a capability lets
 // transports opt in without enlarging the core Session port.
 type CredentialAware interface {
-	ApplyCredentials(ctx context.Context, creds *domain.CredentialSet) error
+	ApplyCredentials(ctx context.Context, creds *connectivity.CredentialSet) error
 }
 
 // CredentialRefresher owns the watcher goroutines that translate push
@@ -123,7 +123,7 @@ func (r *CredentialRefresher) watchTarget(uri string, target any, kind string) {
 func (r *CredentialRefresher) run(
 	parent context.Context,
 	uri string,
-	ch <-chan *domain.CredentialSet,
+	ch <-chan *connectivity.CredentialSet,
 	aware CredentialAware,
 ) {
 	defer r.wg.Done()

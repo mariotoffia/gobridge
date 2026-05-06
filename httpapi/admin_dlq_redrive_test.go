@@ -10,13 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/adapters/native/store/memorydlq"
-	"github.com/mariotoffia/gobridge/domain"
-	"github.com/mariotoffia/gobridge/domain/messaging"
-	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/adapters/native/store/memorydlq"
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -39,8 +40,8 @@ func redriveSetup(t *testing.T) (*http.ServeMux, *memorydlq.Store, *stubSender) 
 	)
 	cfg := runtime.RouteConfig{
 		ID: "test-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliveryDirectHold,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
@@ -56,7 +57,7 @@ func redriveSetup(t *testing.T) (*http.ServeMux, *memorydlq.Store, *stubSender) 
 	return mux, dlq, sender
 }
 
-func seedDLQ(t *testing.T, store *memorydlq.Store, entries ...domain.DLQEntry) {
+func seedDLQ(t *testing.T, store *memorydlq.Store, entries ...routing.DLQEntry) {
 	t.Helper()
 	for _, e := range entries {
 		require.NoError(t, store.Write(context.Background(), e))
@@ -85,12 +86,12 @@ func redriveReq(body string) *http.Request {
 func TestHandleDLQRedrive_AllSuccess(t *testing.T) {
 	mux, dlq, sender := redriveSetup(t)
 	seedDLQ(t, dlq,
-		domain.DLQEntry{
+		routing.DLQEntry{
 			ID: "e1", RouteID: "test-route",
 			Envelope: messaging.Envelope{Subject: "s1", Payload: []byte("p1")},
 			FailedAt: time.Now(),
 		},
-		domain.DLQEntry{
+		routing.DLQEntry{
 			ID: "e2", RouteID: "test-route",
 			Envelope: messaging.Envelope{Subject: "s2", Payload: []byte("p2")},
 			FailedAt: time.Now(),
@@ -111,7 +112,7 @@ func TestHandleDLQRedrive_AllSuccess(t *testing.T) {
 	assert.Equal(t, 2, sender.sentCount())
 
 	// Verify entries were deleted from DLQ
-	remaining, _ := dlq.List(context.Background(), domain.DLQFilter{})
+	remaining, _ := dlq.List(context.Background(), routing.DLQFilter{})
 	assert.Empty(t, remaining)
 }
 
@@ -119,7 +120,7 @@ func TestHandleDLQRedrive_AllSuccess(t *testing.T) {
 // some IDs don't exist in the DLQ store.
 func TestHandleDLQRedrive_EntryNotFound(t *testing.T) {
 	mux, dlq, _ := redriveSetup(t)
-	seedDLQ(t, dlq, domain.DLQEntry{
+	seedDLQ(t, dlq, routing.DLQEntry{
 		ID: "e1", RouteID: "test-route",
 		Envelope: messaging.Envelope{Subject: "s1"},
 		FailedAt: time.Now(),
@@ -145,7 +146,7 @@ func TestHandleDLQRedrive_EntryNotFound(t *testing.T) {
 // route_id does not exist get a "route not found" error.
 func TestHandleDLQRedrive_RouteNotFound(t *testing.T) {
 	mux, dlq, _ := redriveSetup(t)
-	seedDLQ(t, dlq, domain.DLQEntry{
+	seedDLQ(t, dlq, routing.DLQEntry{
 		ID: "e1", RouteID: "nonexistent-route",
 		Envelope: messaging.Envelope{Subject: "s1"},
 		FailedAt: time.Now(),
@@ -169,7 +170,7 @@ func TestHandleDLQRedrive_RouteNotFound(t *testing.T) {
 // the request are deduplicated — the message is injected only once.
 func TestHandleDLQRedrive_DuplicateIDs(t *testing.T) {
 	mux, dlq, sender := redriveSetup(t)
-	seedDLQ(t, dlq, domain.DLQEntry{
+	seedDLQ(t, dlq, routing.DLQEntry{
 		ID: "e1", RouteID: "test-route",
 		Envelope: messaging.Envelope{Subject: "s1"},
 		FailedAt: time.Now(),

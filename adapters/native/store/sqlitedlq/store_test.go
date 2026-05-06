@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq"
-	"github.com/mariotoffia/gobridge/domain"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 )
@@ -33,15 +33,15 @@ func newTempStore(t *testing.T) *sqlitedlq.Store {
 	return s
 }
 
-func mustWrite(t *testing.T, s *sqlitedlq.Store, ctx context.Context, entry domain.DLQEntry) {
+func mustWrite(t *testing.T, s *sqlitedlq.Store, ctx context.Context, entry routing.DLQEntry) {
 	t.Helper()
 	if err := s.Write(ctx, entry); err != nil {
 		t.Fatalf("Write %s: %v", entry.ID, err)
 	}
 }
 
-func makeEntry(id, routeID, category string, failedAt time.Time) domain.DLQEntry {
-	return domain.DLQEntry{
+func makeEntry(id, routeID, category string, failedAt time.Time) routing.DLQEntry {
+	return routing.DLQEntry{
 		ID:            id,
 		RouteID:       routeID,
 		BindingID:     "bind-" + id,
@@ -75,7 +75,7 @@ func TestWriteAndList(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	got, err := s.List(ctx, domain.DLQFilter{})
+	got, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestListFilterByRouteID(t *testing.T) {
 		t.Fatalf("Write r3: %v", err)
 	}
 
-	got, err := s.List(ctx, domain.DLQFilter{RouteID: "route-A"})
+	got, err := s.List(ctx, routing.DLQFilter{RouteID: "route-A"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestListFilterByCategory(t *testing.T) {
 		t.Fatalf("Write c3: %v", err)
 	}
 
-	got, err := s.List(ctx, domain.DLQFilter{Category: "timeout"})
+	got, err := s.List(ctx, routing.DLQFilter{Category: "timeout"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestListFilterBySince(t *testing.T) {
 	mustWrite(t, s, ctx, makeEntry("s3", "route-A", "cat", now))
 
 	since := now.Add(-45 * time.Minute)
-	got, err := s.List(ctx, domain.DLQFilter{Since: since})
+	got, err := s.List(ctx, routing.DLQFilter{Since: since})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestListFilterByBefore(t *testing.T) {
 	mustWrite(t, s, ctx, makeEntry("b3", "route-A", "cat", now))
 
 	before := now.Add(-20 * time.Minute)
-	got, err := s.List(ctx, domain.DLQFilter{Before: before})
+	got, err := s.List(ctx, routing.DLQFilter{Before: before})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestListRespectsLimit(t *testing.T) {
 		mustWrite(t, s, ctx, makeEntry(id, "route-A", "cat", now.Add(time.Duration(i)*time.Second)))
 	}
 
-	got, err := s.List(ctx, domain.DLQFilter{Limit: 2})
+	got, err := s.List(ctx, routing.DLQFilter{Limit: 2})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestWriteIdempotent(t *testing.T) {
 		t.Fatalf("expected ErrDuplicateRecord, got %v", err)
 	}
 
-	got, err := s.List(ctx, domain.DLQFilter{})
+	got, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestDeleteRemovesEntries(t *testing.T) {
 		t.Fatalf("Delete count: got %d, want 1", count)
 	}
 
-	got, err := s.List(ctx, domain.DLQFilter{})
+	got, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestPurgeRemovesOld(t *testing.T) {
 		t.Fatalf("Purge count: got %d, want 2", count)
 	}
 
-	got, err := s.List(ctx, domain.DLQFilter{})
+	got, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestPurgeSkipsRecent(t *testing.T) {
 		t.Fatalf("Purge count: got %d, want 0", count)
 	}
 
-	got, err := s.List(ctx, domain.DLQFilter{})
+	got, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestFullLifecycle(t *testing.T) {
 	mustWrite(t, s, ctx, makeEntry("lc1", "route-A", "timeout", past))
 	mustWrite(t, s, ctx, makeEntry("lc2", "route-A", "timeout", past))
 
-	got, err := s.List(ctx, domain.DLQFilter{})
+	got, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("List after write: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestFullLifecycle(t *testing.T) {
 		t.Fatalf("Purge count: got %d, want 1", count)
 	}
 
-	got, err = s.List(ctx, domain.DLQFilter{})
+	got, err = s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("List after purge: %v", err)
 	}
@@ -464,7 +464,7 @@ func TestInMemoryMode(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	got, err := s.List(ctx, domain.DLQFilter{})
+	got, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestDurability_CloseAndReopen(t *testing.T) {
 	}
 	defer func() { _ = s2.Close() }()
 
-	got, err := s2.List(ctx, domain.DLQFilter{})
+	got, err := s2.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("List after reopen: %v", err)
 	}
@@ -559,7 +559,7 @@ func TestListOrderByFailedAtDesc(t *testing.T) {
 	mustWrite(t, s, ctx, makeEntry("ord-2", "route-A", "cat", t2))
 	mustWrite(t, s, ctx, makeEntry("ord-3", "route-A", "cat", t3))
 
-	got, err := s.List(ctx, domain.DLQFilter{})
+	got, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -604,7 +604,7 @@ func TestListEmptyStore(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
 
-	got, err := s.List(ctx, domain.DLQFilter{})
+	got, err := s.List(ctx, routing.DLQFilter{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

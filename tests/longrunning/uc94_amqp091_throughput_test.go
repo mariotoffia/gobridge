@@ -11,7 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 )
@@ -54,9 +55,9 @@ func TestUC94_AMQP091_HighThroughput(t *testing.T) {
 	collector := newRabbitMQCollector(t, queue)
 
 	sessID := uniqueID("uc94-sess")
-	sess := setupRabbitMQSession(t, domain.SessionExclusive)
-	require.NoError(t, sess.Reconcile(ctx, domain.SessionPlan{
-		Publishers: []domain.PublisherPlan{
+	sess := setupRabbitMQSession(t, connectivity.SessionExclusive)
+	require.NoError(t, sess.Reconcile(ctx, connectivity.SessionPlan{
+		Publishers: []connectivity.PublisherPlan{
 			{Topic: exchange},
 		},
 	}))
@@ -74,13 +75,13 @@ func TestUC94_AMQP091_HighThroughput(t *testing.T) {
 	)
 	routeCfg := goruntime.RouteConfig{
 		ID: "uc94-route",
-		Policy: domain.RoutePolicy{
-			DeliveryMode: domain.DeliverySharedOutbox,
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			domain.DispatchPlan{BindingID: "uc94-bind", Address: exchange},
+			routing.DispatchPlan{BindingID: "uc94-bind", Address: exchange},
 		),
-		Bindings: []domain.DestinationBinding{
+		Bindings: []routing.DestinationBinding{
 			{ID: "uc94-bind", SessionID: sessID},
 		},
 	}

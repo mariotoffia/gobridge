@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/mariotoffia/gobridge/domain/messaging"
-	"github.com/mariotoffia/gobridge/ports"
 	"github.com/ohler55/ojg/jp"
 	"github.com/ohler55/ojg/oj"
+
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // Processor is a processor that transforms message payloads using JSONPath.

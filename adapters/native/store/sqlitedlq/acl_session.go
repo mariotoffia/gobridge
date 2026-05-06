@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 
 	// Driver registration. The blank import lives in this ACL file so
@@ -55,7 +55,7 @@ func (s *sqlSession) close() error {
 
 // write inserts a single DLQ entry. Duplicates surface as
 // shared.ErrDuplicateRecord.
-func (s *sqlSession) write(ctx context.Context, entry domain.DLQEntry) error {
+func (s *sqlSession) write(ctx context.Context, entry routing.DLQEntry) error {
 	envJSON, err := json.Marshal(entry.Envelope)
 	if err != nil {
 		return fmt.Errorf("sqlitedlq: marshal envelope: %w", err)
@@ -77,7 +77,7 @@ func (s *sqlSession) write(ctx context.Context, entry domain.DLQEntry) error {
 }
 
 // list returns DLQ entries matching the supplied filter.
-func (s *sqlSession) list(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error) {
+func (s *sqlSession) list(ctx context.Context, filter routing.DLQFilter) ([]routing.DLQEntry, error) {
 	query, args := listSQL(filter)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -91,19 +91,19 @@ func (s *sqlSession) list(ctx context.Context, filter domain.DLQFilter) ([]domai
 }
 
 // get returns the entry with id or shared.ErrNotFound.
-func (s *sqlSession) get(ctx context.Context, id string) (domain.DLQEntry, error) {
+func (s *sqlSession) get(ctx context.Context, id string) (routing.DLQEntry, error) {
 	rows, err := s.db.QueryContext(ctx, selectByIDSQL, id)
 	if err != nil {
-		return domain.DLQEntry{}, wrapErr(err, "sqlitedlq: get", "entryID", id)
+		return routing.DLQEntry{}, wrapErr(err, "sqlitedlq: get", "entryID", id)
 	}
 	defer func() { _ = rows.Close() }()
 
 	entries, err := scanDLQEntries(rows)
 	if err != nil {
-		return domain.DLQEntry{}, err
+		return routing.DLQEntry{}, err
 	}
 	if len(entries) == 0 {
-		return domain.DLQEntry{}, shared.ErrNotFound.
+		return routing.DLQEntry{}, shared.ErrNotFound.
 			WithMessage("dlq entry not found").
 			With("entryID", id)
 	}
@@ -127,7 +127,7 @@ func (s *sqlSession) delete(ctx context.Context, ids []string) (int, error) {
 }
 
 // deleteByFilter removes every entry matching the filter.
-func (s *sqlSession) deleteByFilter(ctx context.Context, filter domain.DLQFilter) (int, error) {
+func (s *sqlSession) deleteByFilter(ctx context.Context, filter routing.DLQFilter) (int, error) {
 	query, args := deleteByFilterSQL(filter)
 
 	res, err := s.db.ExecContext(ctx, query, args...)

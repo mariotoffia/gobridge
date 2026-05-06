@@ -9,10 +9,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsssm "github.com/aws/aws-sdk-go-v2/service/ssm"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-	"github.com/mariotoffia/gobridge/domain"
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ---------------------------------------------------------------------------
@@ -185,8 +186,8 @@ func TestParseCredentials_MissingUsername(t *testing.T) {
 
 // Verifies serializeCredentialSet and parseCredentials round-trip password credentials.
 func TestSerializeAndParseRoundTrip_Password(t *testing.T) {
-	original := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	original := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	}
 	s, err := serializeCredentialSet(original)
 	require.NoError(t, err)
@@ -200,8 +201,8 @@ func TestSerializeAndParseRoundTrip_Password(t *testing.T) {
 
 // Verifies serializeCredentialSet and parseCredentials round-trip TLS material.
 func TestSerializeAndParseRoundTrip_TLS(t *testing.T) {
-	original := &domain.CredentialSet{
-		TLS: &domain.TLSMaterial{
+	original := &connectivity.CredentialSet{
+		TLS: &connectivity.TLSMaterial{
 			CertPEM:            "cert-data",
 			KeyPEM:             "key-data",
 			CAPEMs:             []string{"ca1", "ca2"},
@@ -364,8 +365,8 @@ func TestRepository_Create(t *testing.T) {
 	}
 
 	r := New(WithClient(mock))
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	}
 	err := r.Create(context.Background(), "pms://ns/path", creds)
 	require.NoError(t, err)
@@ -383,8 +384,8 @@ func TestRepository_Create_AlreadyExists(t *testing.T) {
 	}
 
 	r := New(WithClient(mock))
-	err := r.Create(context.Background(), "pms://ns/path", &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	err := r.Create(context.Background(), "pms://ns/path", &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, shared.ErrAlreadyExists))
@@ -401,8 +402,8 @@ func TestRepository_Update(t *testing.T) {
 	}
 
 	r := New(WithClient(mock))
-	creds := &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u2", Password: "p2"},
+	creds := &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u2", Password: "p2"},
 	}
 	err := r.Update(context.Background(), "pms://ns/path", creds, 0)
 	require.NoError(t, err)
@@ -421,8 +422,8 @@ func TestRepository_Update_VersionMismatch(t *testing.T) {
 	}
 
 	r := New(WithClient(mock))
-	err := r.Update(context.Background(), "pms://ns/path", &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	err := r.Update(context.Background(), "pms://ns/path", &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	}, 3)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, shared.ErrVersionMismatch))
@@ -574,8 +575,8 @@ func TestRepository_Get_InvalidURI(t *testing.T) {
 // Verifies Create rejects invalid URIs before calling SSM.
 func TestRepository_Create_InvalidURI(t *testing.T) {
 	r := New(WithClient(&mockSSM{}))
-	err := r.Create(context.Background(), "bad://uri", &domain.CredentialSet{
-		Password: &domain.PasswordCredential{Username: "u", Password: "p"},
+	err := r.Create(context.Background(), "bad://uri", &connectivity.CredentialSet{
+		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
 	})
 	assert.Error(t, err)
 }
