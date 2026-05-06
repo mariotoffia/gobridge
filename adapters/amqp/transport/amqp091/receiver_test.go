@@ -25,8 +25,8 @@ func TestReceiver_ConvertMessage(t *testing.T) {
 		Body:       []byte(`{"item":"widget"}`),
 		Timestamp:  now,
 		Headers: amqp.Table{
-			"tenant":               "acme",
-			HeaderGobridgeSubject:  "order.created",
+			"tenant":              "acme",
+			HeaderGobridgeSubject: "order.created",
 		},
 	}
 

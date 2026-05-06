@@ -20,6 +20,18 @@
 //   - Extend:         ErrNotSupported (AMQP 1.0 uses credit-based flow control,
 //     not visibility timeouts)
 //
+// # Subject vs Address
+//
+// AMQP 1.0 sender links are address-bound: the link's target is fixed
+// at link creation. ports.OutboundMessage.Address is therefore
+// validated against the configured sender link address. An empty
+// Address selects the configured address; a non-empty Address that
+// does not match yields shared.ErrInvalidTopic without contacting the
+// broker. The logical Envelope.Subject is mapped to
+// Properties.Subject in both directions and never participates in
+// link routing. On receive, a missing Properties.Subject leaves
+// Envelope.Subject empty — there is no fallback to the link address.
+//
 // # Header Mapping
 //
 // Standard AMQP 1.0 message properties (message-id, correlation-id,

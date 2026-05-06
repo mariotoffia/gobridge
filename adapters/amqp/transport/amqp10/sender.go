@@ -2,6 +2,7 @@ package amqp10
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -81,9 +82,25 @@ func (s *Sender) clock() clock.Clock {
 }
 
 // Send publishes a single envelope to the AMQP 1.0 broker.
+//
+// Address validation: AMQP 1.0 sender links are address-bound. When
+// msg.Address is empty, the configured s.cfg.Address is used. A
+// non-empty msg.Address must match s.cfg.Address exactly; any other
+// value is rejected with shared.ErrInvalidTopic without contacting the
+// broker. (Dynamic per-address link creation is a possible future
+// extension.) The logical Envelope.Subject is mapped to
+// Properties.Subject by envelopeToMessage and never participates in
+// link routing.
 func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
-	// TODO(T03/T06): consume msg.Address as the AMQP 1.0 link target override.
 	env := msg.Envelope
+	if env == nil {
+		return shared.ErrInvalidPayload.WithMessage("amqp10: nil envelope")
+	}
+	if msg.Address != "" && msg.Address != s.cfg.Address {
+		return shared.ErrInvalidTopic.WithMessage(fmt.Sprintf(
+			"amqp10: address %q does not match configured sender link address %q",
+			msg.Address, s.cfg.Address))
+	}
 	sendCtx, cancel := s.applyTimeout(ctx)
 	defer cancel()
 
@@ -158,7 +175,22 @@ func (s *Sender) handleSendFailure(ctx context.Context, failed senderLinkAPI, fa
 }
 
 // SendBatch sends multiple envelopes individually over the AMQP 1.0 link.
+// Each entry is validated up-front (non-nil envelope, address either
+// empty or equal to s.cfg.Address); any violation fails the batch with
+// 0 sent and the corresponding shared.* error before any link work
+// occurs.
 func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (int, error) {
+	for _, m := range msgs {
+		if m.Envelope == nil {
+			return 0, shared.ErrInvalidPayload.WithMessage("amqp10: nil envelope")
+		}
+		if m.Address != "" && m.Address != s.cfg.Address {
+			return 0, shared.ErrInvalidTopic.WithMessage(fmt.Sprintf(
+				"amqp10: address %q does not match configured sender link address %q",
+				m.Address, s.cfg.Address))
+		}
+	}
+
 	if err := s.ensureLink(ctx); err != nil {
 		return 0, err
 	}

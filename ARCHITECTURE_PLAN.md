@@ -227,7 +227,7 @@ Blast radius: low.
 - Update AMQP 0-9-1 sender and receiver tests.
 - Acceptance: routing key is preserved in headers, logical subject comes only from the explicit subject carrier.
 
-### 7. Update AMQP 1.0 adapter
+### 7. Update AMQP 1.0 adapter - DONE
 
 - Change sender signature.
 - Keep logical subject mapped to `Properties.Subject`.

@@ -74,7 +74,7 @@
     {
       "id": "T07",
       "title": "Update AMQP 1.0 adapter",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "AMQP 1.0 Go adapter changes around Properties.Subject and address validation.",

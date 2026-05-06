@@ -33,7 +33,7 @@ func TestReceiver_ConvertMessage_MissingID(t *testing.T) {
 		Data: [][]byte{[]byte("payload")},
 	}
 
-	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
+	env := messageToEnvelope(msg, r.clock())
 
 	if env.ID == "" {
 		t.Fatal("Envelope.ID should be auto-generated when message has no MessageID (BUG-4)")
@@ -57,7 +57,7 @@ func TestReceiver_ConvertMessage_WithID(t *testing.T) {
 		Data: [][]byte{[]byte("payload")},
 	}
 
-	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
+	env := messageToEnvelope(msg, r.clock())
 
 	if env.ID != "msg-123" {
 		t.Fatalf("Envelope.ID = %q, want %q", env.ID, "msg-123")
@@ -78,7 +78,7 @@ func TestReceiver_ConvertMessage_ValueBodyExtraction(t *testing.T) {
 		Value: []byte("value-body"),
 	}
 
-	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
+	env := messageToEnvelope(msg, r.clock())
 
 	if string(env.Payload) != "value-body" {
 		t.Fatalf("Payload = %q, want %q", env.Payload, "value-body")
@@ -100,7 +100,7 @@ func TestReceiver_ConvertMessage_ValueBodyNonBytes(t *testing.T) {
 		Value: "not-bytes",
 	}
 
-	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
+	env := messageToEnvelope(msg, r.clock())
 
 	if env.Payload != nil {
 		t.Fatalf("Payload = %v, want nil for non-[]byte Value", env.Payload)
@@ -125,15 +125,17 @@ func TestReceiver_ConvertMessage_Subject(t *testing.T) {
 		Data: [][]byte{[]byte("data")},
 	}
 
-	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
+	env := messageToEnvelope(msg, r.clock())
 
 	if env.Subject != subject {
 		t.Fatalf("Subject = %q, want %q", env.Subject, subject)
 	}
 }
 
-// TestReceiver_ConvertMessage_SubjectDefault validates Subject defaults to address.
-func TestReceiver_ConvertMessage_SubjectDefault(t *testing.T) {
+// TestReceiver_ConvertMessage_SubjectAbsent validates that a message
+// without Properties.Subject yields an Envelope with empty Subject —
+// the receiver does not fall back to the configured link address.
+func TestReceiver_ConvertMessage_SubjectAbsent(t *testing.T) {
 	sess := newTestSession()
 	r := &Receiver{
 		cfg:     ReceiverConfig{Address: "queue/default-subject", LinkCredit: 10},
@@ -146,9 +148,9 @@ func TestReceiver_ConvertMessage_SubjectDefault(t *testing.T) {
 		Data: [][]byte{[]byte("data")},
 	}
 
-	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
+	env := messageToEnvelope(msg, r.clock())
 
-	if env.Subject != "queue/default-subject" {
-		t.Fatalf("Subject = %q, want %q", env.Subject, "queue/default-subject")
+	if env.Subject != "" {
+		t.Fatalf("Subject = %q, want empty (no link-address fallback)", env.Subject)
 	}
 }

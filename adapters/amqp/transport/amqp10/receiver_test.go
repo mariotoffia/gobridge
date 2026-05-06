@@ -62,7 +62,7 @@ func TestReceiver_ConvertMessage(t *testing.T) {
 	}
 
 	settler := newMockSettler()
-	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
+	env := messageToEnvelope(msg, r.clock())
 	_ = settler
 
 	if env.ID != "msg-convert-1" {
@@ -93,9 +93,9 @@ func TestReceiver_ConvertMessage_NoSubject(t *testing.T) {
 		Data: [][]byte{[]byte("data")},
 	}
 
-	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
-	if env.Subject != "queue/fallback" {
-		t.Fatalf("Subject = %q, want address fallback %q", env.Subject, "queue/fallback")
+	env := messageToEnvelope(msg, r.clock())
+	if env.Subject != "" {
+		t.Fatalf("Subject = %q, want empty (no fallback to link address)", env.Subject)
 	}
 }
 
@@ -110,7 +110,7 @@ func TestReceiver_ConvertMessage_ValueBody(t *testing.T) {
 		Value: []byte("value-body"),
 	}
 
-	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
+	env := messageToEnvelope(msg, r.clock())
 	if string(env.Payload) != "value-body" {
 		t.Fatalf("Payload = %q, want %q", env.Payload, "value-body")
 	}
@@ -125,7 +125,7 @@ func TestReceiver_ConvertMessage_EmptyBody(t *testing.T) {
 
 	msg := &amqp.Message{}
 
-	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
+	env := messageToEnvelope(msg, r.clock())
 	if len(env.Payload) != 0 {
 		t.Fatalf("Payload should be empty, got %d bytes", len(env.Payload))
 	}
@@ -145,7 +145,7 @@ func TestReceiver_ConvertMessage_NonStringMessageID(t *testing.T) {
 		Data: [][]byte{[]byte("data")},
 	}
 
-	env := messageToEnvelope(msg, r.cfg.Address, r.clock())
+	env := messageToEnvelope(msg, r.clock())
 	if env.ID == "" {
 		t.Fatal("ID should be auto-generated for non-string MessageID")
 	}

@@ -85,10 +85,11 @@ type receiverLink struct {
 
 // Receive blocks until a message is available, then translates it into
 // a fresh *Delivery (with envelope, settler, etc.) without leaking SDK
-// types to the caller.
+// types to the caller. The receiver does NOT fall back to the link
+// address when Properties.Subject is missing; an inbound message
+// without Properties.Subject yields an Envelope with empty Subject.
 func (r *receiverLink) Receive(
 	ctx context.Context,
-	defaultSubject string,
 	logger *slog.Logger,
 	metrics ports.MetricsExporter,
 	clk clock.Clock,
@@ -97,7 +98,7 @@ func (r *receiverLink) Receive(
 	if err != nil {
 		return nil, fmt.Errorf("amqp10: receive: %w", err)
 	}
-	env := messageToEnvelope(msg, defaultSubject, clk)
+	env := messageToEnvelope(msg, clk)
 	return NewDelivery(env, msg, r.raw, logger, metrics, clk), nil
 }
 
@@ -114,9 +115,12 @@ func (r *receiverLink) Close(ctx context.Context) error {
 }
 
 // messageToEnvelope translates an inbound *amqp.Message into a fresh
-// messaging.Envelope. The defaultSubject parameter is used when the
-// message does not carry one of its own.
-func messageToEnvelope(msg *amqp.Message, defaultSubject string, clk clock.Clock) *messaging.Envelope {
+// messaging.Envelope. The logical Envelope.Subject is sourced solely
+// from Properties.Subject; if the inbound message has no Subject the
+// envelope's Subject is left empty (no fallback to the link address).
+// The raw amqp10.subject header is still recorded under
+// envelope.Headers via messageToHeaders for full property round-trip.
+func messageToEnvelope(msg *amqp.Message, clk clock.Clock) *messaging.Envelope {
 	if clk == nil {
 		clk = clock.System
 	}
@@ -132,7 +136,7 @@ func messageToEnvelope(msg *amqp.Message, defaultSubject string, clk clock.Clock
 		msgID = generateEnvelopeID()
 	}
 
-	subject := defaultSubject
+	var subject string
 	if msg.Properties != nil && msg.Properties.Subject != nil {
 		subject = *msg.Properties.Subject
 	}
