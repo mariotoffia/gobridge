@@ -58,11 +58,12 @@ func (r *RouteRunner) hasBinding(bindingID string) bool {
 }
 
 func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, env *messaging.Envelope, plan routing.DispatchPlan) error {
-	if plan.Address != "" {
-		env.Subject = plan.Address
-	}
+	// Build an isolated outbound envelope so we never mutate the source
+	// delivery envelope. The logical Subject is preserved; the destination
+	// address travels via OutboundMessage.Address.
+	outbound := env.Clone()
 	if plan.Headers != nil {
-		env.Headers = messaging.MergeHeaders(env.Headers, plan.Headers, true)
+		outbound.Headers = messaging.MergeHeaders(outbound.Headers, plan.Headers, true)
 	}
 
 	sender := r.senderForBinding(plan.BindingID)
@@ -81,16 +82,16 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	rc := receiveCount(env)
 	attempt := rc + 1
 
-	sendErr := sender.Send(sendCtx, ports.OutboundMessage{Envelope: env, Address: plan.Address})
+	sendErr := sender.Send(sendCtx, ports.OutboundMessage{Envelope: outbound, Address: plan.Address})
 
-	r.invokeOnDelivery(env, sendErr)
+	r.invokeOnDelivery(outbound, sendErr)
 
 	r.hook.OnAttempt(ctx, ports.DeliveryAttempt{
 		Direction:   ports.DirectionEgress,
 		RouteID:     r.routeID,
 		BindingID:   plan.BindingID,
 		Address:     plan.Address,
-		Envelope:    env,
+		Envelope:    outbound,
 		Attempt:     attempt,
 		MaxAttempts: r.policy.MaxReplayAttempts,
 		Err:         sendErr,
@@ -110,7 +111,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 			RouteID:     r.routeID,
 			BindingID:   plan.BindingID,
 			Address:     plan.Address,
-			Envelope:    env,
+			Envelope:    outbound,
 			Attempt:     attempt,
 			MaxAttempts: r.policy.MaxReplayAttempts,
 			Terminal:    true,
@@ -133,7 +134,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 			}
 			poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent,
 				fmt.Sprintf("direct_hold: receive count %d >= max replay attempts %d", rc, r.policy.MaxReplayAttempts))
-			if dlqErr := r.dlq.Route(ctx, env, r.routeID, plan.BindingID, plan.Address,
+			if dlqErr := r.dlq.Route(ctx, outbound, r.routeID, plan.BindingID, plan.Address,
 				r.sessionIDForBinding(plan.BindingID), "", poisonErr, rc); dlqErr != nil {
 				return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 			}
@@ -143,7 +144,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 				RouteID:     r.routeID,
 				BindingID:   plan.BindingID,
 				Address:     plan.Address,
-				Envelope:    env,
+				Envelope:    outbound,
 				Attempt:     attempt,
 				MaxAttempts: r.policy.MaxReplayAttempts,
 				Err:         poisonErr,
@@ -155,7 +156,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		return r.retryOrFallback(ctx, del, env, retryDelay(r.policy, receiveCount(env)+1, sendErr), sendErr)
 	}
 
-	if dlqErr := r.dlq.Route(ctx, env, r.routeID, plan.BindingID, plan.Address, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
+	if dlqErr := r.dlq.Route(ctx, outbound, r.routeID, plan.BindingID, plan.Address, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
 		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 	}
 	if logging.DebugEnabled(r.logger) {
@@ -172,7 +173,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		RouteID:     r.routeID,
 		BindingID:   plan.BindingID,
 		Address:     plan.Address,
-		Envelope:    env,
+		Envelope:    outbound,
 		Attempt:     attempt,
 		MaxAttempts: r.policy.MaxReplayAttempts,
 		Err:         sendErr,

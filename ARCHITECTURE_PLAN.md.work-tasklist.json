@@ -30,7 +30,7 @@
     {
       "id": "T03",
       "title": "Fix direct-hold dispatch",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "Behavioral Go fix in dispatch path with a unit test asserting Subject preservation.",

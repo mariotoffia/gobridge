@@ -132,10 +132,11 @@ func (r *FakeReceiver) Ready() <-chan struct{} {
 // ---------------------------------------------------------------------------
 
 type FakeSender struct {
-	mu      sync.Mutex
-	Sent    []*messaging.Envelope
-	SendErr error
-	SendFn  func(*messaging.Envelope) error
+	mu       sync.Mutex
+	Sent     []*messaging.Envelope
+	Outbound []ports.OutboundMessage
+	SendErr  error
+	SendFn   func(*messaging.Envelope) error
 }
 
 func NewFakeSender() *FakeSender {
@@ -152,12 +153,14 @@ func (s *FakeSender) Send(_ context.Context, msg ports.OutboundMessage) error {
 			return err
 		}
 		s.Sent = append(s.Sent, env.Clone())
+		s.Outbound = append(s.Outbound, msg)
 		return nil
 	}
 	if s.SendErr != nil {
 		return s.SendErr
 	}
 	s.Sent = append(s.Sent, env.Clone())
+	s.Outbound = append(s.Outbound, msg)
 	return nil
 }
 
@@ -172,6 +175,16 @@ func (s *FakeSender) GetSent() []*messaging.Envelope {
 	defer s.mu.Unlock()
 	out := make([]*messaging.Envelope, len(s.Sent))
 	copy(out, s.Sent)
+	return out
+}
+
+// GetOutbound returns a snapshot of all OutboundMessages observed by Send,
+// preserving the destination Address alongside the envelope.
+func (s *FakeSender) GetOutbound() []ports.OutboundMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]ports.OutboundMessage, len(s.Outbound))
+	copy(out, s.Outbound)
 	return out
 }
 

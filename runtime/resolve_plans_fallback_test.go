@@ -48,8 +48,12 @@ func TestResolvePlans_NoResolver_RendersAddress(t *testing.T) {
 
 	sent := sender.GetSent()
 	require.Len(t, sent, 1)
-	assert.Equal(t, "devices/acme/events", sent[0].Subject,
-		"fallback path should render address template")
+	assert.Equal(t, "test", sent[0].Subject,
+		"source logical Subject must be preserved on the outbound envelope")
+	out := sender.GetOutbound()
+	require.Len(t, out, 1)
+	assert.Equal(t, "devices/acme/events", out[0].Address,
+		"fallback path should render address template into OutboundMessage.Address")
 }
 
 func TestResolvePlans_NoResolver_RenderError_RoutesDLQ(t *testing.T) {

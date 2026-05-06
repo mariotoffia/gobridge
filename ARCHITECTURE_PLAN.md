@@ -193,7 +193,7 @@ Blast radius: low.
 - Add `Address string` to `domain.DLQEntry` or equivalent DLQ routing metadata.
 - Acceptance: egress hooks and DLQ records can report destination address without reading `Envelope.Subject`.
 
-### 3. Fix direct-hold dispatch
+### 3. Fix direct-hold dispatch - DONE
 
 - Stop assigning `env.Subject = plan.Address`.
 - Build an outbound envelope copy for dispatch header merge.
