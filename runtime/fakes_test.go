@@ -142,7 +142,8 @@ func NewFakeSender() *FakeSender {
 	return &FakeSender{}
 }
 
-func (s *FakeSender) Send(_ context.Context, env *messaging.Envelope) error {
+func (s *FakeSender) Send(_ context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

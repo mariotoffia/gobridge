@@ -68,12 +68,13 @@ func newFaultySender(inner ports.Sender, failPercent int) *faultySender {
 	return &faultySender{inner: inner, failPercent: failPercent}
 }
 
-func (s *faultySender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *faultySender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	s.calls.Add(1)
 	if rand.IntN(100) < s.failPercent {
 		return shared.ErrUnavailable.WithMessage("faulty sender injected failure")
 	}
-	return s.inner.Send(ctx, env)
+	return s.inner.Send(ctx, ports.OutboundMessage{Envelope: env})
 }
 
 // slowProcessor adds a configurable delay to each message.
@@ -124,7 +125,8 @@ func newPausableSender(inner ports.Sender) *pausableSender {
 	return &pausableSender{inner: inner, ch: make(chan struct{})}
 }
 
-func (s *pausableSender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *pausableSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	s.mu.Lock()
 	if s.paused {
 		ch := s.ch
@@ -137,7 +139,7 @@ func (s *pausableSender) Send(ctx context.Context, env *messaging.Envelope) erro
 	} else {
 		s.mu.Unlock()
 	}
-	return s.inner.Send(ctx, env)
+	return s.inner.Send(ctx, ports.OutboundMessage{Envelope: env})
 }
 
 func (s *pausableSender) Pause() {
@@ -168,26 +170,27 @@ func newSlowSender(inner ports.Sender, delay time.Duration) *slowSender {
 	return &slowSender{inner: inner, delay: delay}
 }
 
-func (s *slowSender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *slowSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	select {
 	case <-time.After(s.delay):
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return s.inner.Send(ctx, env)
+	return s.inner.Send(ctx, ports.OutboundMessage{Envelope: env})
 }
 
 // alwaysFailSender always returns a transient error.
 type alwaysFailSender struct{}
 
-func (s *alwaysFailSender) Send(_ context.Context, _ *messaging.Envelope) error {
+func (s *alwaysFailSender) Send(_ context.Context, msg ports.OutboundMessage) error {
 	return shared.ErrUnavailable.WithMessage("always-fail sender")
 }
 
 // permanentFailSender always returns a permanent error, forcing DLQ routing.
 type permanentFailSender struct{}
 
-func (s *permanentFailSender) Send(_ context.Context, _ *messaging.Envelope) error {
+func (s *permanentFailSender) Send(_ context.Context, msg ports.OutboundMessage) error {
 	return shared.ErrInvalidPayload.WithMessage("permanent-fail sender")
 }
 
@@ -468,7 +471,8 @@ type errorClassSender struct {
 	inner ports.Sender
 }
 
-func (s *errorClassSender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *errorClassSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	if env.Headers != nil {
 		if et, ok := env.Headers["error_type"].(string); ok {
 			switch et {
@@ -479,7 +483,7 @@ func (s *errorClassSender) Send(ctx context.Context, env *messaging.Envelope) er
 			}
 		}
 	}
-	return s.inner.Send(ctx, env)
+	return s.inner.Send(ctx, ports.OutboundMessage{Envelope: env})
 }
 
 // ---------------------------------------------------------------------------

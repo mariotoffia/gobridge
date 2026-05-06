@@ -70,9 +70,9 @@ func TestIntegration_Reconcile_FirstFailureDoesNotPoisonSubsequentReconciles(t *
 		Session: sess, Timeout: 5 * time.Second,
 	})
 	defer func() { _ = sender.Close(ctx) }()
-	if err := sender.Send(ctx, &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		ID: "post-recon", Subject: freshQueue, Payload: []byte("ok"),
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("send after recovered Reconcile: %v", err)
 	}
 

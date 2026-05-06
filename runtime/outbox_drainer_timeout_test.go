@@ -28,7 +28,7 @@ type ctxAwareSender struct {
 
 var _ ports.Sender = (*ctxAwareSender)(nil)
 
-func (s *ctxAwareSender) Send(ctx context.Context, _ *messaging.Envelope) error {
+func (s *ctxAwareSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

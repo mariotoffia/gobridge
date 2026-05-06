@@ -179,7 +179,7 @@ Blast radius: low.
 
 ## Tasks
 
-### 1. Define outbound send contract
+### 1. Define outbound send contract - DONE
 
 - Add `ports.OutboundMessage`.
 - Change `ports.Sender.Send` and `ports.BatchSender.SendBatch` signatures.

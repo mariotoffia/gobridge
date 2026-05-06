@@ -11,6 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -369,7 +370,8 @@ type ContextAwareSender struct {
 	sendFn func(context.Context, *messaging.Envelope) error
 }
 
-func (s *ContextAwareSender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *ContextAwareSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	return s.sendFn(ctx, env)
 }
 
@@ -384,7 +386,7 @@ type BlockingSender struct {
 	ctxErrors int
 }
 
-func (s *BlockingSender) Send(ctx context.Context, _ *messaging.Envelope) error {
+func (s *BlockingSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	<-ctx.Done()
 	s.mu.Lock()
 	s.ctxErrors++

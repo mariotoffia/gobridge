@@ -1,0 +1,163 @@
+{
+  "$schema": "v2",
+  "source": "ARCHITECTURE_PLAN.md",
+  "source_sha": "e7dbeb270821ff18fe1704ec23ed4713e9d08793af07415c86a1ae8a8cacff7f",
+  "indexed_at": "2026-05-06T00:00:00Z",
+  "status_convention": "per-task markers only; absent any marker \u2192 pending. File-level ## Status: Planned is not propagated.",
+  "tasks": [
+    {
+      "id": "T01",
+      "title": "Define outbound send contract",
+      "status": "done",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "Defines new Go port types and updates Sender/BatchSender signatures across the Go codebase.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "T02",
+      "title": "Add address to observability contracts",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "Adds Address fields to Go port/domain structs used by egress hooks and DLQ.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "T03",
+      "title": "Fix direct-hold dispatch",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "Behavioral Go fix in dispatch path with a unit test asserting Subject preservation.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "T04",
+      "title": "Fix shared-outbox dispatch and drain",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "Go runtime change to outbox persistence and drain logic with unit-test acceptance.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "T05",
+      "title": "Update MQTT adapter",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "MQTT adapter Go code change: sender, headers, subject mapping, and tests.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "T06",
+      "title": "Update AMQP 0-9-1 adapter",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "AMQP 0-9-1 Go adapter sender/receiver refactor and test updates.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "T07",
+      "title": "Update AMQP 1.0 adapter",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "AMQP 1.0 Go adapter changes around Properties.Subject and address validation.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "T08",
+      "title": "Update SQS adapter",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "SQS Go adapter sender/batch/receiver/SNS-unwrap updates with FIFO dedup review.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "T09",
+      "title": "Update Azure Service Bus adapter",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "Azure Service Bus Go adapter sender/batch/receiver refactor and tests.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "T10",
+      "title": "Update HTTP/SSE adapter",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "HTTP/SSE Go adapter sender signature change and test/fake updates.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "T11",
+      "title": "Update bridge builder and runtime wiring",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "golang-pro",
+      "agent_rationale": "Bridge builder/runtime Go wiring update to align with new sender signatures and address abstraction.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "T12",
+      "title": "Update cross-transport regression coverage",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "test-automator",
+      "agent_rationale": "Pure test work: extend cross-transport regression suite to assert subject vs address separation.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "T13",
+      "title": "Update documentation",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "technical-writer",
+      "agent_rationale": "Documentation-only task updating ARCHITECTURE.md and transport docs.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    },
+    {
+      "id": "T14",
+      "title": "Remove stale compatibility assumptions",
+      "status": "pending",
+      "category_hint": "",
+      "suggested_agent": "refactoring-specialist",
+      "agent_rationale": "Repo-wide cleanup of stale subject/address semantics in tests, docs, and comments \u2014 safe refactor pass.",
+      "body_suggested_agents": [],
+      "body_suggested_skills": [],
+      "review_round": 0
+    }
+  ]
+}

@@ -75,10 +75,10 @@ func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
 		})
 	}()
 
-	if err := sender1.Send(ctx, &messaging.Envelope{
+	if err := sender1.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		Subject: topic,
 		Payload: []byte("phase1-msg"),
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("Send phase1: %v", err)
 	}
 
@@ -129,10 +129,10 @@ func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
 		})
 	}()
 
-	if err := sender2.Send(ctx, &messaging.Envelope{
+	if err := sender2.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		Subject: topic,
 		Payload: []byte("phase2-msg"),
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("Send phase2: %v", err)
 	}
 
@@ -218,10 +218,10 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 
 	// Send to both topics.
 	for _, topic := range []string{topicA, topicB} {
-		if err := sender.Send(ctx, &messaging.Envelope{
+		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 			Subject: topic,
 			Payload: []byte("test-" + topic),
-		}); err != nil {
+		}}); err != nil {
 			t.Fatalf("Send to %s: %v", topic, err)
 		}
 	}
@@ -420,10 +420,10 @@ func TestIntegration_ConcurrentReconcile_ActiveSubsIntegrity(t *testing.T) {
 	}()
 
 	wait.RequireClosed(t, recv.Started(), 5*time.Second)
-	if err := sender.Send(ctx, &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		Subject: verifyTopic,
 		Payload: []byte("verify"),
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("Send verify: %v", err)
 	}
 

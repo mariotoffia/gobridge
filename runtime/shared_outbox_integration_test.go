@@ -328,11 +328,12 @@ func NewTrackingSender(tag string) *TrackingSender {
 	return &TrackingSender{Tag: tag}
 }
 
-func (s *TrackingSender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *TrackingSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	s.mu.Lock()
 	s.SentIDs = append(s.SentIDs, env.ID)
 	s.mu.Unlock()
-	return s.FakeSender.Send(ctx, env)
+	return s.FakeSender.Send(ctx, ports.OutboundMessage{Envelope: env})
 }
 
 func (s *TrackingSender) SentCount() int {

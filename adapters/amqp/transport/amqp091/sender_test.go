@@ -29,7 +29,7 @@ func TestSender_Send_NoSession(t *testing.T) {
 		ID:      "e1",
 		Payload: []byte("hello"),
 	}
-	err := s.Send(context.Background(), env)
+	err := s.Send(context.Background(), ports.OutboundMessage{Envelope: env})
 	if err == nil {
 		t.Fatal("expected error for nil session")
 	}
@@ -56,7 +56,7 @@ func TestSender_Send_NoConnection(t *testing.T) {
 		ID:      "e2",
 		Payload: []byte("hello"),
 	}
-	err := s.Send(context.Background(), env)
+	err := s.Send(context.Background(), ports.OutboundMessage{Envelope: env})
 	if err == nil {
 		t.Fatal("expected error for disconnected session")
 	}
@@ -74,7 +74,13 @@ func TestSender_SendBatch_FirstFails(t *testing.T) {
 		{ID: "e1", Payload: []byte("a")},
 		{ID: "e2", Payload: []byte("b")},
 	}
-	sent, err := s.SendBatch(context.Background(), envs)
+	sent, err := s.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -87,7 +93,7 @@ func TestSender_SendBatch_FirstFails(t *testing.T) {
 func TestSender_SendBatch_Empty(t *testing.T) {
 	s := NewSender(SenderConfig{})
 
-	sent, err := s.SendBatch(context.Background(), nil)
+	sent, err := s.SendBatch(context.Background(), []ports.OutboundMessage(nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

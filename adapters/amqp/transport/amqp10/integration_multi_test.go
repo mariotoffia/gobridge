@@ -53,7 +53,7 @@ func TestIntegration_MultipleSenders(t *testing.T) {
 				ID:      fmt.Sprintf("multi-s%d-m%d", s, m),
 				Payload: []byte(fmt.Sprintf("sender-%d-msg-%d", s, m)),
 			}
-			if err := sender.Send(ctx, env); err != nil {
+			if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 				t.Fatalf("sender %d Send(%d) error = %v", s, m, err)
 			}
 		}
@@ -129,7 +129,7 @@ func TestIntegration_CompetingReceivers(t *testing.T) {
 			ID:      fmt.Sprintf("competing-%d", i),
 			Payload: []byte(fmt.Sprintf("msg-%d", i)),
 		}
-		if err := sender.Send(ctx, env); err != nil {
+		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 			t.Fatalf("Send(%d) error = %v", i, err)
 		}
 	}
@@ -263,7 +263,7 @@ func TestIntegration_SenderCloseReopen(t *testing.T) {
 		ID:      "reopen-1",
 		Payload: []byte("first"),
 	}
-	if err := sender1.Send(ctx, env1); err != nil {
+	if err := sender1.Send(ctx, ports.OutboundMessage{Envelope: env1}); err != nil {
 		t.Fatalf("sender1 Send() error = %v", err)
 	}
 	if err := sender1.Close(context.Background()); err != nil {
@@ -283,7 +283,7 @@ func TestIntegration_SenderCloseReopen(t *testing.T) {
 		ID:      "reopen-2",
 		Payload: []byte("second"),
 	}
-	if err := sender2.Send(ctx, env2); err != nil {
+	if err := sender2.Send(ctx, ports.OutboundMessage{Envelope: env2}); err != nil {
 		t.Fatalf("sender2 Send() error = %v", err)
 	}
 

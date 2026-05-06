@@ -81,7 +81,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	rc := receiveCount(env)
 	attempt := rc + 1
 
-	sendErr := sender.Send(sendCtx, env)
+	sendErr := sender.Send(sendCtx, ports.OutboundMessage{Envelope: env, Address: plan.Address})
 
 	r.invokeOnDelivery(env, sendErr)
 

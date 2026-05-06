@@ -152,7 +152,7 @@ func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {
 					"factory": factory,
 				},
 			}
-			require.NoError(t, pubSnd.Send(ctx, env),
+			require.NoError(t, pubSnd.Send(ctx, ports.OutboundMessage{Envelope: env}),
 				"MQTT publish factory=%s seq=%d", factory, i)
 		}
 		t.Logf("UC2: published %d messages for factory %s",

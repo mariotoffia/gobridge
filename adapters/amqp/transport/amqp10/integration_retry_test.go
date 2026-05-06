@@ -50,7 +50,7 @@ func TestIntegration_RetryRelease(t *testing.T) {
 		Subject: "test.retry.release",
 		Payload: []byte(`{"action":"release"}`),
 	}
-	if err := sender.Send(ctx, env); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
 
@@ -131,7 +131,7 @@ func TestIntegration_RetryModify(t *testing.T) {
 		Subject: "test.retry.modify",
 		Payload: []byte(`{"action":"modify"}`),
 	}
-	if err := sender.Send(ctx, env); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
 
@@ -213,7 +213,7 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 		Subject: "test.extend",
 		Payload: []byte(`{"action":"extend"}`),
 	}
-	if err := sender.Send(ctx, env); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
 

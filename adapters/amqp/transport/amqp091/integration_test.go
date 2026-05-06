@@ -80,7 +80,7 @@ func TestIntegration_SendReceive(t *testing.T) {
 		},
 	}
 
-	if err := sender.Send(ctx, env); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 
@@ -170,7 +170,13 @@ func TestIntegration_SendBatch(t *testing.T) {
 		{ID: "batch-3", Subject: queueName, Payload: []byte("three")},
 	}
 
-	sent, err := sender.SendBatch(ctx, envs)
+	sent, err := sender.SendBatch(ctx, func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if err != nil {
 		t.Fatalf("send batch: %v", err)
 	}
@@ -262,9 +268,9 @@ func TestIntegration_RetryRedelivers(t *testing.T) {
 		Session:    sess,
 	})
 
-	if err := sender.Send(ctx, &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		ID: "retry-msg", Subject: queueName, Payload: []byte("retry-me"),
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 

@@ -9,12 +9,14 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
 type senderFunc func(context.Context, *messaging.Envelope) error
 
-func (f senderFunc) Send(ctx context.Context, env *messaging.Envelope) error {
+func (f senderFunc) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	return f(ctx, env)
 }
 

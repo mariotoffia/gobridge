@@ -65,7 +65,9 @@ func (s *Sender) entityName() string {
 }
 
 // Send submits a single envelope to Service Bus.
-func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	// TODO(T03/T05): consume msg.Address as the Service Bus entity override.
+	env := msg.Envelope
 	if err := s.ensureClient(ctx); err != nil {
 		return err
 	}
@@ -100,7 +102,12 @@ func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
 // ASB batches are size-limited; when a message overflows the batch, the
 // current batch is flushed and the oversized message is sent individually.
 // Returns the number of successfully sent messages.
-func (s *Sender) SendBatch(ctx context.Context, envs []*messaging.Envelope) (int, error) {
+func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (int, error) {
+	// TODO(T03/T05): per-message msg.Address handling for Service Bus.
+	envs := make([]*messaging.Envelope, len(msgs))
+	for i, m := range msgs {
+		envs[i] = m.Envelope
+	}
 	if err := s.ensureClient(ctx); err != nil {
 		return 0, err
 	}

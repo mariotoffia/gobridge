@@ -35,7 +35,7 @@ func TestAnaSender_NoSession_NoCM_ReturnsErrUnavailable(t *testing.T) {
 
 	s := NewSender(sess, SenderOptions{Timeout: time.Second, DefaultTopic: "t/x"})
 
-	err := s.Send(context.Background(), &messaging.Envelope{Subject: "t/x", Payload: []byte("p")})
+	err := s.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{Subject: "t/x", Payload: []byte("p")}})
 	if err == nil {
 		t.Fatal("expected error from Send when CM is nil")
 	}
@@ -64,7 +64,7 @@ func TestAnaSender_EmptyTopicAndNoDefault_ReturnsErrInvalidTopic(t *testing.T) {
 
 	s := NewSender(sess, SenderOptions{Timeout: time.Second})
 
-	err := s.Send(context.Background(), &messaging.Envelope{Payload: []byte("p")})
+	err := s.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{Payload: []byte("p")}})
 	if err == nil {
 		t.Fatal("expected error for empty topic / no default")
 	}
@@ -204,7 +204,7 @@ func TestAnaCBSender_NonRecoverableError_DoesNotTripCircuit(t *testing.T) {
 	cbs := NewCircuitBreakerSender(inner, br)
 
 	// First call: invalid topic → non-recoverable → not counted.
-	_ = cbs.Send(context.Background(), &messaging.Envelope{Payload: []byte("p")})
+	_ = cbs.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{Payload: []byte("p")}})
 
 	// Inject a non-recoverable error directly to verify CountError result.
 	if shared.IsRecoverableError(shared.ErrInvalidTopic) {
@@ -300,7 +300,7 @@ func TestAnaSender_ContextDoneBeforeSend_ReturnsClassifiedError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := s.Send(ctx, &messaging.Envelope{Subject: "t", Payload: []byte("p")})
+	err := s.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{Subject: "t", Payload: []byte("p")}})
 	if err == nil {
 		t.Fatal("expected error from Send with cancelled ctx")
 	}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // TestSender_StaleLinkFailure_DoesNotKillReconnectedConn validates that
@@ -63,7 +64,7 @@ func TestSender_StaleLinkFailure_DoesNotKillReconnectedConn(t *testing.T) {
 	sess.connected = true
 	sess.mu.Unlock()
 
-	if err := s.Send(context.Background(), &messaging.Envelope{ID: "x"}); err == nil {
+	if err := s.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "x"}}); err == nil {
 		t.Fatal("expected Send to return the link error")
 	}
 
@@ -124,7 +125,7 @@ func TestSender_LinkFailure_TriggersDisconnectWhenLinkConnStillCurrent(t *testin
 	s.linkConn = conn1
 	s.mu.Unlock()
 
-	if err := s.Send(context.Background(), &messaging.Envelope{ID: "x"}); err == nil {
+	if err := s.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "x"}}); err == nil {
 		t.Fatal("expected Send to return the link error")
 	}
 

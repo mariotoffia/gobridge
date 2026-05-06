@@ -131,7 +131,7 @@ func TestGap_AMQP091_To_SQS_CrossTransport(t *testing.T) {
 			},
 			CreatedAt: time.Now().UTC(),
 		}
-		require.NoError(t, pubSnd.Send(ctx, env), "publish msg %d", i)
+		require.NoError(t, pubSnd.Send(ctx, ports.OutboundMessage{Envelope: env}), "publish msg %d", i)
 	}
 
 	// --- Poll SQS and verify ---
@@ -255,7 +255,7 @@ func TestGap_AMQP091_To_MQTT_CrossTransport(t *testing.T) {
 			},
 			CreatedAt: time.Now().UTC(),
 		}
-		require.NoError(t, pubSnd.Send(ctx, env), "publish msg %d", i)
+		require.NoError(t, pubSnd.Send(ctx, ports.OutboundMessage{Envelope: env}), "publish msg %d", i)
 	}
 
 	// --- Wait for MQTT collector to receive all messages ---

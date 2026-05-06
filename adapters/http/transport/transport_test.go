@@ -500,7 +500,7 @@ func TestSSESender_BroadcastToClients(t *testing.T) {
 		Subject: "user.signup",
 		Payload: []byte(`{"user":"alice"}`),
 	}
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 

@@ -556,7 +556,7 @@ func TestEdgeR3_SSESendContextCancelled(t *testing.T) {
 		Payload: []byte(`{}`),
 	}
 
-	err = sender.Send(ctx, env)
+	err = sender.Send(ctx, ports.OutboundMessage{Envelope: env})
 	if err == nil {
 		t.Fatal("expected error from cancelled context, got nil")
 	}

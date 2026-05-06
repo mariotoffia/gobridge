@@ -132,10 +132,10 @@ func TestIntegration_ConcurrentReconcile_NoCorruption(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("receiver did not start")
 	}
-	if err := sender.Send(ctx, &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		Subject: verifyTopic,
 		Payload: []byte("verify-state"),
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("Send to verify topic: %v", err)
 	}
 

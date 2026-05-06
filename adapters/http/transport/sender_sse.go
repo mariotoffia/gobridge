@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
-	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -94,7 +93,9 @@ func (s *SSESender) SetRouteID(routeID string) {
 }
 
 // Send broadcasts an envelope to all connected SSE clients.
-func (s *SSESender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *SSESender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	// TODO(T03/T09): consume msg.Address as the SSE channel/route override.
+	env := msg.Envelope
 	start := s.cfg.clock.Now()
 
 	select {

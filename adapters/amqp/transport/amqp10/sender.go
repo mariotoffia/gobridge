@@ -81,7 +81,9 @@ func (s *Sender) clock() clock.Clock {
 }
 
 // Send publishes a single envelope to the AMQP 1.0 broker.
-func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	// TODO(T03/T06): consume msg.Address as the AMQP 1.0 link target override.
+	env := msg.Envelope
 	sendCtx, cancel := s.applyTimeout(ctx)
 	defer cancel()
 
@@ -156,17 +158,17 @@ func (s *Sender) handleSendFailure(ctx context.Context, failed senderLinkAPI, fa
 }
 
 // SendBatch sends multiple envelopes individually over the AMQP 1.0 link.
-func (s *Sender) SendBatch(ctx context.Context, envs []*messaging.Envelope) (int, error) {
+func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (int, error) {
 	if err := s.ensureLink(ctx); err != nil {
 		return 0, err
 	}
 
 	var sent int
-	for _, env := range envs {
+	for _, m := range msgs {
 		if ctx.Err() != nil {
 			return sent, ctx.Err()
 		}
-		if err := s.Send(ctx, env); err != nil {
+		if err := s.Send(ctx, m); err != nil {
 			return sent, err
 		}
 		sent++

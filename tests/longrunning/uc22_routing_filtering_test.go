@@ -228,7 +228,7 @@ func TestUC23_SubjectPrefix_Routing(t *testing.T) {
 				Subject: fmt.Sprintf("%sitem-%d", pfx, i),
 				Payload: []byte(fmt.Sprintf(`{"pfx":"%s","seq":%d}`, pfx, i)),
 			}
-			require.NoError(t, pubSnd.Send(ctx, env))
+			require.NoError(t, pubSnd.Send(ctx, ports.OutboundMessage{Envelope: env}))
 		}
 	}
 	t.Logf("UC23: published %d messages across 3 prefixes", total)

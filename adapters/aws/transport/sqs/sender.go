@@ -61,7 +61,9 @@ func (s *Sender) clock() clock.Clock {
 }
 
 // Send submits a single envelope to SQS.
-func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	// TODO(T03/T07): consume msg.Address as the SQS queue URL override.
+	env := msg.Envelope
 	if err := s.ensureClient(ctx); err != nil {
 		return err
 	}
@@ -85,7 +87,12 @@ func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
 // fail (partial failures or API errors), the method continues sending
 // the remaining batches and returns a combined error with the total
 // successful count.
-func (s *Sender) SendBatch(ctx context.Context, envs []*messaging.Envelope) (int, error) {
+func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (int, error) {
+	// TODO(T03/T07): per-message msg.Address handling for SQS.
+	envs := make([]*messaging.Envelope, len(msgs))
+	for i, m := range msgs {
+		envs[i] = m.Envelope
+	}
 	if err := s.ensureClient(ctx); err != nil {
 		return 0, err
 	}

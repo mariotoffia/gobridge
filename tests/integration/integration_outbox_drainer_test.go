@@ -12,6 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
@@ -481,7 +482,8 @@ type collectingSender struct {
 	envs []*messaging.Envelope
 }
 
-func (s *collectingSender) Send(_ context.Context, env *messaging.Envelope) error {
+func (s *collectingSender) Send(_ context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	s.mu.Lock()
 	s.envs = append(s.envs, env)
 	s.mu.Unlock()

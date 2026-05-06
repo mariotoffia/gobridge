@@ -313,7 +313,7 @@ func TestEdge_SSEFieldSanitization(t *testing.T) {
 		Subject: "sanitize.test",
 		Payload: []byte(`{}`),
 	}
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -409,7 +409,7 @@ func TestEdge_SendWithNoClients(t *testing.T) {
 		Subject: "no.listeners",
 		Payload: []byte(`{}`),
 	}
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send with no clients should succeed, got: %v", err)
 	}
 }

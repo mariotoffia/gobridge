@@ -109,7 +109,7 @@ func TestAnaMore_Sender_NilEnvelope_ReturnsInvalidPayload(t *testing.T) {
 
 	s := NewSender(sess, SenderOptions{Timeout: time.Second, DefaultTopic: "t"})
 
-	err := s.Send(context.Background(), nil)
+	err := s.Send(context.Background(), ports.OutboundMessage{})
 	if err == nil {
 		t.Fatalf("expected error for nil envelope, got nil")
 	}

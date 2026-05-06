@@ -49,7 +49,7 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *persistence.Outb
 	sendCtx, sendCancel := context.WithTimeout(ctx, d.policy.SendTimeout)
 	defer sendCancel()
 
-	sendErr := d.sender.Send(sendCtx, env)
+	sendErr := d.sender.Send(sendCtx, ports.OutboundMessage{Envelope: env, Address: rec.Address})
 
 	d.hook.OnAttempt(ctx, ports.DeliveryAttempt{
 		Direction:   ports.DirectionEgress,

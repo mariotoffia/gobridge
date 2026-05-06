@@ -36,16 +36,39 @@ type ReceiverStartedSignaler interface {
 	Started() <-chan struct{}
 }
 
-// Sender submits envelopes to a transport.
+// OutboundMessage carries an envelope together with the concrete
+// transport destination chosen by the runtime for this dispatch.
+//
+// Address is the resolved transport-level destination (e.g. an MQTT
+// publish topic, an AMQP 0-9-1 routing key, an AMQP 1.0 link target
+// address, an SQS queue URL/name, or an Azure Service Bus entity name).
+// Envelope.Subject remains the logical event subject and MUST NOT be
+// mutated to express the transport address.
+type OutboundMessage struct {
+	// Envelope is the logical message being dispatched.
+	Envelope *messaging.Envelope
+	// Address is the concrete transport destination for this dispatch.
+	// An empty Address means "use the adapter's default destination".
+	Address string
+}
+
+// Sender submits a single OutboundMessage to a transport.
+//
+// OutboundMessage.Address is the transport destination for this dispatch;
+// OutboundMessage.Envelope.Subject is the logical event subject and is
+// distinct from the transport address.
 type Sender interface {
-	Send(ctx context.Context, env *messaging.Envelope) error
+	Send(ctx context.Context, msg OutboundMessage) error
 }
 
 // BatchSender extends Sender with batch send capability for transports
 // that support it (e.g., SQS SendMessageBatch).
+//
+// Each OutboundMessage in the batch carries its own Address (transport
+// destination) alongside the logical Envelope.Subject.
 type BatchSender interface {
 	Sender
-	SendBatch(ctx context.Context, envs []*messaging.Envelope) (int, error)
+	SendBatch(ctx context.Context, msgs []OutboundMessage) (int, error)
 }
 
 // SessionEventType classifies session lifecycle events.

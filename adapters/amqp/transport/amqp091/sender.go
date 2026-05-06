@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
-	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -73,7 +72,9 @@ func (s *Sender) clock() clock.Clock {
 // confirms. The exchange and routing key are derived from configuration
 // and the envelope's Subject. The entire publish+confirm cycle is
 // serialized to prevent confirm-channel races under concurrent callers.
-func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	// TODO(T03/T06): use msg.Address as the AMQP 0-9-1 routing key when set.
+	env := msg.Envelope
 	exchange := s.cfg.Exchange
 	routingKey := s.cfg.RoutingKey
 	if routingKey == "" {
@@ -161,10 +162,10 @@ func mapPublishError(err error) error {
 
 // SendBatch publishes multiple envelopes sequentially with publisher
 // confirms. Returns the number of successfully published messages.
-func (s *Sender) SendBatch(ctx context.Context, envs []*messaging.Envelope) (int, error) {
+func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (int, error) {
 	sent := 0
-	for _, env := range envs {
-		if err := s.Send(ctx, env); err != nil {
+	for _, m := range msgs {
+		if err := s.Send(ctx, m); err != nil {
 			return sent, err
 		}
 		sent++

@@ -7,6 +7,7 @@ import (
 
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // ---------------------------------------------------------------------------
@@ -47,7 +48,13 @@ func TestSendBatch_PerBatchTimeout_FreshDeadline(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(6) // 3 batches of 2
-	sent, err := sender.SendBatch(context.Background(), envs)
+	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
@@ -96,7 +103,13 @@ func TestSendBatch_TimeoutOneBatch_OthersUnaffected(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(4) // 2 batches of 2
-	sent, sendErr := sender.SendBatch(context.Background(), envs)
+	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if sendErr == nil {
 		t.Fatal("expected error from timed-out first batch")
 	}
@@ -145,7 +158,13 @@ func TestSendBatch_ParentContextCancel_PropagatesAllBatches(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(4) // 2 batches
-	sent, sendErr := sender.SendBatch(ctx, envs)
+	sent, sendErr := sender.SendBatch(ctx, func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 
 	// First batch should have succeeded.
 	if sent < 2 {
@@ -196,7 +215,13 @@ func TestSendBatch_LargeBatch_LastBatchFullTimeout(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(totalMsgs)
-	sent, err := sender.SendBatch(context.Background(), envs)
+	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}

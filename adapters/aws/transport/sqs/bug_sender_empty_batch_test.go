@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -25,7 +25,7 @@ func TestSendBatch_NilSlice_ReturnsZeroNil(t *testing.T) {
 		cfg:      SenderConfig{BatchSize: 10, Timeout: 30},
 	}
 
-	n, err := s.SendBatch(context.Background(), nil)
+	n, err := s.SendBatch(context.Background(), []ports.OutboundMessage(nil))
 	require.NoError(t, err)
 	assert.Equal(t, 0, n, "SendBatch(nil) should return 0 sent")
 }
@@ -38,7 +38,7 @@ func TestSendBatch_EmptySlice_ReturnsZeroNil(t *testing.T) {
 		cfg:      SenderConfig{BatchSize: 10, Timeout: 30},
 	}
 
-	n, err := s.SendBatch(context.Background(), []*messaging.Envelope{})
+	n, err := s.SendBatch(context.Background(), []ports.OutboundMessage{})
 	require.NoError(t, err)
 	assert.Equal(t, 0, n, "SendBatch([]) should return 0 sent")
 }

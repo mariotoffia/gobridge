@@ -113,7 +113,7 @@ func BenchmarkSSE_Broadcast(b *testing.B) {
 			b.ReportAllocs()
 
 			for i := 0; i < b.N; i++ {
-				if err := sender.Send(context.Background(), env); err != nil {
+				if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 					b.Fatalf("Send: %v", err)
 				}
 			}

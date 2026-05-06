@@ -13,6 +13,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // Verifies Send maps envelope body, subject, and headers to SendMessage input.
@@ -35,7 +36,7 @@ func TestSender_Send_Basic(t *testing.T) {
 		},
 	}
 
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -79,7 +80,7 @@ func TestSender_Send_FIFO_WithHeaders(t *testing.T) {
 		},
 	}
 
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -109,7 +110,7 @@ func TestSender_Send_FIFO_DefaultGroup(t *testing.T) {
 		Payload: []byte("msg"),
 	}
 
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -142,7 +143,7 @@ func TestSender_Send_FIFO_HeaderOverridesDefault(t *testing.T) {
 		},
 	}
 
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -164,7 +165,7 @@ func TestSender_Send_WithDelay(t *testing.T) {
 	}
 
 	env := &messaging.Envelope{ID: "env-delay", Payload: []byte("delayed")}
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -189,7 +190,7 @@ func TestSender_Send_Error(t *testing.T) {
 	}
 
 	env := &messaging.Envelope{ID: "env-err", Payload: []byte("fail")}
-	sendErr := sender.Send(context.Background(), env)
+	sendErr := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env})
 	if sendErr == nil {
 		t.Fatal("expected error")
 	}
@@ -228,7 +229,13 @@ func TestSender_SendBatch_Basic(t *testing.T) {
 		}
 	}
 
-	sent, err := sender.SendBatch(context.Background(), envs)
+	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
@@ -265,7 +272,13 @@ func TestSender_SendBatch_PartialFailure(t *testing.T) {
 		{ID: "fail", Payload: []byte("fail")},
 	}
 
-	sent, sendErr := sender.SendBatch(context.Background(), envs)
+	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if sendErr == nil {
 		t.Fatal("expected error on partial failure")
 	}
@@ -302,7 +315,13 @@ func TestSender_SendBatch_LargeBatch(t *testing.T) {
 		envs[i] = &messaging.Envelope{ID: "lg", Payload: []byte("x")}
 	}
 
-	sent, err := sender.SendBatch(context.Background(), envs)
+	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
@@ -376,7 +395,13 @@ func TestSender_SendBatch_PartialFailure_ContinuesRemaining(t *testing.T) {
 	for i := range envs {
 		envs[i] = &messaging.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("msg")}
 	}
-	sent, sendErr := sender.SendBatch(context.Background(), envs)
+	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if sendErr == nil {
 		t.Fatal("expected combined error from partial failure")
 	}
@@ -412,7 +437,13 @@ func TestSender_SendBatch_APIError_ContinuesRemaining(t *testing.T) {
 	for i := range envs {
 		envs[i] = &messaging.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("x")}
 	}
-	sent, sendErr := sender.SendBatch(context.Background(), envs)
+	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if sendErr == nil {
 		t.Fatal("expected error from first batch failure")
 	}
@@ -453,7 +484,13 @@ func TestSender_SendBatch_PerBatchTimeout(t *testing.T) {
 	for i := range envs {
 		envs[i] = &messaging.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("x")}
 	}
-	sent, err := sender.SendBatch(context.Background(), envs)
+	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}

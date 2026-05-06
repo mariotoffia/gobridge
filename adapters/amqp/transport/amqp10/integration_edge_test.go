@@ -76,7 +76,7 @@ func edgeSendRecv(t *testing.T, sess *Session, addr string, env *messaging.Envel
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	if err := sender.Send(ctx, env); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -177,9 +177,9 @@ func TestIntegration_Edge_SendContextTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err = sender.Send(ctx, &messaging.Envelope{
+	err = sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		ID: "timeout-msg", Subject: "test", Payload: []byte("hello"),
-	})
+	}})
 	if err == nil {
 		t.Fatal("expected error from Send with cancelled context")
 	}
@@ -232,9 +232,9 @@ func TestIntegration_Edge_DoubleAck(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	if err := sender.Send(ctx, &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		ID: "dbl-ack", Subject: "test", Payload: []byte("ack-me"),
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -280,9 +280,9 @@ func TestIntegration_Edge_DoubleRetry(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	if err := sender.Send(ctx, &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		ID: "dbl-retry", Subject: "test", Payload: []byte("retry-me"),
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -330,9 +330,9 @@ func TestIntegration_Edge_AckThenRetry(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	if err := sender.Send(ctx, &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		ID: "ack-then-retry", Subject: "test", Payload: []byte("test"),
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -385,9 +385,9 @@ func TestIntegration_Edge_SendAfterSessionClose(t *testing.T) {
 	}
 	_ = sess.Close(ctx)
 
-	err = sender.Send(ctx, &messaging.Envelope{
+	err = sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		ID: "after-close", Subject: "test", Payload: []byte("nope"),
-	})
+	}})
 	if err == nil {
 		t.Fatal("expected error sending after session close")
 	}

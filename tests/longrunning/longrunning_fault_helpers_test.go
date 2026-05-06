@@ -31,7 +31,8 @@ func newFailFirstNSender(inner ports.Sender, maxFails int) *failFirstNSender {
 	return &failFirstNSender{inner: inner, maxFails: maxFails, attempts: make(map[string]int)}
 }
 
-func (s *failFirstNSender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *failFirstNSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	s.mu.Lock()
 	s.attempts[env.ID]++
 	n := s.attempts[env.ID]
@@ -40,7 +41,7 @@ func (s *failFirstNSender) Send(ctx context.Context, env *messaging.Envelope) er
 		return shared.ErrUnavailable.WithMessage(
 			fmt.Sprintf("failFirstN: attempt %d/%d for %s", n, s.maxFails, env.ID))
 	}
-	return s.inner.Send(ctx, env)
+	return s.inner.Send(ctx, ports.OutboundMessage{Envelope: env})
 }
 
 // ---------------------------------------------------------------------------
@@ -57,8 +58,9 @@ func newCountingSender(inner ports.Sender) *countingSender {
 	return &countingSender{inner: inner}
 }
 
-func (s *countingSender) Send(ctx context.Context, env *messaging.Envelope) error {
-	err := s.inner.Send(ctx, env)
+func (s *countingSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
+	err := s.inner.Send(ctx, ports.OutboundMessage{Envelope: env})
 	if err != nil {
 		s.failures.Add(1)
 	} else {
@@ -82,7 +84,8 @@ func newDegradedSender(inner ports.Sender, failPct int, latency time.Duration) *
 	return &degradedSender{inner: inner, failPercent: failPct, latency: latency}
 }
 
-func (s *degradedSender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *degradedSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	if s.latency > 0 {
 		select {
 		case <-time.After(s.latency):
@@ -94,7 +97,7 @@ func (s *degradedSender) Send(ctx context.Context, env *messaging.Envelope) erro
 	if rand.IntN(100) < s.failPercent {
 		return shared.ErrUnavailable.WithMessage("degraded sender: injected failure")
 	}
-	return s.inner.Send(ctx, env)
+	return s.inner.Send(ctx, ports.OutboundMessage{Envelope: env})
 }
 
 // ---------------------------------------------------------------------------

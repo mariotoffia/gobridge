@@ -52,7 +52,7 @@ func TestSender_Send_NoSession(t *testing.T) {
 		Payload: []byte("data"),
 	}
 
-	err = s.Send(context.Background(), env)
+	err = s.Send(context.Background(), ports.OutboundMessage{Envelope: env})
 	if err == nil {
 		t.Fatal("Send() should fail when session is not connected")
 	}
@@ -76,7 +76,13 @@ func TestSender_SendBatch_NoSession(t *testing.T) {
 		{ID: "b-2", Payload: []byte("two")},
 	}
 
-	sent, err := s.SendBatch(context.Background(), envs)
+	sent, err := s.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if err == nil {
 		t.Fatal("SendBatch() should fail when session is not connected")
 	}
@@ -175,7 +181,13 @@ func TestSender_SendBatch_ContextCancel(t *testing.T) {
 		{ID: "c-1", Payload: []byte("one")},
 	}
 
-	_, sendErr := s.SendBatch(ctx, envs)
+	_, sendErr := s.SendBatch(ctx, func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if sendErr == nil {
 		t.Fatal("SendBatch() should fail with cancelled context")
 	}

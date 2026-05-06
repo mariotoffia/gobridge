@@ -98,7 +98,7 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 		Subject: pubTopic,
 		Payload: []byte(`{"order_id":"99"}`),
 	}
-	if err := mqttSend.Send(ctx, pubEnv); err != nil {
+	if err := mqttSend.Send(ctx, ports.OutboundMessage{Envelope: pubEnv}); err != nil {
 		t.Fatalf("MQTT publish: %v", err)
 	}
 

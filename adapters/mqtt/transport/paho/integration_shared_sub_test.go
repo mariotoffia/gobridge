@@ -80,7 +80,7 @@ func TestIntegration_SharedSubscription_CompetingConsumers(t *testing.T) {
 			Subject: baseTopic,
 			Payload: []byte(fmt.Sprintf("shared-msg-%d", i)),
 		}
-		if err := sender.Send(ctx, env); err != nil {
+		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 			t.Fatalf("Send %d: %v", i, err)
 		}
 	}
@@ -144,7 +144,7 @@ func TestIntegration_PlainSubscription_FanOut(t *testing.T) {
 			Subject: topic,
 			Payload: []byte(fmt.Sprintf("fanout-msg-%d", i)),
 		}
-		if err := sender.Send(ctx, env); err != nil {
+		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 			t.Fatalf("Send %d: %v", i, err)
 		}
 	}
@@ -222,7 +222,7 @@ func TestIntegration_SharedSubscription_PayloadIntegrity(t *testing.T) {
 		},
 	}
 
-	if err := sender.Send(ctx, env); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
