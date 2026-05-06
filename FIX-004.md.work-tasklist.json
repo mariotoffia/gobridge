@@ -1,8 +1,8 @@
 {
   "$schema": "v2",
   "source": "FIX-004.md",
-  "source_sha": "5680a6f33a28d9a27f48205cda9a5ee2b5759f4060d3bec2aa94f5c67df4a79e",
-  "indexed_at": "2026-05-06T08:32:04Z",
+  "source_sha": "cff8c826f7431aa2ccf45b6fb6a25e7f0774e53cdd20337f26df419db01ae7e9",
+  "indexed_at": "2026-05-06T00:00:00Z",
   "status_convention": "- DONE suffix on Phase H3 headings",
   "tasks": [
     {
@@ -77,7 +77,7 @@
     {
       "id": "phase-6",
       "title": "Update .golangci.yml depguard for cross-context bans",
-      "status": "pending",
+      "status": "done",
       "category_hint": "clean-arch lint",
       "suggested_agent": "clean-arch-reviewer",
       "agent_rationale": "Belt-and-suspenders cross-context import bans.",

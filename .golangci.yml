@@ -212,6 +212,111 @@ linters:
             - pkg: "github.com/mariotoffia/gobridge/bridge"
               desc: "runtime must not depend on bridge (composition root)"
 
+        # FIX-004 Phase 6: belt-and-suspenders cross-context bans.
+        # The .go-arch-lint.yml deps block is the primary enforcer;
+        # these depguard rules catch the same violations at file
+        # scope so violations surface in the IDE / pre-commit lint
+        # cycle without waiting for `go-arch-lint check`.
+        #
+        # Allowed cross-context edges (mirroring .go-arch-lint.yml):
+        #   shared       → (none)
+        #   messaging    → (none)
+        #   persistence  → shared, messaging
+        #   routing      → shared, messaging
+        #   connectivity → shared
+        #   clock        → (none — pure stdlib)
+        domain-shared-isolation:
+          list-mode: lax
+          files:
+            - "**/domain/shared/**/*.go"
+            - "!$test"
+          deny:
+            - pkg: "github.com/mariotoffia/gobridge/domain/messaging"
+              desc: "FIX-004 bounded context: domain/shared must not import domain/messaging"
+            - pkg: "github.com/mariotoffia/gobridge/domain/persistence"
+              desc: "FIX-004 bounded context: domain/shared must not import domain/persistence"
+            - pkg: "github.com/mariotoffia/gobridge/domain/routing"
+              desc: "FIX-004 bounded context: domain/shared must not import domain/routing"
+            - pkg: "github.com/mariotoffia/gobridge/domain/connectivity"
+              desc: "FIX-004 bounded context: domain/shared must not import domain/connectivity"
+            - pkg: "github.com/mariotoffia/gobridge/domain/clock"
+              desc: "FIX-004 bounded context: domain/shared must not import domain/clock"
+
+        domain-messaging-isolation:
+          list-mode: lax
+          files:
+            - "**/domain/messaging/**/*.go"
+            - "!$test"
+          deny:
+            - pkg: "github.com/mariotoffia/gobridge/domain/shared"
+              desc: "FIX-004 bounded context: domain/messaging must not import domain/shared"
+            - pkg: "github.com/mariotoffia/gobridge/domain/persistence"
+              desc: "FIX-004 bounded context: domain/messaging must not import domain/persistence"
+            - pkg: "github.com/mariotoffia/gobridge/domain/routing"
+              desc: "FIX-004 bounded context: domain/messaging must not import domain/routing"
+            - pkg: "github.com/mariotoffia/gobridge/domain/connectivity"
+              desc: "FIX-004 bounded context: domain/messaging must not import domain/connectivity"
+            - pkg: "github.com/mariotoffia/gobridge/domain/clock"
+              desc: "FIX-004 bounded context: domain/messaging must not import domain/clock"
+
+        domain-persistence-isolation:
+          list-mode: lax
+          files:
+            - "**/domain/persistence/**/*.go"
+            - "!$test"
+          deny:
+            - pkg: "github.com/mariotoffia/gobridge/domain/routing"
+              desc: "FIX-004 bounded context: domain/persistence must not import domain/routing"
+            - pkg: "github.com/mariotoffia/gobridge/domain/connectivity"
+              desc: "FIX-004 bounded context: domain/persistence must not import domain/connectivity"
+            - pkg: "github.com/mariotoffia/gobridge/domain/clock"
+              desc: "FIX-004 bounded context: domain/persistence must not import domain/clock"
+
+        domain-routing-isolation:
+          list-mode: lax
+          files:
+            - "**/domain/routing/**/*.go"
+            - "!$test"
+          deny:
+            - pkg: "github.com/mariotoffia/gobridge/domain/persistence"
+              desc: "FIX-004 bounded context: domain/routing must not import domain/persistence"
+            - pkg: "github.com/mariotoffia/gobridge/domain/connectivity"
+              desc: "FIX-004 bounded context: domain/routing must not import domain/connectivity"
+            - pkg: "github.com/mariotoffia/gobridge/domain/clock"
+              desc: "FIX-004 bounded context: domain/routing must not import domain/clock"
+
+        domain-connectivity-isolation:
+          list-mode: lax
+          files:
+            - "**/domain/connectivity/**/*.go"
+            - "!$test"
+          deny:
+            - pkg: "github.com/mariotoffia/gobridge/domain/messaging"
+              desc: "FIX-004 bounded context: domain/connectivity must not import domain/messaging"
+            - pkg: "github.com/mariotoffia/gobridge/domain/persistence"
+              desc: "FIX-004 bounded context: domain/connectivity must not import domain/persistence"
+            - pkg: "github.com/mariotoffia/gobridge/domain/routing"
+              desc: "FIX-004 bounded context: domain/connectivity must not import domain/routing"
+            - pkg: "github.com/mariotoffia/gobridge/domain/clock"
+              desc: "FIX-004 bounded context: domain/connectivity must not import domain/clock"
+
+        domain-clock-isolation:
+          list-mode: lax
+          files:
+            - "**/domain/clock/**/*.go"
+            - "!$test"
+          deny:
+            - pkg: "github.com/mariotoffia/gobridge/domain/shared"
+              desc: "FIX-004 bounded context: domain/clock must remain pure stdlib (no domain/shared)"
+            - pkg: "github.com/mariotoffia/gobridge/domain/messaging"
+              desc: "FIX-004 bounded context: domain/clock must remain pure stdlib (no domain/messaging)"
+            - pkg: "github.com/mariotoffia/gobridge/domain/persistence"
+              desc: "FIX-004 bounded context: domain/clock must remain pure stdlib (no domain/persistence)"
+            - pkg: "github.com/mariotoffia/gobridge/domain/routing"
+              desc: "FIX-004 bounded context: domain/clock must remain pure stdlib (no domain/routing)"
+            - pkg: "github.com/mariotoffia/gobridge/domain/connectivity"
+              desc: "FIX-004 bounded context: domain/clock must remain pure stdlib (no domain/connectivity)"
+
     # wrapcheck allow-list (binding seed from
     # _design/error-wrapping-policy.adoc §"Confirmed wrapcheck
     # allow-list seed"). Future tuning is additive: extend the lists
