@@ -30,8 +30,7 @@ workdir: .
 
 allow:
   # Vendor lint enabled: components must explicitly declare every external
-  # dependency via canUse. The inner ring is stdlib-only; this is now
-  # machine-checked, not a wiki claim.
+  # dependency via canUse. The inner ring is stdlib-only; this is machine-checked, not a wiki claim.
   depOnAnyVendor: false
   # Deep scan: detect cross-component leaks via method calls and structural
   # typing, not only direct imports. Catches phantom dependencies that
@@ -41,7 +40,6 @@ allow:
 
 exclude:
   - .claude
-  - .cursor
   - .git
   - .worktrees
   - audit

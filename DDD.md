@@ -380,6 +380,12 @@ flowchart TB
         adapters_creds["adapter_credentials_*"]
         adapters_obs["adapter_metrics_*<br/>adapter_tracing_*"]
         adapters_cluster["adapter_cluster_*"]
+        httpapi ~~~ adapters_transport
+        adapters_transport ~~~ adapters_config
+        adapters_config ~~~ adapters_obs
+        processors ~~~ adapters_store
+        adapters_store ~~~ adapters_creds
+        adapters_creds ~~~ adapters_cluster
     end
     subgraph L2 [Layer 2 - Application + Ports + Shared kernel]
         direction TB
@@ -391,6 +397,12 @@ flowchart TB
         circuitbreaker
         logging
         observability
+        ports ~~~ runtime
+        runtime ~~~ validate
+        validate ~~~ logging
+        config ~~~ bridge
+        bridge ~~~ circuitbreaker
+        circuitbreaker ~~~ observability
     end
     subgraph L1 [Layer 1 - Domain]
         direction TB
@@ -400,6 +412,10 @@ flowchart TB
         routing
         connectivity
         clock
+        shared ~~~ persistence
+        persistence ~~~ connectivity
+        messaging ~~~ routing
+        routing ~~~ clock
     end
 
     L4 --> L3
