@@ -203,6 +203,7 @@ classDiagram
 
 ```mermaid
 classDiagram
+    direction TB
     class RoutePolicy {
         <<aggregate root>>
         +MaxInFlight, MaxReplayAttempts, MaxOutboxDepth: int
@@ -253,6 +254,9 @@ classDiagram
     RoutePolicy --> AckBoundary
     RoutePolicy --> ExpiredAction
     RoutePolicy --> FailureAction
+    DispatchPlan --> DestinationBinding
+    DLQEntry --> DestinationBinding
+    DLQFilter ..> DLQEntry
 ```
 
 **Invariants:**
