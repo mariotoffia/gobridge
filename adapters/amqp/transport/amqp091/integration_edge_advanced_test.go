@@ -106,9 +106,9 @@ func TestIntegration_Edge_ExchangeRouting(t *testing.T) {
 	})
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	if err := sender.Send(ctx, &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		ID: "exchange-routed", Subject: routingKey, Payload: []byte("routed"),
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -213,7 +213,13 @@ func TestIntegration_Edge_SendBatchAllReceived(t *testing.T) {
 		wantIDs[id] = true
 	}
 
-	sent, err := sender.SendBatch(ctx, envs)
+	sent, err := sender.SendBatch(ctx, func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
@@ -318,9 +324,9 @@ func TestIntegration_Edge_PrefetchHonored(t *testing.T) {
 
 	const total = 3
 	for i := 0; i < total; i++ {
-		if err := sender.Send(ctx, &messaging.Envelope{
+		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 			ID: "pf-" + string(rune('A'+i)), Subject: e.queue, Payload: []byte("x"),
-		}); err != nil {
+		}}); err != nil {
 			t.Fatalf("Send[%d]: %v", i, err)
 		}
 	}

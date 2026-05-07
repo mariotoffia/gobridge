@@ -79,7 +79,7 @@ func TestIntegration_ReceiverClose_ReceiveThenShutdown(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 
-	if err := sender.Send(ctx, env); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 

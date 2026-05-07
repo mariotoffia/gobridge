@@ -28,6 +28,13 @@ type DeliveryAttempt struct {
 	RouteID string
 	// BindingID identifies the destination binding (egress only).
 	BindingID string
+	// Address is the transport destination address used for this
+	// attempt (e.g. MQTT topic, SQS queue URL, AMQP routing key) on
+	// egress, or the source address on ingress. It is the concrete
+	// transport-level address actually used for the send/receive and
+	// is NOT the logical Envelope.Subject. Empty when not known at
+	// the call site.
+	Address string
 	// Envelope is the message being processed. Hooks must not mutate it.
 	Envelope *messaging.Envelope
 	// Attempt is the 1-based attempt number for this message.
@@ -49,6 +56,12 @@ type DeliveryOutcome struct {
 	RouteID string
 	// BindingID identifies the destination binding (egress only).
 	BindingID string
+	// Address is the transport destination address used for the final
+	// attempt (e.g. MQTT topic, SQS queue URL, AMQP routing key) on
+	// egress, or the source address on ingress. It is the concrete
+	// transport-level address actually used and is NOT the logical
+	// Envelope.Subject. Empty when not known at the call site.
+	Address string
 	// Envelope is the message that reached its terminal state.
 	// Hooks must not mutate it.
 	Envelope *messaging.Envelope

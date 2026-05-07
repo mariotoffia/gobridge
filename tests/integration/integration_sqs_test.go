@@ -89,7 +89,7 @@ func TestIntegration_SQS_Sender_SendsMessage(t *testing.T) {
 		Payload: []byte("hello from sender"),
 	}
 
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("sender.Send: %v", err)
 	}
 
@@ -127,7 +127,7 @@ func TestIntegration_SQS_Sender_FIFO(t *testing.T) {
 			ID:      "msg-" + string(rune('a'+i)),
 			Payload: []byte("order-" + string(rune('0'+i))),
 		}
-		if err := sender.Send(context.Background(), env); err != nil {
+		if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 			t.Fatalf("sender.Send[%d]: %v", i, err)
 		}
 	}

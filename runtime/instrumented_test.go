@@ -180,7 +180,7 @@ func TestInstrumentedSender_RecordsSendLatency(t *testing.T) {
 		shared.MetricMQTTPublishLatency, shared.TagKeySessionID, "sess-1", clock.System)
 
 	env := &messaging.Envelope{ID: "msg-1", Payload: []byte("test")}
-	err := sender.Send(context.Background(), env)
+	err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestInstrumentedSender_SendLatencyUsesInjectedClock(t *testing.T) {
 	sender := runtime.NewInstrumentedSender(inner, rec,
 		shared.MetricMQTTPublishLatency, shared.TagKeySessionID, "sess-1", clk)
 
-	err := sender.Send(context.Background(), &messaging.Envelope{ID: "msg-1"})
+	err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "msg-1"}})
 	if err != nil {
 		t.Fatal(err)
 	}

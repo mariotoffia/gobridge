@@ -22,6 +22,20 @@ const (
 	HeaderConsumerTag     = "amqp091.consumer-tag"
 )
 
+// HeaderGobridgeSubject is the AMQP 0-9-1 user-header key used to
+// round-trip the logical Envelope.Subject through AMQP, distinct from
+// the transport-level routing key. envelopeToPublishing writes this
+// header into the AMQP Headers table when env.Subject is non-empty;
+// deliveryToEnvelope reads it back into env.Subject. Inbound headers
+// carrying this key from a peer bridge are honoured (subject-preserving
+// round trip is intentional); the generic user-header pass-through
+// skips this reserved key so the typed extraction wins.
+//
+// Unlike the amqp091.* well-known headers, this is a cross-transport
+// subject carrier (the same key is used by the MQTT adapter), so it is
+// NOT registered in amqp091WellKnown / amqp091Prefix.
+const HeaderGobridgeSubject = "gobridge.subject"
+
 const amqp091Prefix = "amqp091."
 
 var amqp091WellKnown = map[string]bool{

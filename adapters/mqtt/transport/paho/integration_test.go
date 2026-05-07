@@ -216,7 +216,7 @@ func TestIntegration_PubSubRoundTrip(t *testing.T) {
 		},
 	}
 
-	if err := sender.Send(ctx, env); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env, Address: env.Subject}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -321,7 +321,7 @@ func TestIntegration_BackpressureNoDrops(t *testing.T) {
 			Subject: "bp/test",
 			Payload: []byte(fmt.Sprintf("msg-%d", i)),
 		}
-		if err := sender.Send(ctx, env); err != nil {
+		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env, Address: env.Subject}); err != nil {
 			t.Fatalf("Send %d: %v", i, err)
 		}
 	}
@@ -397,9 +397,9 @@ func TestIntegration_QoS1Completion(t *testing.T) {
 		Timeout:      5 * time.Second,
 	})
 
-	if err := sender.Send(ctx, &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		Payload: []byte("qos1-message"),
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("QoS 1 Send: %v", err)
 	}
 }

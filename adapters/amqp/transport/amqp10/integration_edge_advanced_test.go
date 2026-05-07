@@ -137,9 +137,9 @@ func TestIntegration_Edge_MulticastRouting(t *testing.T) {
 		}
 	}
 
-	if err := sender.Send(ctx, &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		ID: "multicast-1", Subject: "test", Payload: []byte("fan-out"),
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -185,7 +185,13 @@ func TestIntegration_Edge_SendBatchPartialVerify(t *testing.T) {
 		wantIDs[id] = true
 	}
 
-	sent, err := sender.SendBatch(ctx, envs)
+	sent, err := sender.SendBatch(ctx, func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}

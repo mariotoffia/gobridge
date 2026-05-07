@@ -158,7 +158,12 @@ type DestinationBinding struct {
 	Transport string
 	SessionID string
 	SenderID  string
-	Address   string
+	// Address is the transport-level destination for this binding
+	// (queue URL, topic name, exchange/routing-key, etc.). It is the
+	// single destination abstraction propagated to ports.OutboundMessage
+	// at send time and is distinct from messaging.Envelope.Subject —
+	// the logical message subject — which the runtime must preserve.
+	Address string
 	// Config is the typed plugin config carried from BindingDef.
 	// In production this is populated with a value that satisfies
 	// ports.PluginConfig; the type assertion happens at the adapter
@@ -175,6 +180,11 @@ type DestinationBinding struct {
 // DispatchPlan is the result of destination resolution for one envelope dispatch.
 type DispatchPlan struct {
 	BindingID string
-	Address   string
-	Headers   map[string]any
+	// Address is the resolved transport-level destination for this
+	// dispatch (typically copied or rendered from the selected
+	// DestinationBinding.Address). It travels alongside the envelope
+	// via ports.OutboundMessage.Address; it is NOT the same as
+	// messaging.Envelope.Subject and must not overwrite it.
+	Address string
+	Headers map[string]any
 }

@@ -31,7 +31,8 @@ type fakeSender struct {
 	sent []*messaging.Envelope
 }
 
-func (s *fakeSender) Send(_ context.Context, env *messaging.Envelope) error {
+func (s *fakeSender) Send(_ context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sent = append(s.sent, env.Clone())
@@ -249,7 +250,7 @@ func TestIntegration_SSEClient_ReceivesMultipleEvents(t *testing.T) {
 	subjects := []string{"evt.one", "evt.two", "evt.three"}
 	for i, subj := range subjects {
 		env := &messaging.Envelope{ID: subj, Subject: subj, Payload: []byte(`{}`)}
-		if err := sender.Send(context.Background(), env); err != nil {
+		if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 			t.Fatalf("Send[%d]: %v", i, err)
 		}
 	}
@@ -292,9 +293,9 @@ func TestIntegration_SSEClient_ReceivesMultipleEvents(t *testing.T) {
 
 	_ = resp.Body.Close()
 
-	if err := sender.Send(context.Background(), &messaging.Envelope{
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{
 		ID: "after-close", Subject: "evt.four", Payload: []byte(`{}`),
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("Send after client disconnect should not error: %v", err)
 	}
 }

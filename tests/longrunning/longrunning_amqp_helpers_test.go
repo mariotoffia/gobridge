@@ -237,7 +237,7 @@ func sendToRabbitMQ(
 			Payload:   []byte(fmt.Sprintf(`{"seq":%d}`, i)),
 			CreatedAt: time.Now().UTC(),
 		}
-		require.NoError(t, sender.Send(ctx, env), "sendToRabbitMQ msg %d", i)
+		require.NoError(t, sender.Send(ctx, ports.OutboundMessage{Envelope: env}), "sendToRabbitMQ msg %d", i)
 	}
 }
 
@@ -255,7 +255,7 @@ func sendToArtemis(
 			Payload:   []byte(fmt.Sprintf(`{"seq":%d}`, i)),
 			CreatedAt: time.Now().UTC(),
 		}
-		require.NoError(t, sender.Send(ctx, env), "sendToArtemis msg %d", i)
+		require.NoError(t, sender.Send(ctx, ports.OutboundMessage{Envelope: env}), "sendToArtemis msg %d", i)
 	}
 }
 

@@ -29,7 +29,7 @@ func newLimitedSender(limit int) *limitedSender {
 	return &limitedSender{inner: newFakeSender(), limit: limit, reached: make(chan struct{})}
 }
 
-func (s *limitedSender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *limitedSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	s.mu.Lock()
 	s.count++
 	n := s.count
@@ -37,7 +37,7 @@ func (s *limitedSender) Send(ctx context.Context, env *messaging.Envelope) error
 	if n > s.limit {
 		return fmt.Errorf("simulated failure after %d sends", s.limit)
 	}
-	err := s.inner.Send(ctx, env)
+	err := s.inner.Send(ctx, msg)
 	if err == nil && n == s.limit {
 		s.once.Do(func() { close(s.reached) })
 	}
@@ -46,7 +46,7 @@ func (s *limitedSender) Send(ctx context.Context, env *messaging.Envelope) error
 
 type stallSender struct{}
 
-func (s *stallSender) Send(ctx context.Context, _ *messaging.Envelope) error {
+func (s *stallSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	<-ctx.Done()
 	return ctx.Err()
 }

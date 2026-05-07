@@ -255,7 +255,7 @@ func TestUC9_MQTT_QoS2_Stress(t *testing.T) {
 			Subject: "uc9/input",
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
 		}
-		require.NoError(t, pubSnd.Send(ctx, env), "publish msg %d", i)
+		require.NoError(t, pubSnd.Send(ctx, ports.OutboundMessage{Envelope: env, Address: "uc9/input"}), "publish msg %d", i)
 	}
 	t.Logf("UC9: published %d QoS 2 messages", msgCount)
 

@@ -47,7 +47,7 @@ func TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization(t *test
 			messaging.HeaderSourceID:       "internal-src", // forwarded (debatable)
 		},
 	}
-	pub := PublishFromEnvelope(env, SenderOptions{QoS: 1}, nil)
+	pub := PublishFromEnvelope(env, env.Subject, SenderOptions{QoS: 1}, nil)
 	if pub.Properties == nil {
 		t.Fatal("expected properties to be set")
 	}
@@ -109,7 +109,7 @@ func TestAnaMore_Sender_NilEnvelope_ReturnsInvalidPayload(t *testing.T) {
 
 	s := NewSender(sess, SenderOptions{Timeout: time.Second, DefaultTopic: "t"})
 
-	err := s.Send(context.Background(), nil)
+	err := s.Send(context.Background(), ports.OutboundMessage{})
 	if err == nil {
 		t.Fatalf("expected error for nil envelope, got nil")
 	}

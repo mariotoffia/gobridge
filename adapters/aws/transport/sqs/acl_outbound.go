@@ -264,6 +264,16 @@ func extractFIFOFields(headers map[string]any) (groupID, dedupID string) {
 // generateDeduplicationID derives a stable FIFO dedup id from the
 // envelope payload, subject and id. md5 is sufficient — SQS only uses
 // the value as an opaque key for dedup, not for security.
+//
+// T08 review: Subject is now a logical event subject (no longer
+// implicitly populated from the queue name/URL on receive) and may be
+// empty. Mixing it into the hash is benign: when env.ID is set it is
+// the primary disambiguator, so distinct logical messages do not
+// collide just because they share an empty Subject. Conversely, two
+// envelopes that share payload+id+subject deliberately collide so
+// SQS dedup treats them as duplicates. When env.ID is empty the
+// CreatedAt timestamp keeps each call unique. No semantic change is
+// required for T08.
 func generateDeduplicationID(env *messaging.Envelope) string {
 	h := md5.New()
 	h.Write(env.Payload)

@@ -64,6 +64,12 @@ func headersToPublishing(headers map[string]any) amqp.Publishing {
 		if messaging.IsReservedHeader(k) {
 			continue
 		}
+		// HeaderGobridgeSubject is handled by envelopeToPublishing
+		// (which has access to env.Subject). Skip it here so a stale
+		// header copy does not race the typed write below.
+		if k == HeaderGobridgeSubject {
+			continue
+		}
 		if table == nil {
 			table = make(amqp.Table, len(headers))
 		}
@@ -76,6 +82,12 @@ func headersToPublishing(headers map[string]any) amqp.Publishing {
 
 // envelopeToPublishing builds an amqp091.Publishing from a messaging.Envelope.
 // It maps the envelope body, ID, subject, TTL, and headers.
+//
+// The logical Envelope.Subject is propagated as a HeaderGobridgeSubject
+// entry in the AMQP Headers table — distinct from the transport-level
+// routing key chosen by the Sender. When env.Subject is empty but a
+// peer bridge supplied a HeaderGobridgeSubject in env.Headers (subject
+// round-trip from another transport), that value is preserved.
 func envelopeToPublishing(env *messaging.Envelope, cfg SenderConfig, clk clock.Clock) amqp.Publishing {
 	if clk == nil {
 		clk = clock.System
@@ -85,6 +97,21 @@ func envelopeToPublishing(env *messaging.Envelope, cfg SenderConfig, clk clock.C
 
 	if env.ID != "" && pub.MessageId == "" {
 		pub.MessageId = env.ID
+	}
+
+	switch {
+	case env.Subject != "":
+		if pub.Headers == nil {
+			pub.Headers = amqp.Table{}
+		}
+		pub.Headers[HeaderGobridgeSubject] = env.Subject
+	case env.Headers != nil:
+		if v, ok := env.Headers[HeaderGobridgeSubject].(string); ok && v != "" {
+			if pub.Headers == nil {
+				pub.Headers = amqp.Table{}
+			}
+			pub.Headers[HeaderGobridgeSubject] = v
+		}
 	}
 
 	if env.HasExpiry() {

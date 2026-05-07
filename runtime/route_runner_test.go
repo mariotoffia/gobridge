@@ -634,8 +634,15 @@ func TestRouteRunner_DirectHold_WithResolver(t *testing.T) {
 	if sender.SentCount() != 1 {
 		t.Fatalf("expected 1 sent message, got %d", sender.SentCount())
 	}
-	if sender.GetSent()[0].Subject != "factory/a/orders/42" {
-		t.Fatalf("expected resolved subject, got %q", sender.GetSent()[0].Subject)
+	out := sender.GetOutbound()
+	if out[0].Address != "factory/a/orders/42" {
+		t.Fatalf("expected resolved Address, got %q", out[0].Address)
+	}
+	if out[0].Envelope.Subject != "" {
+		t.Fatalf("source envelope had no Subject; outbound must preserve it (got %q)", out[0].Envelope.Subject)
+	}
+	if env.Subject != "" {
+		t.Fatalf("source envelope Subject must not be mutated, got %q", env.Subject)
 	}
 	if !del.IsAcked() {
 		t.Fatal("delivery should be acked")
@@ -730,8 +737,12 @@ func TestRouteRunner_DirectHold_ResolverHeaders(t *testing.T) {
 		t.Fatalf("expected 1 sent message, got %d", sender.SentCount())
 	}
 	sent := sender.GetSent()[0]
-	if sent.Subject != "topic/resolved" {
-		t.Fatalf("expected subject topic/resolved, got %q", sent.Subject)
+	out := sender.GetOutbound()[0]
+	if out.Address != "topic/resolved" {
+		t.Fatalf("expected Address topic/resolved, got %q", out.Address)
+	}
+	if sent.Subject != "" {
+		t.Fatalf("source envelope had no Subject; outbound must preserve it (got %q)", sent.Subject)
 	}
 	if sent.Headers["qos"] != 1 {
 		t.Fatalf("expected dispatch header qos=1, got %v", sent.Headers["qos"])
@@ -897,8 +908,15 @@ func TestRouteRunner_MQTTToSQS_DirectHold(t *testing.T) {
 		t.Fatalf("expected 1 sent message, got %d", sender.SentCount())
 	}
 	sent := sender.GetSent()[0]
-	if sent.Subject != "arn:aws:sqs:eu-west-1:123456789:orders" {
-		t.Fatalf("expected SQS address as subject, got %q", sent.Subject)
+	out := sender.GetOutbound()[0]
+	if out.Address != "arn:aws:sqs:eu-west-1:123456789:orders" {
+		t.Fatalf("expected SQS Address, got %q", out.Address)
+	}
+	if sent.Subject != "factory/a/telemetry" {
+		t.Fatalf("logical Subject must be preserved on outbound, got %q", sent.Subject)
+	}
+	if env.Subject != "factory/a/telemetry" {
+		t.Fatalf("source envelope Subject must not be mutated, got %q", env.Subject)
 	}
 	if sent.Headers["source-transport"] != "mqtt" {
 		t.Fatal("processor should have set source-transport header")

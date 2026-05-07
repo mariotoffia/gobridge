@@ -112,7 +112,8 @@ type fakeSender struct {
 
 func newFakeSender() *fakeSender { return &fakeSender{} }
 
-func (s *fakeSender) Send(_ context.Context, env *messaging.Envelope) error {
+func (s *fakeSender) Send(_ context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.sendErr != nil {

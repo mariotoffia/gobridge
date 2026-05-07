@@ -222,7 +222,7 @@ func TestIntegration_SQS_HeaderRoundTrip(t *testing.T) {
 		},
 	}
 
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("sender.Send: %v", err)
 	}
 

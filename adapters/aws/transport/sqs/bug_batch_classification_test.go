@@ -55,7 +55,13 @@ func TestBug6_SendBatch_SenderFaultClassifiedAsPermanent(t *testing.T) {
 		{ID: "msg-1", Payload: []byte(`{"bad":true}`)},
 	}
 
-	sent, err := s.SendBatch(context.Background(), envs)
+	sent, err := s.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if err == nil {
 		t.Fatal("batch with failures should return error")
 	}
@@ -123,7 +129,13 @@ func TestBug6_SendBatch_AllFailuresCorrectClassification(t *testing.T) {
 				{ID: "msg-0", Payload: []byte(`{"test":true}`)},
 			}
 
-			_, err := s.SendBatch(context.Background(), envs)
+			_, err := s.SendBatch(context.Background(), func() []ports.OutboundMessage {
+				_msgs := make([]ports.OutboundMessage, len(envs))
+				for _i, _e := range envs {
+					_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+				}
+				return _msgs
+			}())
 			if err == nil {
 				t.Fatal("expected error from batch failure")
 			}

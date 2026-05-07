@@ -162,7 +162,7 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 		}
 
 		start := r.clock().Now()
-		del, err := link.Receive(ctx, r.cfg.Address, r.logger, r.metrics, r.clock())
+		del, err := link.Receive(ctx, r.logger, r.metrics, r.clock())
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()

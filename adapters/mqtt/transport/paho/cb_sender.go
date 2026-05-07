@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -58,7 +57,7 @@ func NewCircuitBreakerSender(inner *Sender, breaker ports.CircuitBreaker) *Circu
 // tag — matching the tagging convention used by Sender.Send so that
 // operators can correlate publish failures (whether broker-side or
 // breaker-side) by session.
-func (s *CircuitBreakerSender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *CircuitBreakerSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	if err := s.breaker.BeforeRequest(); err != nil {
 		s.metrics.Counter(shared.MetricMQTTPublishFailures, 1,
 			shared.Tag{Key: "reason", Value: "circuit_open"},
@@ -66,7 +65,7 @@ func (s *CircuitBreakerSender) Send(ctx context.Context, env *messaging.Envelope
 		)
 		return err
 	}
-	err := s.inner.Send(ctx, env)
+	err := s.inner.Send(ctx, msg)
 	s.breaker.AfterRequest(err)
 	return err
 }

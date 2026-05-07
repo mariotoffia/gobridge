@@ -100,6 +100,7 @@ func TestSharedOutbox_BasicFlow(t *testing.T) {
 
 	env := &messaging.Envelope{
 		ID:      "msg-basic-1",
+		Subject: "device.state.update",
 		Payload: []byte("hello"),
 	}
 	del := NewFakeDelivery(env)
@@ -122,14 +123,118 @@ func TestSharedOutbox_BasicFlow(t *testing.T) {
 	})
 
 	sent := sender.GetSent()
-	if sent[0].Subject != "devices/1/state" {
-		t.Errorf("expected subject devices/1/state, got %q", sent[0].Subject)
+	if sent[0].Subject != "device.state.update" {
+		t.Errorf("expected logical subject device.state.update preserved, got %q", sent[0].Subject)
+	}
+	outbound := sender.GetOutbound()
+	if len(outbound) == 0 || outbound[0].Address != "devices/1/state" {
+		t.Errorf("expected OutboundMessage.Address devices/1/state, got %+v", outbound)
 	}
 
 	// Outbox record should be completed.
 	waitFor(t, time.Second, "outbox completed", func() bool {
 		return outbox.CompletedCount() >= 1
 	})
+}
+
+// TestSharedOutbox_DrainPreservesLogicalSubject is the acceptance test for
+// T04: the drainer must dispatch using OutboxRecord.Address as the destination
+// while leaving the persisted envelope's logical Subject untouched.
+func TestSharedOutbox_DrainPreservesLogicalSubject(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	lease := NewFakeLeaseStore()
+	dlq := NewFakeDLQStore()
+
+	rt := newTestRuntime("bridge-t04", outbox, lease, dlq)
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+	session := NewFakeSession()
+
+	sessCfg := fastSessionConfig("mqtt-sess-t04")
+
+	cfg := goruntime.RouteConfig{
+		ID: "t04-route",
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+		},
+		Resolver: &FakeResolver{
+			Plans: []routing.DispatchPlan{
+				{BindingID: "binding-1", Address: "topics/users/created"},
+			},
+		},
+		Bindings: []routing.DestinationBinding{
+			{ID: "binding-1", SessionID: "mqtt-sess-t04"},
+		},
+	}
+
+	if err := rt.AddRoute(cfg, receiver, sender, session, &sessCfg); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	waitFor(t, 2*time.Second, "session started", func() bool {
+		return session.IsStarted()
+	})
+
+	env := &messaging.Envelope{
+		ID:      "msg-t04-1",
+		Subject: "evt.user.created",
+		Payload: []byte("user-payload"),
+	}
+	del := NewFakeDelivery(env)
+	if err := receiver.Emit(ctx, del); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	// Wait for outbox persistence (delivery is acked after persist).
+	waitFor(t, time.Second, "delivery acked", func() bool {
+		return del.IsAcked()
+	})
+	waitFor(t, time.Second, "record persisted", func() bool {
+		return outbox.RecordCount() >= 1
+	})
+
+	// The record must store the logical Subject and the destination Address
+	// separately — the drainer must NOT mutate Envelope.Subject to Address.
+	recs := outbox.Records()
+	if len(recs) != 1 {
+		t.Fatalf("expected exactly 1 outbox record, got %d", len(recs))
+	}
+	if got := recs[0].Envelope.Subject; got != "evt.user.created" {
+		t.Errorf("outbox record Envelope.Subject = %q, want %q (logical subject must be preserved)",
+			got, "evt.user.created")
+	}
+	if got := recs[0].Address; got != "topics/users/created" {
+		t.Errorf("outbox record Address = %q, want %q", got, "topics/users/created")
+	}
+
+	// Drainer should send it.
+	waitFor(t, 2*time.Second, "message sent via drainer", func() bool {
+		return sender.SentCount() >= 1
+	})
+
+	sent := sender.GetSent()
+	if sent[0].Subject != "evt.user.created" {
+		t.Errorf("sender saw Envelope.Subject = %q, want %q (logical subject must be preserved on outbound)",
+			sent[0].Subject, "evt.user.created")
+	}
+
+	outbound := sender.GetOutbound()
+	if len(outbound) == 0 {
+		t.Fatal("expected at least one OutboundMessage observed by sender")
+	}
+	if outbound[0].Address != "topics/users/created" {
+		t.Errorf("OutboundMessage.Address = %q, want %q (destination must travel via Address)",
+			outbound[0].Address, "topics/users/created")
+	}
 }
 
 // verifies route processors run in order and their mutations appear on envelopes the drainer sends.
@@ -328,11 +433,12 @@ func NewTrackingSender(tag string) *TrackingSender {
 	return &TrackingSender{Tag: tag}
 }
 
-func (s *TrackingSender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *TrackingSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	s.mu.Lock()
 	s.SentIDs = append(s.SentIDs, env.ID)
 	s.mu.Unlock()
-	return s.FakeSender.Send(ctx, env)
+	return s.FakeSender.Send(ctx, msg)
 }
 
 func (s *TrackingSender) SentCount() int {

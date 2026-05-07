@@ -136,7 +136,7 @@ Network errors and `context.DeadlineExceeded` map to `ErrTimeout`. `context.Canc
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `Exchange` | `string` | `""` | Target exchange |
-| `RoutingKey` | `string` | `""` | Routing key; falls back to `envelope.Subject` |
+| `RoutingKey` | `string` | `""` | Routing key. When empty the sender uses `OutboundMessage.Address` from the dispatch plan. Never derived from `Envelope.Subject`. The logical subject is propagated as the AMQP header `gobridge.subject`. |
 | `Mandatory` | `bool` | `false` | Return unroutable messages |
 | `Immediate` | `bool` | `false` | Return messages when no consumer ready |
 | `Timeout` | `time.Duration` | `30s` | Per-publish timeout (applied when context has no deadline) |

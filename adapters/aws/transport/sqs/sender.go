@@ -3,11 +3,13 @@ package sqs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -61,9 +63,28 @@ func (s *Sender) clock() clock.Clock {
 }
 
 // Send submits a single envelope to SQS.
-func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
+//
+// Address validation: an SQS Sender is bound to a single queue URL
+// (resolved lazily via ensureClient from cfg.QueueURL or cfg.QueueName).
+// When msg.Address is empty, the configured queue URL is used. A
+// non-empty msg.Address must match the resolved s.queueURL exactly;
+// any other value is rejected with shared.ErrInvalidTopic without
+// contacting the SDK or emitting metrics. Per-message dynamic
+// addressing for SQS is explicitly out of scope (see ARCHITECTURE_PLAN
+// "Non-Goals"). The logical Envelope.Subject is mapped to the "Subject"
+// SQS message attribute by buildSendInput and never selects the queue.
+func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
+	if env == nil {
+		return shared.ErrInvalidPayload.WithMessage("sqs: nil envelope")
+	}
 	if err := s.ensureClient(ctx); err != nil {
 		return err
+	}
+	if msg.Address != "" && msg.Address != s.queueURL {
+		return shared.ErrInvalidTopic.WithMessage(fmt.Sprintf(
+			"sqs: address %q does not match configured queue URL %q",
+			msg.Address, s.queueURL))
 	}
 
 	if logging.TraceEnabled(s.logger) {
@@ -85,9 +106,37 @@ func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
 // fail (partial failures or API errors), the method continues sending
 // the remaining batches and returns a combined error with the total
 // successful count.
-func (s *Sender) SendBatch(ctx context.Context, envs []*messaging.Envelope) (int, error) {
+//
+// The entire slice is pre-validated before any SDK dispatch: a nil
+// envelope yields shared.ErrInvalidPayload and a non-empty address
+// that does not match the resolved queue URL yields
+// shared.ErrInvalidTopic. Either failure aborts the whole batch with
+// (0, joined-errs) — fail-fast, no chunk is dispatched.
+func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (int, error) {
 	if err := s.ensureClient(ctx); err != nil {
 		return 0, err
+	}
+
+	var preErrs []error
+	for i, m := range msgs {
+		if m.Envelope == nil {
+			preErrs = append(preErrs, shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
+				"sqs: nil envelope at index %d", i)))
+			continue
+		}
+		if m.Address != "" && m.Address != s.queueURL {
+			preErrs = append(preErrs, shared.ErrInvalidTopic.WithMessage(fmt.Sprintf(
+				"sqs: address %q at index %d does not match configured queue URL %q",
+				m.Address, i, s.queueURL)))
+		}
+	}
+	if len(preErrs) > 0 {
+		return 0, errors.Join(preErrs...)
+	}
+
+	envs := make([]*messaging.Envelope, len(msgs))
+	for i, m := range msgs {
+		envs[i] = m.Envelope
 	}
 
 	var (

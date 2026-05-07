@@ -72,7 +72,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 		Session:    sess,
 		Timeout:    10 * time.Second,
 	})
-	if err := sender.Send(ctx, env); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -172,7 +172,7 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 		Session:    sess,
 		Timeout:    10 * time.Second,
 	})
-	if err := sender.Send(ctx, env); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -255,9 +255,9 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 		Session:    sess,
 		Timeout:    10 * time.Second,
 	})
-	if err := sender.Send(ctx, &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		ID: "extend-msg", Subject: queueName, Payload: []byte("extend-test"),
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 

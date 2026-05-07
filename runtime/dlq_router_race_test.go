@@ -53,7 +53,7 @@ func TestDLQRouter_ConcurrentCloseAndRoute(t *testing.T) {
 			for range routeIterations {
 				_ = router.Route(
 					ctx, env,
-					"route-1", "bind-1", "sess-1", "src-1",
+					"route-1", "bind-1", "", "sess-1", "src-1",
 					shared.ErrUnavailable, 1,
 				)
 			}
@@ -107,7 +107,7 @@ func TestDLQRouter_RouteAfterClose(t *testing.T) {
 
 	err := router.Route(
 		ctx, env,
-		"route-1", "bind-1", "sess-1", "src-1",
+		"route-1", "bind-1", "", "sess-1", "src-1",
 		shared.ErrUnavailable, 1,
 	)
 	assert.NoError(t, err, "Route after Close should fall back to direct write")

@@ -13,6 +13,7 @@ import (
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
 
@@ -54,7 +55,13 @@ func TestIntegration_SQS_SendBatch_25Messages(t *testing.T) {
 		}
 	}
 
-	sent, err := sender.SendBatch(context.Background(), envs)
+	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
@@ -108,7 +115,13 @@ func TestIntegration_SQS_SendBatch_VerifyBatchBoundaries(t *testing.T) {
 		}
 	}
 
-	sent, err := sender.SendBatch(context.Background(), envs)
+	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
@@ -168,7 +181,13 @@ func TestIntegration_SQS_SendBatch_LargeWithHeaders(t *testing.T) {
 		}
 	}
 
-	sent, err := sender.SendBatch(context.Background(), envs)
+	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}

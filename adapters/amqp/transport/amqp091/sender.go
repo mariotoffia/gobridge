@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
-	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -70,14 +69,25 @@ func (s *Sender) clock() clock.Clock {
 }
 
 // Send publishes a single envelope to the AMQP broker with publisher
-// confirms. The exchange and routing key are derived from configuration
-// and the envelope's Subject. The entire publish+confirm cycle is
-// serialized to prevent confirm-channel races under concurrent callers.
-func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
+// confirms. The publish routing key is taken from msg.Address; when
+// Address is empty, SenderConfig.RoutingKey is used as a fallback. The
+// logical Envelope.Subject is propagated as the HeaderGobridgeSubject
+// AMQP user header — it never selects the routing key. When neither
+// msg.Address nor cfg.RoutingKey is set, Send returns
+// shared.ErrInvalidTopic without contacting the broker.
+//
+// Precedence (Address first, then cfg default) mirrors the MQTT
+// adapter, so a runtime-resolved per-dispatch destination always wins
+// over the adapter's configured default.
+func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
+	if env == nil {
+		return shared.ErrInvalidPayload.WithMessage("amqp091: nil envelope")
+	}
 	exchange := s.cfg.Exchange
-	routingKey := s.cfg.RoutingKey
-	if routingKey == "" {
-		routingKey = env.Subject
+	routingKey, err := resolveRoutingKey(s.cfg, msg)
+	if err != nil {
+		return err
 	}
 
 	if logging.TraceEnabled(s.logger) {
@@ -161,10 +171,10 @@ func mapPublishError(err error) error {
 
 // SendBatch publishes multiple envelopes sequentially with publisher
 // confirms. Returns the number of successfully published messages.
-func (s *Sender) SendBatch(ctx context.Context, envs []*messaging.Envelope) (int, error) {
+func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (int, error) {
 	sent := 0
-	for _, env := range envs {
-		if err := s.Send(ctx, env); err != nil {
+	for _, m := range msgs {
+		if err := s.Send(ctx, m); err != nil {
 			return sent, err
 		}
 		sent++
@@ -220,4 +230,22 @@ func (s *Sender) applyTimeout(ctx context.Context) (context.Context, context.Can
 		return context.WithTimeout(ctx, s.cfg.Timeout)
 	}
 	return ctx, func() {}
+}
+
+// resolveRoutingKey picks the AMQP 0-9-1 routing key for an outbound
+// publish. Per-dispatch msg.Address wins over cfg.RoutingKey so that a
+// runtime-resolved destination (e.g. a route-table lookup) overrides
+// the adapter's configured default. When neither is set, the call is
+// rejected with shared.ErrInvalidTopic; the logical Envelope.Subject
+// is intentionally NOT consulted — Subject travels as a header, not as
+// a transport address.
+func resolveRoutingKey(cfg SenderConfig, msg ports.OutboundMessage) (string, error) {
+	if msg.Address != "" {
+		return msg.Address, nil
+	}
+	if cfg.RoutingKey != "" {
+		return cfg.RoutingKey, nil
+	}
+	return "", shared.ErrInvalidTopic.WithMessage(
+		"amqp091: no routing key specified and no default RoutingKey configured")
 }

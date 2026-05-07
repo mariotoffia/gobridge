@@ -91,10 +91,10 @@ func TestRes_ConcurrentSendAndClose_NoPanicOrHang(t *testing.T) {
 				if sendAttempts.Add(1) == int64(senders) {
 					close(midFlight)
 				}
-				err := sender.Send(ctx, &messaging.Envelope{
+				err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 					Subject: "res/send-close",
 					Payload: []byte(fmt.Sprintf("s%d-i%d", id, i)),
-				})
+				}})
 				if err != nil {
 					sendErrs.Add(1)
 				} else {
@@ -161,10 +161,10 @@ func TestRes_SendAfterClose_ReturnsErrorNoPanic(t *testing.T) {
 		}
 	}()
 
-	err := sender.Send(ctx, &messaging.Envelope{
+	err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		Subject: "res/post-close",
 		Payload: []byte("after-close"),
-	})
+	}, Address: "res/post-close"})
 	if err == nil {
 		t.Fatal("Send after Close must return an error")
 	}
@@ -369,10 +369,10 @@ func TestRes_BrokerOutage_ReconnectResubscribesAndDelivers(t *testing.T) {
 	defer func() { recvCancel(); rwg.Wait() }()
 
 	// Phase 1: send + receive against live broker.
-	if err := sender.Send(ctx, &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		Subject: topic,
 		Payload: []byte("phase-1"),
-	}); err != nil {
+	}, Address: topic}); err != nil {
 		t.Fatalf("Send phase 1: %v", err)
 	}
 	waitForCount(t, &received, 1, 5*time.Second, "phase 1 message")
@@ -390,10 +390,10 @@ func TestRes_BrokerOutage_ReconnectResubscribesAndDelivers(t *testing.T) {
 
 	// Phase 4: subscription must have been restored — sending again
 	// should be received.
-	if err := sender.Send(ctx, &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		Subject: topic,
 		Payload: []byte("phase-2-after-recovery"),
-	}); err != nil {
+	}, Address: topic}); err != nil {
 		t.Fatalf("Send phase 2 after recovery: %v", err)
 	}
 	waitForCount(t, &received, 2, 10*time.Second, "phase 2 message after recovery")

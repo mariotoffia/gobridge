@@ -84,10 +84,10 @@ func (r *Receiver) convertMessage(
 
 	headers := attributesToHeaders(msg.MessageAttributes, msg.Attributes)
 
-	subject := r.cfg.QueueName
-	if subject == "" {
-		subject = r.cfg.QueueURL
-	}
+	// T08: no fallback to the configured queue name/URL. Subject comes
+	// only from an explicit "Subject" message attribute (or the inner
+	// SNS Subject when SNSUnwrap is enabled); otherwise it is empty.
+	subject := ""
 	if v, ok := headers["Subject"].(string); ok && v != "" {
 		subject = v
 	}
@@ -106,9 +106,12 @@ func (r *Receiver) convertMessage(
 					"queue_url", queueURL,
 					"message_id", env.ID,
 					"new_subject", unwrapped.subject,
+					"has_subject", unwrapped.hasSubject,
 				)
 			}
-			env.Subject = unwrapped.subject
+			if unwrapped.hasSubject {
+				env.Subject = unwrapped.subject
+			}
 			env.Payload = []byte(unwrapped.message)
 		}
 	}
@@ -168,14 +171,23 @@ func attributesToHeaders(
 }
 
 // snsPayload is the subset of an SNS notification relevant for unwrapping.
+//
+// hasSubject is true only when the inner SNS Subject field is present
+// and non-empty. Callers must NOT promote TopicArn into
+// Envelope.Subject when hasSubject is false — TopicArn remains
+// available via headers["sns.topic_arn"].
 type snsPayload struct {
-	subject string
-	message string
+	subject    string
+	message    string
+	hasSubject bool
 }
 
 // trySNSUnwrap detects an SNS-over-SQS notification envelope and pulls
 // the inner subject/message out of it. The original SNS metadata is
-// preserved in headers under sns.* keys.
+// preserved in headers under sns.* keys. When the SNS notification has
+// no Subject field, snsPayload.subject is empty and hasSubject=false so
+// callers leave Envelope.Subject untouched (T08: no fallback to
+// TopicArn or queue name).
 func trySNSUnwrap(body string, headers map[string]any) (snsPayload, bool) {
 	var raw struct {
 		TopicArn string `json:"TopicArn"`
@@ -186,14 +198,16 @@ func trySNSUnwrap(body string, headers map[string]any) (snsPayload, bool) {
 		return snsPayload{}, false
 	}
 
-	subject := raw.TopicArn
-	if raw.Subject != "" {
-		subject = raw.Subject
-		headers["sns.subject"] = raw.Subject
-	}
 	headers["sns.topic_arn"] = raw.TopicArn
 
-	return snsPayload{subject: subject, message: raw.Message}, true
+	out := snsPayload{message: raw.Message}
+	if raw.Subject != "" {
+		out.subject = raw.Subject
+		out.hasSubject = true
+		headers["sns.subject"] = raw.Subject
+	}
+
+	return out, true
 }
 
 // ensureClient lazily creates the SDK SQS client for the receiver,

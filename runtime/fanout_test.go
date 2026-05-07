@@ -100,13 +100,21 @@ func TestFanOut_SingleRouteMultipleSessions(t *testing.T) {
 	})
 
 	sentA := senderA.GetSent()
-	if sentA[0].Subject != "factory/a/orders/42" {
-		t.Errorf("sender A: expected address factory/a/orders/42, got %q", sentA[0].Subject)
+	if sentA[0].Subject != "" {
+		t.Errorf("sender A: expected logical Subject preserved (empty), got %q", sentA[0].Subject)
+	}
+	outA := senderA.GetOutbound()
+	if len(outA) == 0 || outA[0].Address != "factory/a/orders/42" {
+		t.Errorf("sender A: expected OutboundMessage.Address factory/a/orders/42, got %+v", outA)
 	}
 
 	sentB := senderB.GetSent()
-	if sentB[0].Subject != "factory/b/orders/42" {
-		t.Errorf("sender B: expected address factory/b/orders/42, got %q", sentB[0].Subject)
+	if sentB[0].Subject != "" {
+		t.Errorf("sender B: expected logical Subject preserved (empty), got %q", sentB[0].Subject)
+	}
+	outB := senderB.GetOutbound()
+	if len(outB) == 0 || outB[0].Address != "factory/b/orders/42" {
+		t.Errorf("sender B: expected OutboundMessage.Address factory/b/orders/42, got %+v", outB)
 	}
 
 	// Both records should be completed.

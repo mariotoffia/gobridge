@@ -62,7 +62,7 @@ func TestIntegration_DLQRouter_RouteStoresEntry(t *testing.T) {
 	routeErr := shared.ErrInvalidPayload.WithMessage("bad payload format")
 
 	ctx := context.Background()
-	if err := router.Route(ctx, env, "route-dr1", "bind-dr1", "sess-dr1", "src-dr1", routeErr, 3); err != nil {
+	if err := router.Route(ctx, env, "route-dr1", "bind-dr1", "", "sess-dr1", "src-dr1", routeErr, 3); err != nil {
 		t.Fatalf("Route: %v", err)
 	}
 
@@ -127,7 +127,7 @@ func TestIntegration_DLQRouter_AsyncBufferDrains(t *testing.T) {
 			Payload: []byte(`{"async":"entry"}`),
 		}
 		routeErr := shared.ErrUnavailable.WithMessage("transient failure")
-		if err := router.Route(ctx, env, "route-dr2", uniqueID("bind"), "sess-dr2", "", routeErr, 1); err != nil {
+		if err := router.Route(ctx, env, "route-dr2", uniqueID("bind"), "", "sess-dr2", "", routeErr, 1); err != nil {
 			t.Fatalf("Route[%d]: %v", i, err)
 		}
 	}
@@ -169,14 +169,14 @@ func TestIntegration_DLQRouter_ErrorClassification(t *testing.T) {
 	// Permanent error (ErrNotFound has ErrorPermanent class)
 	env1 := &messaging.Envelope{ID: "env-dr3-perm", Subject: "test", Payload: []byte("x")}
 	permErr := shared.ErrNotFound.WithMessage("resource gone")
-	if err := router.Route(ctx, env1, "route-dr3", "b1", "s1", "", permErr, 1); err != nil {
+	if err := router.Route(ctx, env1, "route-dr3", "b1", "", "s1", "", permErr, 1); err != nil {
 		t.Fatalf("Route perm: %v", err)
 	}
 
 	// Transient error
 	env2 := &messaging.Envelope{ID: "env-dr3-trans", Subject: "test", Payload: []byte("y")}
 	transErr := shared.ErrUnavailable.WithMessage("service down")
-	if err := router.Route(ctx, env2, "route-dr3", "b2", "s2", "", transErr, 2); err != nil {
+	if err := router.Route(ctx, env2, "route-dr3", "b2", "", "s2", "", transErr, 2); err != nil {
 		t.Fatalf("Route trans: %v", err)
 	}
 
@@ -229,7 +229,7 @@ func TestIntegration_DLQRouter_CloseDrainsBuffer(t *testing.T) {
 			Subject: "test/drain",
 			Payload: []byte(`{"drain":"test"}`),
 		}
-		if err := router.Route(ctx, env, "route-dr4", uniqueID("bind"), "sess-dr4", "", shared.ErrUnavailable, 1); err != nil {
+		if err := router.Route(ctx, env, "route-dr4", uniqueID("bind"), "", "sess-dr4", "", shared.ErrUnavailable, 1); err != nil {
 			t.Fatalf("Route[%d]: %v", i, err)
 		}
 	}
@@ -280,7 +280,7 @@ func TestIntegration_DLQRouter_ConcurrentRoutes(t *testing.T) {
 				Subject: "test/concurrent",
 				Payload: []byte(`{"concurrent":"dlq"}`),
 			}
-			_ = router.Route(ctx, env, "route-dr5", uniqueID("bind"), "sess-dr5", "", shared.ErrUnavailable, 1)
+			_ = router.Route(ctx, env, "route-dr5", uniqueID("bind"), "", "sess-dr5", "", shared.ErrUnavailable, 1)
 		}()
 	}
 	wg.Wait()

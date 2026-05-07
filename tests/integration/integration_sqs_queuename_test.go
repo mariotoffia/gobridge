@@ -68,7 +68,7 @@ func TestIntegration_SQS_Sender_QueueNameResolution(t *testing.T) {
 		Payload: []byte("resolved-by-name"),
 	}
 
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("sender.Send: %v", err)
 	}
 
@@ -186,7 +186,7 @@ func TestIntegration_SQS_SenderReceiver_FullRoundTrip(t *testing.T) {
 		},
 	}
 
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("sender.Send: %v", err)
 	}
 
@@ -313,7 +313,13 @@ func TestIntegration_SQS_Sender_BatchThenReceive(t *testing.T) {
 		}
 	}
 
-	sent, err := sender.SendBatch(context.Background(), envs)
+	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}

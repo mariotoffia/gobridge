@@ -35,7 +35,7 @@ func TestAnaSender_NoSession_NoCM_ReturnsErrUnavailable(t *testing.T) {
 
 	s := NewSender(sess, SenderOptions{Timeout: time.Second, DefaultTopic: "t/x"})
 
-	err := s.Send(context.Background(), &messaging.Envelope{Subject: "t/x", Payload: []byte("p")})
+	err := s.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{Subject: "t/x", Payload: []byte("p")}})
 	if err == nil {
 		t.Fatal("expected error from Send when CM is nil")
 	}
@@ -64,7 +64,7 @@ func TestAnaSender_EmptyTopicAndNoDefault_ReturnsErrInvalidTopic(t *testing.T) {
 
 	s := NewSender(sess, SenderOptions{Timeout: time.Second})
 
-	err := s.Send(context.Background(), &messaging.Envelope{Payload: []byte("p")})
+	err := s.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{Payload: []byte("p")}})
 	if err == nil {
 		t.Fatal("expected error for empty topic / no default")
 	}
@@ -77,15 +77,16 @@ func TestAnaSender_EmptyTopicAndNoDefault_ReturnsErrInvalidTopic(t *testing.T) {
 	}
 }
 
-// TestAnaSender_DefaultTopicUsedWhenSubjectEmpty proves that the
-// SenderOptions.DefaultTopic is used when the envelope has no subject.
-// We assert this via PublishFromEnvelope — Send itself requires a real
-// broker.
-func TestAnaSender_DefaultTopicUsedWhenSubjectEmpty(t *testing.T) {
+// TestAnaSender_PublishFromEnvelope_UsesExplicitTopic proves that
+// PublishFromEnvelope uses the supplied topic argument verbatim and
+// does NOT consult SenderOptions.DefaultTopic — the latter is the
+// responsibility of Sender.Send (see Sender.Send for the full
+// resolution order: msg.Address || opts.DefaultTopic).
+func TestAnaSender_PublishFromEnvelope_UsesExplicitTopic(t *testing.T) {
 	env := &messaging.Envelope{Payload: []byte("x")}
-	pub := PublishFromEnvelope(env, SenderOptions{DefaultTopic: "fallback/t", QoS: 1}, nil)
-	if pub.Topic != "fallback/t" {
-		t.Fatalf("topic = %q, want %q", pub.Topic, "fallback/t")
+	pub := PublishFromEnvelope(env, "explicit/t", SenderOptions{DefaultTopic: "fallback/t", QoS: 1}, nil)
+	if pub.Topic != "explicit/t" {
+		t.Fatalf("topic = %q, want %q", pub.Topic, "explicit/t")
 	}
 }
 
@@ -204,7 +205,7 @@ func TestAnaCBSender_NonRecoverableError_DoesNotTripCircuit(t *testing.T) {
 	cbs := NewCircuitBreakerSender(inner, br)
 
 	// First call: invalid topic → non-recoverable → not counted.
-	_ = cbs.Send(context.Background(), &messaging.Envelope{Payload: []byte("p")})
+	_ = cbs.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{Payload: []byte("p")}})
 
 	// Inject a non-recoverable error directly to verify CountError result.
 	if shared.IsRecoverableError(shared.ErrInvalidTopic) {
@@ -300,7 +301,7 @@ func TestAnaSender_ContextDoneBeforeSend_ReturnsClassifiedError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := s.Send(ctx, &messaging.Envelope{Subject: "t", Payload: []byte("p")})
+	err := s.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{Subject: "t", Payload: []byte("p")}})
 	if err == nil {
 		t.Fatal("expected error from Send with cancelled ctx")
 	}

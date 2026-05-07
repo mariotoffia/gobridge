@@ -65,11 +65,11 @@ func TestRes_CBSender_CircuitOpen_TagsSessionID(t *testing.T) {
 	_ = cbs.breaker.BeforeRequest()
 	cbs.breaker.AfterRequest(shared.ErrUnavailable.Wrap(context.Canceled))
 
-	if err := cbs.Send(context.Background(), &messaging.Envelope{
+	if err := cbs.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{
 		ID:      "e",
 		Subject: "t/cbtag",
 		Payload: []byte("p"),
-	}); err == nil {
+	}}); err == nil {
 		t.Fatal("expected error from open circuit")
 	}
 
@@ -139,7 +139,7 @@ func TestRes_CBSender_CircuitOpen_NoSession_TagPresent(t *testing.T) {
 		metrics: rec,
 	}
 
-	_ = cbs.Send(context.Background(), &messaging.Envelope{ID: "e2", Subject: "t/2"})
+	_ = cbs.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "e2", Subject: "t/2"}})
 
 	entries := rec.FindEntries(shared.MetricMQTTPublishFailures)
 	if len(entries) == 0 {

@@ -225,7 +225,7 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 			ID: "sse-evt-1", Subject: "user.created",
 			Payload: []byte(`{"name":"alice"}`),
 		}
-		if err := senderB.Send(ctx, env); err != nil {
+		if err := senderB.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 			t.Fatalf("Send: %v", err)
 		}
 

@@ -658,7 +658,8 @@ func newStubSender() *stubSender {
 	return &stubSender{sentCh: make(chan struct{}, 256)}
 }
 
-func (s *stubSender) Send(_ context.Context, env *messaging.Envelope) error {
+func (s *stubSender) Send(_ context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	s.mu.Lock()
 	s.sent = append(s.sent, env.Clone())
 	s.mu.Unlock()

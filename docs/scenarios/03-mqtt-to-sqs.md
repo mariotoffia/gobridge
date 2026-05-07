@@ -128,11 +128,11 @@ graph TD
 
 1. MQTT broker delivers a message on `telemetry/temperature/sensor-42`
 2. Receiver wraps it in an `Envelope` with:
-   - `Subject` = `telemetry/temperature/sensor-42` (the MQTT topic)
+   - `Subject` = the logical event subject from the publisher's `gobridge.subject` MQTT user property when present, otherwise empty for plain MQTT producers
    - `Payload` = raw message bytes
-   - `Headers` = bridge metadata (correlation-id, traceparent, etc.)
+   - `Headers` = bridge metadata (`mqtt.topic` = `telemetry/temperature/sensor-42`, plus correlation-id, traceparent, etc.)
 3. Route processes it (no processors in this example)
-4. Sender publishes to SQS via `SendMessageBatch`
+4. Sender publishes to SQS via `SendMessageBatch`. The destination queue comes from sender options; `Envelope.Subject` is propagated as the SQS `Subject` message attribute.
 5. On success, receiver acknowledges the MQTT message (QoS 1 PUBACK)
 
 ## Go Bootstrap

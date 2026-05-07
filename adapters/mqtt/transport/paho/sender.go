@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -35,13 +34,22 @@ func NewSender(session *Session, opts SenderOptions) *Sender {
 	return &Sender{session: session, opts: opts, logger: session.logger, metrics: m}
 }
 
-// Send publishes the envelope to the MQTT broker. The topic is taken from
-// env.Subject; if empty, opts.DefaultTopic is used. Headers are mapped to
-// MQTT 5 user properties. Message expiry is derived from the session clock.
+// Send publishes the envelope to the MQTT broker.
+//
+// The publish topic is derived from msg.Address; when Address is empty,
+// SenderOptions.DefaultTopic is used as a fallback. msg.Envelope.Subject
+// is the LOGICAL event subject and is propagated to the broker as the
+// HeaderGobridgeSubject user property — it never selects the publish
+// topic. When neither msg.Address nor opts.DefaultTopic is set, Send
+// returns shared.ErrInvalidTopic without contacting the broker.
+//
+// Headers are mapped to MQTT 5 user properties. Message expiry is
+// derived from the session clock.
 //
 // Returns nil when the broker has accepted the message (PUBACK / PUBCOMP).
 // Returns a classified shared.BridgeError on failure.
-func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
+func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	if env == nil {
 		return shared.ErrInvalidPayload.WithMessage("nil envelope")
 	}
@@ -51,12 +59,15 @@ func (s *Sender) Send(ctx context.Context, env *messaging.Envelope) error {
 		return shared.ErrUnavailable.WithMessage("MQTT session not connected")
 	}
 
-	pub := PublishFromEnvelope(env, s.opts, s.session.clock())
-
-	topic := pub.Topic
+	topic := msg.Address
+	if topic == "" {
+		topic = s.opts.DefaultTopic
+	}
 	if topic == "" {
 		return shared.ErrInvalidTopic.WithMessage("no topic specified and no default topic configured")
 	}
+
+	pub := PublishFromEnvelope(env, topic, s.opts, s.session.clock())
 
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "mqtt: publishing",

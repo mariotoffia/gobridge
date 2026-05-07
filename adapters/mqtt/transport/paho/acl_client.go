@@ -30,6 +30,7 @@ type pahoConnection interface {
 	PublishEnvelope(
 		ctx context.Context,
 		env *messaging.Envelope,
+		topic string,
 		opts SenderOptions,
 		clk clock.Clock,
 	) (publishResult, error)
@@ -114,15 +115,18 @@ func (c *pahoConn) Unsubscribe(ctx context.Context, topics []string) error {
 
 // PublishEnvelope serialises the given messaging.Envelope into a paho
 // Publish via PublishFromEnvelope and forwards it to the broker. The
+// publish topic is supplied explicitly by the caller (it is the
+// transport-level destination, distinct from env.Subject). The
 // PUBACK / PUBREC reason code is returned in publishResult so the port
 // side can map it via MapPublishReasonCode without importing the SDK.
 func (c *pahoConn) PublishEnvelope(
 	ctx context.Context,
 	env *messaging.Envelope,
+	topic string,
 	opts SenderOptions,
 	clk clock.Clock,
 ) (publishResult, error) {
-	pub := PublishFromEnvelope(env, opts, clk)
+	pub := PublishFromEnvelope(env, topic, opts, clk)
 	resp, err := c.cm.Publish(ctx, pub)
 	if err != nil {
 		return publishResult{}, fmt.Errorf("paho: publish: %w", err)

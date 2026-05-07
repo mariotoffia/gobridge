@@ -15,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -40,7 +41,7 @@ func TestUC74_MQTTRetainedMessages(t *testing.T) {
 		Subject: "uc74/retained",
 		Payload: []byte(`{"retained":true}`),
 	}
-	require.NoError(t, retainedSnd.Send(ctx, env))
+	require.NoError(t, retainedSnd.Send(ctx, ports.OutboundMessage{Envelope: env}))
 	time.Sleep(1 * time.Second) // SYNC: let retained message propagate to broker
 
 	// Collector subscribes — should immediately receive the retained message.

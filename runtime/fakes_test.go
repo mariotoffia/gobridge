@@ -132,17 +132,19 @@ func (r *FakeReceiver) Ready() <-chan struct{} {
 // ---------------------------------------------------------------------------
 
 type FakeSender struct {
-	mu      sync.Mutex
-	Sent    []*messaging.Envelope
-	SendErr error
-	SendFn  func(*messaging.Envelope) error
+	mu       sync.Mutex
+	Sent     []*messaging.Envelope
+	Outbound []ports.OutboundMessage
+	SendErr  error
+	SendFn   func(*messaging.Envelope) error
 }
 
 func NewFakeSender() *FakeSender {
 	return &FakeSender{}
 }
 
-func (s *FakeSender) Send(_ context.Context, env *messaging.Envelope) error {
+func (s *FakeSender) Send(_ context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -151,12 +153,14 @@ func (s *FakeSender) Send(_ context.Context, env *messaging.Envelope) error {
 			return err
 		}
 		s.Sent = append(s.Sent, env.Clone())
+		s.Outbound = append(s.Outbound, msg)
 		return nil
 	}
 	if s.SendErr != nil {
 		return s.SendErr
 	}
 	s.Sent = append(s.Sent, env.Clone())
+	s.Outbound = append(s.Outbound, msg)
 	return nil
 }
 
@@ -171,6 +175,16 @@ func (s *FakeSender) GetSent() []*messaging.Envelope {
 	defer s.mu.Unlock()
 	out := make([]*messaging.Envelope, len(s.Sent))
 	copy(out, s.Sent)
+	return out
+}
+
+// GetOutbound returns a snapshot of all OutboundMessages observed by Send,
+// preserving the destination Address alongside the envelope.
+func (s *FakeSender) GetOutbound() []ports.OutboundMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]ports.OutboundMessage, len(s.Outbound))
+	copy(out, s.Outbound)
 	return out
 }
 
@@ -548,6 +562,18 @@ func (s *FakeOutboxStore) CompletedCount() int {
 		}
 	}
 	return n
+}
+
+// Records returns a snapshot of all persisted outbox records (any status).
+// The returned slice is a copy; mutating it does not affect the store.
+func (s *FakeOutboxStore) Records() []persistence.OutboxRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]persistence.OutboxRecord, 0, len(s.records))
+	for _, rec := range s.records {
+		out = append(out, *rec)
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

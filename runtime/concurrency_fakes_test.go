@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // ConcurrentSender is a test sender that does NOT hold a mutex during
@@ -23,7 +24,8 @@ func NewConcurrentSender(fn func(*messaging.Envelope) error) *ConcurrentSender {
 	return &ConcurrentSender{sendFn: fn}
 }
 
-func (s *ConcurrentSender) Send(_ context.Context, env *messaging.Envelope) error {
+func (s *ConcurrentSender) Send(_ context.Context, msg ports.OutboundMessage) error {
+	env := msg.Envelope
 	if err := s.sendFn(env); err != nil {
 		return err
 	}

@@ -64,12 +64,15 @@ func messageToHeaders(msg *azservicebus.ReceivedMessage) map[string]any {
 }
 
 // receivedToEnvelope translates an inbound *azservicebus.ReceivedMessage
-// to a fresh messaging.Envelope using the supplied default subject.
-func receivedToEnvelope(msg *azservicebus.ReceivedMessage, defaultSubject string, clk clock.Clock) *messaging.Envelope {
+// to a fresh messaging.Envelope. Envelope.Subject is populated solely
+// from the native Service Bus Subject; the queue/topic entity name is
+// NEVER promoted into Envelope.Subject. When the broker carries no
+// native Subject, Envelope.Subject is left empty.
+func receivedToEnvelope(msg *azservicebus.ReceivedMessage, clk clock.Clock) *messaging.Envelope {
 	if clk == nil {
 		clk = clock.System
 	}
-	subject := defaultSubject
+	subject := ""
 	if msg.Subject != nil {
 		subject = *msg.Subject
 	}
@@ -337,11 +340,7 @@ func (r *Receiver) receiveAndConvert(ctx context.Context) ([]ports.Delivery, err
 // toDelivery converts a single received SDK message into an
 // asbDelivery, attaching the configured logger, metrics, and clock.
 func (r *Receiver) toDelivery(ctx context.Context, msg *azservicebus.ReceivedMessage) *asbDelivery {
-	defaultSubject := r.cfg.QueueName
-	if defaultSubject == "" {
-		defaultSubject = r.cfg.TopicName
-	}
-	env := receivedToEnvelope(msg, defaultSubject, r.clock())
+	env := receivedToEnvelope(msg, r.clock())
 
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelTrace, "servicebus: converting",

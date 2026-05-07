@@ -66,6 +66,12 @@ func deliveryToHeaders(d amqp.Delivery) map[string]any {
 	}
 
 	for k, v := range d.Headers {
+		if k == HeaderGobridgeSubject {
+			// Reserved cross-transport subject carrier — extracted
+			// separately by deliveryToEnvelope into env.Subject. Do
+			// not duplicate it in the generic header pass-through.
+			continue
+		}
 		if messaging.IsReservedHeader(k) || strings.HasPrefix(k, amqp091Prefix) {
 			continue
 		}
@@ -84,7 +90,7 @@ func deliveryToEnvelope(d amqp.Delivery, clk clock.Clock) *messaging.Envelope {
 	}
 	env := &messaging.Envelope{
 		ID:        d.MessageId,
-		Subject:   d.RoutingKey,
+		Subject:   subjectFromHeaders(d.Headers),
 		Payload:   d.Body,
 		Headers:   deliveryToHeaders(d),
 		CreatedAt: clk.Now(),
@@ -104,6 +110,21 @@ func generateEnvelopeID() string {
 		panic("amqp091: crypto/rand unavailable: " + err.Error())
 	}
 	return hex.EncodeToString(b)
+}
+
+// subjectFromHeaders extracts the logical Envelope.Subject from an
+// inbound AMQP Headers table. The subject is carried by a typed string
+// entry under HeaderGobridgeSubject; if absent or not a string, the
+// returned subject is empty (the AMQP routing key is NEVER promoted to
+// Envelope.Subject — that coupling was intentionally removed).
+func subjectFromHeaders(table amqp.Table) string {
+	if table == nil {
+		return ""
+	}
+	if v, ok := table[HeaderGobridgeSubject].(string); ok {
+		return v
+	}
+	return ""
 }
 
 func generateConsumerTag() string {

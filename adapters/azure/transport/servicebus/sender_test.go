@@ -12,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // mockSenderAPI implements asbSenderAPI for unit tests.
@@ -131,7 +132,7 @@ func TestSender_Send_Success(t *testing.T) {
 		Payload: []byte(`{"order_id":"42"}`),
 	}
 
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -176,7 +177,7 @@ func TestSender_Send_HeaderMapping(t *testing.T) {
 		},
 	}
 
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -227,7 +228,7 @@ func TestSender_Send_DefaultSessionID(t *testing.T) {
 		Payload: []byte("no-session-header"),
 	}
 
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -259,7 +260,7 @@ func TestSender_Send_HeaderSessionOverride(t *testing.T) {
 		},
 	}
 
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -288,7 +289,7 @@ func TestSender_Send_Error(t *testing.T) {
 	}
 
 	env := &messaging.Envelope{Payload: []byte("fail")}
-	sendErr := sender.Send(context.Background(), env)
+	sendErr := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env})
 	if sendErr == nil {
 		t.Fatal("expected error from Send")
 	}
@@ -315,7 +316,7 @@ func TestSender_Send_SubjectMapping(t *testing.T) {
 		Payload: []byte("data"),
 	}
 
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -343,7 +344,7 @@ func TestSender_Send_EmptyID(t *testing.T) {
 		Payload: []byte("no-id"),
 	}
 
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -372,7 +373,7 @@ func TestSender_Send_NilHeaders(t *testing.T) {
 		Payload: []byte("body"),
 	}
 
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -396,7 +397,7 @@ func TestSender_SendBatch_EmptySlice(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sent, err := sender.SendBatch(context.Background(), nil)
+	sent, err := sender.SendBatch(context.Background(), []ports.OutboundMessage(nil))
 	if err != nil {
 		t.Fatalf("SendBatch(nil): %v", err)
 	}
@@ -404,7 +405,7 @@ func TestSender_SendBatch_EmptySlice(t *testing.T) {
 		t.Errorf("sent = %d, want 0", sent)
 	}
 
-	sent, err = sender.SendBatch(context.Background(), []*messaging.Envelope{})
+	sent, err = sender.SendBatch(context.Background(), []ports.OutboundMessage{})
 	if err != nil {
 		t.Fatalf("SendBatch(empty): %v", err)
 	}
@@ -434,7 +435,13 @@ func TestSender_SendBatch_NewBatchError(t *testing.T) {
 		{ID: "b2", Payload: []byte("msg2")},
 	}
 
-	sent, sendErr := sender.SendBatch(context.Background(), envs)
+	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if sendErr == nil {
 		t.Fatal("expected error from SendBatch")
 	}
@@ -469,7 +476,13 @@ func TestSender_SendBatch_SendBatchError(t *testing.T) {
 		{ID: "b1", Payload: []byte("msg1")},
 	}
 
-	_, sendErr := sender.SendBatch(context.Background(), envs)
+	_, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if sendErr == nil {
 		t.Fatal("expected error from SendBatch when SendMessageBatch fails")
 	}
@@ -539,7 +552,7 @@ func TestSender_Send_ContextCanceled(t *testing.T) {
 	cancel()
 
 	env := &messaging.Envelope{Payload: []byte("canceled")}
-	sendErr := sender.Send(ctx, env)
+	sendErr := sender.Send(ctx, ports.OutboundMessage{Envelope: env})
 	if sendErr == nil {
 		t.Fatal("expected error on canceled context")
 	}
@@ -564,7 +577,7 @@ func TestSender_Send_Timestamps(t *testing.T) {
 		ExpiresAt: now.Add(5 * time.Minute),
 	}
 
-	if err := sender.Send(context.Background(), env); err != nil {
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -593,7 +606,7 @@ func TestSender_Send_MultipleMessages(t *testing.T) {
 			ID:      fmt.Sprintf("msg-%d", i),
 			Payload: []byte(fmt.Sprintf("payload-%d", i)),
 		}
-		if err := sender.Send(context.Background(), env); err != nil {
+		if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 			t.Fatalf("Send[%d]: %v", i, err)
 		}
 	}

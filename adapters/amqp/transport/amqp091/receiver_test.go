@@ -14,7 +14,8 @@ import (
 )
 
 // verifies deliveryToEnvelope converts an amqp.Delivery to a messaging.Envelope
-// with correct field mappings.
+// with correct field mappings. The transport routing key MUST NOT be promoted
+// to Envelope.Subject — it is recorded under HeaderRoutingKey.
 func TestReceiver_ConvertMessage(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
@@ -24,7 +25,8 @@ func TestReceiver_ConvertMessage(t *testing.T) {
 		Body:       []byte(`{"item":"widget"}`),
 		Timestamp:  now,
 		Headers: amqp.Table{
-			"tenant": "acme",
+			"tenant":              "acme",
+			HeaderGobridgeSubject: "order.created",
 		},
 	}
 
@@ -33,8 +35,9 @@ func TestReceiver_ConvertMessage(t *testing.T) {
 	if env.ID != "msg-500" {
 		t.Errorf("ID = %q, want %q", env.ID, "msg-500")
 	}
-	if env.Subject != "order.placed" {
-		t.Errorf("Subject = %q, want %q", env.Subject, "order.placed")
+	if env.Subject != "order.created" {
+		t.Errorf("Subject = %q, want %q (must come only from gobridge.subject)",
+			env.Subject, "order.created")
 	}
 	if string(env.Payload) != `{"item":"widget"}` {
 		t.Errorf("Payload = %q", env.Payload)
@@ -47,6 +50,14 @@ func TestReceiver_ConvertMessage(t *testing.T) {
 	}
 	if env.Headers["tenant"] != "acme" {
 		t.Errorf("Headers[tenant] = %v", env.Headers["tenant"])
+	}
+	if env.Headers[HeaderRoutingKey] != "order.placed" {
+		t.Errorf("Headers[%s] = %v, want %q",
+			HeaderRoutingKey, env.Headers[HeaderRoutingKey], "order.placed")
+	}
+	if _, ok := env.Headers[HeaderGobridgeSubject]; ok {
+		t.Errorf("Headers[%s] should be absent — typed extraction wins over generic pass-through",
+			HeaderGobridgeSubject)
 	}
 }
 

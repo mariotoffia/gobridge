@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // TestSenderEnsureClientConcurrentS14 verifies that concurrent Send calls do not
@@ -52,7 +53,7 @@ func TestSenderEnsureClientConcurrentS14(t *testing.T) {
 					errMu.Unlock()
 				}
 			}()
-			if err := sender.Send(ctx, env); err != nil {
+			if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 				errMu.Lock()
 				errs = append(errs, err)
 				errMu.Unlock()

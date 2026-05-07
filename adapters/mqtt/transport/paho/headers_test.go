@@ -9,7 +9,9 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
-// verifies EnvelopeFromPublish maps topic, payload, subject, and CreatedAt.
+// verifies EnvelopeFromPublish records the publish topic under
+// HeaderMQTTTopic and leaves env.Subject empty when no
+// HeaderGobridgeSubject user property is present.
 func TestEnvelopeFromPublish_BasicFields(t *testing.T) {
 	pub := &pahov5.Publish{
 		Topic:   "test/topic",
@@ -18,8 +20,11 @@ func TestEnvelopeFromPublish_BasicFields(t *testing.T) {
 
 	env := EnvelopeFromPublish(pub, nil)
 
-	if env.Subject != "test/topic" {
-		t.Errorf("subject = %q, want %q", env.Subject, "test/topic")
+	if env.Subject != "" {
+		t.Errorf("subject = %q, want empty (no gobridge.subject user property)", env.Subject)
+	}
+	if v, _ := messaging.GetHeaderString(env.Headers, HeaderMQTTTopic); v != "test/topic" {
+		t.Errorf("headers[%q] = %q, want %q", HeaderMQTTTopic, v, "test/topic")
 	}
 	if string(env.Payload) != "hello" {
 		t.Errorf("payload = %q, want %q", env.Payload, "hello")
@@ -147,7 +152,7 @@ func TestPublishFromEnvelope_BasicFields(t *testing.T) {
 	}
 	opts := SenderOptions{QoS: 1, Retain: true}
 
-	pub := PublishFromEnvelope(env, opts, nil)
+	pub := PublishFromEnvelope(env, env.Subject, opts, nil)
 
 	if pub.Topic != "out/topic" {
 		t.Errorf("topic = %q, want %q", pub.Topic, "out/topic")
@@ -163,12 +168,14 @@ func TestPublishFromEnvelope_BasicFields(t *testing.T) {
 	}
 }
 
-// verifies PublishFromEnvelope uses DefaultTopic when the envelope has no subject.
+// verifies PublishFromEnvelope uses the supplied topic argument verbatim,
+// even when the envelope subject is empty (the topic is the transport
+// destination — independent from the logical subject).
 func TestPublishFromEnvelope_DefaultTopic(t *testing.T) {
 	env := &messaging.Envelope{Payload: []byte("x")}
 	opts := SenderOptions{DefaultTopic: "fallback/topic", QoS: 0}
 
-	pub := PublishFromEnvelope(env, opts, nil)
+	pub := PublishFromEnvelope(env, opts.DefaultTopic, opts, nil)
 
 	if pub.Topic != "fallback/topic" {
 		t.Errorf("topic = %q, want %q", pub.Topic, "fallback/topic")
@@ -189,7 +196,7 @@ func TestPublishFromEnvelope_Headers(t *testing.T) {
 	}
 	opts := SenderOptions{QoS: 1}
 
-	pub := PublishFromEnvelope(env, opts, nil)
+	pub := PublishFromEnvelope(env, env.Subject, opts, nil)
 
 	if pub.Properties == nil {
 		t.Fatal("properties should be set")
@@ -224,7 +231,7 @@ func TestPublishFromEnvelope_MessageExpiry(t *testing.T) {
 	}
 	opts := SenderOptions{QoS: 1}
 
-	pub := PublishFromEnvelope(env, opts, nil)
+	pub := PublishFromEnvelope(env, env.Subject, opts, nil)
 
 	if pub.Properties == nil || pub.Properties.MessageExpiry == nil {
 		t.Fatal("MessageExpiry should be set")
@@ -236,13 +243,14 @@ func TestPublishFromEnvelope_MessageExpiry(t *testing.T) {
 
 // verifies PublishFromEnvelope omits Properties when no header-derived fields are needed.
 func TestPublishFromEnvelope_NoProperties(t *testing.T) {
+	// Note: env.Subject is intentionally empty so PublishFromEnvelope
+	// does NOT emit a HeaderGobridgeSubject user property.
 	env := &messaging.Envelope{
-		Subject: "t",
 		Payload: []byte("x"),
 	}
 	opts := SenderOptions{QoS: 0}
 
-	pub := PublishFromEnvelope(env, opts, nil)
+	pub := PublishFromEnvelope(env, "t", opts, nil)
 
 	if pub.Properties != nil {
 		for _, u := range pub.Properties.User {
@@ -350,7 +358,8 @@ func TestEnvelopeFromPublish_TimeConsistency(t *testing.T) {
 }
 
 // TestEnvelopeFromPublish_NilProperties validates that a publish with
-// nil properties produces an envelope with no headers.
+// nil properties produces an envelope whose only header is the
+// recorded transport topic.
 func TestEnvelopeFromPublish_NilProperties(t *testing.T) {
 	pub := &pahov5.Publish{
 		Topic:   "t",
@@ -359,8 +368,11 @@ func TestEnvelopeFromPublish_NilProperties(t *testing.T) {
 
 	env := EnvelopeFromPublish(pub, nil)
 
-	if len(env.Headers) > 0 {
-		t.Errorf("expected no headers for nil properties, got %v", env.Headers)
+	if got := len(env.Headers); got != 1 {
+		t.Errorf("expected exactly 1 header (mqtt.topic) for nil properties, got %d: %v", got, env.Headers)
+	}
+	if v, _ := messaging.GetHeaderString(env.Headers, HeaderMQTTTopic); v != "t" {
+		t.Errorf("headers[%q] = %q, want %q", HeaderMQTTTopic, v, "t")
 	}
 }
 
@@ -545,7 +557,7 @@ func TestPublishFromEnvelope_IncludesMessageID(t *testing.T) {
 		Subject: "t",
 		Payload: []byte("p"),
 	}
-	pub := PublishFromEnvelope(env, SenderOptions{QoS: 1}, nil)
+	pub := PublishFromEnvelope(env, env.Subject, SenderOptions{QoS: 1}, nil)
 
 	if pub.Properties == nil {
 		t.Fatal("properties should be set")
@@ -569,7 +581,7 @@ func TestRoundTrip_EnvelopeID(t *testing.T) {
 		Payload: []byte("data"),
 	}
 
-	pub := PublishFromEnvelope(original, SenderOptions{QoS: 1}, nil)
+	pub := PublishFromEnvelope(original, original.Subject, SenderOptions{QoS: 1}, nil)
 	restored := EnvelopeFromPublish(pub, nil)
 
 	if restored.ID != original.ID {
@@ -590,7 +602,7 @@ func TestRoundTrip_EnvelopePublishEnvelope(t *testing.T) {
 	}
 
 	opts := SenderOptions{QoS: 1}
-	pub := PublishFromEnvelope(original, opts, nil)
+	pub := PublishFromEnvelope(original, original.Subject, opts, nil)
 	restored := EnvelopeFromPublish(pub, nil)
 
 	if restored.Subject != original.Subject {

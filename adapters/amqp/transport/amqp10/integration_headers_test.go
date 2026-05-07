@@ -57,7 +57,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 			"x-custom-key":      "custom-value",
 		},
 	}
-	if err := sender.Send(ctx, env); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
 
@@ -137,7 +137,7 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 		Payload:   []byte(`{"test":"ttl"}`),
 		ExpiresAt: expiry,
 	}
-	if err := sender.Send(ctx, env); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
 
@@ -224,7 +224,7 @@ func TestIntegration_ApplicationProperties(t *testing.T) {
 			"x-bridge.session-id": "should-be-stripped",
 		},
 	}
-	if err := sender.Send(ctx, env); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
 

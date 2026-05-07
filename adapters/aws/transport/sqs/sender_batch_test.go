@@ -13,6 +13,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // ---------------------------------------------------------------------------
@@ -46,7 +47,13 @@ func TestSendBatch_AllBatchesSucceed(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(13)
-	sent, err := sender.SendBatch(context.Background(), envs)
+	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -96,7 +103,13 @@ func TestSendBatch_FirstBatchPartialFailure_RemainingExecute(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(9) // 3 batches of 3
-	sent, sendErr := sender.SendBatch(context.Background(), envs)
+	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if sendErr == nil {
 		t.Fatal("expected error from partial failure in first batch")
 	}
@@ -136,7 +149,13 @@ func TestSendBatch_MiddleBatchAPIError_OtherBatchesExecute(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(9) // 3 batches of 3
-	sent, sendErr := sender.SendBatch(context.Background(), envs)
+	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if sendErr == nil {
 		t.Fatal("expected error from middle batch API failure")
 	}
@@ -172,7 +191,13 @@ func TestSendBatch_AllBatchesFail_CombinedError(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(6) // 3 batches of 2
-	sent, sendErr := sender.SendBatch(context.Background(), envs)
+	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if sendErr == nil {
 		t.Fatal("expected combined error when all batches fail")
 	}
@@ -242,7 +267,13 @@ func TestSendBatch_MixedPartialAndAPIErrors(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(8) // 4 batches of 2
-	sent, sendErr := sender.SendBatch(context.Background(), envs)
+	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if sendErr == nil {
 		t.Fatal("expected combined error from partial + API failures")
 	}
@@ -275,7 +306,13 @@ func TestSendBatch_SingleEnvelopeFailure(t *testing.T) {
 	}
 
 	envs := []*messaging.Envelope{{ID: "solo", Payload: []byte("x")}}
-	sent, sendErr := sender.SendBatch(context.Background(), envs)
+	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		_msgs := make([]ports.OutboundMessage, len(envs))
+		for _i, _e := range envs {
+			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
+		}
+		return _msgs
+	}())
 	if sendErr == nil {
 		t.Fatal("expected error for single-envelope failure")
 	}
@@ -301,7 +338,7 @@ func TestSendBatch_EmptyInput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sent, err := sender.SendBatch(context.Background(), nil)
+	sent, err := sender.SendBatch(context.Background(), []ports.OutboundMessage(nil))
 	if err != nil {
 		t.Fatalf("unexpected error for empty input: %v", err)
 	}
@@ -313,7 +350,7 @@ func TestSendBatch_EmptyInput(t *testing.T) {
 	}
 
 	// Also test with empty slice (non-nil).
-	sent, err = sender.SendBatch(context.Background(), []*messaging.Envelope{})
+	sent, err = sender.SendBatch(context.Background(), []ports.OutboundMessage{})
 	if err != nil {
 		t.Fatalf("unexpected error for empty slice: %v", err)
 	}

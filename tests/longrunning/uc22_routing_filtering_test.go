@@ -223,12 +223,13 @@ func TestUC23_SubjectPrefix_Routing(t *testing.T) {
 	pubSnd := paho.NewSender(pubSess, paho.SenderOptions{QoS: 1, Timeout: 10 * time.Second})
 	for _, pfx := range prefixes {
 		for i := 0; i < perPrefix; i++ {
+			subject := fmt.Sprintf("%sitem-%d", pfx, i)
 			env := &messaging.Envelope{
 				ID:      fmt.Sprintf("uc23-%s-%d", pfx, i),
-				Subject: fmt.Sprintf("%sitem-%d", pfx, i),
+				Subject: subject,
 				Payload: []byte(fmt.Sprintf(`{"pfx":"%s","seq":%d}`, pfx, i)),
 			}
-			require.NoError(t, pubSnd.Send(ctx, env))
+			require.NoError(t, pubSnd.Send(ctx, ports.OutboundMessage{Envelope: env, Address: subject}))
 		}
 	}
 	t.Logf("UC23: published %d messages across 3 prefixes", total)

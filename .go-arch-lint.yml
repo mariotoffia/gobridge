@@ -83,8 +83,12 @@ excludeFiles:
 #   Layer 3 -- Interface Adapters (Clean) / Adapters (Hex) /
 #              Infrastructure (DDD)
 #       httpapi             -- Driving adapter (HTTP delivery mechanism)
-#       processors          -- In-process driven adapters (message
-#                              transformation chain)
+#       processor_*         -- In-process driven adapters (message
+#                              transformation chain). One component per
+#                              processor role (filter, tenant, transform,
+#                              circuitbreaker) so the same anti-coupling
+#                              rule that protects transports/stores also
+#                              protects sibling processors.
 #       adapter_transport_* -- Driven adapters: message transport
 #       adapter_store_*     -- Driven adapters: persistence
 #       adapter_config_*    -- Driving adapters: configuration sources
@@ -143,8 +147,14 @@ components:
   # Driving adapter: HTTP admin / monitor delivery mechanism.
   httpapi: { in: [httpapi, httpapi/**] }
 
-  # In-process processor adapters (message transformation chain).
-  processors: { in: [processors, processors/**] }
+  # In-process processor adapters (message-transformation chain). One
+  # component per role so a future processor cannot quietly import a
+  # sibling processor's internals -- the same anti-sibling-coupling
+  # rule that protects transport_* and store_* siblings (see F-001).
+  processor_filter:         { in: [processors/filter, processors/filter/**] }
+  processor_tenant:         { in: [processors/tenant, processors/tenant/**] }
+  processor_transform:      { in: [processors/transform, processors/transform/**] }
+  processor_circuitbreaker: { in: [processors/circuitbreaker, processors/circuitbreaker/**] }
 
   # Driven adapters: message transport. One component per technology so
   # that a flaw in one adapter cannot leak into another via shared types.
@@ -429,22 +439,48 @@ deps:
       - runtime
 
   # Processors are in-process driven adapters that participate in the
-  # message-transformation chain. They depend on ports + domain and may
-  # use the circuitbreaker utility because circuit breaking is itself a
-  # processor (processors/circuitbreaker exists). They MUST NOT depend
-  # on transport, store, or any other adapter.
-  processors:
+  # message-transformation chain. Each processor is its own component so
+  # that, e.g., processors/filter cannot quietly import internals of
+  # processors/transform (the same anti-sibling-coupling rule the
+  # transport_* and store_* components enforce).
+  #
+  # Allowed cross-edges:
+  #   * processor_circuitbreaker may import the `circuitbreaker` utility
+  #     because circuit breaking IS its job; no other processor may.
+  #   * processor_transform may use the `ojg` JSONPath vendor; no other
+  #     processor may.
+  # Every processor depends on ports + the domain bounded contexts it
+  # actually needs and MUST NOT depend on transport, store, httpapi,
+  # bridge, runtime, config, or any other adapter.
+  processor_filter:
+    mayDependOn:
+      - domain_shared
+      - domain_messaging
+      - ports
+    canUse: [_no_external_deps_]
+
+  processor_tenant:
+    mayDependOn:
+      - domain_shared
+      - domain_messaging
+      - ports
+    canUse: [_no_external_deps_]
+
+  processor_transform:
+    mayDependOn:
+      - domain_messaging
+      - ports
+    canUse:
+      - ojg
+
+  processor_circuitbreaker:
     mayDependOn:
       - circuitbreaker
       - domain_clock
       - domain_shared
       - domain_messaging
-      - domain_persistence
-      - domain_routing
-      - domain_connectivity
       - ports
-    canUse:
-      - ojg
+    canUse: [_no_external_deps_]
 
   # ---- Layer 3: Driven adapters -- message transport ----
   #

@@ -14,8 +14,14 @@ import (
 
 // RouteConfig describes a route to be added to the Runtime.
 type RouteConfig struct {
-	ID                 string
-	Policy             routing.RoutePolicy
+	ID     string
+	Policy routing.RoutePolicy
+	// Bindings carries the configured destinations for this route.
+	// Each DestinationBinding.Address is the transport-level destination
+	// (queue URL, topic name, exchange/routing-key, etc.) and is the
+	// single source of truth for "where to send"; it is distinct from
+	// messaging.Envelope.Subject, which is the logical message subject
+	// and must never be overwritten with the binding Address.
 	Bindings           []routing.DestinationBinding
 	Resolver           ports.DestinationResolver
 	Processors         []ports.Processor

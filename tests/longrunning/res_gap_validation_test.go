@@ -131,7 +131,7 @@ func TestRES003_MQTTSourceDropWithoutDLQ(t *testing.T) {
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
 			Headers: map[string]any{"test": "res003"},
 		}
-		sendErr := pubSender.Send(ctx, env)
+		sendErr := pubSender.Send(ctx, ports.OutboundMessage{Envelope: env})
 		if sendErr != nil {
 			t.Logf("RES-003: publish %d failed: %v", i, sendErr)
 		}
