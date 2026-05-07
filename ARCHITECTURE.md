@@ -52,10 +52,10 @@ graph TB
 
     A --> P
     A --> D
-    A --> CB
     PR --> P
     PR --> D
-    PR --> CB
+    PRC["processors/circuitbreaker<br/>Resilience processor"]
+    PRC --> CB
     H --> R
     H --> P
     H --> D
@@ -72,6 +72,7 @@ graph TB
     V --> P
     V --> D
     CB --> D
+    CB --> P
 ```
 
 ### Dependency Rule
@@ -87,25 +88,148 @@ closer to the center. The rules below are enforced by `make lint-arch`
 | `config/` | `domain` and `gopkg.in/yaml.v3` (the only allowed external dep on the inner ring) |
 | `observability/` | Standard library only |
 | `logging/` | Standard library only |
-| `circuitbreaker/` | `domain` |
+| `circuitbreaker/` | `domain`, `ports` (implements `ports.CircuitBreaker`) |
 | `runtime/` | `domain`, `ports`, `observability`, `logging` |
 | `validate/` | `domain`, `ports` |
 | `bridge/` | `config`, `ports`, `runtime`, `domain`, `logging` |
-| transport adapters | `ports`, `domain`, `logging`, `circuitbreaker`, vendor SDK only (no `bridge`, no `config`, no other adapters) |
+| transport adapters | `ports`, `domain`, `logging`, vendor SDK only (no `bridge`, no `config`, no other adapters, no `circuitbreaker` package — wrap with `ports.CircuitBreaker` instead) |
 | store impl adapters | `ports`, `domain`, `logging`, vendor SDK only (no aggregators) |
 | store factory aggregators | `ports`, `domain`, `logging`, only their own store impl packages |
 | config source adapters | `config`, `domain`, `logging`, vendor SDK only (the only adapter category allowed to import `config`) |
 | credential adapters | `ports`, `domain`, `logging`, vendor SDK only |
 | observability adapters | `ports`, `domain`, `logging`, vendor SDK only |
 | cluster resolver adapters | `ports`, `domain`, `logging`, vendor SDK only |
-| `processors/` | `ports`, `domain`, `circuitbreaker`, processor-specific vendor (e.g. `ohler55/ojg` for transform) |
+| `processors/filter` | `ports`, `domain/shared`, `domain/messaging` (stdlib only) |
+| `processors/tenant` | `ports`, `domain/shared`, `domain/messaging` (stdlib only) |
+| `processors/transform` | `ports`, `domain/messaging`, `github.com/ohler55/ojg` (JSONPath) |
+| `processors/circuitbreaker` | `ports`, `domain` contexts, the `circuitbreaker` package (the only processor allowed to depend on it because circuit-breaking IS its role) |
 | `httpapi/` | `runtime`, `config`, `ports`, `domain`, `observability` |
 | `cmd/`, `deployment/` | Composition roots — any project package, any vendor |
 
 The architecture lint splits the umbrella `adapters/` into role-specific
-components (one per transport technology, one per store backend, etc.)
-so cross-adapter coupling — for example MQTT importing AWS SDK — fails
-lint immediately. There is no blanket `adapters → adapters` rule.
+components (one per transport technology, one per store backend, one
+per processor role, etc.) so cross-adapter coupling — for example MQTT
+importing AWS SDK, or `processors/filter` importing
+`processors/transform` — fails lint immediately. There is no blanket
+`adapters → adapters` rule and no umbrella `processors → processors`
+rule.
+
+### 2.1 Architecture Lint Components — Allowed Dependency Map
+
+The diagram below summarises the policy expressed in
+`.go-arch-lint.yml`. Read it inside-out: every arrow is an *allowed*
+edge; absence of an arrow is a denied edge that `make lint-arch` will
+reject. The terminology matches `DDD.md` (bounded contexts), `UBIQUITOUS.md`
+(ubiquitous language), and the Clean / Hexagonal layer numbering used
+throughout this document.
+
+```text
+                 ┌────────────────────── Layer 4: Composition root ───────────────────────┐
+                 │  cmd/    deployment/      (anyProjectDeps, anyVendorDeps)               │
+                 └─────────────────────────────────────────────────────────────────────────┘
+                                                  │ wires
+                                                  ▼
+   ┌──────────────────── Layer 3: Interface Adapters (driving + driven) ────────────────────┐
+   │                                                                                        │
+   │  Driving:   httpapi ──┐                                                                │
+   │             adapter_config_native_file, adapter_config_aws_dynamodb (only adapters     │
+   │                                                                  allowed to import     │
+   │                                                                  the config package)   │
+   │                       │                                                                │
+   │  Driven (transports — one component per technology, no sibling edges):                 │
+   │     adapter_transport_mqtt_paho   adapter_transport_sqs   adapter_transport_servicebus │
+   │     adapter_transport_amqp091     adapter_transport_amqp10  adapter_transport_http     │
+   │                                                                                        │
+   │  Driven (stores — leaves):                                                             │
+   │     adapter_store_native_{memorylease, memoryoutbox, memorydlq,                        │
+   │                            sqliteoutbox, sqlitedlq}                                    │
+   │     adapter_store_aws_{dynamodblease, dynamodboutbox, dynamodbdlq}                     │
+   │  Driven (store factories — only place that may import its own leaves):                 │
+   │     adapter_store_native_factory ──▶ adapter_store_native_*                            │
+   │     adapter_store_aws_factory    ──▶ adapter_store_aws_*                               │
+   │                                                                                        │
+   │  Driven (processor roles — one component per role, no sibling edges):                  │
+   │     processor_filter   processor_tenant   processor_transform   processor_circuitbreaker│
+   │                                                          │                             │
+   │                                                          └─▶ circuitbreaker package    │
+   │                                                             (only processor that may)  │
+   │                                                                                        │
+   │  Driven (credentials, observability export, cluster topology):                         │
+   │     adapter_credentials_*  adapter_metrics_*  adapter_tracing_*  adapter_cluster_*     │
+   └────────────────────────────────────────────────────────────────────────────────────────┘
+                                          │ depends inward only
+                                          ▼
+   ┌─────────────── Layer 2: Application Services + Ports + Shared Kernel ──────────────┐
+   │                                                                                    │
+   │   bridge ──▶ runtime ──▶ ports                                                     │
+   │     │          │           ▲                                                       │
+   │     ▼          ▼           │                                                       │
+   │   config ───▶ ports     validate                                                   │
+   │                                                                                    │
+   │   Cross-cutting utilities (stdlib-only, usable by any layer above):                │
+   │      logging       observability       circuitbreaker (impl of ports.CircuitBreaker)│
+   │                                                                                    │
+   └────────────────────────────────────────────────────────────────────────────────────┘
+                                          │
+                                          ▼
+   ┌────────────────────── Layer 1: Domain (decomposed by bounded context) ─────────────┐
+   │                                                                                    │
+   │   domain_shared                       (shared kernel — value objects, errors)      │
+   │   domain_messaging                    (envelope, headers, transactions)            │
+   │   domain_persistence ──▶ domain_messaging  (OutboxRecord embeds Envelope; the      │
+   │                                              only documented sideways edge)        │
+   │   domain_routing     ──▶ domain_shared, domain_messaging                           │
+   │   domain_connectivity ─▶ domain_shared                                             │
+   │   domain_clock                        (stdlib-only timing primitive)               │
+   │                                                                                    │
+   │   Every domain context: canUse [_no_external_deps_]  — stdlib-only, machine checked│
+   └────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+What this map enforces (the F-001 anti-coupling guarantees):
+
+- No transport adapter can import another transport adapter
+  (e.g. `adapter_transport_mqtt_paho` cannot reach
+  `adapter_transport_sqs`). A bug or a vendor SDK in one transport
+  cannot leak into another.
+- No store implementation can import another store implementation; only
+  the matching factory aggregator may compose its own leaves.
+- No processor role can import another processor role
+  (`processor_filter` and `processor_transform` are siblings, not a
+  shared bucket). Only `processor_circuitbreaker` may import the
+  `circuitbreaker` package because the breaker IS its job.
+- No adapter can import the `circuitbreaker` package directly. Adapters
+  that need resilience consume the `ports.CircuitBreaker` port and the
+  composition root injects a concrete `*circuitbreaker.Breaker`.
+- Only `adapter_config_native_file` and `adapter_config_aws_dynamodb`
+  may import the `config` parser package.
+- `cmd/` and `deployment/` are the only components with
+  `anyProjectDeps + anyVendorDeps`. They are the boundary between the
+  hexagon and the operating environment.
+
+The mapping regression in `scripts/lint-arch-mapping-test.sh` pins one
+sentinel package per component (every domain context, every
+application-service component, every cross-cutting utility, every
+adapter, every processor role, every composition-root component). Any
+edit that broadens or merges a component will fail the regression
+before it lands.
+
+### 2.2 Resilience Ports
+
+`ports.CircuitBreaker` (defined in `ports/resilience.go`) is the
+single point of contact between adapters and the circuit-breaker
+state machine. The concrete implementation in the `circuitbreaker/`
+package satisfies that port; adapters such as
+`adapters/mqtt/transport/paho/cb_sender.go` consume the port only.
+The composition root (`cmd/`, `deployment/`) is the sole place that
+constructs the concrete `*circuitbreaker.Breaker` and injects it into
+adapters via their typed `Config`.
+
+This split is the F-004 outcome: the breaker is a project-internal
+resilience primitive, not an adapter dependency. New adapters that
+need protection get a `CircuitBreaker ports.CircuitBreaker` field on
+their `Config`, never a direct import of the `circuitbreaker`
+package.
 
 ### Typed Plugin Config
 

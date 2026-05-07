@@ -437,7 +437,7 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 
 - **filter**: `processors/filter/` -- condition evaluation with operators (eq, ne, contains, regex, gt, lt, exists, in), actions (pass, drop, route)
 - **transform**: `processors/transform/` -- JSON field mapping with JSONPath, type coercion
-- **circuitbreaker**: `processors/circuitbreaker/` -- per-key state machine, returns `domain.ErrUnavailable.WithRetryAfter()`
+- **circuitbreaker**: `processors/circuitbreaker/` -- per-key state machine, returns `domain.ErrUnavailable.WithRetryAfter()`. Wraps the `circuitbreaker/` package via the `ports.CircuitBreaker` resilience port; adapters that need protection consume the port (never the package). See [ARCHITECTURE.md §2.2 Resilience Ports](ARCHITECTURE.md#22-resilience-ports).
 - **tenant**: `processors/tenant/` -- header-based tenant extraction, validation, usage tracking
 
 ## Module Conventions

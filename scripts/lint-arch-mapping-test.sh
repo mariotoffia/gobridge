@@ -11,8 +11,11 @@
 #
 # It runs `go-arch-lint mapping` and greps the grouped output for
 # specific (component, package) pairs. The script lists every adapter
-# package plus the inner-ring sentinels (domain, ports, config) so
-# the YAML and the package layout cannot drift silently.
+# package, every processor role, every cross-cutting utility, and the
+# inner-ring sentinels (domain bounded contexts, ports, config) so the
+# YAML and the package layout cannot drift silently. If a component is
+# added to .go-arch-lint.yml without a matching `expect` line here, the
+# mapping regression will not catch a future broadening.
 
 set -euo pipefail
 
@@ -81,8 +84,30 @@ expect domain_persistence  /domain/persistence
 expect domain_routing      /domain/routing
 expect domain_connectivity /domain/connectivity
 expect domain_clock        /domain/clock
-expect ports   /ports
-expect config  /config
+
+# Layer 2 — ports, application services, shared kernel.
+expect ports     /ports
+expect config    /config
+expect runtime   /runtime
+expect bridge    /bridge
+expect validate  /validate
+expect httpapi   /httpapi
+
+# Cross-cutting utilities (stdlib-only inner ring).
+expect logging         /logging
+expect observability   /observability
+expect circuitbreaker  /circuitbreaker
+
+# In-process processor chain — one sentinel per role so siblings cannot
+# silently re-merge under a future `processors` umbrella component.
+expect processor_filter         /processors/filter
+expect processor_tenant         /processors/tenant
+expect processor_transform      /processors/transform
+expect processor_circuitbreaker /processors/circuitbreaker
+
+# Composition root.
+expect cmd         /cmd
+expect deployment  /deployment
 
 if [[ $fail -eq 0 ]]; then
     echo "Architecture mapping test passed: all sentinel packages map to expected components."

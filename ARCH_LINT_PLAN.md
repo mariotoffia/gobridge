@@ -159,8 +159,15 @@ make lint
 
 ### Finding F-001: Coarse Adapter Rules Are A Real Architecture Risk
 
-**Status:** Mostly addressed by the current component split, but must remain
-guarded.
+**Status:** Closed. The component split is precise, the
+mapping-regression sentinels in `scripts/lint-arch-mapping-test.sh`
+cover every adapter, every processor role, every cross-cutting
+utility, every application-service component, every domain bounded
+context, and the composition root, and `processors/` has been split
+into per-role components (`processor_filter`, `processor_tenant`,
+`processor_transform`, `processor_circuitbreaker`) so siblings cannot
+silently re-merge under a future umbrella. The dependency map is
+documented in `ARCHITECTURE.md` §2.1.
 
 **Problem:** A blanket `adapters -> adapters` permission would hide bad
 coupling such as MQTT depending on SQS, SQS depending on Azure Service Bus, or
@@ -236,7 +243,11 @@ a soft preference.
 
 ### Finding F-004: `circuitbreaker` Is A Concrete Dependency From An Adapter
 
-**Status:** Open, tracked as a final tightening task.
+**Status:** Closed. `ports.CircuitBreaker` is defined in
+`ports/resilience.go`; `*circuitbreaker.Breaker` satisfies it; the MQTT
+Paho adapter consumes the port (`cb_sender.go`); no transport adapter
+lists `circuitbreaker` in its `mayDependOn`. The composition root in
+`cmd/` injects the concrete breaker. See `ARCHITECTURE.md` §2.2.
 
 **Problem:** `adapters/mqtt/transport/paho` imports the concrete
 `circuitbreaker` package. That forces an adapter to know a project-internal
@@ -257,7 +268,11 @@ wired at the composition root.
 
 ### Finding F-005: Infrastructure Types Must Not Leak Into `ports`
 
-**Status:** Open, tracked as a final tightening task.
+**Status:** Closed. `ports/` no longer exposes `http.Handler` or other
+delivery-mechanism types; HTTP translation lives in
+`adapters/http/transport` and `httpapi/`. Vendor lint
+(`allow.depOnAnyVendor: false`) plus the `ports` component's
+`canUse: [_no_external_deps_]` machine-check the boundary.
 
 **Problem:** A port such as `ports.HTTPMountable` that exposes `http.Handler`
 pulls a delivery mechanism into the port layer. The architectural concept is a
@@ -280,7 +295,11 @@ adapters.
 
 ### Finding F-006: `bridge` / `httpapi` Should Not Over-Couple To Config
 
-**Status:** Open, tracked as a final tightening task.
+**Status:** Closed. `bridge` no longer imports the `config` parser
+package (the composition root supplies a `ports.BlueprintValidator`);
+`httpapi` consumes a narrow `ports.ConfigStore` boundary for admin
+transactions instead of the parser package. Both edges are enforced
+by `.go-arch-lint.yml`.
 
 **Problem:** If `bridge` and `httpapi` depend directly on broad parsed config
 structures, config can become an all-purpose shared object instead of a
