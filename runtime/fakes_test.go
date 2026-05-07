@@ -40,6 +40,7 @@ type FakeDelivery struct {
 	RetryErr   error
 	Extended   bool
 	ExtendTo   time.Time
+	ExtendErr  error
 	AckErr     error
 	RetryFnErr error
 }
@@ -71,7 +72,7 @@ func (d *FakeDelivery) Extend(_ context.Context, until time.Time) error {
 	defer d.mu.Unlock()
 	d.Extended = true
 	d.ExtendTo = until
-	return nil
+	return d.ExtendErr
 }
 
 func (d *FakeDelivery) IsAcked() bool {
