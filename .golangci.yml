@@ -6,7 +6,7 @@
 # so a violation must defeat both to slip through.
 #
 # Companion: see .go-arch-lint.yml for component-level dependency
-# direction; see .claude/CLAUDE.md for the maintenance contract.
+# direction; see AGENT.md for the maintenance contract.
 #
 # Depguard is fully enforcing the inward-only
 # Dependency Rule across domain, ports, adapters, and runtime — every

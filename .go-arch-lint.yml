@@ -25,7 +25,7 @@ workdir: .
 # Each component declared below is a node in those models, NOT a project
 # convenience bucket. Editing this file MUST keep the mapping intact:
 # components map to architectural roles, dependencies follow the
-# Dependency Rule. See `.claude/CLAUDE.md` for the maintenance contract.
+# Dependency Rule. See `AGENT.md` for the maintenance contract.
 # ============================================================================
 
 allow:
