@@ -38,6 +38,26 @@ that receivers and senders share. Stateless transports (SQS, Azure Service
 Bus, HTTP) return `nil` from `NewSession` -- receivers and senders manage
 their own connections.
 
+## Subject vs. Address
+
+Two concepts are kept strictly separate across every transport:
+
+- **`Envelope.Subject`** — the logical event subject. It is set by the producer (or by the bridge's ingress mapping) and is never mutated by the runtime to inject a destination.
+- **`ports.OutboundMessage.Address`** — the transport destination chosen by the route's dispatch plan (`DispatchPlan.Address`). The runtime passes it to `Sender.Send(ctx, OutboundMessage)` separately from the envelope.
+
+Each transport carries the logical subject over the wire in a transport-native field where one exists; for transports that do not have a dedicated subject slot (MQTT, AMQP 0-9-1) the bridge uses an explicit non-reserved carrier named **`gobridge.subject`**.
+
+| Transport | Outbound destination from `OutboundMessage.Address` | Subject carrier on the wire | Ingress: what sets `Envelope.Subject` |
+|-----------|------------------------------------------------------|-----------------------------|---------------------------------------|
+| MQTT | Publish topic (or `default_topic` when address is empty). Never derived from `Envelope.Subject`. | MQTT user property `gobridge.subject` | The `gobridge.subject` user property. The publish topic the broker delivered on is exposed in `Headers["mqtt.topic"]`. |
+| AMQP 0-9-1 | Routing key (when sender `routing_key` is empty). Never derived from `Envelope.Subject`. | AMQP header `gobridge.subject` | The `gobridge.subject` AMQP header. The broker's `Delivery.RoutingKey` is preserved in `Headers["amqp091.routing-key"]`. |
+| AMQP 1.0 | Validated against the configured sender link address (empty allowed; mismatch fails fast). Per-address dynamic links are deferred. | `Message.Properties.Subject` | `Message.Properties.Subject`. There is no fallback from the link address. |
+| SQS | Reserved for future dynamic queue selection. Today the queue is sender-state. | `Subject` message attribute | The `Subject` message attribute. There is no fallback from the queue URL/name. FIFO `MessageDeduplicationId` hashes the logical subject only. |
+| Azure Service Bus | Reserved for future dynamic entity selection. Today the entity is sender-state. | `Message.Subject` | `Message.Subject`. There is no fallback from the queue/topic name. |
+| HTTP / SSE | Path is sender-state. | JSON field `subject` | JSON field `subject`. |
+
+Reserved `x-bridge.*` headers are not used as the cross-transport subject carrier; `gobridge.subject` is the explicit, application-visible name where no native field exists.
+
 ---
 
 ## MQTT (Paho)
@@ -126,7 +146,7 @@ senders:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `default_topic` | string | -- | Fallback publish topic |
+| `default_topic` | string | -- | Fallback publish topic used when `OutboundMessage.Address` is empty. The publish topic is never read from `Envelope.Subject`. |
 | `qos` | int | 1 | MQTT QoS level (0, 1, or 2) |
 | `retain` | bool | `false` | MQTT retain flag |
 | `timeout` | duration | `30s` | Per-publish timeout |
@@ -423,7 +443,7 @@ The receiver accepts JSON POST with the following fields:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `subject` | string | **yes** | Message topic or routing key |
+| `subject` | string | **yes** | Logical event subject. Mapped 1:1 to `Envelope.Subject`. Not a topic or routing key. |
 | `payload` | any JSON | no | Message content (stored as raw bytes) |
 | `id` | string | no | Caller-provided message ID |
 | `headers` | object | no | Custom metadata (`X-Bridge-*` keys stripped) |
@@ -561,7 +581,7 @@ senders:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `exchange` | string | `""` | Target exchange name |
-| `routing_key` | string | `""` | Routing key; falls back to `envelope.Subject` |
+| `routing_key` | string | `""` | Routing key. When empty the sender uses `OutboundMessage.Address` (resolved from the dispatch plan). The routing key is **never** taken from `Envelope.Subject`. |
 | `mandatory` | bool | `false` | Return unroutable messages |
 | `immediate` | bool | `false` | Return messages when no consumer is ready |
 | `timeout` | duration | `30s` | Per-publish timeout (applied when context has no deadline) |

@@ -139,6 +139,7 @@ classDiagram
 - **`Envelope`** — aggregate root for the messaging context. Invariants:
   - `Clone()` deep-copies `Headers` and `Payload` so reference values are never shared between original and clone.
   - Expiry checks must take a `Clock` (no implicit `time.Now()`).
+  - `Subject` is the **logical event subject**. It is producer-supplied (or ingress-mapped from a transport-native subject field, e.g. `Message.Properties.Subject`, the `gobridge.subject` carrier on MQTT/AMQP 0-9-1, or the HTTP JSON `subject`). The runtime never assigns a transport destination to `Subject`; per-message destinations travel on `ports.OutboundMessage.Address` (see § 3.4).
 - **Reserved header invariant** — keys with prefix `x-bridge.` are bridge-internal. `IsReservedHeader` is case-insensitive; transport adapters must `StripReservedHeaders` at ingress to prevent injection. `MergeHeaders(..., protectReserved=true)` denies overlay overrides of reserved keys already in base.
 - **`TraceContext`** — W3C Trace Context VO. `ParseTraceparent` rejects non-`00` versions, all-zero IDs, wrong lengths, non-lowercase hex.
 
@@ -259,6 +260,7 @@ classDiagram
 - `RoutePolicy.WithDefaults()` is the single canonical normalization step — every zero-or-invalid field collapses to a documented default (`DefaultMaxInFlight`, `DefaultSendTimeout`, …). Callers should not hand-fill defaults elsewhere.
 - `DeliveryMode` (`direct_hold` | `shared_outbox`), `DispatchMode` (`single` | `fan_out`), `AckBoundary` (`target_accept` | `outbox_persist`) are exhaustive enums.
 - `DLQEntry.Envelope` is the immutable snapshot of the envelope at failure; `Attempts` and `FailedAt` describe the failure event.
+- `DispatchPlan.Address` is the transport destination for one envelope (publish topic, routing key, queue URL, ...). It is passed to the sender via the `ports.OutboundMessage{Envelope, Address}` port type and is **never** written back into `Envelope.Subject`. The shared-outbox store records `OutboxRecord.Address` alongside the embedded envelope so drainers reconstruct the same `OutboundMessage` shape.
 
 ### 3.5 `domain/connectivity` — Supporting (auth + reconciliation shape)
 

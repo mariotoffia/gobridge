@@ -155,7 +155,7 @@ The `Field` in a filter condition selects which part of the `Envelope` to inspec
 
 | Pattern | Resolves To | Example |
 |---------|-------------|---------|
-| `subject` | `Envelope.Subject` (the MQTT topic) | `sensors/temperature/room-1` |
+| `subject` | `Envelope.Subject` (logical event subject; for raw MQTT ingress this comes from the `gobridge.subject` user property — the publish topic lives in `Headers["mqtt.topic"]`) | `sensor.temperature.room-1` |
 | `header.<key>` | `Envelope.Headers["<key>"]` | `header.x-bridge.content-type` |
 | `$.<path>` | Dot-path into JSON `Envelope.Payload` | `$.type`, `$.reading.unit` |
 | bare name | Falls back to `Envelope.Headers[name]` | `content-type` |

@@ -47,7 +47,7 @@ Headers:   factory_id = "A", device_id = "42"
 Result:    factory/A/orders/42
 ```
 
-The rendered address becomes the `Envelope.Subject`, which the MQTT sender uses as the publish topic.
+The rendered address becomes `DispatchPlan.Address`. The runtime carries it across the egress path on `ports.OutboundMessage.Address`, and the MQTT sender uses it as the publish topic. `Envelope.Subject` is **not** mutated — it remains the logical event subject and travels alongside the message as the `gobridge.subject` MQTT user property.
 
 **Safety guarantees:**
 - Single-pass substitution -- rendered values are never re-parsed (no injection risk)
@@ -99,10 +99,10 @@ routes:
 1. **SQS receiver** polls the queue and delivers each message as an `Envelope`
 2. The envelope carries headers set by the upstream producer (e.g. `factory_id: "A"`)
 3. **Route dispatch** resolves the binding address template: `factory/{factory_id}/events` becomes `factory/A/events`
-4. The rendered address is set as `Envelope.Subject`
-5. **MQTT sender** publishes to topic `factory/A/events` (using Subject, not `default_topic`)
+4. The runtime constructs an outbound `ports.OutboundMessage{Envelope: <copy>, Address: "factory/A/events"}`. Dispatch headers are merged onto the envelope copy; the source `Envelope.Subject` is left untouched.
+5. **MQTT sender** publishes to topic `factory/A/events` (taken from `OutboundMessage.Address`). The logical subject is propagated as the `gobridge.subject` MQTT user property so downstream consumers can reconstruct it.
 
-Note: The `default_topic` on the sender is a fallback. When the binding address resolves successfully, it takes precedence.
+Note: The `default_topic` on the sender is a fallback used only when `OutboundMessage.Address` is empty. The publish topic is **never** read from `Envelope.Subject`.
 
 ## Address Resolution Flow
 
@@ -113,13 +113,14 @@ sequenceDiagram
     participant Res as BindingResolver
     participant S as MQTT Sender
 
-    R->>Route: Envelope (headers: factory_id=A)
+    R->>Route: Envelope (Subject="<logical>", headers: factory_id=A)
     Route->>Res: Resolve(envelope)
     Res->>Res: RenderAddress("factory/{factory_id}/events", headers)
     Res-->>Route: DispatchPlan{Address: "factory/A/events"}
-    Route->>Route: envelope.Subject = "factory/A/events"
-    Route->>S: Send(envelope)
-    S->>S: topic = envelope.Subject ("factory/A/events")
+    Route->>Route: build OutboundMessage{Envelope: copy, Address: "factory/A/events"}
+    Route->>S: Send(ctx, OutboundMessage)
+    S->>S: topic = OutboundMessage.Address ("factory/A/events")
+    S->>S: user property gobridge.subject = Envelope.Subject
     S-->>Route: ACK
 ```
 
@@ -246,16 +247,18 @@ Note: Fan-out requires `shared_outbox` delivery mode.
 
 ## Transport-Specific Behaviour
 
-How the resolved address is used depends on the transport:
+How `OutboundMessage.Address` (resolved from the binding template) is used depends on the transport. In every case, `Envelope.Subject` is the logical event subject and is carried over the wire either in a native subject field or in the `gobridge.subject` user-property/header — never as the destination.
 
-| Transport | Address Effect | Notes |
-|-----------|---------------|-------|
-| **MQTT** | Becomes the publish topic | Overrides `default_topic`; validated for wildcards |
-| **SQS** | Stored as metadata | Queue URL comes from sender config (static) |
-| **Azure SB** | Stored as metadata | Queue/topic from sender config (static) |
-| **HTTP** | Stored as metadata | Path from sender config |
+| Transport | Where `OutboundMessage.Address` goes | Where `Envelope.Subject` rides |
+|-----------|--------------------------------------|--------------------------------|
+| **MQTT** | Publish topic. Overrides `default_topic`; validated for wildcards. | MQTT user property `gobridge.subject` |
+| **AMQP 0-9-1** | Routing key (when sender `routing_key` is empty). | AMQP header `gobridge.subject` |
+| **AMQP 1.0** | Validated against the configured sender link address (mismatch fails fast). Per-address dynamic links are deferred. | `Message.Properties.Subject` |
+| **SQS** | Reserved for future dynamic queue selection. The queue URL/name remains static on the sender today. | `Subject` message attribute |
+| **Azure SB** | Reserved for future dynamic entity selection. The queue/topic remains static on the sender today. | `Message.Subject` |
+| **HTTP/SSE** | Path is static on the sender. | JSON `subject` field |
 
-For MQTT, dynamic addressing is fully effective -- each message can go to a different topic. For SQS/Azure SB, the queue/topic is fixed per sender, but the address is preserved as message metadata.
+For MQTT and AMQP 0-9-1, dynamic addressing is fully effective — each message can land on a different topic / routing key. For SQS, Azure SB, and HTTP, the destination is fixed per sender for now; `OutboundMessage.Address` is preserved as transport-neutral metadata.
 
 ## Config-Driven Resolver
 

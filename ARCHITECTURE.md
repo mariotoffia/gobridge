@@ -137,7 +137,7 @@ The normalized message unit flowing through the bridge. A pure value type define
 | Field | Type | Description |
 |---|---|---|
 | `ID` | `string` | Unique message identifier |
-| `Subject` | `string` | Logical topic or subject |
+| `Subject` | `string` | Logical event subject. Producer-supplied, never mutated by the runtime to inject a destination. Free-form and transport-agnostic. |
 | `Payload` | `[]byte` | Raw message body |
 | `Headers` | `map[string]any` | Metadata key-value pairs |
 | `CreatedAt` | `time.Time` | Envelope creation timestamp |
@@ -168,18 +168,25 @@ type Receiver interface {
 
 ### Sender / BatchSender
 
-Egress interfaces for submitting envelopes to a transport.
+Egress interfaces for submitting envelopes to a transport. Senders receive an `OutboundMessage` so the transport destination is carried independently of the envelope.
 
 ```go
+type OutboundMessage struct {
+    Envelope *domain.Envelope
+    Address  string // transport destination from DispatchPlan.Address
+}
+
 type Sender interface {
-    Send(ctx context.Context, env *domain.Envelope) error
+    Send(ctx context.Context, msg OutboundMessage) error
 }
 
 type BatchSender interface {
     Sender
-    SendBatch(ctx context.Context, envs []*domain.Envelope) (int, error)
+    SendBatch(ctx context.Context, msgs []OutboundMessage) (int, error)
 }
 ```
+
+`OutboundMessage.Address` is the resolved per-message destination (publish topic, routing key, queue URL, ...). `Envelope.Subject` is the logical event subject and is never overwritten with the destination — see [§ Subject vs. Address](#subject-vs-address).
 
 ### Session
 
@@ -233,6 +240,32 @@ type DestinationResolver interface {
     Resolve(ctx context.Context, env *domain.Envelope) ([]domain.DispatchPlan, error)
 }
 ```
+
+### Subject vs. Address
+
+Two concepts are deliberately kept separate end-to-end:
+
+- **`Envelope.Subject`** — the logical event subject. Set by the producer (or by an ingress mapping rule) and **never** mutated by the runtime to inject a destination. It is the value that filters, tenant rules, and downstream consumers reason about.
+- **`DispatchPlan.Address`** (carried over the wire as **`ports.OutboundMessage.Address`**) — the transport destination chosen for one envelope at egress time: a publish topic, an AMQP routing key, a queue URL, an SSE channel, etc.
+
+Runtime invariants:
+
+- The runtime never writes the dispatch address into `env.Subject`. Both `direct_hold` and `shared_outbox` paths build an outbound envelope copy with the route's merged dispatch headers and pass the address out-of-band on `OutboundMessage.Address`.
+- The shared-outbox store persists `OutboxRecord.Address` as a separate column from `OutboxRecord.Envelope.Subject`. Drainers read the address from the record, not from the persisted envelope.
+- Egress hook events and DLQ entries record the outbound address as a distinct field; the `Envelope.Subject` they expose remains the logical event subject.
+
+Per-transport carriers for the logical subject:
+
+| Transport | Outbound destination from `OutboundMessage.Address` | Logical subject on the wire | Ingress mapping into `Envelope.Subject` |
+|-----------|------------------------------------------------------|-----------------------------|------------------------------------------|
+| MQTT | Publish topic (or sender `default_topic` when address is empty). Never derived from `Envelope.Subject`. | MQTT user property `gobridge.subject` | The `gobridge.subject` user property. The actual publish topic is preserved in `Headers["mqtt.topic"]`. |
+| AMQP 0-9-1 | Routing key (when sender `routing_key` is empty). Never derived from `Envelope.Subject`. | AMQP header `gobridge.subject` | The `gobridge.subject` AMQP header. The broker's `Delivery.RoutingKey` is preserved in `Headers["amqp091.routing-key"]`. |
+| AMQP 1.0 | Validated against the configured sender link address (empty allowed; mismatch fails fast). | `Message.Properties.Subject` | `Message.Properties.Subject` only — no fallback from the link address. |
+| SQS | Sender-state today; reserved for dynamic queue selection. FIFO `MessageDeduplicationId` hashes the logical subject only, never the destination. | `Subject` message attribute | `Subject` message attribute only — no fallback from the queue URL/name. |
+| Azure Service Bus | Sender-state today; reserved for dynamic entity selection. | `Message.Subject` | `Message.Subject` only — no fallback from the queue/topic name. |
+| HTTP / SSE | Path is sender-state. | JSON field `subject` | JSON field `subject`. |
+
+The `gobridge.subject` carrier is an explicit, application-visible name. The reserved `x-bridge.*` prefix is **not** used as the cross-transport subject carrier.
 
 ---
 
@@ -309,8 +342,8 @@ sequenceDiagram
    - Checks message expiry. If expired: routes to DLQ or drops per policy, then acks.
    - Runs the processor chain (onion/middleware model).
    - Dispatches based on delivery mode:
-     - **direct_hold**: Resolves dispatch plans, calls `sender.Send`. On success: ack. On transient error: retry with backoff. On permanent error: DLQ then ack.
-     - **shared_outbox**: Resolves dispatch plans, persists to outbox store, then acks the source delivery. A separate `OutboxDrainer` handles egress.
+     - **direct_hold**: Resolves dispatch plans, builds an `OutboundMessage{Envelope: copy, Address: plan.Address}` with merged dispatch headers, calls `Sender.Send`. The source `Envelope.Subject` is left untouched. On success: ack. On transient error: retry with backoff. On permanent error: DLQ then ack.
+     - **shared_outbox**: Resolves dispatch plans, persists outbox records that carry `OutboxRecord.Address` separately from the embedded envelope, then acks the source delivery. A separate `OutboxDrainer` reconstructs the `OutboundMessage` from the record and dispatches it.
 
 ---
 

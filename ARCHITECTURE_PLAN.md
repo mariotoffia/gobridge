@@ -276,7 +276,7 @@ Blast radius: low.
 - Add direct unit tests for MQTT to AMQP 1.0 and SQS to MQTT subject propagation if test infrastructure allows.
 - Acceptance: cross-transport tests distinguish logical subject from transport address.
 
-### 13. Update documentation
+### 13. Update documentation - DONE
 
 - Update `ARCHITECTURE.md` to define `Envelope.Subject` as logical event subject only.
 - Update dynamic destination docs to say `DispatchPlan.Address`, not `Envelope.Subject`, drives outbound destination.

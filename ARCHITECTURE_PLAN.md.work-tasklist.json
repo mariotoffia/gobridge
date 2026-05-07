@@ -140,7 +140,7 @@
     {
       "id": "T13",
       "title": "Update documentation",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "technical-writer",
       "agent_rationale": "Documentation-only task updating ARCHITECTURE.md and transport docs.",

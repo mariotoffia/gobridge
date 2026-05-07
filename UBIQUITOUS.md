@@ -22,7 +22,10 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | Term | Meaning |
 |---|---|
 | **Envelope** | The canonical message moving through the bridge. `ID`, `Subject`, `Payload`, `Headers`, `CreatedAt`, `ExpiresAt`. Aggregate root of the messaging context. |
-| **Subject** | Logical destination/topic of an envelope. Free-form string; transport-specific meaning. |
+| **Subject** | Logical event subject of an envelope. Free-form string set by the producer (or by an ingress mapping). The runtime never overwrites it with a transport destination. Distinct from `Address`. |
+| **Address** | Transport destination chosen at egress time for one envelope: a publish topic, AMQP routing key, queue URL, etc. Lives on `DestinationBinding.Address`, `DispatchPlan.Address`, `OutboxRecord.Address`, and `ports.OutboundMessage.Address`. Never written into `Envelope.Subject`. |
+| **OutboundMessage** | The unit `Sender.Send`/`BatchSender.SendBatch` consume: `{Envelope *domain.Envelope, Address string}`. Carries the logical envelope and the resolved transport destination side-by-side. |
+| **`gobridge.subject`** | Cross-transport carrier for `Envelope.Subject` on transports without a native subject field (MQTT user property, AMQP 0-9-1 header). Application-visible, not reserved. |
 | **Reserved header** | Header key with prefix `x-bridge.` (case-insensitive). Bridge-internal; must be stripped from external sources at ingress. |
 | **Correlation ID** | `x-bridge.correlation-id`. End-to-end ID used to correlate logs/traces across hops. |
 | **Causation ID** | `x-bridge.causation-id`. ID of the envelope that caused this one to be produced. |
@@ -63,8 +66,8 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **AckBoundary** | `target_accept` (ack source after target accepts) or `outbox_persist` (ack source after outbox persists). Together with `DeliveryMode` determines the at-least-once / once-and-only contract per route. |
 | **ExpiredAction** | What happens to expired envelopes: `drop` or `dlq`. |
 | **FailureAction** | What happens on permanent failure: `dlq` or `drop`. |
-| **DestinationBinding** | A concrete target an envelope can be sent to: `Transport`, `SessionID`, `SenderID`, `Address`, plugin `Config`, optional static `Headers`. |
-| **DispatchPlan** | Result of resolving destinations for one envelope: which `BindingID`, which `Address`, merged `Headers`. |
+| **DestinationBinding** | A concrete target an envelope can be sent to: `Transport`, `SessionID`, `SenderID`, `Address`, plugin `Config`, optional static `Headers`. `Address` is the transport destination, not the logical subject. |
+| **DispatchPlan** | Result of resolving destinations for one envelope: which `BindingID`, which `Address` (the per-message transport destination passed to the sender via `OutboundMessage.Address`), merged `Headers`. |
 | **DLQ** | Dead-letter queue. Permanent record of envelopes that could not be delivered. |
 | **DLQEntry** | One DLQ record: snapshot `Envelope`, route/binding/session/source IDs, `Reason`, `Category`, `ErrorCode`, `LastError`, `Attempts`, `FailedAt`. |
 | **DLQFilter** | Query criteria for DLQ scans: by route, category, time window, limit. |
