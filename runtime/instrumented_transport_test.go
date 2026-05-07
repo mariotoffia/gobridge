@@ -170,6 +170,7 @@ func TestInstrumentedDelivery_Extend_Success(t *testing.T) {
 	var extendErr error
 	_ = wrapped.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
 		extendErr = del.Extend(ctx, until)
+		cancel() // unblock singleDeliveryReceiver.Run; 2s timeout is the safety net
 		return nil
 	})
 
@@ -227,6 +228,7 @@ func TestInstrumentedDelivery_Extend_ErrorSuppressesCounter(t *testing.T) {
 	var gotErr error
 	_ = wrapped.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
 		gotErr = del.Extend(ctx, time.Now().Add(time.Minute))
+		cancel() // unblock singleDeliveryReceiver.Run; 2s timeout is the safety net
 		return nil
 	})
 
