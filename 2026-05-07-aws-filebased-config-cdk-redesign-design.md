@@ -598,7 +598,7 @@ parallel.
 
 | ID | Task | Depends on |
 |---|---|---|
-| T01 | `cdk/registry/` package: `QueueRegistry`, `SsmParamRegistry`, `QueueRef`, `ParamRef` types + tests. | — |
+| T01 | `cdk/registry/` package: `QueueRegistry`, `SsmParamRegistry`, `QueueRef`, `ParamRef` types + tests. — DONE | — |
 | T02 | `cdk/constructs/internal/seeder/`: pinned aws-cli Dockerfile/manifest, seeder shell script with canonicalization (PyYAML), atomic temp+rename, exit codes 0/10/20/30/40/50, structured JSON log lines. `make update-seeder-image` target. | — |
 | T03 | `cdk/bridgecfg/secrets.go`: scheme allow-list (`pms://` and any other supported credential schemes) + `ScanForPlaintextSecrets(*ports.BridgeConfig) error`. | — |
 | T04 | `cdk/bridgecfg/`: builder package — `New(name)`, `Build()`, fluent methods for SQS receiver/sender, MQTT broker (incl. `MQTTCredsFromSSM`), HTTP admin API + `AdminAPIDefaults()`, SQLite outbox/lease/dlq, routes. Tests including round-trip through `config.MarshalYAML`+`config.ParseFile`. | — |

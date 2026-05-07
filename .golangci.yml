@@ -124,6 +124,8 @@ linters:
         - github.com/aws/aws-cdk-go/awscdk/v2/awsec2.SecurityGroup
         - github.com/aws/aws-cdk-go/awscdk/v2/awsecs.FargateService
         - github.com/aws/aws-cdk-go/awscdk/v2/awsecs.FargateTaskDefinition
+        - github.com/aws/aws-cdk-go/awscdk/v2/awssqs.IQueue
+        - github.com/aws/aws-cdk-go/awscdk/v2/awsssm.IParameter
 
     interfacebloat:
       # Working ISP threshold for ports. The plan target is 5; the
