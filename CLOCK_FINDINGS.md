@@ -271,10 +271,14 @@ overhead.
   changes only validate the happy path with a fake clock injected.
   A cheap regression test (`WithCredentialClock(nil)` followed by a
   cache touch) would have caught Major #1.
-- **`adapters/http/transport/factory.go`**: no test explicitly verifies
+- ~~**`adapters/http/transport/factory.go`**: no test explicitly verifies
   that `NewFactory(WithClock(nil))` produces a Factory whose
   receiver/sender still uses `clock.System`. The current safety relies
-  on inner constructors that could be refactored later.
+  on inner constructors that could be refactored later.~~
+  **Resolved 2026-05-07.** `TestNewFactory_NilClockOptionKeepsDefault`
+  and `TestNewFactory_DefaultsToSystemClock` in
+  `adapters/http/transport/factory_clock_test.go` assert that both
+  no-option and `WithClock(nil)` paths leave `f.clock == clock.System`.
 - **`bridge/supervisor.go` SwapEvent.Duration** is now driven by
   `s.clk.Since(start)`. The new test in `bridge/supervisor_test.go`
   asserts the duration is exactly the fake-clock advance, which is
@@ -303,8 +307,11 @@ overhead.
    constructors.
 4. ~~**Normalize the two outlier `WithClock` options** (Minor #3) so the
    `if c != nil` pattern is universal~~ **Done 2026-05-07.**
-5. **Add a `clock.Clock.Sleep(ctx, d)` (or document the
+5. ~~**Add a `clock.Clock.Sleep(ctx, d)` (or document the
    `<-ctx.Done() / <-clk.After(d)` idiom in the package doc)** so the
    broadened forbidigo rule has a clean alternative for future
    `time.Sleep` callers, particularly the `testutil/` helpers when they
-   are eventually pulled in-scope.
+   are eventually pulled in-scope.~~ **Done 2026-05-07.** Documented in
+   `domain/clock/clock.go` as a package-level doc with a worked
+   `select` example. The `Sleep` method was deliberately not added —
+   the comment makes the cancellable idiom canonical.
