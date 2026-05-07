@@ -2,7 +2,14 @@
 
 This guide explains how to extend gobridge with custom transport adapters, store backends, credential repositories, observability exporters, and message processors.
 
-All extension points follow the hexagonal architecture: implement a port interface from `ports/`, register it with the `bridge.Builder`, and gobridge handles the rest.
+All extension points follow the hexagonal architecture: implement a port interface from `ports/`, expose a typed `ports.PluginConfig`, self-register a decoder on `ports.DefaultRegistry`, register the factory with the `bridge.Builder`, and gobridge handles the rest. The architectural framing for this contract lives in [DDD.md](DDD.md), [UBIQUITOUS.md](UBIQUITOUS.md), and [`docs/typed-plugin-config.adoc`](docs/typed-plugin-config.adoc).
+
+> **Note on options decoding.** Adapters expose a
+> typed `Config` struct (`ports.PluginConfig`) and register a decoder
+> on `ports.DefaultRegistry` from `register.go`; the runtime never
+> hands `map[string]any` to plugin code. See
+> [Typed Plugin Config](#typed-plugin-config).
+
 
 ## Transport Adapters
 
@@ -24,13 +31,23 @@ type Receiver interface {
     Run(ctx context.Context, emit func(context.Context, Delivery) error) error
 }
 
+// OutboundMessage carries an envelope together with the per-dispatch
+// transport destination resolved by the runtime (DispatchPlan.Address).
+// Senders MUST publish to OutboundMessage.Address — they MUST NOT read a
+// destination out of OutboundMessage.Envelope.Subject (which is the
+// logical event subject and is not a transport destination).
+type OutboundMessage struct {
+    Envelope *domain.Envelope
+    Address  string
+}
+
 type Sender interface {
-    Send(ctx context.Context, env *domain.Envelope) error
+    Send(ctx context.Context, msg OutboundMessage) error
 }
 
 type BatchSender interface {
     Sender
-    SendBatch(ctx context.Context, envs []*domain.Envelope) (int, error)
+    SendBatch(ctx context.Context, msgs []OutboundMessage) (int, error)
 }
 
 type Session interface {
@@ -44,7 +61,11 @@ type Session interface {
 
 ### Transport Factory (ports-first)
 
-To integrate with the builder, implement `ports.TransportFactory` (from `ports/factories.go`):
+To integrate with the builder, implement `ports.TransportFactory` (from
+`ports/factories.go`). Each spec carries a typed `ports.PluginConfig`
+the adapter has registered (see [Typed Plugin Config](#typed-plugin-config)
+below — this is the single source of truth for adapter-specific
+options, and it replaces the old `Options map[string]any` decoding):
 
 ```go
 type TransportFactory interface {
@@ -55,11 +76,12 @@ type TransportFactory interface {
 }
 ```
 
-The bridge converts the declarative `config.*Def` shapes into generic
-`ports.*Spec` values before invoking the factory. The plugin only sees
-ports types, so a transport adapter never needs to import `bridge` or
-`config` — its only inner-ring dependencies are `ports` (and `domain`,
-`logging` as needed).
+The bridge converts the declarative `config.*Def` shapes into
+`ports.*Spec` values, with the adapter's typed `PluginConfig`
+already attached on `Spec.Config`, before invoking the factory. The
+plugin only sees ports types, so a transport adapter never needs to
+import `bridge` or `config` — its only inner-ring dependencies are
+`ports` (and `domain`, `logging` as needed).
 
 For stateless transports, `NewSession` should return `(nil, nil)`.
 
@@ -117,13 +139,15 @@ adapters/mycloud/transport/myqueue/
 
 3. **Header mapping**: Map transport-native message properties to `domain.Envelope.Headers` and vice versa. Strip `x-bridge.*` reserved headers at ingress.
 
-4. **Config parsing**: Parse `Options map[string]any` from `ports.*Spec`
-   values into typed structs that live INSIDE the plugin package.
-   Provide `ReceiverConfigFromOptions`, `SenderConfigFromOptions`, and
-   `SessionOptionsFromMap` helpers (or equivalent). Plugin-specific
-   shapes MUST NOT be added to the core `config` package — keeping core
-   `config` generic is what lets new plugins ship without forking
-   gobridge.
+4. **Typed config**: Export a concrete `Config` struct that satisfies
+   `ports.PluginConfig` (`Kind() string`, `Validate() error`) and
+   register a decoder on `ports.DefaultRegistry` from a `register.go`
+   `init()` (see [Typed Plugin Config](#typed-plugin-config) below).
+   The adapter receives its already-decoded typed config via
+   `Spec.Config`; it does **not** decode `map[string]any`. Plugin-
+   specific shapes MUST NOT be added to the core `config` package —
+   keeping the core `config` package generic is what lets new plugins
+   ship without forking gobridge.
 
 5. **Capabilities**: Return appropriate `ports.Capability` values:
    - `CapStatefulSession` -- transport uses sessions (e.g. MQTT)
@@ -189,16 +213,17 @@ Implement `ports.StoreFactory` (from `ports/stores.go`):
 
 ```go
 type StoreFactory interface {
-    NewLeaseStore(ctx context.Context, spec ports.StoreSpec) (ports.LeaseStore, error)
-    NewOutboxStore(ctx context.Context, spec ports.StoreSpec) (ports.OutboxStore, error)
-    NewDLQStore(ctx context.Context, spec ports.StoreSpec) (ports.DLQStore, error)
+    NewLeaseStore(ctx context.Context, cfg ports.PluginConfig) (LeaseStore, error)
+    NewOutboxStore(ctx context.Context, cfg ports.PluginConfig, runtime OutboxRuntimeOptions) (OutboxStore, error)
+    NewDLQStore(ctx context.Context, cfg ports.PluginConfig) (DLQStore, error)
 }
 ```
 
-`ports.StoreSpec` carries the generic `{ Type, Options }` produced by
-the bridge from `config.StoreConfig`. Like transport plugins, store
-plugins read their typed shape from `spec.Options` — they never import
-the core `config` package.
+Each method receives the typed `ports.PluginConfig` the adapter
+registered on `ports.DefaultRegistry` (see
+[Typed Plugin Config](#typed-plugin-config) below). The factory does
+its own type assertion on the concrete config type — it never sees
+`map[string]any`.
 
 Optional companion interface:
 
@@ -447,9 +472,13 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 3. **doc.go**: Every package needs a `doc.go` explaining its purpose.
 4. **Compile-time checks**: `var _ ports.X = (*T)(nil)` for all implemented interfaces.
 5. **Error mapping**: Transport adapters must have an `errors.go` mapping SDK errors to `domain.BridgeError`.
-6. **Config helpers**: Provide `ReceiverConfigFromOptions`, `SenderConfigFromOptions`,
-   `SessionOptionsFromMap`, etc. — typed plugin shapes live inside the
-   plugin package, never inside core `config`.
+6. **Typed config**: Export a concrete `Config` struct that satisfies
+   `ports.PluginConfig` (`Kind() string`, `Validate() error`) and
+   register a decoder on `ports.DefaultRegistry` from `register.go`
+   `init()`. Typed plugin shapes live inside the plugin package and
+   are reached by the runtime via `Spec.Config` — never inside core
+   `config` or as `map[string]any`. See
+   [Typed Plugin Config](#typed-plugin-config).
 7. **Hexagonal direction**: Adapters depend on `ports`, `domain`, and
    their own SDK only. Adapters MUST NOT import `bridge`, `config`,
    `runtime`, or other unrelated adapters. The architecture lint
@@ -457,3 +486,105 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 8. **Config-source adapters are special**: packages under
    `adapters/*/config/*` are the single category allowed to import
    `config` (they exist to load `*config.BridgeConfig`).
+
+## Typed Plugin Config
+
+Every pluggable component (transports, stores, processors, credential
+sources, config sources) exposes a **typed** `Config` struct rather
+than an opaque `map[string]any`. The runtime decodes the user's YAML
+or JSON `options:` block into that typed struct **once**, at config-
+parse time, and passes the typed value through `ports.*Spec.Config`
+or directly to `StoreFactory` methods.
+
+The full contract (including `cfgshape` analyzer rules, the wire
+round-trip, error reporting, and per-step checklist) lives in
+[`docs/typed-plugin-config.adoc`](docs/typed-plugin-config.adoc).
+The summary below is enough to write a new adapter.
+
+### The `PluginConfig` interface
+
+From `ports/plugin_config.go`:
+
+```go
+type PluginConfig interface {
+    Kind() string   // discriminator that ties this Go type to the YAML `transport:` / `type:` value
+    Validate() error // pure: no I/O, no goroutines, runs once at parse time
+}
+```
+
+Both methods are mandatory and both must do real work — an empty
+`Validate()` is rejected by `make lint`.
+
+### Registering the decoder
+
+Each adapter ships a `register.go` containing an `init()` that
+attaches a decoder to `ports.DefaultRegistry`:
+
+```go
+// adapters/mqtt/transport/paho/register.go
+package paho
+
+import "github.com/mariotoffia/gobridge/ports"
+
+func init() {
+    dec := func(raw ports.RawConfig) (ports.PluginConfig, error) {
+        var c Config
+        if raw != nil {
+            if err := raw.Decode(&c); err != nil {
+                return nil, err
+            }
+        }
+        if err := c.Validate(); err != nil {
+            return nil, err
+        }
+        return &c, nil
+    }
+    ports.DefaultRegistry.Register("mqtt", dec)
+    ports.DefaultRegistry.Register("mqtt.paho", dec)
+}
+```
+
+Rules:
+
+- One `register.go` file per adapter. Importing the adapter is what
+  registers the decoder (the user does this implicitly via
+  `builder.RegisterTransport` or `builder.RegisterStoreFactory`).
+- A decoder must call `Validate()` and surface the error; the bridge
+  treats parse-time errors as fatal.
+- `ports.DefaultRegistry.Register(kind, dec)` panics on duplicate
+  registration of the same `kind`. Use a separate `kind` per
+  adapter or per dialect (e.g. `mqtt` and `mqtt.paho`).
+
+### Reading the typed config inside the factory
+
+Factory methods receive `ports.PluginConfig` (for stores) or a
+`Spec` struct whose `Config` field is `ports.PluginConfig` (for
+transports). Type-assert to your concrete struct:
+
+```go
+func (f *Factory) NewSender(ctx context.Context, spec ports.SenderSpec, sess ports.Session) (ports.Sender, error) {
+    cfg, ok := spec.Config.(*Config)
+    if !ok {
+        return nil, fmt.Errorf("paho: unexpected sender config type %T", spec.Config)
+    }
+    return newSender(cfg, sess), nil
+}
+```
+
+The runtime guarantees `spec.Config` is the value the registered
+decoder returned, so the type assertion is the only check required.
+
+### Anti-patterns the lint rejects
+
+The `cfgshape` analyzer (`scripts/cfgshape/analyzer.go`, run by
+`make lint`) blocks the most common regressions:
+
+- Adapters that accept `map[string]any` instead of a typed `Config`.
+- `Config` types that omit `Kind()` or `Validate()`, or whose
+  `Validate()` body is empty / returns `nil` unconditionally.
+- `register.go` files that bypass `ports.DefaultRegistry`.
+- Wire-format types (YAML/JSON tags, `json.RawMessage`) leaking
+  into `domain/` or `ports/`.
+
+If lint fires on a file you wrote, read the analyzer's message
+verbatim — it points at the rule and the line.

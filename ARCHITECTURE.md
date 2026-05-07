@@ -85,10 +85,10 @@ closer to the center. The rules below are enforced by `make lint-arch`
 |---|---|
 | `domain/` | Standard library only (no gobridge, no vendor) |
 | `ports/` | `domain` |
-| `config/` | `domain` and `gopkg.in/yaml.v3` (the only allowed external dep on the inner ring) |
+| `config/` | `domain` (every bounded context), `ports`, `gopkg.in/yaml.v3`, and `github.com/go-viper/mapstructure/v2` (the only allowed external deps on the inner ring) |
 | `observability/` | Standard library only |
 | `logging/` | Standard library only |
-| `circuitbreaker/` | `domain`, `ports` (implements `ports.CircuitBreaker`) |
+| `circuitbreaker/` | `domain` (every bounded context), `ports` (`*Breaker` satisfies `ports.CircuitBreaker`; adapters depend on the port, not on this package) |
 | `runtime/` | `domain`, `ports`, `observability`, `logging` |
 | `validate/` | `domain`, `ports` |
 | `bridge/` | `config`, `ports`, `runtime`, `domain`, `logging` |

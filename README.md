@@ -92,9 +92,11 @@ go get github.com/mariotoffia/gobridge/adapters/aws/store
 | Document | Description |
 |----------|-------------|
 | [Architecture](ARCHITECTURE.md) | System design, hexagonal layers, core concepts, message flow |
+| [Domain Model (DDD)](DDD.md) | Bounded contexts, aggregates, invariants, context map |
+| [Ubiquitous Language](UBIQUITOUS.md) | Authoritative glossary of terms used in code, config, logs, and docs |
 | [Development](DEVELOPMENT.md) | Prerequisites, workspace setup, building, testing, CI |
 | [Plugins](PLUGIN.md) | How to write transport, store, credential, and processor plugins |
-| [Testing](TESTS.md) | Unit tests, conformance suites, integration tests, test utilities |
+| [Testing](TESTS.md) | Rules for writing non-flaky, architecturally-correct unit, integration, and long-running tests |
 
 ### Guides
 
@@ -157,7 +159,6 @@ make install          # Install all dev tools (golangci-lint, govulncheck, gomaj
 make build            # Build all modules
 make test             # Unit tests (no Docker)
 make test-integration # All tests (Docker required)
-make docker-up        # Start persistent test containers
 make lint             # Lint all modules
 make tidy             # Sync workspace + tidy all module deps
 make update           # Upgrade deps to latest minor/patch

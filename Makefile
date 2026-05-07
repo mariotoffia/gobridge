@@ -4,9 +4,7 @@
 # maintaining the multi-module Go workspace.
 
 .PHONY: all build test test-integration test-long-running lint lint-fix lint-gofmt lint-go-vet lint-go lint-arch lint-arch-report lint-arch-mapping lint-arch-mapping-test lint-arch-check clean tidy sync help
-.PHONY: build-core build-mqtt build-aws build-azure
 .PHONY: install vulncheck update update-major outdated
-.PHONY: docker-up docker-down docker-clean
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
 .PHONY: arch-graph dupl-report goconst-report arch-quality
@@ -25,22 +23,6 @@ all: build test
 build: ## Build all modules
 	@echo "Building all modules..."
 	go build ./...
-
-build-core: ## Build core module only
-	@echo "Building core module..."
-	go build ./bridge/...
-
-build-mqtt: ## Build MQTT module only
-	@echo "Building MQTT module..."
-	cd adapters/mqtt/transport/paho && go build ./...
-
-build-aws: ## Build AWS module only
-	@echo "Building AWS module..."
-	cd adapters/aws/transport/sqs && go build ./...
-
-build-azure: ## Build Azure module only
-	@echo "Building Azure module..."
-	cd adapters/azure/transport/servicebus && go build ./...
 
 # ============================================================================
 # Test targets
@@ -386,38 +368,6 @@ hooks-uninstall: ## Remove installed git hooks
 	@echo "Removing git hooks..."
 	@rm -f .git/hooks/pre-commit
 	@echo "Git hooks removed."
-
-# ============================================================================
-# Docker test containers
-# ============================================================================
-
-docker-up: ## Start persistent test containers for local development
-	@echo "Starting test containers..."
-	@cat /tmp/gobridge-mqtt.conf 2>/dev/null || printf 'listener 1883 0.0.0.0\nprotocol mqtt\nallow_anonymous true\npersistence false\nlog_dest stdout\n' > /tmp/gobridge-mqtt.conf
-	-docker rm -f gobridge-ddb gobridge-sqs gobridge-mqtt 2>/dev/null
-	docker run -d --name gobridge-ddb -p 127.0.0.1:8000:8000 amazon/dynamodb-local:latest -jar DynamoDBLocal.jar -sharedDb -inMemory
-	docker run -d --name gobridge-sqs -p 127.0.0.1:9324:9324 softwaremill/elasticmq-native:latest
-	docker run -d --name gobridge-mqtt -p 127.0.0.1:1883:1883 -v /tmp/gobridge-mqtt.conf:/mosquitto/config/mosquitto.conf:ro eclipse-mosquitto:latest
-	@echo "Waiting for containers..."
-	@sleep 3
-	@echo "Containers ready. Run tests with:"
-	@echo "  DYNAMODB_ENDPOINT=http://127.0.0.1:8000 SQS_ENDPOINT=http://127.0.0.1:9324 MQTT_BROKER_URL=tcp://127.0.0.1:1883 make test-integration"
-
-docker-down: ## Stop and remove all gobridge test containers
-	@echo "Stopping test containers..."
-	-docker rm -f gobridge-ddb gobridge-sqs gobridge-mqtt 2>/dev/null
-
-docker-clean: ## Remove ALL orphaned gobridge containers from any test run
-	@echo "Cleaning orphaned containers..."
-	-docker rm -f $$(docker ps -aq --filter name=gobridge-asblocal-) 2>/dev/null
-	-docker network rm $$(docker network ls -q --filter name=gobridge-asbnet-) 2>/dev/null
-	-docker rm -f $$(docker ps -aq --filter name=gobridge-ddblocal-) 2>/dev/null
-	-docker rm -f $$(docker ps -aq --filter name=gobridge-sqslocal-) 2>/dev/null
-	-docker rm -f $$(docker ps -aq --filter name=gobridge-s3local-) 2>/dev/null
-	-docker rm -f $$(docker ps -aq --filter name=gobridge-localstack-) 2>/dev/null
-	-docker rm -f $$(docker ps -aq --filter name=gobridge-mqtt-) 2>/dev/null
-	-docker rm -f gobridge-ddb gobridge-sqs gobridge-mqtt 2>/dev/null
-	@echo "Done."
 
 # ============================================================================
 # Help

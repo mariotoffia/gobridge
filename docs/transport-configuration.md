@@ -2,9 +2,16 @@
 
 GoBridge uses a factory-based architecture where each transport is registered
 by name and creates sessions, receivers, and senders from declarative YAML
-configuration. The `map[string]any` options blocks in the YAML are passed
-directly to each transport's `*ConfigFromOptions` or `*OptionsFromMap`
-functions at build time.
+configuration. The YAML `options:` block under each session, receiver, and
+sender is decoded **once** at config-parse time into the transport's typed
+`ports.PluginConfig` (e.g. `paho.Config`, `sqs.SenderConfig`) by the decoder
+the adapter registered on `ports.DefaultRegistry` from its `register.go`. The
+typed value is then carried on `ports.SessionSpec.Config` /
+`ports.ReceiverSpec.Config` / `ports.SenderSpec.Config` to the factory — the
+runtime never hands `map[string]any` to plugin code. See
+[`docs/typed-plugin-config.adoc`](typed-plugin-config.adoc) for the full
+contract and [`PLUGIN.md`](../PLUGIN.md#typed-plugin-config) for the
+adapter-author summary.
 
 ## Factory Architecture
 

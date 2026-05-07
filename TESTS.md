@@ -1,197 +1,242 @@
-# Testing Guide
+# Test Authoring Rules
 
-This guide covers the testing patterns, utilities, and workflows used in gobridge.
+This document is **not** a usage guide — it is the contract every new or
+modified test in gobridge must follow. The rules here exist to keep the
+test suite **non-flaky**, **architecturally correct** (no leakage from
+adapters back into the domain), and **fast enough that `make test` is a
+green-or-red signal you can trust on every save**.
 
-## Overview
+If a rule below conflicts with what an existing test does, the rule
+wins; the existing test is wrong and should be rewritten when touched.
 
-gobridge uses three levels of testing:
+The architecture you are testing is described in
+[DDD.md](DDD.md), [UBIQUITOUS.md](UBIQUITOUS.md), and
+[ARCHITECTURE.md](ARCHITECTURE.md). Use the terms from those documents
+in test names, helper names, and comments.
 
-1. **Unit tests** -- fast, no external dependencies, run with `make test`
-2. **Conformance tests** -- shared test suites that verify store implementations against port contracts
-3. **Integration tests** -- require Docker containers, run with `make test-integration`
+---
 
-All tests use the standard `testing` package. `stretchr/testify` (assert/require) is available in the root module but optional -- many packages use plain `t.Fatalf`/`t.Errorf`.
+## 1. The three test categories
 
-There are **no build tags** for integration tests. Instead, integration tests are gated by `testing.Short()` and the test utilities skip automatically when Docker is unavailable.
+gobridge has **exactly three** kinds of tests. Every test must be
+identifiable, on sight, as one of them. Mixing categories in a single
+test function is forbidden.
 
-## Running Tests
+| Category | Lives in | Build tag | Skip mechanism | Run with | Time budget |
+|---|---|---|---|---|---|
+| **Unit** | next to the code: `foo_test.go` beside `foo.go` | none | n/a (always runs) | `make test` (`-short -race -timeout 120s`) | < 100 ms / test, < 2 min total |
+| **Integration** | `*_test.go` in any package, **plus** `tests/integration/...` for cross-module flows | none | `testing.Short()` + Docker probe in `testutil/*` | `make test-integration` | seconds; full target ≤ 10 min |
+| **Long-running** | `tests/longrunning/` only | `//go:build longrunning` (mandatory on every file) | n/a — invisible to default `go test` | `make test-long-running` | minutes to hours; tagged because nobody wants this on PRs |
 
-```bash
-# Unit tests only (skips all Docker-dependent tests)
-make test
-# Equivalent to: go test -short -race -timeout 120s ./...
+### Decision tree — which category am I writing?
 
-# All tests including integration (requires Docker)
-make test-integration
-# Equivalent to: AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test go test -race -timeout 600s -v ./...
-
-# With persistent containers (faster repeated runs)
-make docker-up
-DYNAMODB_ENDPOINT=http://127.0.0.1:8000 \
-SQS_ENDPOINT=http://127.0.0.1:9324 \
-MQTT_BROKER_URL=tcp://127.0.0.1:1883 \
-make test-integration
-
-# CI checks
-make check       # build + lint + unit tests
-make check-all   # build + lint + all tests
-
-# Cleanup orphaned containers
-make docker-clean
+```
+Does the test need a Docker container, real network, or > 1 s wall clock?
+├─ no  → UNIT (everything in this branch must be deterministic and < 100 ms)
+└─ yes → does it intentionally exercise long-haul behaviour
+         (broker crash, > 60 s back-pressure, soak, leak detection)?
+         ├─ no  → INTEGRATION (gated by testing.Short and Docker probe)
+         └─ yes → LONG-RUNNING (`//go:build longrunning`, tests/longrunning/)
 ```
 
-## Unit Tests
+A test that "feels integration-y" but uses only fakes is still a
+**unit** test. A test that is fast but talks to Docker is still an
+**integration** test (because removing Docker on a contributor's
+laptop must not turn it red).
 
-### Conventions
+---
 
-- Use `t.Run("SubtestName", ...)` for table-driven tests
-- Prefer hand-rolled fakes over code-generated mocks
-- Use `errors.Is` and `errors.As` for error assertions
-- Test packages may be internal (`package foo`) or external (`package foo_test`)
+## 2. Anti-flake rules (apply to every category)
 
-### Hand-Rolled Fakes
+These are the rules that, when broken, produce the dreaded
+"works on my machine, fails on CI" tickets. They are non-negotiable.
 
-The runtime package defines comprehensive fakes in `runtime/fakes_test.go`. These implement `ports.Delivery`, `ports.Receiver`, `ports.Sender`, and store interfaces with controllable behavior:
+### 2.1 No `time.Sleep`. Ever.
+
+`time.Sleep` is banned in production code (`make audit-timings`) **and
+in test code** (`make audit-test-timings` — runs as part of
+`make test`). The legitimate reasons people reach for it are all
+covered by named helpers:
+
+| You think you need… | Use instead |
+|---|---|
+| "wait until a goroutine has started" | a `chan struct{}` started signal, or `ports.ReceiverStartedSignaler` |
+| "wait until a metric was emitted" | poll `ports.RecordingExporter.FindEntries` with `require.Eventually` |
+| "wait for a state change" | `require.Eventually(t, cond, timeout, interval)` from `testify` |
+| "advance time" | inject `domain/clock` and use `domain/clock/clocktest` to drive ticks deterministically |
+| "let the scheduler run" | redesign — you have a real ordering bug that `runtime.Gosched()` is hiding |
+
+If you cannot express a wait without `time.Sleep`, the production code
+is not testable; fix the production code (it almost always means a
+missing `Clock` dependency or a missing started-signal channel).
+
+### 2.2 Time is injected, never read
+
+Production code under test must take a `domain/clock.Clock`. Tests
+construct a `clocktest.FakeClock`, advance it explicitly, and assert
+the resulting behaviour. A test that reads `time.Now()` is a flake
+waiting to happen and **will** fail under load on CI.
+
+### 2.3 Concurrency is asserted, not assumed
+
+- Always run with `-race` (default in every Make target).
+- For background goroutines, use `t.Cleanup(cancel)` so leaks crash
+  the test, not a later one. `tests/longrunning/gap_goroutine_leak_test.go`
+  exists exactly because leaks routinely hide behind passing tests.
+- Synchronise on channels or `sync.WaitGroup`, not on sleeps or
+  hard-coded "100 ms ought to be enough".
+- Do not call `t.Parallel()` in tests that share a global resource
+  (`ports.DefaultRegistry`, environment variables, working directory).
+
+### 2.4 Determinism over realism
+
+- Random IDs in tests must come from a seeded source you control,
+  or from a per-test `uuid.NewString()` whose value you do not assert
+  on.
+- Map iteration order is undefined; never assert "the third key is
+  X". Build a sorted slice or a set comparison.
+- JSON ordering is undefined unless you canonicalise. Use
+  `assert.JSONEq` or compare decoded values.
+
+### 2.5 No external network, ever
+
+Unit and integration tests must not reach the real internet. Docker-
+backed integration tests use the `testutil/*local` packages, which
+bind to `127.0.0.1`. If a test fails because DNS is down on CI, the
+test is wrong.
+
+### 2.6 Cleanup is mandatory and ordered
+
+Every resource (goroutine, file, container, channel) is registered
+with `t.Cleanup` or `defer` **at the moment it is acquired**, not
+"later, at the end of the test". This guarantees cleanup runs even
+when an early `require` aborts.
+
+---
+
+## 3. Architectural correctness
+
+Tests are part of the architecture. They must respect the same
+inward-pointing dependency rule as production code (see
+[DDD.md § 4](DDD.md) and `.go-arch-lint.yml`).
+
+### 3.1 Dependency direction
+
+| Test for code in… | May import |
+|---|---|
+| `domain/<context>/...` | only stdlib + sibling files in the same context + `domain/clock/clocktest` (excluded from arch lint) |
+| `ports/...` | `domain/*`, `ports`, `testify`, `ports/storetest` |
+| `runtime/`, `bridge/`, `validate/`, `circuitbreaker/`, `config/` | their own production deps + fakes defined inside the same package's `fakes_test.go` |
+| an adapter (`adapters/<vendor>/<role>/<tech>/...`) | its own production deps + the matching `testutil/*local` helper + `ports/storetest` (for store adapters) |
+| `tests/integration/` | the public API surface only — **never** unexported types from any package |
+| `tests/longrunning/` | the public API surface only |
+
+A test file that imports a sibling adapter (e.g. an MQTT test that
+imports the SQS adapter) is an architectural bug and will fail
+`make lint-arch` once the offending edge becomes a non-test import —
+do not anticipate it by adding the edge "for the test only".
+
+### 3.2 No domain leakage through fakes
+
+Fakes that satisfy a port interface must live in `fakes_test.go`
+inside the package whose code consumes the port. They are
+hand-rolled — **gomock and mockery are banned** because their
+generated code re-asserts argument equality in ways that cannot
+distinguish "logically equal envelope" from "same pointer".
+
+A fake must:
+
+- implement only the port interface it claims to implement;
+- never import another adapter;
+- never embed production state from `runtime`/`bridge`;
+- expose its observable state through plain fields or accessor
+  methods (`Acked() bool`, `Sent() []ports.OutboundMessage`).
+
+The canonical reference is `runtime/fakes_test.go`.
+
+### 3.3 Conformance suites are the contract
+
+Every store implementation **must** call the matching conformance
+suite from `ports/storetest`:
 
 ```go
-type FakeDelivery struct {
-    env     *domain.Envelope
-    acked   bool
-    retried bool
-    ackErr  error
-}
-
-func (d *FakeDelivery) Envelope() *domain.Envelope { return d.env }
-func (d *FakeDelivery) Ack(ctx context.Context) error {
-    d.acked = true
-    return d.ackErr
-}
-// ... etc
-```
-
-Use this pattern in your own tests. Do not use gomock or mockery.
-
-### Processor Test Pattern
-
-Processors use a lightweight test helper pattern:
-
-```go
-func TestFilter(t *testing.T) {
-    // Simple next function that records whether it was called
-    var called bool
-    nextOK := func(ctx context.Context, env *domain.Envelope) error {
-        called = true
-        return nil
-    }
-
-    env := &domain.Envelope{
-        Subject: "test.topic",
-        Headers: map[string]any{"type": "alert"},
-    }
-
-    proc, err := filter.New(filter.Config{
-        Name:       "test-filter",
-        Conditions: []filter.Condition{{Field: "subject", Operator: filter.OpEquals, Value: "test.topic"}},
-        Action:     filter.ActionPass,
-    })
-    if err != nil {
-        t.Fatal(err)
-    }
-
-    if err := proc.Process(context.Background(), env, nextOK); err != nil {
-        t.Fatalf("unexpected error: %v", err)
-    }
-    if !called {
-        t.Fatal("expected next to be called")
-    }
-}
-```
-
-### Domain Test Pattern
-
-Domain tests use the external test package and testify:
-
-```go
-package domain_test
-
-import (
-    "testing"
-    "github.com/stretchr/testify/assert"
-    "github.com/mariotoffia/gobridge/domain"
-)
-
-func TestEnvelope_IsExpired(t *testing.T) {
-    t.Run("not expired", func(t *testing.T) {
-        env := &domain.Envelope{ExpiresAt: time.Now().Add(time.Hour)}
-        assert.False(t, env.IsExpired())
-    })
-    t.Run("expired", func(t *testing.T) {
-        env := &domain.Envelope{ExpiresAt: time.Now().Add(-time.Hour)}
-        assert.True(t, env.IsExpired())
-    })
-}
-```
-
-## Conformance Test Suites
-
-The `ports/storetest/` package provides shared test suites that verify store implementations conform to their port contracts.
-
-### Available Suites
-
-```go
-import "github.com/mariotoffia/gobridge/ports/storetest"
-
-// DLQ store conformance
-storetest.RunDLQStoreTests(t, store)
-
-// Outbox store conformance
-storetest.RunOutboxStoreTests(t, store)
-
-// Lease store conformance (with optional timing configuration)
-storetest.RunLeaseStoreTests(t, store, &storetest.LeaseTestOptions{
-    WaitForExpiry: 2 * time.Second,
-    LeaseTTL:      1 * time.Second,
-})
-```
-
-### Wiring Into Adapter Tests
-
-Each store adapter includes a `_test.go` that constructs the store and runs the conformance suite:
-
-**Memory store example:**
-
-```go
-func TestMemoryDLQStore(t *testing.T) {
-    store := memorydlq.NewStore()
-    storetest.RunDLQStoreTests(t, store)
+func TestMyDLQStore(t *testing.T) {
+    storetest.RunDLQStoreTests(t, newStore(t))
 }
 ```
 
-**DynamoDB store example:**
+If the conformance suite does not test what you need to test, the
+suite is incomplete — extend it (in `ports/storetest`) so every
+implementation gets the new check, rather than writing a one-off
+test in your adapter package.
 
-```go
-func TestDynamoDBOutboxStore(t *testing.T) {
-    client := ddblocal.Client(t)
-    store := newTestStore(t, client) // creates table, registers cleanup
-    storetest.RunOutboxStoreTests(t, store)
-}
-```
+### 3.4 Subject vs Address
 
-### What the Suites Test
+When asserting outbound traffic, assert against
+`ports.OutboundMessage{Envelope, Address}` — **never** assume the
+runtime wrote the address into `Envelope.Subject`. The split
+(`Subject` = logical, `Address` = transport destination) is an
+invariant; tests that conflate the two will mask real bugs.
 
-- **DLQ**: WriteAndList, ListFilterByRouteID, ListFilterByCategory, ListFilterBySince, ListFilterByBefore, ListRespectsLimit, WriteIdempotent, ReplayMarksEntries, PurgeRemovesOld, PurgeSkipsRecent, FullLifecycle
-- **Outbox**: PersistAndQuery, ClaimRecords, CompleteRecords, ExpireOldRecords, FencingTokenValidation, QueryPending
-- **Lease**: AcquireAndRelease, RenewWithValidToken, RenewWithStaleToken, ConcurrentAcquire, Expiry
+### 3.5 Reserved headers
 
-## Integration Tests
+Tests that exercise ingress paths must verify reserved-prefix
+(`x-bridge.*`) headers are stripped. Tests that exercise egress
+paths must verify the runtime's reserved headers (correlation ID,
+trace context, route ID, source ID) are present.
 
-### Test Utility Pattern
+---
 
-The `testutil/` packages manage Docker containers for local testing. They share a common pattern:
+## 4. Unit tests
 
-1. **Configure** before first use in `TestMain`
-2. **Get endpoint** on first test -- starts container if needed
-3. **Shutdown** after all tests complete
+### 4.1 Naming and structure
+
+- One test function per behaviour: `TestEnvelope_IsExpired_True`,
+  `TestEnvelope_IsExpired_False`, **not** `TestEnvelope`.
+- Use `t.Run(...)` only for table-driven cases of the same behaviour.
+- File: `foo_test.go` next to `foo.go`. Black-box (`package foo_test`)
+  unless you must touch unexported identifiers.
+
+### 4.2 Assertions
+
+- `stretchr/testify/{assert,require}` is the default in the root
+  module. Use `require` for preconditions (test cannot continue),
+  `assert` for the actual claims.
+- For errors, `errors.Is` / `errors.As` only — never compare
+  `err.Error()` strings (they are not part of the contract).
+- For `domain.BridgeError`, assert on `Code` and `Class`, never on
+  the formatted message.
+
+### 4.3 Determinism
+
+Unit tests that touch any of {time, randomness, goroutines, the
+file system} must inject the dependency. The package under test
+should have a constructor that accepts a `Clock`, `Reader`, etc.
+If it does not, fix the constructor before fixing the test.
+
+### 4.4 Forbidden in unit tests
+
+- Network calls of any kind.
+- Docker.
+- `time.Sleep`.
+- Reading `time.Now()`.
+- `os.Setenv` without `t.Cleanup` to restore it.
+- Touching `ports.DefaultRegistry` without first
+  `t.Cleanup(func() { ports.DefaultRegistry = oldRegistry })` or using
+  `ports.NewRegistry()` for an isolated instance.
+
+---
+
+## 5. Integration tests
+
+Integration tests verify that an adapter conforms to its port
+contract against a **real** dependency (a Docker-managed broker,
+DynamoDB Local, ElasticMQ, the ASB emulator, MinIO).
+
+### 5.1 Skip discipline — the contract that keeps `make test` green without Docker
+
+Every integration test must be skipped when the local environment
+cannot run it. The `testutil/*local` helpers do this for you:
 
 ```go
 func TestMain(m *testing.M) {
@@ -201,89 +246,184 @@ func TestMain(m *testing.M) {
     os.Exit(code)
 }
 
-func TestMyIntegration(t *testing.T) {
-    // First call starts the Docker container (or uses env var endpoint)
-    client := ddblocal.Client(t)
+func TestDynamoDBOutbox_Persist(t *testing.T) {
+    client := ddblocal.Client(t) // skips automatically when:
+                                  //   - testing.Short() is true, or
+                                  //   - Docker is unavailable and no
+                                  //     DYNAMODB_ENDPOINT env var is set
     // ... use client ...
 }
 ```
 
-### Available Test Utilities
+Do **not** invent your own skip logic. If a new dependency needs a
+container, add a `testutil/<thing>local` package modelled on the
+existing ones; do not embed `docker run` calls in tests.
 
-| Package | Docker Image | Environment Variable | What It Provides |
-|---------|-------------|---------------------|-----------------|
-| `testutil/ddblocal` | `amazon/dynamodb-local` | `DYNAMODB_ENDPOINT` | `Client(t) *dynamodb.Client` |
-| `testutil/sqslocal` | `softwaremill/elasticmq-native` | `SQS_ENDPOINT` | `Client(t) *sqs.Client`, `UniqueQueue(t)`, `CreateQueueWithAttrs(t, ...)` |
-| `testutil/asblocal` | Azure ASB emulator | `ASB_CONNECTION_STRING` | `ConnectionString(t) string` |
-| `testutil/s3local` | `minio/minio` | `S3_ENDPOINT` | `Client(t) *s3.Client` |
-| `testutil/tlsgen` | (none -- pure crypto) | -- | `Generate(Options) (*Result, error)`, `MustGenerate(t, Options)` |
+### 5.2 No build tags
 
-### Automatic Skip Behavior
+Integration tests are gated by `testing.Short()` and the Docker
+probe — **not** by a build tag. A `//go:build integration` line in
+an integration test is wrong; remove it.
 
-Test utilities automatically skip tests when:
-- `testing.Short()` is true (`-short` flag)
-- Docker is not available and no environment variable is set
+### 5.3 Container hygiene
 
-This means `make test` always succeeds without Docker.
+- Containers are named `gobridge-<package>-<uuid>`. Never use a
+  fixed name; parallel CI jobs will collide.
+- `WithCleanOrphans(true)` in `TestMain` removes leftovers from
+  earlier runs — this is the only cleanup mechanism the suite relies
+  on, so container names must keep the `gobridge-` prefix.
+- If you need to nuke leftovers manually, `docker ps -aq --filter name=gobridge-`
+  followed by `docker rm -f` does it; there is no Make target for
+  this on purpose (the helpers self-clean).
 
-### Orphan Cleanup
+### 5.4 What to assert
 
-Test containers use prefixed names (e.g. `gobridge-ddblocal-<uuid>`). The `WithCleanOrphans(true)` option removes any leftover containers from previous runs. `make docker-clean` removes all orphaned gobridge containers.
+Integration tests assert on the **port contract**, not on the
+vendor SDK shape. If your test ends up reading
+`*sqs.ReceiveMessageOutput.Messages[0].MessageId`, that is unit-test
+territory — replace it with an assertion through the
+`ports.Receiver` / `ports.Delivery` surface.
 
-### End-to-End Tests
+### 5.5 Cross-module flows belong in `tests/integration/`
 
-The `tests/integration/` directory contains full bridge flow tests:
+A test that wires the full bridge (config → builder → runtime →
+Docker brokers → assertions) is **not** an adapter test; it is an
+end-to-end test and lives in `tests/integration/`. These tests
+import only the public API of each module.
 
-```go
-func TestMain(m *testing.M) {
-    ddblocal.Configure(ddblocal.WithCleanOrphans(true))
-    sqslocal.Configure(sqslocal.WithCleanOrphans(true))
-    // mqttlocal.Configure(...)
+---
 
-    code := m.Run()
+## 6. Long-running tests
 
-    ddblocal.Shutdown()
-    sqslocal.Shutdown()
-    os.Exit(code)
-}
+These exist to catch what unit and integration tests cannot:
+goroutine leaks, soak behaviour, broker-crash recovery, real
+back-pressure, multi-hop flows, lease takeover races. They are
+expensive and must remain invisible to default `go test` runs.
 
-func TestE2E_MQTTToSQS(t *testing.T) {
-    // Wire up full bridge: config -> builder -> runtime
-    // Send messages via MQTT, verify arrival in SQS
-}
-```
+### 6.1 Mandatory shape
 
-These tests exercise the complete pipeline: config parsing, builder wiring, runtime startup, message flow, and graceful shutdown.
-
-## Metrics Testing
-
-Use `ports.RecordingExporter` for testing metrics emissions:
+Every long-running test file starts with:
 
 ```go
-func TestMetrics(t *testing.T) {
-    rec := &ports.RecordingExporter{}
+//go:build longrunning
 
-    // ... run code that emits metrics with rec as the exporter ...
-
-    entries := rec.FindEntries("bridge.delivery.latency")
-    if len(entries) == 0 {
-        t.Fatal("expected latency metric")
-    }
-}
+package longrunning
 ```
 
-## Writing New Tests
+The build tag is the only thing keeping these tests off PR runs.
+A long-running test without the tag is a CI accident waiting to
+happen.
 
-### Checklist
+### 6.2 Where they live
 
-1. **Unit test**: Does the component work in isolation? Use fakes for dependencies.
-2. **Conformance test**: Does the store implementation pass the shared suite?
-3. **Error paths**: Are all error conditions tested (transient, permanent, expired)?
-4. **Concurrency**: Use `-race` flag (enabled by default in Makefile targets).
-5. **Cleanup**: Register cleanup functions with `t.Cleanup()` or defer.
+- Directory: `tests/longrunning/` (its own Go module — see
+  `tests/longrunning/go.mod`).
+- One file per use-case or gap: `uc<NN>_<topic>_test.go` for
+  scenario tests, `gap_<topic>_test.go` for gap probes
+  (e.g. `gap_goroutine_leak_test.go`).
+- Shared helpers in `longrunning_test.go` and
+  `longrunning_perf_helpers_test.go`.
 
-### File Naming
+### 6.3 How they run
 
-- `foo_test.go` -- unit tests for `foo.go`
-- `integration_test.go` -- integration tests requiring Docker
-- `fakes_test.go` -- shared test doubles within a package
+- Locally: `make test-long-running` (10 800 s timeout, requires
+  Docker, writes `reports/test-long-running.log`).
+- CI: scheduled (nightly / pre-release), **not** on every PR.
+- They never run inside `make test` or `make test-integration` —
+  the Makefile excludes `tests/longrunning/` explicitly.
+
+### 6.4 Determinism even at length
+
+Long-running ≠ allowed-to-be-flaky. The same anti-flake rules
+apply:
+
+- No `time.Sleep` for synchronisation. Use `clocktest`, channels,
+  or `require.Eventually` with a generous timeout.
+- Fail loudly: a leak detector that prints a warning and passes
+  is worse than no leak detector. `t.Fatalf` on the first proven
+  leak.
+- Bound resource usage. A soak test that allocates without bound
+  cannot tell flakiness from a real regression.
+
+### 6.5 What belongs here
+
+| Belongs in long-running | Belongs in integration | Belongs in unit |
+|---|---|---|
+| broker crash + reconnect | adapter sends a message and gets an ack | the BackoffPolicy multiplier is correctly applied |
+| 60-minute soak with leak detection | round-tripping a message through a real container | `Envelope.Clone()` deep-copies headers |
+| multi-hop bridge mesh | a single bridge instance with one route | route policy normalisation |
+| lease handover under load | one acquire + one renew | `LeaseToken.Version` monotonicity |
+
+If it can be shrunk to seconds without losing meaning, it is an
+integration test, not a long-running one.
+
+---
+
+## 7. Test fixtures and shared helpers
+
+- `testutil/*local` — Docker container helpers (DynamoDB, SQS, ASB,
+  S3). Each exposes `Configure`, `Shutdown`, and a typed
+  `Client(t)`.
+- `testutil/tlsgen` — pure-crypto TLS material generator. No Docker.
+- `domain/clock/clocktest` — fake clock. The only blessed way to
+  drive time forward.
+- `ports/storetest` — conformance suites for `LeaseStore`,
+  `OutboxStore`, `DLQStore`. Mandatory for every new store.
+- `ports.RecordingExporter` — records metric emissions for
+  assertion. Use `FindEntries(name)` rather than indexing into the
+  internal slice.
+
+When the helper you need does not exist, add it next to the existing
+ones using the same shape. Do not inline its logic into the test.
+
+---
+
+## 8. Running the suite
+
+```bash
+# Unit tests + timing audits. Must pass on every save.
+make test
+
+# Unit + integration. Requires Docker. Used by `make check-all`.
+make test-integration
+
+# Long-running suite (build tag `longrunning`, Docker required, hours).
+make test-long-running
+
+# CI gates
+make check       # build + lint + unit
+make check-all   # build + lint + integration
+```
+
+`make test` is the contract: it must remain green on a fresh laptop
+with no Docker. If a change to a unit test breaks that contract,
+the change is wrong.
+
+---
+
+## 9. Checklist for every new test
+
+Before you push, walk this list explicitly. Yes, it is tedious; that
+is the point.
+
+- [ ] The test is unambiguously **unit**, **integration**, or
+      **long-running** — and is in the right directory and (for
+      long-running) carries `//go:build longrunning`.
+- [ ] No `time.Sleep`. No `time.Now()` outside an injected `Clock`.
+- [ ] All goroutines, files, containers, env vars, and registry
+      mutations are registered with `t.Cleanup` at acquisition.
+- [ ] Assertions go through ports, not vendor SDK types.
+- [ ] Errors compared with `errors.Is` / `errors.As`, not strings.
+- [ ] If the code under test is a store, the conformance suite
+      from `ports/storetest` is invoked.
+- [ ] The test runs green under `-race`.
+- [ ] No imports of sibling adapters, sibling processors, or
+      unexported identifiers from another module.
+- [ ] If it needs Docker, it skips automatically when Docker is
+      absent (uses a `testutil/*local` helper).
+- [ ] If it is long-running, the build tag is on every file in the
+      package, and the test fails fast on a real regression rather
+      than logging and continuing.
+
+A reviewer will check the same list. Saving them the round-trip is
+the whole point of having it written down.

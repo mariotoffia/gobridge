@@ -106,28 +106,18 @@ This runs `go test -short -race -timeout 120s ./...`. The `-short` flag causes a
 
 ### Run Integration Tests
 
-Integration tests require Docker containers. You can either let the test helpers start ephemeral containers automatically, or use persistent containers for faster iteration:
+Integration tests require Docker. Each `testutil/*local` helper starts an
+ephemeral container the first time it is called from a `TestMain`, reuses
+it for the rest of the run, and shuts it down on teardown. Set the
+matching environment variable (see the table below) to point the helpers
+at an already-running endpoint instead of letting them start their own
+container.
 
 ```bash
-# Option A: Persistent containers (faster for repeated runs)
-make docker-up
-DYNAMODB_ENDPOINT=http://127.0.0.1:8000 \
-SQS_ENDPOINT=http://127.0.0.1:9324 \
-MQTT_BROKER_URL=tcp://127.0.0.1:1883 \
-make test-integration
-
-# Option B: Automatic ephemeral containers (slower but zero setup)
 make test-integration
 ```
 
 `make test-integration` runs `go test -race -timeout 600s -v ./...` with dummy AWS credentials set for the SDK.
-
-### Stop and Clean Docker
-
-```bash
-make docker-down   # Stop persistent containers
-make docker-clean  # Remove ALL orphaned gobridge-* containers and networks
-```
 
 ## Environment Variables
 
@@ -263,25 +253,56 @@ When adding a new adapter or processor module:
 ### Hexagonal Layer Rules
 
 These rules are enforced by `make lint-arch`. The full ruleset lives in
-`.go-arch-lint.yml`.
+`.go-arch-lint.yml`. The bounded-context decomposition of `domain/`
+and the cross-context dependencies are described in
+[DDD.md](DDD.md); ubiquitous-language terms are defined in
+[UBIQUITOUS.md](UBIQUITOUS.md).
 
-- **domain/** — stdlib only. No other gobridge package, no vendor.
-- **ports/** — domain/ only.
-- **config/** — domain/ + `gopkg.in/yaml.v3` only.
+- **domain/shared, domain/messaging, domain/clock** — stdlib only. No project
+  dependencies.
+- **domain/persistence** — stdlib + `domain/shared` + `domain/messaging`
+  (`OutboxRecord` embeds `messaging.Envelope`).
+- **domain/routing** — stdlib + `domain/shared` + `domain/messaging`.
+- **domain/connectivity** — stdlib + `domain/shared`.
+- **ports/** — every `domain/*` context. No external vendors.
+- **config/** — `ports`, every `domain/*` context, plus `gopkg.in/yaml.v3`
+  and `github.com/go-viper/mapstructure/v2` (the only inner-ring
+  vendors). Wire-format marshalling lives here, not in `ports/`.
 - **observability/** — stdlib only.
 - **logging/** — stdlib only.
-- **circuitbreaker/** — domain/ only.
-- **validate/** — domain/, ports/.
-- **runtime/** — domain/, ports/, observability/, logging/.
-- **bridge/** — config/, ports/, runtime/, domain/, logging/.
-- **transport adapters** — ports/, domain/, logging/, circuitbreaker/, vendor SDK. Never bridge/, config/, or another adapter.
-- **store implementation adapters** — ports/, domain/, logging/, vendor SDK. Never aggregators.
-- **store factory aggregators** (`adapters/native/store`, `adapters/aws/store`) — ports/, domain/, logging/, only their own store impls. Never bridge/ or config/.
-- **config source adapters** (`adapters/native/config/file`, `adapters/aws/config/dynamodb`) — config/, domain/, logging/, vendor SDK. The single adapter category allowed to import config.
-- **credential / observability / cluster adapters** — ports/, domain/, logging/, vendor SDK.
-- **processors/** — ports/, domain/, circuitbreaker/. Never runtime/ or bridge/.
-- **httpapi/** — runtime/, config/, ports/, domain/, observability/.
-- **cmd/, deployment/** — composition roots; any project package and any vendor.
+- **circuitbreaker/** — `ports` + every `domain/*` context (the breaker
+  satisfies `ports.CircuitBreaker`; adapters depend on the port, not on
+  this package).
+- **validate/** — `ports` + every `domain/*` context.
+- **runtime/** — `ports`, every `domain/*` context, `observability`, `logging`.
+- **bridge/** — `ports`, `runtime`, every `domain/*` context, `logging`.
+  Never depends on `config` directly (the composition root injects a
+  `ports.BlueprintValidator`).
+- **transport adapters** — `ports`, every `domain/*` context, `logging`,
+  vendor SDK. Never `bridge/`, `config/`, sibling adapters, or
+  `circuitbreaker/` (consume `ports.CircuitBreaker` instead).
+- **store implementation adapters** — `ports`, every `domain/*` context,
+  `logging`, vendor SDK. Never aggregators, never sibling stores.
+- **store factory aggregators** (`adapters/native/store`, `adapters/aws/store`)
+  — `ports`, every `domain/*` context, `logging`, only their own store
+  impls. Never `bridge/` or `config/`.
+- **config source adapters** (`adapters/native/config/file`,
+  `adapters/aws/config/dynamodb`) — `config/`, every `domain/*` context,
+  `ports`, `logging`, vendor SDK. The single adapter category allowed
+  to import `config`.
+- **credential / observability / cluster adapters** — `ports`, every
+  `domain/*` context, `logging`, vendor SDK.
+- **processors/** — one component per role; each may depend on `ports`
+  and the `domain/*` contexts it actually uses. Never sibling
+  processors, never `runtime/`, never `bridge/`. Only
+  `processors/circuitbreaker` may import the `circuitbreaker` package
+  (because circuit breaking IS its job).
+- **httpapi/** — `runtime`, `ports`, every `domain/*` context,
+  `observability`, `logging`. The composition root injects a
+  `ports.ConfigStore` for admin operations; `httpapi` does not depend
+  on the `config` parser package directly.
+- **cmd/, deployment/** — composition roots; any project package and
+  any vendor.
 
 ### Package Documentation
 
