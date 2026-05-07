@@ -69,12 +69,11 @@ func newFaultySender(inner ports.Sender, failPercent int) *faultySender {
 }
 
 func (s *faultySender) Send(ctx context.Context, msg ports.OutboundMessage) error {
-	env := msg.Envelope
 	s.calls.Add(1)
 	if rand.IntN(100) < s.failPercent {
 		return shared.ErrUnavailable.WithMessage("faulty sender injected failure")
 	}
-	return s.inner.Send(ctx, ports.OutboundMessage{Envelope: env})
+	return s.inner.Send(ctx, msg)
 }
 
 // slowProcessor adds a configurable delay to each message.
@@ -126,7 +125,6 @@ func newPausableSender(inner ports.Sender) *pausableSender {
 }
 
 func (s *pausableSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
-	env := msg.Envelope
 	s.mu.Lock()
 	if s.paused {
 		ch := s.ch
@@ -139,7 +137,7 @@ func (s *pausableSender) Send(ctx context.Context, msg ports.OutboundMessage) er
 	} else {
 		s.mu.Unlock()
 	}
-	return s.inner.Send(ctx, ports.OutboundMessage{Envelope: env})
+	return s.inner.Send(ctx, msg)
 }
 
 func (s *pausableSender) Pause() {
@@ -171,13 +169,12 @@ func newSlowSender(inner ports.Sender, delay time.Duration) *slowSender {
 }
 
 func (s *slowSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
-	env := msg.Envelope
 	select {
 	case <-time.After(s.delay):
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return s.inner.Send(ctx, ports.OutboundMessage{Envelope: env})
+	return s.inner.Send(ctx, msg)
 }
 
 // alwaysFailSender always returns a transient error.
@@ -483,7 +480,7 @@ func (s *errorClassSender) Send(ctx context.Context, msg ports.OutboundMessage) 
 			}
 		}
 	}
-	return s.inner.Send(ctx, ports.OutboundMessage{Envelope: env})
+	return s.inner.Send(ctx, msg)
 }
 
 // ---------------------------------------------------------------------------

@@ -151,7 +151,7 @@
     {
       "id": "T14",
       "title": "Remove stale compatibility assumptions",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "Repo-wide cleanup of stale subject/address semantics in tests, docs, and comments \u2014 safe refactor pass.",

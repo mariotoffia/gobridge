@@ -63,7 +63,7 @@ func TestE2E_MQTTToSQS_SingleTopic(t *testing.T) {
 			Subject: topic,
 			Payload: []byte(fmt.Sprintf(`{"temp":%d}`, 20+i)),
 		}
-		if err := pubTx.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
+		if err := pubTx.Send(context.Background(), ports.OutboundMessage{Envelope: env, Address: topic}); err != nil {
 			t.Fatalf("MQTT Send %d: %v", i, err)
 		}
 	}
@@ -126,7 +126,7 @@ func TestE2E_MQTTToSQS_MultiTopicMerge(t *testing.T) {
 			Subject: tp,
 			Payload: []byte(fmt.Sprintf(`{"topic":"%s"}`, tp)),
 		}
-		if err := pubTx.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
+		if err := pubTx.Send(context.Background(), ports.OutboundMessage{Envelope: env, Address: tp}); err != nil {
 			t.Fatalf("Send %d: %v", i, err)
 		}
 	}
@@ -193,8 +193,8 @@ func TestE2E_MQTTToSQS_HeaderBasedRouting(t *testing.T) {
 	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("m3-pub"), connectivity.SessionEphemeral)
 	pubTx := paho.NewSender(pubSess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
-	_ = pubTx.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "m3-order", Subject: ordersTopic, Payload: []byte(`{"order":"123"}`)}})
-	_ = pubTx.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "m3-alert", Subject: alertsTopic, Payload: []byte(`{"alert":"fire"}`)}})
+	_ = pubTx.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "m3-order", Subject: ordersTopic, Payload: []byte(`{"order":"123"}`)}, Address: ordersTopic})
+	_ = pubTx.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "m3-alert", Subject: alertsTopic, Payload: []byte(`{"alert":"fire"}`)}, Address: alertsTopic})
 
 	ordersBodies := pollSQS(t, ordersClient, ordersQueue, 1, 10*time.Second)
 	alertsBodies := pollSQS(t, alertsClient, alertsQueue, 1, 10*time.Second)
@@ -348,7 +348,7 @@ func TestE2E_MQTTToSQS_BackpressureSQSSlow(t *testing.T) {
 			Subject: topic,
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
 		}
-		if err := pubTx.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
+		if err := pubTx.Send(context.Background(), ports.OutboundMessage{Envelope: env, Address: topic}); err != nil {
 			t.Fatalf("Send %d: %v", i, err)
 		}
 	}

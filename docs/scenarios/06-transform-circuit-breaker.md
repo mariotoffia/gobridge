@@ -250,7 +250,7 @@ The circuit breaker is partitioned by key. Different strategies provide differen
 | Strategy | Function | Behavior |
 |----------|----------|----------|
 | Global | `circuitbreaker.GlobalKey()` | Single breaker for all messages. One failing destination opens the breaker for everyone. |
-| Subject | `circuitbreaker.SubjectKey()` | Separate breaker per `Envelope.Subject`. Failure on topic A does not affect topic B. |
+| Subject | `circuitbreaker.SubjectKey()` | Separate breaker per `Envelope.Subject` (the logical event subject). Failures on subject A do not affect subject B. |
 | Header | `circuitbreaker.HeaderKey("tenant-id")` | Separate breaker per header value. Tenant isolation -- one tenant's failures do not block others. |
 
 ### State Transition Details

@@ -283,7 +283,7 @@ Blast radius: low.
 - Update transport configuration docs for MQTT topic and AMQP routing key behavior.
 - Acceptance: docs no longer describe rendered addresses becoming `Envelope.Subject`.
 
-### 14. Remove stale compatibility assumptions
+### 14. Remove stale compatibility assumptions - DONE
 
 - Search for tests or docs that assert resolved address appears in `Envelope.Subject`.
 - Replace them with explicit address assertions or transport-specific headers.

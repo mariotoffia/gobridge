@@ -41,7 +41,7 @@ func (s *failFirstNSender) Send(ctx context.Context, msg ports.OutboundMessage) 
 		return shared.ErrUnavailable.WithMessage(
 			fmt.Sprintf("failFirstN: attempt %d/%d for %s", n, s.maxFails, env.ID))
 	}
-	return s.inner.Send(ctx, ports.OutboundMessage{Envelope: env})
+	return s.inner.Send(ctx, msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -59,8 +59,7 @@ func newCountingSender(inner ports.Sender) *countingSender {
 }
 
 func (s *countingSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
-	env := msg.Envelope
-	err := s.inner.Send(ctx, ports.OutboundMessage{Envelope: env})
+	err := s.inner.Send(ctx, msg)
 	if err != nil {
 		s.failures.Add(1)
 	} else {
@@ -85,7 +84,6 @@ func newDegradedSender(inner ports.Sender, failPct int, latency time.Duration) *
 }
 
 func (s *degradedSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
-	env := msg.Envelope
 	if s.latency > 0 {
 		select {
 		case <-time.After(s.latency):
@@ -97,7 +95,7 @@ func (s *degradedSender) Send(ctx context.Context, msg ports.OutboundMessage) er
 	if rand.IntN(100) < s.failPercent {
 		return shared.ErrUnavailable.WithMessage("degraded sender: injected failure")
 	}
-	return s.inner.Send(ctx, ports.OutboundMessage{Envelope: env})
+	return s.inner.Send(ctx, msg)
 }
 
 // ---------------------------------------------------------------------------

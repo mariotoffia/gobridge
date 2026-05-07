@@ -152,7 +152,7 @@ func TestUC4_Bidirectional_SQS_MQTT(t *testing.T) {
 				Payload: []byte(fmt.Sprintf("dirB-%d", i)),
 				Headers: map[string]any{"direction": "B"},
 			}
-			if err := pubTx.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
+			if err := pubTx.Send(context.Background(), ports.OutboundMessage{Envelope: env, Address: "uc4/north/data"}); err != nil {
 				t.Errorf("MQTT publish dirB-%d: %v", i, err)
 				return
 			}

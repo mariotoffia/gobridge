@@ -133,7 +133,7 @@ func TestAnaIntg_ReconcileEmptyPlan_DoesNotUnsubscribe(t *testing.T) {
 
 	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 		Subject: topic, Payload: []byte("after-empty-reconcile"),
-	}}); err != nil {
+	}, Address: topic}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -254,7 +254,7 @@ func TestAnaIntg_MultipleReceivers_SameTopic_AllReceive(t *testing.T) {
 	for i := 0; i < n; i++ {
 		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 			Subject: topic, Payload: []byte(fmt.Sprintf("m-%d", i)),
-		}}); err != nil {
+		}, Address: topic}); err != nil {
 			t.Fatalf("Send %d: %v", i, err)
 		}
 	}
@@ -314,7 +314,7 @@ func TestAnaIntg_HighConcurrencyPublish_NoLoss(t *testing.T) {
 			for i := 0; i < perG; i++ {
 				if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
 					Subject: topic, Payload: []byte(fmt.Sprintf("g%d-i%d", id, i)),
-				}}); err != nil {
+				}, Address: topic}); err != nil {
 					t.Errorf("Send g%d i%d: %v", id, i, err)
 					return
 				}

@@ -30,7 +30,6 @@ func newLimitedSender(limit int) *limitedSender {
 }
 
 func (s *limitedSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
-	env := msg.Envelope
 	s.mu.Lock()
 	s.count++
 	n := s.count
@@ -38,7 +37,7 @@ func (s *limitedSender) Send(ctx context.Context, msg ports.OutboundMessage) err
 	if n > s.limit {
 		return fmt.Errorf("simulated failure after %d sends", s.limit)
 	}
-	err := s.inner.Send(ctx, ports.OutboundMessage{Envelope: env})
+	err := s.inner.Send(ctx, msg)
 	if err == nil && n == s.limit {
 		s.once.Do(func() { close(s.reached) })
 	}

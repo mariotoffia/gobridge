@@ -193,7 +193,7 @@ func TestE2E_S3_MQTTToSQS_DirectHold(t *testing.T) {
 		Subject: topic,
 		Payload: []byte(`{"event":"created"}`),
 	}
-	if err := pubSender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
+	if err := pubSender.Send(context.Background(), ports.OutboundMessage{Envelope: env, Address: topic}); err != nil {
 		t.Fatalf("MQTT Send: %v", err)
 	}
 
