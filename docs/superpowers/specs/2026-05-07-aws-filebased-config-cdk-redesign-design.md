@@ -5,8 +5,8 @@ Scope: `deployment/aws-filebased-config/` (cdk + infra; lib runtime unchanged)
 
 ## Problem
 
-The current `GoBridgeService` / `GoBridgeStack` constructs deploy a single ECS task
-with EFS-backed config. Two gaps motivate a redesign:
+The current constructs deploy a single ECS task with EFS-backed config. Two gaps
+motivate a redesign:
 
 1. **No clustered topology.** Filesystem-replicated bridges (multi-worker, single
    control) require RW/RO mount split, ALB admin-API routing, and a control-task
@@ -25,8 +25,6 @@ automatically. Misconfigurations fail at `cdk synth`, not at runtime.
 - Cross-region failover (single-region only).
 - DynamoDB-backed config profile (separate `deployment/aws-dynamodb-config/`).
 - Schema-breaking yaml migrations (handled by runtime, out of scope here).
-- Backward compatibility with `GoBridgeService` / `GoBridgeStack` — module is
-  pre-1.0; old constructs removed in this change.
 
 ## Construct surface
 
@@ -34,7 +32,7 @@ Five public constructs, plus a programmatic `bridge.yaml` builder package:
 
 | Construct | Layer | Purpose |
 |---|---|---|
-| `GoBridgeSingle` | L2 | One ECS task, RW EFS mount, no clustering. Replaces `GoBridgeService`. |
+| `GoBridgeSingle` | L2 | One ECS task, RW EFS mount, no clustering. |
 | `GoBridgeCluster` | L2 | Control + worker services, RW/RO mount split, Cloud Map SD. |
 | `GoBridgeEfsConfig` | L2 | EFS filesystem + access points (RW/RO). Reused by both. |
 | `GoBridgeALBAttachment` | L2 | Listener rules: admin paths → control SD, data paths → worker SD. |
@@ -240,8 +238,6 @@ deployment/aws-filebased-config/
 ├── lib/      (unchanged)
 └── infra/    (BootstrapConfig: add cluster.* fields)
 ```
-
-`stack.go` and `gobridge_service.go` are removed (no deprecation period).
 
 ## Testing approach
 
