@@ -57,7 +57,11 @@ func WithPathPrefix(prefix string) FactoryOption {
 }
 
 func WithClock(clk clock.Clock) FactoryOption {
-	return func(f *Factory) { f.clock = clk }
+	return func(f *Factory) {
+		if clk != nil {
+			f.clock = clk
+		}
+	}
 }
 
 // NewFactory creates an HTTP transport factory.
@@ -69,6 +73,9 @@ func NewFactory(opts ...FactoryOption) *Factory {
 	}
 	for _, o := range opts {
 		o(f)
+	}
+	if f.clock == nil {
+		f.clock = clock.System
 	}
 	return f
 }

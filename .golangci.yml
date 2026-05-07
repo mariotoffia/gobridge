@@ -132,12 +132,27 @@ linters:
       # are split.
       max: 6
 
-    # forbidigo bans direct time.Now() in production code. Exempt paths:
-    # domain/clock/real.go, domain/clock/clocktest/, _test.go, ports/storetest/.
+    # forbidigo bans direct time.Now() and other unabstracted time
+    # primitives in production code. Exempt paths:
+    # domain/clock/real.go, domain/clock/clocktest/, _test.go, ports/storetest/, testutil/.
     forbidigo:
       forbid:
         - pattern: '^time\.Now$'
           msg: "use clock.Now via dependency injection (see domain/clock)"
+        - pattern: '^time\.After$'
+          msg: "use clock.After via dependency injection (see domain/clock)"
+        - pattern: '^time\.NewTimer$'
+          msg: "use clock.NewTimer via dependency injection (see domain/clock)"
+        - pattern: '^time\.NewTicker$'
+          msg: "use clock.NewTicker via dependency injection (see domain/clock)"
+        - pattern: '^time\.Sleep$'
+          msg: "use the cancellable `<-ctx.Done() / <-clk.After(d)` idiom (see domain/clock)"
+        - pattern: '^time\.Tick$'
+          msg: "use clock.NewTicker via dependency injection (see domain/clock)"
+        - pattern: '^time\.Since$'
+          msg: "use clock.Since via dependency injection (see domain/clock)"
+        - pattern: '^time\.Until$'
+          msg: "compute via clk.Now (see domain/clock)"
 
     depguard:
       rules:

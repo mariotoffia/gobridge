@@ -87,7 +87,11 @@ func WithLogger(l *slog.Logger) WatcherOption {
 // WithClock overrides the clock used for timers and tickers.
 // Defaults to clock.System when nil or not set.
 func WithClock(c clock.Clock) WatcherOption {
-	return func(w *Watcher) { w.clk = c }
+	return func(w *Watcher) {
+		if c != nil {
+			w.clk = c
+		}
+	}
 }
 
 // WithWatchConfig applies settings from a ConfigWatchDef (typically read

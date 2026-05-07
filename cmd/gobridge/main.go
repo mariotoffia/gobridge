@@ -12,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/httpapi"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 
@@ -96,7 +97,7 @@ func main() {
 	}()
 
 	// Wait for the supervisor to build and start the initial runtime.
-	rt := waitForSupervisorRuntime(sup, 10*time.Second)
+	rt := waitForSupervisorRuntime(sup, clock.System, 10*time.Second)
 	if rt == nil {
 		logger.Error("supervisor did not produce a runtime within timeout")
 		cancel()
@@ -170,9 +171,9 @@ func main() {
 	logger.Info("bridge stopped")
 }
 
-func waitForSupervisorRuntime(sup *bridge.Supervisor, timeout time.Duration) *goruntime.Runtime {
+func waitForSupervisorRuntime(sup *bridge.Supervisor, clk clock.Clock, timeout time.Duration) *goruntime.Runtime {
 	// ESSENTIAL: runtime init poll
-	deadline := time.After(timeout)
+	deadline := clk.After(timeout)
 	for {
 		if rt := sup.Runtime(); rt != nil {
 			return rt
@@ -180,7 +181,7 @@ func waitForSupervisorRuntime(sup *bridge.Supervisor, timeout time.Duration) *go
 		select {
 		case <-deadline:
 			return nil
-		case <-time.After(20 * time.Millisecond):
+		case <-clk.After(20 * time.Millisecond):
 		}
 	}
 }

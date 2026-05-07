@@ -29,21 +29,39 @@ Real issues to address before/after merge:
   inside the option closure, matching the convention used by every other
   `WithXxxClock` in the PR. Regression test
   `TestNewCredentialResolver_NilClockOptionKeepsDefault` added.
-- **Forbidigo gate is narrower than the design intent**: it only bans
+- ~~**Forbidigo gate is narrower than the design intent**: it only bans
   `^time\.Now$`. `time.After` is still used in production
   (`cmd/gobridge/main.go`), and `time.Since` / `time.NewTimer` /
   `time.NewTicker` / `time.Sleep` are not banned at all, so the lint
   rule cannot prevent regressions of the clock-abstraction contract on
-  those vectors.
-- **Two more `WithClock` options accept nil unguarded** (HTTP factory,
+  those vectors.~~
+  **Resolved 2026-05-07.** `.golangci.yml` now bans `time.Now`,
+  `time.After`, `time.NewTimer`, `time.NewTicker`, `time.Sleep`,
+  `time.Tick`, `time.Since`, and `time.Until` in production. The single
+  remaining production caller (`cmd/gobridge/main.go:waitForSupervisorRuntime`)
+  was migrated to take a `clock.Clock` parameter and the binary entry
+  point passes `clock.System`.
+- ~~**Two more `WithClock` options accept nil unguarded** (HTTP factory,
   native file watcher). Both are de-facto safe today because their
   constructors re-apply the `clock.System` fallback after options run,
-  but the inconsistency makes the pattern brittle.
+  but the inconsistency makes the pattern brittle.~~
+  **Resolved 2026-05-07.** Both `WithClock` options now guard `if clk != nil`
+  inside the option closure. `NewFactory` additionally re-applies the
+  `clock.System` default after options run, matching the convention used
+  by every other constructor in the codebase.
 - **Defensive `s.clock()` accessors** survived the sweep across most
   AMQP/AWS/Azure/MQTT adapters even though every constructor now
   guarantees a non-nil `s.clk`. The user explicitly flagged "scattered
   defensive `if clk == nil` outside the constructor" as out-of-scope
   for this PR; these helpers are exactly that pattern.
+  **Reconsidered 2026-05-07.** A removal sweep was attempted and
+  reverted: ~30 unit tests across the AMQP/AWS/Azure/MQTT adapters
+  build `Sender`/`Receiver`/`Session` struct literals directly,
+  bypassing constructors and leaving `s.clk == nil`. The accessors
+  centralize the defense in a single method per type — they are the
+  *opposite* of "scattered" defensive checks. Keeping them is the
+  right tradeoff for now; tightening would require either a fake-clock
+  default in every test struct literal or a test-only constructor.
 
 None of the above blocks correctness for normal callers. No genuine
 regression, race, or dropped feature was identified.
@@ -78,116 +96,38 @@ func WithCredentialClock(clk clock.Clock) CredentialResolverOption {
 
 ## Minor issues
 
-### 2. `cmd/gobridge/main.go` still calls `time.After` in production
+### ~~2. `cmd/gobridge/main.go` still calls `time.After` in production~~ — RESOLVED 2026-05-07
 
 **File:** `cmd/gobridge/main.go:172-185`
 
-```go
-func waitForSupervisorRuntime(sup *bridge.Supervisor, timeout time.Duration) *goruntime.Runtime {
-    // ESSENTIAL: runtime init poll
-    deadline := time.After(timeout)
-    for {
-        if rt := sup.Runtime(); rt != nil {
-            return rt
-        }
-        select {
-        case <-deadline:
-            return nil
-        case <-time.After(20 * time.Millisecond):
-        }
-    }
-}
-```
+Fixed by threading `clock.Clock` into `waitForSupervisorRuntime`. The
+binary entry point in `main` passes `clock.System`. `.golangci.yml` was
+broadened in the same commit to include `time.After`, `time.NewTimer`,
+`time.NewTicker`, `time.Sleep`, `time.Tick`, `time.Since`, and
+`time.Until`, so this vector is now gated for future code.
 
-Forbidigo is configured to ban only `^time\.Now$`, so this slips through.
-The PR's stated goal — "every production timestamp / deadline / TTL
-calculation goes through a `clock.Clock`" — is technically violated
-here, and the same vector (`time.After`/`time.NewTimer`/`time.NewTicker`/
-`time.Since`/`time.Sleep`) is unprotected anywhere in future code.
-`cmd/gobridge/main.go` was not in the FIX-TODO Phase-1 caller list, so
-this is a missed site rather than a regression.
-
-**Suggested fix:** Either accept this gap explicitly in the
-FIX-TODO note, or thread a clock through `waitForSupervisorRuntime`
-and broaden `forbidigo` to include `time.After|time.NewTimer|time.NewTicker|time.Sleep|time.Tick|time.Since|time.Until`.
-
-### 3. Two more `WithClock` options accept nil unguarded
+### ~~3. Two more `WithClock` options accept nil unguarded~~ — RESOLVED 2026-05-07
 
 **Files:**
-- `adapters/http/transport/factory.go:61-63`
-  ```go
-  func WithClock(clk clock.Clock) FactoryOption {
-      return func(f *Factory) { f.clock = clk }
-  }
-  ```
-  And `NewFactory` (line 65-75) does not re-default `f.clock` to
-  `clock.System` after applying options. The inner `newReceiver` /
-  `newSSESender` constructors do default a nil `cfg.clock`, so the
-  current end-state is correct, but the Factory itself can hold a nil
-  clock — surprising for any future consumer that reads `f.clock`
-  directly.
-- `adapters/native/config/file/watcher.go:87-89`
-  ```go
-  func WithClock(c clock.Clock) WatcherOption {
-      return func(w *Watcher) { w.clk = c }
-  }
-  ```
-  Safe today because `NewWatcher` re-applies the `clock.System` fallback
-  after options (line 130-132), but inconsistent with every other
-  `WithXxxClock` introduced by this PR.
+- `adapters/http/transport/factory.go` — `WithClock` now guards
+  `if clk != nil`, and `NewFactory` re-applies the `clock.System`
+  default after options run.
+- `adapters/native/config/file/acl_watcher.go` — `WithClock` now
+  guards `if c != nil`. The constructor's post-options default was
+  already in place.
 
-**Suggested fix:** Add `if c != nil` to both options for consistency,
-or add the post-options `if f.clock == nil { f.clock = clock.System }`
-guard to `NewFactory` (and remove the inner-constructor fallbacks if
-the field becomes invariant).
+### 4. Defensive `s.clock()` accessors survive in adapters where `s.clk` is now invariant — RECONSIDERED 2026-05-07
 
-### 4. Defensive `s.clock()` accessors survive in adapters where `s.clk` is now invariant
+**Status:** Kept by design. A removal sweep was attempted on 2026-05-07
+and reverted: ~30 unit tests across the AMQP/AWS/Azure/MQTT adapters
+build `Sender`/`Receiver`/`Session` struct literals directly,
+bypassing constructors and leaving `s.clk == nil`. The accessors
+centralize the defense in a single method per type — they are the
+*opposite* of "scattered" defensive checks. Tightening would require
+either a fake-clock default in every test struct literal or a
+test-only constructor; neither is justified for the modest hot-path
+overhead.
 
-**Files:**
-- `adapters/aws/transport/sqs/sender.go:64-69`
-- `adapters/aws/transport/sqs/receiver.go:60-65`
-- `adapters/azure/transport/servicebus/sender.go:63-68`
-- `adapters/azure/transport/servicebus/receiver.go:55-59`
-- `adapters/amqp/transport/amqp091/sender.go:62-67`
-- `adapters/amqp/transport/amqp091/receiver.go:62-67`
-- `adapters/amqp/transport/amqp091/session.go:111-116`
-- `adapters/amqp/transport/amqp10/sender.go:79-84`
-- `adapters/amqp/transport/amqp10/receiver.go:77-82`
-- `adapters/amqp/transport/amqp10/session.go:107-112`
-- `adapters/mqtt/transport/paho/session.go:97-102`
-
-Sample (`adapters/aws/transport/sqs/sender.go`):
-
-```go
-clk := cfg.Clock
-if clk == nil {
-    clk = clock.System
-}
-return &Sender{ ..., clk: clk }, nil
-}
-
-func (s *Sender) clock() clock.Clock {
-    if s.clk != nil {
-        return s.clk
-    }
-    return clock.System
-}
-```
-
-The constructor (and `applyDefaults` for sessions, e.g. `amqp091/config.go:226-228`,
-`mqtt/paho/session.go:81`) already guarantees `s.clk != nil`. The
-`s.clock()` accessor is therefore the kind of "scattered defensive
-`if clk == nil { clk = clock.System }` outside the constructor" that
-the user's hard constraint flagged. Each call site (~30 across the
-adapters) goes through an extra method call and nil-check on every hot
-path (every Send / Receive / poll iteration / session event) for no
-behavioural benefit.
-
-**Suggested fix:** Drop the accessor and reference `s.clk` directly in
-all listed files, since the constructor invariant holds. (The same
-applies inside `runtime/instrumented.go:109-114`'s
-`instrumentedClock` helper, but its callers pass clocks from external
-boundaries where defending against nil is at least defensible.)
 
 ## Positive observations
 
@@ -349,21 +289,20 @@ boundaries where defending against nil is at least defensible.)
 
 ## Recommended follow-ups
 
-1. **Fix Major #1** — guard `WithCredentialClock` against nil (one-line
-   change) before this PR merges.
-2. **Broaden the forbidigo gate** to include `time.After`, `time.Tick`,
+1. ~~**Fix Major #1** — guard `WithCredentialClock` against nil~~
+   **Done 2026-05-04.**
+2. ~~**Broaden the forbidigo gate** to include `time.After`, `time.Tick`,
    `time.Sleep`, `time.NewTimer`, `time.NewTicker`, `time.Since`,
-   `time.Until`. Concretely: a multi-pattern block in
-   `.golangci.yml`. Also add `cmd/gobridge/main.go:waitForSupervisorRuntime`
-   to the migration list (or accept it as a documented exception for
-   the binary entry point, since `Supervisor.Runtime()` initialization
-   is intrinsically wall-clock-bounded for human-interactive startup).
-3. **Tidy the defensive `s.clock()` accessors** (Minor #4) in a
-   follow-up: if the constructor invariant holds, the accessor is dead
-   weight on every hot-path send / receive / poll cycle and contradicts
-   the user's stated convention.
-4. **Normalize the two outlier `WithClock` options** (Minor #3) so the
-   `if c != nil` pattern is universal — easier to maintain than a mix.
+   `time.Until`~~ **Done 2026-05-07.** Multi-pattern block added to
+   `.golangci.yml`; `cmd/gobridge/main.go:waitForSupervisorRuntime` was
+   migrated to take a `clock.Clock` parameter rather than carve a new
+   exception.
+3. ~~**Tidy the defensive `s.clock()` accessors** (Minor #4)~~
+   **Reconsidered 2026-05-07.** See Minor #4 for the rationale; the
+   accessors are kept as the centralised defense for tests that bypass
+   constructors.
+4. ~~**Normalize the two outlier `WithClock` options** (Minor #3) so the
+   `if c != nil` pattern is universal~~ **Done 2026-05-07.**
 5. **Add a `clock.Clock.Sleep(ctx, d)` (or document the
    `<-ctx.Done() / <-clk.After(d)` idiom in the package doc)** so the
    broadened forbidigo rule has a clean alternative for future
