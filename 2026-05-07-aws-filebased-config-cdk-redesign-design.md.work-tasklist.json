@@ -140,7 +140,7 @@
         {
             "id": "T13",
             "title": "Singleton constraint: synth-time scope scan that errors on multiple instances per Stack.",
-            "status": "pending",
+            "status": "done",
             "category_hint": "",
             "suggested_agent": "golang-pro",
             "agent_rationale": "Construct tree walk + error emission in Go; small focused logic.",
@@ -173,7 +173,7 @@
         {
             "id": "T16",
             "title": "LookupBridge(scope, id, prefix) + BridgeRef type; manifest-version check.",
-            "status": "pending",
+            "status": "done",
             "category_hint": "",
             "suggested_agent": "golang-pro",
             "agent_rationale": "Cross-stack SSM lookup helper in Go using awsssm.StringParameter_FromStringParameterName.",
@@ -206,7 +206,7 @@
         {
             "id": "T19",
             "title": "Per-validation-matrix-row negative tests, one named test per row.",
-            "status": "pending",
+            "status": "done",
             "category_hint": "",
             "suggested_agent": "test-automator",
             "agent_rationale": "Targeted negative-path Go tests covering each validation matrix row; pure test authoring.",
@@ -217,7 +217,7 @@
         {
             "id": "T20",
             "title": "Targeted aws-cdk-lib/assertions tests for each construct (resources, IAM, EFS APs, ALB rules, ports, mounts).",
-            "status": "pending",
+            "status": "done",
             "category_hint": "",
             "suggested_agent": "test-automator",
             "agent_rationale": "CDK assertions-based unit tests across constructs; pure test authoring.",
@@ -294,7 +294,7 @@
         {
             "id": "T27",
             "title": "CI check: every kind in ports.DefaultRegistry has matching bridgecfg/<kind>.go AND internal/grants/<kind>.go.",
-            "status": "pending",
+            "status": "done",
             "category_hint": "",
             "suggested_agent": "deployment-engineer",
             "agent_rationale": "CI pipeline enforcement check; small Go program or shell wired into Makefile + CI workflow.",
