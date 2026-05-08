@@ -2,10 +2,8 @@ package validation
 
 import (
 	"fmt"
-	"net/url"
 	"path"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/bridgecfg"
@@ -125,28 +123,9 @@ func validateBridgeID(cfg *ports.BridgeConfig) error {
 // and host (matrix row 9). Iteration order is deterministic so the
 // first error returned is reproducible.
 func validateClusterEndpoints(cfg *ports.BridgeConfig) error {
-	if cfg.Bridge.Cluster == nil || len(cfg.Bridge.Cluster.Endpoints) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(cfg.Bridge.Cluster.Endpoints))
-	for k := range cfg.Bridge.Cluster.Endpoints {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		v := cfg.Bridge.Cluster.Endpoints[k]
-		if v == "" {
-			return &ErrEndpointURL{Key: k, Value: v, Reason: "empty value"}
-		}
-		u, err := url.Parse(v)
-		if err != nil {
-			return &ErrEndpointURL{Key: k, Value: v, Reason: err.Error()}
-		}
-		if u.Scheme == "" {
-			return &ErrEndpointURL{Key: k, Value: v, Reason: "missing scheme"}
-		}
-		if u.Host == "" {
-			return &ErrEndpointURL{Key: k, Value: v, Reason: "missing host"}
+	for _, k := range sortedEndpointKeys(cfg) {
+		if e := parseEndpoint(k, cfg.Bridge.Cluster.Endpoints[k]); e != nil {
+			return e
 		}
 	}
 	return nil
