@@ -43,7 +43,7 @@ const (
 )
 
 // Default Fargate sizing. Picked to match the Single profile baseline
-// in the legacy GoBridgeService construct (CPU=512, mem=1024 MiB).
+// matching the historical defaults (CPU=512, mem=1024 MiB).
 // Both can be overridden via [Props.CPU] / [Props.MemoryMiB].
 const (
 	defaultCPU       = 512.0

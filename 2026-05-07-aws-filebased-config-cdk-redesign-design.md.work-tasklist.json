@@ -184,18 +184,18 @@
     {
       "id": "T17",
       "title": "GoBridgeAlarms bundle construct + AlarmsProps; control-absence, worker-degraded, EFS, ALB alarms.",
-      "status": "pending",
+      "status": "done",
       "category_hint": "Obs",
       "suggested_agent": "architect-aws-serverless",
       "agent_rationale": "CloudWatch Alarms bundle construct wiring metrics from ECS/EFS/ALB to SNS; AWS observability architecture.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
-      "review_round": 0
+      "review_round": 1
     },
     {
       "id": "T18",
       "title": "Delete old efs_config.go, efs_config_test.go, gobridge_service.go, gobridge_service_test.go and update references.",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "File deletion + reference updates after the new constructs land; scoped refactor.",

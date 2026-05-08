@@ -614,8 +614,8 @@ parallel.
 | T14 | `GoBridgeALBAttachment` construct + props. Creates control + worker target groups, attaches ECS services, derives listener rule paths from yaml HTTP receivers + admin API, BasePriority+offsets, health checks `/healthz` with tuned defaults. Validates priority collisions. — DONE | T11, T12 |
 | T15 | Output helpers: `attachment.WithCfnOutputs(prefix)`, `attachment.WithSSMExports(prefix, opts...)` + `ssmexports.IncludeARNs()`. Construct accessors `AdminURL()`, `HealthzURL()`, `PublicDnsName()`, `ControlService()`, `WorkerService()`. — DONE | T14 |
 | T16 | `LookupBridge(scope, id, prefix)` + `BridgeRef` type. Uses `awsssm.StringParameter_FromStringParameterName`. Manifest-version check. | T15 |
-| T17 | `GoBridgeAlarms` bundle construct + `AlarmsProps`. Wires control-absence, worker-degraded, EFS PercentIOLimit, ALB unhealthy, ALB 5xx to supplied SNS topic. Optional `Attachment` prop. Per-alarm threshold + Disable opt-outs. | T11, T12, T14 |
-| T18 | Delete old `efs_config.go`, `efs_config_test.go`, `gobridge_service.go`, `gobridge_service_test.go`. Update any internal references. | T11, T12 |
+| T17 | `GoBridgeAlarms` bundle construct + `AlarmsProps`. Wires control-absence, worker-degraded, EFS PercentIOLimit, ALB unhealthy, ALB 5xx to supplied SNS topic. Optional `Attachment` prop. Per-alarm threshold + Disable opt-outs. — DONE | T11, T12, T14 |
+| T18 | Delete old `efs_config.go`, `efs_config_test.go`, `gobridge_service.go`, `gobridge_service_test.go`. Update any internal references. — DONE | T11, T12 |
 | T19 | Per-validation-matrix-row negative tests, one named test per row (`Test_TierB_Validation_<RowName>`). | T06, T07 |
 | T20 | Targeted `aws-cdk-lib/assertions` tests for each construct (resources, IAM statements, EFS APs, ALB rules, port mappings, mount readOnly flags). | T11, T12, T14, T17 |
 | T21 | Integration test scaffold: `//go:build integration_aws`, `make integration-aws` target. Deploy single + cluster, healthz/status checks, SQS round-trip, cluster worker scale + kill scenario, teardown with `RemovalPolicy.DESTROY` override. | T11, T12, T14 |

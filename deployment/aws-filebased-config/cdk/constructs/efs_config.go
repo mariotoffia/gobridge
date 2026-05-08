@@ -18,7 +18,7 @@ import (
 // Encryption is always on. Performance mode is locked to General Purpose.
 // Both access points share root path "/" and identical POSIX identity;
 // RW vs RO separation is enforced at IAM and ECS volume level (see T08
-// grants and GoBridgeService mount config), NOT at POSIX user level.
+// grants and the facade mount config), NOT at POSIX user level.
 type GoBridgeEfsConfigProps struct {
 	// Vpc is the VPC in which EFS mount targets are created. Required.
 	Vpc awsec2.IVpc

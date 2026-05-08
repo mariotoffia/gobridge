@@ -13,8 +13,9 @@ import (
 )
 
 // defaultMountPath is the EFS mount root assumed when Phase1Input.MountPath
-// is empty. Mirrors the construct default in
-// constructs/gobridge_service.go.
+// is empty. The runtime construct applies its own default independently
+// (see internal/gobridgebase/base.go); Phase 1 is a pre-synth lint and does
+// not need to mirror that value byte-for-byte.
 const defaultMountPath = "/mnt/gobridge"
 
 // controlOnlySubdir is the convention reserved for control-RW
