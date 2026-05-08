@@ -39,6 +39,38 @@ func (b *Builder) WithSQLiteDLQ(path string) *Builder {
 	return b
 }
 
+// WithMemoryOutbox installs the in-memory outbox store. The memory
+// store is intended for single-bridge deployments and tests; cluster
+// mode requires a persistent backend (SQLite or DynamoDB). Calls
+// replace any previously installed outbox.
+func (b *Builder) WithMemoryOutbox() *Builder {
+	b.cfg.Stores.Outbox = memoryStore()
+	return b
+}
+
+// WithMemoryLease installs the in-memory lease store. Same single-
+// bridge caveats as WithMemoryOutbox apply.
+func (b *Builder) WithMemoryLease() *Builder {
+	b.cfg.Stores.Lease = memoryStore()
+	return b
+}
+
+// WithMemoryDLQ installs the in-memory DLQ store. Same single-
+// bridge caveats as WithMemoryOutbox apply.
+func (b *Builder) WithMemoryDLQ() *Builder {
+	b.cfg.Stores.DLQ = memoryStore()
+	return b
+}
+
+// memoryStore is the shared assembly path for the three memory store
+// methods. MemoryConfig has no operator-tunable fields so the
+// helper is parameter-free.
+func memoryStore() *ports.StoreConfig {
+	sc := &ports.StoreConfig{Type: nativestore.MemoryKind}
+	sc.SetDecoded(nativestore.MemoryConfig{}, nil)
+	return sc
+}
+
 // sqliteStore is the shared assembly path for the three SQLite store
 // methods. It validates the path through the adapter's own Validate
 // so the builder rejects empty paths with the same wording the

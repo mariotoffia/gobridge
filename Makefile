@@ -8,7 +8,7 @@
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
 .PHONY: arch-graph dupl-report goconst-report arch-quality
-.PHONY: build-aclcheck lint-acl build-aggcheck lint-aggregate build-cfgshape lint-cfgshape
+.PHONY: build-aclcheck lint-acl build-aggcheck lint-aggregate build-cfgshape lint-cfgshape build-registrychk lint-registrychk
 
 GOBRIDGE_GO_CACHE ?= /tmp/gobridge-go-build-cache
 export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
@@ -105,7 +105,7 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 # Lint targets
 # ============================================================================
 
-lint: lint-arch-check lint-gofmt lint-go-vet lint-go lint-aggregate lint-acl lint-cfgshape ## Run all static checks across the workspace
+lint: lint-arch-check lint-gofmt lint-go-vet lint-go lint-aggregate lint-acl lint-cfgshape lint-registrychk ## Run all static checks across the workspace
 
 lint-go: ## Run golangci-lint across all workspace modules (uses .golangci.yml at the repo root)
 	@echo "Running golangci-lint across all modules..."
@@ -224,6 +224,19 @@ lint-cfgshape: build-cfgshape ## Enforce typed pluggable config shapes
 		echo "--- cfgshape $$dir ---" | tee -a reports/cfgshape.log; \
 		(cd "$$dir" && go vet -vettool=$(PWD)/bin/cfgshape ./... 2>&1) | tee -a $(PWD)/reports/cfgshape.log; \
 	done'
+
+build-registrychk: ## Build the registrychk tool
+	@mkdir -p bin
+	@cd scripts/registrychk && go build -o $(PWD)/bin/registrychk ./...
+
+# lint-registrychk is enforcing: every kind in ports.DefaultRegistry
+# that is AWS-deployable has both a bridgecfg builder (With<Kind>*)
+# and a grants helper (cdk/constructs/internal/grants/<kind>.go).
+# Pure non-AWS kinds (azure.*, amqp.*) are skipped — the file-based
+# config CDK only deploys to AWS.
+lint-registrychk: build-registrychk ## Enforce CDK builder + grants coverage for all AWS-deployable plugin kinds
+	@echo "Running registrychk..."
+	@$(PWD)/bin/registrychk
 
 # ============================================================================
 # Maintenance targets

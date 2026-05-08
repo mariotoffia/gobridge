@@ -283,7 +283,7 @@
         {
             "id": "T26",
             "title": "Update docs/aws-deployment/tco.md if cluster default sizing changes cost shape.",
-            "status": "pending",
+            "status": "done",
             "category_hint": "Cost",
             "suggested_agent": "technical-writer",
             "agent_rationale": "TCO documentation refresh; conditional prose update.",

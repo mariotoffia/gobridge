@@ -142,8 +142,8 @@ type assetSource struct {
 	path string
 }
 
-func (s *assetSource) Kind() string                  { return "asset" }
-func (s *assetSource) sealedBridgeConfigSource()     {}
+func (s *assetSource) Kind() string              { return "asset" }
+func (s *assetSource) sealedBridgeConfigSource() {}
 
 func (s *assetSource) Materialize() (*Materialized, error) {
 	if s.path == "" {

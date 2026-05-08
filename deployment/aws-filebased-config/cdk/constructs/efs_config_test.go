@@ -39,8 +39,8 @@ func TestGoBridgeEfsConfig_DefaultConfig(t *testing.T) {
 		"PerformanceMode": "generalPurpose",
 	})
 	tpl.HasResource(jsii.String("AWS::EFS::FileSystem"), map[string]any{
-		"DeletionPolicy":        "Retain",
-		"UpdateReplacePolicy":   "Retain",
+		"DeletionPolicy":      "Retain",
+		"UpdateReplacePolicy": "Retain",
 	})
 }
 

@@ -73,10 +73,10 @@ func newApp(t *testing.T) (awscdk.App, awscdk.Stack, awsec2.IVpc, elbv2.IApplica
 		Vpc: vpc, InternetFacing: jsii.Bool(true),
 	})
 	listener := alb.AddListener(jsii.String("L"), &elbv2.BaseApplicationListenerProps{
-		Port:                jsii.Number(80),
-		Protocol:            elbv2.ApplicationProtocol_HTTP,
-		Open:                jsii.Bool(false),
-		DefaultAction:       elbv2.ListenerAction_FixedResponse(jsii.Number(404), nil),
+		Port:          jsii.Number(80),
+		Protocol:      elbv2.ApplicationProtocol_HTTP,
+		Open:          jsii.Bool(false),
+		DefaultAction: elbv2.ListenerAction_FixedResponse(jsii.Number(404), nil),
 	})
 	return app, stack, vpc, listener
 }

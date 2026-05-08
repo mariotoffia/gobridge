@@ -194,17 +194,17 @@ func NewGoBridgeALBAttachment(scope constructs.Construct, id *string, props *Att
 	// 4. Build the two target groups. For Single both forward to
 	//    the same service but stay as distinct TG resources.
 	controlTG := elbv2.NewApplicationTargetGroup(c, jsii.String("ControlTG"), &elbv2.ApplicationTargetGroupProps{
-		Vpc:        props.Vpc,
-		Port:       jsii.Number(controlPort),
-		Protocol:   elbv2.ApplicationProtocol_HTTP,
-		TargetType: elbv2.TargetType_IP,
+		Vpc:         props.Vpc,
+		Port:        jsii.Number(controlPort),
+		Protocol:    elbv2.ApplicationProtocol_HTTP,
+		TargetType:  elbv2.TargetType_IP,
 		HealthCheck: hc,
 	})
 	workerTG := elbv2.NewApplicationTargetGroup(c, jsii.String("WorkerTG"), &elbv2.ApplicationTargetGroupProps{
-		Vpc:        props.Vpc,
-		Port:       jsii.Number(workerPort),
-		Protocol:   elbv2.ApplicationProtocol_HTTP,
-		TargetType: elbv2.TargetType_IP,
+		Vpc:         props.Vpc,
+		Port:        jsii.Number(workerPort),
+		Protocol:    elbv2.ApplicationProtocol_HTTP,
+		TargetType:  elbv2.TargetType_IP,
 		HealthCheck: hc,
 	})
 

@@ -11,11 +11,11 @@ import (
 	awssqs "github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
 	"github.com/aws/jsii-runtime-go"
 
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/bridgecfg"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgealbattachment"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgecluster"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 
@@ -29,12 +29,12 @@ import (
 // integrationFixture bundles the resolved CDK objects shared by
 // scenarios so each test file can stay focused on its scenario.
 type integrationFixture struct {
-	Stack       awscdk.Stack
-	Vpc         awsec2.IVpc
-	Listener    elbv2.IApplicationListener
-	InboundQ    awssqs.Queue
-	OutboundQ   awssqs.Queue
-	Attachment  *gobridgealbattachment.GoBridgeALBAttachment
+	Stack      awscdk.Stack
+	Vpc        awsec2.IVpc
+	Listener   elbv2.IApplicationListener
+	InboundQ   awssqs.Queue
+	OutboundQ  awssqs.Queue
+	Attachment *gobridgealbattachment.GoBridgeALBAttachment
 }
 
 // lookupVpc builds an IVpc from the sandbox env. FromLookup requires

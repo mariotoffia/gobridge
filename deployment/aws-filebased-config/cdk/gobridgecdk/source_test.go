@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/mariotoffia/gobridge/config"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/bridgecfg"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/ports"
