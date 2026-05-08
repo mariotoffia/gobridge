@@ -11,7 +11,7 @@ import (
 	awssqs "github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
 	"github.com/aws/jsii-runtime-go"
 
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/bridgecfg"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgealbattachment"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgecluster"
