@@ -39,9 +39,7 @@ type Builder struct {
 	routeIDs    map[string]struct{}
 
 	// scanSecrets toggles the plaintext-secrets pass run from
-	// Build. On by default; tests that want to assert raw builder
-	// output without the scanner intercepting can disable it via
-	// disableSecretScan (test-only helper).
+	// Build. On by default.
 	scanSecrets bool
 }
 
@@ -113,13 +111,4 @@ func (b *Builder) reserveID(set map[string]struct{}, kind, name string) bool {
 	}
 	set[name] = struct{}{}
 	return true
-}
-
-// disableSecretScan turns off the plaintext-secret pass that Build
-// otherwise runs. Test-only helper kept lower-case so it does not
-// leak into the public surface; secrets_test.go and builder_test.go
-// touch it through reflection-free package-internal access.
-func (b *Builder) disableSecretScan() *Builder {
-	b.scanSecrets = false
-	return b
 }

@@ -141,7 +141,7 @@ func findAllowStatement(t *testing.T, stack awscdk.Stack, wantActions ...string)
 	for _, a := range wantActions {
 		want[a] = true
 	}
-	var visit func(pd map[string]any) map[string]any
+	var visit func(pd map[string]any) map[string]any //nolint:staticcheck // S1021 false positive: recursive closure must be declared before assignment.
 	visit = func(pd map[string]any) map[string]any {
 		stmts, _ := pd["Statement"].([]any)
 		for _, s := range stmts {

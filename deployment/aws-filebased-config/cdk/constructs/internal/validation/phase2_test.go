@@ -40,10 +40,10 @@ func errorMessages(t *testing.T, stack awscdk.Stack) []string {
 	}
 	out := make([]string, 0, len(*msgs))
 	for _, m := range *msgs {
-		if m == nil || m.Entry == nil {
+		if m == nil || m.Entry == nil { //nolint:staticcheck // CDK assertions API still surfaces SynthesisMessage; no replacement on Annotations.FindError yet.
 			continue
 		}
-		switch v := m.Entry.Data.(type) {
+		switch v := m.Entry.Data.(type) { //nolint:staticcheck // see above
 		case string:
 			out = append(out, v)
 		case *string:

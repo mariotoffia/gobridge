@@ -230,7 +230,7 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 func newUnhealthyAlarm(scope constructs.Construct, id string, tg elbv2.ApplicationTargetGroup,
 	period awscdk.Duration, evals *float64, action awscloudwatch.IAlarmAction, desc string,
 ) awscloudwatch.IAlarm {
-	metric := tg.MetricUnhealthyHostCount(&awscloudwatch.MetricOptions{
+	metric := tg.Metrics().UnhealthyHostCount(&awscloudwatch.MetricOptions{
 		Statistic: jsii.String("Maximum"),
 		Period:    period,
 	})
@@ -250,7 +250,7 @@ func newUnhealthyAlarm(scope constructs.Construct, id string, tg elbv2.Applicati
 func new5xxAlarm(scope constructs.Construct, id string, tg elbv2.ApplicationTargetGroup,
 	period awscdk.Duration, evals, threshold *float64, action awscloudwatch.IAlarmAction, desc string,
 ) awscloudwatch.IAlarm {
-	metric := tg.MetricHttpCodeTarget(elbv2.HttpCodeTarget_TARGET_5XX_COUNT, &awscloudwatch.MetricOptions{
+	metric := tg.Metrics().HttpCodeTarget(elbv2.HttpCodeTarget_TARGET_5XX_COUNT, &awscloudwatch.MetricOptions{
 		Statistic: jsii.String("Sum"),
 		Period:    period,
 	})

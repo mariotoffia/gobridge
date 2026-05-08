@@ -181,7 +181,7 @@ no rule can cleanly encode. Review aids, not gates.
 
 ## 5. Working as an agent
 
-1. `make test` and `make lint` before declaring done. Same gates as CI.
+1. `make test` and `make lint` before declaring done. Same gates as CI. **Both must be green on the working branch.** If either fails — including issues that pre-date your changes but landed on the branch — fix them. Do not declare "pre-existing" or "unrelated" and move on; you own the branch state when you commit.
 2. Architectural changes (new component, new vendor dep, new port) require `.go-arch-lint.yml` edit per §3 + sentinel in `scripts/lint-arch-mapping-test.sh`.
 3. Test changes follow `TESTS.md`, including the per-test checklist and bans on `time.Sleep` and mock generators.
 4. Documentation belongs in the canonical files in §1. New runbooks go under `docs/runbooks/` or extend an existing doc; do not drop new MDs in the repo root.

@@ -173,7 +173,7 @@ func TestLookupBridge_ManifestVersionDummyToleratedOnFirstSynth(t *testing.T) {
 	ann := assertions.Annotations_FromStack(stack)
 	errs := ann.FindError(jsii.String("*"), assertions.Match_AnyValue())
 	for _, e := range *errs {
-		msg := fmt.Sprintf("%v", e.Entry.Data)
+		msg := fmt.Sprintf("%v", e.Entry.Data) //nolint:staticcheck // SynthesisMessage.Entry deprecation has no replacement on Annotations.FindError yet.
 		if strings.Contains(msg, "gobridgecdk.LookupBridge") {
 			t.Fatalf("unexpected LookupBridge annotation error on first synth: %s", msg)
 		}
@@ -202,7 +202,7 @@ func TestLookupBridge_ManifestVersionMismatchEmitsAnnotationError(t *testing.T) 
 	want := gobridgealbattachment.ManifestVersion
 	var found bool
 	for _, e := range *errs {
-		msg := fmt.Sprintf("%v", e.Entry.Data)
+		msg := fmt.Sprintf("%v", e.Entry.Data) //nolint:staticcheck // see above
 		if !strings.Contains(msg, "gobridgecdk.LookupBridge") {
 			continue
 		}

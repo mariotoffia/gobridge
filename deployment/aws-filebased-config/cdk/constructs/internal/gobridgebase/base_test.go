@@ -26,11 +26,6 @@ bridge:
   id: test-bridge
 `
 
-const sampleYAMLNoHTTP = `
-bridge:
-  id: test-bridge
-`
-
 func writeTempYAML(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()
