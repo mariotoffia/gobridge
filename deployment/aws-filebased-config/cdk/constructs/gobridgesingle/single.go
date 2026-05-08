@@ -212,7 +212,8 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 	cluster := props.Cluster
 	if cluster == nil {
 		cluster = awsecs.NewCluster(c, jsii.String("Cluster"), &awsecs.ClusterProps{
-			Vpc: props.Vpc,
+			Vpc:                 props.Vpc,
+			ContainerInsightsV2: awsecs.ContainerInsights_ENABLED,
 		})
 	}
 
@@ -259,14 +260,14 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 	// deployment strategy. ServiceName is optional — when nil CDK
 	// generates a stable physical id.
 	svcProps := &awsecs.FargateServiceProps{
-		Cluster:                 cluster,
-		TaskDefinition:          built.TaskDefinition,
-		DesiredCount:            jsii.Number(1),
-		MinHealthyPercent:       jsii.Number(0),
-		MaxHealthyPercent:       jsii.Number(100),
-		SecurityGroups:          &[]awsec2.ISecurityGroup{sg},
-		EnableExecuteCommand:    jsii.Bool(false),
-		CircuitBreaker:          &awsecs.DeploymentCircuitBreaker{Rollback: jsii.Bool(true)},
+		Cluster:              cluster,
+		TaskDefinition:       built.TaskDefinition,
+		DesiredCount:         jsii.Number(1),
+		MinHealthyPercent:    jsii.Number(0),
+		MaxHealthyPercent:    jsii.Number(100),
+		SecurityGroups:       &[]awsec2.ISecurityGroup{sg},
+		EnableExecuteCommand: jsii.Bool(false),
+		CircuitBreaker:       &awsecs.DeploymentCircuitBreaker{Rollback: jsii.Bool(true)},
 	}
 	if props.VpcSubnets != nil {
 		svcProps.VpcSubnets = props.VpcSubnets

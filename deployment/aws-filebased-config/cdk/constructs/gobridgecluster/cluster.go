@@ -261,7 +261,8 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 	cluster := props.Cluster
 	if cluster == nil {
 		cluster = awsecs.NewCluster(c, jsii.String("Cluster"), &awsecs.ClusterProps{
-			Vpc: props.Vpc,
+			Vpc:                 props.Vpc,
+			ContainerInsightsV2: awsecs.ContainerInsights_ENABLED,
 		})
 	}
 
