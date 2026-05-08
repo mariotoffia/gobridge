@@ -96,7 +96,7 @@
         {
             "id": "T09",
             "title": "GoBridgeEfsConfig construct: EFS filesystem + control-RW/worker-RO access points.",
-            "status": "pending",
+            "status": "done",
             "category_hint": "",
             "suggested_agent": "architect-aws-serverless",
             "agent_rationale": "AWS construct authoring (EFS, encryption, KMS, throughput, access points, mount targets).",
@@ -107,13 +107,13 @@
         {
             "id": "T10",
             "title": "cdk/constructs/internal/gobridgebase/: shared facade base \u2014 Fargate task def, EFS mounts, seeder init, IAM, ports.",
-            "status": "pending",
+            "status": "done",
             "category_hint": "",
             "suggested_agent": "architect-aws-serverless",
             "agent_rationale": "Shared ECS/Fargate construct base wiring EFS volumes, seeder init container, port mappings, IAM grants \u2014 AWS architecture core.",
             "body_suggested_agents": [],
             "body_suggested_skills": [],
-            "review_round": 0
+            "review_round": 1
         },
         {
             "id": "T11",

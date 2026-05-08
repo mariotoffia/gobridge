@@ -155,7 +155,7 @@ func TestGoBridgeEfsConfig_ReuseExistingFileSystem(t *testing.T) {
 				jsii.String("sg-12345678"), nil),
 		})
 
-	gobridgecdk.NewGoBridgeEfsConfig(stack, jsii.String("Efs"),
+	cfg := gobridgecdk.NewGoBridgeEfsConfig(stack, jsii.String("Efs"),
 		&gobridgecdk.GoBridgeEfsConfigProps{Vpc: vpc, FileSystem: imported})
 
 	tpl := assertions.Template_FromStack(stack, nil)
@@ -163,6 +163,20 @@ func TestGoBridgeEfsConfig_ReuseExistingFileSystem(t *testing.T) {
 	tpl.ResourceCountIs(jsii.String("AWS::EFS::AccessPoint"), jsii.Number(2))
 	// Backup is also skipped when reusing FS (we don't own the lifecycle).
 	tpl.ResourceCountIs(jsii.String("AWS::Backup::BackupPlan"), jsii.Number(0))
+
+	// Orphan SG fix (T10 follow-up a): no SG is created on the
+	// reuse-existing path. Imported SG is created by the test
+	// (ImpSG) but the construct itself does not add another one.
+	if cfg.SecurityGroup() != nil {
+		t.Fatalf("SecurityGroup() must be nil when reusing existing FileSystem, got %v", cfg.SecurityGroup())
+	}
+	// Only the imported SG (ImpSG) exists; no construct-owned SG.
+	sgs := tpl.FindResources(jsii.String("AWS::EC2::SecurityGroup"), nil)
+	for id := range *sgs {
+		if strings.Contains(id, "EfsSG") {
+			t.Fatalf("unexpected construct-owned EfsSG resource %q", id)
+		}
+	}
 }
 
 func TestGoBridgeEfsConfig_ThroughputOverride(t *testing.T) {

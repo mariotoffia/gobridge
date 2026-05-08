@@ -132,7 +132,7 @@ func NewGoBridgeService(scope constructs.Construct, id *string, props *GoBridgeS
 			FileSystemId:      efsConfig.FileSystem().FileSystemId(),
 			TransitEncryption: jsii.String("ENABLED"),
 			AuthorizationConfig: &awsecs.AuthorizationConfig{
-				AccessPointId: efsConfig.AccessPoint().AccessPointId(),
+				AccessPointId: efsConfig.ControlAccessPoint().AccessPointId(),
 				Iam:           jsii.String("ENABLED"),
 			},
 		},
@@ -190,13 +190,16 @@ func NewGoBridgeService(scope constructs.Construct, id *string, props *GoBridgeS
 		Description: jsii.String("gobridge Fargate task"),
 	})
 
-	// Allow task -> EFS
-	efsConfig.SecurityGroup().AddIngressRule(
-		svcSG,
-		awsec2.Port_Tcp(jsii.Number(2049)),
-		jsii.String("gobridge task NFS access"),
-		jsii.Bool(false),
-	)
+	// Allow task -> EFS (skipped when reusing an external filesystem
+	// whose security group the operator owns).
+	if sg := efsConfig.SecurityGroup(); sg != nil {
+		sg.AddIngressRule(
+			svcSG,
+			awsec2.Port_Tcp(jsii.Number(2049)),
+			jsii.String("gobridge task NFS access"),
+			jsii.Bool(false),
+		)
+	}
 
 	// Service
 	svc := awsecs.NewFargateService(c, jsii.String("Svc"), &awsecs.FargateServiceProps{

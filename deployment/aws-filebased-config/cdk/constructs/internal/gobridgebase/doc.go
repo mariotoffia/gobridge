@@ -1,0 +1,27 @@
+// Package gobridgebase is the shared facade base used by the
+// GoBridgeSingle (T11) and GoBridgeCluster (T12) public constructs.
+//
+// It owns the parts of the deployment that are identical for the
+// single-node and clustered topologies:
+//
+//   - the Fargate task definition (one per service kind: control vs
+//     worker), parameterised by [Mode];
+//   - a single EFS volume bound to the appropriate access point
+//     exposed by [GoBridgeEfsConfig] (control mounted RW, worker
+//     mounted with readOnly:true at the ECS volume layer);
+//   - the seeder init container (see internal/seeder), wired with
+//     EXPECTED_HASH and MODE env vars so worker tasks gate startup
+//     on config drift while control tasks materialise the file;
+//   - one CloudWatch log group per container with a stable
+//     "/gobridge/<construct-id>/<container-name>" prefix and
+//     RemovalPolicy.RETAIN by default;
+//   - port mappings derived from the parsed [BridgeConfig] and
+//     [BootstrapConfig] — never hard-coded;
+//   - task and execution IAM roles plus per-adapter grants applied
+//     by iterating over the registry kinds present in the parsed
+//     bridge config (see internal/grants).
+//
+// The package is internal: only the GoBridge{Single,Cluster}
+// constructs may import it. Consumers of the public CDK module
+// interact with the base indirectly through those facades.
+package gobridgebase

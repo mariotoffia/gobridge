@@ -99,16 +99,21 @@ func NewGoBridgeEfsConfig(scope constructs.Construct, id *string, props *GoBridg
 		panic("GoBridgeEfsConfig: VpcSubnets selection resolved to zero subnets")
 	}
 
-	sg := awsec2.NewSecurityGroup(c, jsii.String("EfsSG"), &awsec2.SecurityGroupProps{
-		Vpc:              props.Vpc,
-		Description:      jsii.String("gobridge EFS mount target access"),
-		AllowAllOutbound: jsii.Bool(false),
-	})
-
+	var sg awsec2.SecurityGroup
 	var fs awsefs.IFileSystem
 	if props.FileSystem != nil {
 		fs = props.FileSystem
 	} else {
+		// SecurityGroup is only created on the new-FS path. When
+		// reusing an existing filesystem the caller already owns the
+		// mount-target SG; creating one here would leave an orphan
+		// resource in the synthesized template.
+		sg = awsec2.NewSecurityGroup(c, jsii.String("EfsSG"), &awsec2.SecurityGroupProps{
+			Vpc:              props.Vpc,
+			Description:      jsii.String("gobridge EFS mount target access"),
+			AllowAllOutbound: jsii.Bool(false),
+		})
+
 		throughput := awsefs.ThroughputMode_ELASTIC
 		if props.ThroughputMode != "" {
 			throughput = props.ThroughputMode
@@ -180,15 +185,10 @@ func (c *GoBridgeEfsConfig) ControlAccessPoint() awsefs.AccessPoint { return c.c
 func (c *GoBridgeEfsConfig) WorkerAccessPoint() awsefs.AccessPoint { return c.workerAP }
 
 // SecurityGroup returns the security group attached to the mount targets.
+// Returns nil when an existing FileSystem is reused (the caller owns the SG).
 func (c *GoBridgeEfsConfig) SecurityGroup() awsec2.SecurityGroup { return c.securityGrp }
 
 // VpcSubnets returns the resolved subnet selection used for mount targets.
 // Parent constructs use this to validate that the consuming ECS services
 // run in the same subnet selection.
 func (c *GoBridgeEfsConfig) VpcSubnets() *awsec2.SubnetSelection { return c.vpcSubnets }
-
-// AccessPoint is a deprecated shim returning ControlAccessPoint to keep
-// the legacy GoBridgeService construct compiling during the redesign.
-//
-// Deprecated: use ControlAccessPoint or WorkerAccessPoint.
-func (c *GoBridgeEfsConfig) AccessPoint() awsefs.AccessPoint { return c.controlAP }

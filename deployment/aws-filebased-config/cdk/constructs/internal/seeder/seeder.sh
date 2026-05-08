@@ -155,12 +155,23 @@ sys.stdout.write(hashlib.sha256(canon.encode("utf-8")).hexdigest())
 PY
 }
 
-# --- writability probe (exit 40) -------------------------------------------
+# --- writability probe + canon staging dir (exit 40) -----------------------
+# AbortDeploy runs as the Worker, which is granted ClientMount only on EFS
+# (no ClientWrite). Writing under TARGET_DIR — even a probe or a staged canon
+# file — would EACCES and fail the deploy. Skip the probe and stage the
+# canonical asset under /tmp; TARGET_DIR is still read for hash comparison.
 TARGET_DIR=$(dirname -- "$EFS_TARGET_PATH")
-mkdir -p -- "$TARGET_DIR" 2>/dev/null || die 40 "efs_not_writable" "path" "$TARGET_DIR"
-PROBE=$(mktemp -- "${TARGET_DIR}/.seeder.probe.XXXXXX" 2>/dev/null) \
-  || die 40 "efs_not_writable" "path" "$TARGET_DIR"
-rm -f -- "$PROBE"
+if [ "$MODE" = "AbortDeploy" ]; then
+  STAGE_DIR="/tmp/seeder"
+  mkdir -p -- "$STAGE_DIR" 2>/dev/null \
+    || die 40 "tmp_not_writable" "path" "$STAGE_DIR"
+else
+  mkdir -p -- "$TARGET_DIR" 2>/dev/null || die 40 "efs_not_writable" "path" "$TARGET_DIR"
+  PROBE=$(mktemp -- "${TARGET_DIR}/.seeder.probe.XXXXXX" 2>/dev/null) \
+    || die 40 "efs_not_writable" "path" "$TARGET_DIR"
+  rm -f -- "$PROBE"
+  STAGE_DIR="$TARGET_DIR"
+fi
 
 # --- download asset (exit 20) ----------------------------------------------
 DL=$(mktemp -- "/tmp/bridge.asset.XXXXXX" 2>/dev/null) \
@@ -170,8 +181,8 @@ if ! aws s3 cp "$ASSET_S3_URI" "$DL" >/dev/null 2>&1; then
 fi
 
 # --- canonicalize asset (exit 30) ------------------------------------------
-ASSET_CANON=$(mktemp -- "${TARGET_DIR}/.seeder.asset.XXXXXX" 2>/dev/null) \
-  || die 40 "efs_not_writable" "path" "$TARGET_DIR"
+ASSET_CANON=$(mktemp -- "${STAGE_DIR}/.seeder.asset.XXXXXX" 2>/dev/null) \
+  || die 40 "stage_not_writable" "path" "$STAGE_DIR"
 if ! ASSET_HASH=$(canon_write "$DL" "$ASSET_CANON" 2>/dev/null); then
   die 30 "yaml_unparseable" "source" "asset"
 fi
