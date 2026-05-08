@@ -618,7 +618,7 @@ parallel.
 | T18 | Delete old `efs_config.go`, `efs_config_test.go`, `gobridge_service.go`, `gobridge_service_test.go`. Update any internal references. — DONE | T11, T12 |
 | T19 | Per-validation-matrix-row negative tests, one named test per row (`Test_TierB_Validation_<RowName>`). | T06, T07 |
 | T20 | Targeted `aws-cdk-lib/assertions` tests for each construct (resources, IAM statements, EFS APs, ALB rules, port mappings, mount readOnly flags). | T11, T12, T14, T17 |
-| T21 | Integration test scaffold: `//go:build integration_aws`, `make integration-aws` target. Deploy single + cluster, healthz/status checks, SQS round-trip, cluster worker scale + kill scenario, teardown with `RemovalPolicy.DESTROY` override. | T11, T12, T14 |
+| T21 | Integration test scaffold: `//go:build integration_aws`, `make integration-aws` target. Deploy single + cluster, healthz/status checks, SQS round-trip, cluster worker scale + kill scenario, teardown with `RemovalPolicy.DESTROY` override. — DONE | T11, T12, T14 |
 | T22 | Update `deployment/aws-filebased-config/README.md`: new construct table, quickstart compose snippet, singleton warning, secrets policy. | T11, T12, T14, T15, T17 |
 | T23 | Update `deployment/aws-filebased-config/ARCHITECTURE.md`: single+cluster diagrams, tier B explanation, "no Cloud Map" rationale (LeaseStore peer discovery). | T22 |
 | T24 | Update `deployment/aws-filebased-config/UBIQUITOUS.md`: `QueueRegistry`, `SsmParamRegistry`, `OnConfigDrift`, `BridgeConfigSource`, `BridgeRef`, `LookupBridge`. | T22 |

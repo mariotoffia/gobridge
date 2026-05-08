@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "2026-05-07-aws-filebased-config-cdk-redesign-design.md",
-  "source_sha": "f7a4616587b5d5fc5a36ea877c2551f7c2824a6cb1da373614e09ac095489dfd",
+  "source_sha": "7c574068afa059e45a32bc99625a37892180b7dc117349643b4bcfed2717c0cb",
   "indexed_at": "2026-05-08T09:45:00Z",
   "status_convention": "Tasks live in a markdown table under '## Tasks'. No completion markers present in the source. To mark a task complete, append ' \u2014 DONE' suffix to the end of the Task column (column 2) of that row. status='pending' = no suffix; status='done' = ' \u2014 DONE' suffix; status='blocked' = ' \u2014 BLOCKED' suffix; status='skipped' = ' \u2014 SKIPPED' suffix.",
   "tasks": [
@@ -228,7 +228,7 @@
     {
       "id": "T21",
       "title": "Integration test scaffold: //go:build integration_aws, make integration-aws target.",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "test-automator",
       "agent_rationale": "Integration-test harness wiring deploy/healthz/SQS round-trip/teardown \u2014 test infrastructure.",
