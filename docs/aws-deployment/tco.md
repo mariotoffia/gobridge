@@ -214,7 +214,8 @@ Set retention based on environment to control storage costs:
 | Production | 90 days | Compliance and incident investigation |
 
 The CDK construct defaults to `ONE_WEEK`. Override via the `LogRetention`
-prop on `GoBridgeServiceProps`.
+prop on `gobridgecluster.ClusterProps` (applied to both the control and
+worker services).
 
 ### Reducing Observability Costs
 
@@ -312,24 +313,32 @@ A production deployment with two replicas, NAT Gateway, and ALB.
 CloudWatch Logs (~$15 for two endpoints in one AZ) to save ~$17/month,
 bringing the total to approximately $76/month.
 
-### Production Cluster (~$250--350/month)
+### Production Cluster (~$130--200/month)
 
-A high-availability cluster with dedicated control and worker tasks, VPC
-endpoints, and full observability.
+A high-availability cluster with a dedicated control task, two worker tasks,
+VPC endpoints, and full observability. Sizing matches the
+`gobridgecluster.GoBridgeCluster` construct defaults: one control Fargate
+task (RW EFS, `DesiredCount=1` hard-coded) plus `WorkerDesiredCount=2`
+worker tasks (RO EFS), each at 0.5 vCPU / 1 GiB. Override per-cluster via
+`ClusterProps.CPU`, `ClusterProps.MemoryMiB`, and
+`ClusterProps.WorkerDesiredCount`; opt the worker service into target-tracking
+CPU autoscaling by setting `ClusterProps.AutoScaling` (`AutoScalingProps{Min,
+Max, TargetCPU}`).
 
 | Component | Configuration | Monthly cost |
 |-----------|--------------|--------------|
-| Fargate (On-Demand) | 1 control + 4 workers, 1 vCPU, 2 GiB each | ~$180 |
-| EFS (Standard) | Shared config across 5 tasks | ~$0.10 |
+| Fargate (On-Demand) | 1 control + 2 workers, 0.5 vCPU, 1 GiB each (defaults) | ~$54 |
+| EFS (Standard) | Shared config across 3 tasks | ~$0.10 |
 | VPC Endpoints | SSM, SQS, Logs, ECR (1 AZ) | ~$29 |
 | ALB | 1 load balancer, higher LCU usage | ~$18 |
 | CloudWatch | 90-day retention, ~20 GB/month, 15 alarms, 20 metrics, 1 dashboard | ~$25 |
 | X-Ray | 10% sampling | ~$5 |
-| **Total** | | **~$257** |
+| **Total** | | **~$131** |
 
-**Scaling note:** Adding a sixth worker task at 1 vCPU / 2 GiB adds
-approximately $36/month on-demand or $11/month on Spot. The fixed costs
-(VPC endpoints, ALB, CloudWatch) remain constant.
+**Scaling note:** Each additional worker task at the default 0.5 vCPU / 1 GiB
+adds approximately $18/month on-demand or $5/month on Spot — either by raising
+`WorkerDesiredCount` or by letting `AutoScaling` scale up under load. The
+fixed costs (VPC endpoints, ALB, CloudWatch) remain constant.
 
 ---
 
@@ -396,7 +405,7 @@ The table below provides a quick reference for budget planning.
 | Dev/Test (Spot, with ALB) | $3 | $16 | $0.50 | $0.06 | **~$20** |
 | Production Single | $36 | $48 | $8 | $0.60 | **~$93** |
 | Production Single (optimized) | $36 | $31 | $8 | $0.60 | **~$76** |
-| Production Cluster | $180 | $47 | $30 | $0.10 | **~$257** |
+| Production Cluster | $54 | $47 | $30 | $0.10 | **~$131** |
 
 Costs are rounded to the nearest dollar. Actual bills may vary by 10--15%
 depending on data transfer, Logs Insights query volume, and LCU consumption.
