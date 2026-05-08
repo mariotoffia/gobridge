@@ -23,6 +23,7 @@ import (
 
 	cdkconstructs "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/gobridgebase"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/singleton"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/validation"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
@@ -408,7 +409,7 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 		SsmParamRegistry: props.SsmParamRegistry,
 	})
 
-	return &GoBridgeCluster{
+	facade := &GoBridgeCluster{
 		Construct:   c,
 		controlBase: controlBuilt,
 		workerBase:  workerBuilt,
@@ -419,6 +420,12 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 		controlSG:   controlSG,
 		workerSG:    workerSG,
 	}
+	// Pass the inner construct (not the facade) because jsii rejects
+	// re-embedding a constructs.Construct proxy in another Go value
+	// when that value has not been registered with the jsii runtime.
+	singleton.Register(c, "cluster")
+	singleton.Enforce(c)
+	return facade
 }
 
 // ControlService returns the underlying control ECS Fargate service.

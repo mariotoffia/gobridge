@@ -21,6 +21,7 @@ import (
 
 	cdkconstructs "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/gobridgebase"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/singleton"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/validation"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
@@ -289,7 +290,7 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 		SsmParamRegistry: props.SsmParamRegistry,
 	})
 
-	return &GoBridgeSingle{
+	facade := &GoBridgeSingle{
 		Construct: c,
 		base:      built,
 		service:   svc,
@@ -297,6 +298,12 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 		efsConfig: efsConfig,
 		sg:        sg,
 	}
+	// Pass the inner construct (not the facade) because jsii rejects
+	// re-embedding a constructs.Construct proxy in another Go value
+	// when that value has not been registered with the jsii runtime.
+	singleton.Register(c, "single")
+	singleton.Enforce(c)
+	return facade
 }
 
 // Service returns the underlying ECS Fargate service.
