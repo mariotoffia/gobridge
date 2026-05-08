@@ -261,7 +261,7 @@
     {
       "id": "T24",
       "title": "Update deployment/aws-filebased-config/UBIQUITOUS.md with new identifiers.",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "technical-writer",
       "agent_rationale": "Glossary/ubiquitous-language doc update; pure prose.",

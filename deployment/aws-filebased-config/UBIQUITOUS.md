@@ -54,6 +54,28 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 
 | Term | Meaning |
 |---|---|
-| **L2 construct** | `GoBridgeEfsConfig`, `GoBridgeService`. Composable; consumers wire their own VPC / cluster / ALB. |
-| **L3 stack** | `GoBridgeStack`. Opinionated single-call deployment for default-VPC use. |
+| **L2 construct** | `GoBridgeSingle`, `GoBridgeCluster`, `GoBridgeAlarms`. Composable; consumers wire their own VPC / cluster / ALB. There is no L3 stack — see [ARCHITECTURE.md](ARCHITECTURE.md). |
 | **Exposure** | `infra.Exposure` flags (`Admin`, `Monitor`, `TransportHTTP`) selecting which container ports get mapped. Admin :8080 is always mapped (health check requirement) regardless of `Admin`. |
+| **BridgeConfigSource** | Sealed type representing the source of bridge YAML supplied to a `GoBridgeSingle`/`GoBridgeCluster`. Two constructors: `BridgeYamlAsset(path)` (file → S3 asset) and `BridgeYamlInline(*ports.BridgeConfig)` (in-memory builder output). Construct unwraps internally. Lives in `cdk/gobridgecdk/`. |
+
+### Registries
+
+Explicit producer→consumer wiring for resources referenced by name from bridge YAML. See ARCHITECTURE.md → "Source resolution & cross-stack lookup" and Tier B (Phase 2).
+
+| Term | Meaning |
+|---|---|
+| **QueueRegistry** | Explicit `string→awssqs.IQueue` map provided as a construct prop. Tier B resolves YAML SQS-by-name references via `QueueRegistry.Ref(name) → QueueRef`. No auto-import scanning. Missing entry → `addError` with self-healing message: `registry.AddQueue("X", queue)`. Lives in `cdk/registry/`. |
+| **SsmParamRegistry** | Explicit `string-URI→awsssm.IParameter` map. Tier B resolves YAML SSM URI references via `SsmParamRegistry.Ref(uri) → ParamRef`. Keyed by full URI / parameter path (e.g. `/bridge/mqtt`). Missing entry → `addError`: `registry.AddParameter("/path", param)`. Lives in `cdk/registry/`. |
+
+### Drift policy
+
+| Term | Meaning |
+|---|---|
+| **OnConfigDrift** | Drift-handling policy applied by the seeder init container when comparing the bundled asset against the existing EFS file (canonical SHA-256). Three modes: `SeedOnce` (default — seed iff absent, warn if drifted), `Overwrite` (CDK source of truth, GitOps), `AbortDeploy` (strict — exit 10 on hash mismatch). On the cluster, the worker seeder is fixed to `AbortDeploy`. Configured per-construct via `SeederMode` / `ControlSeederMode` props. |
+
+### Cross-stack lookup
+
+| Term | Meaning |
+|---|---|
+| **BridgeRef** | Consumer-side handle returned by `LookupBridge`. Exposes the same accessor surface (`AdminURL`, `HealthzURL`, optional ARNs) as the producing constructs but resolves values lazily through SSM tokens. |
+| **LookupBridge** | Top-level helper `gobridgecdk.LookupBridge(scope, id, ssmPrefix)` returning a `BridgeRef`. Reads `<prefix>/admin-url`, `<prefix>/healthz-url`, `<prefix>/manifest-version` (and optional `<prefix>/alb-arn`, `<prefix>/cluster-arn`, `<prefix>/efs-id` if producer used `IncludeARNs()`). Backed by `awsssm.StringParameter_FromStringParameterName` — soft coupling, deploy-time token, producer rotates freely. Manifest-version sentinel allows future schema breaks to fail consumer synth fast. |
