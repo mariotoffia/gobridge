@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "2026-05-07-aws-filebased-config-cdk-redesign-design.md",
-  "source_sha": "0ab05921929ea8228e2aa79340d90396c485b04973090cb19bdd40438f1ed514",
+  "source_sha": "8312982110f272db5d9e5b2fe76295c80b7f269156d39a43d4360628969b03f8",
   "indexed_at": "2026-05-08T00:00:00Z",
   "status_convention": "Tasks live in a markdown table under '## Tasks'. No completion markers present in the source. To mark a task complete, append ' \u2014 DONE' suffix to the end of the Task column (column 2) of that row. status='pending' = no suffix; status='done' = ' \u2014 DONE' suffix; status='blocked' = ' \u2014 BLOCKED' suffix; status='skipped' = ' \u2014 SKIPPED' suffix.",
   "tasks": [
@@ -41,7 +41,7 @@
     {
       "id": "T04",
       "title": "cdk/bridgecfg/: builder package \u2014 fluent BridgeConfig builder + round-trip tests.",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "Hand-written fluent Go builder package with comprehensive unit tests including marshal round-trip.",

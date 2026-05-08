@@ -6,10 +6,45 @@ require (
 	github.com/aws/aws-cdk-go/awscdk/v2 v2.248.0
 	github.com/aws/constructs-go/constructs/v10 v10.6.0
 	github.com/aws/jsii-runtime-go v1.127.0
+	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge/adapters/native/store v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra v0.0.0
 )
 
-require github.com/kr/text v0.2.0 // indirect
+require (
+	github.com/aws/aws-sdk-go-v2 v1.41.5 // indirect
+	github.com/aws/aws-sdk-go-v2/config v1.32.12 // indirect
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.12 // indirect
+	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.20 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.21 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.21 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/ini v1.8.6 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.7 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.20 // indirect
+	github.com/aws/aws-sdk-go-v2/service/signin v1.0.8 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.24 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sso v1.30.13 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.17 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sts v1.41.9 // indirect
+	github.com/aws/smithy-go v1.24.2 // indirect
+	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/eclipse/paho.golang v0.23.0 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/memorylease v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox v0.0.0 // indirect
+	github.com/ncruces/go-strftime v1.0.0 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	golang.org/x/net v0.52.0 // indirect
+	modernc.org/libc v1.70.0 // indirect
+	modernc.org/mathutil v1.7.1 // indirect
+	modernc.org/memory v1.11.0 // indirect
+	modernc.org/sqlite v1.47.0 // indirect
+)
 
 require (
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
@@ -17,7 +52,6 @@ require (
 	github.com/cdklabs/awscdk-asset-node-proxy-agent-go/nodeproxyagentv6/v2 v2.1.1 // indirect
 	github.com/cdklabs/cloud-assembly-schema-go/awscdkcloudassemblyschema/v53 v53.0.0 // indirect
 	github.com/fatih/color v1.18.0 // indirect
-	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/mariotoffia/gobridge v0.0.0
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
@@ -36,3 +70,21 @@ require (
 replace github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra => ../infra
 
 replace github.com/mariotoffia/gobridge => ../../..
+
+replace github.com/mariotoffia/gobridge/adapters/aws/transport/sqs => ../../../adapters/aws/transport/sqs
+
+replace github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho => ../../../adapters/mqtt/transport/paho
+
+replace github.com/mariotoffia/gobridge/adapters/native/store => ../../../adapters/native/store
+
+replace github.com/mariotoffia/gobridge/adapters/native/store/memorydlq => ../../../adapters/native/store/memorydlq
+
+replace github.com/mariotoffia/gobridge/adapters/native/store/memorylease => ../../../adapters/native/store/memorylease
+
+replace github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox => ../../../adapters/native/store/memoryoutbox
+
+replace github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq => ../../../adapters/native/store/sqlitedlq
+
+replace github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox => ../../../adapters/native/store/sqliteoutbox
+
+replace github.com/mariotoffia/gobridge/testutil/wait => ../../../testutil/wait
