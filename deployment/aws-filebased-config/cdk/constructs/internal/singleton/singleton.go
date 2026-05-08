@@ -58,6 +58,15 @@ func stackKey(self constructs.Construct) string {
 // Register records that `self` (a GoBridgeSingle or GoBridgeCluster
 // facade construct) has been created. `kind` must be "single" or
 // "cluster". Calls outside of a Stack are silently ignored.
+//
+// Stale-marker purge: the registry is process-wide and survives
+// `jsii.Close()` between tests, so when a new test allocates a
+// Stack proxy at the same Go address as a torn-down one the marker
+// bucket can hold dangling entries whose underlying jsii object is
+// gone. Probing such an entry from Enforce panics with "no object
+// reference found". Before appending we drop any existing marker
+// whose `Node()` access fails — keeping the bucket consistent with
+// the live kernel.
 func Register(self constructs.Construct, kind string) {
 	key := stackKey(self)
 	if key == "" {
@@ -65,7 +74,29 @@ func Register(self constructs.Construct, kind string) {
 	}
 	registry.Lock()
 	defer registry.Unlock()
-	registry.byStack[key] = append(registry.byStack[key], marker{construct: self, kind: kind})
+	existing := registry.byStack[key]
+	live := existing[:0]
+	for _, m := range existing {
+		if isLive(m.construct) {
+			live = append(live, m)
+		}
+	}
+	registry.byStack[key] = append(live, marker{construct: self, kind: kind})
+}
+
+// isLive returns true if the construct's jsii proxy still resolves.
+// Used to scrub stale markers between test runs (see Register).
+func isLive(c constructs.Construct) (ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			ok = false
+		}
+	}()
+	if c == nil || c.Node() == nil {
+		return false
+	}
+	_ = c.Node().Path()
+	return true
 }
 
 // Enforce registers a synth-time scope scan that panics if more

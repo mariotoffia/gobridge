@@ -33,6 +33,7 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	elbv2 "github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsssm"
 	"github.com/aws/constructs-go/constructs/v10"
 	"github.com/aws/jsii-runtime-go"
 
@@ -40,6 +41,7 @@ import (
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/gobridgebase"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/ssmexports"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -67,6 +69,13 @@ const (
 	// also routed to the control TG ahead of the broader /api/v1/*
 	// rule (lower priority number wins).
 	DefaultAdminStatusPath = "/api/v1/status*"
+
+	// ManifestVersion is the schema sentinel published as
+	// `<prefix>/manifest-version` by [GoBridgeALBAttachment.WithSSMExports].
+	// Bump when the set or semantics of published SSM parameters
+	// changes in a way that consumer LookupBridge code needs to
+	// detect. Treated as an opaque string by consumers.
+	ManifestVersion = "1"
 )
 
 // HealthCheckProps overrides the default health-check configuration
@@ -134,11 +143,17 @@ type AttachmentProps struct {
 type GoBridgeALBAttachment struct {
 	constructs.Construct
 
-	listener  elbv2.IApplicationListener
-	controlTG elbv2.ApplicationTargetGroup
-	workerTG  elbv2.ApplicationTargetGroup
-	rules     []elbv2.ApplicationListenerRule
-	base      int
+	inner      constructs.Construct
+	listener   elbv2.IApplicationListener
+	controlTG  elbv2.ApplicationTargetGroup
+	workerTG   elbv2.ApplicationTargetGroup
+	rules      []elbv2.ApplicationListenerRule
+	base       int
+	dnsName    *string
+	adminURL   *string
+	healthzURL *string
+	clusterArn *string
+	efsID      *string
 }
 
 // NewGoBridgeALBAttachment constructs a [GoBridgeALBAttachment]
@@ -194,11 +209,11 @@ func NewGoBridgeALBAttachment(scope constructs.Construct, id *string, props *Att
 	})
 
 	controlTG.AddTarget(controlSvc.LoadBalancerTarget(&awsecs.LoadBalancerTargetOptions{
-		ContainerName: jsii.String("gobridge"),
+		ContainerName: jsii.String(gobridgebase.ContainerNameMain),
 		ContainerPort: jsii.Number(controlPort),
 	}))
 	workerTG.AddTarget(workerSvc.LoadBalancerTarget(&awsecs.LoadBalancerTargetOptions{
-		ContainerName: jsii.String("gobridge"),
+		ContainerName: jsii.String(gobridgebase.ContainerNameMain),
 		ContainerPort: jsii.Number(workerPort),
 	}))
 
@@ -225,14 +240,40 @@ func NewGoBridgeALBAttachment(scope constructs.Construct, id *string, props *Att
 			[]string{p}, workerTG))
 	}
 
+	dns := loadBalancerOf(props.Listener).LoadBalancerDnsName()
+	adminURL := awscdk.Fn_Join(jsii.String(""), &[]*string{
+		jsii.String("https://"), dns, jsii.String("/api/v1/"),
+	})
+	healthzURL := awscdk.Fn_Join(jsii.String(""), &[]*string{
+		jsii.String("https://"), dns, jsii.String("/healthz"),
+	})
+
+	clusterArn, efsID := resolveImplARNs(props)
+
 	return &GoBridgeALBAttachment{
-		Construct: c,
-		listener:  props.Listener,
-		controlTG: controlTG,
-		workerTG:  workerTG,
-		rules:     rules,
-		base:      base,
+		Construct:  c,
+		inner:      c,
+		listener:   props.Listener,
+		controlTG:  controlTG,
+		workerTG:   workerTG,
+		rules:      rules,
+		base:       base,
+		dnsName:    dns,
+		adminURL:   adminURL,
+		healthzURL: healthzURL,
+		clusterArn: clusterArn,
+		efsID:      efsID,
 	}
+}
+
+// resolveImplARNs returns the ECS cluster ARN and EFS file system ID
+// of the attached facade. Both come straight from the existing
+// facade accessors so we do not reach into private state.
+func resolveImplARNs(p *AttachmentProps) (clusterArn, efsID *string) {
+	if p.Single != nil {
+		return p.Single.Cluster().ClusterArn(), p.Single.EfsConfig().FileSystem().FileSystemId()
+	}
+	return p.Cluster.Cluster().ClusterArn(), p.Cluster.EfsConfig().FileSystem().FileSystemId()
 }
 
 // ControlTargetGroup returns the target group that admin API + status
@@ -258,6 +299,129 @@ func (a *GoBridgeALBAttachment) Rules() []elbv2.ApplicationListenerRule { return
 // BasePriority returns the resolved base priority (post default
 // substitution).
 func (a *GoBridgeALBAttachment) BasePriority() int { return a.base }
+
+// PublicDnsName returns the LoadBalancerDnsName CDK token of the
+// listener's load balancer. Cached at construct time.
+func (a *GoBridgeALBAttachment) PublicDnsName() *string { return a.dnsName }
+
+// AdminURL returns the deploy-time URL where the admin API is
+// reachable: `https://<albdns>/api/v1/`. HTTPS is hard-coded per
+// design (T15) — consumers that terminate HTTP-only must front the
+// ALB themselves.
+func (a *GoBridgeALBAttachment) AdminURL() *string { return a.adminURL }
+
+// HealthzURL returns the deploy-time URL of the worker healthz
+// probe: `https://<albdns>/healthz`.
+func (a *GoBridgeALBAttachment) HealthzURL() *string { return a.healthzURL }
+
+// WithCfnOutputs emits two same-stack CloudFormation outputs:
+// `<prefix>AdminURL` → AdminURL() and `<prefix>HealthzURL` →
+// HealthzURL(). An empty prefix yields the bare names `AdminURL`
+// and `HealthzURL`. Returns the receiver for chaining.
+func (a *GoBridgeALBAttachment) WithCfnOutputs(prefix string) *GoBridgeALBAttachment {
+	mk := func(suffix string, value *string) {
+		name := prefix + suffix
+		out := awscdk.NewCfnOutput(a.inner, jsii.String(name), &awscdk.CfnOutputProps{
+			Value: value,
+		})
+		// CfnOutput logical IDs default to the full construct path
+		// (e.g. `AttOrdersBridgeAdminURLABCDEF12`). Force the bare
+		// `<prefix><suffix>` name documented in the design.
+		out.OverrideLogicalId(jsii.String(name))
+	}
+	mk("AdminURL", a.adminURL)
+	mk("HealthzURL", a.healthzURL)
+	return a
+}
+
+// WithSSMExports publishes the URL set (and optionally the
+// implementation ARNs, when [ssmexports.IncludeARNs] is supplied) as
+// `awsssm.StringParameter`s under the supplied prefix. The prefix
+// must be non-empty and start with `/` — both panic with a clear
+// message otherwise. Returns the receiver for chaining.
+//
+// Always published:
+//
+//	<prefix>/admin-url
+//	<prefix>/healthz-url
+//	<prefix>/manifest-version
+//
+// With [ssmexports.IncludeARNs]:
+//
+//	<prefix>/alb-arn
+//	<prefix>/cluster-arn
+//	<prefix>/efs-id
+func (a *GoBridgeALBAttachment) WithSSMExports(prefix string, opts ...ssmexports.Option) *GoBridgeALBAttachment {
+	if prefix == "" {
+		panic("GoBridgeALBAttachment.WithSSMExports: prefix must not be empty")
+	}
+	if !strings.HasPrefix(prefix, "/") {
+		panic(fmt.Sprintf("GoBridgeALBAttachment.WithSSMExports: prefix %q must start with '/'", prefix))
+	}
+	o := ssmexports.Resolve(opts...)
+
+	publish := func(suffix string, value *string) {
+		name := prefix + "/" + suffix
+		// Logical IDs must be alnum within CloudFormation. Sanitize
+		// the prefix into a stable token by stripping `/` and `-`
+		// boundaries to camel-ish form.
+		logical := "SSM" + sanitizeLogical(prefix) + sanitizeLogical("/"+suffix)
+		awsssm.NewStringParameter(a.inner, jsii.String(logical), &awsssm.StringParameterProps{
+			ParameterName: jsii.String(name),
+			StringValue:   value,
+			Tier:          awsssm.ParameterTier_STANDARD,
+		})
+	}
+	publish("admin-url", a.adminURL)
+	publish("healthz-url", a.healthzURL)
+	publish("manifest-version", jsii.String(ManifestVersion))
+
+	if o.IncludeARNs {
+		publish("alb-arn", loadBalancerOf(a.listener).LoadBalancerArn())
+		publish("cluster-arn", a.clusterArn)
+		publish("efs-id", a.efsID)
+	}
+	return a
+}
+
+// loadBalancerOf returns the IApplicationLoadBalancer the listener
+// belongs to. The listener interface itself does not expose this —
+// the accessor lives on the concrete [elbv2.ApplicationListener]
+// type — so we type-assert and panic with a clear message if a
+// consumer supplied a listener type the attachment cannot derive a
+// DNS name / ARN from. In practice both `addListener` on a created
+// ALB and `ApplicationListener_FromLookup` return the concrete type
+// so this assertion holds.
+func loadBalancerOf(l elbv2.IApplicationListener) elbv2.IApplicationLoadBalancer {
+	al, ok := l.(elbv2.ApplicationListener)
+	if !ok {
+		panic(fmt.Sprintf("GoBridgeALBAttachment: listener %T does not expose LoadBalancer() — cannot derive PublicDnsName/AdminURL/HealthzURL", l))
+	}
+	return al.LoadBalancer()
+}
+
+// sanitizeLogical converts an SSM-prefix-style string into a
+// CloudFormation-safe logical-id fragment. We preserve order so
+// logical IDs stay deterministic across synths.
+func sanitizeLogical(s string) string {
+	var b strings.Builder
+	upper := true
+	for _, r := range s {
+		switch {
+		case r == '/' || r == '-' || r == '_':
+			upper = true
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'):
+			if upper {
+				if r >= 'a' && r <= 'z' {
+					r = r - 'a' + 'A'
+				}
+				upper = false
+			}
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
 
 func addRule(scope constructs.Construct, id string, listener elbv2.IApplicationListener, priority int, paths []string, tg elbv2.ApplicationTargetGroup) elbv2.ApplicationListenerRule {
 	patterns := make([]*string, 0, len(paths))
@@ -311,15 +475,29 @@ func buildHealthCheck(o *HealthCheckProps) *elbv2.HealthCheck {
 	}
 }
 
-func resolveTargets(p *AttachmentProps) (control, worker awsecs.FargateService, controlPort, workerPort float64) {
+func resolveTargets(p *AttachmentProps) (control, worker awsecs.BaseService, controlPort, workerPort float64) {
 	if p.Single != nil {
-		svc := p.Single.Service()
+		svc := mustBaseService(p.Single.ControlService())
 		port := adminPort(p.Single.PortMappings())
 		return svc, svc, port, port
 	}
 	cport := adminPort(p.Cluster.ControlPortMappings())
 	wport := adminPort(p.Cluster.WorkerPortMappings())
-	return p.Cluster.ControlService(), p.Cluster.WorkerService(), cport, wport
+	return mustBaseService(p.Cluster.ControlService()), mustBaseService(p.Cluster.WorkerService()), cport, wport
+}
+
+// mustBaseService asserts that the IService returned by a facade is
+// in fact a [awsecs.BaseService] (i.e. an ECS service the attachment
+// can register as an ALB target). Both facades create FargateService
+// instances which implement BaseService; the assertion exists to
+// fail fast with a clear message if a future facade swaps in a
+// non-base IService.
+func mustBaseService(s awsecs.IService) awsecs.BaseService {
+	bs, ok := s.(awsecs.BaseService)
+	if !ok {
+		panic(fmt.Sprintf("GoBridgeALBAttachment: facade IService %T is not a BaseService — cannot register ALB targets", s))
+	}
+	return bs
 }
 
 func adminPort(mappings []gobridgebase.PortMapping) float64 {

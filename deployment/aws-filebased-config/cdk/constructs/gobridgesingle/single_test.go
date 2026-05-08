@@ -122,8 +122,8 @@ func TestGoBridgeSingle_MainContainer_RWMount(t *testing.T) {
 func TestGoBridgeSingle_Accessors(t *testing.T) {
 	defer jsii.Close()
 	_, g := newSingleStack(t)
-	if g.Service() == nil {
-		t.Fatal("Service() nil")
+	if g.ControlService() == nil {
+		t.Fatal("ControlService() nil")
 	}
 	if g.TaskDefinition() == nil {
 		t.Fatal("TaskDefinition() nil")

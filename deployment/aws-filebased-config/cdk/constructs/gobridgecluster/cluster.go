@@ -428,11 +428,15 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 	return facade
 }
 
-// ControlService returns the underlying control ECS Fargate service.
-func (g *GoBridgeCluster) ControlService() awsecs.FargateService { return g.control }
+// ControlService returns the underlying control ECS Fargate service
+// as the [awsecs.IService] interface per design contract; consumers
+// needing the concrete type can type-assert.
+func (g *GoBridgeCluster) ControlService() awsecs.IService { return g.control }
 
-// WorkerService returns the underlying worker ECS Fargate service.
-func (g *GoBridgeCluster) WorkerService() awsecs.FargateService { return g.worker }
+// WorkerService returns the underlying worker ECS Fargate service
+// as the [awsecs.IService] interface per design contract; consumers
+// needing the concrete type can type-assert.
+func (g *GoBridgeCluster) WorkerService() awsecs.IService { return g.worker }
 
 // ControlTaskDefinition returns the control Fargate task definition
 // built by the shared base.

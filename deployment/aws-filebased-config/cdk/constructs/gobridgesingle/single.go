@@ -306,8 +306,12 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 	return facade
 }
 
-// Service returns the underlying ECS Fargate service.
-func (g *GoBridgeSingle) Service() awsecs.FargateService { return g.service }
+// ControlService returns the underlying ECS Fargate service. The
+// Single profile has no separate worker — see [GoBridgeCluster] for
+// a control + worker pair. Returned as the [awsecs.IService]
+// interface per design contract; consumers needing the concrete
+// type can type-assert.
+func (g *GoBridgeSingle) ControlService() awsecs.IService { return g.service }
 
 // TaskDefinition returns the Fargate task definition built by the
 // shared base.

@@ -151,7 +151,7 @@
     {
       "id": "T14",
       "title": "GoBridgeALBAttachment construct: target groups, listener rules, priorities, health checks.",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "architect-aws-serverless",
       "agent_rationale": "ALB integration construct deriving listener rules from yaml; AWS networking architecture.",
@@ -162,7 +162,7 @@
     {
       "id": "T15",
       "title": "Output helpers: WithCfnOutputs, WithSSMExports + IncludeARNs; construct accessors.",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "golang-pro",
       "agent_rationale": "Go helpers wrapping CfnOutput + SSM StringParameter; accessor methods on existing constructs.",

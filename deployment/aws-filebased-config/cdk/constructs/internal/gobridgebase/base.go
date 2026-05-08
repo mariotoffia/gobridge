@@ -64,9 +64,12 @@ const defaultBridgeYamlName = "bridge.yaml"
 // assert mount points by name.
 const volumeName = "gobridge-config"
 
-// containerNameMain is the logical container name of the gobridge
-// runtime container. Used in the log group prefix.
-const containerNameMain = "gobridge"
+// ContainerNameMain is the logical container name of the gobridge
+// runtime container. Used in the log group prefix and exported so
+// downstream constructs (e.g. the ALB attachment) can refer to it
+// via [awsecs.LoadBalancerTargetOptions.ContainerName] without
+// duplicating the literal.
+const ContainerNameMain = "gobridge"
 
 // containerNameSeeder is the logical container name of the seeder
 // init container.
@@ -250,7 +253,7 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 		logRemoval = props.LogRemovalPolicy
 	}
 	mainLG := awslogs.NewLogGroup(c, jsii.String("MainLogs"), &awslogs.LogGroupProps{
-		LogGroupName:  jsii.String(logGroupPrefix(scopeID, containerNameMain)),
+		LogGroupName:  jsii.String(logGroupPrefix(scopeID, ContainerNameMain)),
 		Retention:     logRetention,
 		RemovalPolicy: logRemoval,
 	})
@@ -302,7 +305,7 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 		panic(fmt.Sprintf("gobridgebase: marshal bootstrap: %v", err))
 	}
 	main := taskDef.AddContainer(jsii.String("Main"), &awsecs.ContainerDefinitionOptions{
-		ContainerName: jsii.String(containerNameMain),
+		ContainerName: jsii.String(ContainerNameMain),
 		Image:         props.Image,
 		Essential:     jsii.Bool(true),
 		Environment: &map[string]*string{
@@ -311,7 +314,7 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 		},
 		Logging: awsecs.LogDriver_AwsLogs(&awsecs.AwsLogDriverProps{
 			LogGroup:     mainLG,
-			StreamPrefix: jsii.String(containerNameMain),
+			StreamPrefix: jsii.String(ContainerNameMain),
 		}),
 	})
 	main.AddMountPoints(&awsecs.MountPoint{
