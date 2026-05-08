@@ -1,0 +1,8 @@
+version: 1
+routes:
+  - name: alpha
+    from: mqtt://broker/topic-a
+    to: sqs://queue-a
+  - name: beta
+    from: mqtt://broker/topic-b
+    to: sqs://queue-b

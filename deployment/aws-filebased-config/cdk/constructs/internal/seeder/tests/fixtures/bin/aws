@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Fake `aws` CLI for seeder tests. Supports only `aws s3 cp <s3uri> <dest>`.
+# Maps s3://test/<name> → ${FIXTURES_DIR}/<name>; missing fixture → exit 1.
+set -euo pipefail
+if [ "${1:-}" = "s3" ] && [ "${2:-}" = "cp" ]; then
+  src="${3:?}"
+  dst="${4:?}"
+  name="${src#s3://test/}"
+  fixture="${FIXTURES_DIR:?FIXTURES_DIR not set}/$name"
+  if [ ! -f "$fixture" ]; then
+    echo "fake-aws: no fixture '$fixture'" >&2
+    exit 1
+  fi
+  cp -- "$fixture" "$dst"
+  exit 0
+fi
+echo "fake-aws: unsupported invocation: $*" >&2
+exit 2

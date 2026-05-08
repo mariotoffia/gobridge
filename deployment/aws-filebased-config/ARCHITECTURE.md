@@ -1,15 +1,15 @@
 # aws-filebased-config — Architecture
 
-This document covers the **internal** architecture of the deployment profile: how the Go modules layer, how the runtime composition works, and how it maps onto the project's DDD model. For end-to-end AWS architecture (VPC, ALB, IAM JSON), see [docs/aws-deployment/overview.md](../../docs/aws-deployment/overview.md).
+Internal architecture of the deployment profile: Go module layering, CDK construct composition, single vs cluster topology, the synth-time validation pipeline ("tier B"), and why peer discovery is EFS-mediated instead of Cloud Map. End-to-end AWS architecture (VPC, ALB, IAM JSON) lives in [docs/aws-deployment/overview.md](../../docs/aws-deployment/overview.md). The DDD mapping lives in [../../DDD.md](../../DDD.md) and the local glossary in [UBIQUITOUS.md](./UBIQUITOUS.md).
 
-## 1. Module Topology
+## Module Topology
 
-Three independent Go modules (separately versionable):
+Three Go modules, separately versionable:
 
 ```mermaid
 flowchart LR
-    INFRA["infra/<br/>BootstrapConfig, ServiceProps,<br/>Exposure, AppSpec"]
-    CDK["cdk/<br/>L2 constructs + L3 stack"]
+    INFRA["infra/<br/>BootstrapConfig, Exposure, AppSpec<br/>(zero external deps)"]
+    CDK["cdk/<br/>L2 constructs + helper packages"]
     LIB["lib/<br/>bootstrap.App + cmd binary"]
     CORE["github.com/mariotoffia/gobridge/*<br/>(bridge, runtime, ports, httpapi, adapters)"]
 
@@ -18,120 +18,241 @@ flowchart LR
     LIB --> CORE
 ```
 
-**Dependency rule:** `infra/` has zero external deps. CDK consumers never pull the runtime tree. The runtime never imports CDK.
+**Dependency rule.** `infra/` imports nothing outside the standard library — CDK consumers never pull in the runtime tree, and the runtime never imports CDK. `lib/model/BootstrapConfig` and `infra.BootstrapConfig` are intentional duplicates so each module can stand alone; equivalence is guarded by tests.
 
-`lib/model/BootstrapConfig` and `infra.BootstrapConfig` are intentional duplicates so each module can stand alone; tests guard the equivalence.
+`cdk/` ships five public L2 constructs plus four supporting packages. There is **no L3 wrapper** — consumers compose the L2s directly inside their own `awscdk.Stack`.
 
-## 2. CDK Composition
+| Path | Role |
+|------|------|
+| `cdk/constructs/gobridgesingle/` | `GoBridgeSingle` facade. |
+| `cdk/constructs/gobridgecluster/` | `GoBridgeCluster` facade. |
+| `cdk/constructs/` (`efs_config.go`) | `GoBridgeEfsConfig` shared EFS + access points. |
+| `cdk/constructs/gobridgealbattachment/` | `GoBridgeALBAttachment` listener-rule wiring. |
+| `cdk/constructs/gobridgealarms/` | `GoBridgeAlarms` opinionated CloudWatch bundle. |
+| `cdk/gobridgecdk/` | Public facade: `BridgeYamlAsset`, `BridgeYamlInline`, sealed `BridgeConfigSource`, `LookupBridge`, `BridgeRef`. |
+| `cdk/bridgecfg/` | Fluent builder for `*ports.BridgeConfig` + `ScanForPlaintextSecrets`. |
+| `cdk/registry/` | `QueueRegistry`, `SsmParamRegistry` and their typed `Ref` accessors. |
+| `cdk/ssmexports/` | Functional options (`IncludeARNs()`) for the cross-stack export contract. |
+| `cdk/constructs/internal/{gobridgebase,grants,seeder,singleton,validation}/` | Private shared machinery — facades MUST NOT be bypassed. |
 
-```mermaid
-flowchart TB
-    Stack["GoBridgeStack (L3, opinionated)"]
-    VPC["awsec2.Vpc<br/>(new or lookup)"]
-    EFS["GoBridgeEfsConfig (L2)<br/>EFS + AccessPoint + SG"]
-    SVC["GoBridgeService (L2)<br/>Cluster + TaskDef + FargateService<br/>+ LogGroup + Scaling + IAM"]
+## Construct Composition
 
-    Stack --> VPC
-    Stack --> EFS
-    Stack --> SVC
-    SVC --> EFS
-    SVC --> VPC
-```
-
-L2 constructs are the **integration boundary** for external stacks. L3 is a convenience wrapper for default-VPC / single-tenant deployments and exposes only a subset of knobs (no `Cluster`, no `LogRetention`, no `Scaling*`, no `SsmParameterArns`).
-
-Wiring done by `GoBridgeService`:
-
-1. EFS access point mounted as a named volume; container mount is **read-only**.
-2. Container env `GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` carries the marshalled `BootstrapConfig`.
-3. Task role granted `elasticfilesystem:ClientMount|ClientRead` and `ssm:GetParameter` over `SsmParameterArns`.
-4. Service security group added as ingress on the EFS SG (port 2049).
-5. Auto-scaling target tracking on CPU (disabled when `ScalingMaxCapacity == 0`).
-
-## 3. Runtime Library (`lib/bootstrap`)
+Both facades route through the same private base; the diagram is the same shape for Single and Cluster — only the service set differs.
 
 ```mermaid
 flowchart TB
-    ENV["GOBRIDGE_FILEBASED_BOOTSTRAP_JSON<br/>or _FILE"] --> APP
-    APP["bootstrap.App"] --> MGR["config.Manager<br/>+ poll watcher"]
-    MGR --> EFSF["EFS bridge.yaml"]
-    APP --> SSM["SSM ParameterResolver<br/>+ ssmrepo CredentialStore"]
-    APP --> HTTPAPI["httpapi.Server<br/>(admin + monitor)"]
-    APP --> TXSRV["transportServer<br/>(:8082 HTTP transport)"]
-    APP --> RT["bridge.Runtime<br/>(swap-on-reload)"]
-    RT --> ADP["transports: mqtt, sqs, http<br/>stores: memory, sqlite"]
+    YAML["BridgeYamlAsset / BridgeYamlInline<br/>(sealed BridgeConfigSource)"]
+    REG["QueueRegistry / SsmParamRegistry"]
+    SINGLE["GoBridgeSingle"]
+    CLUSTER["GoBridgeCluster"]
+    EFS["GoBridgeEfsConfig<br/>(internal use; opt-in BYO)"]
+    BASE["internal/gobridgebase<br/>(task def, mounts, IAM grants,<br/>seeder init container)"]
+    ECS["awsecs.FargateService(s)"]
+    ALB["GoBridgeALBAttachment<br/>(opt-in)"]
+    ALM["GoBridgeAlarms<br/>(opt-in)"]
+    LOOKUP["LookupBridge → BridgeRef<br/>(cross-stack, SSM-backed)"]
+
+    YAML --> SINGLE
+    YAML --> CLUSTER
+    REG --> SINGLE
+    REG --> CLUSTER
+    SINGLE --> BASE
+    CLUSTER --> BASE
+    BASE --> EFS
+    BASE --> ECS
+    SINGLE -. WithSSMExports .-> LOOKUP
+    CLUSTER -. WithSSMExports .-> LOOKUP
+    ALB --- SINGLE
+    ALB --- CLUSTER
+    ALM --- SINGLE
+    ALM --- CLUSTER
 ```
 
-### Reload Strategy (`applyLogicalConfig`)
+`GoBridgeEfsConfig` is normally created and owned by the facade; consumers may pass an instance in to override KMS / throughput / removal policy / backup. `GoBridgeALBAttachment` and `GoBridgeAlarms` are independent opt-ins. Cross-stack consumption is via `gobridgecdk.LookupBridge` (returns a `*BridgeRef` exposing the same accessor surface as the producing constructs).
 
-| Mode                    | Trigger                                                                 | Sequence |
-|-------------------------|--------------------------------------------------------------------------|----------|
-| `swapModeOverlap`       | No transport advertises `CapExclusiveIdentity`.                          | Build + Start new runtime → install plan → Stop old. |
-| `swapModePrepareCommit` | Any session-bound transport (e.g. exclusive MQTT identity).              | `Builder.Prepare` → Stop old → `Complete` → Start new → install. On failure: `recoverPrevious` rebuilds last-good. |
+## Single vs Cluster
 
-A serialized mutex around `applyLogicalConfig` ensures reload races never produce two live runtimes simultaneously beyond the planned overlap window.
+### `GoBridgeSingle`
 
-### Profile Guard
+```mermaid
+flowchart LR
+    subgraph TaskDef
+      SEED["seeder init<br/>(SeedOnce default)"] --> CTRL["bridge container<br/>NODE_ROLE=control"]
+    end
+    EFS[("EFS file system<br/>(1 access point, RW)")]
+    SSM[("SSM SecureString<br/>params")]
+    LOG[("CloudWatch Logs")]
+    ALB{{"ALB Listener<br/>(optional, via GoBridgeALBAttachment)"}}
 
-`validateFilesystemProfile` rejects routes incompatible with shared-EFS coordination:
+    CTRL -- "RW mount<br/>ClientMount+ClientWrite" --> EFS
+    SEED -- "RW mount" --> EFS
+    CTRL --> SSM
+    CTRL --> LOG
+    ALB -. admin + healthz + receivers .-> CTRL
+```
 
-- `route.delivery_mode = shared_outbox` → fail.
-- `route.session != nil` → fail.
+One Fargate service, `DesiredCount=1`, deployment policy `MinHealthyPercent=0 / MaxHealthyPercent=100` (full drain before replace — eliminates concurrent EFS RW writers across rolling deploys). The control role gets EFS `ClientMount`+`ClientWrite`; SSM/Logs grants are derived from the parsed yaml.
 
-Reason: shared-outbox lease/fencing requires DynamoDB-backed coordination, not available in this profile.
+### `GoBridgeCluster`
 
-### Reference Cells
+```mermaid
+flowchart LR
+    subgraph Control["ControlService (DesiredCount=1, deploy 0/100)"]
+      CSEED["seeder init"] --> CCTRL["bridge container<br/>NODE_ROLE=control"]
+    end
+    subgraph Worker["WorkerService (DesiredCount=2 default, optional autoscaling)"]
+      WBR["bridge container<br/>NODE_ROLE=worker"]
+    end
+    EFS[("Shared EFS<br/>2 access points, root '/'<br/>posixUser uid:gid 1000:1000")]
+    LEASE[("LeaseStore on EFS<br/>peer registry")]
+    SSM[("SSM SecureString")]
+    LOG[("CloudWatch Logs")]
 
-`bridgeConfigRef`, `runtimeRef`, `apiKeysRef`, `transportHandlerRef` — small `sync.RWMutex`-guarded holders so the admin/monitor HTTP servers and the transport HTTP server can read live state without coupling to reload mechanics.
+    CCTRL -- "RW (ClientMount+ClientWrite)" --> EFS
+    CSEED -- "RW" --> EFS
+    WBR   -- "RO (readOnly:true, ClientMount only)" --> EFS
+    CCTRL --> LEASE
+    WBR --> LEASE
+    CCTRL --> SSM
+    WBR --> SSM
+    CCTRL --> LOG
+    WBR --> LOG
+```
 
-## 4. Bootstrap vs Bridge Config
+Both access points share the same root path and the same posix user (uid/gid `1000:1000`); the **RW/RO split is enforced at IAM and at the ECS volume level (`readOnly: true`)**, not by POSIX ownership. The control role and worker role are split for EFS grants only — `ClientMount`+`ClientWrite` for control, `ClientMount` only for workers; SQS, SSM and Logs grants are identical between roles since both task families process messages.
 
-Two-layer model:
+`DesiredCount=1` for the control service is a runtime invariant (single LeaseStore writer semantics) and is **not** exposed as a prop. Workers default to two and may opt in to CPU target-tracking autoscaling via `AutoScalingProps{Min, Max, TargetCPU}`. The seeder init container runs only in the control task; workers boot from EFS and their readiness blocks until the yaml is present.
 
-| Layer            | Owner          | Format       | Delivery                        | Mutability        |
-|------------------|----------------|--------------|---------------------------------|-------------------|
-| Bootstrap        | Platform / IaC | JSON         | env var (preferred) or file     | per task revision |
-| Bridge (logical) | App / Dev      | YAML or JSON | EFS file mount                  | hot-reloadable    |
+## Tier B: parse, validate, derive
 
-Secrets live **only** in SSM. Bootstrap holds *references* (`pms://...` or `/path/to/param`); the runtime resolves them on every reload and patches the resolved bridge config (`resolveInputs`) for HTTP receivers/senders. Embedded `Config.APIKey` overrides any SSM ref.
+Tier B is the synth-time pipeline that turns a `BridgeConfigSource` into IAM grants and CDK errors. It runs in three phases; central design promise: **misconfigurations fail at `cdk synth`, not at runtime.**
 
-## 5. DDD Alignment
+### Phase 1 — Constructor (fast-fail)
 
-The deployment profile is a **service / application layer** for the existing DDD model defined in [DDD.md](../../DDD.md) and [UBIQUITOUS.md](../../UBIQUITOUS.md). It does **not** introduce new aggregates.
+Errors thrown immediately at the construct call site. Implemented in `cdk/constructs/internal/validation/`.
 
-| Project context                | Touched here                                                                 |
-|--------------------------------|------------------------------------------------------------------------------|
-| `bridge` (Composition root)    | `lib/bootstrap` calls `bridge.NewBuilder`, registers transports/stores, and drives the `Build` / `Prepare` / `Complete` lifecycle. |
-| `runtime` (Engine)             | `bootstrap.App` owns the active `*runtime.Runtime`; reload swap mode mirrors `runtime` semantics. |
-| `config` (Declarative model)   | `config.Manager` + file `Loader/Watcher` produce `*ports.BridgeConfig`. |
-| `httpapi` (Admin/Monitor)      | Mounted with `ConfigStore = config.FileStore{Path}` so PUTs persist back to EFS. |
-| `ports` (Capabilities)         | `ports.CapExclusiveIdentity` drives swap-mode selection. |
+1. yaml parses (`config.ParseFile`).
+2. Stage-1 validators (`config/validate.go`).
+3. Filesystem-topology constraints from `validateFilesystemProfile`: no `delivery_mode: shared_outbox`, no `route.session` lease.
+4. Plaintext credential scan (`cdk/bridgecfg/secrets.go::ScanForPlaintextSecrets`).
+5. SQLite store paths must sit under the EFS mount root.
+6. Cluster only: workers must not reference RW-only paths.
 
-### Profile-Local Concepts (see [UBIQUITOUS.md](./UBIQUITOUS.md))
+Both `BridgeYamlAsset(path)` and `BridgeYamlInline(cfg)` go through the **same** Phase 1 walker — the inline path marshals via `config.MarshalYAML` and re-parses via `config.ParseFile` so what was validated is what gets seeded.
 
-- **Bootstrap config** — deployment-owned runtime parameters, distinct from `ports.BridgeConfig`.
-- **Logical vs Applied state** — the same bridge config tracked at two points: last seen on disk (`logicalRef`) vs what the running runtime was built from (`appliedRef`). Diverge only after a rejected reload.
-- **Topology** (`single`, `filesystem_replicated`) — determines which routing features are permitted.
-- **NodeRole** (`control`, `worker`) — declared on every replica; used by `validateFilesystemProfile` and future coordination hooks.
-- **Swap mode** — `overlap` vs `prepare_commit`.
-- **Parameter reference** — `pms://` URI or absolute SSM path.
+### Phase 2 — `construct.validate()` (aggregated)
 
-These terms are *additive* to the project's ubiquitous language — they describe deployment-time state that does not exist in the core domain.
+Errors are collected via `Annotations.of(scope).addError(...)` so a single `cdk synth` reports **every** missing reference, not iteration-by-iteration:
 
-## 6. Failure Modes & Guards
+1. Each SQS queue name in yaml must have a `QueueRegistry` entry (typed remediation message: `registry.AddQueue("X", queue)`).
+2. Each SSM URI must have an `SsmParamRegistry` entry.
+3. Each `bridge.cluster.endpoints` value parses as a URL.
 
-| Concern                           | Guard |
-|-----------------------------------|-------|
+`QueueRegistry` and `SsmParamRegistry` are **conditionally required** props — tier B inspects yaml first; the prop becomes required only if the parsed config uses adapter types that need it. Missing-when-needed surfaces as a typed synth error, never a nil panic.
+
+### Phase 3 — Grant derivation
+
+Per-adapter grant functions live one-file-per-kind under `cdk/constructs/internal/grants/`. Tier B walks the parsed yaml and emits IAM via CDK's typed grant methods (no manual ARN construction):
+
+| Adapter family | Grant |
+|----------------|-------|
+| SQS receiver | `queue.GrantConsumeMessages(role)` always; `queue.Grant(role, "sqs:ChangeMessageVisibility")` additionally when `auto_extend: true`. |
+| SQS sender | `queue.GrantSendMessages(role)`. |
+| SSM credential | `param.GrantRead(role)` (covers `ssm:GetParameter` + `kms:Decrypt` for AWS-managed keys). |
+| CloudWatch Logs | `logGroup.GrantWrite(role)`. |
+| EFS | Per role: control `ClientMount`+`ClientWrite`; worker `ClientMount` only. |
+| EFS CMK | Auto-granted when `EfsKmsKey` prop is set. |
+
+Adding a new plugin requires a matching pair of files (`bridgecfg/<kind>.go` and `internal/grants/<kind>.go`) — enforced by the T27 CI check against `ports.DefaultRegistry`.
+
+## No Cloud Map — LeaseStore peer discovery
+
+`GoBridgeCluster` deliberately does not provision a Cloud Map namespace. Peer discovery is EFS-mediated through the LeaseStore.
+
+- Each task self-detects its reachable address via `EcsEndpointResolver` (`adapters/aws/cluster/ecs/resolver.go`), which queries the ECS task metadata endpoint.
+- The resolved endpoints are passed to the runtime via `runtime.WithClusterEndpoints(...)`; the call site lives in `bridge/builder_prepare.go` (`Builder.Prepare → rtOpts = append(rtOpts, runtime.WithClusterEndpoints(endpoints))`).
+- The runtime registers itself in the LeaseStore on EFS; siblings discover the live set by reading the same store.
+
+**Why not Cloud Map.**
+
+- One fewer AWS service to permission, observe and pay for; EFS is already required for hot-reloadable yaml and SQLite outbox/lease state.
+- Discovery is a property of the membership store, not DNS — no "DNS TTL vs reality" gap, no SRV record plumbing, no `servicediscovery:*` IAM.
+- Workers and control read the same store they already mount; nothing new joins the trust boundary.
+
+**Trade-off.** Peer-discovery latency is bounded by the LeaseStore TTL / poll interval, not by DNS TTL. Acceptable for this profile because: single-region / single-account is a non-goal-of-multi-region scope (see Singleton constraint), membership churn is low (deploys are gated by `MinHealthyPercent=0`), and the LeaseStore is on EFS which is already tail-latency-bounded by the workload itself.
+
+## Singleton constraint
+
+**One `GoBridgeSingle` OR one `GoBridgeCluster` per AWS account.** Multiple instances in the same account are forbidden.
+
+| Layer | Enforcement |
+|-------|-------------|
+| Synth | Scope scan (`cdk/constructs/internal/singleton`) errors when more than one facade is found in the same Stack tree. |
+| Operator | Cross-account / cross-stack collisions are operator responsibility; no custom resource enforcement. |
+| Docs | Prominent warning in [README.md](./README.md). |
+
+The bridge identity is taken from the deployed yaml's `bridge.name` (validated against `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$` in Phase 1). It is reused as the log group middle segment, alarm name prefix and EFS construct ID. **There is no `Name` prop** on `SingleProps` / `ClusterProps` — single source of truth eliminates the deploy-vs-config drift class.
+
+## Source resolution & cross-stack lookup
+
+`gobridgecdk` exposes a sealed `BridgeConfigSource` with two constructors:
+
+| Constructor | Behaviour |
+|-------------|-----------|
+| `BridgeYamlAsset(path)` | `s3assets.NewAsset` reads the file for upload; tier B parses the same file from disk. Single synth pass, no drift concern. |
+| `BridgeYamlInline(*ports.BridgeConfig)` | Marshals via `config.MarshalYAML`, builds an asset from the bytes, re-parses via `config.ParseFile` so tier B walks the same structure that gets seeded. |
+
+For cross-stack consumption, the producer publishes typed accessors via SSM Parameter Store (soft-coupled — no `Fn.importValue`):
+
+```go
+attachment.WithSSMExports("/bridges/prod", ssmexports.IncludeARNs())
+```
+
+The consumer resolves them with `gobridgecdk.LookupBridge`, which returns a `*BridgeRef` exposing `AdminURL()`, `HealthzURL()`, `PublicDnsName()`, optional `AlbARN()` / `ClusterARN()` / `EfsID()`, and a `ManifestVersion()` sentinel that fails synth fast on a producer/consumer schema mismatch. Implementation is `awsssm.StringParameter_FromStringParameterName` (deploy-time CDK token); the manifest sentinel uses `awsssm.StringParameter_ValueFromLookup` so it materialises as a real synth-time string in `cdk.context.json`.
+
+## Runtime Library (`lib/bootstrap`)
+
+`lib/bootstrap.NewApp(cfg, opts...)` loads `BootstrapConfig` from env (`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` or `…_FILE`, max 1 MiB), polls `ConfigFilePath` on EFS, swaps the active `*runtime.Runtime` without restart, resolves `pms://` SSM secrets and starts the admin / monitor / transport HTTP servers. Reload uses `swapModeOverlap` by default; `swapModePrepareCommit` whenever any transport advertises `ports.CapExclusiveIdentity`. Reference cells (`bridgeConfigRef`, `runtimeRef`, `apiKeysRef`, `transportHandlerRef`) decouple HTTP servers from reload mechanics. Profile guard `validateFilesystemProfile` rejects `route.delivery_mode = shared_outbox` and `route.session != nil`.
+
+| Project context | Touched here |
+|-----------------|--------------|
+| `bridge` | `lib/bootstrap` calls `bridge.NewBuilder`, registers transports/stores, drives `Build`/`Prepare`/`Complete`. |
+| `runtime` | `bootstrap.App` owns the active `*runtime.Runtime`; swap mode mirrors runtime semantics. |
+| `config` | `config.Manager` + file `Loader/Watcher` produce `*ports.BridgeConfig`. |
+| `httpapi` | Mounted with `ConfigStore = config.FileStore{Path}` so PUTs persist back to EFS. |
+| `ports` | `ports.CapExclusiveIdentity` drives swap-mode selection. |
+
+See [../../DDD.md](../../DDD.md) for the project-level model and [UBIQUITOUS.md](./UBIQUITOUS.md) for profile-local terminology (`Bootstrap config`, `Logical vs Applied state`, `Topology`, `NodeRole`, `Swap mode`, `Parameter reference`, plus the new tier-B terms `BridgeConfigSource`, `BridgeRef`, `LookupBridge`, `QueueRegistry`, `SsmParamRegistry`, `OnConfigDrift`).
+
+## Failure Modes & Guards
+
+| Concern | Guard |
+|---------|-------|
 | Production with custom SSM endpoint | `Validate()` rejects `SSMEndpoint != "" && !DevMode`. |
 | Memory exhaustion on bootstrap file | 1 MiB file size cap (`maxBootstrapFileSize`). |
-| Concurrent reload races            | `App.mu` serializes `applyLogicalConfig`. |
-| Reload failure                     | `recoverPrevious` rebuilds last-good logical config; admin/monitor stay up. |
-| Stale runtime on watch shutdown    | `Stop` waits for `watchWg` before tearing down dependencies. |
-| Bad new runtime in prepare/commit  | Old runtime stopped *before* commit; `recoverPrevious` re-attempts. |
+| Concurrent reload races | `App.mu` serializes `applyLogicalConfig`. |
+| Reload failure | `recoverPrevious` rebuilds last-good logical config; admin/monitor stay up. |
+| Stale runtime on watch shutdown | `Stop` waits for `watchWg` before tearing down dependencies. |
+| Bad new runtime in prepare/commit | Old runtime stopped *before* commit; `recoverPrevious` re-attempts. |
+| Concurrent EFS RW writers across deploys | Control deploy policy `MinHealthyPercent=0 / MaxHealthyPercent=100`. |
+| Worker writes via admin API | Defence in depth: EFS mount `readOnly:true` AND ALB rule routes admin paths to control TG only. |
+| Multiple facades in same stack | `cdk/constructs/internal/singleton` synth-time scope scan. |
+| Missing `QueueRegistry` / `SsmParamRegistry` entry | Tier B Phase 2 aggregates via `Annotations.of(scope).addError(...)` — every missing reference reported in one synth, with typed remediation message. |
+| Plaintext credential in yaml | Phase 1 hard error from `ScanForPlaintextSecrets` — no opt-out. |
+| ALB priority collision | Attachment ctor errors when consumer rule already uses `[BasePriority, BasePriority+99]`. |
 
-## 7. Extension Points
+## Extension Points
 
 - **Custom credential store**: `WithCredentialStore` on `App`.
-- **Custom SSM resolver**: `WithParameterResolver` (e.g. for tests / Vault wrapper).
+- **Custom SSM resolver**: `WithParameterResolver` (e.g. test fixtures, Vault wrapper).
+- **Custom CDK wiring**: compose `BridgeYamlInline(cfg)` over a hand-built `*ports.BridgeConfig` from `cdk/bridgecfg/`. The facades (`GoBridgeSingle` / `GoBridgeCluster`) are the supported integration boundary; **bypassing them by composing `cdk/constructs/internal/gobridgebase` directly is not supported** — the package is internal precisely so the singleton / tier-B / mount-policy invariants stay enforceable.
 - **Custom transport/store**: not exposed via `App` — fork `factoryRegistry` or build a sibling deployment profile.
-- **Custom CDK wiring**: bypass L3, compose L2 `GoBridgeService` + `GoBridgeEfsConfig` inside your stack; pass an existing `Cluster`, `EfsConfig`, and your own ALB.
+
+## Related Docs
+
+| Doc | Scope |
+|-----|-------|
+| [README.md](./README.md) | Construct surface, quickstarts, secrets policy, what-it-provisions. |
+| [UBIQUITOUS.md](./UBIQUITOUS.md) | Profile-local glossary. |
+| [../../DDD.md](../../DDD.md) | Project-wide DDD model. |
+| [docs/aws-deployment/overview.md](../../docs/aws-deployment/overview.md) | End-to-end AWS architecture (VPC, ALB, IAM JSON). |

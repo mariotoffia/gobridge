@@ -121,9 +121,21 @@ linters:
         - github.com/aws/aws-cdk-go/awscdk/v2.Stack
         - github.com/aws/aws-cdk-go/awscdk/v2/awsefs.IFileSystem
         - github.com/aws/aws-cdk-go/awscdk/v2/awsefs.AccessPoint
+        - github.com/aws/aws-cdk-go/awscdk/v2/awsefs.IAccessPoint
         - github.com/aws/aws-cdk-go/awscdk/v2/awsec2.SecurityGroup
+        - github.com/aws/aws-cdk-go/awscdk/v2/awsec2.ISecurityGroup
         - github.com/aws/aws-cdk-go/awscdk/v2/awsecs.FargateService
         - github.com/aws/aws-cdk-go/awscdk/v2/awsecs.FargateTaskDefinition
+        - github.com/aws/aws-cdk-go/awscdk/v2/awsecs.IService
+        - github.com/aws/aws-cdk-go/awscdk/v2/awsecs.ICluster
+        - github.com/aws/aws-cdk-go/awscdk/v2/awsecs.BaseService
+        - github.com/aws/aws-cdk-go/awscdk/v2/awssqs.IQueue
+        - github.com/aws/aws-cdk-go/awscdk/v2/awsssm.IParameter
+        - github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2.ApplicationTargetGroup
+        - github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2.IApplicationListener
+        - github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2.IApplicationLoadBalancer
+        - github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2.ApplicationListenerRule
+        - github.com/aws/aws-cdk-go/awscdk/v2/awscloudwatch.IAlarm
 
     interfacebloat:
       # Working ISP threshold for ports. The plan target is 5; the
@@ -480,6 +492,15 @@ linters:
         path: "^scripts/"
       - linters: [gochecknoglobals, gochecknoinits]
         path: "_test\\.go$"
+
+      # CDK constructs use jsii under the hood. Process-wide singletons
+      # (singleton registry, secret-scheme registry, sync.Once-cached
+      # seeder asset) are unavoidable because jsii caches construct
+      # trees per process. init() in bridgecfg/secrets.go seeds the
+      # default secret-scheme allow-list. These are documented
+      # architectural exemptions, scoped to the CDK module path.
+      - linters: [gochecknoglobals, gochecknoinits]
+        path: "^deployment/aws-filebased-config/cdk/"
 
       # CredentialAdmin is a coordination interface that legitimately
       # exceeds five methods. Whitelist explicitly so the threshold

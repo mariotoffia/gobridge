@@ -34,6 +34,9 @@ jobs:
           version: latest
           args: --timeout=5m
 
+      - name: Enforce CDK builder + grants coverage
+        run: make lint-registrychk
+
   lint-arch:
     runs-on: ubuntu-latest
     steps:

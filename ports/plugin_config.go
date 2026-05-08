@@ -15,6 +15,7 @@ package ports
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -95,6 +96,24 @@ func (r *Registry) Decode(kind string, raw RawConfig) (PluginConfig, error) {
 		return nil, fmt.Errorf("ports: unknown plugin kind %q", kind)
 	}
 	return dec(raw)
+}
+
+// Kinds returns the sorted list of every plugin kind currently
+// registered. It is intended for tooling (CI checks, diagnostics,
+// documentation generators) that needs to enumerate the registered
+// discriminators after the desired adapter side-effect imports have
+// run. It is not part of any hot path; the snapshot is taken under
+// the registry's read lock and returned as a fresh slice the caller
+// owns.
+func (r *Registry) Kinds() []string {
+	r.mu.RLock()
+	out := make([]string, 0, len(r.decoders))
+	for k := range r.decoders {
+		out = append(out, k)
+	}
+	r.mu.RUnlock()
+	sort.Strings(out)
+	return out
 }
 
 // DefaultRegistry is the process-wide registry adapters self-register
