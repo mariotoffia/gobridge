@@ -118,13 +118,13 @@
         {
             "id": "T11",
             "title": "GoBridgeSingle facade construct + SingleProps; Phase 1 validation invocation.",
-            "status": "pending",
+            "status": "done",
             "category_hint": "",
             "suggested_agent": "architect-aws-serverless",
             "agent_rationale": "Single-service facade L2 construct over the shared base; AWS construct authoring.",
             "body_suggested_agents": [],
             "body_suggested_skills": [],
-            "review_round": 0
+            "review_round": 1
         },
         {
             "id": "T12",
