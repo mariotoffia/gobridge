@@ -1,0 +1,13 @@
+# Same logical content as bridge.yaml but reordered + commented; canonical
+# form MUST collide with bridge.yaml after sort_keys + comment-strip.
+routes:
+  # beta listed first; sorting happens at top-level keys only, but list
+  # order is semantically significant in YAML, so for *match* fixture we
+  # keep route order identical and only shuffle the per-route key order.
+  - to: sqs://queue-a
+    from: mqtt://broker/topic-a
+    name: alpha
+  - name: beta
+    to: sqs://queue-b
+    from: mqtt://broker/topic-b
+version: 1
