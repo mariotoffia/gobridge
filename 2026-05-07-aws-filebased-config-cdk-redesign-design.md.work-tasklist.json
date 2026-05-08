@@ -239,7 +239,7 @@
     {
       "id": "T22",
       "title": "Update deployment/aws-filebased-config/README.md: new construct table, quickstart, singleton warning, secrets.",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "technical-writer",
       "agent_rationale": "User-facing README rewrite; prose + code examples.",
@@ -250,7 +250,7 @@
     {
       "id": "T23",
       "title": "Update deployment/aws-filebased-config/ARCHITECTURE.md: single+cluster diagrams, tier B, no-Cloud-Map rationale.",
-      "status": "pending",
+      "status": "done",
       "category_hint": "",
       "suggested_agent": "technical-writer",
       "agent_rationale": "Architecture document update with diagrams and rationale.",
