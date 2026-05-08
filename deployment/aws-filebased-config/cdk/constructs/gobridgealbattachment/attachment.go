@@ -365,7 +365,7 @@ func (a *GoBridgeALBAttachment) WithSSMExports(prefix string, opts ...ssmexports
 		// Logical IDs must be alnum within CloudFormation. Sanitize
 		// the prefix into a stable token by stripping `/` and `-`
 		// boundaries to camel-ish form.
-		logical := "SSM" + sanitizeLogical(prefix) + sanitizeLogical("/"+suffix)
+		logical := "SSM" + SanitizeLogical(prefix) + SanitizeLogical("/"+suffix)
 		awsssm.NewStringParameter(a.inner, jsii.String(logical), &awsssm.StringParameterProps{
 			ParameterName: jsii.String(name),
 			StringValue:   value,
@@ -400,10 +400,12 @@ func loadBalancerOf(l elbv2.IApplicationListener) elbv2.IApplicationLoadBalancer
 	return al.LoadBalancer()
 }
 
-// sanitizeLogical converts an SSM-prefix-style string into a
+// SanitizeLogical converts an SSM-prefix-style string into a
 // CloudFormation-safe logical-id fragment. We preserve order so
-// logical IDs stay deterministic across synths.
-func sanitizeLogical(s string) string {
+// logical IDs stay deterministic across synths. Exported so the
+// consumer-side LookupBridge helper in package gobridgecdk can build
+// the same logical IDs without duplicating the algorithm.
+func SanitizeLogical(s string) string {
 	var b strings.Builder
 	upper := true
 	for _, r := range s {
