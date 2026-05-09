@@ -164,7 +164,7 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 
 	sessionID := mqttlocal.UniqueClientID("uc43-session")
 	sess := setupMQTTSessionWithBroker(t, brokerURL, sessionID,
-		connectivity.SessionExclusive, 65535, 5)
+		connectivity.SessionPersistent, 65535, 5)
 	mqttSnd := setupMQTTSender(t, sess)
 
 	sqsRx, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
@@ -196,6 +196,7 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 		SourceCapabilities: directHoldCaps,
 	}
 	sc := lrSessionConfig(sessionID)
+	sc.Exclusive = false
 	require.NoError(t, rt.AddRoute(routeCfg, sqsRx, mqttSnd, sess, &sc))
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()

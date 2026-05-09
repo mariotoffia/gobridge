@@ -105,9 +105,10 @@ func (r *fakeReceiver) Emit(ctx context.Context, del ports.Delivery) error {
 }
 
 type fakeSender struct {
-	mu      sync.Mutex
-	sent    []*messaging.Envelope
-	sendErr error
+	mu       sync.Mutex
+	sent     []*messaging.Envelope
+	sentMsgs []ports.OutboundMessage
+	sendErr  error
 }
 
 func newFakeSender() *fakeSender { return &fakeSender{} }
@@ -119,7 +120,9 @@ func (s *fakeSender) Send(_ context.Context, msg ports.OutboundMessage) error {
 	if s.sendErr != nil {
 		return s.sendErr
 	}
-	s.sent = append(s.sent, env.Clone())
+	cloned := env.Clone()
+	s.sent = append(s.sent, cloned)
+	s.sentMsgs = append(s.sentMsgs, ports.OutboundMessage{Envelope: cloned, Address: msg.Address})
 	return nil
 }
 
@@ -134,6 +137,14 @@ func (s *fakeSender) getSent() []*messaging.Envelope {
 	defer s.mu.Unlock()
 	cp := make([]*messaging.Envelope, len(s.sent))
 	copy(cp, s.sent)
+	return cp
+}
+
+func (s *fakeSender) getSentMessages() []ports.OutboundMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]ports.OutboundMessage, len(s.sentMsgs))
+	copy(cp, s.sentMsgs)
 	return cp
 }
 
@@ -932,13 +943,13 @@ func TestE2E_DynamoDB_FanOutAtomicity(t *testing.T) {
 		return senderA.sentCount() >= 1 && senderB.sentCount() >= 1
 	})
 
-	sentA := senderA.getSent()
-	if sentA[0].Subject != "factory/a/orders/42" {
-		t.Errorf("sender A: expected factory/a/orders/42, got %q", sentA[0].Subject)
+	sentA := senderA.getSentMessages()
+	if sentA[0].Address != "factory/a/orders/42" {
+		t.Errorf("sender A: expected factory/a/orders/42, got %q", sentA[0].Address)
 	}
-	sentBList := senderB.getSent()
-	if sentBList[0].Subject != "factory/b/orders/42" {
-		t.Errorf("sender B: expected factory/b/orders/42, got %q", sentBList[0].Subject)
+	sentBList := senderB.getSentMessages()
+	if sentBList[0].Address != "factory/b/orders/42" {
+		t.Errorf("sender B: expected factory/b/orders/42, got %q", sentBList[0].Address)
 	}
 
 	// Verify idempotent persist: re-emit the same envelope should not create duplicates.

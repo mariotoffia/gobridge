@@ -2,7 +2,6 @@ package integration_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -126,9 +125,14 @@ routes:
 
 // writeBridgeConfigYAML marshals a BridgeConfig to JSON (which is valid
 // YAML) and writes it to a temp file. Returns the file path.
+//
+// Uses config.MarshalBridgeConfigJSON so that typed PluginConfig values
+// (which carry json:"-" on the field) are projected back into the
+// canonical "options:" wire form and survive the file → config.Parse
+// round-trip.
 func writeBridgeConfigYAML(t *testing.T, cfg *ports.BridgeConfig) string {
 	t.Helper()
-	data, err := json.Marshal(cfg)
+	data, err := config.MarshalBridgeConfigJSON(cfg)
 	if err != nil {
 		t.Fatalf("marshal config: %v", err)
 	}

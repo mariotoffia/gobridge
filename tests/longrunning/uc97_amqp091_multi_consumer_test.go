@@ -84,7 +84,7 @@ func TestUC97_AMQP091_MultiConsumer_CompetingConsumers(t *testing.T) {
 			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			routing.DispatchPlan{BindingID: "uc97-bind", Address: exchange},
+			routing.DispatchPlan{BindingID: "uc97-bind", Address: routingKey},
 		),
 		Bindings: []routing.DestinationBinding{
 			{ID: "uc97-bind", SessionID: sessID},

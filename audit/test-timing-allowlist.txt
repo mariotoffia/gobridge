@@ -124,8 +124,8 @@
 ./tests/integration/integration_config_api_edge_test.go:68:	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for 100ms transaction TTL to expire
 ./tests/integration/integration_config_api_edge_test.go:87:	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for 100ms transaction TTL to expire
 ./tests/integration/integration_config_api_helpers_test.go:297:		time.Sleep(interval) // SYNC: poll for condition
-./tests/integration/integration_ddb_config_helpers_test.go:430:		time.Sleep(10 * time.Millisecond) // SYNC: poll for supervisor runtime readiness
-./tests/integration/integration_ddb_config_helpers_test.go:449:		time.Sleep(10 * time.Millisecond) // SYNC: poll for route availability
+./tests/integration/integration_ddb_config_helpers_test.go:434:		time.Sleep(10 * time.Millisecond) // SYNC: poll for supervisor runtime readiness
+./tests/integration/integration_ddb_config_helpers_test.go:453:		time.Sleep(10 * time.Millisecond) // SYNC: poll for route availability
 ./tests/integration/integration_ddb_config_rollback_test.go:336:	time.Sleep(300 * time.Millisecond) // SYNC: let config watcher detect invalid overlay
 ./tests/integration/integration_ddb_config_rollback_test.go:443:	time.Sleep(300 * time.Millisecond) // SYNC: let config watcher detect invalid overlay before saving valid one
 ./tests/integration/integration_ddb_config_rollback_test.go:82:	time.Sleep(500 * time.Millisecond) // NEGATIVE: verify Manager drops invalid config (no swap event)
@@ -138,9 +138,9 @@
 ./tests/integration/integration_sqs_delivery_test.go:316:		time.Sleep(6 * time.Second) // ESSENTIAL: exceed 4s visibility timeout to prove auto-extend prevents redelivery
 ./tests/integration/integration_sqs_delivery_test.go:344:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 ./tests/integration/integration_sqs_sender_batch_test.go:264:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
-./tests/integration/shared_outbox_e2e_test.go:215:		time.Sleep(10 * time.Millisecond) // SYNC: poll for condition
-./tests/integration/shared_outbox_e2e_test.go:730:	time.Sleep(400 * time.Millisecond) // ESSENTIAL: wait for A's lease to expire so B can acquire
-./tests/integration/shared_outbox_e2e_test.go:740:	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for stale claim threshold
+./tests/integration/shared_outbox_e2e_test.go:226:		time.Sleep(10 * time.Millisecond) // SYNC: poll for condition
+./tests/integration/shared_outbox_e2e_test.go:741:	time.Sleep(400 * time.Millisecond) // ESSENTIAL: wait for A's lease to expire so B can acquire
+./tests/integration/shared_outbox_e2e_test.go:751:	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for stale claim threshold
 ./tests/longrunning/gap_broker_crash_test.go:136:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 ./tests/longrunning/gap_broker_crash_test.go:244:	time.Sleep(3 * time.Second) // OTHER: scenario timing — keep broker down before restart
 ./tests/longrunning/gap_goroutine_leak_test.go:105:		time.Sleep(3 * time.Second) // SYNC: let goroutines from cycle clean up
@@ -167,7 +167,7 @@
 ./tests/longrunning/uc38_outbox_modes_test.go:289:	time.Sleep(idleWait) // SYNC: observe drain cycles during idle period
 ./tests/longrunning/uc38_outbox_modes_test.go:95:	time.Sleep(10 * time.Second) // OTHER: let outbox fill while sender is paused
 ./tests/longrunning/uc42_broker_resilience_test.go:103:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
-./tests/longrunning/uc42_broker_resilience_test.go:215:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
+./tests/longrunning/uc42_broker_resilience_test.go:216:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 ./tests/longrunning/uc48_broker_multihop_test.go:142:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 ./tests/longrunning/uc48_broker_multihop_test.go:279:		time.Sleep(time.Duration(flapDownSec) * time.Second) // OTHER: scenario timing — broker flap downtime
 ./tests/longrunning/uc48_broker_multihop_test.go:506:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down during message queuing

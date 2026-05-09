@@ -91,7 +91,7 @@ func TestUC90_SQS_To_RabbitMQ_SharedOutbox(t *testing.T) {
 			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			routing.DispatchPlan{BindingID: "uc90-bind", Address: exchangeName},
+			routing.DispatchPlan{BindingID: "uc90-bind", Address: uc90RoutingKey},
 		),
 		Bindings: []routing.DestinationBinding{
 			{ID: "uc90-bind", SessionID: sessionID},

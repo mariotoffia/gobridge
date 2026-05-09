@@ -79,7 +79,7 @@ func TestUC94_AMQP091_HighThroughput(t *testing.T) {
 			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			routing.DispatchPlan{BindingID: "uc94-bind", Address: exchange},
+			routing.DispatchPlan{BindingID: "uc94-bind", Address: routingKey},
 		),
 		Bindings: []routing.DestinationBinding{
 			{ID: "uc94-bind", SessionID: sessID},

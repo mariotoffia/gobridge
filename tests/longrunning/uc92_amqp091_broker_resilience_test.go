@@ -101,7 +101,7 @@ func TestUC92_RabbitMQ_BrokerKillRestart(t *testing.T) {
 			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 		Resolver: goruntime.NewStaticResolver(
-			routing.DispatchPlan{BindingID: "uc92-bind", Address: exchangeName},
+			routing.DispatchPlan{BindingID: "uc92-bind", Address: routingKey},
 		),
 		Bindings: []routing.DestinationBinding{
 			{ID: "uc92-bind", SessionID: sessionID},

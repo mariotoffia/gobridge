@@ -150,6 +150,10 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 			"envelope_id", env.ID,
 			"duration", elapsed,
 		)
+		s.logger.Log(ctx, logging.LevelTrace, "amqp091: publish confirmed",
+			"delivery_tag", res.ConfirmedTag,
+			"envelope_id", env.ID,
+		)
 	}
 
 	return nil

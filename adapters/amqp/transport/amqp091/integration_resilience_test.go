@@ -95,10 +95,10 @@ func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 	wait.RequireClosed(t, r2.Started(), 5*time.Second)
 
 	sender := NewSender(SenderConfig{Exchange: exchange, Session: sess, Timeout: 5 * time.Second})
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "pre-A", Subject: queueA, Payload: []byte("a1")}}); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "pre-A", Payload: []byte("a1")}, Address: queueA}); err != nil {
 		t.Fatalf("send pre-A: %v", err)
 	}
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "pre-B", Subject: queueB, Payload: []byte("b1")}}); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "pre-B", Payload: []byte("b1")}, Address: queueB}); err != nil {
 		t.Fatalf("send pre-B: %v", err)
 	}
 
@@ -132,8 +132,8 @@ func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 	defer sendCancel()
 	go func() {
 		for sendCtx.Err() == nil {
-			_ = sender2.Send(sendCtx, ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "post-A", Subject: queueA, Payload: []byte("a2")}})
-			_ = sender2.Send(sendCtx, ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "post-B", Subject: queueB, Payload: []byte("b2")}})
+			_ = sender2.Send(sendCtx, ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "post-A", Payload: []byte("a2")}, Address: queueA})
+			_ = sender2.Send(sendCtx, ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "post-B", Payload: []byte("b2")}, Address: queueB})
 			select {
 			case <-sendCtx.Done():
 			case <-time.After(100 * time.Millisecond):

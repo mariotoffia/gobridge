@@ -79,7 +79,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_FullCycle(t *testing.T) {
 			BindingID:  "bind-sq1",
 			SessionID:  "sess-sq1",
 			RouteID:    "route-sq1",
-			Address:    "test/sqs/full-cycle",
+			Address:    queueURL,
 			Envelope: messaging.Envelope{
 				ID:      fmt.Sprintf("env-sq1-%d", i),
 				Subject: "test/sqs/full-cycle",
@@ -283,7 +283,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_HeaderPreservation(t *testing.T
 		BindingID:       "bind-sq3",
 		SessionID:       "sess-sq3",
 		RouteID:         "route-sq3",
-		Address:         "test/sqs/headers",
+		Address:         queueURL,
 		DispatchHeaders: customHeaders,
 		Envelope: messaging.Envelope{
 			ID:      "env-sq3",
