@@ -43,6 +43,8 @@ gobridge/
 │   ├── aws/config/dynamodb/
 │   ├── aws/cluster/ecs/          # ECS cluster resolver
 │   ├── azure/transport/servicebus/
+│   ├── amqp/transport/amqp091/   # RabbitMQ (AMQP 0-9-1)
+│   ├── amqp/transport/amqp10/    # AMQP 1.0 (Artemis, Solace, Qpid)
 │   ├── http/transport/            # HTTP POST ingress, SSE egress
 │   ├── native/store/             # Memory + SQLite store factory
 │   │   ├── memorylease/

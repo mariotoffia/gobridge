@@ -122,7 +122,11 @@ The user's four review questions answered:
    - Tests added/updated: `adapters/aws/config/dynamodb/zz_internal_registry_test.go` (new internal registry helper); `ports/plugin_config_test.go` (duplicate-kind sentinel + nil-decoder + concurrent-register coverage); `bridge/builder_test.go`-style coverage via `deployment/aws-filebased-config/cdk/bridgecfg/builder_test.go` for `WithRegistry`; reworked `config/parse{,_phase1{,_helpers}}_test.go` and `config/write_test.go` to use explicit registries; reworked `httpapi/admin_config{,_version}_test.go`; reworked AWS file-based-config bootstrap tests; reworked `tests/integration/zz_register_fakes_test.go` and integration helpers.
    - Follow-ups (not blockers; logged for future passes): consider a small `ports/registry_test_helper.go` exposing a fluent test-only `MustRegister` to cut boilerplate in adapter test setups (Low); evaluate whether `Builder.Registry()` should be elevated from informative-only to mandatory once an admin re-parse endpoint actually lands (Low); `registrychk` still scans for `init()` registrations as a guardrail — keep for future drift detection (Low); `MustEnvelope`-style guardrail test (`no_default_registry_in_production_test.go`) deferred until a concrete drift incident justifies the AST-walker maintenance cost (Low).
 
-- **H-5** Add `adapters/amqp/transport/{amqp091,amqp10}/` rows to `ARCHITECTURE.md §13` and `DEVELOPMENT.md` layout blocks (or replace duplicates with a link to the README block to prevent future drift). *(Docs F#3)*
+- **H-5** Add `adapters/amqp/transport/{amqp091,amqp10}/` rows to `ARCHITECTURE.md §13` and `DEVELOPMENT.md` layout blocks (or replace duplicates with a link to the README block to prevent future drift). *(Docs F#3)* - DONE
+  - Status: Resolved 2026-05-11. Two AMQP rows added to both ARCHITECTURE.md §13 and DEVELOPMENT.md Repository Structure between azure/transport/servicebus and http/transport. Fences balanced; siblings undisturbed; README consistent.
+  - What landed: ARCHITECTURE.md §13 lines 912-913; DEVELOPMENT.md lines 46-47.
+  - Tests added: none.
+  - Reviewer verdict: APPROVED (code-reviewer).
 - **H-6** Add `docs/scenarios/README.md` grouping the 21+5 scenarios by concept (transports, processors, ops, config, observability, AMQP, CDK). *(Docs F#4)*
 
 ### Medium

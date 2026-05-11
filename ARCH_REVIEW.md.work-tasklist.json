@@ -63,7 +63,7 @@
     {
       "id": "H-5",
       "title": "Add `adapters/amqp/transport/...` rows to ARCHITECTURE.md \u00a713 and DEVELOPMENT.md",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(Docs F#3)",
       "suggested_agent": "technical-writer",
       "agent_rationale": "Docs F#3 tag \u2014 documentation/diagram update.",
