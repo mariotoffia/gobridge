@@ -501,6 +501,55 @@ round-trip, error reporting, and per-step checklist) lives in
 [`docs/typed-plugin-config.adoc`](docs/typed-plugin-config.adoc).
 The summary below is enough to write a new adapter.
 
+### End-to-end flow
+
+The decoder, factory, and adapter are wired together implicitly via the
+`*ports.Registry`. The sequence below traces a single transport `options:`
+block from on-disk YAML to a running adapter at runtime.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Op as Operator
+    participant YAML as bridge.yaml
+    participant Parser as config.ParseFile
+    participant Reg as ports.Registry
+    participant Dec as Adapter decoder<br/>(register.go init)
+    participant Cfg as Typed *Config
+    participant Builder as bridge.Builder
+    participant Fact as Adapter Factory<br/>(NewSender / NewReceiver)
+    participant Adp as Adapter<br/>(ports.Sender / Receiver / Session)
+    participant RT as runtime.Runtime
+
+    Op->>YAML: write transport / options block
+    Op->>Parser: ParseFile("bridge.yaml", ..., reg)
+    Parser->>Reg: Lookup(kind == "mqtt")
+    Reg-->>Parser: registered decoder
+    Parser->>Dec: dec(rawOptionsBlock)
+    Dec->>Cfg: yaml.Decode + Validate()
+    Cfg-->>Dec: typed value or error
+    Dec-->>Parser: ports.PluginConfig
+    Parser-->>Builder: BridgeConfig with *Config inside Spec.Config
+    Builder->>Fact: NewSender(spec, session)
+    Fact->>Cfg: type-assert spec.Config.(*Config)
+    Fact->>Adp: construct adapter from typed Config
+    Fact-->>Builder: ports.Sender
+    Builder-->>RT: wired Runtime
+    RT->>Adp: Send / Run / Reconcile
+```
+
+Key invariants enforced along the path:
+
+- The decoder runs **once**, at parse time. Adapter code never sees raw
+  YAML/JSON or `map[string]any` (`cfgshape` rejects this).
+- `Validate()` is mandatory and must do real work — empty bodies fail
+  lint.
+- `bridge.Builder` does not invent values; it propagates the typed
+  `Config` the decoder produced into `*Spec.Config`.
+- Adapter factories perform a single type assertion and return a clear
+  error on mismatch. The runtime guarantees the assertion succeeds for
+  correctly-registered plugins.
+
 ### The `PluginConfig` interface
 
 From `ports/plugin_config.go`:

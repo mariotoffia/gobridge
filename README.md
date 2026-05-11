@@ -15,49 +15,9 @@ A message-bridge framework for Go. Route messages between MQTT, AWS SQS, Azure S
 
 ## Quick Start
 
-```go
-package main
+The simplest possible bridge — a single MQTT topic forwarded to another topic — is walked through end to end (YAML config + Go bootstrap + variations) in **[Scenario 1: MQTT-to-MQTT Bridge](docs/scenarios/01-mqtt-to-mqtt.md)**.
 
-import (
-    "context"
-    "log/slog"
-    "os"
-
-    "github.com/mariotoffia/gobridge/bridge"
-    "github.com/mariotoffia/gobridge/config"
-    "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-    nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
-)
-
-func main() {
-    cfg, err := config.ParseFile("bridge.yaml", config.FormatAuto)
-    if err != nil {
-        slog.Error("config error", "error", err)
-        os.Exit(1)
-    }
-
-    ctx := context.Background()
-    logger := slog.Default()
-
-    rt, err := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-        RegisterTransport("mqtt", paho.NewFactory(logger)).
-        RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).
-        Build(ctx)
-    if err != nil {
-        slog.Error("build error", "error", err)
-        os.Exit(1)
-    }
-
-    if err := rt.Start(ctx); err != nil {
-        slog.Error("start error", "error", err)
-        os.Exit(1)
-    }
-    defer rt.Stop(context.Background())
-
-    slog.Info("bridge running", "instance_id", rt.InstanceID())
-    // ... wait for shutdown signal ...
-}
-```
+For richer setups, see the [scenarios index](docs/scenarios/) (durable outbox, clustered exclusive sessions, multi-tenant routing, custom processors, …) or jump straight to the [Configuration Overview](docs/configuration-overview.md).
 
 ## Installation
 
@@ -109,6 +69,14 @@ go get github.com/mariotoffia/gobridge/adapters/aws/store
 | [Credentials and HTTP API](docs/credentials-and-http-api.md) | URI-based credential resolution and Admin/Monitor HTTP API |
 | [Scenarios](docs/scenarios/) | Progressive walkthroughs from basic MQTT forwarding to cross-protocol AMQP bridging |
 
+### Machine-readable specs
+
+| Spec | Description |
+|------|-------------|
+| [`spec/httpapi/http-api.yaml`](spec/httpapi/http-api.yaml) | OpenAPI 3.x contract for the Admin and Monitor HTTP servers |
+| [`spec/httpapi/components.yaml`](spec/httpapi/components.yaml) | Shared OpenAPI component schemas for the bridge HTTP surface |
+| [`spec/httpapi/config-components.yaml`](spec/httpapi/config-components.yaml) | OpenAPI schema for the `BridgeConfig` blueprint exposed via the Admin API |
+
 ## Project Structure
 
 ```
@@ -118,6 +86,7 @@ gobridge/
 ├── runtime/          Route execution engine (Runtime, RouteRunner)
 ├── bridge/           Composition root (Builder wires config to runtime)
 ├── config/           Declarative YAML/JSON configuration model
+├── validate/         Cross-cutting blueprint validation (used by config + admin API)
 ├── httpapi/          Admin and monitor HTTP servers
 ├── observability/    Context helpers and correlation slog handler
 ├── adapters/

@@ -518,6 +518,58 @@ The `OutboxDrainer` loop:
 3. Marks records as completed on success.
 4. Supports clustering via `LeaseStore` for single-active ownership of outbox partitions.
 
+The detailed drainer cycle (claim → send → complete, with adaptive
+back-off when the partition is empty) is:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Tick as DrainStrategy<br/>(FixedPoll / AdaptiveBackoff)
+    participant Drainer as OutboxDrainer
+    participant Lease as LeaseStore
+    participant Outbox as OutboxStore
+    participant Snd as Sender
+    participant DLQ as DLQStore
+
+    loop per partition (per route or session+binding)
+        Tick->>Drainer: NextInterval (cancellable via ctx)
+        Drainer->>Lease: Read current LeaseToken {Owner, Version}
+        alt not lease holder (clustered)
+            Drainer-->>Tick: idle, backoff
+        else lease holder or standalone
+            Drainer->>Outbox: Claim(partition, owner, token, limit)
+            alt no records
+                Outbox-->>Drainer: empty
+                Drainer-->>Tick: backoff (Adaptive grows interval)
+            else got records
+                Outbox-->>Drainer: []OutboxRecord (claimed)
+                loop per record
+                    Drainer->>Snd: Send(OutboundMessage{Envelope, Address})
+                    alt success
+                        Snd-->>Drainer: ok
+                        Drainer->>Outbox: Complete(record, token)
+                        Outbox-->>Drainer: ok or STALE_FENCING_TOKEN
+                    else transient error
+                        Snd-->>Drainer: BridgeError(transient)
+                        Drainer->>Outbox: Replay (++ReplayCount)
+                    else permanent error / replay exhausted
+                        Snd-->>Drainer: BridgeError(permanent)
+                        Drainer->>DLQ: Persist DLQEntry
+                        Drainer->>Outbox: Complete (terminal)
+                    end
+                end
+                Drainer-->>Tick: reset to MinInterval
+            end
+        end
+    end
+```
+
+Fencing is checked on every guarded write (`Claim`, `Complete`,
+`Replay`) — a stale `LeaseToken.Version` is rejected with
+`shared.ErrCodeStaleFencingToken` so two instances cannot drain the
+same partition. See [§16 — Clustered Deployment](#16-clustered-deployment)
+for the lease state machine.
+
 ---
 
 ## 6. Processor Chain
@@ -696,7 +748,16 @@ http:
 
 ## 9. Composition Root (`bridge.Builder`)
 
-The `bridge` package is the composition root that wires all components together. It is the only package that imports across layers.
+The `bridge` package is the **library-mode composition root** that wires all components together. It is the only Layer-2 package allowed to bridge across layers (its Builder consumes `ports.BridgeConfig` and produces a `runtime.Runtime` from registered adapters).
+
+There are two equivalent composition roots in the project:
+
+| Entry point | Role | When to pick |
+|---|---|---|
+| [`cmd/gobridge`](cmd/) | YAML/JSON-driven binary entry point. Parses on-disk config, calls into `bridge.Builder`, manages process lifecycle. | Operating GoBridge as a standalone service. |
+| [`bridge`](bridge/) | Library/programmatic entry point. Same wiring, exposed as a Go API. | Embedding GoBridge inside another Go process (tests, custom daemons, third-party hosts) where the host owns lifecycle, signals, and config sourcing. |
+
+Both end at the same `runtime.Runtime`; the choice is purely about who owns the process. Adapter registration, credential resolution, and ordering of `Build → Start → Stop` are identical in either path.
 
 ```go
 cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
@@ -719,7 +780,7 @@ rt.Start(ctx)
 
 ```mermaid
 flowchart TD
-    CFG[config.BridgeConfig] --> B[bridge.Builder]
+    CFG[ports.BridgeConfig<br/>blueprint] --> B[bridge.Builder]
     B -->|RegisterTransport| TF[TransportFactory]
     B -->|RegisterStoreFactory| SF[StoreFactory]
     B -->|RegisterProcessor| PROC[Processor]
@@ -741,11 +802,55 @@ flowchart TD
     PROC --> RT
 ```
 
+#### Builder dispatch flow (Plan / Commit two-phase)
+
+`bridge.Builder` exposes both a one-shot `Build(ctx)` and an explicit
+two-phase `Plan(ctx)` → `Commit(ctx)` for hot-reload scenarios. Both
+paths execute the same internal `prepare → complete` sequence; the
+diagram below traces the dispatch through the `bridge/builder*.go`
+files.
+
+```mermaid
+flowchart TD
+    Caller([Caller])
+    Caller -->|"Build(ctx)"| Build["builder_prepare.go: Build()"]
+    Caller -->|"Plan(ctx)"| Plan["builder_prepare.go: Plan()"]
+
+    Build --> Prepare
+    Plan --> Prepare["builder_prepare.go: prepare()"]
+    Prepare --> CheckRand["runtime.CheckRandSource()"]
+    Prepare --> Validate["validator(cfg)<br/>config.Validate / blueprint validator"]
+    Prepare --> Stores["builder_prepare.go: buildStores()<br/>resolveClusterEndpoints()<br/>outboxRuntimeOptions()"]
+    Stores --> StoreFact["StoreFactory(.NewLeaseStore /<br/>NewOutboxStore / NewDLQStore)"]
+    StoreFact --> Prep[(preparedBuild<br/>cfg + stores + rtOpts)]
+
+    Plan --> PlanObj[(BuildPlan<br/>one-shot)]
+    PlanObj -->|"Commit(ctx)"| Complete
+    Build --> Complete
+
+    Complete["builder_prepare.go: complete()<br/>(opens sessions, receivers, senders;<br/>resolves credentials and processors;<br/>wires routes)"]
+    Complete --> Resolve["builder_resolve.go:<br/>resolveProcessors()<br/>resolveConfigCredentials()"]
+    Complete --> CredRefresh["credential_refresh.go<br/>(push/pull credential rotation)"]
+    Complete --> Convert["convert.go<br/>(BindingDef/RouteDef → runtime types)"]
+    Complete --> RT([runtime.Runtime<br/>not yet started])
+
+    classDef phase fill:#fde68a,stroke:#b45309,color:#111
+    class Prepare,Complete phase
+```
+
+`Plan` returns a one-shot `BuildPlan` that captures the prepared
+state; `Commit` is single-use (a second call returns an error) so
+the supervisor's hot-reload state machine cannot accidentally
+double-commit. `Build` is the same `prepare → complete` collapsed
+into a single call.
+
 ---
 
 ## 10. HTTP API
 
 Two HTTP servers expose operational and management interfaces.
+
+> **Machine-readable spec:** the OpenAPI 3.x contracts live under [`spec/httpapi/`](spec/httpapi/) — [`http-api.yaml`](spec/httpapi/http-api.yaml) is the entry document, with shared schemas in [`components.yaml`](spec/httpapi/components.yaml) and the blueprint payload in [`config-components.yaml`](spec/httpapi/config-components.yaml). Tables below are an index; the YAML is authoritative for request/response shapes, status codes, and auth.
 
 ### Admin Server (default `:8080`)
 
@@ -1082,6 +1187,47 @@ The `SessionManager` manages the lease lifecycle for exclusive sessions:
 4. **Re-acquire** -- After step-down, loop back to acquire and resume on success.
 
 The lease fencing token (monotonically increasing version) propagates through the entire outbox lifecycle: `Claim` and `Complete` operations validate the token, preventing stale owners from sending duplicates.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle : SessionManager start
+
+    Idle --> Acquiring : try LeaseStore.Acquire(TTL)
+    Acquiring --> Active : Acquire OK<br/>token={Owner, Version}
+    Acquiring --> Idle : Acquire fails<br/>(another holder)<br/>backoff + retry
+
+    Active --> Renewing : RenewInterval elapsed<br/>(TTL / MaxRenewFails)
+    Renewing --> Active : Renew OK<br/>(token unchanged)
+    Renewing --> Renewing : transient renew fail<br/>++failCount
+    Renewing --> SteppingDown : failCount ≥ MaxRenewFails<br/>or STALE_FENCING_TOKEN
+
+    SteppingDown --> Released : wait StepDownGrace<br/>(in-flight Complete drains)
+    Released --> Idle : LeaseStore.Release<br/>resume Acquire loop
+
+    Active --> SteppingDown : explicit Stop()<br/>(graceful shutdown)
+    SteppingDown --> [*] : on Stop()
+
+    note right of Active
+        Drainers active.
+        Every guarded write carries
+        LeaseToken{Owner, Version}.
+    end note
+
+    note right of SteppingDown
+        Standby instances may
+        Acquire as soon as TTL
+        expires; fencing rejects
+        any late writes from this
+        former owner.
+    end note
+```
+
+Transitions are driven by the `Clock` (renew tick, grace timer) and by
+`LeaseStore` outcomes. The state machine is identical for every
+exclusive session; multiple sessions on one instance run independent
+state machines but share the same `Clock` source. See
+[`runtime/cluster/`](runtime/) for the implementation and
+`shared.ErrCodeStaleFencingToken` for the fencing-failure surface.
 
 ### Timeout Alignment
 

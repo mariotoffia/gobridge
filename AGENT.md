@@ -28,6 +28,8 @@ Do not preload these. Open one only when the task requires it.
 
 In commits and PRs: **link**, do not restate.
 
+> **Doc format.** Markdown (`.md`) is the default for all repository documentation, including `docs/` guides, scenarios, runbooks, and the canonical files in this table. AsciiDoc (`.adoc`) is the carve-out and acceptable in two cases only: (a) formal design specifications under `_design/` (e.g. `_design/error-wrapping-policy.adoc`), and (b) deep cross-cutting reference material that benefits from AsciiDoc's tighter table/admonition support — currently `docs/typed-plugin-config.adoc`. Do not introduce new `.adoc` files outside these two buckets; convert or write Markdown instead.
+
 ---
 
 ## 2. Non-negotiable rules
