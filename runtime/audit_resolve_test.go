@@ -173,20 +173,6 @@ func TestBindingResolver_NoMatch(t *testing.T) {
 	}
 }
 
-// TestValidateMQTTTopic_LeadingSlash validates that a leading slash
-// is rejected (empty segment before first /).
-func TestValidateMQTTTopic_LeadingSlash(t *testing.T) {
-	err := ValidateMQTTTopic("/topic/path")
-	if err == nil {
-		t.Fatal("expected error for leading slash (empty segment)")
-	}
-}
-
-// TestValidateMQTTTopic_TrailingSlash validates that a trailing slash
-// is rejected (empty segment after last /).
-func TestValidateMQTTTopic_TrailingSlash(t *testing.T) {
-	err := ValidateMQTTTopic("topic/path/")
-	if err == nil {
-		t.Fatal("expected error for trailing slash (empty segment)")
-	}
-}
+// TestValidateMQTTTopic_LeadingSlash and TestValidateMQTTTopic_TrailingSlash
+// were moved to adapters/mqtt/transport/paho/topic_validator_test.go as
+// part of AP-005 — MQTT topic validation is no longer a runtime concern.

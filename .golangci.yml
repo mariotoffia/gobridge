@@ -80,6 +80,7 @@ linters:
         - github.com/mariotoffia/gobridge/ports.LeaseStore
         - github.com/mariotoffia/gobridge/ports.OutboxStore
         - github.com/mariotoffia/gobridge/ports.DLQStore
+        - github.com/mariotoffia/gobridge/ports.AddressValidator
 
         # 3. Runtime accessors.
         - github.com/mariotoffia/gobridge/ports.RouteLocator

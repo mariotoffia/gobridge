@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
@@ -20,6 +19,22 @@ func (r *RouteRunner) outboxPartitionKey(plans []routing.DispatchPlan) string {
 }
 
 func (r *RouteRunner) resolvePlans(ctx context.Context, env *messaging.Envelope) ([]routing.DispatchPlan, error) {
+	plans, err := r.resolveRawPlans(ctx, env)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.validatePlanAddresses(plans); err != nil {
+		return nil, err
+	}
+	return plans, nil
+}
+
+// resolveRawPlans returns dispatch plans from the configured resolver
+// (or from a single-binding fallback when none is configured) without
+// performing transport-level address validation. Address validation is
+// applied uniformly by resolvePlans so all plans, regardless of source,
+// pass through the same per-binding AddressValidator dispatch.
+func (r *RouteRunner) resolveRawPlans(ctx context.Context, env *messaging.Envelope) ([]routing.DispatchPlan, error) {
 	if r.resolver != nil {
 		return r.resolver.Resolve(ctx, env)
 	}
@@ -32,13 +47,6 @@ func (r *RouteRunner) resolvePlans(ctx context.Context, env *messaging.Envelope)
 				WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
 		}
 
-		if strings.EqualFold(b.Transport, "mqtt") {
-			if err := ValidateMQTTTopic(addr); err != nil {
-				return nil, shared.ErrInvalidTopic.
-					WithMessage(fmt.Sprintf("binding %q: %v", b.ID, err))
-			}
-		}
-
 		return []routing.DispatchPlan{{
 			BindingID: b.ID,
 			Address:   addr,
@@ -46,6 +54,38 @@ func (r *RouteRunner) resolvePlans(ctx context.Context, env *messaging.Envelope)
 		}}, nil
 	}
 	return []routing.DispatchPlan{{BindingID: r.routeID}}, nil
+}
+
+// validatePlanAddresses runs the per-binding AddressValidator (when
+// registered) against every plan's rendered Address. This is the
+// single point where the runtime applies transport-level address
+// rules; AP-005 promoted this from a hardcoded MQTT branch in each
+// dispatch site to a generic capability surfaced by TransportFactory.
+// Bindings whose transport returns a nil validator are skipped.
+func (r *RouteRunner) validatePlanAddresses(plans []routing.DispatchPlan) error {
+	for _, p := range plans {
+		if p.Address == "" {
+			continue
+		}
+		if err := r.validateAddress(p.BindingID, p.Address); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateAddress invokes the AddressValidator registered for bindingID
+// (if any). Returns a shared.ErrInvalidTopic-wrapped error on failure.
+func (r *RouteRunner) validateAddress(bindingID, address string) error {
+	v, ok := r.addressValidators[bindingID]
+	if !ok || v == nil {
+		return nil
+	}
+	if err := v.ValidateAddress(address); err != nil {
+		return shared.ErrInvalidTopic.
+			WithMessage(fmt.Sprintf("binding %q: %v", bindingID, err))
+	}
+	return nil
 }
 
 func (r *RouteRunner) buildOutboxRecords(env *messaging.Envelope, plans []routing.DispatchPlan) ([]*persistence.OutboxRecord, error) {

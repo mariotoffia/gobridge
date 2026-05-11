@@ -124,8 +124,8 @@
 ./tests/integration/integration_config_api_edge_test.go:68:	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for 100ms transaction TTL to expire
 ./tests/integration/integration_config_api_edge_test.go:87:	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for 100ms transaction TTL to expire
 ./tests/integration/integration_config_api_helpers_test.go:298:		time.Sleep(interval) // SYNC: poll for condition
-./tests/integration/integration_ddb_config_helpers_test.go:434:		time.Sleep(10 * time.Millisecond) // SYNC: poll for supervisor runtime readiness
-./tests/integration/integration_ddb_config_helpers_test.go:453:		time.Sleep(10 * time.Millisecond) // SYNC: poll for route availability
+./tests/integration/integration_ddb_config_helpers_test.go:438:		time.Sleep(10 * time.Millisecond) // SYNC: poll for supervisor runtime readiness
+./tests/integration/integration_ddb_config_helpers_test.go:457:		time.Sleep(10 * time.Millisecond) // SYNC: poll for route availability
 ./tests/integration/integration_ddb_config_rollback_test.go:336:	time.Sleep(300 * time.Millisecond) // SYNC: let config watcher detect invalid overlay
 ./tests/integration/integration_ddb_config_rollback_test.go:443:	time.Sleep(300 * time.Millisecond) // SYNC: let config watcher detect invalid overlay before saving valid one
 ./tests/integration/integration_ddb_config_rollback_test.go:82:	time.Sleep(500 * time.Millisecond) // NEGATIVE: verify Manager drops invalid config (no swap event)

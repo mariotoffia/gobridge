@@ -14,8 +14,11 @@ import (
 type MatchFunc func(env *messaging.Envelope, b routing.DestinationBinding) bool
 
 // BindingResolver is a production DestinationResolver that selects bindings
-// using a MatchFunc, renders address templates from envelope headers, and
-// validates MQTT topics when the binding transport is "mqtt".
+// using a MatchFunc and renders address templates from envelope headers.
+// Address validation is no longer the resolver's responsibility — the
+// route runner invokes the per-transport AddressValidator (supplied via
+// TransportFactory.AddressValidator) against each rendered DispatchPlan
+// before dispatch, so resolvers stay transport-agnostic.
 type BindingResolver struct {
 	bindings []routing.DestinationBinding
 	matchFn  MatchFunc
@@ -23,8 +26,7 @@ type BindingResolver struct {
 
 // NewBindingResolver creates a resolver that evaluates matchFn against each
 // configured binding. Bindings whose Address contains {key} placeholders are
-// rendered using envelope headers. MQTT bindings have their rendered addresses
-// validated for wildcard safety.
+// rendered using envelope headers.
 func NewBindingResolver(bindings []routing.DestinationBinding, matchFn MatchFunc) *BindingResolver {
 	return &BindingResolver{
 		bindings: bindings,
@@ -46,13 +48,6 @@ func (r *BindingResolver) Resolve(_ context.Context, env *messaging.Envelope) ([
 		if err != nil {
 			return nil, shared.ErrInvalidTopic.
 				WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
-		}
-
-		if strings.EqualFold(b.Transport, "mqtt") {
-			if err := ValidateMQTTTopic(addr); err != nil {
-				return nil, shared.ErrInvalidTopic.
-					WithMessage(fmt.Sprintf("binding %q: %v", b.ID, err))
-			}
 		}
 
 		plans = append(plans, routing.DispatchPlan{
@@ -258,13 +253,6 @@ func (r *RuleResolver) planForBinding(bindingID string, env *messaging.Envelope)
 			WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
 	}
 
-	if strings.EqualFold(b.Transport, "mqtt") {
-		if err := ValidateMQTTTopic(addr); err != nil {
-			return nil, shared.ErrInvalidTopic.
-				WithMessage(fmt.Sprintf("binding %q: %v", b.ID, err))
-		}
-	}
-
 	return []routing.DispatchPlan{{
 		BindingID: b.ID,
 		Address:   addr,
@@ -317,40 +305,6 @@ func RenderAddress(template string, vars map[string]any) (string, error) {
 	}
 
 	return result, nil
-}
-
-const maxMQTTTopicLen = 65535
-
-// ValidateMQTTTopic rejects MQTT wildcard characters, empty segments, null
-// bytes, reserved $-prefixed topics, and topics exceeding the spec maximum
-// length in a rendered topic string. Call this on resolved addresses before
-// publishing to MQTT.
-func ValidateMQTTTopic(topic string) error {
-	if topic == "" {
-		return fmt.Errorf("MQTT topic must not be empty")
-	}
-	if len(topic) > maxMQTTTopicLen {
-		return fmt.Errorf("MQTT topic exceeds maximum length of %d bytes", maxMQTTTopicLen)
-	}
-	if strings.HasPrefix(topic, "$") {
-		return fmt.Errorf("MQTT publish topic must not start with '$' (reserved)")
-	}
-	if strings.ContainsRune(topic, '+') {
-		return fmt.Errorf("MQTT publish topic must not contain wildcard '+'")
-	}
-	if strings.ContainsRune(topic, '#') {
-		return fmt.Errorf("MQTT publish topic must not contain wildcard '#'")
-	}
-	if strings.ContainsRune(topic, 0) {
-		return fmt.Errorf("MQTT topic must not contain null character")
-	}
-	segments := strings.Split(topic, "/")
-	for _, seg := range segments {
-		if seg == "" {
-			return fmt.Errorf("MQTT topic must not contain empty segments")
-		}
-	}
-	return nil
 }
 
 func copyHeaders(opts map[string]any) map[string]any {

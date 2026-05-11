@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,8 +11,18 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
+
+// rejectingAddressValidator implements ports.AddressValidator for tests
+// that exercise the AP-005 per-binding validator dispatch path. Every
+// call returns an error so the runtime maps it to ErrInvalidTopic.
+type rejectingAddressValidator struct{}
+
+func (rejectingAddressValidator) ValidateAddress(string) error {
+	return errors.New("address rejected by test validator")
+}
 
 func TestResolvePlans_NoResolver_RendersAddress(t *testing.T) {
 	sender := NewFakeSender()
@@ -132,7 +143,7 @@ func TestResolvePlans_NoResolver_CopiesBindingHeaders(t *testing.T) {
 		"binding Headers should be merged into envelope headers")
 }
 
-func TestResolvePlans_NoResolver_MQTTValidation(t *testing.T) {
+func TestResolvePlans_NoResolver_AddressValidatorRejects(t *testing.T) {
 	sender := NewFakeSender()
 	dlqStore := NewFakeDLQStore()
 
@@ -142,12 +153,18 @@ func TestResolvePlans_NoResolver_MQTTValidation(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
-		RouteID:  "fallback-mqtt-validate",
+		RouteID:  "fallback-validate",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      runtime.NewDLQRouter(dlqStore),
 		Bindings: bindings,
+		// AP-005: validation is now a transport-supplied capability
+		// dispatched per binding by the runtime. The test wires a
+		// rejecting validator to assert the fallback path enforces it.
+		AddressValidators: map[string]ports.AddressValidator{
+			"mqtt-b": rejectingAddressValidator{},
+		},
 	}
 	runner := runtime.NewRouteRunnerFromConfig(cfg)
 
@@ -156,9 +173,8 @@ func TestResolvePlans_NoResolver_MQTTValidation(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	// Header produces invalid MQTT topic with wildcard.
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{
-		ID:      "mqtt-fallback-bad",
+		ID:      "validator-fallback-bad",
 		Subject: "test",
 		Headers: map[string]any{"topic": "factory/#"},
 	})
@@ -167,7 +183,7 @@ func TestResolvePlans_NoResolver_MQTTValidation(t *testing.T) {
 	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)
 
 	assert.Equal(t, 0, sender.SentCount(),
-		"sender must not be called for invalid MQTT topic")
+		"sender must not be called when AddressValidator rejects")
 	assert.Equal(t, 1, dlqStore.Count(),
-		"expected 1 DLQ entry for MQTT validation")
+		"expected 1 DLQ entry for AddressValidator rejection")
 }

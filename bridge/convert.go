@@ -200,6 +200,7 @@ func toBindings(cfg *ports.BridgeConfig, bindingIDs []string) []routing.Destinat
 		}
 		out = append(out, routing.DestinationBinding{
 			ID:        bd.ID,
+			Transport: transportForBinding(cfg, bd),
 			SessionID: bd.SessionID,
 			SenderID:  bd.SenderID,
 			Address:   bd.Address,
@@ -207,6 +208,31 @@ func toBindings(cfg *ports.BridgeConfig, bindingIDs []string) []routing.Destinat
 		})
 	}
 	return out
+}
+
+// transportForBinding resolves the transport name a binding belongs to
+// by following SenderID → SenderDef.Transport. Falls back to the
+// session's transport when the sender does not declare one. Returns ""
+// when neither can be resolved (the runtime then treats the binding as
+// having no transport-level address validator).
+func transportForBinding(cfg *ports.BridgeConfig, bd *ports.BindingDef) string {
+	for i := range cfg.Senders {
+		if cfg.Senders[i].ID == bd.SenderID {
+			if cfg.Senders[i].Transport != "" {
+				return cfg.Senders[i].Transport
+			}
+			if sd := findSession(cfg, cfg.Senders[i].SessionID); sd != nil {
+				return sd.Transport
+			}
+			break
+		}
+	}
+	if bd.SessionID != "" {
+		if sd := findSession(cfg, bd.SessionID); sd != nil {
+			return sd.Transport
+		}
+	}
+	return ""
 }
 
 func findBinding(cfg *ports.BridgeConfig, id string) *ports.BindingDef {
@@ -280,4 +306,34 @@ func buildResolver(def *ports.ResolverDef, bindings []routing.DestinationBinding
 	default:
 		return nil, fmt.Errorf("unknown resolver type %q", def.Type)
 	}
+}
+
+// buildAddressValidators returns a binding-ID → AddressValidator map
+// populated by querying the per-binding TransportFactory's
+// AddressValidator() capability. Bindings whose transport is unknown
+// or whose factory returns nil are omitted (the runtime then skips
+// validation for those bindings).
+func buildAddressValidators(
+	transports map[string]ports.TransportFactory,
+	bindings []routing.DestinationBinding,
+) map[string]ports.AddressValidator {
+	out := make(map[string]ports.AddressValidator, len(bindings))
+	for _, bd := range bindings {
+		if bd.Transport == "" {
+			continue
+		}
+		tf, ok := transports[bd.Transport]
+		if !ok {
+			continue
+		}
+		v := tf.AddressValidator()
+		if v == nil {
+			continue
+		}
+		out[bd.ID] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

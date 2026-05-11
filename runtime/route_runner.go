@@ -28,7 +28,8 @@ type RouteRunner struct {
 	policy               routing.RoutePolicy
 	receiver             ports.Receiver
 	sender               ports.Sender
-	senders              map[string]ports.Sender // binding ID -> sender (optional)
+	senders              map[string]ports.Sender           // binding ID -> sender (optional)
+	addressValidators    map[string]ports.AddressValidator // binding ID -> validator (optional)
 	outboxStore          ports.OutboxStore
 	dlq                  *DLQRouter
 	resolver             ports.DestinationResolver
@@ -60,7 +61,8 @@ type RouteRunnerConfig struct {
 	Policy               routing.RoutePolicy
 	Receiver             ports.Receiver
 	Sender               ports.Sender
-	Senders              map[string]ports.Sender // binding ID -> sender (optional)
+	Senders              map[string]ports.Sender           // binding ID -> sender (optional)
+	AddressValidators    map[string]ports.AddressValidator // binding ID -> validator (optional)
 	OutboxStore          ports.OutboxStore
 	DLQ                  *DLQRouter
 	Resolver             ports.DestinationResolver
@@ -139,6 +141,7 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 		receiver:             cfg.Receiver,
 		sender:               cfg.Sender,
 		senders:              cfg.Senders,
+		addressValidators:    cfg.AddressValidators,
 		outboxStore:          cfg.OutboxStore,
 		dlq:                  dlq,
 		resolver:             cfg.Resolver,

@@ -183,6 +183,11 @@ func (f *Factory) Capabilities() []ports.Capability {
 	return []ports.Capability{ports.CapHTTPEndpoint}
 }
 
+// AddressValidator returns nil — HTTP egress targets are plain URL
+// strings and are validated by the underlying http.Client when the
+// request is built.
+func (f *Factory) AddressValidator() ports.AddressValidator { return nil }
+
 // Handler returns the HTTP handler for all registered transport endpoints.
 func (f *Factory) Handler() http.Handler {
 	return f.mux

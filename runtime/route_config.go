@@ -34,6 +34,15 @@ type RouteConfig struct {
 	// sender. Optional; when nil all bindings use the default sender.
 	Senders map[string]ports.Sender
 
+	// AddressValidators maps binding IDs to the AddressValidator the
+	// owning transport supplies (via TransportFactory.AddressValidator).
+	// The runtime invokes the validator against every fully-rendered
+	// destination address before dispatch and surfaces a non-nil
+	// validation error as shared.ErrInvalidTopic. Bindings whose
+	// transport returns a nil validator are simply omitted from this
+	// map, in which case the runtime skips validation. Optional.
+	AddressValidators map[string]ports.AddressValidator
+
 	// SourceVisibilityTimeout is the visibility timeout of the source
 	// transport (e.g. SQS VisibilityTimeout). When set, the validator
 	// checks that SendTimeout does not exceed half this value to

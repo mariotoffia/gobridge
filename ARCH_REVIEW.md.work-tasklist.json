@@ -85,7 +85,7 @@
     {
       "id": "M-1",
       "title": "Promote `ports.AddressValidator` capability; remove `\"mqtt\"` literal from runtime",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(AP-005)",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "AP-005 \u2014 extensibility/seam refactor moving validation to factory capability.",

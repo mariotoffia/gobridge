@@ -60,6 +60,11 @@ func (f *Factory) Capabilities() []ports.Capability {
 	}
 }
 
+// AddressValidator returns nil — SQS queue URLs/names are validated by
+// the AWS SDK at send time and have no runtime-enforceable
+// rendered-address rules of the kind MQTT topics need.
+func (f *Factory) AddressValidator() ports.AddressValidator { return nil }
+
 // VisibilityTimeout returns the default SQS visibility timeout (30s).
 // The runtime validator uses this to check that SendTimeout does not
 // exceed half the visibility window.

@@ -32,9 +32,5 @@ func BenchmarkRenderAddress_NoPlaceholders(b *testing.B) {
 	}
 }
 
-func BenchmarkValidateMQTTTopic(b *testing.B) {
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = ValidateMQTTTopic("devices/sensor-1/temperature/readings")
-	}
-}
+// BenchmarkValidateMQTTTopic was moved alongside ValidateMQTTTopic to
+// adapters/mqtt/transport/paho — see AP-005.

@@ -73,7 +73,8 @@ type SenderFactory interface {
 // TransportFactory is the port-level contract a transport adapter
 // implements so it can be registered with bridge.Builder. It composes
 // the per-role factories with a Capabilities query used by the runtime
-// validator.
+// validator and an AddressValidator factory used by the runtime to
+// validate rendered transport addresses.
 //
 // Stateless transports (e.g. SQS, HTTP) return (nil, nil) from
 // NewSession. The session parameter passed to NewReceiver/NewSender
@@ -86,6 +87,29 @@ type TransportFactory interface {
 	// Capabilities returns the transport capabilities relevant for
 	// startup validation (e.g. visibility extension, stateful session).
 	Capabilities() []Capability
+
+	// AddressValidator returns a validator the runtime invokes against
+	// each fully-rendered transport-level address (e.g. an MQTT publish
+	// topic, an AMQP routing key, an SQS queue URL) before handing it
+	// to the Sender. Transports without address-level validation
+	// requirements MUST return nil; the runtime then skips validation
+	// for that binding. Returning a non-nil validator that yields an
+	// error from ValidateAddress causes the runtime to surface
+	// shared.ErrInvalidTopic at the call site.
+	AddressValidator() AddressValidator
+}
+
+// AddressValidator validates a fully-rendered transport-level address
+// (e.g. an MQTT publish topic, an AMQP routing key, an SQS queue URL)
+// before the runtime hands it to a Sender. Returning a non-nil error
+// is treated by the runtime as an invalid-topic / invalid-address
+// condition (mapped to shared.ErrInvalidTopic at the call site).
+//
+// Implementations must be safe for concurrent use; the runtime caches
+// one validator per transport factory and may invoke it from many
+// route-runner goroutines.
+type AddressValidator interface {
+	ValidateAddress(address string) error
 }
 
 // VisibilityTimeoutProvider is an optional interface that

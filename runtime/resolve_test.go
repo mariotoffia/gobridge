@@ -2,7 +2,6 @@ package runtime_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
@@ -92,72 +91,12 @@ func TestRenderAddress_RendersToEmpty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ValidateMQTTTopic
+// ValidateMQTTTopic — moved
 // ---------------------------------------------------------------------------
-
-// Verifies ValidateMQTTTopic accepts common valid MQTT topic strings.
-func TestValidateMQTTTopic_ValidTopics(t *testing.T) {
-	valid := []string{
-		"devices/sensor-1/data",
-		"factory/a/orders/42",
-		"a",
-		"a/b/c/d/e",
-	}
-	for _, topic := range valid {
-		if err := runtime.ValidateMQTTTopic(topic); err != nil {
-			t.Errorf("topic %q should be valid: %v", topic, err)
-		}
-	}
-}
-
-// Verifies ValidateMQTTTopic rejects an empty topic.
-func TestValidateMQTTTopic_Empty(t *testing.T) {
-	if err := runtime.ValidateMQTTTopic(""); err == nil {
-		t.Fatal("empty topic should be rejected")
-	}
-}
-
-// Verifies ValidateMQTTTopic rejects single-level wildcards in the topic.
-func TestValidateMQTTTopic_PlusWildcard(t *testing.T) {
-	if err := runtime.ValidateMQTTTopic("devices/+/data"); err == nil {
-		t.Fatal("plus wildcard should be rejected")
-	}
-}
-
-// Verifies ValidateMQTTTopic rejects multi-level wildcards in the topic.
-func TestValidateMQTTTopic_HashWildcard(t *testing.T) {
-	if err := runtime.ValidateMQTTTopic("devices/#"); err == nil {
-		t.Fatal("hash wildcard should be rejected")
-	}
-}
-
-// Verifies ValidateMQTTTopic rejects embedded null bytes.
-func TestValidateMQTTTopic_NullCharacter(t *testing.T) {
-	if err := runtime.ValidateMQTTTopic("devices/\x00/data"); err == nil {
-		t.Fatal("null character should be rejected")
-	}
-}
-
-// Verifies ValidateMQTTTopic rejects consecutive slashes producing empty segments.
-func TestValidateMQTTTopic_EmptySegment(t *testing.T) {
-	if err := runtime.ValidateMQTTTopic("devices//data"); err == nil {
-		t.Fatal("empty segment should be rejected")
-	}
-}
-
-// Verifies ValidateMQTTTopic rejects a leading slash.
-func TestValidateMQTTTopic_LeadingSlash(t *testing.T) {
-	if err := runtime.ValidateMQTTTopic("/devices/data"); err == nil {
-		t.Fatal("leading slash (empty first segment) should be rejected")
-	}
-}
-
-// Verifies ValidateMQTTTopic rejects a trailing slash.
-func TestValidateMQTTTopic_TrailingSlash(t *testing.T) {
-	if err := runtime.ValidateMQTTTopic("devices/data/"); err == nil {
-		t.Fatal("trailing slash (empty last segment) should be rejected")
-	}
-}
+//
+// All ValidateMQTTTopic / TestValidateMQTTTopic_* tests have been moved to
+// adapters/mqtt/transport/paho/topic_validator_test.go. The runtime no
+// longer owns MQTT topic semantics — see AP-005 (M-1).
 
 // ---------------------------------------------------------------------------
 // BindingResolver + MatchByHeader
@@ -313,45 +252,13 @@ func TestBindingResolver_MatchByID_NotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 // BindingResolver -- MQTT topic validation
 // ---------------------------------------------------------------------------
-
-// Verifies rendered MQTT addresses are validated and wildcard characters in values yield ErrInvalidTopic.
-func TestBindingResolver_MQTTTopicValidation(t *testing.T) {
-	bindings := []routing.DestinationBinding{
-		{ID: "bind-bad", Transport: "mqtt", Address: "devices/{wildcard}/data"},
-	}
-	resolver := runtime.NewBindingResolver(bindings, runtime.MatchAll())
-
-	env := messaging.MustEnvelope(messaging.EnvelopeInput{
-		ID:      "msg-bad",
-		Headers: map[string]any{"wildcard": "sensor+"},
-	})
-
-	_, err := resolver.Resolve(context.Background(), env)
-	if err == nil {
-		t.Fatal("expected error for MQTT topic with wildcard character")
-	}
-	if !errors.Is(err, shared.ErrInvalidTopic) {
-		t.Fatalf("expected ErrInvalidTopic, got %v", err)
-	}
-}
-
-// Verifies non-MQTT transports skip MQTT topic validation so plus signs in addresses are allowed.
-func TestBindingResolver_NonMQTTSkipsTopicValidation(t *testing.T) {
-	bindings := []routing.DestinationBinding{
-		{ID: "bind-sqs", Transport: "sqs", Address: "queue+name"},
-	}
-	resolver := runtime.NewBindingResolver(bindings, runtime.MatchAll())
-
-	env := &messaging.Envelope{ID: "msg-sqs"}
-
-	plans, err := resolver.Resolve(context.Background(), env)
-	if err != nil {
-		t.Fatalf("SQS binding should not validate MQTT topics: %v", err)
-	}
-	if len(plans) != 1 {
-		t.Fatalf("expected 1 plan, got %d", len(plans))
-	}
-}
+//
+// MQTT-specific resolver-level validation tests were removed as part of
+// AP-005 — BindingResolver no longer performs transport-aware address
+// validation. The route runner now invokes a per-binding
+// ports.AddressValidator returned by TransportFactory.AddressValidator,
+// so the equivalent end-to-end coverage lives next to the runner
+// (runtime/route_address_validator_test.go) and inside the paho package.
 
 // ---------------------------------------------------------------------------
 // BindingResolver -- address template errors

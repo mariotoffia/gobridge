@@ -79,6 +79,7 @@ func (f *fakeTransportFactory) NewSender(_ context.Context, _ ports.SenderSpec, 
 func (f *fakeTransportFactory) Capabilities() []ports.Capability {
 	return []ports.Capability{ports.CapVisibilityExtension}
 }
+func (f *fakeTransportFactory) AddressValidator() ports.AddressValidator { return nil }
 
 type fakeLeaseStore struct{}
 

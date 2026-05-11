@@ -315,6 +315,8 @@ func (f *cfgFakeTransportFactory) Capabilities() []ports.Capability {
 	return []ports.Capability{ports.CapSourceRedelivery, ports.CapVisibilityExtension}
 }
 
+func (f *cfgFakeTransportFactory) AddressValidator() ports.AddressValidator { return nil }
+
 // cfgBrokenTransportFactory returns errors on NewSession for testing
 // rollback when the builder fails.
 type cfgBrokenTransportFactory struct {
@@ -334,6 +336,8 @@ func (f *cfgBrokenTransportFactory) NewSender(_ context.Context, _ ports.SenderS
 }
 
 func (f *cfgBrokenTransportFactory) Capabilities() []ports.Capability { return nil }
+
+func (f *cfgBrokenTransportFactory) AddressValidator() ports.AddressValidator { return nil }
 
 // cfgExclusiveTransportFactory is like cfgFakeTransportFactory but
 // declares CapExclusiveIdentity, triggering SwapPrepareCommit mode.

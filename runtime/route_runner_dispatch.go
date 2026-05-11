@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
@@ -30,11 +29,9 @@ func (r *RouteRunner) sendDirectHoldForBinding(ctx context.Context, del ports.De
 				}
 				addr = rendered
 			}
-			if strings.EqualFold(b.Transport, "mqtt") && addr != "" {
-				if err := ValidateMQTTTopic(addr); err != nil {
-					topicErr := shared.ErrInvalidTopic.
-						WithMessage(fmt.Sprintf("binding %q: %v", b.ID, err))
-					return r.handleResolveError(ctx, del, env, topicErr)
+			if addr != "" {
+				if err := r.validateAddress(b.ID, addr); err != nil {
+					return r.handleResolveError(ctx, del, env, err)
 				}
 			}
 			return r.sendDirectHold(ctx, del, env, routing.DispatchPlan{
@@ -374,11 +371,9 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 						}
 						addr = rendered
 					}
-					if strings.EqualFold(b.Transport, "mqtt") && addr != "" {
-						if err := ValidateMQTTTopic(addr); err != nil {
-							topicErr := shared.ErrInvalidTopic.
-								WithMessage(fmt.Sprintf("binding %q: %v", b.ID, err))
-							return r.handleResolveError(ctx, del, env, topicErr)
+					if addr != "" {
+						if err := r.validateAddress(b.ID, addr); err != nil {
+							return r.handleResolveError(ctx, del, env, err)
 						}
 					}
 					plans = []routing.DispatchPlan{{

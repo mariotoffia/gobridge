@@ -1,10 +1,11 @@
 package runtime
 
 // ═══════════════════════════════════════════════
-// Fuzz Tests for RenderAddress and ValidateMQTTTopic
+// Fuzz Tests for RenderAddress
 //
-// Tests that both functions handle arbitrary input
-// without panics, infinite loops, or OOM.
+// FuzzValidateMQTTTopic was moved to
+// adapters/mqtt/transport/paho/topic_validator_test.go as part of
+// AP-005 — MQTT topic validation lives next to the paho factory now.
 // ═══════════════════════════════════════════════
 
 import (
@@ -41,21 +42,5 @@ func FuzzRenderAddress(f *testing.F) {
 		case <-time.After(100 * time.Millisecond):
 			t.Fatalf("RenderAddress did not return within 100ms for template=%q key=%q val=%q", template, headerKey, headerVal)
 		}
-	})
-}
-
-// FuzzValidateMQTTTopic verifies that arbitrary topic strings never
-// cause panics.
-func FuzzValidateMQTTTopic(f *testing.F) {
-	f.Add("devices/sensor/temp")
-	f.Add("")
-	f.Add("a/+/b")
-	f.Add("#")
-	f.Add("a//b")
-	f.Add(string([]byte{0}))
-	f.Add("very/deep/topic/with/many/segments/a/b/c/d")
-
-	f.Fuzz(func(t *testing.T, topic string) {
-		_ = ValidateMQTTTopic(topic)
 	})
 }

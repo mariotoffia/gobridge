@@ -213,10 +213,15 @@ func TestDirectHold_Override_RenderAddressError_RoutesDLQ(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestDirectHold_Override_MQTTValidation_RoutesDLQ
+// TestDirectHold_Override_AddressValidator_RoutesDLQ
 // ---------------------------------------------------------------------------
+//
+// AP-005: replaces the old MQTT-specific override validation test. The
+// runtime no longer hardcodes mqtt — it dispatches to a per-binding
+// AddressValidator supplied by the transport. This test wires a
+// rejecting validator and asserts the override path routes to DLQ.
 
-func TestDirectHold_Override_MQTTValidation_RoutesDLQ(t *testing.T) {
+func TestDirectHold_Override_AddressValidator_RoutesDLQ(t *testing.T) {
 	sender := NewFakeSender()
 	dlqStore := NewFakeDLQStore()
 
@@ -226,11 +231,14 @@ func TestDirectHold_Override_MQTTValidation_RoutesDLQ(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	cfg := runtime.RouteRunnerConfig{
-		RouteID:  "mqtt-validate-route",
+		RouteID:  "validator-override-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		Senders:  map[string]ports.Sender{"mqtt-bind": sender},
+		AddressValidators: map[string]ports.AddressValidator{
+			"mqtt-bind": rejectingAddressValidator{},
+		},
 		DLQ:      runtime.NewDLQRouter(dlqStore),
 		Bindings: bindings,
 		Processors: []ports.Processor{
@@ -244,9 +252,8 @@ func TestDirectHold_Override_MQTTValidation_RoutesDLQ(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	// Header value produces invalid MQTT topic (contains wildcard).
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{
-		ID:      "bad-mqtt-msg",
+		ID:      "bad-validator-msg",
 		Subject: "test",
 		Headers: map[string]any{"topic": "factory/+/data"},
 	})
@@ -255,9 +262,9 @@ func TestDirectHold_Override_MQTTValidation_RoutesDLQ(t *testing.T) {
 	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)
 
 	assert.Equal(t, 0, sender.SentCount(),
-		"sender must not be called for invalid MQTT topic")
+		"sender must not be called when AddressValidator rejects override binding")
 	assert.Equal(t, 1, dlqStore.Count(),
-		"expected 1 DLQ entry for invalid MQTT topic")
+		"expected 1 DLQ entry for AddressValidator rejection on override path")
 }
 
 // ---------------------------------------------------------------------------

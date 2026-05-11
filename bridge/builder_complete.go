@@ -184,6 +184,15 @@ func (b *Builder) wireRoutes(
 			rcfg.Senders = senderReg
 		}
 
+		// Build per-binding AddressValidator registry. The validator is
+		// supplied by the binding's transport via TransportFactory's
+		// AddressValidator capability (AP-005). Bindings whose transport
+		// returns a nil validator are simply omitted; the runtime then
+		// skips validation for those bindings.
+		if vmap := buildAddressValidators(b.transports, bindings); len(vmap) > 0 {
+			rcfg.AddressValidators = vmap
+		}
+
 		if err := rt.AddRoute(rcfg, recv, routeSender, routeSession, sessCfg); err != nil {
 			return fmt.Errorf("bridge: add route %q: %w", routeDef.ID, err)
 		}
