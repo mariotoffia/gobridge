@@ -127,7 +127,11 @@ The user's four review questions answered:
   - What landed: ARCHITECTURE.md §13 lines 912-913; DEVELOPMENT.md lines 46-47.
   - Tests added: none.
   - Reviewer verdict: APPROVED (code-reviewer).
-- **H-6** Add `docs/scenarios/README.md` grouping the 21+5 scenarios by concept (transports, processors, ops, config, observability, AMQP, CDK). *(Docs F#4)*
+- **H-6** Add `docs/scenarios/README.md` grouping the 21+5 scenarios by concept (transports, processors, ops, config, observability, AMQP, CDK). *(Docs F#4)* - DONE
+  - Status: Resolved 2026-05-11 (review_round 1, code-reviewer APPROVED; codex consulted — flagged a P2 stale CDK construct path which was corrected before reviewer dispatch). New `docs/scenarios/README.md` indexes the 21 transport scenarios and 5 CDK scenarios by concept (Transports — getting started, Cross-protocol bridging, Routing & filtering, Processors & pipelines, Durability & operations, Clustering & multi-tenancy, Configuration management, Security & credentials, Observability, AMQP family, CDK deployment) and adds two reverse indexes — by transport/adapter and by capability — so readers who already know their broker or feature can land on the right scenario directly. All 26 relative links verified to resolve; spot-checked one-line descriptions against source for scenarios 5, 17, 18, 19, 20 and CDK 1.
+  - What landed: `docs/scenarios/README.md` (new, ~168 lines).
+  - Tests added: none — documentation-only.
+  - Follow-ups (not blockers; logged for future passes): scenarios 14 and 19–21 are cross-listed under multiple groups for discoverability; reconfirm taxonomy when L-13 introduces `_template.md` (Low). Top-level `README.md` does not yet link to this index — that cross-link belongs to L-11 / a follow-on doc pass and was deliberately left untouched (Low). Section ordering codified in the "Authoring a new scenario" hint (Use Case → Architecture → Configuration → Composition Root → Observable Behavior) was inferred from scenarios 1 and cdk/01; L-13 should validate against all 26 files before promoting it to a hard contract (Low).
 
 ### Medium
 - **M-1** Promote `ports.AddressValidator` capability returned by `TransportFactory`; remove the `"mqtt"` literal from `runtime/route_runner_dispatch.go:33`. Precondition for adding NATS/Kafka without core changes. *(AP-005)*
