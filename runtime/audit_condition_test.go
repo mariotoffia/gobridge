@@ -127,7 +127,7 @@ func TestNumericCompare_LargeInt64Precision(t *testing.T) {
 		cond: MatchCondition{
 			Field:    "header.val",
 			Operator: OpLessThan,
-			Value:    v2,
+			Value:    Val(v2),
 		},
 	}
 
@@ -152,7 +152,7 @@ func TestConditionEval_Equals_StringFastPath(t *testing.T) {
 		cond: MatchCondition{
 			Field:    "header.type",
 			Operator: OpEquals,
-			Value:    "order",
+			Value:    Val("order"),
 		},
 	}
 
@@ -177,7 +177,7 @@ func TestConditionEval_In_StringSlice(t *testing.T) {
 		cond: MatchCondition{
 			Field:    "header.status",
 			Operator: OpIn,
-			Value:    []any{"active", "pending"},
+			Value:    Val([]any{"active", "pending"}),
 		},
 	}
 
@@ -202,7 +202,7 @@ func TestConditionEval_Exists_True(t *testing.T) {
 		cond: MatchCondition{
 			Field:    "header.key",
 			Operator: OpExists,
-			Value:    true,
+			Value:    Val(true),
 		},
 	}
 
@@ -227,7 +227,7 @@ func TestConditionEval_Exists_False(t *testing.T) {
 		cond: MatchCondition{
 			Field:    "header.missing",
 			Operator: OpExists,
-			Value:    true,
+			Value:    Val(true),
 		},
 	}
 
@@ -251,7 +251,7 @@ func TestConditionEval_PayloadPath(t *testing.T) {
 		cond: MatchCondition{
 			Field:    "$.order.status",
 			Operator: OpEquals,
-			Value:    "shipped",
+			Value:    Val("shipped"),
 		},
 	}
 
@@ -276,7 +276,7 @@ func TestConditionEval_UnsupportedOperator(t *testing.T) {
 		cond: MatchCondition{
 			Field:    "header.key",
 			Operator: "bogus",
-			Value:    "val",
+			Value:    Val("val"),
 		},
 	}
 

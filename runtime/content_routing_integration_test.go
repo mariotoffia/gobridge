@@ -29,10 +29,10 @@ func TestIntegration_ContentRouting_HeaderMatch_DirectHold(t *testing.T) {
 
 	rules, _ := runtime.CompileMatchRules([]runtime.MatchRule{
 		{BindingID: "bind-orders", Conditions: []runtime.MatchCondition{
-			{Field: "header.category", Operator: "eq", Value: "order"},
+			{Field: "header.category", Operator: "eq", Value: runtime.Val("order")},
 		}},
 		{BindingID: "bind-alerts", Conditions: []runtime.MatchCondition{
-			{Field: "header.category", Operator: "eq", Value: "alert"},
+			{Field: "header.category", Operator: "eq", Value: runtime.Val("alert")},
 		}},
 	})
 	resolver, _ := runtime.NewRuleResolver(bindings, rules, "bind-default")
@@ -106,10 +106,10 @@ func TestIntegration_ContentRouting_SubjectPrefix_DirectHold(t *testing.T) {
 
 	rules, _ := runtime.CompileMatchRules([]runtime.MatchRule{
 		{BindingID: "bind-eu", Conditions: []runtime.MatchCondition{
-			{Field: "subject", Operator: "prefix", Value: "eu."},
+			{Field: "subject", Operator: "prefix", Value: runtime.Val("eu.")},
 		}},
 		{BindingID: "bind-us", Conditions: []runtime.MatchCondition{
-			{Field: "subject", Operator: "prefix", Value: "us."},
+			{Field: "subject", Operator: "prefix", Value: runtime.Val("us.")},
 		}},
 	})
 	resolver, _ := runtime.NewRuleResolver(bindings, rules, "")
@@ -159,7 +159,7 @@ func TestIntegration_ContentRouting_JSONPayload_DirectHold(t *testing.T) {
 
 	rules, _ := runtime.CompileMatchRules([]runtime.MatchRule{
 		{BindingID: "high-prio", Conditions: []runtime.MatchCondition{
-			{Field: "$.priority", Operator: "gt", Value: float64(7)},
+			{Field: "$.priority", Operator: "gt", Value: runtime.Val(float64(7))},
 		}},
 	})
 	resolver, _ := runtime.NewRuleResolver(bindings, rules, "low-prio")
@@ -219,7 +219,7 @@ func TestIntegration_ContentRouting_ProcessorThenRouting(t *testing.T) {
 
 	rules, _ := runtime.CompileMatchRules([]runtime.MatchRule{
 		{BindingID: "bind-vip", Conditions: []runtime.MatchCondition{
-			{Field: "header.tier", Operator: "eq", Value: "vip"},
+			{Field: "header.tier", Operator: "eq", Value: runtime.Val("vip")},
 		}},
 	})
 	resolver, _ := runtime.NewRuleResolver(bindings, rules, "bind-normal")
@@ -293,10 +293,10 @@ func TestIntegration_ContentRouting_Concurrent(t *testing.T) {
 
 	rules, _ := runtime.CompileMatchRules([]runtime.MatchRule{
 		{BindingID: "bind-a", Conditions: []runtime.MatchCondition{
-			{Field: "header.target", Operator: "eq", Value: "a"},
+			{Field: "header.target", Operator: "eq", Value: runtime.Val("a")},
 		}},
 		{BindingID: "bind-b", Conditions: []runtime.MatchCondition{
-			{Field: "header.target", Operator: "eq", Value: "b"},
+			{Field: "header.target", Operator: "eq", Value: runtime.Val("b")},
 		}},
 	})
 	resolver, _ := runtime.NewRuleResolver(bindings, rules, "")

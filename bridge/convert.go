@@ -286,8 +286,8 @@ func buildResolver(def *ports.ResolverDef, bindings []routing.DestinationBinding
 			for j, c := range r.Match {
 				conds[j] = runtime.MatchCondition{
 					Field:    c.Field,
-					Operator: c.Operator,
-					Value:    c.Value,
+					Operator: runtime.Operator(c.Operator),
+					Value:    runtime.Val(c.Value),
 				}
 			}
 			rules[i] = runtime.MatchRule{

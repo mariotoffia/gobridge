@@ -428,7 +428,7 @@ func (s *FakeOutboxStore) Persist(_ context.Context, records []*persistence.Outb
 				return shared.ErrDuplicateRecord
 			}
 		}
-		s.records[rec.ID] = persistence.RehydrateFromSnapshot(rec.Snapshot())
+		s.records[rec.ID] = persistence.RehydrateFromSnapshot(rec.PersistenceSnapshot())
 	}
 	return nil
 }
@@ -469,7 +469,7 @@ func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string,
 		// the production behaviour where the lease token would have
 		// advanced.
 		if !rec.IsClaimable(token.Version) {
-			snap := rec.Snapshot()
+			snap := rec.PersistenceSnapshot()
 			snap.Status = persistence.OutboxPending
 			snap.ClaimedBy = ""
 			snap.ClaimedAt = time.Time{}
@@ -480,7 +480,7 @@ func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string,
 		if claimErr := rec.Claim(time.Now(), ownerID, token.Version); claimErr != nil {
 			continue
 		}
-		claimed = append(claimed, persistence.RehydrateFromSnapshot(rec.Snapshot()))
+		claimed = append(claimed, persistence.RehydrateFromSnapshot(rec.PersistenceSnapshot()))
 	}
 	return claimed, nil
 }
@@ -551,7 +551,7 @@ func (s *FakeOutboxStore) QueryPending(_ context.Context, partitionKey string, l
 			continue
 		}
 		if rec.Status() == persistence.OutboxPending {
-			result = append(result, persistence.RehydrateFromSnapshot(rec.Snapshot()))
+			result = append(result, persistence.RehydrateFromSnapshot(rec.PersistenceSnapshot()))
 		}
 	}
 	return result, nil
@@ -582,7 +582,7 @@ func (s *FakeOutboxStore) Records() []*persistence.OutboxRecord {
 	defer s.mu.Unlock()
 	out := make([]*persistence.OutboxRecord, 0, len(s.records))
 	for _, rec := range s.records {
-		out = append(out, persistence.RehydrateFromSnapshot(rec.Snapshot()))
+		out = append(out, persistence.RehydrateFromSnapshot(rec.PersistenceSnapshot()))
 	}
 	return out
 }

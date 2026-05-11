@@ -467,7 +467,7 @@ func TestEdgeR3_RemoteRouteNoForwarderReturns502(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
-	if setter, ok := recv.(interface{ SetRouteID(string) }); ok {
+	if setter, ok := recv.(ports.RouteIDSetter); ok {
 		setter.SetRouteID("route-nofwd")
 	}
 

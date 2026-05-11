@@ -55,10 +55,10 @@ func TestDirectHold_SenderRegistry_SelectsByBinding(t *testing.T) {
 
 	rules, err := runtime.CompileMatchRules([]runtime.MatchRule{
 		{BindingID: "bind-a", Conditions: []runtime.MatchCondition{
-			{Field: "header.target", Operator: "eq", Value: "a"},
+			{Field: "header.target", Operator: "eq", Value: runtime.Val("a")},
 		}},
 		{BindingID: "bind-b", Conditions: []runtime.MatchCondition{
-			{Field: "header.target", Operator: "eq", Value: "b"},
+			{Field: "header.target", Operator: "eq", Value: runtime.Val("b")},
 		}},
 	})
 	if err != nil {
@@ -134,7 +134,7 @@ func TestDirectHold_SenderRegistry_FallsBackToDefault(t *testing.T) {
 
 	rules, _ := runtime.CompileMatchRules([]runtime.MatchRule{
 		{BindingID: "specific", Conditions: []runtime.MatchCondition{
-			{Field: "subject", Operator: "eq", Value: "special"},
+			{Field: "subject", Operator: "eq", Value: runtime.Val("special")},
 		}},
 	})
 	resolver, _ := runtime.NewRuleResolver(bindings, rules, "fallback")

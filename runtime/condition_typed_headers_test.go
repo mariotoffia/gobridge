@@ -12,7 +12,7 @@ import (
 // nil-headers branch (no panic, no match).
 func TestConditionEval_TypedHeaderAccessor_HeaderDotPrefix(t *testing.T) {
 	eval, err := newConditionEval(MatchCondition{
-		Field: "header.x-tenant", Operator: OpEquals, Value: "acme",
+		Field: "header.x-tenant", Operator: OpEquals, Value: Val("acme"),
 	})
 	if err != nil {
 		t.Fatalf("newConditionEval: %v", err)
@@ -45,7 +45,7 @@ func TestConditionEval_TypedHeaderAccessor_HeaderDotPrefix(t *testing.T) {
 // bare-field fallback path also routes through Headers.Get().
 func TestConditionEval_TypedHeaderAccessor_BareFieldFallback(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{
-		Field: "tenant", Operator: OpEquals, Value: "acme",
+		Field: "tenant", Operator: OpEquals, Value: Val("acme"),
 	})
 
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{
@@ -67,7 +67,7 @@ func TestConditionEval_TypedHeaderAccessor_BareFieldFallback(t *testing.T) {
 // reporting "not exists" without panicking on a zero-value envelope.
 func TestConditionEval_TypedHeaderAccessor_ExistsOnEmptyHeaders(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{
-		Field: "header.x", Operator: OpExists, Value: false,
+		Field: "header.x", Operator: OpExists, Value: Val(false),
 	})
 	env := &messaging.Envelope{}
 	if ok, err := eval.evaluate(env, newEvalContext()); err != nil || !ok {

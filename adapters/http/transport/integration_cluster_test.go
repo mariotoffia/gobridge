@@ -29,7 +29,7 @@ import (
 
 func setRouteID(t *testing.T, v any, id string) {
 	t.Helper()
-	if s, ok := v.(interface{ SetRouteID(string) }); ok {
+	if s, ok := v.(ports.RouteIDSetter); ok {
 		s.SetRouteID(id)
 	} else {
 		t.Fatal("value does not support SetRouteID")

@@ -347,7 +347,7 @@ func TestReceiver_ClusterForward(t *testing.T) {
 	}
 
 	// The receiver needs a routeID for cluster logic to kick in.
-	if setter, ok := recv.(interface{ SetRouteID(string) }); ok {
+	if setter, ok := recv.(ports.RouteIDSetter); ok {
 		setter.SetRouteID("route-A")
 	}
 
@@ -410,7 +410,7 @@ func TestReceiver_ForwardedRequestNotReforwarded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
-	if setter, ok := recv.(interface{ SetRouteID(string) }); ok {
+	if setter, ok := recv.(ports.RouteIDSetter); ok {
 		setter.SetRouteID("route-B")
 	}
 
@@ -567,7 +567,7 @@ func TestSSESender_RedirectWhenRemote(t *testing.T) {
 		t.Fatalf("NewSender: %v", err)
 	}
 
-	if setter, ok := sender.(interface{ SetRouteID(string) }); ok {
+	if setter, ok := sender.(ports.RouteIDSetter); ok {
 		setter.SetRouteID("route-C")
 	}
 

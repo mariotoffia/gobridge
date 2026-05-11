@@ -70,7 +70,7 @@ func partitionKey(r *persistence.OutboxRecord) string {
 }
 
 func cloneAggregate(r *persistence.OutboxRecord) *persistence.OutboxRecord {
-	return persistence.RehydrateFromSnapshot(r.Snapshot())
+	return persistence.RehydrateFromSnapshot(r.PersistenceSnapshot())
 }
 
 func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord) error {

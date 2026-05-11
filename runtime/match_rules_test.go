@@ -86,10 +86,10 @@ func TestRuleResolver_FirstMatchWins(t *testing.T) {
 	}
 	rules := []runtime.MatchRule{
 		{BindingID: "first", Conditions: []runtime.MatchCondition{
-			{Field: "subject", Operator: "prefix", Value: "orders."},
+			{Field: "subject", Operator: "prefix", Value: runtime.Val("orders.")},
 		}},
 		{BindingID: "second", Conditions: []runtime.MatchCondition{
-			{Field: "subject", Operator: "prefix", Value: "orders."},
+			{Field: "subject", Operator: "prefix", Value: runtime.Val("orders.")},
 		}},
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "")
@@ -113,10 +113,10 @@ func TestRuleResolver_SecondRuleMatches(t *testing.T) {
 	}
 	rules := []runtime.MatchRule{
 		{BindingID: "first", Conditions: []runtime.MatchCondition{
-			{Field: "subject", Operator: "prefix", Value: "alerts."},
+			{Field: "subject", Operator: "prefix", Value: runtime.Val("alerts.")},
 		}},
 		{BindingID: "second", Conditions: []runtime.MatchCondition{
-			{Field: "subject", Operator: "prefix", Value: "orders."},
+			{Field: "subject", Operator: "prefix", Value: runtime.Val("orders.")},
 		}},
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "")
@@ -137,7 +137,7 @@ func TestRuleResolver_DefaultBinding(t *testing.T) {
 	}
 	rules := []runtime.MatchRule{
 		{BindingID: "specific", Conditions: []runtime.MatchCondition{
-			{Field: "subject", Operator: "eq", Value: "exact"},
+			{Field: "subject", Operator: "eq", Value: runtime.Val("exact")},
 		}},
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "fallback")
@@ -156,7 +156,7 @@ func TestRuleResolver_NoMatch_NoDefault_Error(t *testing.T) {
 	bindings := []routing.DestinationBinding{{ID: "only"}}
 	rules := []runtime.MatchRule{
 		{BindingID: "only", Conditions: []runtime.MatchCondition{
-			{Field: "subject", Operator: "eq", Value: "exact"},
+			{Field: "subject", Operator: "eq", Value: runtime.Val("exact")},
 		}},
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "")
@@ -172,8 +172,8 @@ func TestRuleResolver_MultiConditionRule_AND(t *testing.T) {
 	bindings := []routing.DestinationBinding{{ID: "target"}, {ID: "fallback"}}
 	rules := []runtime.MatchRule{
 		{BindingID: "target", Conditions: []runtime.MatchCondition{
-			{Field: "subject", Operator: "prefix", Value: "orders."},
-			{Field: "header.priority", Operator: "eq", Value: "high"},
+			{Field: "subject", Operator: "prefix", Value: runtime.Val("orders.")},
+			{Field: "header.priority", Operator: "eq", Value: runtime.Val("high")},
 		}},
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "fallback")
@@ -242,7 +242,7 @@ func TestRuleResolver_JSONPayloadCondition(t *testing.T) {
 	bindings := []routing.DestinationBinding{{ID: "high-prio"}, {ID: "low-prio"}}
 	rules := []runtime.MatchRule{
 		{BindingID: "high-prio", Conditions: []runtime.MatchCondition{
-			{Field: "$.priority", Operator: "gt", Value: float64(5)},
+			{Field: "$.priority", Operator: "gt", Value: runtime.Val(float64(5))},
 		}},
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "low-prio")
@@ -268,7 +268,7 @@ func TestRuleResolver_RegexCondition(t *testing.T) {
 	bindings := []routing.DestinationBinding{{ID: "order-match"}, {ID: "other"}}
 	rules := []runtime.MatchRule{
 		{BindingID: "order-match", Conditions: []runtime.MatchCondition{
-			{Field: "subject", Operator: "regex", Value: `^order-\d+$`},
+			{Field: "subject", Operator: "regex", Value: runtime.Val(`^order-\d+$`)},
 		}},
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "other")
@@ -286,7 +286,7 @@ func TestRuleResolver_WithAddressTemplate(t *testing.T) {
 	}
 	rules := []runtime.MatchRule{
 		{BindingID: "dynamic", Conditions: []runtime.MatchCondition{
-			{Field: "header.region", Operator: "exists", Value: true},
+			{Field: "header.region", Operator: "exists", Value: runtime.Val(true)},
 		}},
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "")
@@ -335,7 +335,7 @@ func TestRuleResolver_UnknownDefaultBinding_ReturnsError(t *testing.T) {
 func TestCompileMatchRules_InvalidRegex_ReturnsError(t *testing.T) {
 	_, err := runtime.CompileMatchRules([]runtime.MatchRule{
 		{BindingID: "bad", Conditions: []runtime.MatchCondition{
-			{Field: "subject", Operator: "regex", Value: "[invalid("},
+			{Field: "subject", Operator: "regex", Value: runtime.Val("[invalid(")},
 		}},
 	})
 	if err == nil {
@@ -351,7 +351,7 @@ func TestRuleResolver_ConditionEvalError_TreatedAsNoMatch(t *testing.T) {
 	rules := []runtime.MatchRule{
 		{BindingID: "target", Conditions: []runtime.MatchCondition{
 			// Numeric compare on non-numeric string -> error -> treated as no-match
-			{Field: "header.x", Operator: "gt", Value: float64(5)},
+			{Field: "header.x", Operator: "gt", Value: runtime.Val(float64(5))},
 		}},
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "fallback")

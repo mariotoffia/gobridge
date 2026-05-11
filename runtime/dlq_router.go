@@ -221,7 +221,7 @@ func (r *DLQRouter) buildEntry(
 	correlationID, _ := messaging.GetHeaderString(env.Headers(), messaging.HeaderCorrelationID)
 	reason := safeErrorReason(err)
 
-	return routing.DLQEntry{
+	return routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID:            generateID(),
 		Envelope:      *env,
 		RouteID:       routeID,
@@ -236,7 +236,7 @@ func (r *DLQRouter) buildEntry(
 		LastError:     reason,
 		FailedAt:      r.clk.Now(),
 		Attempts:      attempts,
-	}
+	})
 }
 
 func (r *DLQRouter) writeDirect(ctx context.Context, entry routing.DLQEntry) error {

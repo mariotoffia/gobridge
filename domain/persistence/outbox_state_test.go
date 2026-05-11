@@ -307,7 +307,7 @@ func TestOutboxRecord_SnapshotRoundTrip(t *testing.T) {
 		ExpiresAt:    now.Add(time.Hour),
 	})
 
-	snap := original.Snapshot()
+	snap := original.PersistenceSnapshot()
 	clone := persistence.RehydrateFromSnapshot(snap)
 
 	if clone.Status() != original.Status() ||
@@ -320,6 +320,6 @@ func TestOutboxRecord_SnapshotRoundTrip(t *testing.T) {
 		clone.RouteID != original.RouteID ||
 		clone.EnvelopeID != original.EnvelopeID ||
 		clone.Envelope.ID != original.Envelope.ID {
-		t.Fatalf("snapshot round-trip lost state\norig=%+v\nclone=%+v", original.Snapshot(), snap)
+		t.Fatalf("snapshot round-trip lost state\norig=%+v\nclone=%+v", original.PersistenceSnapshot(), snap)
 	}
 }

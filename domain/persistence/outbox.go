@@ -98,7 +98,7 @@ func NewOutboxRecord(spec OutboxSpec) (*OutboxRecord, *shared.BridgeError) {
 		BindingID:       spec.BindingID,
 		SessionID:       spec.SessionID,
 		Address:         spec.Address,
-		Envelope:        spec.Envelope,
+		Envelope:        *spec.Envelope.Clone(),
 		DispatchHeaders: spec.DispatchHeaders,
 		CreatedAt:       spec.CreatedAt,
 		ExpiresAt:       spec.ExpiresAt,
@@ -218,10 +218,22 @@ type OutboxSnapshot struct {
 	CompletedAt     time.Time
 }
 
-// Snapshot returns a value copy of the aggregate's full state for
+// Snapshot returns a deep copy of the aggregate's embedded envelope.
+// Use it whenever the envelope must outlive the aggregate or be handed
+// to mutator code (DLQ writer, retry submitter) so that subsequent
+// mutations cannot corrupt the persisted aggregate state. This satisfies
+// the DDD R5 aggregate-boundary rule: callers receive an isolated
+// messaging.Envelope rather than a shared reference.
+func (r *OutboxRecord) Snapshot() *messaging.Envelope {
+	return r.Envelope.Clone()
+}
+
+// PersistenceSnapshot returns a value copy of the aggregate's full state for
 // persistence. Callers must not assume the returned snapshot reflects
-// concurrent in-memory mutations.
-func (r *OutboxRecord) Snapshot() OutboxSnapshot {
+// concurrent in-memory mutations. The embedded Envelope is deep-cloned so
+// the snapshot can be serialized or rehydrated without aliasing the
+// aggregate's internal state.
+func (r *OutboxRecord) PersistenceSnapshot() OutboxSnapshot {
 	return OutboxSnapshot{
 		ID:              r.ID,
 		RouteID:         r.RouteID,
@@ -229,7 +241,7 @@ func (r *OutboxRecord) Snapshot() OutboxSnapshot {
 		BindingID:       r.BindingID,
 		SessionID:       r.SessionID,
 		Address:         r.Address,
-		Envelope:        r.Envelope,
+		Envelope:        *r.Envelope.Clone(),
 		DispatchHeaders: r.DispatchHeaders,
 		Status:          r.status,
 		ClaimedBy:       r.claimedBy,
@@ -245,7 +257,9 @@ func (r *OutboxRecord) Snapshot() OutboxSnapshot {
 // RehydrateFromSnapshot reconstructs an OutboxRecord aggregate from a
 // persistence snapshot without invoking the lifecycle state machine.
 // Used exclusively by storage adapters when materializing aggregates
-// from durable storage; runtime code must use NewOutboxRecord.
+// from durable storage; runtime code must use NewOutboxRecord. The
+// snapshot's Envelope is deep-cloned so the rehydrated aggregate does
+// not alias state owned by the storage adapter.
 func RehydrateFromSnapshot(s OutboxSnapshot) *OutboxRecord {
 	status := s.Status
 	if status == "" {
@@ -258,7 +272,7 @@ func RehydrateFromSnapshot(s OutboxSnapshot) *OutboxRecord {
 		BindingID:       s.BindingID,
 		SessionID:       s.SessionID,
 		Address:         s.Address,
-		Envelope:        s.Envelope,
+		Envelope:        *s.Envelope.Clone(),
 		DispatchHeaders: s.DispatchHeaders,
 		CreatedAt:       s.CreatedAt,
 		ExpiresAt:       s.ExpiresAt,
