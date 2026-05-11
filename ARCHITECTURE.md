@@ -275,7 +275,7 @@ A source-owned unit of work wrapping an `Envelope` plus transport-native acknowl
 
 | Method | Signature | Purpose |
 |---|---|---|
-| `Envelope()` | `*domain.Envelope` | Access the wrapped envelope |
+| `Envelope()` | `*messaging.Envelope` | Access the wrapped envelope |
 | `Ack(ctx)` | `error` | Acknowledge successful processing |
 | `Retry(ctx, after, reason)` | `error` | Request redelivery after a delay (e.g. SQS `ChangeMessageVisibility`) |
 | `Extend(ctx, until)` | `error` | Extend processing deadline (e.g. SQS visibility extension) |
@@ -296,7 +296,7 @@ Egress interfaces for submitting envelopes to a transport. Senders receive an `O
 
 ```go
 type OutboundMessage struct {
-    Envelope *domain.Envelope
+    Envelope *messaging.Envelope
     Address  string // transport destination from DispatchPlan.Address
 }
 
@@ -361,7 +361,7 @@ Optional runtime egress binding selection. Returns one or more `DispatchPlan` va
 
 ```go
 type DestinationResolver interface {
-    Resolve(ctx context.Context, env *domain.Envelope) ([]domain.DispatchPlan, error)
+    Resolve(ctx context.Context, env *messaging.Envelope) ([]routing.DispatchPlan, error)
 }
 ```
 
@@ -525,11 +525,11 @@ The `OutboxDrainer` loop:
 Processors implement the onion/middleware pattern. Each processor wraps the next, forming a layered pipeline where cross-cutting concerns execute in order on the way in and in reverse on the way out.
 
 ```go
-type ProcessorFunc func(ctx context.Context, env *domain.Envelope) error
+type ProcessorFunc func(ctx context.Context, env *messaging.Envelope) error
 
 type Processor interface {
     Name() string
-    Process(ctx context.Context, env *domain.Envelope, next ProcessorFunc) error
+    Process(ctx context.Context, env *messaging.Envelope, next ProcessorFunc) error
 }
 ```
 
@@ -567,10 +567,10 @@ Distributed lease ownership for single-active scenarios. Implementations must us
 
 ```go
 type LeaseStore interface {
-    Acquire(ctx context.Context, leaseID string, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error)
-    Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error)
-    Release(ctx context.Context, leaseID string, token domain.LeaseToken) error
-    Current(ctx context.Context, leaseID string) (domain.LeaseInfo, error)
+    Acquire(ctx context.Context, leaseID string, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error)
+    Renew(ctx context.Context, leaseID string, token persistence.LeaseToken, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error)
+    Release(ctx context.Context, leaseID string, token persistence.LeaseToken) error
+    Current(ctx context.Context, leaseID string) (persistence.LeaseInfo, error)
 }
 ```
 
@@ -584,15 +584,15 @@ Durable outbox for reliable egress. All mutations that accept a `LeaseToken` mus
 
 ```go
 type OutboxStore interface {
-    Persist(ctx context.Context, records []domain.OutboxRecord) error
-    Claim(ctx context.Context, partitionKey, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error)
-    Complete(ctx context.Context, recordIDs []string, token domain.LeaseToken) error
+    Persist(ctx context.Context, records []persistence.OutboxRecord) error
+    Claim(ctx context.Context, partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error)
+    Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error
     Expire(ctx context.Context, before time.Time) (int, error)
-    QueryPending(ctx context.Context, partitionKey string, limit int) ([]domain.OutboxRecord, error)
+    QueryPending(ctx context.Context, partitionKey string, limit int) ([]persistence.OutboxRecord, error)
 }
 ```
 
-Outbox records are partitioned by session or binding identity via `domain.OutboxPartitionKey()`.
+Outbox records are partitioned by session or binding identity via `persistence.OutboxPartitionKey()`.
 
 ### DLQStore
 
@@ -600,8 +600,8 @@ Dead-letter queue management for failed or rejected messages. `Write` is idempot
 
 ```go
 type DLQStore interface {
-    Write(ctx context.Context, entry domain.DLQEntry) error
-    List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error)
+    Write(ctx context.Context, entry routing.DLQEntry) error
+    List(ctx context.Context, filter routing.DLQFilter) ([]routing.DLQEntry, error)
     Replay(ctx context.Context, entryIDs []string) error
     Purge(ctx context.Context, before time.Time) (int, error)
 }
@@ -799,7 +799,7 @@ Defined by `ports.MetricsExporter` with four metric kinds:
 
 Implementations: OTel OTLP (`adapters/otel/metrics`), CloudWatch (`adapters/aws/metrics/cloudwatch`). Default: `NoopExporter`.
 
-Standard metric dimensions use `domain.Tag` with well-known keys: `route_id`, `session_id`, `lease_id`, `partition`, `queue_url`, `category`.
+Standard metric dimensions use `shared.Tag` with well-known keys: `route_id`, `session_id`, `lease_id`, `partition`, `queue_url`, `category`.
 
 ### Tracing
 
@@ -807,14 +807,14 @@ Defined by `ports.Tracer` and `ports.Span`. The runtime starts spans around `han
 
 ```go
 type Tracer interface {
-    StartSpan(ctx context.Context, name string, attrs ...domain.Tag) (context.Context, Span)
+    StartSpan(ctx context.Context, name string, attrs ...shared.Tag) (context.Context, Span)
 }
 
 type Span interface {
     End()
     SetError(err error)
-    AddEvent(name string, attrs ...domain.Tag)
-    SetAttributes(attrs ...domain.Tag)
+    AddEvent(name string, attrs ...shared.Tag)
+    SetAttributes(attrs ...shared.Tag)
 }
 ```
 
@@ -831,7 +831,7 @@ Context helpers: `WithCorrelationID(ctx, id)`, `WithTraceID(ctx, id)`, `WithSpan
 
 ### Trace Context
 
-`domain.TraceContext` supports W3C traceparent parsing and formatting:
+`messaging.TraceContext` supports W3C traceparent parsing and formatting:
 
 - `ParseTraceparent(s)` -- parses `"00-<traceID>-<spanID>-<flags>"`
 - `FormatTraceparent(tc)` -- formats back to W3C string
@@ -976,7 +976,7 @@ All headers with the `x-bridge.` prefix are reserved for bridge-internal use. Tr
 
 ## 15. Error Classification
 
-All errors in the bridge pipeline are structured as `domain.BridgeError` with an `ErrorClass` that drives routing decisions.
+All errors in the bridge pipeline are structured as `shared.BridgeError` with an `ErrorClass` that drives routing decisions.
 
 ### Error Classes
 
@@ -1006,13 +1006,13 @@ All errors in the bridge pipeline are structured as `domain.BridgeError` with an
 
 ```go
 // Classification
-be, ok := domain.AsBridgeError(err)
-recoverable := domain.IsRecoverableError(err)
-retryDelay := domain.GetRetryAfter(err)
+be, ok := shared.AsBridgeError(err)
+recoverable := shared.IsRecoverableError(err)
+retryDelay := shared.GetRetryAfter(err)
 
 // Construction and chaining
-err := domain.ErrTimeout.Wrap(cause).With("queue_url", url)
-err := domain.ErrUnavailable.WithRetryAfter(30 * time.Second)
+err := shared.ErrTimeout.Wrap(cause).With("queue_url", url)
+err := shared.ErrUnavailable.WithRetryAfter(30 * time.Second)
 ```
 
 Unknown error types (non-`BridgeError`) are treated as recoverable by default, ensuring safe retry behavior when interfacing with third-party code.
