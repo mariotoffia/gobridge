@@ -1,8 +1,8 @@
 {
   "$schema": "v2",
   "source": "ARCH_REVIEW.md",
-  "source_sha": "acb93df1353cb3dfa62e6ab39e716b52f31be380221aae93e1fad11e264307c0",
-  "indexed_at": "2026-05-11T16:55:00Z",
+  "source_sha": "c4f9d6d29bb53313aae455ce7eb975a92a4bd64e3c06bf0065c653cfd5914271",
+  "indexed_at": "2026-05-11T19:03:21Z",
   "status_convention": "no explicit markers \u2014 orchestrator will append \" - DONE\" to the item line on completion",
   "tasks": [
     {
@@ -118,7 +118,7 @@
     {
       "id": "M-4",
       "title": "CI plugin-symmetry analyzer verifying registered kind \u2194 wired factory",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(AP-008)",
       "suggested_agent": "golang-pro",
       "agent_rationale": "AP-008 \u2014 Go static analyzer mirroring scripts/registrychk.",
@@ -338,7 +338,7 @@
     {
       "id": "L-12",
       "title": "Generate adapter layout block from `find adapters \u2026` via make to prevent drift",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(Docs \u00a78)",
       "suggested_agent": "technical-writer",
       "agent_rationale": "Docs \u00a78 tag \u2014 documentation generation tooling.",
@@ -382,7 +382,7 @@
     {
       "id": "L-16",
       "title": "Namespace domain-events vs operational-events terminology when M-6 lands",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(DDD F-12)",
       "suggested_agent": "thiink-ddd-expert",
       "agent_rationale": "DDD F-12 tag \u2014 ubiquitous-language disambiguation.",

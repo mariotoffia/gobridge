@@ -8,7 +8,7 @@
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
 .PHONY: arch-graph dupl-report goconst-report arch-quality
-.PHONY: build-aclcheck lint-acl build-aggcheck lint-aggregate build-cfgshape lint-cfgshape build-registrychk lint-registrychk
+.PHONY: build-aclcheck lint-acl build-aggcheck lint-aggregate build-cfgshape lint-cfgshape build-registrychk lint-registrychk build-pluginsym lint-pluginsym
 
 GOBRIDGE_GO_CACHE ?= /tmp/gobridge-go-build-cache
 export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
@@ -105,7 +105,7 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 # Lint targets
 # ============================================================================
 
-lint: lint-arch-check lint-gofmt lint-go-vet lint-go lint-aggregate lint-acl lint-cfgshape lint-registrychk ## Run all static checks across the workspace
+lint: lint-arch-check lint-gofmt lint-go-vet lint-go lint-aggregate lint-acl lint-cfgshape lint-registrychk lint-pluginsym ## Run all static checks across the workspace
 
 lint-go: ## Run golangci-lint across all workspace modules (uses .golangci.yml at the repo root)
 	@echo "Running golangci-lint across all modules..."
@@ -237,6 +237,20 @@ build-registrychk: ## Build the registrychk tool
 lint-registrychk: build-registrychk ## Enforce CDK builder + grants coverage for all AWS-deployable plugin kinds
 	@echo "Running registrychk..."
 	@$(PWD)/bin/registrychk
+
+build-pluginsym: ## Build the pluginsym tool
+	@mkdir -p bin
+	@cd scripts/pluginsym && go build -o $(PWD)/bin/pluginsym ./...
+
+# lint-pluginsym is enforcing: every kind registered into the per-process
+# *ports.Registry by the canonical composition root has a corresponding
+# wired factory (Supervisor.RegisterTransport / RegisterStoreFactory or
+# Builder.RegisterTransportFactory / RegisterStoreFactory) and vice-versa.
+# Aliases (e.g. aws.sqs / sqs, mqtt.paho / mqtt) are collapsed via the
+# curated aliasMap; a canonical group is satisfied if any alias is wired.
+lint-pluginsym: build-pluginsym ## Enforce plugin-registry symmetry between decoders and wired factories
+	@echo "Running pluginsym..."
+	@$(PWD)/bin/pluginsym
 
 # ============================================================================
 # Maintenance targets

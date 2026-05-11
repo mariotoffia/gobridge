@@ -83,6 +83,7 @@ func main() {
 
 	sup.RegisterTransport("mqtt", paho.NewFactory(logger))
 	sup.RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory())
+	sup.RegisterStoreFactory("sqlite", nativestore.NewSQLiteStoreFactory())
 
 	// AWS adapters require an AWS SDK client. Uncomment and configure
 	// when deploying with AWS backing services:
