@@ -92,6 +92,9 @@ func (e *conditionEval) evaluate(env *messaging.Envelope, ctx *evalContext) (boo
 }
 
 // extractField retrieves the value for the condition's field path.
+// Header lookups go through the typed messaging.Headers accessors
+// (Get / nil-safe by design) rather than direct map indexing — this is
+// the M-2 / AP-004 hot-path migration site.
 func (e *conditionEval) extractField(env *messaging.Envelope, ctx *evalContext) (any, bool, error) {
 	field := e.cond.Field
 
@@ -101,20 +104,14 @@ func (e *conditionEval) extractField(env *messaging.Envelope, ctx *evalContext) 
 
 	case strings.HasPrefix(field, "header."):
 		key := strings.TrimPrefix(field, "header.")
-		if env.Headers() == nil {
-			return nil, false, nil
-		}
-		val, ok := env.Headers()[key]
+		val, ok := env.Headers().Get(key)
 		return val, ok, nil
 
 	case strings.HasPrefix(field, "$."):
 		return ctx.extractPayloadPath(env.Payload, field)
 
 	default:
-		if env.Headers() == nil {
-			return nil, false, nil
-		}
-		val, ok := env.Headers()[field]
+		val, ok := env.Headers().Get(field)
 		return val, ok, nil
 	}
 }

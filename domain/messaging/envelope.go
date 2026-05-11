@@ -28,19 +28,20 @@ var (
 // (Subject / SetSubject / Headers / Header / SetHeader / DeleteHeader /
 // ReplaceHeaders) to read or mutate state.
 //
-// Headers() returns the live underlying map by reference rather than a
-// defensive deep copy. This is a deliberate trade-off: the runtime and
-// adapter hot paths hand the map to helpers like GetHeaderString,
+// Headers() returns the live underlying header set (typed
+// messaging.Headers, a named map[string]any) by reference rather than
+// a defensive deep copy. This is a deliberate trade-off: the runtime
+// and adapter hot paths hand the map to helpers like GetHeaderString,
 // ExtractTraceContext, and RenderAddress on every message, and a
 // per-call deep copy would impose a heap allocation on the dispatch
-// path. Callers MUST treat the returned map as read-only — use the
-// mutator methods (or HeadersSnapshot for an isolated copy) when
+// path. Callers MUST treat the returned Headers as read-only — use
+// the mutator methods (or HeadersSnapshot for an isolated copy) when
 // modification is required.
 type Envelope struct {
 	ID        string
 	subject   string
 	Payload   []byte
-	headers   map[string]any
+	headers   Headers
 	CreatedAt time.Time
 	ExpiresAt time.Time
 }
@@ -88,7 +89,7 @@ func NewEnvelope(in EnvelopeInput, now time.Time) (*Envelope, error) {
 		ID:        in.ID,
 		subject:   in.Subject,
 		Payload:   in.Payload,
-		headers:   StripReservedHeaders(in.Headers),
+		headers:   NewHeadersFromMap(in.Headers),
 		CreatedAt: created,
 		ExpiresAt: in.ExpiresAt,
 	}, nil
@@ -102,35 +103,31 @@ func (e *Envelope) Subject() string { return e.subject }
 // processor_chain — processors may rewrite the routing subject).
 func (e *Envelope) SetSubject(s string) { e.subject = s }
 
-// Headers returns the live underlying header map. Callers MUST treat it
-// as read-only; use SetHeader / DeleteHeader / ReplaceHeaders to mutate
-// or HeadersSnapshot for an isolated copy. May return nil.
-func (e *Envelope) Headers() map[string]any { return e.headers }
+// Headers returns the live typed Headers value. Callers MUST treat it
+// as read-only; use SetHeader / DeleteHeader / ReplaceHeaders to
+// mutate or HeadersSnapshot for an isolated copy. The returned value
+// may be nil; the typed accessors (Get, Has, Range, Len, GetString,
+// CorrelationID, …) are nil-safe by design.
+//
+// Headers is a named map type, so the value remains directly assignable
+// to legacy map[string]any helper signatures (RenderAddress,
+// ExtractTraceContext, MergeHeaders, …) without explicit conversion.
+func (e *Envelope) Headers() Headers { return e.headers }
 
 // Header returns a single header value and whether it was present.
-func (e *Envelope) Header(key string) (any, bool) {
-	if e.headers == nil {
-		return nil, false
-	}
-	v, ok := e.headers[key]
-	return v, ok
-}
+func (e *Envelope) Header(key string) (any, bool) { return e.headers.Get(key) }
 
-// SetHeader assigns key=value, initialising the underlying map if nil.
+// SetHeader assigns key=value, initialising the underlying Headers
+// lazily when nil.
 func (e *Envelope) SetHeader(key string, value any) {
 	if e.headers == nil {
-		e.headers = make(map[string]any, 1)
+		e.headers = NewHeaders()
 	}
 	e.headers[key] = value
 }
 
-// DeleteHeader removes key from the underlying map. No-op when nil.
-func (e *Envelope) DeleteHeader(key string) {
-	if e.headers == nil {
-		return
-	}
-	delete(e.headers, key)
-}
+// DeleteHeader removes key from the underlying Headers. No-op when nil.
+func (e *Envelope) DeleteHeader(key string) { e.headers.Delete(key) }
 
 // ReplaceHeaders swaps the entire header map. Reserved-prefix headers
 // (x-bridge.*) supplied by the caller are stripped defensively because
@@ -142,7 +139,7 @@ func (e *Envelope) DeleteHeader(key string) {
 // needs to write the reserved namespace MUST use SetHeader (per-key)
 // or StampHeaders (whole-map, no strip).
 func (e *Envelope) ReplaceHeaders(h map[string]any) {
-	e.headers = StripReservedHeaders(h)
+	e.headers = NewHeadersFromMap(h)
 }
 
 // StampHeaders is the trusted whole-map setter used by the runtime
@@ -152,17 +149,12 @@ func (e *Envelope) ReplaceHeaders(h map[string]any) {
 // the input is constructed from internal sources, no reserved-prefix
 // strip is applied. External / adapter-ingress code MUST go through
 // ReplaceHeaders.
-func (e *Envelope) StampHeaders(h map[string]any) { e.headers = h }
+func (e *Envelope) StampHeaders(h map[string]any) { e.headers = headersFromTrustedMap(h) }
 
 // HeadersSnapshot returns a deep copy of the headers map. Use when the
 // caller needs to mutate or hand the map to an untrusted boundary
 // without affecting the envelope state.
-func (e *Envelope) HeadersSnapshot() map[string]any {
-	if e.headers == nil {
-		return nil
-	}
-	return deepCopyHeaders(e.headers)
-}
+func (e *Envelope) HeadersSnapshot() map[string]any { return e.headers.Snapshot() }
 
 // HasExpiry returns true if the envelope has a non-zero expiry timestamp.
 func (e *Envelope) HasExpiry() bool {
@@ -197,7 +189,7 @@ func (e *Envelope) Clone() *Envelope {
 		copy(c.Payload, e.Payload)
 	}
 	if e.headers != nil {
-		c.headers = deepCopyHeaders(e.headers)
+		c.headers = Headers(deepCopyHeaders(e.headers))
 	}
 	return &c
 }
@@ -304,7 +296,9 @@ func (e *Envelope) UnmarshalJSON(data []byte) error {
 	e.ID = dto.ID
 	e.subject = dto.Subject
 	e.Payload = dto.Payload
-	e.headers = dto.Headers
+	// Rehydration path: bypass reserved-header strip so previously-
+	// stamped bridge metadata survives a save/load round-trip.
+	e.headers = headersFromTrustedMap(dto.Headers)
 	e.CreatedAt = dto.CreatedAt
 	e.ExpiresAt = dto.ExpiresAt
 	return nil

@@ -1,8 +1,8 @@
 {
   "$schema": "v2",
   "source": "ARCH_REVIEW.md",
-  "source_sha": "5fe5cbcfb4d40bfcb9e7527b2ab3c57a374df4af27634779bc4b7f053440dd45",
-  "indexed_at": "2026-05-11T12:55:42Z",
+  "source_sha": "acb93df1353cb3dfa62e6ab39e716b52f31be380221aae93e1fad11e264307c0",
+  "indexed_at": "2026-05-11T16:55:00Z",
   "status_convention": "no explicit markers \u2014 orchestrator will append \" - DONE\" to the item line on completion",
   "tasks": [
     {
@@ -96,7 +96,7 @@
     {
       "id": "M-2",
       "title": "Introduce typed `messaging.Headers` value object; migrate `runtime/condition.go`",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(AP-004)",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "AP-004 \u2014 value-object refactor replacing map[string]any pattern.",
