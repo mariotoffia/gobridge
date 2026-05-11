@@ -9,26 +9,94 @@ import (
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
-// PreparedBuild holds pre-validated state from the prepare phase.
+// preparedBuild holds pre-validated state from the prepare phase.
 // No transport sessions, receivers, or senders have been created yet,
-// making it safe to call Prepare while an old runtime still holds
+// making it safe to construct while an old runtime still holds
 // exclusive transport connections.
-type PreparedBuild struct {
+//
+// preparedBuild is unexported on purpose: the only supported public
+// entry points are Builder.Build (single-shot) and Builder.Plan +
+// BuildPlan.Commit (explicit two-phase). See M-3 / W-7.
+type preparedBuild struct {
 	cfg    *ports.BridgeConfig
 	stores *storeResult
 	rtOpts []runtime.Option
 }
 
-// Prepare builds stores but does NOT create transport sessions,
-// receivers, or senders. This is the first phase of the two-phase
-// build used by the Supervisor in PrepareCommit mode.
+// BuildPlan is the result of Builder.Plan. It captures all
+// pre-validated state (config validation, stores opened, runtime
+// options assembled) WITHOUT having opened any transport sessions,
+// receivers, or senders yet.
+//
+// A BuildPlan exists to support the prepare/commit swap pattern used
+// by hot-reload code paths that must drain an OLD runtime BEFORE the
+// NEW runtime opens exclusive transport resources (e.g. an MQTT
+// client-id that may not be held twice). Typical usage:
+//
+//	plan, err := builder.Plan(ctx)
+//	if err != nil { return err }
+//	// ... drain / stop the previous runtime ...
+//	rt, err := plan.Commit(ctx)
+//
+// BuildPlan.Commit is one-shot: a second call returns an error. If
+// you do not need the explicit two-phase pattern, prefer the simpler
+// Builder.Build(ctx).
+type BuildPlan struct {
+	b         *Builder
+	prep      *preparedBuild
+	committed bool
+}
+
+// Plan runs the prepare phase: validates the configuration, builds
+// stores, assembles runtime options. It does NOT open transport
+// sessions, receivers, or senders — those are deferred to
+// BuildPlan.Commit. This separation lets callers stop and drain a
+// previously running runtime between the two phases without holding
+// duplicate exclusive transport resources.
 //
 // When a ports.BlueprintValidator was supplied via
 // WithBlueprintValidator, it runs first; the builder does not import
 // the config parser, so the composition root injects the validator
 // (typically config.Validate). When no validator is set the bridge
 // trusts the input.
-func (b *Builder) Prepare(ctx context.Context) (*PreparedBuild, error) {
+//
+// Most callers should use Build(ctx) instead; Plan is reserved for
+// supervisor-style hot-reload orchestration.
+func (b *Builder) Plan(ctx context.Context) (*BuildPlan, error) {
+	prep, err := b.prepare(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &BuildPlan{b: b, prep: prep}, nil
+}
+
+// Commit runs the commit phase: opens transport sessions, receivers,
+// and senders, wires routes, and returns a ready-to-start
+// *runtime.Runtime (callers must invoke Start themselves).
+//
+// Commit is one-shot — calling it twice on the same BuildPlan
+// returns an error. This guards against accidental double-commit
+// when the hot-reload state machine retries.
+func (p *BuildPlan) Commit(ctx context.Context) (*runtime.Runtime, error) {
+	if p == nil {
+		return nil, fmt.Errorf("bridge: BuildPlan.Commit called on nil plan")
+	}
+	if p.committed {
+		return nil, fmt.Errorf("bridge: BuildPlan already committed")
+	}
+	rt, err := p.b.complete(ctx, p.prep)
+	if err != nil {
+		return nil, err
+	}
+	p.committed = true
+	return rt, nil
+}
+
+// prepare is the internal first phase used by both Build and Plan.
+// It is unexported to enforce that callers cannot construct an
+// invalid prepare/complete sequence — the public surface is Build
+// (single-shot) or Plan/Commit (explicit two-phase).
+func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 	if b.validator != nil {
 		if err := b.validator(b.cfg); err != nil {
 			return nil, fmt.Errorf("bridge: config validation: %w", err)
@@ -60,23 +128,29 @@ func (b *Builder) Prepare(ctx context.Context) (*PreparedBuild, error) {
 		rtOpts = append(rtOpts, runtime.WithClusterEndpoints(endpoints))
 	}
 
-	return &PreparedBuild{
+	return &preparedBuild{
 		cfg:    b.cfg,
 		stores: stores,
 		rtOpts: rtOpts,
 	}, nil
 }
 
-// Build validates the configuration, creates all adapters via registered
-// factories, and wires them into a runtime.Runtime. The returned runtime
-// is not yet started; call Start on it separately. If any step fails,
-// previously created sessions are closed to prevent resource leaks.
+// Build validates the configuration, creates all adapters via
+// registered factories, and wires them into a runtime.Runtime in a
+// single call. The returned runtime is not yet started; call Start
+// on it separately. If any step fails, previously created sessions
+// are closed to prevent resource leaks.
+//
+// Build is the recommended entry point for almost all callers.
+// Supervisor / hot-reload code that must drain an old runtime
+// between the prepare and commit phases should use Plan + Commit
+// instead.
 func (b *Builder) Build(ctx context.Context) (*runtime.Runtime, error) {
-	prep, err := b.Prepare(ctx)
+	prep, err := b.prepare(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return b.Complete(ctx, prep)
+	return b.complete(ctx, prep)
 }
 
 type storeResult struct {

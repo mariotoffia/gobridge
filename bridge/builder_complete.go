@@ -9,13 +9,17 @@ import (
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
-// Complete creates sessions, receivers, senders, wires routes, and
-// returns a ready-to-start Runtime. Call after the old runtime has
-// released exclusive resources (e.g. MQTT client-ids). If prep is
-// nil, Complete returns an error.
-func (b *Builder) Complete(ctx context.Context, prep *PreparedBuild) (_ *runtime.Runtime, retErr error) {
+// complete creates sessions, receivers, senders, wires routes, and
+// returns a ready-to-start Runtime. Callers must ensure the old
+// runtime has released exclusive resources (e.g. MQTT client-ids)
+// before invoking this phase.
+//
+// complete is unexported; external callers reach it through
+// Builder.Build (single-shot) or BuildPlan.Commit (explicit
+// two-phase). See M-3 / W-7.
+func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime.Runtime, retErr error) {
 	if prep == nil {
-		return nil, fmt.Errorf("bridge: Complete called with nil PreparedBuild")
+		return nil, fmt.Errorf("bridge: complete called with nil preparedBuild")
 	}
 
 	sessions, sessionURIs, err := b.buildSessionsWithURIs(ctx)

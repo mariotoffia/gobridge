@@ -13,7 +13,7 @@ import (
 )
 
 // fakePushStore is a minimal PushCredentialStore used to prove that
-// Builder.Complete wires the push store through to a per-URI watcher.
+// Builder.Build wires the push store through to a per-URI watcher.
 type fakePushStore struct {
 	watched int32
 }

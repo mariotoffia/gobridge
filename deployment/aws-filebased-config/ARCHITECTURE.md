@@ -170,7 +170,7 @@ Adding a new plugin requires a matching pair of files (`bridgecfg/<kind>.go` and
 `GoBridgeCluster` deliberately does not provision a Cloud Map namespace. Peer discovery is EFS-mediated through the LeaseStore.
 
 - Each task self-detects its reachable address via `EcsEndpointResolver` (`adapters/aws/cluster/ecs/resolver.go`), which queries the ECS task metadata endpoint.
-- The resolved endpoints are passed to the runtime via `runtime.WithClusterEndpoints(...)`; the call site lives in `bridge/builder_prepare.go` (`Builder.Prepare → rtOpts = append(rtOpts, runtime.WithClusterEndpoints(endpoints))`).
+- The resolved endpoints are passed to the runtime via `runtime.WithClusterEndpoints(...)`; the call site lives in `bridge/builder_prepare.go` (`Builder.prepare → rtOpts = append(rtOpts, runtime.WithClusterEndpoints(endpoints))`, invoked through `Builder.Build` or `Builder.Plan`).
 - The runtime registers itself in the LeaseStore on EFS; siblings discover the live set by reading the same store.
 
 **Why not Cloud Map.**

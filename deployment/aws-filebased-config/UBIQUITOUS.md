@@ -30,7 +30,7 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 | **Swap mode** | Strategy used by `applyLogicalConfig` to replace the running runtime. |
 | **Overlap swap** (`swapModeOverlap`) | Build + Start new runtime, install, then Stop old. Default. |
 | **Prepare/commit swap** (`swapModePrepareCommit`) | Used when any transport advertises `ports.CapExclusiveIdentity` (e.g. exclusive MQTT client ID). Stop old → `Complete` → Start new → install. |
-| **Runtime plan** | `runtimePlan` struct: bundles logical + resolved configs, swap mode, registry, and either a `PreparedBuild` or a built `*runtime.Runtime`. |
+| **Runtime plan** | `runtimePlan` struct: bundles logical + resolved configs, swap mode, registry, and either a `bridge.BuildPlan` or a built `*runtime.Runtime`. |
 | **Recover previous** | `recoverPrevious(ctx, oldApplied)` — best-effort rebuild from last-good applied config when a prepare/commit swap fails mid-flight. |
 
 ## Secrets & Parameters

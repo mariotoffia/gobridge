@@ -368,7 +368,7 @@ func (s *Supervisor) applyPrepareCommit(
 ) (*runtime.Runtime, error) {
 	builder := s.newBuilder(newCfg)
 
-	prep, err := builder.Prepare(ctx)
+	prep, err := builder.prepare(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("prepare: %w", err)
 	}
@@ -383,7 +383,7 @@ func (s *Supervisor) applyPrepareCommit(
 		cancel()
 	}
 
-	newRt, err := builder.Complete(ctx, prep)
+	newRt, err := builder.complete(ctx, prep)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Error("supervisor: Complete failed, attempting recovery with old config", "error", err)

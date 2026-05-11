@@ -307,7 +307,7 @@ type runtimePlan struct {
 	mode     swapMode
 
 	registry *factoryRegistry
-	prepared *bridge.PreparedBuild
+	plan     *bridge.BuildPlan
 	runtime  *goruntime.Runtime
 }
 
@@ -351,11 +351,11 @@ func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfi
 
 	switch mode {
 	case swapModePrepareCommit:
-		prepared, err := registry.builder.Prepare(ctx)
+		bp, err := registry.builder.Plan(ctx)
 		if err != nil {
 			return nil, err
 		}
-		plan.prepared = prepared
+		plan.plan = bp
 	default:
 		rt, err := registry.builder.Build(ctx)
 		if err != nil {
@@ -409,7 +409,7 @@ func (a *App) applyPrepareCommit(
 	}
 	a.runtimeRef.Set(nil)
 
-	newRuntime, err := plan.registry.builder.Complete(ctx, plan.prepared)
+	newRuntime, err := plan.plan.Commit(ctx)
 	if err != nil {
 		a.recoverPrevious(ctx, oldApplied)
 		return fmt.Errorf("bootstrap: complete runtime: %w", err)
@@ -442,7 +442,7 @@ func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) 
 
 	switch plan.mode {
 	case swapModePrepareCommit:
-		plan.runtime, err = plan.registry.builder.Complete(ctx, plan.prepared)
+		plan.runtime, err = plan.plan.Commit(ctx)
 	default:
 		// Overlap mode: plan.runtime was already built by prepareRuntimePlan.
 	}
