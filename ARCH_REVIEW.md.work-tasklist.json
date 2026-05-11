@@ -1,8 +1,8 @@
 {
   "$schema": "v2",
   "source": "ARCH_REVIEW.md",
-  "source_sha": "ad51427fa22690dcf6ea96e546681cf48b16483760ebf10d33ce5e00229f87fa",
-  "indexed_at": "2026-05-11T09:57:59Z",
+  "source_sha": "5fe5cbcfb4d40bfcb9e7527b2ab3c57a374df4af27634779bc4b7f053440dd45",
+  "indexed_at": "2026-05-11T12:55:42Z",
   "status_convention": "no explicit markers \u2014 orchestrator will append \" - DONE\" to the item line on completion",
   "tasks": [
     {
@@ -52,7 +52,7 @@
     {
       "id": "H-4",
       "title": "De-globalise `ports.DefaultRegistry`; add `bridge.WithRegistry` and `ErrDuplicateKind`",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(AP-003)",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "AP-003 \u2014 registry/singleton design refactor.",

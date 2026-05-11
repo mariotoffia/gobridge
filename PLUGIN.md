@@ -2,11 +2,11 @@
 
 This guide explains how to extend gobridge with custom transport adapters, store backends, credential repositories, observability exporters, and message processors.
 
-All extension points follow the hexagonal architecture: implement a port interface from `ports/`, expose a typed `ports.PluginConfig`, self-register a decoder on `ports.DefaultRegistry`, register the factory with the `bridge.Builder`, and gobridge handles the rest. The architectural framing for this contract lives in [DDD.md](DDD.md), [UBIQUITOUS.md](UBIQUITOUS.md), and [`docs/typed-plugin-config.adoc`](docs/typed-plugin-config.adoc).
+All extension points follow the hexagonal architecture: implement a port interface from `ports/`, expose a typed `ports.PluginConfig`, self-register a decoder on `*ports.Registry`, register the factory with the `bridge.Builder`, and gobridge handles the rest. The architectural framing for this contract lives in [DDD.md](DDD.md), [UBIQUITOUS.md](UBIQUITOUS.md), and [`docs/typed-plugin-config.adoc`](docs/typed-plugin-config.adoc).
 
 > **Note on options decoding.** Adapters expose a
 > typed `Config` struct (`ports.PluginConfig`) and register a decoder
-> on `ports.DefaultRegistry` from `register.go`; the runtime never
+> on `*ports.Registry` from `register.go`; the runtime never
 > hands `map[string]any` to plugin code. See
 > [Typed Plugin Config](#typed-plugin-config).
 
@@ -141,7 +141,7 @@ adapters/mycloud/transport/myqueue/
 
 4. **Typed config**: Export a concrete `Config` struct that satisfies
    `ports.PluginConfig` (`Kind() string`, `Validate() error`) and
-   register a decoder on `ports.DefaultRegistry` from a `register.go`
+   register a decoder on `*ports.Registry` from a `register.go`
    `init()` (see [Typed Plugin Config](#typed-plugin-config) below).
    The adapter receives its already-decoded typed config via
    `Spec.Config`; it does **not** decode `map[string]any`. Plugin-
@@ -220,7 +220,7 @@ type StoreFactory interface {
 ```
 
 Each method receives the typed `ports.PluginConfig` the adapter
-registered on `ports.DefaultRegistry` (see
+registered on `*ports.Registry` (see
 [Typed Plugin Config](#typed-plugin-config) below). The factory does
 its own type assertion on the concrete config type — it never sees
 `map[string]any`.
@@ -474,7 +474,7 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 5. **Error mapping**: Transport adapters must have an `errors.go` mapping SDK errors to `shared.BridgeError`.
 6. **Typed config**: Export a concrete `Config` struct that satisfies
    `ports.PluginConfig` (`Kind() string`, `Validate() error`) and
-   register a decoder on `ports.DefaultRegistry` from `register.go`
+   register a decoder on `*ports.Registry` from `register.go`
    `init()`. Typed plugin shapes live inside the plugin package and
    are reached by the runtime via `Spec.Config` — never inside core
    `config` or as `map[string]any`. See
@@ -518,7 +518,7 @@ Both methods are mandatory and both must do real work — an empty
 ### Registering the decoder
 
 Each adapter ships a `register.go` containing an `init()` that
-attaches a decoder to `ports.DefaultRegistry`:
+attaches a decoder to `*ports.Registry`:
 
 ```go
 // adapters/mqtt/transport/paho/register.go
@@ -539,8 +539,8 @@ func init() {
         }
         return &c, nil
     }
-    ports.DefaultRegistry.Register("mqtt", dec)
-    ports.DefaultRegistry.Register("mqtt.paho", dec)
+    reg.Register("mqtt", dec)
+    reg.Register("mqtt.paho", dec)
 }
 ```
 
@@ -551,7 +551,7 @@ Rules:
   `builder.RegisterTransport` or `builder.RegisterStoreFactory`).
 - A decoder must call `Validate()` and surface the error; the bridge
   treats parse-time errors as fatal.
-- `ports.DefaultRegistry.Register(kind, dec)` panics on duplicate
+- `reg.Register(kind, dec)` panics on duplicate
   registration of the same `kind`. Use a separate `kind` per
   adapter or per dialect (e.g. `mqtt` and `mqtt.paho`).
 
@@ -582,7 +582,7 @@ The `cfgshape` analyzer (`scripts/cfgshape/analyzer.go`, run by
 - Adapters that accept `map[string]any` instead of a typed `Config`.
 - `Config` types that omit `Kind()` or `Validate()`, or whose
   `Validate()` body is empty / returns `nil` unconditionally.
-- `register.go` files that bypass `ports.DefaultRegistry`.
+- `register.go` files that bypass `*ports.Registry`.
 - Wire-format types (YAML/JSON tags, `json.RawMessage`) leaking
   into `domain/` or `ports/`.
 

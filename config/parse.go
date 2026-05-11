@@ -26,18 +26,13 @@ const (
 // Inputs exceeding this limit are rejected to prevent excessive memory use.
 const MaxConfigBytes = 4 << 20
 
-// ParseFile loads and parses a configuration file using the
-// process-wide ports.DefaultRegistry for plugin decoding. The format
-// is detected from the file extension unless overridden by format.
-// Supported extensions: .yaml, .yml (YAML), .json (JSON).
-func ParseFile(path string, format Format) (*ports.BridgeConfig, error) {
-	return ParseFileWithRegistry(path, format, ports.DefaultRegistry)
-}
-
-// ParseFileWithRegistry is ParseFile but with an explicit plugin
-// registry, mainly useful in tests that want hermetic decoder
-// registration without touching the process-wide DefaultRegistry.
-func ParseFileWithRegistry(path string, format Format, registry *ports.Registry) (*ports.BridgeConfig, error) {
+// ParseFile loads and parses a configuration file using the supplied
+// plugin registry. The format is detected from the file extension
+// unless overridden by format. Supported extensions: .yaml, .yml
+// (YAML), .json (JSON). registry MUST be non-nil; the composition
+// root constructs a *ports.Registry and registers each adapter
+// decoder explicitly via the adapter's exported Register function.
+func ParseFile(path string, format Format, registry *ports.Registry) (*ports.BridgeConfig, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("config: open %s: %w", path, err)
@@ -48,17 +43,13 @@ func ParseFileWithRegistry(path string, format Format, registry *ports.Registry)
 		format = detectFormat(path)
 	}
 
-	return ParseWithRegistry(f, format, registry)
+	return Parse(f, format, registry)
 }
 
 // Parse reads configuration from r using the specified format and the
-// process-wide ports.DefaultRegistry for plugin decoding. Inputs
-// larger than MaxConfigBytes are rejected.
-func Parse(r io.Reader, format Format) (*ports.BridgeConfig, error) {
-	return ParseWithRegistry(r, format, ports.DefaultRegistry)
-}
-
-// ParseWithRegistry is Parse but with an explicit plugin registry.
+// supplied plugin registry. Inputs larger than MaxConfigBytes are
+// rejected. registry MUST be non-nil.
+//
 // The two-stage decode is:
 //
 //  1. yaml/json unmarshal into a stage-1 mirror struct that captures
@@ -70,9 +61,9 @@ func Parse(r io.Reader, format Format) (*ports.BridgeConfig, error) {
 //     NewRawConfig, decode it through the registry, and stash both
 //     the typed PluginConfig and the originating RawConfig on the
 //     ports blueprint type via SetDecoded.
-func ParseWithRegistry(r io.Reader, format Format, registry *ports.Registry) (*ports.BridgeConfig, error) {
+func Parse(r io.Reader, format Format, registry *ports.Registry) (*ports.BridgeConfig, error) {
 	if registry == nil {
-		registry = ports.DefaultRegistry
+		return nil, fmt.Errorf("config: registry must not be nil")
 	}
 
 	lr := io.LimitReader(r, MaxConfigBytes+1)

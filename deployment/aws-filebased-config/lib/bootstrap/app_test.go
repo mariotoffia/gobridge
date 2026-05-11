@@ -138,7 +138,7 @@ func TestResolveInputs_InjectsHTTPSecretsWithoutMutatingLogicalConfig(t *testing
 		HTTPReceiverAPIKeyParams: map[string]string{"rx": "/rx-key"},
 		HTTPSenderAPIKeyParams:   map[string]string{"tx": "/tx-key"},
 		TransportHTTPAddr:        ":0",
-	}, logical)
+	}, newDefaultPluginRegistry(), logical)
 	require.NoError(t, err)
 
 	assert.Equal(t, "admin-secret-key-123456", inputs.AdminAPIKey)
@@ -171,7 +171,7 @@ func TestResolveInputs_ErrorOnMissingAdminKey(t *testing.T) {
 		AdminAPIKeyParam:   "/admin",
 		MonitorAPIKeyParam: "/monitor",
 		TransportHTTPAddr:  ":0",
-	}, logical)
+	}, newDefaultPluginRegistry(), logical)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing secret ref /admin")
@@ -198,7 +198,7 @@ func TestResolveInputs_ErrorOnMissingReceiverKey(t *testing.T) {
 		MonitorAPIKeyParam:       "/monitor",
 		HTTPReceiverAPIKeyParams: map[string]string{"rx": "/rx-key"},
 		TransportHTTPAddr:        ":0",
-	}, logical)
+	}, newDefaultPluginRegistry(), logical)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing secret ref /rx-key")

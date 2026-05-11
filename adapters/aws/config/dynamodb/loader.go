@@ -74,6 +74,7 @@ type Loader struct {
 	mode               WatchMode
 	logger             *slog.Logger
 	clk                clock.Clock
+	registry           *ports.Registry
 
 	mu          sync.Mutex
 	lastVersion int64
@@ -119,6 +120,14 @@ func WithStreamPollInterval(d time.Duration) Option {
 	}
 }
 
+// WithRegistry sets the *ports.Registry used to decode the JSON
+// payload stored in DynamoDB into typed PluginConfig values. The
+// registry MUST be supplied (no global default exists); the loader
+// surfaces a parse error if Load runs without one.
+func WithRegistry(r *ports.Registry) Option {
+	return func(l *Loader) { l.registry = r }
+}
+
 // WithLogger sets the logger used for diagnostic messages (mode
 // fallbacks, stream errors). Nil is safe: diagnostics are suppressed.
 func WithLogger(logger *slog.Logger) Option {
@@ -148,7 +157,7 @@ func (l *Loader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 		return nil, shared.ErrNotFound.WithMessage("config not found for bridge " + l.bridgeID)
 	}
 
-	cfg, err := config.Parse(bytes.NewReader([]byte(rawData)), config.FormatJSON)
+	cfg, err := config.Parse(bytes.NewReader([]byte(rawData)), config.FormatJSON, l.registry)
 	if err != nil {
 		return nil, fmt.Errorf("dynamodb config load: parse: %w", err)
 	}

@@ -163,7 +163,7 @@ Per-adapter grant functions live one-file-per-kind under `cdk/constructs/interna
 | EFS | Per role: control `ClientMount`+`ClientWrite`; worker `ClientMount` only. |
 | EFS CMK | Auto-granted when `EfsKmsKey` prop is set. |
 
-Adding a new plugin requires a matching pair of files (`bridgecfg/<kind>.go` and `internal/grants/<kind>.go`) — enforced by the T27 CI check against `ports.DefaultRegistry`.
+Adding a new plugin requires a matching pair of files (`bridgecfg/<kind>.go` and `internal/grants/<kind>.go`) — enforced by the T27 CI check against `*ports.Registry`.
 
 ## No Cloud Map — LeaseStore peer discovery
 

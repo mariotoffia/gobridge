@@ -39,7 +39,7 @@ func TestHandleConfigTxnCommit_VersionConflict(t *testing.T) {
 	assert.Contains(t, body["error"], "version conflict")
 
 	// Verify file was NOT overwritten.
-	parsed, err := config.ParseFile(path, config.FormatYAML)
+	parsed, err := config.ParseFile(path, config.FormatYAML, newTestRegistry(t))
 	require.NoError(t, err)
 	assert.Equal(t, 1, parsed.Version)
 	assert.Equal(t, "info", parsed.Bridge.LogLevel)
@@ -60,13 +60,13 @@ func TestHandleConfigTxnCommit_SequentialVersionIncrement(t *testing.T) {
 
 	// Update the provider to return the committed config (as the
 	// real system would after the file watcher picks up the change).
-	parsed, err := config.ParseFile(path, config.FormatYAML)
+	parsed, err := config.ParseFile(path, config.FormatYAML, newTestRegistry(t))
 	require.NoError(t, err)
 	assert.Equal(t, 1, parsed.Version)
 	currentCfg := parsed
 
 	// Recreate the server's config provider to return the new version.
-	s.configTxn = newTxnManager(&config.FileStore{Path: path}, func() *ports.BridgeConfig { return currentCfg }, nil, s.clk)
+	s.configTxn = newTxnManager(&config.FileStore{Path: path, Registry: newTestRegistry(t)}, func() *ports.BridgeConfig { return currentCfg }, nil, s.clk)
 
 	// Second commit: version 1 → 2.
 	txnID2 := createTxn(t, s)
@@ -81,7 +81,7 @@ func TestHandleConfigTxnCommit_SequentialVersionIncrement(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec2.Body).Decode(&body))
 	assert.Equal(t, float64(2), body["version"])
 
-	parsed2, err := config.ParseFile(path, config.FormatYAML)
+	parsed2, err := config.ParseFile(path, config.FormatYAML, newTestRegistry(t))
 	require.NoError(t, err)
 	assert.Equal(t, 2, parsed2.Version)
 	assert.Equal(t, "error", parsed2.Bridge.LogLevel)

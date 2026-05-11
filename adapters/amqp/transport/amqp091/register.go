@@ -1,8 +1,14 @@
 package amqp091
 
-import "github.com/mariotoffia/gobridge/ports"
+import (
+	"errors"
 
-func init() {
+	"github.com/mariotoffia/gobridge/ports"
+)
+
+// Register installs this adapter's PluginConfig decoder under the
+// short and fully-qualified discriminators on the supplied registry.
+func Register(reg *ports.Registry) error {
 	dec := func(raw ports.RawConfig) (ports.PluginConfig, error) {
 		var c Config
 		if raw != nil {
@@ -15,6 +21,8 @@ func init() {
 		}
 		return &c, nil
 	}
-	ports.DefaultRegistry.Register("amqp091", dec)
-	ports.DefaultRegistry.Register("amqp.amqp091", dec)
+	return errors.Join(
+		reg.Register("amqp091", dec),
+		reg.Register("amqp.amqp091", dec),
+	)
 }

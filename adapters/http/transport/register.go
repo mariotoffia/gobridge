@@ -6,8 +6,10 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-func init() {
-	ports.DefaultRegistry.Register(Kind, decode)
+// Register installs this adapter's PluginConfig decoder under the
+// canonical "http" discriminator on the supplied registry.
+func Register(reg *ports.Registry) error {
+	return reg.Register(Kind, decode)
 }
 
 func decode(raw ports.RawConfig) (ports.PluginConfig, error) {

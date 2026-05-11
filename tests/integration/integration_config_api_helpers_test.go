@@ -60,7 +60,7 @@ func newConfigAPITestServer(t *testing.T, baseCfg *ports.BridgeConfig) configAPI
 		AdminAPIKey:     testAdminAPIKey,
 		MonitorAPIKey:   testMonitorAPIKey,
 		RuntimeProvider: func() *goruntime.Runtime { return rt },
-		ConfigStore:     &config.FileStore{Path: cfgPath},
+		ConfigStore:     &config.FileStore{Path: cfgPath, Registry: newTestRegistry()},
 		ConfigProvider:  func() *ports.BridgeConfig { return currentCfg },
 	}
 
@@ -99,8 +99,9 @@ func newConfigAPITestServerWithPipeline(t *testing.T, baseCfg *ports.BridgeConfi
 	}
 
 	// File source + poll-mode watcher (100ms for fast test feedback).
-	fileSource := fileconfig.NewSource(cfgPath)
-	watcher := fileconfig.NewWatcher(cfgPath,
+	reg := newTestRegistry()
+	fileSource := fileconfig.NewSource(cfgPath, reg)
+	watcher := fileconfig.NewWatcher(cfgPath, reg,
 		fileconfig.WithMode(fileconfig.ModePoll),
 		fileconfig.WithPollInterval(100*time.Millisecond),
 	)
@@ -145,7 +146,7 @@ func newConfigAPITestServerWithPipeline(t *testing.T, baseCfg *ports.BridgeConfi
 		AdminAPIKey:     testAdminAPIKey,
 		MonitorAPIKey:   testMonitorAPIKey,
 		RuntimeProvider: sup.Runtime,
-		ConfigStore:     &config.FileStore{Path: cfgPath},
+		ConfigStore:     &config.FileStore{Path: cfgPath, Registry: newTestRegistry()},
 		ConfigProvider:  sup.Config,
 	}
 
@@ -321,7 +322,7 @@ func pollForSupervisorRoute(t *testing.T, sup *bridge.Supervisor, routeID string
 
 func readConfigFromDisk(t *testing.T, path string) *ports.BridgeConfig {
 	t.Helper()
-	cfg, err := config.ParseFile(path, config.FormatYAML)
+	cfg, err := config.ParseFile(path, config.FormatYAML, newTestRegistry())
 	if err != nil {
 		t.Fatalf("parse config from disk: %v", err)
 	}

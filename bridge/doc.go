@@ -5,8 +5,12 @@
 //
 // Usage:
 //
-//	cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
-//	rt, _ := bridge.NewBuilder(cfg).
+//	reg := ports.NewRegistry()
+//	_ = paho.Register(reg)
+//	_ = sqs.Register(reg)
+//	_ = ddbstore.Register(reg)
+//	cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto, reg)
+//	rt, _ := bridge.NewBuilder(cfg, bridge.WithRegistry(reg)).
 //	    RegisterTransport("mqtt", mqttFactory).
 //	    RegisterTransport("sqs", sqsFactory).
 //	    RegisterStoreFactory("dynamodb", ddbFactory).

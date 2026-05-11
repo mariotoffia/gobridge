@@ -73,7 +73,7 @@ routes:
       lease_ttl: 30s
       drain_interval: 1s
 `
-	cfg, err := ParseWithRegistry(strings.NewReader(input), FormatYAML, passthroughRegistry("dynamodb", "mqtt", "sqs"))
+	cfg, err := Parse(strings.NewReader(input), FormatYAML, passthroughRegistry("dynamodb", "mqtt", "sqs"))
 	require.NoError(t, err)
 
 	assert.Equal(t, "bridge-1", cfg.Bridge.ID)
@@ -123,7 +123,7 @@ func TestParse_JSON(t *testing.T) {
   "bindings": [{"id": "b1", "sender_id": "tx1", "address": "queue://test"}],
   "routes": [{"id": "r1", "receiver_id": "rx1", "bindings": ["b1"]}]
 }`
-	cfg, err := ParseWithRegistry(strings.NewReader(input), FormatJSON, passthroughRegistry("sqs"))
+	cfg, err := Parse(strings.NewReader(input), FormatJSON, passthroughRegistry("sqs"))
 	require.NoError(t, err)
 	assert.Equal(t, "bridge-json", cfg.Bridge.ID)
 	require.Len(t, cfg.Routes, 1)
@@ -131,13 +131,13 @@ func TestParse_JSON(t *testing.T) {
 
 // Verifies Parse returns an error for malformed YAML input.
 func TestParse_InvalidYAML(t *testing.T) {
-	_, err := Parse(strings.NewReader("{{invalid"), FormatYAML)
+	_, err := Parse(strings.NewReader("{{invalid"), FormatYAML, passthroughRegistry())
 	assert.Error(t, err)
 }
 
 // Verifies Parse returns an error for malformed JSON input.
 func TestParse_InvalidJSON(t *testing.T) {
-	_, err := Parse(strings.NewReader("{not json"), FormatJSON)
+	_, err := Parse(strings.NewReader("{not json"), FormatJSON, passthroughRegistry())
 	assert.Error(t, err)
 }
 
@@ -180,7 +180,7 @@ routes:
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, content, 0o644))
 
-	cfg, err := ParseFileWithRegistry(path, FormatAuto, passthroughRegistry("sqs"))
+	cfg, err := ParseFile(path, FormatAuto, passthroughRegistry("sqs"))
 	require.NoError(t, err)
 	assert.Equal(t, "file-test", cfg.Bridge.ID)
 	require.Len(t, cfg.Receivers, 1)
@@ -198,7 +198,7 @@ func TestParseFile_ValidJSON(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	require.NoError(t, os.WriteFile(path, content, 0o644))
 
-	cfg, err := ParseFileWithRegistry(path, FormatAuto, passthroughRegistry("sqs"))
+	cfg, err := ParseFile(path, FormatAuto, passthroughRegistry("sqs"))
 	require.NoError(t, err)
 	assert.Equal(t, "json-file", cfg.Bridge.ID)
 	require.Len(t, cfg.Receivers, 1)
@@ -208,7 +208,7 @@ func TestParseFile_ValidJSON(t *testing.T) {
 // TestParseFile_NonExistentFile verifies ParseFile returns an error whose message
 // contains "config: open" when the file does not exist.
 func TestParseFile_NonExistentFile(t *testing.T) {
-	_, err := ParseFile("/tmp/gobridge-nonexistent-12345.yaml", FormatAuto)
+	_, err := ParseFile("/tmp/gobridge-nonexistent-12345.yaml", FormatAuto, passthroughRegistry())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "config: open")
 }
@@ -221,7 +221,7 @@ func TestParseFile_FormatOverride(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, content, 0o644))
 
-	cfg, err := ParseFile(path, FormatJSON)
+	cfg, err := ParseFile(path, FormatJSON, passthroughRegistry())
 	require.NoError(t, err)
 	assert.Equal(t, "override-test", cfg.Bridge.ID)
 }
@@ -229,7 +229,7 @@ func TestParseFile_FormatOverride(t *testing.T) {
 // TestParse_UnsupportedFormat verifies Parse returns an error containing
 // "unsupported format" for an unrecognized format string.
 func TestParse_UnsupportedFormat(t *testing.T) {
-	_, err := Parse(strings.NewReader("<xml/>"), Format("xml"))
+	_, err := Parse(strings.NewReader("<xml/>"), Format("xml"), passthroughRegistry())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported format")
 }
@@ -237,7 +237,7 @@ func TestParse_UnsupportedFormat(t *testing.T) {
 // TestParse_EmptyInput verifies Parse does not error on an empty reader and
 // returns a valid zero-valued config.
 func TestParse_EmptyInput(t *testing.T) {
-	cfg, err := Parse(strings.NewReader(""), FormatYAML)
+	cfg, err := Parse(strings.NewReader(""), FormatYAML, passthroughRegistry())
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 	assert.Empty(t, cfg.Bridge.ID)
@@ -250,7 +250,7 @@ func TestParse_OversizedInput_RejectedByLimit(t *testing.T) {
 	data := strings.Repeat("a: b\n", MaxConfigBytes/5+1)
 	require.Greater(t, len(data), MaxConfigBytes)
 
-	_, err := Parse(strings.NewReader(data), FormatYAML)
+	_, err := Parse(strings.NewReader(data), FormatYAML, passthroughRegistry())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds maximum size")
 }

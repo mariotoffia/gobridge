@@ -238,7 +238,7 @@ receivers, senders, subscriptions, bindings, and stores) carries a
 typed `ports.PluginConfig` rather than an opaque `map[string]any`.
 Adapters export a concrete `Config` struct that implements
 `Kind() string` and `Validate() error`, and self-register a decoder on
-`ports.DefaultRegistry` from an `init()` in their `register.go`. The
+`*ports.Registry` from an `init()` in their `register.go`. The
 `config/` parser performs a two-stage decode (frame → registry-dispatched
 typed config); `config/blueprint_marshal.go` round-trips the typed
 `Config` back into the canonical `options:` wire form. The

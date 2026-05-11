@@ -93,7 +93,7 @@ The builder lives only in `cdk/bridgecfg/` (CDK-package-local). It is NOT
 exposed from each plugin. **Adding a new plugin requires syncing
 `bridgecfg/<kind>.go` and `internal/grants/<kind>.go` in the same change** —
 documented contributor obligation, optionally enforced by a CI check that
-asserts every kind in `ports.DefaultRegistry` has both a builder method and
+asserts every kind in `*ports.Registry` has both a builder method and
 a grant function.
 
 `AdminAPIDefaults()` enables the admin API on `:8080` with `/healthz`,
@@ -583,7 +583,7 @@ Integration tests run nightly + on release tags, NOT on every PR.
   schema stability.
 - Risk: tier B grant derivation grows complex as new adapter types ship.
   Mitigation: each adapter has its own file in `internal/grants/`; CI check
-  enforces presence for every kind in `ports.DefaultRegistry`.
+  enforces presence for every kind in `*ports.Registry`.
 - Risk: ALB rule priority collisions with consumer's own rules. Mitigation:
   `BasePriority` prop, documented reserved range, synth-time collision check.
 
@@ -624,7 +624,7 @@ parallel.
 | T24 | Update `deployment/aws-filebased-config/UBIQUITOUS.md`: `QueueRegistry`, `SsmParamRegistry`, `OnConfigDrift`, `BridgeConfigSource`, `BridgeRef`, `LookupBridge`. — DONE | T22 |
 | T25 | Update `docs/scenarios/cdk/05-multi-bridge-cluster.md` to use `GoBridgeCluster`. | T22 |
 | T26 | Update `docs/aws-deployment/tco.md` if cluster default sizing changes cost shape. | T17 |
-| T27 | CI check: every kind in `ports.DefaultRegistry` has matching `bridgecfg/<kind>.go` builder method AND `internal/grants/<kind>.go` derivation function. Fail build on missing. | T04, T08 |
+| T27 | CI check: every kind in `*ports.Registry` has matching `bridgecfg/<kind>.go` builder method AND `internal/grants/<kind>.go` derivation function. Fail build on missing. | T04, T08 |
 
 ### Dependency graph (compact)
 

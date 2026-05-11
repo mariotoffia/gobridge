@@ -128,6 +128,7 @@ func resolveInputs(
 	ctx context.Context,
 	resolver parameterResolver,
 	bootstrapCfg deployinfra.BootstrapConfig,
+	registry *ports.Registry,
 	logical *ports.BridgeConfig,
 ) (*resolvedInputs, error) {
 	adminKey, err := resolver.ResolveString(ctx, bootstrapCfg.AdminAPIKeyParam)
@@ -143,7 +144,7 @@ func resolveInputs(
 		}
 	}
 
-	resolvedCfg, err := cloneBridgeConfig(logical)
+	resolvedCfg, err := cloneBridgeConfig(logical, registry)
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: clone logical config: %w", err)
 	}

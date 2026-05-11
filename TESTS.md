@@ -73,7 +73,7 @@ Production code under test takes `domain/clock.Clock`. Tests use
 - Synchronise on channels or `sync.WaitGroup`. Never on sleeps or
   "100 ms ought to be enough".
 - Do not call `t.Parallel()` in tests sharing global state
-  (`ports.DefaultRegistry`, env vars, working directory).
+  (`*ports.Registry`, env vars, working directory).
 
 ### 2.4 Determinism over realism
 
@@ -196,7 +196,7 @@ inject the dependency. The constructor under test should accept
 - `time.Sleep`.
 - Reading `time.Now()`.
 - `os.Setenv` without `t.Cleanup` to restore.
-- Touching `ports.DefaultRegistry` without `t.Cleanup` to restore the
+- Touching `*ports.Registry` without `t.Cleanup` to restore the
   old registry, or using `ports.NewRegistry()` for an isolated instance.
 
 ---

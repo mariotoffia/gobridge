@@ -174,6 +174,7 @@ func TestStreamLoopEmitsOnWatchedKeyChange(t *testing.T) {
 		streamPollInterval: 100 * time.Millisecond,
 		mode:               ModeStreams,
 		clk:                fc,
+		registry:           newDDBTestRegistry(t),
 	}
 
 	ch := make(chan *ports.BridgeConfig, 1)
@@ -248,6 +249,7 @@ func TestStreamLoopIgnoresUnrelatedRecords(t *testing.T) {
 		streamPollInterval: 50 * time.Millisecond,
 		mode:               ModeStreams,
 		clk:                fc,
+		registry:           newDDBTestRegistry(t),
 	}
 
 	ch := make(chan *ports.BridgeConfig, 1)

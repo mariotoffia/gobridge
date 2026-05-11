@@ -34,7 +34,7 @@ In commits and PRs: **link**, do not restate.
 
 - **Names** come from `UBIQUITOUS.md`. No synonyms for `Envelope`, `Subject`, `Address`, `Delivery`, `Route`, `Lease`, `OutboxRecord`, etc.
 - **Cross-context references** in `domain/` go through `domain/shared` or are forbidden (`DDD.md`).
-- **Plugin config is typed.** Implement `ports.PluginConfig` (`Kind() string`, `Validate() error`); register decoder in `register.go` `init()` against `ports.DefaultRegistry`; type-assert in factory. `map[string]any` decoding is banned (`cfgshape`). Detail: `PLUGIN.md#typed-plugin-config`.
+- **Plugin config is typed.** Implement `ports.PluginConfig` (`Kind() string`, `Validate() error`); register decoder in `register.go` `init()` against `*ports.Registry`; type-assert in factory. `map[string]any` decoding is banned (`cfgshape`). Detail: `PLUGIN.md#typed-plugin-config`.
 - **Sender contract**: `ports.Sender.Send(ctx, OutboundMessage)` carrying `Envelope` + resolved `Address`. `Subject` (logical) ≠ `Address` (transport destination); never overload one with the other. Detail: `ARCHITECTURE.md#subject-vs-address`.
 - **No `time.Sleep`** in production or test code. Use injected `clock.Clock`. Audited by `make audit-timings` and `make audit-test-timings`.
 - **Hand-rolled fakes only.** `gomock`, `mockery`, etc. are banned (`TESTS.md`).

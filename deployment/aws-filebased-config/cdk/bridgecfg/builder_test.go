@@ -1,6 +1,7 @@
 package bridgecfg_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -10,15 +11,25 @@ import (
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/bridgecfg"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
-
-	// Side-effect imports populate ports.DefaultRegistry so
-	// config.Parse can decode every PluginConfig the builder
-	// emits. Without these the parser returns "unknown plugin
-	// kind" for sqs/mqtt/sqlite.
-	_ "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
-	_ "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	_ "github.com/mariotoffia/gobridge/adapters/native/store"
+	"github.com/mariotoffia/gobridge/ports"
 )
+
+// newTestRegistry builds a hermetic *ports.Registry pre-populated
+// with the PluginConfig decoders the builder emits, so config.Parse
+// can decode every kind without relying on package init() side
+// effects.
+func newTestRegistry(t *testing.T) *ports.Registry {
+	t.Helper()
+	reg := ports.NewRegistry()
+	if err := errors.Join(
+		sqs.Register(reg),
+		paho.Register(reg),
+		nativestore.Register(reg),
+	); err != nil {
+		t.Fatalf("register decoders: %v", err)
+	}
+	return reg
+}
 
 // TestBuilder_Canonical_RoundTrip exercises the documented happy path
 // from the design doc (lines 71-90): build a representative bridge
@@ -32,6 +43,7 @@ import (
 // understand, or the config marshaller is dropping a field the
 // builder writes.
 func TestBuilder_Canonical_RoundTrip(t *testing.T) {
+	reg := newTestRegistry(t)
 	qr := registry.NewQueueRegistry()
 	pr := registry.NewSsmParamRegistry()
 
@@ -61,7 +73,7 @@ func TestBuilder_Canonical_RoundTrip(t *testing.T) {
 		t.Fatal("MarshalYAML produced empty output")
 	}
 
-	parsed, err := config.Parse(strings.NewReader(string(yamlBytes)), config.FormatYAML)
+	parsed, err := config.Parse(strings.NewReader(string(yamlBytes)), config.FormatYAML, reg)
 	if err != nil {
 		t.Fatalf("Parse round-trip: %v\n--- yaml ---\n%s", err, string(yamlBytes))
 	}

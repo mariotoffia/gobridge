@@ -1,6 +1,10 @@
 package integration_test
 
-import "github.com/mariotoffia/gobridge/ports"
+import (
+	"errors"
+
+	"github.com/mariotoffia/gobridge/ports"
+)
 
 // fakePluginConfig is a permissive stand-in for adapter Configs whose
 // real decoders are not imported into the integration_test binary.
@@ -26,30 +30,51 @@ type fakeOverlayConfig struct {
 func (fakeOverlayConfig) Kind() string    { return "fake" }
 func (fakeOverlayConfig) Validate() error { return nil }
 
-func init() {
-	registerSimple := func(kind string) {
+// registerFakes installs stand-in PluginConfig decoders for the
+// transport / store kinds the integration test fixtures reference.
+// It is invoked once per test registry by the helpers that build
+// hermetic registries; duplicate calls return ports.ErrDuplicateKind
+// and are ignored on the second register, which keeps the helper
+// idempotent across tests that share a process-wide test fixture
+// registry.
+func registerFakes(reg *ports.Registry) error {
+	registerSimple := func(kind string) error {
 		k := kind
-		ports.DefaultRegistry.Register(k, func(_ ports.RawConfig) (ports.PluginConfig, error) {
+		return reg.Register(k, func(_ ports.RawConfig) (ports.PluginConfig, error) {
 			return fakePluginConfig{kind: k}, nil
 		})
 	}
 
-	// kind "fake" decodes into fakeOverlayConfig so the broker field
-	// survives a wire-format round-trip through ParseFile.
-	ports.DefaultRegistry.Register("fake", func(raw ports.RawConfig) (ports.PluginConfig, error) {
-		var c fakeOverlayConfig
-		if raw != nil {
-			if err := raw.Decode(&c); err != nil {
-				return nil, err
+	if err := errors.Join(
+		// kind "fake" decodes into fakeOverlayConfig so the broker field
+		// survives a wire-format round-trip through ParseFile.
+		reg.Register("fake", func(raw ports.RawConfig) (ports.PluginConfig, error) {
+			var c fakeOverlayConfig
+			if raw != nil {
+				if err := raw.Decode(&c); err != nil {
+					return nil, err
+				}
 			}
-		}
-		return c, nil
-	})
+			return c, nil
+		}),
+		// Other transport discriminators used by test fixtures.
+		registerSimple("exclusive"),
+		registerSimple("broken"),
+		// Store discriminators used by test fixtures.
+		registerSimple("memory"),
+	); err != nil {
+		return err
+	}
+	return nil
+}
 
-	// Other transport discriminators used by test fixtures.
-	registerSimple("exclusive")
-	registerSimple("broken")
-
-	// Store discriminators used by test fixtures.
-	registerSimple("memory")
+// newTestRegistry returns a fresh *ports.Registry pre-populated with
+// the integration-test fakes. Use this everywhere a parser is called
+// in this test binary instead of constructing a bare NewRegistry().
+func newTestRegistry() *ports.Registry {
+	reg := ports.NewRegistry()
+	if err := registerFakes(reg); err != nil {
+		panic("integration_test: register fakes: " + err.Error())
+	}
+	return reg
 }

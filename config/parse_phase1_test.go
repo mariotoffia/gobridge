@@ -50,7 +50,7 @@ func (f phase1FakeConfig) Validate() error {
 // `validate_ok` boolean (default false).
 func fakeRegistry() *ports.Registry {
 	reg := ports.NewRegistry()
-	reg.Register(phase1FakeKind, func(raw ports.RawConfig) (ports.PluginConfig, error) {
+	if err := reg.Register(phase1FakeKind, func(raw ports.RawConfig) (ports.PluginConfig, error) {
 		var probe struct {
 			Field      string `json:"field"`
 			ValidateOK bool   `json:"validate_ok"`
@@ -67,7 +67,9 @@ func fakeRegistry() *ports.Registry {
 			return nil, err
 		}
 		return cfg, nil
-	})
+	}); err != nil {
+		panic(err)
+	}
 	return reg
 }
 
@@ -77,7 +79,7 @@ func fakeRegistry() *ports.Registry {
 // table-driven tests.
 func parseYAML(t *testing.T, reg *ports.Registry, src string) (*ports.BridgeConfig, error) {
 	t.Helper()
-	return ParseWithRegistry(strings.NewReader(src), FormatYAML, reg)
+	return Parse(strings.NewReader(src), FormatYAML, reg)
 }
 
 const baseBridge = `bridge:

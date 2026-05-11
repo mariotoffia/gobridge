@@ -10,6 +10,7 @@ import (
 // Builder constructs a runtime.Runtime from a declarative BridgeConfig.
 type Builder struct {
 	cfg              *ports.BridgeConfig
+	registry         *ports.Registry
 	transports       map[string]ports.TransportFactory
 	storeFactories   map[string]ports.StoreFactory
 	processors       map[string]ports.Processor
@@ -135,3 +136,20 @@ func (b *Builder) RegisterDeliveryHook(h ports.DeliveryHook) *Builder {
 func WithBlueprintValidator(v ports.BlueprintValidator) BuilderOption {
 	return func(b *Builder) { b.validator = v }
 }
+
+// WithRegistry attaches the *ports.Registry the composition root
+// used to parse BridgeConfig. The Builder itself does not parse
+// blueprints (cfg arrives pre-decoded), but exposing the registry
+// here lets callers retrieve it via Builder.Registry for downstream
+// composition (e.g. an admin endpoint that re-parses uploaded YAML
+// against the same decoder set). The option is purely informative
+// for the runtime; nil is permitted.
+func WithRegistry(r *ports.Registry) BuilderOption {
+	return func(b *Builder) { b.registry = r }
+}
+
+// Registry returns the *ports.Registry passed via WithRegistry, or
+// nil if none was supplied. Callers that need a registry but did
+// not configure one MUST construct one explicitly via
+// ports.NewRegistry — the Builder does not synthesise a default.
+func (b *Builder) Registry() *ports.Registry { return b.registry }

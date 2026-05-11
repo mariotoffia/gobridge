@@ -17,6 +17,27 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
+)
+
+// ErrDuplicateKind is returned by Registry.Register when the supplied
+// kind has already been registered. It is a typed *shared.BridgeError
+// (Code: ErrCodeAlreadyExists, Class: ErrorPermanent) so callers can
+// errors.Is for it and so the same diagnostics infrastructure that
+// classifies runtime errors classifies registration errors.
+var ErrDuplicateKind = shared.NewBridgeError(
+	shared.ErrCodeAlreadyExists,
+	shared.ErrorPermanent,
+	"ports: duplicate plugin kind",
+)
+
+// ErrNilDecoder is returned by Registry.Register when the supplied
+// ConfigDecoder is nil. Same typed-error rationale as ErrDuplicateKind.
+var ErrNilDecoder = shared.NewBridgeError(
+	shared.ErrCodeInvalidPayload,
+	shared.ErrorPermanent,
+	"ports: nil ConfigDecoder",
 )
 
 // PluginConfig is the marker interface every plugin implements with
@@ -54,7 +75,11 @@ type RawConfig interface {
 type ConfigDecoder func(raw RawConfig) (PluginConfig, error)
 
 // Registry maps plugin kinds to their decoders. The zero value is
-// not usable; construct via NewRegistry or use DefaultRegistry.
+// not usable; construct via NewRegistry. Each composition root owns
+// its own Registry — there is no process-wide singleton. Adapters
+// expose an exported Register(reg *ports.Registry) error function
+// from their register.go which the composition root calls explicitly
+// after constructing the registry.
 type Registry struct {
 	mu       sync.RWMutex
 	decoders map[string]ConfigDecoder
@@ -65,13 +90,19 @@ func NewRegistry() *Registry {
 	return &Registry{decoders: map[string]ConfigDecoder{}}
 }
 
-// Register associates a decoder with a kind. It panics if kind is
-// already registered: duplicate registration is always a programming
-// error (typically a copy/paste init() in two adapters claiming the
-// same discriminator) and must be caught at process start.
-func (r *Registry) Register(kind string, dec ConfigDecoder) {
+// Register associates a decoder with a kind. It returns ErrNilDecoder
+// when dec is nil and ErrDuplicateKind when kind is already
+// registered. The returned error is wrapped with the offending kind
+// for diagnostics; callers can recover the sentinel via errors.Is.
+//
+// Duplicate registration is treated as a programming error (typically
+// a copy/paste in two adapter Register functions claiming the same
+// discriminator) and must be surfaced at composition time, but the
+// registry no longer panics — callers decide whether to fail-fast or
+// degrade.
+func (r *Registry) Register(kind string, dec ConfigDecoder) error {
 	if dec == nil {
-		panic("ports: nil ConfigDecoder for kind " + kind)
+		return fmt.Errorf("%w: kind %q", ErrNilDecoder, kind)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -79,9 +110,10 @@ func (r *Registry) Register(kind string, dec ConfigDecoder) {
 		r.decoders = map[string]ConfigDecoder{}
 	}
 	if _, dup := r.decoders[kind]; dup {
-		panic("ports: duplicate plugin kind " + kind)
+		return fmt.Errorf("%w: kind %q", ErrDuplicateKind, kind)
 	}
 	r.decoders[kind] = dec
+	return nil
 }
 
 // Decode looks up the decoder for kind and runs it against raw. It
@@ -115,12 +147,6 @@ func (r *Registry) Kinds() []string {
 	sort.Strings(out)
 	return out
 }
-
-// DefaultRegistry is the process-wide registry adapters self-register
-// into from their init() functions. The composition root imports the
-// adapters it wants (`_ "…/adapters/aws/transport/sqs"`); the
-// import graph determines which kinds are available at runtime.
-var DefaultRegistry = NewRegistry()
 
 // Factory is the runtime-side counterpart of PluginConfig: a typed
 // constructor an adapter exposes for its own concrete config. The

@@ -1,5 +1,5 @@
 // Command registrychk enforces that every AWS-deployable plugin kind
-// registered into ports.DefaultRegistry has matching CDK helpers in
+// registered into the CDK plugin registry has matching CDK helpers in
 // the deployment/aws-filebased-config/cdk tree.
 //
 // For each AWS-deployable canonical kind it asserts:
@@ -21,6 +21,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"go/ast"
@@ -31,12 +32,12 @@ import (
 	"sort"
 	"strings"
 
-	// Side-effect imports populate ports.DefaultRegistry with the
-	// AWS-deployable adapter kinds the CDK can synthesise.
-	_ "github.com/mariotoffia/gobridge/adapters/aws/store"
-	_ "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
-	_ "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	_ "github.com/mariotoffia/gobridge/adapters/native/store"
+	// Adapter Register functions are invoked explicitly below to
+	// populate the per-process registry the CDK can synthesise.
+	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
+	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
+	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
+	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
 
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -115,7 +116,11 @@ func main() {
 		*grantsDir = filepath.Join(cwd, "deployment", "aws-filebased-config", "cdk", "constructs", "internal", "grants")
 	}
 
-	registered := ports.DefaultRegistry.Kinds()
+	registered, err := buildRegisteredKinds()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "registrychk: build registry: %v\n", err)
+		os.Exit(2)
+	}
 	canonical, skipped := classify(registered)
 
 	if *verbose {
@@ -138,6 +143,23 @@ func main() {
 		fmt.Fprint(os.Stderr, m)
 	}
 	os.Exit(1)
+}
+
+// buildRegisteredKinds constructs the local *ports.Registry by
+// invoking the exported Register function for each adapter the CDK
+// supports, then returns the sorted list of registered kinds.
+// Adding a new CDK-deployable adapter means extending this set.
+func buildRegisteredKinds() ([]string, error) {
+	reg := ports.NewRegistry()
+	if err := errors.Join(
+		awsstore.Register(reg),
+		sqsadapter.Register(reg),
+		paho.Register(reg),
+		nativestore.Register(reg),
+	); err != nil {
+		return nil, err
+	}
+	return reg.Kinds(), nil
 }
 
 // classify partitions the registered kinds into:

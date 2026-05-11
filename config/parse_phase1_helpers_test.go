@@ -30,9 +30,11 @@ func passthroughRegistry(kinds ...string) *ports.Registry {
 	reg := ports.NewRegistry()
 	for _, k := range kinds {
 		k := k
-		reg.Register(k, func(_ ports.RawConfig) (ports.PluginConfig, error) {
+		if err := reg.Register(k, func(_ ports.RawConfig) (ports.PluginConfig, error) {
 			return passthroughConfig{kind: k}, nil
-		})
+		}); err != nil {
+			panic(err)
+		}
 	}
 	return reg
 }

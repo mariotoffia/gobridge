@@ -20,7 +20,7 @@ toc::[]
 
 A plugin is a Go package under `adapters/**` that exports a concrete
 `Config` struct satisfying `ports.PluginConfig` and registers a
-decoder for it on `ports.DefaultRegistry`. The blueprint parser in
+decoder for it on `*ports.Registry`. The blueprint parser in
 `config/` performs a two-stage decode: stage 1 reads the wire
 discriminator (`transport: aws.sqs`, `type: sqlite`, …); stage 2
 dispatches to the registered decoder which returns a typed
@@ -63,7 +63,7 @@ no test reference in a `*_test.go` file in the same package.
 
 == The registry
 
-`ports.DefaultRegistry` is a process-wide `*ports.Registry` that maps
+`*ports.Registry` is a process-wide `*ports.Registry` that maps
 `kind string` to `ConfigDecoder`. Adapters self-register from `init()`;
 the import graph at the composition root determines which kinds are
 available at runtime.
@@ -125,7 +125,7 @@ are required; any one missing fails `make lint`.
   textually (the test must compile and run; cfgshape rule 3 re-reads
   the directory and greps because vet excludes test files).
 . *Write `register.go`.* An `init()` that calls
-  `ports.DefaultRegistry.Register(kind, decoder)`. The decoder
+  `reg.Register(kind, decoder)`. The decoder
   decodes `raw` into the typed `Config`, calls `Validate()`, and
   returns the value (or a pointer to it, when the type satisfies
   `ports.CredentialedConfig` and needs mutation).
@@ -196,8 +196,8 @@ func init() {
     // Short discriminator matches the conventional YAML form
     // (`transport: sqs`); the long form mirrors Kind() for callers
     // that prefer a fully-qualified name.
-    ports.DefaultRegistry.Register("sqs", dec)
-    ports.DefaultRegistry.Register("aws.sqs", dec)
+    reg.Register("sqs", dec)
+    reg.Register("aws.sqs", dec)
 }
 ----
 
@@ -251,8 +251,8 @@ func (c SQLiteConfig) Validate() error {
 ----
 // adapters/native/store/register.go
 func init() {
-    ports.DefaultRegistry.Register(MemoryKind, decodeMemoryConfig)
-    ports.DefaultRegistry.Register(SQLiteKind, decodeSQLiteConfig)
+    reg.Register(MemoryKind, decodeMemoryConfig)
+    reg.Register(SQLiteKind, decodeSQLiteConfig)
 }
 
 func decodeSQLiteConfig(raw ports.RawConfig) (ports.PluginConfig, error) {
@@ -288,9 +288,9 @@ of `make lint` and enforces three rules:
   `*structpb.Struct`, or unbounded `[]byte`. See
   `scripts/cfgshape/analyzer.go:64-74`.
 . *Adapter shape.* Every plugin adapter package (one that calls
-  `ports.DefaultRegistry.Register` or exports a type satisfying
+  `*ports.Registry.Register` or exports a type satisfying
   `ports.PluginConfig`) MUST do BOTH: contain a `register.go` calling
-  `ports.DefaultRegistry.Register`, AND export at least one type
+  `*ports.Registry.Register`, AND export at least one type
   satisfying `ports.PluginConfig`. Half-baked plugins fail this rule.
   See `scripts/cfgshape/analyzer.go:13-21`.
 . *Validate body.* Every method named `Validate` on a type satisfying
@@ -319,7 +319,7 @@ mechanically.
   no-op `Validate` only on intentionally empty configs (see
   `adapters/native/store/config.go:30`, `MemoryConfig`).
 * Half-baked plugins: a package that calls
-  `ports.DefaultRegistry.Register` but exports no `PluginConfig`
+  `*ports.Registry.Register` but exports no `PluginConfig`
   type, or a package that exports a `PluginConfig` type but never
   registers a decoder for it.
 * Stage-1-only decoding: a parser path that hands a `map[string]any`

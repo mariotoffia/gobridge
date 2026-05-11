@@ -30,6 +30,16 @@ func WithCredentialStore(store ports.CredentialStore) Option {
 	return func(a *App) { a.credentialStore = store }
 }
 
+// WithPluginRegistry overrides the *ports.Registry used to decode
+// blueprints loaded from the file source / re-parsed during secret
+// resolution. When unset (the default) the App constructs a fresh
+// registry and populates it with the adapters this binary bundles
+// (paho, sqs, native store, http transport). Tests use this option
+// to inject hermetic stubs.
+func WithPluginRegistry(reg *ports.Registry) Option {
+	return func(a *App) { a.pluginRegistry = reg }
+}
+
 // WithShutdownTimeout sets the graceful shutdown deadline. Defaults to 30s.
 func WithShutdownTimeout(d time.Duration) Option {
 	return func(a *App) { a.shutdownTimeout = d }
@@ -41,6 +51,7 @@ type App struct {
 	logger            *slog.Logger
 	parameterResolver parameterResolver
 	credentialStore   ports.CredentialStore
+	pluginRegistry    *ports.Registry
 
 	manager         *config.Manager
 	httpServer      *httpapi.Server
@@ -75,6 +86,9 @@ func NewApp(cfg deployinfra.BootstrapConfig, opts ...Option) *App {
 	if app.shutdownTimeout <= 0 {
 		app.shutdownTimeout = 30 * time.Second
 	}
+	if app.pluginRegistry == nil {
+		app.pluginRegistry = newDefaultPluginRegistry()
+	}
 	return app
 }
 
@@ -104,10 +118,10 @@ func (a *App) Start(ctx context.Context) error {
 		a.credentialStore = store
 	}
 
-	source := newOptionalFileSource(a.cfg.ConfigFilePath, func() *ports.BridgeConfig {
+	source := newOptionalFileSource(a.cfg.ConfigFilePath, a.pluginRegistry, func() *ports.BridgeConfig {
 		return defaultLogicalConfig(a.cfg)
 	})
-	watcher := newPollWatcher(a.cfg, a.logger)
+	watcher := newPollWatcher(a.cfg, a.pluginRegistry, a.logger)
 	a.manager = config.NewManager(
 		config.Layer{Name: "file", Loader: source, Watcher: watcher},
 		config.WithManagerLogger(a.logger),
@@ -135,7 +149,7 @@ func (a *App) Start(ctx context.Context) error {
 		AdminAPIKeyProvider:   a.apiKeysRef.AdminKey,
 		MonitorAPIKeyProvider: a.apiKeysRef.MonitorKey,
 		RuntimeProvider:       a.runtimeRef.Get,
-		ConfigStore:           &config.FileStore{Path: a.cfg.ConfigFilePath},
+		ConfigStore:           &config.FileStore{Path: a.cfg.ConfigFilePath, Registry: a.pluginRegistry},
 		ConfigProvider:        a.logicalRef.Get,
 	}
 	a.httpServer = httpapi.New(nil, apiCfg,
@@ -319,7 +333,7 @@ func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfi
 }
 
 func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfig) (*runtimePlan, error) {
-	inputs, err := resolveInputs(ctx, a.parameterResolver, a.cfg, logical)
+	inputs, err := resolveInputs(ctx, a.parameterResolver, a.cfg, a.pluginRegistry, logical)
 	if err != nil {
 		return nil, err
 	}

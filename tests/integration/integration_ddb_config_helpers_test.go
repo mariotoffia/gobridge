@@ -152,7 +152,7 @@ func writeBridgeConfigYAML(t *testing.T, cfg *ports.BridgeConfig) string {
 func newFileBaseLayer(path string) config.Layer {
 	return config.Layer{
 		Name:   "file",
-		Loader: fileconfig.NewSource(path),
+		Loader: fileconfig.NewSource(path, newTestRegistry()),
 	}
 }
 

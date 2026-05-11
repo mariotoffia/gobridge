@@ -19,6 +19,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 func main() {
@@ -28,14 +29,26 @@ func main() {
 
 	logger := newLogger(*logLevel)
 
-	fileSource := fileconfig.NewSource(*configPath)
+	// Build the per-process plugin registry by registering each
+	// adapter we link in. Adding a new transport/store means a new
+	// Register call here — the import alone no longer suffices.
+	reg := ports.NewRegistry()
+	if err := errors.Join(
+		paho.Register(reg),
+		nativestore.Register(reg),
+	); err != nil {
+		logger.Error("failed to register plugin decoders", "error", err)
+		os.Exit(1)
+	}
+
+	fileSource := fileconfig.NewSource(*configPath, reg)
 	baseCfg, err := fileSource.Load(context.Background())
 	if err != nil {
 		logger.Error("failed to load config", "path", *configPath, "error", err)
 		os.Exit(1)
 	}
 
-	fileWatcher := fileconfig.NewWatcher(*configPath,
+	fileWatcher := fileconfig.NewWatcher(*configPath, reg,
 		fileconfig.WithWatchConfig(baseCfg.ConfigWatch),
 		fileconfig.WithLogger(logger),
 	)
@@ -112,7 +125,7 @@ func main() {
 			MonitorAPIKey:   cfg.HTTP.MonitorAPIKey,
 			CORSOrigins:     cfg.HTTP.CORSOrigins,
 			RuntimeProvider: sup.Runtime,
-			ConfigStore:     &config.FileStore{Path: *configPath},
+			ConfigStore:     &config.FileStore{Path: *configPath, Registry: reg},
 			ConfigProvider:  sup.Config,
 		}
 		if apiCfg.AdminAddr == "" {
