@@ -25,7 +25,11 @@ type Builder struct {
 // BuilderOption configures a Builder.
 type BuilderOption func(*Builder)
 
-// WithLogger sets the logger for the builder and the resulting runtime.
+// WithLogger sets the structured logger used by the builder during
+// construction and forwarded to the resulting runtime via
+// runtime.WithLogger. There is intentionally one logger seam: the
+// bridge package owns the BuilderOption surface and forwards into
+// runtime so callers configure logging in a single place.
 func WithLogger(l *slog.Logger) BuilderOption {
 	return func(b *Builder) { b.logger = l }
 }
@@ -90,9 +94,10 @@ func NewBuilder(cfg *ports.BridgeConfig, opts ...BuilderOption) *Builder {
 	return b
 }
 
-// RegisterTransport registers a transport factory under the given name
-// (e.g. "mqtt", "sqs"). Returns the builder for chaining.
-func (b *Builder) RegisterTransport(name string, factory ports.TransportFactory) *Builder {
+// RegisterTransportFactory registers a transport factory under the given
+// name (e.g. "mqtt", "sqs"). Returns the builder for chaining. Named for
+// symmetry with RegisterStoreFactory.
+func (b *Builder) RegisterTransportFactory(name string, factory ports.TransportFactory) *Builder {
 	b.transports[name] = factory
 	return b
 }

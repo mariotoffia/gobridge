@@ -211,17 +211,15 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	}
 
 	for i, drainer := range rt.drainers {
-		d := drainer
-		name := "drainer:" + d.partitionKey
+		name := "drainer:" + drainer.partitionKey
 		if name == "drainer:" {
-			name = "drainer:" + d.routeID + ":" + strconv.Itoa(i)
+			name = "drainer:" + drainer.routeID + ":" + strconv.Itoa(i)
 		}
-		rt.startBackground(ctx, name, d.Run)
+		rt.startBackground(ctx, name, drainer.Run)
 	}
 
 	for _, entry := range rt.entries {
-		e := entry
-		rt.startBackground(ctx, "route:"+e.config.ID, e.runner.Run)
+		rt.startBackground(ctx, "route:"+entry.config.ID, entry.runner.Run)
 	}
 
 	return nil

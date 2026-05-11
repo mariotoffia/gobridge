@@ -70,7 +70,7 @@ func TestT11_BridgeBuilder_PropagatesAddress_PreservesSubject(t *testing.T) {
 	tf := &dispatchTransportFactory{sender: sender}
 
 	rt, err := NewBuilder(cfg, WithBlueprintValidator(config.Validate)).
-		RegisterTransport("sqs", tf).
+		RegisterTransportFactory("sqs", tf).
 		Build(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, rt)
@@ -141,7 +141,7 @@ func TestT11_BridgeBuilder_RejectsEmptyBindingAddress(t *testing.T) {
 	}
 
 	_, err := NewBuilder(cfg, WithBlueprintValidator(config.Validate)).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		Build(context.Background())
 
 	require.Error(t, err)

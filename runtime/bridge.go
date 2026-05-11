@@ -37,7 +37,7 @@ type Runtime struct {
 
 	shutdownTimeout time.Duration
 
-	credRefresherClose func()
+	credRefresherClose func(context.Context)
 
 	mu              sync.Mutex
 	entries         []*routeEntry
@@ -214,25 +214,52 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 
 	// Close credential refresher BEFORE session teardown so that a
 	// rotation in flight cannot race ApplyCredentials against session
-	// Close (see AttachCredentialCloser rationale).
+	// Close (see AttachCredentialCloser rationale). The closer is
+	// invoked under a bounded timeout so a stuck watcher cannot hang
+	// Stop past the user-supplied ctx.
 	rt.mu.Lock()
 	closeRefresher := rt.credRefresherClose
 	rt.credRefresherClose = nil
 	rt.mu.Unlock()
+
+	closeTimeout := rt.shutdownTimeout
+	if closeTimeout <= 0 {
+		closeTimeout = 5 * time.Second
+	}
+
 	if closeRefresher != nil {
-		closeRefresher()
+		refresherCtx, refresherCancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
+		// Spawn the closer with explicit lifetime; if it overruns the
+		// bounded timer or the caller's ctx, we move on (best-effort)
+		// rather than blocking Stop.
+		refresherDone := make(chan struct{})
+		go func() {
+			defer close(refresherDone)
+			closeRefresher(refresherCtx)
+		}()
+		select {
+		case <-refresherDone:
+		case <-refresherCtx.Done():
+		case <-ctx.Done():
+		}
+		refresherCancel()
 	}
 
 	var errs []error
 
-	done := make(chan struct{})
+	// Wait-goroutine has explicit fire-and-forget lifetime: it survives
+	// only until rt.wg drains. If ctx fires first we record the error
+	// and proceed to session close under closeCtx (below); the bounded
+	// closeCtx ensures Stop cannot hang indefinitely waiting on a stuck
+	// background goroutine.
+	waitDone := make(chan struct{})
 	go func() {
+		defer close(waitDone)
 		rt.wg.Wait()
-		close(done)
 	}()
 
 	select {
-	case <-done:
+	case <-waitDone:
 	case <-ctx.Done():
 		errs = append(errs, ctx.Err())
 	}
@@ -242,10 +269,6 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		rt.dlqRouter.Close()
 	}
 
-	closeTimeout := rt.shutdownTimeout
-	if closeTimeout <= 0 {
-		closeTimeout = 5 * time.Second
-	}
 	// Close/flush must complete regardless of caller ctx cancellation,
 	// but we preserve values (trace/correlation) for logging.
 	closeCtx, closeCancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)

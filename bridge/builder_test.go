@@ -210,8 +210,8 @@ func TestBuilder_Build(t *testing.T) {
 	cfg := testConfig()
 
 	rt, err := NewBuilder(cfg).
-		RegisterTransport("mqtt", &fakeTransportFactory{}).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		Build(context.Background())
 
@@ -229,7 +229,7 @@ func TestBuilder_MissingTransportFactory(t *testing.T) {
 	cfg := testConfig()
 
 	_, err := NewBuilder(cfg).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		Build(context.Background())
 
@@ -242,8 +242,8 @@ func TestBuilder_MissingStoreFactory(t *testing.T) {
 	cfg := testConfig()
 
 	_, err := NewBuilder(cfg).
-		RegisterTransport("mqtt", &fakeTransportFactory{}).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		Build(context.Background())
 
 	require.Error(t, err)
@@ -286,7 +286,7 @@ func TestBuilder_DirectHoldRoute(t *testing.T) {
 	}
 
 	rt, err := NewBuilder(cfg).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		Build(context.Background())
 
 	require.NoError(t, err)
@@ -318,8 +318,8 @@ func TestBuilder_WithCredentialStore(t *testing.T) {
 	mqttFactory := &capturingTransportFactory{}
 
 	rt, err := NewBuilder(cfg, WithCredentialStore(cs)).
-		RegisterTransport("mqtt", mqttFactory).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("mqtt", mqttFactory).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		Build(context.Background())
 
@@ -353,8 +353,8 @@ func TestBuilder_CredentialInlineOverride(t *testing.T) {
 	mqttFactory := &capturingTransportFactory{}
 
 	rt, err := NewBuilder(cfg, WithCredentialStore(cs)).
-		RegisterTransport("mqtt", mqttFactory).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("mqtt", mqttFactory).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		Build(context.Background())
 
@@ -381,8 +381,8 @@ func TestBuilder_Clustered_NonDistributedStore_Rejected(t *testing.T) {
 	cfg.Bridge.DeploymentMode = "clustered"
 
 	_, err := NewBuilder(cfg).
-		RegisterTransport("mqtt", &fakeTransportFactory{}).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		Build(context.Background())
 
@@ -396,8 +396,8 @@ func TestBuilder_Clustered_DistributedStore_OK(t *testing.T) {
 	cfg.Bridge.DeploymentMode = "clustered"
 
 	rt, err := NewBuilder(cfg).
-		RegisterTransport("mqtt", &fakeTransportFactory{}).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		RegisterStoreFactory("memory", &fakeDistributedStoreFactory{}).
 		Build(context.Background())
 
@@ -411,8 +411,8 @@ func TestBuilder_Standalone_NonDistributedStore_OK(t *testing.T) {
 	cfg.Bridge.DeploymentMode = "standalone"
 
 	rt, err := NewBuilder(cfg).
-		RegisterTransport("mqtt", &fakeTransportFactory{}).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		Build(context.Background())
 
@@ -444,8 +444,8 @@ func TestBuilder_ClusteredMode_NilLeaseStore_RejectsStartup(t *testing.T) {
 	cfg.Stores.Lease = &ports.StoreConfig{Type: "sqlite"}
 
 	_, err := NewBuilder(cfg).
-		RegisterTransport("mqtt", &fakeTransportFactory{}).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		RegisterStoreFactory("sqlite", &nilLeaseStoreFactory{}).
 		RegisterStoreFactory("memory", &fakeDistributedStoreFactory{}).
 		Build(context.Background())
@@ -460,8 +460,8 @@ func TestBuilder_CredentialsURIWithoutStore(t *testing.T) {
 	cfg.Sessions[0].Config = &testCredConfig{URI: "file://test/creds"}
 
 	_, err := NewBuilder(cfg).
-		RegisterTransport("mqtt", &fakeTransportFactory{}).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		Build(context.Background())
 
@@ -496,8 +496,8 @@ func TestBuilder_PolicyFieldsReachRuntime(t *testing.T) {
 	}
 
 	rt, err := NewBuilder(cfg).
-		RegisterTransport("mqtt", &fakeTransportFactory{}).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		Build(context.Background())
 
@@ -521,8 +521,8 @@ func TestBuilder_DrainMaxFieldsReachSessionConfig(t *testing.T) {
 	cfg.Routes[0].Session.DrainMaxConcurrency = 5
 
 	rt, err := NewBuilder(cfg).
-		RegisterTransport("mqtt", &fakeTransportFactory{}).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		Build(context.Background())
 
@@ -544,8 +544,8 @@ func TestBuilder_WiresSourceVisibilityTimeout(t *testing.T) {
 	sqsFactory := &fakeVisibilityFactory{timeout: 30 * time.Second}
 
 	rt, err := NewBuilder(cfg).
-		RegisterTransport("mqtt", &fakeTransportFactory{}).
-		RegisterTransport("sqs", sqsFactory).
+		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", sqsFactory).
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		Build(context.Background())
 

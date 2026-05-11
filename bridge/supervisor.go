@@ -455,7 +455,7 @@ func (s *Supervisor) newBuilder(cfg *ports.BridgeConfig) *Builder {
 	}
 	b := NewBuilder(cfg, opts...)
 	for name, tf := range transports {
-		b.RegisterTransport(name, tf)
+		b.RegisterTransportFactory(name, tf)
 	}
 	for name, sf := range stores {
 		b.RegisterStoreFactory(name, sf)
