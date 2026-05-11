@@ -1,6 +1,11 @@
 package routing
 
-import "time"
+import (
+	"fmt"
+	"time"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
+)
 
 // DeliveryMode determines how a route handles message ownership transfer.
 type DeliveryMode string
@@ -10,6 +15,15 @@ const (
 	DeliverySharedOutbox DeliveryMode = "shared_outbox"
 )
 
+// IsValid reports whether m is one of the declared DeliveryMode values.
+func (m DeliveryMode) IsValid() bool {
+	switch m {
+	case DeliveryDirectHold, DeliverySharedOutbox:
+		return true
+	}
+	return false
+}
+
 // DispatchMode determines whether a route sends to one or many destinations.
 type DispatchMode string
 
@@ -18,6 +32,15 @@ const (
 	DispatchFanOut DispatchMode = "fan_out"
 )
 
+// IsValid reports whether m is one of the declared DispatchMode values.
+func (m DispatchMode) IsValid() bool {
+	switch m {
+	case DispatchSingle, DispatchFanOut:
+		return true
+	}
+	return false
+}
+
 // AckBoundary determines when the source delivery is acknowledged.
 type AckBoundary string
 
@@ -25,6 +48,15 @@ const (
 	AckAfterTargetAccept  AckBoundary = "target_accept"
 	AckAfterOutboxPersist AckBoundary = "outbox_persist"
 )
+
+// IsValid reports whether a is one of the declared AckBoundary values.
+func (a AckBoundary) IsValid() bool {
+	switch a {
+	case AckAfterTargetAccept, AckAfterOutboxPersist:
+		return true
+	}
+	return false
+}
 
 // BackoffPolicy configures retry backoff behavior.
 type BackoffPolicy struct {
@@ -41,6 +73,15 @@ const (
 	ExpiredDLQ  ExpiredAction = "dlq"
 )
 
+// IsValid reports whether a is one of the declared ExpiredAction values.
+func (a ExpiredAction) IsValid() bool {
+	switch a {
+	case ExpiredDrop, ExpiredDLQ:
+		return true
+	}
+	return false
+}
+
 // FailureAction determines what happens on permanent failures.
 type FailureAction string
 
@@ -48,6 +89,15 @@ const (
 	FailureDLQ  FailureAction = "dlq"
 	FailureDrop FailureAction = "drop"
 )
+
+// IsValid reports whether a is one of the declared FailureAction values.
+func (a FailureAction) IsValid() bool {
+	switch a {
+	case FailureDLQ, FailureDrop:
+		return true
+	}
+	return false
+}
 
 // Route policy defaults.
 const (
@@ -60,19 +110,9 @@ const (
 	DefaultProcessorTimeout  = 30 * time.Second
 )
 
-// DefaultBackoffPolicy holds the default backoff configuration.
-// Deprecated: use NewDefaultBackoffPolicy() to get an immutable copy.
-// This variable is kept for backward compatibility but callers should
-// not mutate it.
-var DefaultBackoffPolicy = BackoffPolicy{
-	InitialInterval: 1 * time.Second,
-	MaxInterval:     30 * time.Second,
-	Multiplier:      2.0,
-}
-
 // NewDefaultBackoffPolicy returns a fresh BackoffPolicy with the
-// recommended defaults. Unlike the DefaultBackoffPolicy var, the
-// returned value is safe to mutate without global side effects.
+// recommended defaults. The returned value is safe to mutate without
+// global side effects.
 func NewDefaultBackoffPolicy() BackoffPolicy {
 	return BackoffPolicy{
 		InitialInterval: 1 * time.Second,
@@ -94,7 +134,7 @@ type RoutePolicy struct {
 	MaxReplayAttempts    int
 	MaxOutboxDepth       int
 	AllowUnfenced        bool
-	AllowRetryDrop       bool `json:"allow_retry_drop,omitempty" yaml:"allow_retry_drop,omitempty"`
+	AllowRetryDrop       bool
 	SendTimeout          time.Duration
 	DepthCacheTTL        time.Duration
 	// ProcessorTimeout bounds the execution time of a single processor in the
@@ -105,6 +145,9 @@ type RoutePolicy struct {
 }
 
 // WithDefaults returns a copy with zero-valued or invalid fields set to defaults.
+// Enum fields that carry an unrecognised value are reset to their default; use
+// Validate when callers want to reject invalid input rather than silently
+// correct it.
 func (p RoutePolicy) WithDefaults() RoutePolicy {
 	if p.MaxInFlight <= 0 {
 		p.MaxInFlight = DefaultMaxInFlight
@@ -125,19 +168,19 @@ func (p RoutePolicy) WithDefaults() RoutePolicy {
 	if p.Backoff.Multiplier == 0 {
 		p.Backoff.Multiplier = defaults.Multiplier
 	}
-	if p.OnExpired == "" {
+	if !p.OnExpired.IsValid() {
 		p.OnExpired = ExpiredDLQ
 	}
-	if p.OnPermanentFailure == "" {
+	if !p.OnPermanentFailure.IsValid() {
 		p.OnPermanentFailure = FailureDLQ
 	}
-	if p.DispatchMode == "" {
+	if !p.DispatchMode.IsValid() {
 		p.DispatchMode = DispatchSingle
 	}
-	if p.DeliveryMode == "" {
+	if !p.DeliveryMode.IsValid() {
 		p.DeliveryMode = DeliveryDirectHold
 	}
-	if p.AckAfter == "" {
+	if !p.AckAfter.IsValid() {
 		p.AckAfter = AckAfterTargetAccept
 	}
 	if p.SendTimeout <= 0 {
@@ -150,6 +193,39 @@ func (p RoutePolicy) WithDefaults() RoutePolicy {
 		p.ProcessorTimeout = DefaultProcessorTimeout
 	}
 	return p
+}
+
+// Validate reports the first invalid enum value carried by p as a
+// permanent BridgeError with code shared.ErrCodeInvalidPayload. A
+// zero-valued enum is treated as "use default" (handled by WithDefaults)
+// and is NOT considered invalid here. Callers that want strict
+// rejection of typos like RoutePolicy{DeliveryMode: "wat"} should call
+// Validate before (or instead of) WithDefaults.
+func (p RoutePolicy) Validate() error {
+	if p.DeliveryMode != "" && !p.DeliveryMode.IsValid() {
+		return invalidEnum("DeliveryMode", string(p.DeliveryMode))
+	}
+	if p.DispatchMode != "" && !p.DispatchMode.IsValid() {
+		return invalidEnum("DispatchMode", string(p.DispatchMode))
+	}
+	if p.AckAfter != "" && !p.AckAfter.IsValid() {
+		return invalidEnum("AckAfter", string(p.AckAfter))
+	}
+	if p.OnExpired != "" && !p.OnExpired.IsValid() {
+		return invalidEnum("OnExpired", string(p.OnExpired))
+	}
+	if p.OnPermanentFailure != "" && !p.OnPermanentFailure.IsValid() {
+		return invalidEnum("OnPermanentFailure", string(p.OnPermanentFailure))
+	}
+	return nil
+}
+
+func invalidEnum(field, value string) *shared.BridgeError {
+	return &shared.BridgeError{
+		Code:    shared.ErrCodeInvalidPayload,
+		Class:   shared.ErrorPermanent,
+		Message: fmt.Sprintf("routing: invalid %s value %q", field, value),
+	}
 }
 
 // DestinationBinding describes a concrete target that a route may send to.

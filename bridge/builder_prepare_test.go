@@ -42,7 +42,7 @@ func directHoldConfig() *ports.BridgeConfig {
 func buildWith(cfg *ports.BridgeConfig, transports ...string) *Builder {
 	b := NewBuilder(cfg)
 	for _, t := range transports {
-		b.RegisterTransport(t, &fakeTransportFactory{})
+		b.RegisterTransportFactory(t, &fakeTransportFactory{})
 	}
 	b.RegisterStoreFactory("memory", &fakeStoreFactory{})
 	return b
@@ -59,13 +59,13 @@ func TestBuilder_PrepareComplete_EquivalentToBuild(t *testing.T) {
 	ctx := context.Background()
 
 	rtBuild, err := NewBuilder(cfg).
-		RegisterTransport("fake", &fakeTransportFactory{}).
+		RegisterTransportFactory("fake", &fakeTransportFactory{}).
 		Build(ctx)
 	require.NoError(t, err)
 
 	cfg2 := supervisorTestConfig("r1")
 	builder := NewBuilder(cfg2).
-		RegisterTransport("fake", &fakeTransportFactory{})
+		RegisterTransportFactory("fake", &fakeTransportFactory{})
 
 	prep, err := builder.prepare(ctx)
 	require.NoError(t, err)
@@ -114,16 +114,16 @@ func TestBuilder_PrepareComplete_SharedOutbox(t *testing.T) {
 	ctx := context.Background()
 
 	rtBuild, err := NewBuilder(testConfig()).
-		RegisterTransport("mqtt", &fakeTransportFactory{}).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		Build(ctx)
 	require.NoError(t, err)
 
 	cfg2 := testConfig()
 	builder := NewBuilder(cfg2).
-		RegisterTransport("mqtt", &fakeTransportFactory{}).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		RegisterStoreFactory("memory", &fakeStoreFactory{})
 
 	prep, err := builder.prepare(ctx)
@@ -178,8 +178,8 @@ func TestBuilder_PrepareBuildsStores(t *testing.T) {
 	cfg := testConfig()
 
 	prep, err := NewBuilder(cfg).
-		RegisterTransport("mqtt", &fakeTransportFactory{}).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		prepare(context.Background())
 
@@ -194,7 +194,7 @@ func TestBuilder_PrepareDoesNotCallTransportFactory(t *testing.T) {
 	ct := &countingTransportFactory{}
 
 	prep, err := NewBuilder(cfg).
-		RegisterTransport("fake", ct).
+		RegisterTransportFactory("fake", ct).
 		prepare(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, prep)
@@ -219,8 +219,8 @@ func TestBuilder_Prepare_ClusteredNonDistributedStore_Rejected(t *testing.T) {
 	cfg.Bridge.DeploymentMode = "clustered"
 
 	_, err := NewBuilder(cfg).
-		RegisterTransport("mqtt", &fakeTransportFactory{}).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		prepare(context.Background())
 
@@ -239,7 +239,7 @@ func TestBuilder_CompleteCreatesSessionsAndRoutes(t *testing.T) {
 	ctx := context.Background()
 	ct := &countingTransportFactory{}
 
-	builder := NewBuilder(cfg).RegisterTransport("fake", ct)
+	builder := NewBuilder(cfg).RegisterTransportFactory("fake", ct)
 
 	prep, err := builder.prepare(ctx)
 	require.NoError(t, err)
@@ -269,8 +269,8 @@ func TestBuilder_CompleteFailsOnSessionCreationError(t *testing.T) {
 	ft := &failingTransportFactory{sessionErr: fmt.Errorf("connection refused")}
 
 	builder := NewBuilder(cfg).
-		RegisterTransport("mqtt", ft).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("mqtt", ft).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		RegisterStoreFactory("memory", &fakeStoreFactory{})
 
 	prep, err := builder.prepare(ctx)
@@ -285,7 +285,7 @@ func TestBuilder_CompleteFailsOnSessionCreationError(t *testing.T) {
 // error when called with a nil preparedBuild.
 func TestBuilder_CompleteNilPrepared(t *testing.T) {
 	builder := NewBuilder(supervisorTestConfig("r1")).
-		RegisterTransport("fake", &fakeTransportFactory{})
+		RegisterTransportFactory("fake", &fakeTransportFactory{})
 
 	_, err := builder.complete(context.Background(), nil)
 	require.Error(t, err)

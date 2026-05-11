@@ -441,9 +441,6 @@ linters:
       #   locator — the canonical entry point for production code that
       #   does NOT yet use injected clocks. Documented architectural
       #   exemption.
-      # - domain/routing/policy.go declares the legacy `var DefaultBackoffPolicy`
-      #   (struct value, cannot be const). Already marked Deprecated in
-      #   the source; new code uses NewDefaultBackoffPolicy().
       # - config/validate_resolver.go declares two lookup maps used by
       #   the validator. Go has no const map literal; the maps are
       #   functionally immutable.
@@ -457,8 +454,6 @@ linters:
       #   helper init() blocks — outside the rule's scope.
       - linters: [gochecknoglobals]
         path: "^domain/clock/clock\\.go$"
-      - linters: [gochecknoglobals]
-        path: "^domain/routing/policy\\.go$"
       # FIX-003: ports/plugin_config.go declares `var DefaultRegistry`,
       # the process-wide plugin-decoder registry adapters self-register
       # into from init(). Documented architectural exemption — same

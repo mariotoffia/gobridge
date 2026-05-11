@@ -17,23 +17,11 @@ import (
 //   - RoutePolicy.WithDefaults completeness
 // ═══════════════════════════════════════════════════════════════════
 
-// TestDefaultBackoffPolicy_MutableGlobal validates that mutating the
-// package-level DefaultBackoffPolicy affects subsequent WithDefaults calls.
-// This documents the known risk (GO-006, SEC-004).
-//
-// ═══════════════════════════════════════════════════════════════════
-// DefaultBackoffPolicy is a mutable `var`. Mutation changes all
-// subsequent WithDefaults() calls globally. After the fix to use
-// NewDefaultBackoffPolicy(), mutating the global no longer affects
-// WithDefaults() output.
-func TestDefaultBackoffPolicy_MutableGlobalDoesNotAffectWithDefaults(t *testing.T) {
-	orig := routing.DefaultBackoffPolicy
-
-	defer func() {
-		routing.DefaultBackoffPolicy = orig
-	}()
-
-	routing.DefaultBackoffPolicy.Multiplier = 99.0
+// TestNewDefaultBackoffPolicy_Independent verifies that mutations to one
+// returned value do not bleed into subsequent WithDefaults calls.
+func TestNewDefaultBackoffPolicy_Independent(t *testing.T) {
+	bp := routing.NewDefaultBackoffPolicy()
+	bp.Multiplier = 99.0
 
 	p := routing.RoutePolicy{}.WithDefaults()
 	expected := routing.NewDefaultBackoffPolicy().Multiplier

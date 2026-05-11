@@ -93,70 +93,67 @@ func NewRouteRunnerFromConfig(cfg RouteRunnerConfig) *RouteRunner {
 	return newRouteRunner(cfg)
 }
 
+// applyDefaults fills zero-valued / nil fields with their runtime
+// defaults so newRouteRunner can read the config straight through
+// without inline default-fill branches. It mutates c in place.
+func (c *RouteRunnerConfig) applyDefaults() {
+	if c.DLQ == nil {
+		c.DLQ = NewDLQRouter(nil)
+	}
+	if c.Metrics == nil {
+		c.Metrics = &ports.NoopExporter{}
+	}
+	if c.Tracer == nil {
+		c.Tracer = &ports.NoopTracer{}
+	}
+	if c.Hook == nil {
+		c.Hook = ports.NoopDeliveryHook{}
+	}
+	if c.PanicRetryTimeout <= 0 {
+		c.PanicRetryTimeout = 5 * time.Second
+	}
+	if c.ReceiverCloseTimeout <= 0 {
+		c.ReceiverCloseTimeout = 10 * time.Second
+	}
+	if c.Clock == nil {
+		c.Clock = clock.System
+	}
+	c.Policy = c.Policy.WithDefaults()
+	if c.Policy.DeliveryMode == routing.DeliverySharedOutbox && c.DepthCacheTTL <= 0 {
+		c.DepthCacheTTL = routing.DefaultDepthCacheTTL
+	}
+}
+
 func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
-	dlq := cfg.DLQ
-	if dlq == nil {
-		dlq = NewDLQRouter(nil)
-	}
-	m := cfg.Metrics
-	if m == nil {
-		m = &ports.NoopExporter{}
-	}
-	t := cfg.Tracer
-	if t == nil {
-		t = &ports.NoopTracer{}
-	}
-	h := cfg.Hook
-	if h == nil {
-		h = ports.NoopDeliveryHook{}
-	}
-	policy := cfg.Policy.WithDefaults()
-
-	panicRetry := cfg.PanicRetryTimeout
-	if panicRetry <= 0 {
-		panicRetry = 5 * time.Second
-	}
-	recvClose := cfg.ReceiverCloseTimeout
-	if recvClose <= 0 {
-		recvClose = 10 * time.Second
-	}
-
-	clk := cfg.Clock
-	if clk == nil {
-		clk = clock.System
-	}
+	cfg.applyDefaults()
 
 	var dc *outboxDepthCache
-	if policy.DeliveryMode == routing.DeliverySharedOutbox {
-		depthTTL := cfg.DepthCacheTTL
-		if depthTTL <= 0 {
-			depthTTL = routing.DefaultDepthCacheTTL
-		}
-		dc = newOutboxDepthCache(depthTTL, clk)
+	if cfg.Policy.DeliveryMode == routing.DeliverySharedOutbox {
+		dc = newOutboxDepthCache(cfg.DepthCacheTTL, cfg.Clock)
 	}
 
 	r := &RouteRunner{
 		routeID:              cfg.RouteID,
-		policy:               policy,
+		policy:               cfg.Policy,
 		receiver:             cfg.Receiver,
 		sender:               cfg.Sender,
 		senders:              cfg.Senders,
 		addressValidators:    cfg.AddressValidators,
 		outboxStore:          cfg.OutboxStore,
-		dlq:                  dlq,
+		dlq:                  cfg.DLQ,
 		resolver:             cfg.Resolver,
 		processors:           cfg.Processors,
 		bindings:             cfg.Bindings,
 		instanceID:           cfg.InstanceID,
-		metrics:              m,
-		tracer:               t,
-		hook:                 h,
+		metrics:              cfg.Metrics,
+		tracer:               cfg.Tracer,
+		hook:                 cfg.Hook,
 		logger:               cfg.Logger,
-		clk:                  clk,
+		clk:                  cfg.Clock,
 		globalSem:            cfg.GlobalSem,
 		depthCache:           dc,
-		panicRetryTimeout:    panicRetry,
-		receiverCloseTimeout: recvClose,
+		panicRetryTimeout:    cfg.PanicRetryTimeout,
+		receiverCloseTimeout: cfg.ReceiverCloseTimeout,
 		onDelivery:           cfg.OnDelivery,
 		onAck:                cfg.OnAck,
 		started:              make(chan struct{}),

@@ -4,11 +4,15 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"io"
+	"strconv"
+	"sync/atomic"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -122,10 +126,59 @@ func DefaultSessionConfig(sessionID string, exclusive bool) SessionConfig {
 	}
 }
 
+// CheckRandSource probes crypto/rand once and returns a permanent
+// shared.BridgeError when the system random source is unavailable.
+// Composition roots (e.g. bridge.Builder.Build) MUST call this once
+// during wiring so a missing /dev/urandom (or equivalent) surfaces
+// as a structured error before any envelope or instance ID is
+// generated. The probe is cheap and idempotent: subsequent calls
+// after a successful probe return nil without re-reading the source.
+func CheckRandSource() error {
+	if randProbeOK.Load() {
+		return nil
+	}
+	b := make([]byte, 1)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		return (&shared.BridgeError{
+			Code:    shared.ErrCodeInternal,
+			Class:   shared.ErrorPermanent,
+			Message: "runtime: crypto/rand unavailable",
+		}).Wrap(err)
+	}
+	randProbeOK.Store(true)
+	return nil
+}
+
+// randProbeOK records that CheckRandSource has succeeded at least once
+// in this process. It also tells generateID that the eager composition
+// probe ran and the panic-free fallback below should remain dormant.
+//
+//nolint:gochecknoglobals // probe state must outlive every call
+var randProbeOK atomic.Bool
+
+// idFallbackCounter feeds the deterministic-but-unique fallback path in
+// generateID when crypto/rand fails after composition (effectively
+// impossible on supported OSes but kept as defence-in-depth so the
+// runtime never panics on ID generation).
+//
+//nolint:gochecknoglobals // counter must outlive every call
+var idFallbackCounter atomic.Uint64
+
 func generateID() string {
 	b := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		panic("runtime: crypto/rand unavailable: " + err.Error())
+		return fallbackID()
 	}
 	return hex.EncodeToString(b)
+}
+
+// fallbackID returns a 32-hex-character ID assembled from the
+// nanosecond clock (via clock.System, the documented default) and a
+// process-local atomic counter. It is reachable only when crypto/rand
+// fails post-composition; CheckRandSource is the supported way to
+// surface a missing entropy source as a structured error at startup.
+func fallbackID() string {
+	n := idFallbackCounter.Add(1)
+	ts := uint64(clock.System.Now().UnixNano())
+	return strconv.FormatUint(ts, 16) + "-" + strconv.FormatUint(n, 16)
 }

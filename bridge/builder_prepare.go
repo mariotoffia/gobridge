@@ -97,6 +97,10 @@ func (p *BuildPlan) Commit(ctx context.Context) (*runtime.Runtime, error) {
 // invalid prepare/complete sequence — the public surface is Build
 // (single-shot) or Plan/Commit (explicit two-phase).
 func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
+	if err := runtime.CheckRandSource(); err != nil {
+		return nil, fmt.Errorf("bridge: entropy source unavailable: %w", err)
+	}
+
 	if b.validator != nil {
 		if err := b.validator(b.cfg); err != nil {
 			return nil, fmt.Errorf("bridge: config validation: %w", err)
