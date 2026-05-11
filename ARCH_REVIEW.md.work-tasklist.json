@@ -129,7 +129,7 @@
     {
       "id": "M-5",
       "title": "Promote anonymous `interface{ SetRouteID(string) }` assertions to named ports",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(AP-007)",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "AP-007 \u2014 naming/interface promotion refactor.",
@@ -151,7 +151,7 @@
     {
       "id": "M-7",
       "title": "Snapshot enforcement on `OutboxRecord` and `DLQEntry` (deep-clone Envelope)",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(DDD R5)",
       "suggested_agent": "thiink-ddd-expert",
       "agent_rationale": "DDD R5 tag \u2014 aggregate snapshot/encapsulation rule.",
@@ -162,7 +162,7 @@
     {
       "id": "M-8",
       "title": "Move stray design doc to `_design/`; gitignore `*.work-tasklist*.json`",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(Docs F#5)",
       "suggested_agent": "technical-writer",
       "agent_rationale": "Docs F#5 \u2014 repo hygiene per AGENT.md doc rules.",
@@ -173,7 +173,7 @@
     {
       "id": "M-9",
       "title": "Fix README Quick Start to register typed config decoder, or link to scenario 1",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(Docs F#6)",
       "suggested_agent": "technical-writer",
       "agent_rationale": "Docs F#6 \u2014 README correction.",
@@ -184,7 +184,7 @@
     {
       "id": "M-10",
       "title": "Add `doc.go` to observability, circuitbreaker, logging, and processors/* packages",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(Docs F#8)",
       "suggested_agent": "technical-writer",
       "agent_rationale": "Docs F#8 \u2014 package-level overview docs (doc.go authoring).",
@@ -195,7 +195,7 @@
     {
       "id": "M-11",
       "title": "Add `docs/troubleshooting.md` keyed off `shared.ErrorCode` constants",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(Docs F#7)",
       "suggested_agent": "technical-writer",
       "agent_rationale": "Docs F#7 \u2014 author troubleshooting guide.",
@@ -206,7 +206,7 @@
     {
       "id": "M-12",
       "title": "Verify panic-recovery scope around goroutine in `runtime/processor_chain.go:119`",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(C-005)",
       "suggested_agent": "thiink-resilience-auditor",
       "agent_rationale": "C-005 panic-recovery audit per task mapping.",
@@ -217,7 +217,7 @@
     {
       "id": "L-1",
       "title": "Drop lone `json/yaml` tag from `domain/routing/policy.go:97 AllowRetryDrop`",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(DDD F-03 / R3)",
       "suggested_agent": "thiink-ddd-expert",
       "agent_rationale": "DDD F-03/R3 tag \u2014 inner-ring purity / DDD finding.",
@@ -250,7 +250,7 @@
     {
       "id": "L-4",
       "title": "Reposition `bridge/` semantically \u2014 docs-rename or move `Builder` into `cmd/`",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(Clean-Arch F3)",
       "suggested_agent": "thiink-clean-arch-reviewer",
       "agent_rationale": "Clean-Arch F3 tag \u2014 layer-role positioning.",
@@ -272,7 +272,7 @@
     {
       "id": "L-6",
       "title": "Add `IsValid()` helpers on routing enums to harden `WithDefaults()`",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(DDD F-10 / R8)",
       "suggested_agent": "thiink-ddd-expert",
       "agent_rationale": "DDD F-10/R8 tag \u2014 value-object validation.",
@@ -283,7 +283,7 @@
     {
       "id": "L-7",
       "title": "Add Blueprint/Configuration supporting subdomain entry to DDD.md/UBIQUITOUS.md",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(DDD F-08 / R7)",
       "suggested_agent": "thiink-ddd-expert",
       "agent_rationale": "DDD F-08/R7 tag \u2014 strategic DDD context-map update.",
@@ -294,7 +294,7 @@
     {
       "id": "L-8",
       "title": "Naming pass: `RegisterTransport \u2192 RegisterTransportFactory`; collapse `WithLogger`",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(AP-010, AP-012)",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "AP-010/AP-012 \u2014 naming/registration symmetry refactor.",
@@ -305,7 +305,7 @@
     {
       "id": "L-9",
       "title": "Pick one doc format \u2014 convert AsciiDoc to Markdown or document the carve-out",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(Docs F#9)",
       "suggested_agent": "technical-writer",
       "agent_rationale": "Docs F#9 tag \u2014 doc format consistency.",
@@ -316,7 +316,7 @@
     {
       "id": "L-10",
       "title": "Add diagrams: PLUGIN sequence, Builder dispatch, Outbox/SharedOutbox, lease state",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(Docs F#10, F#14, F#15)",
       "suggested_agent": "technical-writer",
       "agent_rationale": "Docs F#10/F#14/F#15 tags \u2014 diagram authoring.",
@@ -327,7 +327,7 @@
     {
       "id": "L-11",
       "title": "Link `spec/httpapi/*.yaml` (OpenAPI) from README and ARCHITECTURE.md \u00a710",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(Docs F#12, F#13)",
       "suggested_agent": "technical-writer",
       "agent_rationale": "Docs F#12/F#13 tags \u2014 README/architecture cross-linking.",
@@ -349,7 +349,7 @@
     {
       "id": "L-13",
       "title": "Add `docs/scenarios/_template.md` with required sections",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(Docs \u00a78)",
       "suggested_agent": "technical-writer",
       "agent_rationale": "Docs \u00a78 tag \u2014 scenario template authoring.",
@@ -360,7 +360,7 @@
     {
       "id": "L-14",
       "title": "Replace `runtime/route_config.go:119` panic with constructor-time error",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(AP-011)",
       "suggested_agent": "golang-pro",
       "agent_rationale": "AP-011 \u2014 Go runtime/* error-return refactor.",
@@ -371,7 +371,7 @@
     {
       "id": "L-15",
       "title": "Remove mutable `RoutePolicy.DefaultBackoffPolicy` var on next major release",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(DDD F-11 / R9)",
       "suggested_agent": "thiink-ddd-expert",
       "agent_rationale": "DDD F-11/R9 tag \u2014 global mutable state in domain.",
@@ -393,7 +393,7 @@
     {
       "id": "L-17",
       "title": "README \"Project Structure\" omits `validate/` \u2014 add a row",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(Docs F#11)",
       "suggested_agent": "technical-writer",
       "agent_rationale": "Docs F#11 tag \u2014 README structure fix.",
@@ -404,7 +404,7 @@
     {
       "id": "L-18",
       "title": "Resolve sentinel-error vs `BridgeError` inconsistency in processors/filter",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(AP-014)",
       "suggested_agent": "golang-pro",
       "agent_rationale": "AP-014 \u2014 Go error-handling convention alignment.",
@@ -415,7 +415,7 @@
     {
       "id": "L-19",
       "title": "Convert `MatchCondition` to typed Operator enum + discriminated Value union",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(AP-013)",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "AP-013 \u2014 typed sum/value-object refactor of condition.go.",
@@ -448,7 +448,7 @@
     {
       "id": "L-22",
       "title": "Collapse `RouteRunnerConfig` defaults via a `defaults()` method on the config",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(AP-006)",
       "suggested_agent": "golang-pro",
       "agent_rationale": "AP-006 \u2014 pure Go config-defaults refactor.",
@@ -459,7 +459,7 @@
     {
       "id": "L-23",
       "title": "`closeRefresher` in `runtime/bridge.go:218-224` should accept `ctx`",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(C-001)",
       "suggested_agent": "golang-pro",
       "agent_rationale": "C-001 concurrency finding \u2014 golang-pro per mapping.",
@@ -470,7 +470,7 @@
     {
       "id": "L-24",
       "title": "`done` goroutine in `runtime/bridge.go:228-238` could outlive `Stop`",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(C-002)",
       "suggested_agent": "golang-pro",
       "agent_rationale": "C-002 concurrency finding \u2014 golang-pro per mapping.",
@@ -481,7 +481,7 @@
     {
       "id": "L-25",
       "title": "Add bounded timeout around `closeRefresher` (`runtime/bridge.go:223`)",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(C-006)",
       "suggested_agent": "golang-pro",
       "agent_rationale": "C-006 concurrency finding \u2014 golang-pro per mapping.",
@@ -492,7 +492,7 @@
     {
       "id": "L-26",
       "title": "Resolve mixed loop-variable shadowing in `runtime/bridge_start.go:209-219`",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(C-003)",
       "suggested_agent": "golang-pro",
       "agent_rationale": "C-003 concurrency-style finding in Go runtime/* \u2014 golang-pro.",
