@@ -94,7 +94,7 @@ func TestOutboxDrainer_SendTimeout(t *testing.T) {
 	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
 
 	ctx := context.Background()
-	rec := persistence.OutboxRecord{
+	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID:         "rec-timeout",
 		RouteID:    "route-1",
 		EnvelopeID: "env-timeout",
@@ -102,8 +102,8 @@ func TestOutboxDrainer_SendTimeout(t *testing.T) {
 		SessionID:  "sess-1",
 		Envelope:   messaging.Envelope{ID: "env-timeout", Payload: []byte("data")},
 		Status:     persistence.OutboxPending,
-	}
-	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
+	})
+	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
 	defer cancel()
@@ -256,22 +256,21 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
 
 	ctx := context.Background()
-	records := []persistence.OutboxRecord{
-		{
+	records := []*persistence.OutboxRecord{
+		persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID: "rec-first", RouteID: "route-1", EnvelopeID: "env-first",
 			BindingID: "bind-1", SessionID: "sess-1",
 			Envelope: messaging.Envelope{ID: "env-first", Payload: []byte("data")},
 			Status:   persistence.OutboxPending,
-		},
-		{
+		}),
+		persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID: "rec-slow", RouteID: "route-1", EnvelopeID: "env-slow",
 			BindingID: "bind-1", SessionID: "sess-1",
 			Envelope: messaging.Envelope{ID: "env-slow", Payload: []byte("data")},
 			Status:   persistence.OutboxPending,
-		},
-	}
+		})}
 	for _, r := range records {
-		_ = outbox.Persist(ctx, []persistence.OutboxRecord{r})
+		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{r})
 	}
 
 	drainCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
@@ -340,13 +339,13 @@ func TestOutboxDrainer_StaleFencingToken_PropagatedToRunLoop(t *testing.T) {
 	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
 
 	ctx := context.Background()
-	rec := persistence.OutboxRecord{
+	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-stale", RouteID: "route-1", EnvelopeID: "env-stale",
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: messaging.Envelope{ID: "env-stale", Payload: []byte("data")},
 		Status:   persistence.OutboxPending,
-	}
-	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
+	})
+	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()

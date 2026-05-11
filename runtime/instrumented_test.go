@@ -82,10 +82,10 @@ func TestInstrumentedOutboxStore_PersistRecordsLatency(t *testing.T) {
 	inner := NewFakeOutboxStore()
 	store := runtime.NewInstrumentedOutboxStore(inner, rec, clock.System)
 
-	records := []persistence.OutboxRecord{{
+	records := []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1",
 		Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"},
-	}}
+	})}
 
 	err := store.Persist(context.Background(), records)
 	if err != nil {
@@ -107,10 +107,9 @@ func TestInstrumentedOutboxStore_CompleteDelegates(t *testing.T) {
 	inner := NewFakeOutboxStore()
 	store := runtime.NewInstrumentedOutboxStore(inner, rec, clock.System)
 
-	records := []persistence.OutboxRecord{
-		{ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", SessionID: "s1",
-			Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"}},
-	}
+	records := []*persistence.OutboxRecord{
+		persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", SessionID: "s1",
+			Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"}})}
 	_ = store.Persist(context.Background(), records)
 
 	token := persistence.LeaseToken{Version: 1, Owner: "me"}
@@ -146,7 +145,7 @@ func TestInstrumentedOutboxStore_QueryPendingRecordsDepth(t *testing.T) {
 	pk := persistence.OutboxPartitionKey("s1", "b1")
 
 	for i := 0; i < 3; i++ {
-		records := []persistence.OutboxRecord{{
+		records := []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID:         "r" + string(rune('0'+i)),
 			RouteID:    "route-1",
 			EnvelopeID: "env-" + string(rune('0'+i)),
@@ -154,7 +153,7 @@ func TestInstrumentedOutboxStore_QueryPendingRecordsDepth(t *testing.T) {
 			SessionID:  "s1",
 			Status:     persistence.OutboxPending,
 			Envelope:   messaging.Envelope{ID: "env-" + string(rune('0'+i))},
-		}}
+		})}
 		_ = store.Persist(context.Background(), records)
 	}
 
@@ -226,10 +225,9 @@ func TestInstrumentedOutboxStore_ExpireDelegates(t *testing.T) {
 	inner := NewFakeOutboxStore()
 	store := runtime.NewInstrumentedOutboxStore(inner, rec, clock.System)
 
-	records := []persistence.OutboxRecord{
-		{ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", SessionID: "s1",
-			Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"}},
-	}
+	records := []*persistence.OutboxRecord{
+		persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", SessionID: "s1",
+			Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"}})}
 	_ = store.Persist(context.Background(), records)
 	rec.Reset()
 
@@ -317,9 +315,9 @@ func TestInstrumentedOutboxStore_PersistLatencyUsesInjectedClock(t *testing.T) {
 	inner := &advancingOutboxStore{OutboxStore: NewFakeOutboxStore(), clk: clk, advance: 90 * time.Millisecond}
 	store := runtime.NewInstrumentedOutboxStore(inner, rec, clk)
 
-	err := store.Persist(context.Background(), []persistence.OutboxRecord{{
+	err := store.Persist(context.Background(), []*persistence.OutboxRecord{persistence.MustOutboxRecord(persistence.OutboxSpec{
 		ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", Envelope: messaging.Envelope{ID: "env-1"},
-	}})
+	})})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +405,7 @@ type advancingOutboxStore struct {
 	advance time.Duration
 }
 
-func (s *advancingOutboxStore) Persist(ctx context.Context, records []persistence.OutboxRecord) error {
+func (s *advancingOutboxStore) Persist(ctx context.Context, records []*persistence.OutboxRecord) error {
 	s.clk.Advance(s.advance)
 	return s.OutboxStore.Persist(ctx, records)
 }

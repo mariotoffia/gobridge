@@ -73,7 +73,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_FullCycle(t *testing.T) {
 
 	const recordCount = 5
 	for i := 0; i < recordCount; i++ {
-		rec := persistence.OutboxRecord{
+		rec := persistence.MustOutboxRecord(persistence.OutboxSpec{
 			ID:         uniqueID("sq1-rec"),
 			EnvelopeID: fmt.Sprintf("env-sq1-%d", i),
 			BindingID:  "bind-sq1",
@@ -85,8 +85,8 @@ func TestIntegration_OutboxDrainer_RealSQSSender_FullCycle(t *testing.T) {
 				Subject: "test/sqs/full-cycle",
 				Payload: []byte(fmt.Sprintf(`{"index":%d}`, i)),
 			},
-		}
-		if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+		})
+		if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist record %d: %v", i, err)
 		}
 	}
@@ -176,7 +176,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_ExpiredToDLQ(t *testing.T) {
 	ctx := context.Background()
 
 	past := time.Now().Add(-1 * time.Hour)
-	rec := persistence.OutboxRecord{
+	rec := persistence.MustOutboxRecord(persistence.OutboxSpec{
 		ID:         uniqueID("sq2-rec"),
 		EnvelopeID: "env-sq2",
 		BindingID:  "bind-sq2",
@@ -190,8 +190,8 @@ func TestIntegration_OutboxDrainer_RealSQSSender_ExpiredToDLQ(t *testing.T) {
 			Payload:   []byte(`{"expired":"should-not-reach-sqs"}`),
 			ExpiresAt: past,
 		},
-	}
-	if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+	})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -277,7 +277,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_HeaderPreservation(t *testing.T
 		"X-Priority": "high",
 	}
 
-	rec := persistence.OutboxRecord{
+	rec := persistence.MustOutboxRecord(persistence.OutboxSpec{
 		ID:              uniqueID("sq3-rec"),
 		EnvelopeID:      "env-sq3",
 		BindingID:       "bind-sq3",
@@ -290,8 +290,8 @@ func TestIntegration_OutboxDrainer_RealSQSSender_HeaderPreservation(t *testing.T
 			Subject: "test/sqs/headers",
 			Payload: []byte(`{"headers":"preservation-test"}`),
 		},
-	}
-	if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+	})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 

@@ -38,7 +38,7 @@ func NewQueryCountingOutboxStore() *QueryCountingOutboxStore {
 	return &QueryCountingOutboxStore{FakeOutboxStore: NewFakeOutboxStore()}
 }
 
-func (s *QueryCountingOutboxStore) QueryPending(ctx context.Context, partitionKey string, limit int) ([]persistence.OutboxRecord, error) {
+func (s *QueryCountingOutboxStore) QueryPending(ctx context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error) {
 	atomic.AddInt64(&s.queryCount, 1)
 	return s.FakeOutboxStore.QueryPending(ctx, partitionKey, limit)
 }
@@ -196,7 +196,7 @@ func TestDepthCache_AtCapacityCachedImmediately(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		rec := persistence.OutboxRecord{
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID:         "prefill-" + string(rune('a'+i)),
 			RouteID:    "cap-route",
 			EnvelopeID: "prefill-env-" + string(rune('a'+i)),
@@ -204,8 +204,8 @@ func TestDepthCache_AtCapacityCachedImmediately(t *testing.T) {
 			SessionID:  "mqtt-cap",
 			Envelope:   messaging.Envelope{ID: "prefill-env-" + string(rune('a'+i)), Payload: []byte("x")},
 			Status:     persistence.OutboxPending,
-		}
-		_ = countingOutbox.Persist(ctx, []persistence.OutboxRecord{rec})
+		})
+		_ = countingOutbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 	}
 
 	receiver := NewFakeReceiver()

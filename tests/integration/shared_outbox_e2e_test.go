@@ -715,7 +715,7 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 	}
 
 	// Persist a record and claim it with A's token.
-	rec := persistence.OutboxRecord{
+	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID:         "fencing-rec-1",
 		RouteID:    "fencing-route",
 		EnvelopeID: "fencing-env-1",
@@ -724,8 +724,8 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 		Address:    "topic/fencing",
 		Status:     persistence.OutboxPending,
 		Envelope:   messaging.Envelope{ID: "fencing-env-1", Payload: []byte("data")},
-	}
-	if err := outboxStore.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+	})
+	if err := outboxStore.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 

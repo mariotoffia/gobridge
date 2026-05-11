@@ -98,11 +98,11 @@ func TestOutboxDrainer_EmitsDrainLatency(t *testing.T) {
 
 	token, _ := lease.Acquire(context.Background(), "session-1", "owner-1", 30*time.Second, nil)
 
-	records := []persistence.OutboxRecord{{
+	records := []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "r1", RouteID: "route-drain", EnvelopeID: "e1", BindingID: "b1",
 		SessionID: "session-1", Status: persistence.OutboxPending,
 		Envelope: messaging.Envelope{ID: "e1", Payload: []byte("data")},
-	}}
+	})}
 	_ = outbox.Persist(context.Background(), records)
 
 	drainer := runtime.NewOutboxDrainerFromConfig(runtime.OutboxDrainerConfig{
@@ -144,7 +144,7 @@ func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 
 	token, _ := lease.Acquire(context.Background(), "s1", "owner-1", 30*time.Second, nil)
 
-	records := []persistence.OutboxRecord{{
+	records := []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "r-exp", RouteID: "route-exp", EnvelopeID: "e-exp", BindingID: "b1",
 		SessionID: "s1", Status: persistence.OutboxPending,
 		Envelope: messaging.Envelope{
@@ -153,7 +153,7 @@ func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 			ExpiresAt: time.Now().Add(-time.Hour),
 		},
 		ExpiresAt: time.Now().Add(-time.Hour),
-	}}
+	})}
 	_ = outbox.Persist(context.Background(), records)
 
 	drainer := runtime.NewOutboxDrainerFromConfig(runtime.OutboxDrainerConfig{

@@ -173,9 +173,8 @@ func TestOutboxDrainerConfig_DrainBatchSize_Default(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = drainer.Run(ctx) }()
 
-	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{
-		{ID: "rec-def", RouteID: "route-1", EnvelopeID: "env-def", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-def", Payload: []byte("x")}},
-	})
+	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{
+		persistence.MustOutboxRecord(persistence.OutboxSpec{ID: "rec-def", RouteID: "route-1", EnvelopeID: "env-def", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-def", Payload: []byte("x")}})})
 
 	waitFor(t, 2*time.Second, "record sent", func() bool {
 		return sender.SentCount() >= 1
@@ -193,7 +192,7 @@ func TestOutboxDrainerConfig_DrainBatchSize_Custom(t *testing.T) {
 		cfg.DrainBatchSize = 42
 	})
 
-	outbox.ClaimFn = func(_ string, _ string, _ persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error) {
+	outbox.ClaimFn = func(_ string, _ string, _ persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
 		atomic.StoreInt64(&observedLimit, int64(limit))
 		return nil, nil
 	}
@@ -242,9 +241,8 @@ func TestOutboxDrainer_FinalDrain_CompletesAfterCancel(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	_ = outbox.Persist(ctx, []persistence.OutboxRecord{
-		{ID: "final-1", RouteID: "route-1", EnvelopeID: "env-f1", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-f1", Payload: []byte("final")}},
-	})
+	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{
+		persistence.MustOutboxRecord(persistence.OutboxSpec{ID: "final-1", RouteID: "route-1", EnvelopeID: "env-f1", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-f1", Payload: []byte("final")}})})
 
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
@@ -374,9 +372,8 @@ func TestOutboxDrainerConfig_DrainBatchSize_NegativeClamped(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = drainer.Run(ctx) }()
 
-	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{
-		{ID: "rec-neg", RouteID: "route-1", EnvelopeID: "env-neg", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-neg", Payload: []byte("neg")}},
-	})
+	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{
+		persistence.MustOutboxRecord(persistence.OutboxSpec{ID: "rec-neg", RouteID: "route-1", EnvelopeID: "env-neg", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-neg", Payload: []byte("neg")}})})
 
 	waitFor(t, 2*time.Second, "record sent with clamped batch size", func() bool {
 		return sender.SentCount() >= 1
@@ -402,9 +399,8 @@ func TestOutboxDrainerConfig_DrainMaxBatchSize_FloorsToBatchSize(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = drainer.Run(ctx) }()
 
-	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{
-		{ID: "rec-floor", RouteID: "route-1", EnvelopeID: "env-floor", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-floor", Payload: []byte("f")}},
-	})
+	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{
+		persistence.MustOutboxRecord(persistence.OutboxSpec{ID: "rec-floor", RouteID: "route-1", EnvelopeID: "env-floor", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-floor", Payload: []byte("f")}})})
 
 	waitFor(t, 2*time.Second, "record sent with floored max batch size", func() bool {
 		return sender.SentCount() >= 1

@@ -102,7 +102,7 @@ func TestF3_DrainOnShutdown(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	rec := persistence.OutboxRecord{
+	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID:         "rec-f3",
 		RouteID:    "route-1",
 		EnvelopeID: "env-f3",
@@ -110,8 +110,8 @@ func TestF3_DrainOnShutdown(t *testing.T) {
 		SessionID:  "sess-1",
 		Envelope:   messaging.Envelope{ID: "env-f3", Payload: []byte("shutdown-drain")},
 		Status:     persistence.OutboxPending,
-	}
-	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
+	})
+	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithCancel(ctx)
 
@@ -253,13 +253,13 @@ func TestF5_DrainBatchSkipsTOCTOUCheck(t *testing.T) {
 	}
 	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
 
-	rec := persistence.OutboxRecord{
+	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-f5", RouteID: "route-1", EnvelopeID: "env-f5",
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: messaging.Envelope{ID: "env-f5", Payload: []byte("data")},
 		Status:   persistence.OutboxPending,
-	}
-	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{rec})
+	})
+	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()

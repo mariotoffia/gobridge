@@ -58,7 +58,7 @@ func TestIntegration_OutboxDrainer_FullLifecycle(t *testing.T) {
 	sender := &collectingSender{}
 	tok := persistence.LeaseToken{Version: 1, Owner: "drainer-od1"}
 
-	rec := persistence.OutboxRecord{
+	rec := persistence.MustOutboxRecord(persistence.OutboxSpec{
 		ID:         uniqueID("od1-rec"),
 		EnvelopeID: "env-od1",
 		BindingID:  "bind-od1",
@@ -70,10 +70,10 @@ func TestIntegration_OutboxDrainer_FullLifecycle(t *testing.T) {
 			Subject: "test",
 			Payload: []byte(`{"lifecycle":"test"}`),
 		},
-	}
+	})
 
 	ctx := context.Background()
-	if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -123,7 +123,7 @@ func TestIntegration_OutboxDrainer_StaleFencingToken(t *testing.T) {
 	store := newDDBOutboxStore(t, "od2")
 	ctx := context.Background()
 
-	rec := persistence.OutboxRecord{
+	rec := persistence.MustOutboxRecord(persistence.OutboxSpec{
 		ID:         uniqueID("od2-rec"),
 		EnvelopeID: "env-od2",
 		BindingID:  "bind-od2",
@@ -134,9 +134,9 @@ func TestIntegration_OutboxDrainer_StaleFencingToken(t *testing.T) {
 			Subject: "test",
 			Payload: []byte(`{"stale":"test"}`),
 		},
-	}
+	})
 
-	if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -176,7 +176,7 @@ func TestIntegration_OutboxDrainer_ExpiredRecordRoutesDLQ(t *testing.T) {
 	tok := persistence.LeaseToken{Version: 1, Owner: "drainer-od3"}
 
 	past := time.Now().Add(-1 * time.Hour)
-	rec := persistence.OutboxRecord{
+	rec := persistence.MustOutboxRecord(persistence.OutboxSpec{
 		ID:         uniqueID("od3-rec"),
 		EnvelopeID: "env-od3",
 		BindingID:  "bind-od3",
@@ -189,10 +189,10 @@ func TestIntegration_OutboxDrainer_ExpiredRecordRoutesDLQ(t *testing.T) {
 			Payload:   []byte(`{"expired":"test"}`),
 			ExpiresAt: past,
 		},
-	}
+	})
 
 	ctx := context.Background()
-	if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -245,7 +245,7 @@ func TestIntegration_OutboxDrainer_PoisonMessageRoutesDLQ(t *testing.T) {
 	ctx := context.Background()
 	pk := persistence.OutboxPartitionKey("sess-od4", "")
 
-	rec := persistence.OutboxRecord{
+	rec := persistence.MustOutboxRecord(persistence.OutboxSpec{
 		ID:         uniqueID("od4-rec"),
 		EnvelopeID: "env-od4",
 		BindingID:  "bind-od4",
@@ -256,9 +256,9 @@ func TestIntegration_OutboxDrainer_PoisonMessageRoutesDLQ(t *testing.T) {
 			Subject: "test",
 			Payload: []byte(`{"poison":"test"}`),
 		},
-	}
+	})
 
-	if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -334,7 +334,7 @@ func TestIntegration_OutboxDrainer_ConcurrentDrainers(t *testing.T) {
 
 	const recordCount = 10
 	for i := 0; i < recordCount; i++ {
-		rec := persistence.OutboxRecord{
+		rec := persistence.MustOutboxRecord(persistence.OutboxSpec{
 			ID:         uniqueID("od5-rec"),
 			EnvelopeID: uniqueID("env-od5"),
 			BindingID:  uniqueID("bind-od5"),
@@ -345,8 +345,8 @@ func TestIntegration_OutboxDrainer_ConcurrentDrainers(t *testing.T) {
 				Subject: "test",
 				Payload: []byte(`{"concurrent":"test"}`),
 			},
-		}
-		if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+		})
+		if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist %d: %v", i, err)
 		}
 	}
@@ -409,7 +409,7 @@ func TestIntegration_OutboxDrainer_AdaptiveBatchSize(t *testing.T) {
 
 	const batchSize = 5
 	for i := 0; i < batchSize*3; i++ {
-		rec := persistence.OutboxRecord{
+		rec := persistence.MustOutboxRecord(persistence.OutboxSpec{
 			ID:         uniqueID("od6-rec"),
 			EnvelopeID: uniqueID("env-od6"),
 			BindingID:  uniqueID("bind-od6"),
@@ -420,8 +420,8 @@ func TestIntegration_OutboxDrainer_AdaptiveBatchSize(t *testing.T) {
 				Subject: "test",
 				Payload: []byte(`{"adaptive":"test"}`),
 			},
-		}
-		if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+		})
+		if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist %d: %v", i, err)
 		}
 	}

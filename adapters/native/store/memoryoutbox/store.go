@@ -15,6 +15,11 @@ import (
 
 // Store implements ports.OutboxStore in memory for unit tests.
 // It is not safe for production deployments.
+//
+// In-memory aggregates are stored by pointer; lifecycle transitions go
+// through the OutboxRecord state-machine methods so the store performs
+// no direct field mutation. Reads return rehydrated aggregate copies
+// so callers cannot reach back into store-owned state.
 type Store struct {
 	mu            sync.Mutex
 	records       map[string]*persistence.OutboxRecord // keyed by record ID
@@ -64,7 +69,11 @@ func partitionKey(r *persistence.OutboxRecord) string {
 	return persistence.OutboxPartitionKey(r.SessionID, r.BindingID)
 }
 
-func (s *Store) Persist(ctx context.Context, records []persistence.OutboxRecord) error {
+func cloneAggregate(r *persistence.OutboxRecord) *persistence.OutboxRecord {
+	return persistence.RehydrateFromSnapshot(r.Snapshot())
+}
+
+func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: persist",
 			"count", len(records))
@@ -72,30 +81,30 @@ func (s *Store) Persist(ctx context.Context, records []persistence.OutboxRecord)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for i := range records {
-		dk := dedupKey(records[i].EnvelopeID, records[i].BindingID)
+	for _, rec := range records {
+		dk := dedupKey(rec.EnvelopeID, rec.BindingID)
 		if s.dedup[dk] {
 			return shared.ErrDuplicateRecord.
 				WithMessage("duplicate outbox record").
-				With("envelopeID", records[i].EnvelopeID).
-				With("bindingID", records[i].BindingID)
+				With("envelopeID", rec.EnvelopeID).
+				With("bindingID", rec.BindingID)
 		}
 	}
 
 	now := s.clk.Now()
-	for i := range records {
-		r := records[i] // copy
-		r.Status = persistence.OutboxPending
-		if r.CreatedAt.IsZero() {
-			r.CreatedAt = now
+	for _, rec := range records {
+		// Defensive snapshot+rehydrate so the caller can't mutate stored state.
+		stored := cloneAggregate(rec)
+		if stored.CreatedAt.IsZero() {
+			stored.CreatedAt = now
 		}
-		s.records[r.ID] = &r
-		s.dedup[dedupKey(r.EnvelopeID, r.BindingID)] = true
+		s.records[stored.ID] = stored
+		s.dedup[dedupKey(stored.EnvelopeID, stored.BindingID)] = true
 	}
 	return nil
 }
 
-func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error) {
+func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: claim",
 			"partition_key", pk, "owner_id", ownerID, "limit", limit)
@@ -116,10 +125,7 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token pers
 		if partitionKey(r) != pk {
 			continue
 		}
-		switch {
-		case r.Status == persistence.OutboxPending:
-			candidates = append(candidates, r)
-		case r.Status == persistence.OutboxClaimed && r.ClaimVersion < token.Version:
+		if r.IsClaimable(token.Version) {
 			candidates = append(candidates, r)
 		}
 	}
@@ -133,14 +139,14 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token pers
 	}
 
 	now := s.clk.Now()
-	result := make([]persistence.OutboxRecord, 0, len(candidates))
+	result := make([]*persistence.OutboxRecord, 0, len(candidates))
 	for _, r := range candidates {
-		r.Status = persistence.OutboxClaimed
-		r.ClaimedBy = ownerID
-		r.ClaimedAt = now
-		r.ClaimVersion = token.Version
-		r.ReplayCount++
-		result = append(result, *r)
+		if claimErr := r.Claim(now, ownerID, token.Version); claimErr != nil {
+			// Should be unreachable given the IsClaimable filter; skip
+			// any concurrent transition rather than failing the batch.
+			continue
+		}
+		result = append(result, cloneAggregate(r))
 	}
 
 	return result, nil
@@ -159,15 +165,16 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 		if !ok {
 			continue
 		}
-		if r.ClaimVersion != token.Version {
+		if r.ClaimVersion() != token.Version {
 			return shared.ErrStaleFencingToken.
 				WithMessage("claim version mismatch on complete").
 				With("recordID", id).
-				With("storedClaimVersion", r.ClaimVersion).
+				With("storedClaimVersion", r.ClaimVersion()).
 				With("givenVersion", token.Version)
 		}
-		r.Status = persistence.OutboxCompleted
-		r.CompletedAt = s.clk.Now()
+		if completeErr := r.Complete(s.clk.Now()); completeErr != nil {
+			return completeErr
+		}
 	}
 	return nil
 }
@@ -177,19 +184,22 @@ func (s *Store) Expire(_ context.Context, before time.Time) (int, error) {
 	defer s.mu.Unlock()
 
 	count := 0
+	now := s.clk.Now()
 	for _, r := range s.records {
 		if r.ExpiresAt.IsZero() || !r.ExpiresAt.Before(before) {
 			continue
 		}
-		if r.Status == persistence.OutboxPending || r.Status == persistence.OutboxClaimed {
-			r.Status = persistence.OutboxExpired
+		if r.Status() != persistence.OutboxPending && r.Status() != persistence.OutboxClaimed {
+			continue
+		}
+		if expireErr := r.Expire(now); expireErr == nil {
 			count++
 		}
 	}
 	return count, nil
 }
 
-func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]persistence.OutboxRecord, error) {
+func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]*persistence.OutboxRecord, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: query_pending",
 			"partition_key", pk, "limit", limit)
@@ -197,12 +207,12 @@ func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]persi
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var result []persistence.OutboxRecord
+	var result []*persistence.OutboxRecord
 	for _, r := range s.records {
-		if partitionKey(r) != pk || r.Status != persistence.OutboxPending {
+		if partitionKey(r) != pk || r.Status() != persistence.OutboxPending {
 			continue
 		}
-		result = append(result, *r)
+		result = append(result, cloneAggregate(r))
 	}
 
 	sort.Slice(result, func(i, j int) bool {

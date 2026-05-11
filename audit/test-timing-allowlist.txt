@@ -7,7 +7,7 @@
 ./adapters/amqp/transport/amqp10/session_lifecycle_test.go:48:	time.Sleep(50 * time.Millisecond)
 ./adapters/amqp/transport/amqp10/session_reconnect_test.go:52:		time.Sleep(50 * time.Millisecond) // OTHER: simulates dial latency in mock.
 ./adapters/aws/store/dynamodblease/store_test.go:90:		time.Sleep(2 * time.Second)
-./adapters/aws/store/dynamodboutbox/store_test.go:249:	time.Sleep(10 * time.Millisecond)
+./adapters/aws/store/dynamodboutbox/store_test.go:246:	time.Sleep(10 * time.Millisecond)
 ./adapters/aws/transport/sqs/sender_test.go:471:			time.Sleep(5 * time.Millisecond) // OTHER: ensure distinguishable deadlines
 ./adapters/aws/transport/sqs/sender_timeout_test.go:199:			time.Sleep(2 * time.Millisecond) // OTHER: simulate work for deadline verification
 ./adapters/aws/transport/sqs/sender_timeout_test.go:32:			time.Sleep(10 * time.Millisecond) // OTHER: shift wall clock for distinguishable deadlines

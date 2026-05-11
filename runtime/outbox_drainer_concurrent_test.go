@@ -39,7 +39,7 @@ func persistRecords(outbox *FakeOutboxStore, count int, prefix string) {
 	ctx := context.Background()
 	for i := 0; i < count; i++ {
 		id := fmt.Sprintf("%s-%d", prefix, i)
-		rec := persistence.OutboxRecord{
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID:         id,
 			RouteID:    "route-1",
 			EnvelopeID: "env-" + id,
@@ -47,8 +47,8 @@ func persistRecords(outbox *FakeOutboxStore, count int, prefix string) {
 			SessionID:  "sess-1",
 			Envelope:   messaging.Envelope{ID: "env-" + id, Payload: []byte("data")},
 			Status:     persistence.OutboxPending,
-		}
-		_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
+		})
+		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 	}
 }
 

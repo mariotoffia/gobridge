@@ -66,7 +66,7 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 	}
 
 	persistRecord := func(id, envID string) {
-		rec := persistence.OutboxRecord{
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID:         id,
 			RouteID:    "route-1",
 			EnvelopeID: envID,
@@ -74,8 +74,8 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 			SessionID:  sessionID,
 			Envelope:   messaging.Envelope{ID: envID, Payload: []byte("payload")},
 			Status:     persistence.OutboxPending,
-		}
-		if err := outbox.Persist(context.Background(), []persistence.OutboxRecord{rec}); err != nil {
+		})
+		if err := outbox.Persist(context.Background(), []*persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist %s: %v", id, err)
 		}
 	}
@@ -193,7 +193,7 @@ func TestOutboxDrainer_DrainLatencyUsesInjectedClock(t *testing.T) {
 		t.Fatalf("acquire lease: %v", err)
 	}
 
-	rec := persistence.OutboxRecord{
+	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID:         "rec-1",
 		RouteID:    "route-1",
 		EnvelopeID: "env-1",
@@ -201,8 +201,8 @@ func TestOutboxDrainer_DrainLatencyUsesInjectedClock(t *testing.T) {
 		SessionID:  sessionID,
 		Envelope:   messaging.Envelope{ID: "env-1", Payload: []byte("payload")},
 		Status:     persistence.OutboxPending,
-	}
-	if err := outbox.Persist(context.Background(), []persistence.OutboxRecord{rec}); err != nil {
+	})
+	if err := outbox.Persist(context.Background(), []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist record: %v", err)
 	}
 

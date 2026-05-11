@@ -48,13 +48,13 @@ func (r *RouteRunner) resolvePlans(ctx context.Context, env *messaging.Envelope)
 	return []routing.DispatchPlan{{BindingID: r.routeID}}, nil
 }
 
-func (r *RouteRunner) buildOutboxRecords(env *messaging.Envelope, plans []routing.DispatchPlan) []persistence.OutboxRecord {
+func (r *RouteRunner) buildOutboxRecords(env *messaging.Envelope, plans []routing.DispatchPlan) ([]*persistence.OutboxRecord, error) {
 	now := r.clk.Now()
-	records := make([]persistence.OutboxRecord, len(plans))
+	records := make([]*persistence.OutboxRecord, len(plans))
 
 	for i, plan := range plans {
 		sessionID := r.sessionIDForBinding(plan.BindingID)
-		records[i] = persistence.OutboxRecord{
+		rec, err := persistence.NewOutboxRecord(persistence.OutboxSpec{
 			ID:              generateID(),
 			RouteID:         r.routeID,
 			EnvelopeID:      env.ID,
@@ -63,12 +63,15 @@ func (r *RouteRunner) buildOutboxRecords(env *messaging.Envelope, plans []routin
 			Address:         plan.Address,
 			Envelope:        *env,
 			DispatchHeaders: plan.Headers,
-			Status:          persistence.OutboxPending,
 			CreatedAt:       now,
 			ExpiresAt:       env.ExpiresAt,
+		})
+		if err != nil {
+			return nil, err
 		}
+		records[i] = rec
 	}
-	return records
+	return records, nil
 }
 
 func (r *RouteRunner) injectHeaders(env *messaging.Envelope) {

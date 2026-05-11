@@ -235,12 +235,12 @@ func TestE2E_F4_Failover_ThreeInstances_StaleFencingToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("A acquire: %v", err)
 	}
-	rec := persistence.OutboxRecord{
+	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "f4-rec-1", RouteID: "f4-route", EnvelopeID: "f4-env",
 		BindingID: "b1", SessionID: leaseID, Address: "t/f4",
 		Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "f4-env", Payload: []byte("fencing")},
-	}
-	if err := outboxStore.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+	})
+	if err := outboxStore.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 	pk := persistence.OutboxPartitionKey(leaseID, "b1")

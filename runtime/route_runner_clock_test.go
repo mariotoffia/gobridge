@@ -59,10 +59,10 @@ func TestRouteRunner_SharedOutboxCreatedAtUsesInjectedClock(t *testing.T) {
 	fake := clocktest.NewAt(createdAt)
 	var (
 		persistMu sync.Mutex
-		persisted []persistence.OutboxRecord
+		persisted []*persistence.OutboxRecord
 	)
 	outbox := NewFakeOutboxStore()
-	outbox.PersistFn = func(records []persistence.OutboxRecord) error {
+	outbox.PersistFn = func(records []*persistence.OutboxRecord) error {
 		persistMu.Lock()
 		defer persistMu.Unlock()
 		persisted = append(persisted, records...)

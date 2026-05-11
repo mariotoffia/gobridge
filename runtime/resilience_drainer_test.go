@@ -43,7 +43,7 @@ import (
 // ───────────────────────────────────────────────
 func TestDrainer_StaleFencingToken_UsesMinBackoff(t *testing.T) {
 	outbox := NewFakeOutboxStore()
-	outbox.ClaimFn = func(_, _ string, _ persistence.LeaseToken, _ int) ([]persistence.OutboxRecord, error) {
+	outbox.ClaimFn = func(_, _ string, _ persistence.LeaseToken, _ int) ([]*persistence.OutboxRecord, error) {
 		return nil, shared.ErrStaleFencingToken
 	}
 

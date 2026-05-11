@@ -123,15 +123,15 @@ func TestEdge_StaleFencingTokenRejected(t *testing.T) {
 	// For nonexistent records, it's a no-op in the fake store.
 
 	// Persist a new record and try to claim with stale token.
-	rec := persistence.OutboxRecord{
+	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID:         "stale-test-rec",
 		EnvelopeID: "stale-test-env",
 		BindingID:  "b1",
 		SessionID:  sessionID,
 		Status:     persistence.OutboxPending,
 		Envelope:   messaging.Envelope{ID: "stale-test-env", Payload: []byte("x")},
-	}
-	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{rec})
+	})
+	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{rec})
 
 	// B should be able to claim and complete it with the correct token.
 	waitFor(t, 3*time.Second, "B claims new record", func() bool {

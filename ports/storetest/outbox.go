@@ -16,8 +16,9 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-func makeRecord(id, envelopeID, bindingID, sessionID, routeID string, expiresAt time.Time) persistence.OutboxRecord {
-	return persistence.OutboxRecord{
+func makeRecord(t *testing.T, id, envelopeID, bindingID, sessionID, routeID string, expiresAt time.Time) *persistence.OutboxRecord {
+	t.Helper()
+	rec, err := persistence.NewOutboxRecord(persistence.OutboxSpec{
 		ID:         id,
 		RouteID:    routeID,
 		EnvelopeID: envelopeID,
@@ -32,7 +33,11 @@ func makeRecord(id, envelopeID, bindingID, sessionID, routeID string, expiresAt 
 		},
 		DispatchHeaders: map[string]any{"dispatch": "header"},
 		ExpiresAt:       expiresAt,
+	})
+	if err != nil {
+		t.Fatalf("makeRecord: %v", err)
 	}
+	return rec
 }
 
 // RunOutboxStoreTests executes the full conformance suite against the given
@@ -40,57 +45,27 @@ func makeRecord(id, envelopeID, bindingID, sessionID, routeID string, expiresAt 
 func RunOutboxStoreTests(t *testing.T, store ports.OutboxStore) {
 	t.Helper()
 
-	t.Run("PersistAndQueryPending", func(t *testing.T) {
-		testPersistAndQueryPending(t, store)
-	})
-	t.Run("PersistDuplicate", func(t *testing.T) {
-		testPersistDuplicate(t, store)
-	})
-	t.Run("PersistFanOut", func(t *testing.T) {
-		testPersistFanOut(t, store)
-	})
-	t.Run("ClaimTransitionsStatus", func(t *testing.T) {
-		testClaimTransitionsStatus(t, store)
-	})
-	t.Run("ClaimRespectsLimit", func(t *testing.T) {
-		testClaimRespectsLimit(t, store)
-	})
-	t.Run("ClaimReclaimsStale", func(t *testing.T) {
-		testClaimReclaimsStale(t, store)
-	})
-	t.Run("CompleteWithValidToken", func(t *testing.T) {
-		testCompleteWithValidToken(t, store)
-	})
-	t.Run("CompleteWithWrongToken", func(t *testing.T) {
-		testCompleteWithWrongToken(t, store)
-	})
-	t.Run("ExpireMarksEligible", func(t *testing.T) {
-		testExpireMarksEligible(t, store)
-	})
-	t.Run("ExpireSkipsCompleted", func(t *testing.T) {
-		testExpireSkipsCompleted(t, store)
-	})
-	t.Run("QueryPendingOnlyPending", func(t *testing.T) {
-		testQueryPendingOnlyPending(t, store)
-	})
-	t.Run("QueryPendingRespectsPartitionKey", func(t *testing.T) {
-		testQueryPendingRespectsPartitionKey(t, store)
-	})
-	t.Run("FullLifecycle", func(t *testing.T) {
-		testFullLifecycle(t, store)
-	})
-	t.Run("IdempotentPersist", func(t *testing.T) {
-		testIdempotentPersist(t, store)
-	})
-	t.Run("CompleteAfterTokenChange", func(t *testing.T) {
-		outboxCompleteAfterTokenChange(t, store)
-	})
+	t.Run("PersistAndQueryPending", func(t *testing.T) { testPersistAndQueryPending(t, store) })
+	t.Run("PersistDuplicate", func(t *testing.T) { testPersistDuplicate(t, store) })
+	t.Run("PersistFanOut", func(t *testing.T) { testPersistFanOut(t, store) })
+	t.Run("ClaimTransitionsStatus", func(t *testing.T) { testClaimTransitionsStatus(t, store) })
+	t.Run("ClaimRespectsLimit", func(t *testing.T) { testClaimRespectsLimit(t, store) })
+	t.Run("ClaimReclaimsStale", func(t *testing.T) { testClaimReclaimsStale(t, store) })
+	t.Run("CompleteWithValidToken", func(t *testing.T) { testCompleteWithValidToken(t, store) })
+	t.Run("CompleteWithWrongToken", func(t *testing.T) { testCompleteWithWrongToken(t, store) })
+	t.Run("ExpireMarksEligible", func(t *testing.T) { testExpireMarksEligible(t, store) })
+	t.Run("ExpireSkipsCompleted", func(t *testing.T) { testExpireSkipsCompleted(t, store) })
+	t.Run("QueryPendingOnlyPending", func(t *testing.T) { testQueryPendingOnlyPending(t, store) })
+	t.Run("QueryPendingRespectsPartitionKey", func(t *testing.T) { testQueryPendingRespectsPartitionKey(t, store) })
+	t.Run("FullLifecycle", func(t *testing.T) { testFullLifecycle(t, store) })
+	t.Run("IdempotentPersist", func(t *testing.T) { testIdempotentPersist(t, store) })
+	t.Run("CompleteAfterTokenChange", func(t *testing.T) { outboxCompleteAfterTokenChange(t, store) })
 }
 
 func testPersistAndQueryPending(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
-	r := makeRecord("pq-1", "env-pq-1", "bind-pq-1", "sess-pq", "route-1", time.Time{})
-	if err := store.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
+	r := makeRecord(t, "pq-1", "env-pq-1", "bind-pq-1", "sess-pq", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -104,8 +79,8 @@ func testPersistAndQueryPending(t *testing.T, store ports.OutboxStore) {
 	if results[0].ID != "pq-1" {
 		t.Fatalf("id: got %q, want %q", results[0].ID, "pq-1")
 	}
-	if results[0].Status != persistence.OutboxPending {
-		t.Fatalf("status: got %q, want %q", results[0].Status, persistence.OutboxPending)
+	if results[0].Status() != persistence.OutboxPending {
+		t.Fatalf("status: got %q, want %q", results[0].Status(), persistence.OutboxPending)
 	}
 	if results[0].Envelope.ID != "env-pq-1" {
 		t.Fatalf("envelope.ID: got %q, want %q", results[0].Envelope.ID, "env-pq-1")
@@ -117,13 +92,13 @@ func testPersistAndQueryPending(t *testing.T, store ports.OutboxStore) {
 
 func testPersistDuplicate(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
-	r := makeRecord("dup-1", "env-dup", "bind-dup", "sess-dup", "route-1", time.Time{})
-	if err := store.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
+	r := makeRecord(t, "dup-1", "env-dup", "bind-dup", "sess-dup", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("first persist: %v", err)
 	}
 
-	r2 := makeRecord("dup-2", "env-dup", "bind-dup", "sess-dup", "route-1", time.Time{})
-	err := store.Persist(ctx, []persistence.OutboxRecord{r2})
+	r2 := makeRecord(t, "dup-2", "env-dup", "bind-dup", "sess-dup", "route-1", time.Time{})
+	err := store.Persist(ctx, []*persistence.OutboxRecord{r2})
 	if !errors.Is(err, shared.ErrDuplicateRecord) {
 		t.Fatalf("expected ErrDuplicateRecord, got %v", err)
 	}
@@ -131,10 +106,10 @@ func testPersistDuplicate(t *testing.T, store ports.OutboxStore) {
 
 func testPersistFanOut(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
-	records := []persistence.OutboxRecord{
-		makeRecord("fo-1", "env-fo", "bind-A", "sess-fo", "route-1", time.Time{}),
-		makeRecord("fo-2", "env-fo", "bind-B", "sess-fo", "route-1", time.Time{}),
-		makeRecord("fo-3", "env-fo", "bind-C", "sess-fo", "route-1", time.Time{}),
+	records := []*persistence.OutboxRecord{
+		makeRecord(t, "fo-1", "env-fo", "bind-A", "sess-fo", "route-1", time.Time{}),
+		makeRecord(t, "fo-2", "env-fo", "bind-B", "sess-fo", "route-1", time.Time{}),
+		makeRecord(t, "fo-3", "env-fo", "bind-C", "sess-fo", "route-1", time.Time{}),
 	}
 	if err := store.Persist(ctx, records); err != nil {
 		t.Fatalf("fan-out persist: %v", err)
@@ -151,8 +126,8 @@ func testPersistFanOut(t *testing.T, store ports.OutboxStore) {
 
 func testClaimTransitionsStatus(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
-	r := makeRecord("cl-1", "env-cl-1", "bind-cl-1", "sess-cl", "route-1", time.Time{})
-	if err := store.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
+	r := makeRecord(t, "cl-1", "env-cl-1", "bind-cl-1", "sess-cl", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -164,28 +139,28 @@ func testClaimTransitionsStatus(t *testing.T, store ports.OutboxStore) {
 	if len(claimed) != 1 {
 		t.Fatalf("expected 1 claimed, got %d", len(claimed))
 	}
-	if claimed[0].Status != persistence.OutboxClaimed {
-		t.Fatalf("status: got %q, want %q", claimed[0].Status, persistence.OutboxClaimed)
+	if claimed[0].Status() != persistence.OutboxClaimed {
+		t.Fatalf("status: got %q, want %q", claimed[0].Status(), persistence.OutboxClaimed)
 	}
-	if claimed[0].ClaimedBy != "owner-A" {
-		t.Fatalf("claimedBy: got %q, want %q", claimed[0].ClaimedBy, "owner-A")
+	if claimed[0].ClaimedBy() != "owner-A" {
+		t.Fatalf("claimedBy: got %q, want %q", claimed[0].ClaimedBy(), "owner-A")
 	}
-	if claimed[0].ClaimVersion != 1 {
-		t.Fatalf("claimVersion: got %d, want %d", claimed[0].ClaimVersion, 1)
+	if claimed[0].ClaimVersion() != 1 {
+		t.Fatalf("claimVersion: got %d, want %d", claimed[0].ClaimVersion(), 1)
 	}
-	if claimed[0].ReplayCount != 1 {
-		t.Fatalf("replayCount: got %d, want %d", claimed[0].ReplayCount, 1)
+	if claimed[0].ReplayCount() != 1 {
+		t.Fatalf("replayCount: got %d, want %d", claimed[0].ReplayCount(), 1)
 	}
 }
 
 func testClaimRespectsLimit(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		r := makeRecord(
+		r := makeRecord(t,
 			"clim-"+itoa(i), "env-clim-"+itoa(i), "bind-clim-"+itoa(i),
 			"sess-clim", "route-1", time.Time{},
 		)
-		if err := store.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
+		if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 			t.Fatalf("persist %d: %v", i, err)
 		}
 	}
@@ -202,8 +177,8 @@ func testClaimRespectsLimit(t *testing.T, store ports.OutboxStore) {
 
 func testClaimReclaimsStale(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
-	r := makeRecord("recl-1", "env-recl-1", "bind-recl-1", "sess-recl", "route-1", time.Time{})
-	if err := store.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
+	r := makeRecord(t, "recl-1", "env-recl-1", "bind-recl-1", "sess-recl", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -221,21 +196,21 @@ func testClaimReclaimsStale(t *testing.T, store ports.OutboxStore) {
 	if len(reclaimed) != 1 {
 		t.Fatalf("expected 1 reclaimed, got %d", len(reclaimed))
 	}
-	if reclaimed[0].ClaimedBy != "owner-new" {
-		t.Fatalf("claimedBy: got %q, want %q", reclaimed[0].ClaimedBy, "owner-new")
+	if reclaimed[0].ClaimedBy() != "owner-new" {
+		t.Fatalf("claimedBy: got %q, want %q", reclaimed[0].ClaimedBy(), "owner-new")
 	}
-	if reclaimed[0].ClaimVersion != 2 {
-		t.Fatalf("claimVersion: got %d, want %d", reclaimed[0].ClaimVersion, 2)
+	if reclaimed[0].ClaimVersion() != 2 {
+		t.Fatalf("claimVersion: got %d, want %d", reclaimed[0].ClaimVersion(), 2)
 	}
-	if reclaimed[0].ReplayCount != 2 {
-		t.Fatalf("replayCount: got %d, want %d", reclaimed[0].ReplayCount, 2)
+	if reclaimed[0].ReplayCount() != 2 {
+		t.Fatalf("replayCount: got %d, want %d", reclaimed[0].ReplayCount(), 2)
 	}
 }
 
 func testCompleteWithValidToken(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
-	r := makeRecord("comp-1", "env-comp-1", "bind-comp-1", "sess-comp", "route-1", time.Time{})
-	if err := store.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
+	r := makeRecord(t, "comp-1", "env-comp-1", "bind-comp-1", "sess-comp", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -260,8 +235,8 @@ func testCompleteWithValidToken(t *testing.T, store ports.OutboxStore) {
 
 func testCompleteWithWrongToken(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
-	r := makeRecord("compw-1", "env-compw-1", "bind-compw-1", "sess-compw", "route-1", time.Time{})
-	if err := store.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
+	r := makeRecord(t, "compw-1", "env-compw-1", "bind-compw-1", "sess-compw", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -280,8 +255,8 @@ func testCompleteWithWrongToken(t *testing.T, store ports.OutboxStore) {
 func testExpireMarksEligible(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
 	past := time.Now().Add(-1 * time.Hour)
-	r := makeRecord("exp-1", "env-exp-1", "bind-exp-1", "sess-exp", "route-1", past)
-	if err := store.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
+	r := makeRecord(t, "exp-1", "env-exp-1", "bind-exp-1", "sess-exp", "route-1", past)
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -305,8 +280,8 @@ func testExpireMarksEligible(t *testing.T, store ports.OutboxStore) {
 func testExpireSkipsCompleted(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
 	past := time.Now().Add(-1 * time.Hour)
-	r := makeRecord("expsk-1", "env-expsk-1", "bind-expsk-1", "sess-expsk", "route-1", past)
-	if err := store.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
+	r := makeRecord(t, "expsk-1", "env-expsk-1", "bind-expsk-1", "sess-expsk", "route-1", past)
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -330,9 +305,9 @@ func testExpireSkipsCompleted(t *testing.T, store ports.OutboxStore) {
 func testQueryPendingOnlyPending(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
 
-	r1 := makeRecord("qpo-1", "env-qpo-1", "bind-qpo-1", "sess-qpo", "route-1", time.Time{})
-	r2 := makeRecord("qpo-2", "env-qpo-2", "bind-qpo-2", "sess-qpo", "route-1", time.Time{})
-	if err := store.Persist(ctx, []persistence.OutboxRecord{r1, r2}); err != nil {
+	r1 := makeRecord(t, "qpo-1", "env-qpo-1", "bind-qpo-1", "sess-qpo", "route-1", time.Time{})
+	r2 := makeRecord(t, "qpo-2", "env-qpo-2", "bind-qpo-2", "sess-qpo", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r1, r2}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -353,12 +328,12 @@ func testQueryPendingOnlyPending(t *testing.T, store ports.OutboxStore) {
 func testQueryPendingRespectsPartitionKey(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
 
-	r1 := makeRecord("qppk-1", "env-qppk-1", "bind-qppk-1", "sess-pk-A", "route-1", time.Time{})
-	r2 := makeRecord("qppk-2", "env-qppk-2", "bind-qppk-2", "sess-pk-B", "route-1", time.Time{})
-	if err := store.Persist(ctx, []persistence.OutboxRecord{r1}); err != nil {
+	r1 := makeRecord(t, "qppk-1", "env-qppk-1", "bind-qppk-1", "sess-pk-A", "route-1", time.Time{})
+	r2 := makeRecord(t, "qppk-2", "env-qppk-2", "bind-qppk-2", "sess-pk-B", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r1}); err != nil {
 		t.Fatalf("persist r1: %v", err)
 	}
-	if err := store.Persist(ctx, []persistence.OutboxRecord{r2}); err != nil {
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r2}); err != nil {
 		t.Fatalf("persist r2: %v", err)
 	}
 
@@ -381,8 +356,8 @@ func testQueryPendingRespectsPartitionKey(t *testing.T, store ports.OutboxStore)
 
 func testFullLifecycle(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
-	r := makeRecord("lc-1", "env-lc-1", "bind-lc-1", "sess-lc", "route-1", time.Time{})
-	if err := store.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
+	r := makeRecord(t, "lc-1", "env-lc-1", "bind-lc-1", "sess-lc", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -396,7 +371,7 @@ func testFullLifecycle(t *testing.T, store ports.OutboxStore) {
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if len(claimed) != 1 || claimed[0].Status != persistence.OutboxClaimed {
+	if len(claimed) != 1 || claimed[0].Status() != persistence.OutboxClaimed {
 		t.Fatalf("expected 1 claimed, got %d", len(claimed))
 	}
 
@@ -412,13 +387,13 @@ func testFullLifecycle(t *testing.T, store ports.OutboxStore) {
 
 func testIdempotentPersist(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
-	r := makeRecord("idem-1", "env-idem", "bind-idem", "sess-idem", "route-1", time.Time{})
-	if err := store.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
+	r := makeRecord(t, "idem-1", "env-idem", "bind-idem", "sess-idem", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("first persist: %v", err)
 	}
 
-	r2 := makeRecord("idem-2", "env-idem", "bind-idem", "sess-idem", "route-1", time.Time{})
-	err := store.Persist(ctx, []persistence.OutboxRecord{r2})
+	r2 := makeRecord(t, "idem-2", "env-idem", "bind-idem", "sess-idem", "route-1", time.Time{})
+	err := store.Persist(ctx, []*persistence.OutboxRecord{r2})
 	if !errors.Is(err, shared.ErrDuplicateRecord) {
 		t.Fatalf("expected ErrDuplicateRecord on idempotent persist, got %v", err)
 	}
@@ -438,38 +413,39 @@ func outboxCompleteAfterTokenChange(t *testing.T, store ports.OutboxStore) {
 	tok2 := persistence.LeaseToken{Version: 200, Owner: "owner-B"}
 
 	pk := persistence.OutboxPartitionKey("sess-catc", "")
-	recs := []persistence.OutboxRecord{
-		{
-			ID:         fmt.Sprintf("ox-catc-%d", time.Now().UnixNano()),
-			EnvelopeID: "env-catc-1",
-			SessionID:  "sess-catc",
-			Envelope:   messaging.Envelope{ID: "env-catc-1", Subject: "test"},
-			Status:     persistence.OutboxPending,
-		},
+	id := fmt.Sprintf("ox-catc-%d", time.Now().UnixNano())
+	rec, err := persistence.NewOutboxRecord(persistence.OutboxSpec{
+		ID:         id,
+		EnvelopeID: "env-catc-1",
+		SessionID:  "sess-catc",
+		Envelope:   messaging.Envelope{ID: "env-catc-1", Subject: "test"},
+	})
+	if err != nil {
+		t.Fatalf("new record: %v", err)
 	}
-	if err := store.Persist(ctx, recs); err != nil {
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
-	claimed, err := store.Claim(ctx, pk, "owner-A", tok1, 10)
-	if err != nil {
-		t.Fatalf("claim: %v", err)
+	claimed, claimErr := store.Claim(ctx, pk, "owner-A", tok1, 10)
+	if claimErr != nil {
+		t.Fatalf("claim: %v", claimErr)
 	}
 	if len(claimed) == 0 {
 		t.Fatal("expected at least 1 claimed record")
 	}
 
-	_, err = store.Claim(ctx, pk, "owner-B", tok2, 10)
-	if err != nil && !errors.Is(err, shared.ErrStaleFencingToken) {
-		t.Fatalf("unexpected error on reclaim with higher token: %v", err)
+	_, claim2Err := store.Claim(ctx, pk, "owner-B", tok2, 10)
+	if claim2Err != nil && !errors.Is(claim2Err, shared.ErrStaleFencingToken) {
+		t.Fatalf("unexpected error on reclaim with higher token: %v", claim2Err)
 	}
 
-	err = store.Complete(ctx, []string{recs[0].ID}, tok1)
-	if err == nil {
+	completeErr := store.Complete(ctx, []string{id}, tok1)
+	if completeErr == nil {
 		t.Fatal("expected error when completing with old token after new claim")
 	}
-	if !errors.Is(err, shared.ErrStaleFencingToken) {
-		t.Fatalf("expected ErrStaleFencingToken, got %v", err)
+	if !errors.Is(completeErr, shared.ErrStaleFencingToken) {
+		t.Fatalf("expected ErrStaleFencingToken, got %v", completeErr)
 	}
 }
 

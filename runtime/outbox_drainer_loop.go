@@ -173,8 +173,8 @@ loop:
 		if ctx.Err() != nil || batchCtx.Err() != nil {
 			break
 		}
-		rec := &records[i]
-		if rec.ReplayCount > 1 {
+		rec := records[i]
+		if rec.ReplayCount() > 1 {
 			d.metrics.Counter(shared.MetricOutboxReplayCount, 1, routeTag)
 		}
 		select {

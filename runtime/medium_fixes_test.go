@@ -251,7 +251,7 @@ func NewErrorOutboxStore(qErr error) *ErrorOutboxStore {
 	}
 }
 
-func (s *ErrorOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]persistence.OutboxRecord, error) {
+func (s *ErrorOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]*persistence.OutboxRecord, error) {
 	if s.queryErr != nil {
 		return nil, s.queryErr
 	}
@@ -325,14 +325,14 @@ func TestAbsoluteMaxBatchSize_Clamps(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		rec := persistence.OutboxRecord{
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID: fmt.Sprintf("clamp-%d", i), RouteID: "clamp-route",
 			EnvelopeID: fmt.Sprintf("env-clamp-%d", i), BindingID: "bind-1",
 			SessionID: "sess-1",
 			Envelope:  messaging.Envelope{ID: fmt.Sprintf("env-clamp-%d", i), Payload: []byte("data")},
 			Status:    persistence.OutboxPending,
-		}
-		_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
+		})
+		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 	}
 
 	drainCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
@@ -384,14 +384,14 @@ func TestOutboxDrainer_EmitsRecordFailureMetric(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	outboxRec := persistence.OutboxRecord{
+	outboxRec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-fail", RouteID: "metric-route",
 		EnvelopeID: "env-fail", BindingID: "bind-1",
 		SessionID: "sess-1",
 		Envelope:  messaging.Envelope{ID: "env-fail", Payload: []byte("data")},
 		Status:    persistence.OutboxPending,
-	}
-	_ = outbox.Persist(ctx, []persistence.OutboxRecord{outboxRec})
+	})
+	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{outboxRec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()

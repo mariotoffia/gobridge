@@ -367,17 +367,17 @@ func (s *cfgFakeLeaseStore) Current(_ context.Context, _ string) (persistence.Le
 
 type cfgFakeOutboxStore struct{}
 
-func (s *cfgFakeOutboxStore) Persist(_ context.Context, _ []persistence.OutboxRecord) error {
+func (s *cfgFakeOutboxStore) Persist(_ context.Context, _ []*persistence.OutboxRecord) error {
 	return nil
 }
-func (s *cfgFakeOutboxStore) Claim(_ context.Context, _ string, _ string, _ persistence.LeaseToken, _ int) ([]persistence.OutboxRecord, error) {
+func (s *cfgFakeOutboxStore) Claim(_ context.Context, _ string, _ string, _ persistence.LeaseToken, _ int) ([]*persistence.OutboxRecord, error) {
 	return nil, nil
 }
 func (s *cfgFakeOutboxStore) Complete(_ context.Context, _ []string, _ persistence.LeaseToken) error {
 	return nil
 }
 func (s *cfgFakeOutboxStore) Expire(_ context.Context, _ time.Time) (int, error) { return 0, nil }
-func (s *cfgFakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]persistence.OutboxRecord, error) {
+func (s *cfgFakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]*persistence.OutboxRecord, error) {
 	return nil, nil
 }
 

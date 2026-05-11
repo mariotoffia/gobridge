@@ -75,8 +75,41 @@ The user's four review questions answered:
   **Status:** Resolved 2026-05-11. Rewrote 51 stale `domain.X` references in `ARCHITECTURE.md` and `PLUGIN.md` to `messaging.*`, `persistence.*`, `routing.*`, `connectivity.*`, `shared.*` per the actual `domain/` subpackage layout. Round-1 fixes: `PLUGIN.md` import block (line 431) corrected to `domain/messaging`; `ARCH_REVIEW.md` broken per-reviewer report links replaced with synthesis paragraph preserving five reviewer names. Reviewer (`code-reviewer`) verified zero remaining `\bdomain\.[A-Z]` matches and confirmed every subpackage-qualified symbol resolves to a real declaration. **Files:** `ARCHITECTURE.md`, `PLUGIN.md`, `ARCH_REVIEW.md`. **Review:** APPROVED after 1 fix-round by `code-reviewer` (codex: unavailable).
 
 ### High
-- **H-1** Split `runtime/` into sub-packages (`route`, `outbox`, `dlq`, `session`, `cluster`, `credentials`); leave only `Runtime` coordinator + lifecycle in the root. *(AP-001; Clean-Arch F4)*
-- **H-2** Promote `OutboxRecord` to a real aggregate root with `Claim()`, `Complete()`, `Expire()`, `IsClaimable()` methods returning typed `*shared.BridgeError`. Adapter logic reduces to "load → call → persist". *(DDD R1)*
+- **H-1** Split `runtime/` into sub-packages (`route`, `outbox`, `dlq`, `session`, `cluster`, `credentials`); leave only `Runtime` coordinator + lifecycle in the root. *(AP-001; Clean-Arch F4)* - BLOCKED
+
+  **Status:** BLOCKED 2026-05-11 — scope too large for single dispatch; requires sub-task decomposition into H-1a..H-1g per implementer plan. Investigation by `refactoring-specialist` (no production files touched) reported ~6.1K LOC production + ~22K LOC tests under `runtime/`, 30 production files cross-referencing private types, and 85 external caller files in `bridge/`, `httpapi/`, `cmd/`, `tests/integration/`, `tests/longrunning/`, `adapters/native/**` — plus arch-lint and `ARCHITECTURE.md`. A single-shot move would leave `make test` / `make lint` red for an extended window, violating the "branch is always green" rule in `AGENT.md` §5.
+
+  **Recommended decomposition (sequenced, each independently green-able):**
+  1. **H-1a — `runtime/dlq`**: extract `DLQ`, `DLQEntry`, related stores/handlers; lowest fan-out, safe leaf to validate the splitting pattern.
+  2. **H-1b — `runtime/credentials`**: move `NewPollBasedWrapper` and credential-refresh wiring; closes out L-21 follow-on (`bridge/builder.go:74`). Folds `runtime/credential_refresher_hook.go` (19 lines) into `Runtime.AttachCredentialCloser` as a minor cleanup.
+  3. **H-1c — `runtime/cluster`**: extract cluster/leader-election/coordination pieces; few external callers.
+  4. **H-1d — `runtime/session`**: extract session lifecycle; depends on cluster boundary being settled.
+  5. **H-1e — `runtime/outbox`**: extract `OutboxRecord` and outbox machinery. **Must land before H-2** (which promotes `OutboxRecord` to a real aggregate root) so the new aggregate lives in its destination package from day one.
+  6. **H-1f — `runtime/route`**: extract route runner + dispatch. **Open architectural question for the architect:** where do `instrumented*.go` and `processor_chain.go` belong — under `route/`, in a dedicated sub-package, or in `runtime/internal/chain`? Resolve before this sub-task is dispatched.
+  7. **H-1g — arch-lint + docs**: update `scripts/archlint`, `ARCHITECTURE.md` §13, `DEVELOPMENT.md` layout block, and any `doc.go` headers to reflect the new package boundaries; tighten arch-lint rules to forbid backsliding.
+
+  **Outstanding decisions for the human:**
+  - Confirm the sub-task ordering above or re-shuffle (e.g., bring `cluster` before `dlq` if leader-election is on the critical path for some other work).
+  - Resolve the `instrumented*.go` / `processor_chain.go` placement question before H-1f is dispatched.
+  - Decide whether to re-index `ARCH_REVIEW.md` to add H-1a..H-1g as first-class sidecar tasks (recommended) or to track them in a separate child document.
+
+  **Files in flux:** none — investigation only; no production code touched.
+
+  **Resume options:**
+  - (a) Re-author `ARCH_REVIEW.md` H-1 as seven sub-task bullets H-1a..H-1g and re-run the indexer; the runner will then process each in turn.
+  - (b) Park H-1 entirely, work the rest of the backlog, return to the split as a dedicated multi-PR program after H-2..H-6 land.
+
+  **Review:** N/A — implementer returned BLOCKED before any reviewer was dispatched. Orchestrator deferred per explicit user instruction to mark blocked and proceed to the next pending task rather than retry as a single dispatch.
+- **H-2** Promote `OutboxRecord` to a real aggregate root with `Claim()`, `Complete()`, `Expire()`, `IsClaimable()` methods returning typed `*shared.BridgeError`. Adapter logic reduces to "load → call → persist". *(DDD R1)* - DONE
+
+  **Status:** Resolved 2026-05-11. `OutboxRecord` is now a real aggregate root: identity exported and frozen at construction; lifecycle fields (`status`, `claimedBy`, `claimedAt`, `claimVersion`, `replayCount`, `completedAt`) un-exported and reachable only through `Claim`, `Complete`, `Expire`, and `IsClaimable`. Persistence boundary uses `OutboxSnapshot` DTO + `RehydrateFromSnapshot`; the port now traffics `[]*persistence.OutboxRecord` and the three adapters (`memoryoutbox`, `sqliteoutbox`, `dynamodboutbox`) reduce to load → call → persist over snapshots. State-machine methods return four typed `*shared.BridgeError` sentinels (`ErrInvalidOutboxRecord`, `ErrOutboxNotClaimable`, `ErrOutboxNotInClaimedState`, `ErrOutboxAlreadyTerminal`), all classified `ErrorPermanent`. New table-driven coverage in `domain/persistence/outbox_state_test.go` exercises every state-machine branch (construction, `IsClaimable`, `Claim` legal/stale-token-takeover/equal-token-reject/terminal-reject, `Complete`, `Expire`, snapshot round-trip). 45 files changed (+822 / −535); `make test` and `make lint` green.
+
+  **Follow-ups (not blockers; logged for future passes):**
+  - `OutboxRecord.Expire(now time.Time)` discards the `now` argument and the aggregate stores no `expiredAt`; either drop the parameter or persist the timestamp on the snapshot.
+  - Invariant duplication: `sqliteoutbox` / `dynamodboutbox` encode `Claim` / `Complete` preconditions in SQL / DDB conditional expressions. Add a contract test under `ports/storetest` that drives every state-machine branch through every adapter, or doc-comment the SQL/DDB clauses that must mirror the aggregate.
+  - `NewOutboxRecord` does not validate `RouteID`; harmless today but worth tightening if route IDs become routable handles.
+  - `Snapshot()` shallow-copies `DispatchHeaders` and `Envelope.Headers`; doc-comment should call out aliasing for callers that mutate snapshots.
+  - (Carried from implementer notes) `M-7` Envelope getter w/ defensive copy; `lastError` field on the aggregate; explicit `claimedUntil` deadline; `H-1e` relocation; Drainer-fake stale-takeover cleanup.
 - **H-3** Add a constructor `messaging.NewEnvelope(...)` that validates ID, normalises headers (strip reserved-prefix overrides), stamps `CreatedAt` via injected clock; un-export `Subject`/`Headers` so callers must use methods. *(DDD R2)*
 - **H-4** De-globalise `ports.DefaultRegistry`: keep for back-compat, add `bridge.WithRegistry(*ports.Registry)`, replace `panic` on duplicate kind with `ErrDuplicateKind`. *(AP-003)*
 - **H-5** Add `adapters/amqp/transport/{amqp091,amqp10}/` rows to `ARCHITECTURE.md §13` and `DEVELOPMENT.md` layout blocks (or replace duplicates with a link to the README block to prevent future drift). *(Docs F#3)*

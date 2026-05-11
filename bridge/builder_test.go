@@ -97,15 +97,15 @@ func (f *fakeLeaseStore) Current(_ context.Context, _ string) (persistence.Lease
 
 type fakeOutboxStore struct{}
 
-func (f *fakeOutboxStore) Persist(_ context.Context, _ []persistence.OutboxRecord) error { return nil }
-func (f *fakeOutboxStore) Claim(_ context.Context, _ string, _ string, _ persistence.LeaseToken, _ int) ([]persistence.OutboxRecord, error) {
+func (f *fakeOutboxStore) Persist(_ context.Context, _ []*persistence.OutboxRecord) error { return nil }
+func (f *fakeOutboxStore) Claim(_ context.Context, _ string, _ string, _ persistence.LeaseToken, _ int) ([]*persistence.OutboxRecord, error) {
 	return nil, nil
 }
 func (f *fakeOutboxStore) Complete(_ context.Context, _ []string, _ persistence.LeaseToken) error {
 	return nil
 }
 func (f *fakeOutboxStore) Expire(_ context.Context, _ time.Time) (int, error) { return 0, nil }
-func (f *fakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]persistence.OutboxRecord, error) {
+func (f *fakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]*persistence.OutboxRecord, error) {
 	return nil, nil
 }
 

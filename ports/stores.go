@@ -29,11 +29,11 @@ type LeaseStore interface {
 // All mutations that accept a LeaseToken must validate the fencing token
 // and reject stale tokens atomically.
 type OutboxStore interface {
-	Persist(ctx context.Context, records []persistence.OutboxRecord) error
-	Claim(ctx context.Context, partitionKey string, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error)
+	Persist(ctx context.Context, records []*persistence.OutboxRecord) error
+	Claim(ctx context.Context, partitionKey string, ownerID string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error)
 	Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error
 	Expire(ctx context.Context, before time.Time) (int, error)
-	QueryPending(ctx context.Context, partitionKey string, limit int) ([]persistence.OutboxRecord, error)
+	QueryPending(ctx context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error)
 }
 
 // DLQStore manages dead-letter queue entries for failed or rejected messages.

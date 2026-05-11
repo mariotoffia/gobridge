@@ -170,7 +170,7 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 
 	ctx := context.Background()
 	for i := range recordCount {
-		rec := persistence.OutboxRecord{
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID:         fmt.Sprintf("rec-%d", i),
 			RouteID:    "route-1",
 			EnvelopeID: fmt.Sprintf("env-%d", i),
@@ -181,8 +181,8 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 				Payload: []byte("payload"),
 			},
 			Status: persistence.OutboxPending,
-		}
-		if err := outbox.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+		})
+		if err := outbox.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist: %v", err)
 		}
 	}
@@ -278,7 +278,7 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 
 	ctx := context.Background()
 	for i := range recordCount {
-		rec := persistence.OutboxRecord{
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID:         fmt.Sprintf("rec-legacy-%d", i),
 			RouteID:    "route-1",
 			EnvelopeID: fmt.Sprintf("env-legacy-%d", i),
@@ -289,8 +289,8 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 				Payload: []byte("payload"),
 			},
 			Status: persistence.OutboxPending,
-		}
-		if err := outbox.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+		})
+		if err := outbox.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist: %v", err)
 		}
 	}

@@ -57,7 +57,7 @@ func (s *sqlSession) close() error {
 // persist inserts records under a single transaction. Duplicate
 // records are translated to shared.ErrDuplicateRecord at the SDK
 // boundary.
-func (s *sqlSession) persist(ctx context.Context, records []persistence.OutboxRecord, clk clock.Clock) error {
+func (s *sqlSession) persist(ctx context.Context, records []*persistence.OutboxRecord, clk clock.Clock) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return wrapErr(err, "sqliteoutbox: begin tx", "recordCount", len(records))
@@ -70,8 +70,7 @@ func (s *sqlSession) persist(ctx context.Context, records []persistence.OutboxRe
 	}
 	defer func() { _ = stmt.Close() }()
 
-	for i := range records {
-		r := &records[i]
+	for _, r := range records {
 		envJSON, err := json.Marshal(r.Envelope)
 		if err != nil {
 			return fmt.Errorf("sqliteoutbox: marshal envelope: %w", err)
@@ -128,7 +127,7 @@ func (s *sqlSession) persist(ctx context.Context, records []persistence.OutboxRe
 
 // claim selects up to limit claimable IDs and atomically flips them to
 // claimed under the supplied owner+version, then hydrates the rows.
-func (s *sqlSession) claim(ctx context.Context, pk string, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error) {
+func (s *sqlSession) claim(ctx context.Context, pk string, ownerID string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, wrapErr(err, "sqliteoutbox: begin tx claim", "partitionKey", pk)
@@ -178,7 +177,7 @@ func (s *sqlSession) claim(ctx context.Context, pk string, ownerID string, token
 }
 
 // fetchByIDs hydrates records by ID using the canonical column list.
-func (s *sqlSession) fetchByIDs(ctx context.Context, ids []string) ([]persistence.OutboxRecord, error) {
+func (s *sqlSession) fetchByIDs(ctx context.Context, ids []string) ([]*persistence.OutboxRecord, error) {
 	args := make([]any, len(ids))
 	for i, id := range ids {
 		args[i] = id
@@ -234,7 +233,7 @@ func (s *sqlSession) expire(ctx context.Context, before time.Time) (int, error) 
 }
 
 // queryPending returns up to limit pending records under partition pk.
-func (s *sqlSession) queryPending(ctx context.Context, pk string, limit int) ([]persistence.OutboxRecord, error) {
+func (s *sqlSession) queryPending(ctx context.Context, pk string, limit int) ([]*persistence.OutboxRecord, error) {
 	rows, err := s.db.QueryContext(ctx, selectPendingByPartitionSQL, pk, limit)
 	if err != nil {
 		return nil, wrapErr(err, "sqliteoutbox: query pending", "partitionKey", pk)

@@ -424,7 +424,10 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 		}
 	}
 
-	records := r.buildOutboxRecords(env, plans)
+	records, buildErr := r.buildOutboxRecords(env, plans)
+	if buildErr != nil {
+		return r.retryOrFallback(ctx, del, env, 0, buildErr)
+	}
 
 	persistErr := r.outboxStore.Persist(ctx, records)
 	if persistErr != nil {

@@ -182,7 +182,7 @@ func (s *Store) CreateTable(ctx context.Context) error {
 // Persist writes outbox records atomically. For a single record, it uses
 // PutItem with a condition to reject duplicates. For multiple records
 // (fan-out), it uses TransactWriteItems to ensure atomicity.
-func (s *Store) Persist(ctx context.Context, records []persistence.OutboxRecord) error {
+func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: persist", "count", len(records))
 	}
@@ -194,7 +194,7 @@ func (s *Store) Persist(ctx context.Context, records []persistence.OutboxRecord)
 	now := s.clk.Now()
 
 	if len(records) == 1 {
-		return s.persistSingle(ctx, &records[0], now)
+		return s.persistSingle(ctx, records[0], now)
 	}
 	return s.persistFanOut(ctx, records, now)
 }
@@ -222,14 +222,14 @@ func (s *Store) persistSingle(ctx context.Context, r *persistence.OutboxRecord, 
 	return nil
 }
 
-func (s *Store) persistFanOut(ctx context.Context, records []persistence.OutboxRecord, now time.Time) error {
+func (s *Store) persistFanOut(ctx context.Context, records []*persistence.OutboxRecord, now time.Time) error {
 	if len(records) > 100 {
 		return fmt.Errorf("dynamodboutbox: fan-out exceeds DynamoDB transaction limit of 100 items (%d)", len(records))
 	}
 
 	items := make([]ddbtypes.TransactWriteItem, 0, len(records))
 	for i := range records {
-		item, err := marshalRecord(&records[i], now, s.compactGrace)
+		item, err := marshalRecord(records[i], now, s.compactGrace)
 		if err != nil {
 			return err
 		}
@@ -260,7 +260,7 @@ func (s *Store) persistFanOut(ctx context.Context, records []persistence.OutboxR
 // Uses strongly consistent reads with pagination to handle the DynamoDB
 // Limit+Filter interaction (Limit caps evaluated items, not filtered results).
 // Records that have exceeded the max replay count are skipped.
-func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error) {
+func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: claim", "partition_key", partitionKey, "limit", limit)
 	}
@@ -283,7 +283,7 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, 
 		exprValues[":maxReplay"] = &ddbtypes.AttributeValueMemberN{Value: strconv.Itoa(s.maxReplayCount)}
 	}
 
-	var claimed []persistence.OutboxRecord
+	var claimed []*persistence.OutboxRecord
 	var startKey map[string]ddbtypes.AttributeValue
 
 	for len(claimed) < limit {
@@ -524,12 +524,12 @@ func (s *Store) expireByStatus(ctx context.Context, status string, beforeMs, ttl
 // QueryPending returns pending records for the given partition key, ordered
 // by creation time (oldest first). Uses strongly consistent reads and
 // paginates past DynamoDB's Limit+Filter interaction.
-func (s *Store) QueryPending(ctx context.Context, partitionKey string, limit int) ([]persistence.OutboxRecord, error) {
+func (s *Store) QueryPending(ctx context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: query_pending", "partition_key", partitionKey, "limit", limit)
 	}
 
-	var records []persistence.OutboxRecord
+	var records []*persistence.OutboxRecord
 	var startKey map[string]ddbtypes.AttributeValue
 
 	for len(records) < limit {
@@ -663,40 +663,39 @@ func marshalRecord(r *persistence.OutboxRecord, now time.Time, compactGrace time
 	return item, nil
 }
 
-func unmarshalRecord(item map[string]ddbtypes.AttributeValue) (persistence.OutboxRecord, error) {
-	var r persistence.OutboxRecord
+func unmarshalRecord(item map[string]ddbtypes.AttributeValue) (*persistence.OutboxRecord, error) {
+	snap := persistence.OutboxSnapshot{
+		ID:           strAttr(item, "record_id"),
+		RouteID:      strAttr(item, "route_id"),
+		EnvelopeID:   strAttr(item, "envelope_id"),
+		BindingID:    strAttr(item, "binding_id"),
+		SessionID:    strAttr(item, "session_id"),
+		Address:      strAttr(item, "address"),
+		Status:       persistence.OutboxStatus(strAttr(item, "status")),
+		ClaimedBy:    strAttr(item, "claimed_by"),
+		ClaimVersion: numAttrU64(item, "claim_version"),
+		ReplayCount:  int(numAttrI64(item, "replay_count")),
+		CreatedAt:    timeFromMillis(numAttrI64(item, "created_at")),
+		CompletedAt:  timeFromMillis(numAttrI64(item, "completed_at")),
+	}
 
-	r.ID = strAttr(item, "record_id")
-	r.RouteID = strAttr(item, "route_id")
-	r.EnvelopeID = strAttr(item, "envelope_id")
-	r.BindingID = strAttr(item, "binding_id")
-	r.SessionID = strAttr(item, "session_id")
-	r.Address = strAttr(item, "address")
-	r.Status = persistence.OutboxStatus(strAttr(item, "status"))
-	r.ClaimedBy = strAttr(item, "claimed_by")
-	r.ClaimVersion = numAttrU64(item, "claim_version")
-	r.ReplayCount = int(numAttrI64(item, "replay_count"))
-	r.CreatedAt = timeFromMillis(numAttrI64(item, "created_at"))
-	r.CompletedAt = timeFromMillis(numAttrI64(item, "completed_at"))
-
-	expiresMs := numAttrI64(item, "expires_at")
-	if expiresMs > 0 {
-		r.ExpiresAt = timeFromMillis(expiresMs)
+	if expiresMs := numAttrI64(item, "expires_at"); expiresMs > 0 {
+		snap.ExpiresAt = timeFromMillis(expiresMs)
 	}
 
 	if envJSON := strAttr(item, "envelope_json"); envJSON != "" {
-		if err := json.Unmarshal([]byte(envJSON), &r.Envelope); err != nil {
-			return r, fmt.Errorf("dynamodboutbox: unmarshal envelope: %w", err)
+		if err := json.Unmarshal([]byte(envJSON), &snap.Envelope); err != nil {
+			return nil, fmt.Errorf("dynamodboutbox: unmarshal envelope: %w", err)
 		}
 	}
 
 	if hdrJSON := strAttr(item, "headers_json"); hdrJSON != "" {
-		if err := json.Unmarshal([]byte(hdrJSON), &r.DispatchHeaders); err != nil {
-			return r, fmt.Errorf("dynamodboutbox: unmarshal headers: %w", err)
+		if err := json.Unmarshal([]byte(hdrJSON), &snap.DispatchHeaders); err != nil {
+			return nil, fmt.Errorf("dynamodboutbox: unmarshal headers: %w", err)
 		}
 	}
 
-	return r, nil
+	return persistence.RehydrateFromSnapshot(snap), nil
 }
 
 // --- attribute helpers ---

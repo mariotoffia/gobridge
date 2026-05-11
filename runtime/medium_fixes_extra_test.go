@@ -63,14 +63,14 @@ func TestAdaptBatchSize_HalvesOnConsecutiveZeroSuccess(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 20; i++ {
-		rec := persistence.OutboxRecord{
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID: fmt.Sprintf("adapt-%d", i), RouteID: "adapt-route",
 			EnvelopeID: fmt.Sprintf("env-adapt-%d", i), BindingID: "bind-1",
 			SessionID: "sess-1",
 			Envelope:  messaging.Envelope{ID: fmt.Sprintf("env-adapt-%d", i), Payload: []byte("data")},
 			Status:    persistence.OutboxPending,
-		}
-		_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
+		})
+		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 	}
 
 	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
@@ -299,14 +299,14 @@ func TestNormalMaxBatchSize_NotClamped(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		rec := persistence.OutboxRecord{
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID: fmt.Sprintf("normal-%d", i), RouteID: "normal-route",
 			EnvelopeID: fmt.Sprintf("env-normal-%d", i), BindingID: "bind-1",
 			SessionID: "sess-1",
 			Envelope:  messaging.Envelope{ID: fmt.Sprintf("env-normal-%d", i), Payload: []byte("data")},
 			Status:    persistence.OutboxPending,
-		}
-		_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
+		})
+		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 	}
 
 	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
@@ -372,14 +372,14 @@ func TestOutboxDrainer_SuccessEmitsCompletion(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	outboxRec := persistence.OutboxRecord{
+	outboxRec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-ok", RouteID: "success-route",
 		EnvelopeID: "env-ok", BindingID: "bind-1",
 		SessionID: "sess-1",
 		Envelope:  messaging.Envelope{ID: "env-ok", Payload: []byte("data")},
 		Status:    persistence.OutboxPending,
-	}
-	_ = outbox.Persist(ctx, []persistence.OutboxRecord{outboxRec})
+	})
+	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{outboxRec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
@@ -413,14 +413,14 @@ func TestBatchSizeClamped_PreventsAbsoluteMaxBypass(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		rec := persistence.OutboxRecord{
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID: fmt.Sprintf("bsclamp-%d", i), RouteID: "bsclamp-route",
 			EnvelopeID: fmt.Sprintf("env-bsclamp-%d", i), BindingID: "bind-1",
 			SessionID: "sess-1",
 			Envelope:  messaging.Envelope{ID: fmt.Sprintf("env-bsclamp-%d", i), Payload: []byte("data")},
 			Status:    persistence.OutboxPending,
-		}
-		_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
+		})
+		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 	}
 
 	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
@@ -489,14 +489,14 @@ func TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	outboxRec := persistence.OutboxRecord{
+	outboxRec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-stale-metric", RouteID: "stale-metric-route",
 		EnvelopeID: "env-stale-metric", BindingID: "bind-1",
 		SessionID: "sess-1",
 		Envelope:  messaging.Envelope{ID: "env-stale-metric", Payload: []byte("data")},
 		Status:    persistence.OutboxPending,
-	}
-	_ = outbox.Persist(ctx, []persistence.OutboxRecord{outboxRec})
+	})
+	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{outboxRec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()

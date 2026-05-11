@@ -31,7 +31,7 @@ func TestOutboxDrainer_CompleteSurvivesNearBatchDeadline(t *testing.T) {
 		t.Fatalf("acquire lease: %v", err)
 	}
 
-	rec := persistence.OutboxRecord{
+	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID:         "rec-complete-deadline",
 		RouteID:    "route-1",
 		EnvelopeID: "env-complete-deadline",
@@ -39,8 +39,8 @@ func TestOutboxDrainer_CompleteSurvivesNearBatchDeadline(t *testing.T) {
 		SessionID:  "sess-complete-deadline",
 		Envelope:   messaging.Envelope{ID: "env-complete-deadline", Payload: []byte("payload")},
 		Status:     persistence.OutboxPending,
-	}
-	if err := outbox.Persist(context.Background(), []persistence.OutboxRecord{rec}); err != nil {
+	})
+	if err := outbox.Persist(context.Background(), []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -126,7 +126,7 @@ func TestOutboxDrainer_CompleteRespectsRuntimeShutdown(t *testing.T) {
 		t.Fatalf("acquire lease: %v", err)
 	}
 
-	rec := persistence.OutboxRecord{
+	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID:         "rec-complete-shutdown",
 		RouteID:    "route-1",
 		EnvelopeID: "env-complete-shutdown",
@@ -134,8 +134,8 @@ func TestOutboxDrainer_CompleteRespectsRuntimeShutdown(t *testing.T) {
 		SessionID:  "sess-complete-shutdown",
 		Envelope:   messaging.Envelope{ID: "env-complete-shutdown", Payload: []byte("payload")},
 		Status:     persistence.OutboxPending,
-	}
-	if err := outbox.Persist(context.Background(), []persistence.OutboxRecord{rec}); err != nil {
+	})
+	if err := outbox.Persist(context.Background(), []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 

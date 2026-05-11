@@ -161,13 +161,13 @@ func TestOutboxDrainer_FinalDrainCompletesPendingRecords(t *testing.T) {
 	lease := NewFakeLeaseStore()
 	token := persistence.LeaseToken{Version: 1, Owner: "me"}
 
-	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{{
+	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID:        "rec-1",
 		RouteID:   "r1",
 		SessionID: "s1",
 		Status:    persistence.OutboxPending,
 		Envelope:  messaging.Envelope{ID: "env-1", Payload: []byte("hello")},
-	}})
+	})})
 
 	var sent atomic.Int32
 	sender := &FakeSender{

@@ -68,6 +68,14 @@ const (
 	ErrCodeProcessorTimeout ErrorCode = "PROCESSOR_TIMEOUT"
 )
 
+// Outbox aggregate state-machine error codes.
+const (
+	ErrCodeInvalidOutboxRecord     ErrorCode = "INVALID_OUTBOX_RECORD"
+	ErrCodeOutboxNotClaimable      ErrorCode = "OUTBOX_NOT_CLAIMABLE"
+	ErrCodeOutboxNotInClaimedState ErrorCode = "OUTBOX_NOT_IN_CLAIMED_STATE"
+	ErrCodeOutboxAlreadyTerminal   ErrorCode = "OUTBOX_ALREADY_TERMINAL"
+)
+
 // BridgeError is the structured error type for the bridge.
 // Transport adapters and runtime components return BridgeError instances
 // so the pipeline can classify failures for retry, DLQ, or drop decisions.
@@ -264,6 +272,35 @@ var (
 	ErrProcessorTimeout = &BridgeError{
 		Code: ErrCodeProcessorTimeout, Class: ErrorTransient,
 		Message: "processor timed out",
+	}
+)
+
+// Sentinel errors -- outbox aggregate state-machine.
+var (
+	// ErrInvalidOutboxRecord indicates an attempt to construct an OutboxRecord
+	// without the required identity fields. Permanent: callers must fix inputs.
+	ErrInvalidOutboxRecord = &BridgeError{
+		Code: ErrCodeInvalidOutboxRecord, Class: ErrorPermanent,
+		Message: "invalid outbox record",
+	}
+	// ErrOutboxNotClaimable indicates a Claim call against a record whose
+	// state does not permit claiming (terminal or under a newer fencing
+	// token). Permanent: retry will not help without external state change.
+	ErrOutboxNotClaimable = &BridgeError{
+		Code: ErrCodeOutboxNotClaimable, Class: ErrorPermanent,
+		Message: "outbox record is not claimable",
+	}
+	// ErrOutboxNotInClaimedState indicates Complete was invoked on a record
+	// that is not currently in the Claimed state.
+	ErrOutboxNotInClaimedState = &BridgeError{
+		Code: ErrCodeOutboxNotInClaimedState, Class: ErrorPermanent,
+		Message: "outbox record is not in claimed state",
+	}
+	// ErrOutboxAlreadyTerminal indicates Expire was invoked on a record
+	// that has already reached a terminal state (Completed or Expired).
+	ErrOutboxAlreadyTerminal = &BridgeError{
+		Code: ErrCodeOutboxAlreadyTerminal, Class: ErrorPermanent,
+		Message: "outbox record is already in a terminal state",
 	}
 )
 

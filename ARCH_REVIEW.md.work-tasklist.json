@@ -1,8 +1,8 @@
 {
   "$schema": "v2",
   "source": "ARCH_REVIEW.md",
-  "source_sha": "c9fc3fe234e89fc19a9cfbfcb4459e73bafe9b915e9a399051a7438e48aa0a93",
-  "indexed_at": "2026-05-11T09:19:38Z",
+  "source_sha": "33663893fed9900bf5bd9b98471bcefd5beaacba64fa8cf105cf93ea03370ddd",
+  "indexed_at": "2026-05-11T09:57:59Z",
   "status_convention": "no explicit markers \u2014 orchestrator will append \" - DONE\" to the item line on completion",
   "tasks": [
     {
@@ -19,7 +19,7 @@
     {
       "id": "H-1",
       "title": "Split `runtime/` into sub-packages; leave only `Runtime` coordinator + lifecycle",
-      "status": "pending",
+      "status": "blocked",
       "category_hint": "(AP-001; Clean-Arch F4)",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "AP-001 plus Clean-Arch F4 is a package-decomposition refactor of runtime/.",
@@ -30,7 +30,7 @@
     {
       "id": "H-2",
       "title": "Promote `OutboxRecord` to a real aggregate root with state-machine methods",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(DDD R1)",
       "suggested_agent": "thiink-ddd-expert",
       "agent_rationale": "DDD R1 tag \u2014 tactical DDD aggregate design.",
