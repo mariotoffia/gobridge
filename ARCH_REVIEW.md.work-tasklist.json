@@ -107,7 +107,7 @@
     {
       "id": "M-3",
       "title": "Single `Builder.Build(ctx)` entry point; keep prepare()/complete() private",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(AP-009)",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "AP-009 \u2014 builder/lifecycle design refactor.",
