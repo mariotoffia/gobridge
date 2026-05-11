@@ -152,13 +152,13 @@ func TestRouteRunner_HeaderInjection(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID: "msg-headers",
 		Headers: map[string]any{
 			messaging.HeaderCorrelationID: "injected-by-attacker",
 			"custom-header":               "keep-me",
 		},
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "delivery acked and message sent", func() bool {
@@ -169,10 +169,10 @@ func TestRouteRunner_HeaderInjection(t *testing.T) {
 		t.Fatal("expected 1 sent message")
 	}
 	sent := sender.GetSent()[0]
-	if _, ok := sent.Headers["custom-header"]; !ok {
+	if _, ok := sent.Headers()["custom-header"]; !ok {
 		t.Fatal("custom header should be preserved")
 	}
-	corrID, ok := sent.Headers[messaging.HeaderCorrelationID].(string)
+	corrID, ok := sent.Headers()[messaging.HeaderCorrelationID].(string)
 	if !ok || corrID == "injected-by-attacker" {
 		t.Fatal("reserved header from external source should be stripped and regenerated")
 	}
@@ -364,12 +364,12 @@ func TestRouteRunner_Tracer_TraceContextExtraction(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID: "msg-w3c",
 		Headers: map[string]any{
 			"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
 		},
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "delivery acked and span ended for trace extraction", func() bool {
@@ -419,12 +419,12 @@ func TestRouteRunner_Tracer_ContextEnrichment(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID: "msg-ctx",
 		Headers: map[string]any{
 			"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
 		},
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "delivery acked for context enrichment", del.IsAcked)
@@ -621,10 +621,10 @@ func TestRouteRunner_DirectHold_WithResolver(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-resolve",
 		Headers: map[string]any{"factory": "A", "device_id": "42"},
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "send and ack with resolver", func() bool {
@@ -638,11 +638,11 @@ func TestRouteRunner_DirectHold_WithResolver(t *testing.T) {
 	if out[0].Address != "factory/a/orders/42" {
 		t.Fatalf("expected resolved Address, got %q", out[0].Address)
 	}
-	if out[0].Envelope.Subject != "" {
-		t.Fatalf("source envelope had no Subject; outbound must preserve it (got %q)", out[0].Envelope.Subject)
+	if out[0].Envelope.Subject() != "" {
+		t.Fatalf("source envelope had no Subject; outbound must preserve it (got %q)", out[0].Envelope.Subject())
 	}
-	if env.Subject != "" {
-		t.Fatalf("source envelope Subject must not be mutated, got %q", env.Subject)
+	if env.Subject() != "" {
+		t.Fatalf("source envelope Subject must not be mutated, got %q", env.Subject())
 	}
 	if !del.IsAcked() {
 		t.Fatal("delivery should be acked")
@@ -726,7 +726,7 @@ func TestRouteRunner_DirectHold_ResolverHeaders(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{ID: "msg-hdrs", Headers: map[string]any{"custom": "value"}}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-hdrs", Headers: map[string]any{"custom": "value"}})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "send with resolver headers", func() bool {
@@ -741,13 +741,13 @@ func TestRouteRunner_DirectHold_ResolverHeaders(t *testing.T) {
 	if out.Address != "topic/resolved" {
 		t.Fatalf("expected Address topic/resolved, got %q", out.Address)
 	}
-	if sent.Subject != "" {
-		t.Fatalf("source envelope had no Subject; outbound must preserve it (got %q)", sent.Subject)
+	if sent.Subject() != "" {
+		t.Fatalf("source envelope had no Subject; outbound must preserve it (got %q)", sent.Subject())
 	}
-	if sent.Headers["qos"] != 1 {
-		t.Fatalf("expected dispatch header qos=1, got %v", sent.Headers["qos"])
+	if sent.Headers()["qos"] != 1 {
+		t.Fatalf("expected dispatch header qos=1, got %v", sent.Headers()["qos"])
 	}
-	if sent.Headers["custom"] != "value" {
+	if sent.Headers()["custom"] != "value" {
 		t.Fatal("custom header should be preserved")
 	}
 }
@@ -880,7 +880,7 @@ func TestRouteRunner_MQTTToSQS_DirectHold(t *testing.T) {
 			&FakeProcessor{
 				NameVal: "mqtt-to-sqs-enricher",
 				ProcessFn: func(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
-					env.Headers["source-transport"] = "mqtt"
+					env.SetHeader("source-transport", "mqtt")
 					return next(ctx, env)
 				},
 			},
@@ -892,12 +892,12 @@ func TestRouteRunner_MQTTToSQS_DirectHold(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "mqtt-ingress-1",
 		Subject: "factory/a/telemetry",
 		Payload: []byte(`{"temp":22.5}`),
 		Headers: map[string]any{"qos": 1},
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "MQTT to SQS send and ack", func() bool {
@@ -912,13 +912,13 @@ func TestRouteRunner_MQTTToSQS_DirectHold(t *testing.T) {
 	if out.Address != "arn:aws:sqs:eu-west-1:123456789:orders" {
 		t.Fatalf("expected SQS Address, got %q", out.Address)
 	}
-	if sent.Subject != "factory/a/telemetry" {
-		t.Fatalf("logical Subject must be preserved on outbound, got %q", sent.Subject)
+	if sent.Subject() != "factory/a/telemetry" {
+		t.Fatalf("logical Subject must be preserved on outbound, got %q", sent.Subject())
 	}
-	if env.Subject != "factory/a/telemetry" {
-		t.Fatalf("source envelope Subject must not be mutated, got %q", env.Subject)
+	if env.Subject() != "factory/a/telemetry" {
+		t.Fatalf("source envelope Subject must not be mutated, got %q", env.Subject())
 	}
-	if sent.Headers["source-transport"] != "mqtt" {
+	if sent.Headers()["source-transport"] != "mqtt" {
 		t.Fatal("processor should have set source-transport header")
 	}
 	if !del.IsAcked() {
@@ -943,11 +943,11 @@ func TestRouteRunner_MQTTToSQS_SharedOutbox(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "mqtt-to-sqs-outbox-1",
 		Subject: "sensors/temp",
 		Payload: []byte(`{"temp":19.3}`),
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "MQTT to SQS outbox persist and ack", func() bool {

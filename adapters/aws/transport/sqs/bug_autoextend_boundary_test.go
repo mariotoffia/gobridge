@@ -30,7 +30,7 @@ func TestAutoExtend_Boundary_Timeout1_Disabled(t *testing.T) {
 	parentCtx, parentCancel := context.WithCancel(context.Background())
 	defer parentCancel()
 
-	env := &messaging.Envelope{ID: "boundary-1", Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "boundary-1", Subject: "test"})
 	del := newDelivery(
 		parentCtx,
 		env,
@@ -78,7 +78,7 @@ func TestAutoExtend_Boundary_Timeout2_Enabled(t *testing.T) {
 	parentCtx, parentCancel := context.WithCancel(context.Background())
 	defer parentCancel()
 
-	env := &messaging.Envelope{ID: "boundary-2", Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "boundary-2", Subject: "test"})
 	fake := clocktest.New()
 	del := newDelivery(
 		parentCtx,

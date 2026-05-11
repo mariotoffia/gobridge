@@ -164,12 +164,12 @@ func TestRuntime_Inject_HappyPath(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "injected-1",
 		Subject: "test/inject",
 		Payload: []byte(`{"injected":true}`),
 		Headers: map[string]any{"custom": "value"},
-	}
+	})
 	if err := rt.Inject(ctx, "inject-route", env); err != nil {
 		t.Fatalf("Inject failed: %v", err)
 	}
@@ -280,20 +280,20 @@ func TestRuntime_Inject_DoesNotMutateOriginal(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "orig-id",
 		Headers: map[string]any{"keep": "this"},
-	}
+	})
 	_ = rt.Inject(context.Background(), "clone-route", env)
 
 	waitFor(t, time.Second, "clone-route inject completed", func() bool {
 		return sender.SentCount() == 1
 	})
 
-	if len(env.Headers) != 1 {
-		t.Fatalf("original headers should not be modified, got %d entries", len(env.Headers))
+	if len(env.Headers()) != 1 {
+		t.Fatalf("original headers should not be modified, got %d entries", len(env.Headers()))
 	}
-	if env.Headers["keep"] != "this" {
+	if env.Headers()["keep"] != "this" {
 		t.Fatal("original header value should be preserved")
 	}
 }

@@ -42,7 +42,7 @@ func (r *BindingResolver) Resolve(_ context.Context, env *messaging.Envelope) ([
 			continue
 		}
 
-		addr, err := RenderAddress(b.Address, env.Headers)
+		addr, err := RenderAddress(b.Address, env.Headers())
 		if err != nil {
 			return nil, shared.ErrInvalidTopic.
 				WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
@@ -99,7 +99,7 @@ func (r *StaticResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]ro
 // value "A" maps to binding ID "mqtt-factory-a-orders".
 func MatchByHeader(headerKey string, bindingMap map[string]string) MatchFunc {
 	return func(env *messaging.Envelope, b routing.DestinationBinding) bool {
-		val, ok := messaging.GetHeaderString(env.Headers, headerKey)
+		val, ok := messaging.GetHeaderString(env.Headers(), headerKey)
 		if !ok {
 			return false
 		}
@@ -128,7 +128,7 @@ func MatchByID(bindingID string) MatchFunc {
 func MatchBySubjectPrefix(prefixMap map[string]string) MatchFunc {
 	return func(env *messaging.Envelope, b routing.DestinationBinding) bool {
 		for prefix, targetID := range prefixMap {
-			if strings.HasPrefix(env.Subject, prefix) && targetID == b.ID {
+			if strings.HasPrefix(env.Subject(), prefix) && targetID == b.ID {
 				return true
 			}
 		}
@@ -252,7 +252,7 @@ func (r *RuleResolver) Resolve(_ context.Context, env *messaging.Envelope) ([]ro
 func (r *RuleResolver) planForBinding(bindingID string, env *messaging.Envelope) ([]routing.DispatchPlan, error) {
 	b := r.bindingIndex[bindingID]
 
-	addr, err := RenderAddress(b.Address, env.Headers)
+	addr, err := RenderAddress(b.Address, env.Headers())
 	if err != nil {
 		return nil, shared.ErrInvalidTopic.
 			WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))

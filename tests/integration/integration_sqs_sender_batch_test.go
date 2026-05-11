@@ -46,13 +46,13 @@ func TestIntegration_SQS_SendBatch_25Messages(t *testing.T) {
 
 	envs := make([]*messaging.Envelope, 25)
 	for i := range envs {
-		envs[i] = &messaging.Envelope{
+		envs[i] = messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("batch-msg-%d", i),
 			Payload: []byte(fmt.Sprintf("body-%d", i)),
 			Headers: map[string]any{
 				"X-Seq": strconv.Itoa(i),
 			},
-		}
+		})
 	}
 
 	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
@@ -171,14 +171,14 @@ func TestIntegration_SQS_SendBatch_LargeWithHeaders(t *testing.T) {
 	const total = 50
 	envs := make([]*messaging.Envelope, total)
 	for i := range envs {
-		envs[i] = &messaging.Envelope{
+		envs[i] = messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("large-%d", i),
 			Subject: "batch-test",
 			Payload: []byte(fmt.Sprintf("large-body-%d", i)),
 			Headers: map[string]any{
 				"X-Index": strconv.Itoa(i),
 			},
-		}
+		})
 	}
 
 	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {

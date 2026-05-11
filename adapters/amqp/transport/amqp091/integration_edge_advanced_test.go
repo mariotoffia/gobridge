@@ -106,9 +106,9 @@ func TestIntegration_Edge_ExchangeRouting(t *testing.T) {
 	})
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "exchange-routed", Subject: routingKey, Payload: []byte("routed"),
-	}}); err != nil {
+	})}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -207,9 +207,9 @@ func TestIntegration_Edge_SendBatchAllReceived(t *testing.T) {
 	wantIDs := make(map[string]bool, msgCount)
 	for i := range envs {
 		id := "batch-" + string(rune('A'+i))
-		envs[i] = &messaging.Envelope{
+		envs[i] = messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID: id, Subject: e.queue, Payload: []byte("payload"),
-		}
+		})
 		wantIDs[id] = true
 	}
 
@@ -269,7 +269,7 @@ func TestIntegration_Edge_HeaderRoundTrip(t *testing.T) {
 	e := edge091Setup(t, logger, "edge-headers")
 
 	longValue := strings.Repeat("y", 4096)
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "unicode-headers", Subject: e.queue, Payload: []byte("body"),
 		Headers: map[string]any{
 			"emoji":      "hello 🌍🚀",
@@ -277,22 +277,22 @@ func TestIntegration_Edge_HeaderRoundTrip(t *testing.T) {
 			"long-value": longValue,
 			"diacritics": "résumé café naïve",
 		},
-	}
+	})
 
 	got := edge091SendRecv(t, e, env, 20*time.Second)
 
-	if got.Headers["emoji"] != "hello 🌍🚀" {
-		t.Errorf("emoji header = %v", got.Headers["emoji"])
+	if got.Headers()["emoji"] != "hello 🌍🚀" {
+		t.Errorf("emoji header = %v", got.Headers()["emoji"])
 	}
-	if got.Headers["cjk"] != "你好世界" {
-		t.Errorf("cjk header = %v", got.Headers["cjk"])
+	if got.Headers()["cjk"] != "你好世界" {
+		t.Errorf("cjk header = %v", got.Headers()["cjk"])
 	}
-	if got.Headers["long-value"] != longValue {
+	if got.Headers()["long-value"] != longValue {
 		t.Errorf("long-value length = %d, want %d",
-			len(got.Headers["long-value"].(string)), len(longValue))
+			len(got.Headers()["long-value"].(string)), len(longValue))
 	}
-	if got.Headers["diacritics"] != "résumé café naïve" {
-		t.Errorf("diacritics header = %v", got.Headers["diacritics"])
+	if got.Headers()["diacritics"] != "résumé café naïve" {
+		t.Errorf("diacritics header = %v", got.Headers()["diacritics"])
 	}
 
 	assertLog091Contains(t, &buf, "amqp091: publishing", "amqp091: message received")
@@ -324,9 +324,9 @@ func TestIntegration_Edge_PrefetchHonored(t *testing.T) {
 
 	const total = 3
 	for i := 0; i < total; i++ {
-		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID: "pf-" + string(rune('A'+i)), Subject: e.queue, Payload: []byte("x"),
-		}}); err != nil {
+		})}); err != nil {
 			t.Fatalf("Send[%d]: %v", i, err)
 		}
 	}

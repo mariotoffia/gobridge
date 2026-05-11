@@ -50,14 +50,14 @@ func TestIntegration_DLQRouter_RouteStoresEntry(t *testing.T) {
 		WriteTimeout: 10 * time.Second,
 	})
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID:      "env-dr1",
 		Subject: "test/topic",
 		Payload: []byte(`{"dlq":"entry"}`),
 		Headers: map[string]any{
 			messaging.HeaderCorrelationID: "corr-dr1",
 		},
-	}
+	})
 
 	routeErr := shared.ErrInvalidPayload.WithMessage("bad payload format")
 
@@ -121,11 +121,11 @@ func TestIntegration_DLQRouter_AsyncBufferDrains(t *testing.T) {
 	defer router.Close()
 	const entryCount = 5
 	for i := 0; i < entryCount; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      uniqueID("env-dr2"),
 			Subject: "test/async",
 			Payload: []byte(`{"async":"entry"}`),
-		}
+		})
 		routeErr := shared.ErrUnavailable.WithMessage("transient failure")
 		if err := router.Route(ctx, env, "route-dr2", uniqueID("bind"), "", "sess-dr2", "", routeErr, 1); err != nil {
 			t.Fatalf("Route[%d]: %v", i, err)
@@ -167,14 +167,14 @@ func TestIntegration_DLQRouter_ErrorClassification(t *testing.T) {
 	ctx := context.Background()
 
 	// Permanent error (ErrNotFound has ErrorPermanent class)
-	env1 := &messaging.Envelope{ID: "env-dr3-perm", Subject: "test", Payload: []byte("x")}
+	env1 := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-dr3-perm", Subject: "test", Payload: []byte("x")})
 	permErr := shared.ErrNotFound.WithMessage("resource gone")
 	if err := router.Route(ctx, env1, "route-dr3", "b1", "", "s1", "", permErr, 1); err != nil {
 		t.Fatalf("Route perm: %v", err)
 	}
 
 	// Transient error
-	env2 := &messaging.Envelope{ID: "env-dr3-trans", Subject: "test", Payload: []byte("y")}
+	env2 := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-dr3-trans", Subject: "test", Payload: []byte("y")})
 	transErr := shared.ErrUnavailable.WithMessage("service down")
 	if err := router.Route(ctx, env2, "route-dr3", "b2", "", "s2", "", transErr, 2); err != nil {
 		t.Fatalf("Route trans: %v", err)
@@ -224,11 +224,11 @@ func TestIntegration_DLQRouter_CloseDrainsBuffer(t *testing.T) {
 
 	const entryCount = 5
 	for i := 0; i < entryCount; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      uniqueID("env-dr4"),
 			Subject: "test/drain",
 			Payload: []byte(`{"drain":"test"}`),
-		}
+		})
 		if err := router.Route(ctx, env, "route-dr4", uniqueID("bind"), "", "sess-dr4", "", shared.ErrUnavailable, 1); err != nil {
 			t.Fatalf("Route[%d]: %v", i, err)
 		}
@@ -275,11 +275,11 @@ func TestIntegration_DLQRouter_ConcurrentRoutes(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
-			env := &messaging.Envelope{
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{
 				ID:      uniqueID("env-dr5"),
 				Subject: "test/concurrent",
 				Payload: []byte(`{"concurrent":"dlq"}`),
-			}
+			})
 			_ = router.Route(ctx, env, "route-dr5", uniqueID("bind"), "", "sess-dr5", "", shared.ErrUnavailable, 1)
 		}()
 	}

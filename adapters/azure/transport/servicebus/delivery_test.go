@@ -16,7 +16,7 @@ import (
 
 // verifies Delivery.Envelope returns the wrapped domain envelope.
 func TestDelivery_Envelope(t *testing.T) {
-	env := &messaging.Envelope{ID: "msg-1", Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1", Subject: "test"})
 	mock := &mockASBClient{}
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
 	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil, nil)

@@ -12,7 +12,7 @@ import (
 
 func BenchmarkRunChain_NoProcessors(b *testing.B) {
 	ctx := context.Background()
-	env := &messaging.Envelope{ID: "1", Subject: "bench"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "1", Subject: "bench"})
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -22,7 +22,7 @@ func BenchmarkRunChain_NoProcessors(b *testing.B) {
 
 func BenchmarkRunChain_OneProcessor(b *testing.B) {
 	ctx := context.Background()
-	env := &messaging.Envelope{ID: "1", Subject: "bench"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "1", Subject: "bench"})
 	procs := []ports.Processor{&FakeProcessor{
 		NameVal: "passthrough",
 		ProcessFn: func(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
@@ -38,7 +38,7 @@ func BenchmarkRunChain_OneProcessor(b *testing.B) {
 
 func BenchmarkRunChain_FiveProcessors(b *testing.B) {
 	ctx := context.Background()
-	env := &messaging.Envelope{ID: "1", Subject: "bench"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "1", Subject: "bench"})
 	var procs []ports.Processor
 	for i := 0; i < 5; i++ {
 		procs = append(procs, &FakeProcessor{
@@ -59,10 +59,10 @@ func BenchmarkDLQRouter_Route(b *testing.B) {
 	store := NewFakeDLQStore()
 	dlq := runtime.NewDLQRouter(store)
 	ctx := context.Background()
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID:      "bench-msg",
 		Headers: map[string]any{messaging.HeaderCorrelationID: "corr-1"},
-	}
+	})
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

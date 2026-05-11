@@ -54,12 +54,12 @@ func makeEntry(id, routeID, category string, failedAt time.Time) routing.DLQEntr
 		LastError:     "something went wrong",
 		FailedAt:      failedAt,
 		Attempts:      3,
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "env-" + id,
 			Subject: "test/subject",
 			Payload: []byte(`{"key":"value"}`),
 			Headers: map[string]any{"x-test": "header"},
-		},
+		}),
 	}
 }
 
@@ -123,14 +123,14 @@ func TestWriteAndList(t *testing.T) {
 	if g.Envelope.ID != "env-e1" {
 		t.Fatalf("Envelope.ID: got %q, want %q", g.Envelope.ID, "env-e1")
 	}
-	if g.Envelope.Subject != "test/subject" {
-		t.Fatalf("Envelope.Subject: got %q, want %q", g.Envelope.Subject, "test/subject")
+	if g.Envelope.Subject() != "test/subject" {
+		t.Fatalf("Envelope.Subject: got %q, want %q", g.Envelope.Subject(), "test/subject")
 	}
 	if string(g.Envelope.Payload) != `{"key":"value"}` {
 		t.Fatalf("Envelope.Payload: got %q", g.Envelope.Payload)
 	}
-	if v, ok := g.Envelope.Headers["x-test"]; !ok || v != "header" {
-		t.Fatalf("Envelope.Headers: got %v", g.Envelope.Headers)
+	if v, ok := g.Envelope.Headers()["x-test"]; !ok || v != "header" {
+		t.Fatalf("Envelope.Headers: got %v", g.Envelope.Headers())
 	}
 }
 

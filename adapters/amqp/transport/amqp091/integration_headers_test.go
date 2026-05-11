@@ -51,7 +51,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "hdr-msg-001",
 		Subject: queueName,
 		Payload: []byte(`{"round":"trip"}`),
@@ -64,7 +64,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 			HeaderPriority:      uint8(5),
 			"x-custom-key":      "custom-value",
 		},
-	}
+	})
 
 	sender := NewSender(SenderConfig{
 		Exchange:   exchangeName,
@@ -97,7 +97,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 	select {
 	case del := <-received:
 		got := del.Envelope()
-		h := got.Headers
+		h := got.Headers()
 
 		assertHeader(t, h, HeaderCorrelationID, "corr-123")
 		assertHeader(t, h, HeaderContentType, "application/json")
@@ -159,12 +159,12 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:        "ttl-msg-001",
 		Subject:   queueName,
 		Payload:   []byte("ttl-test"),
 		ExpiresAt: time.Now().Add(1 * time.Hour),
-	}
+	})
 
 	sender := NewSender(SenderConfig{
 		Exchange:   exchangeName,
@@ -196,7 +196,7 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 
 	select {
 	case del := <-received:
-		h := del.Envelope().Headers
+		h := del.Envelope().Headers()
 		exp, ok := h[HeaderExpiration].(string)
 		if !ok || exp == "" {
 			t.Fatalf("%s not set or empty; headers: %v", HeaderExpiration, h)
@@ -255,9 +255,9 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 		Session:    sess,
 		Timeout:    10 * time.Second,
 	})
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "extend-msg", Subject: queueName, Payload: []byte("extend-test"),
-	}}); err != nil {
+	})}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 

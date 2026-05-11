@@ -20,7 +20,7 @@ func nextErr(sentinel error) func(context.Context, *messaging.Envelope) error {
 }
 
 func envelope(subject string, headers map[string]any) *messaging.Envelope {
-	return &messaging.Envelope{Subject: subject, Headers: headers}
+	return messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{Subject: subject, Headers: headers})
 }
 
 // Verifies closed-to-open-to-half-open-to-closed transitions under failures and reset timeout.

@@ -270,11 +270,11 @@ func TestDeliveryHook_DirectHold_AttemptCarriesReceiveCount(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-rc3",
 		Payload: []byte("attempt"),
 		Headers: map[string]any{"sqs.ApproximateReceiveCount": 3},
-	})
+	}))
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}

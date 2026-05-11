@@ -18,7 +18,7 @@ import (
 
 // Verifies Envelope returns the underlying domain envelope.
 func TestDelivery_Envelope(t *testing.T) {
-	env := &messaging.Envelope{ID: "msg-1", Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1", Subject: "test"})
 	mock := &mockSQSClient{}
 	d := newDelivery(context.Background(), env, mock, "q-url", "rh-1", 30, false, nil, nil, nil, nil)
 

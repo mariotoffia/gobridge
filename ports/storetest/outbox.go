@@ -25,12 +25,12 @@ func makeRecord(t *testing.T, id, envelopeID, bindingID, sessionID, routeID stri
 		BindingID:  bindingID,
 		SessionID:  sessionID,
 		Address:    "test/topic",
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      envelopeID,
 			Subject: "test-subject",
 			Payload: []byte(`{"data":"value"}`),
 			Headers: map[string]any{"key": "val"},
-		},
+		}),
 		DispatchHeaders: map[string]any{"dispatch": "header"},
 		ExpiresAt:       expiresAt,
 	})
@@ -418,7 +418,7 @@ func outboxCompleteAfterTokenChange(t *testing.T, store ports.OutboxStore) {
 		ID:         id,
 		EnvelopeID: "env-catc-1",
 		SessionID:  "sess-catc",
-		Envelope:   messaging.Envelope{ID: "env-catc-1", Subject: "test"},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-catc-1", Subject: "test"}),
 	})
 	if err != nil {
 		t.Fatalf("new record: %v", err)

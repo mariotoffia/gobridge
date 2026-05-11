@@ -136,7 +136,7 @@ func TestNewSender_NilMetrics(t *testing.T) {
 func TestSender_Send_MissingRoutingTarget(t *testing.T) {
 	s := NewSender(SenderConfig{})
 
-	env := &messaging.Envelope{ID: "x", Subject: "logical.subject", Payload: []byte("hi")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "x", Subject: "logical.subject", Payload: []byte("hi")})
 	err := s.Send(context.Background(), ports.OutboundMessage{Envelope: env})
 	if err == nil {
 		t.Fatal("expected error when neither cfg.RoutingKey nor msg.Address is set")

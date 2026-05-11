@@ -143,7 +143,7 @@ func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {
 		for i := 0; i < uc2MsgsPerFactory; i++ {
 			deviceID := fmt.Sprintf("dev-%s-%d", factory, i)
 			topic := fmt.Sprintf("uc2/devices/%s/telemetry", deviceID)
-			env := &messaging.Envelope{
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{
 				ID:      fmt.Sprintf("uc2-%s-%d", factory, i),
 				Subject: topic,
 				Payload: []byte(fmt.Sprintf(
@@ -151,7 +151,7 @@ func TestUC2_MQTT_ContentRouted_FanOut_To_SQS(t *testing.T) {
 				Headers: map[string]any{
 					"factory": factory,
 				},
-			}
+			})
 			require.NoError(t, pubSnd.Send(ctx, ports.OutboundMessage{Envelope: env, Address: topic}),
 				"MQTT publish factory=%s seq=%d", factory, i)
 		}

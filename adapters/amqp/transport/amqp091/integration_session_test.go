@@ -246,16 +246,16 @@ func TestIntegration_SessionReconcile_MultipleQueues(t *testing.T) {
 		Timeout:  10 * time.Second,
 	})
 
-	if err := directSender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := directSender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "direct-1", Subject: directQueue, Payload: []byte("direct-payload"),
-	}}); err != nil {
+	})}); err != nil {
 		t.Fatalf("send direct: %v", err)
 	}
 	if err := fanoutSender.Send(ctx, ports.OutboundMessage{
 		Address: fanoutQueue,
-		Envelope: &messaging.Envelope{
+		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID: "fanout-1", Subject: fanoutQueue, Payload: []byte("fanout-payload"),
-		},
+		}),
 	}); err != nil {
 		t.Fatalf("send fanout: %v", err)
 	}
@@ -356,9 +356,9 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 		Session:    sess1,
 		Timeout:    10 * time.Second,
 	})
-	if err := sender1.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender1.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "restart-msg", Subject: queueName, Payload: []byte("first-session"),
-	}}); err != nil {
+	})}); err != nil {
 		t.Fatalf("send on session1: %v", err)
 	}
 
@@ -385,9 +385,9 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 		Session:    sess2,
 		Timeout:    10 * time.Second,
 	})
-	if err := sender2.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender2.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "restart-msg-2", Subject: queueName, Payload: []byte("second-session"),
-	}}); err != nil {
+	})}); err != nil {
 		t.Fatalf("send on session2: %v", err)
 	}
 

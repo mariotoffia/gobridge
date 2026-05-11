@@ -121,7 +121,7 @@ func TestSSESender_Send_NilEnvelope(t *testing.T) {
 func TestSSESender_Send_RejectsMismatchedAddress(t *testing.T) {
 	sender, rec := newSSESenderForTest(t, "sse-cfg")
 
-	env := &messaging.Envelope{ID: "e1", Subject: "evt.x", Payload: []byte(`{}`)}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Subject: "evt.x", Payload: []byte(`{}`)})
 	err := sender.Send(context.Background(), ports.OutboundMessage{
 		Envelope: env,
 		Address:  "other-route",
@@ -163,11 +163,11 @@ func TestSSESender_Send_MismatchErrorMessageContainsBothAddresses(t *testing.T) 
 func TestSSESender_Send_EmptyAddressUsesConfiguredIdentity(t *testing.T) {
 	sender, _ := newSSESenderForTest(t, "sse-empty")
 	subject, body := runSSESendAndCapture(t, sender, ports.OutboundMessage{
-		Envelope: &messaging.Envelope{
+		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "evt-empty",
 			Subject: "user.signup",
 			Payload: []byte(`{"user":"alice"}`),
-		},
+		}),
 	})
 	if subject != "user.signup" {
 		t.Fatalf("subject = %q, want user.signup; full body:\n%s", subject, body)
@@ -180,11 +180,11 @@ func TestSSESender_Send_EmptyAddressUsesConfiguredIdentity(t *testing.T) {
 func TestSSESender_Send_AcceptsMatchingAddress(t *testing.T) {
 	sender, _ := newSSESenderForTest(t, "sse-match")
 	subject, body := runSSESendAndCapture(t, sender, ports.OutboundMessage{
-		Envelope: &messaging.Envelope{
+		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "evt-match",
 			Subject: "user.signup",
 			Payload: []byte(`{"user":"bob"}`),
-		},
+		}),
 		Address: "sse-match",
 	})
 	if subject != "user.signup" {
@@ -199,7 +199,7 @@ func TestSSESender_Send_SetRouteIDOverridesIdentity(t *testing.T) {
 	sender.SetRouteID("route-123")
 
 	// A msg.Address equal to the now-overridden identity must succeed.
-	env := &messaging.Envelope{ID: "e1", Subject: "evt.x", Payload: []byte(`{}`)}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Subject: "evt.x", Payload: []byte(`{}`)})
 	if err := sender.Send(context.Background(), ports.OutboundMessage{
 		Envelope: env,
 		Address:  "route-123",
@@ -303,8 +303,8 @@ func TestHTTPIngressToSSEEgress_PreservesSubject(t *testing.T) {
 	// Confirm the receiver saw the same logical subject.
 	select {
 	case env := <-emitDone:
-		if env.Subject != "order.created" {
-			t.Fatalf("ingress envelope subject = %q, want order.created", env.Subject)
+		if env.Subject() != "order.created" {
+			t.Fatalf("ingress envelope subject = %q, want order.created", env.Subject())
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("emit did not fire")

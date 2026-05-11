@@ -26,7 +26,7 @@ func (r *RouteRunner) resolvePlans(ctx context.Context, env *messaging.Envelope)
 	if len(r.bindings) > 0 {
 		b := r.bindings[0]
 
-		addr, err := RenderAddress(b.Address, env.Headers)
+		addr, err := RenderAddress(b.Address, env.Headers())
 		if err != nil {
 			return nil, shared.ErrInvalidTopic.
 				WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
@@ -75,14 +75,14 @@ func (r *RouteRunner) buildOutboxRecords(env *messaging.Envelope, plans []routin
 }
 
 func (r *RouteRunner) injectHeaders(env *messaging.Envelope) {
-	if env.Headers == nil {
-		env.Headers = make(map[string]any, 3)
+	if env.Headers() == nil {
+		env.ReplaceHeaders(make(map[string]any, 3))
 	}
-	if _, ok := env.Headers[messaging.HeaderCorrelationID]; !ok {
-		env.Headers[messaging.HeaderCorrelationID] = generateID()
+	if _, ok := env.Headers()[messaging.HeaderCorrelationID]; !ok {
+		env.SetHeader(messaging.HeaderCorrelationID, generateID())
 	}
-	env.Headers[messaging.HeaderRouteID] = r.routeID
-	env.Headers[messaging.HeaderSourceID] = r.instanceID
+	env.SetHeader(messaging.HeaderRouteID, r.routeID)
+	env.SetHeader(messaging.HeaderSourceID, r.instanceID)
 }
 
 func (r *RouteRunner) acquireSlots(ctx context.Context) error {

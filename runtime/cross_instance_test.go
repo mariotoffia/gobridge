@@ -125,8 +125,8 @@ func TestCrossInstance_SQSConsumerAndMQTTOwnerAreDifferent(t *testing.T) {
 	})
 
 	sent := senderB.GetSent()
-	if sent[0].Subject != "" {
-		t.Errorf("expected source-empty subject preserved on outbound, got %q", sent[0].Subject)
+	if sent[0].Subject() != "" {
+		t.Errorf("expected source-empty subject preserved on outbound, got %q", sent[0].Subject())
 	}
 	outboundB := senderB.GetOutbound()
 	if len(outboundB) == 0 || outboundB[0].Address != "factory/a/orders/42" {

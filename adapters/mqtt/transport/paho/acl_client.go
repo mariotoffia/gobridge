@@ -116,7 +116,7 @@ func (c *pahoConn) Unsubscribe(ctx context.Context, topics []string) error {
 // PublishEnvelope serialises the given messaging.Envelope into a paho
 // Publish via PublishFromEnvelope and forwards it to the broker. The
 // publish topic is supplied explicitly by the caller (it is the
-// transport-level destination, distinct from env.Subject). The
+// transport-level destination, distinct from env.Subject()). The
 // PUBACK / PUBREC reason code is returned in publishResult so the port
 // side can map it via MapPublishReasonCode without importing the SDK.
 func (c *pahoConn) PublishEnvelope(

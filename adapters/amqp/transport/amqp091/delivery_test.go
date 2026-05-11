@@ -15,11 +15,11 @@ import (
 )
 
 func makeTestDelivery(acker *mockAcknowledger, tag uint64) (*Delivery, *messaging.Envelope) {
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "test-env",
 		Subject: "test.subject",
 		Payload: []byte("hello"),
-	}
+	})
 	raw := amqp.Delivery{
 		Acknowledger: acker,
 		DeliveryTag:  tag,

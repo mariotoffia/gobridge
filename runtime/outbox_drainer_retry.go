@@ -39,7 +39,7 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *persistence.Outb
 	// address travels via OutboundMessage.Address.
 	outbound := env.Clone()
 	if rec.DispatchHeaders != nil {
-		outbound.Headers = messaging.MergeHeaders(outbound.Headers, rec.DispatchHeaders, true)
+		outbound.StampHeaders(messaging.MergeHeaders(outbound.Headers(), rec.DispatchHeaders, true))
 	}
 
 	// Re-check lease before sending to minimize duplicate delivery window.

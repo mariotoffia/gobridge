@@ -55,7 +55,7 @@ func TestSender_Send_RejectsMismatchedAddress(t *testing.T) {
 	}
 
 	err = sender.Send(context.Background(), ports.OutboundMessage{
-		Envelope: &messaging.Envelope{ID: "e1", Subject: "evt.x", Payload: []byte("p")},
+		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Subject: "evt.x", Payload: []byte("p")}),
 		Address:  "https://other-queue",
 	})
 	if err == nil {
@@ -79,7 +79,7 @@ func TestSender_Send_AcceptsMatchingAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{ID: "e1", Subject: "evt.x", Payload: []byte("p")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Subject: "evt.x", Payload: []byte("p")})
 	err = sender.Send(context.Background(), ports.OutboundMessage{
 		Envelope: env,
 		Address:  "https://q",
@@ -342,8 +342,8 @@ func TestReceiver_NoSubjectAttribute_YieldsEmptySubject(t *testing.T) {
 		Body:          aws.String("plain body"),
 	})
 
-	if env.Subject != "" {
-		t.Fatalf("Envelope.Subject = %q, want empty (no fallback to queue name/URL)", env.Subject)
+	if env.Subject() != "" {
+		t.Fatalf("Envelope.Subject = %q, want empty (no fallback to queue name/URL)", env.Subject())
 	}
 }
 
@@ -359,8 +359,8 @@ func TestReceiver_SNSUnwrapEnabled_NonSNSBody_YieldsEmptySubject(t *testing.T) {
 		Body:          aws.String("not-json"),
 	})
 
-	if env.Subject != "" {
-		t.Fatalf("Envelope.Subject = %q, want empty", env.Subject)
+	if env.Subject() != "" {
+		t.Fatalf("Envelope.Subject = %q, want empty", env.Subject())
 	}
 }
 
@@ -383,11 +383,11 @@ func TestReceiver_SNSUnwrap_TopicArnOnly_YieldsEmptySubject(t *testing.T) {
 		Body:          aws.String(string(body)),
 	})
 
-	if env.Subject != "" {
-		t.Fatalf("Envelope.Subject = %q, want empty (TopicArn must not be promoted)", env.Subject)
+	if env.Subject() != "" {
+		t.Fatalf("Envelope.Subject = %q, want empty (TopicArn must not be promoted)", env.Subject())
 	}
-	if env.Headers["sns.topic_arn"] != "arn:aws:sns:us-west-1:123:my-topic" {
-		t.Fatalf("headers[sns.topic_arn] = %v, want the TopicArn", env.Headers["sns.topic_arn"])
+	if env.Headers()["sns.topic_arn"] != "arn:aws:sns:us-west-1:123:my-topic" {
+		t.Fatalf("headers[sns.topic_arn] = %v, want the TopicArn", env.Headers()["sns.topic_arn"])
 	}
 	if string(env.Payload) != `{"inner":"data"}` {
 		t.Fatalf("payload = %q, want unwrapped inner Message", string(env.Payload))
@@ -413,11 +413,11 @@ func TestReceiver_SNSUnwrap_WithSubject_SetsSubject(t *testing.T) {
 		Body:          aws.String(string(body)),
 	})
 
-	if env.Subject != "Logical-Subject" {
-		t.Fatalf("Envelope.Subject = %q, want %q", env.Subject, "Logical-Subject")
+	if env.Subject() != "Logical-Subject" {
+		t.Fatalf("Envelope.Subject = %q, want %q", env.Subject(), "Logical-Subject")
 	}
-	if env.Headers["sns.subject"] != "Logical-Subject" {
-		t.Fatalf("headers[sns.subject] = %v, want %q", env.Headers["sns.subject"], "Logical-Subject")
+	if env.Headers()["sns.subject"] != "Logical-Subject" {
+		t.Fatalf("headers[sns.subject] = %v, want %q", env.Headers()["sns.subject"], "Logical-Subject")
 	}
 }
 
@@ -435,8 +435,8 @@ func TestReceiver_SubjectAttribute_PopulatesSubject(t *testing.T) {
 		},
 	})
 
-	if env.Subject != "evt.created" {
-		t.Fatalf("Envelope.Subject = %q, want %q", env.Subject, "evt.created")
+	if env.Subject() != "evt.created" {
+		t.Fatalf("Envelope.Subject = %q, want %q", env.Subject(), "evt.created")
 	}
 }
 
@@ -449,19 +449,19 @@ func TestReceiver_SubjectAttribute_PopulatesSubject(t *testing.T) {
 // pins the documented behavior: subject participation in the hash is
 // deliberate.
 func TestGenerateDeduplicationID_SubjectMattersForT08(t *testing.T) {
-	a := &messaging.Envelope{ID: "id-1", Subject: "evt.x", Payload: []byte("p")}
-	b := &messaging.Envelope{ID: "id-1", Subject: "evt.x", Payload: []byte("p")}
+	a := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "id-1", Subject: "evt.x", Payload: []byte("p")})
+	b := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "id-1", Subject: "evt.x", Payload: []byte("p")})
 	if generateDeduplicationID(a) != generateDeduplicationID(b) {
 		t.Fatal("identical envelopes must produce identical dedup IDs")
 	}
 
-	withSubject := &messaging.Envelope{ID: "id-1", Subject: "evt.x", Payload: []byte("p")}
-	emptySubject := &messaging.Envelope{ID: "id-1", Subject: "", Payload: []byte("p")}
+	withSubject := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "id-1", Subject: "evt.x", Payload: []byte("p")})
+	emptySubject := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "id-1", Subject: "", Payload: []byte("p")})
 	if generateDeduplicationID(withSubject) == generateDeduplicationID(emptySubject) {
 		t.Fatal("dedup IDs must differ when Subject differs (one empty)")
 	}
 
-	otherSubject := &messaging.Envelope{ID: "id-1", Subject: "evt.y", Payload: []byte("p")}
+	otherSubject := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "id-1", Subject: "evt.y", Payload: []byte("p")})
 	if generateDeduplicationID(withSubject) == generateDeduplicationID(otherSubject) {
 		t.Fatal("dedup IDs must differ when Subject differs")
 	}

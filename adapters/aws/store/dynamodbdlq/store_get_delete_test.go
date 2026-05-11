@@ -37,7 +37,7 @@ func writeTestEntry(t *testing.T, store *dynamodbdlq.Store, id, route, cat strin
 	t.Helper()
 	if err := store.Write(context.Background(), routing.DLQEntry{
 		ID: id, RouteID: route, Category: cat, FailedAt: failedAt,
-		Envelope: messaging.Envelope{ID: "env-" + id, Subject: "test"},
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-" + id, Subject: "test"}),
 	}); err != nil {
 		t.Fatalf("write %s: %v", id, err)
 	}
@@ -54,12 +54,12 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 
 	entry := routing.DLQEntry{
 		ID: "dg-1", RouteID: "route-g", Category: "timeout",
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "env-dg-1",
 			Subject: "test/get",
 			Payload: []byte(`{"k":"v"}`),
 			Headers: map[string]any{"h": "v"},
-		},
+		}),
 		FailedAt: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC),
 		Attempts: 2,
 	}

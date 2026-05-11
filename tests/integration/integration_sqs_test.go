@@ -83,11 +83,11 @@ func TestIntegration_SQS_Sender_SendsMessage(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "ir2")
 	sender := newSQSSender(t, queueURL)
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-ir2",
 		Subject: "test-subject",
 		Payload: []byte("hello from sender"),
-	}
+	})
 
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("sender.Send: %v", err)

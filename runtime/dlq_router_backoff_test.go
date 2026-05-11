@@ -106,11 +106,11 @@ func TestDLQRouter_RetryBackoff_FakeClock(t *testing.T) {
 	ctx := context.Background()
 	router.Start(ctx)
 	defer router.Close()
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "backoff-test-1",
 		Subject: "test/backoff",
 		Payload: []byte("payload"),
-	}
+	})
 
 	err := router.Route(ctx, env, "route-1", "bind-1", "", "sess-1", "src-1", shared.ErrUnavailable, 1)
 	require.NoError(t, err)

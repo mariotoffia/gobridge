@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "ARCH_REVIEW.md",
-  "source_sha": "33663893fed9900bf5bd9b98471bcefd5beaacba64fa8cf105cf93ea03370ddd",
+  "source_sha": "ad51427fa22690dcf6ea96e546681cf48b16483760ebf10d33ce5e00229f87fa",
   "indexed_at": "2026-05-11T09:57:59Z",
   "status_convention": "no explicit markers \u2014 orchestrator will append \" - DONE\" to the item line on completion",
   "tasks": [
@@ -41,7 +41,7 @@
     {
       "id": "H-3",
       "title": "Add `messaging.NewEnvelope(...)` constructor; un-export Subject/Headers",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(DDD R2)",
       "suggested_agent": "thiink-ddd-expert",
       "agent_rationale": "DDD R2 tag \u2014 aggregate constructor / encapsulation.",

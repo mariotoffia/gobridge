@@ -140,7 +140,7 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	env.Headers = messaging.StripReservedHeaders(env.Headers)
+	env.ReplaceHeaders(messaging.StripReservedHeaders(env.Headers()))
 
 	r.mu.Lock()
 	routeID := r.routeID
@@ -218,19 +218,24 @@ func (r *ingressRequest) toEnvelope(clk clock.Clock) (*messaging.Envelope, error
 	if id == "" {
 		id = generateHTTPEnvelopeID(clk)
 	}
-	env := &messaging.Envelope{
+	var expires time.Time
+	if r.ExpiresAt != "" {
+		parsed, err := time.Parse(time.RFC3339, r.ExpiresAt)
+		if err != nil {
+			return nil, fmt.Errorf("invalid expires_at: must be RFC3339 format")
+		}
+		expires = parsed
+	}
+	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
 		ID:        id,
 		Subject:   r.Subject,
 		Payload:   []byte(r.Payload),
 		Headers:   r.Headers,
 		CreatedAt: clk.Now(),
-	}
-	if r.ExpiresAt != "" {
-		t, err := time.Parse(time.RFC3339, r.ExpiresAt)
-		if err != nil {
-			return nil, fmt.Errorf("invalid expires_at: must be RFC3339 format")
-		}
-		env.ExpiresAt = t
+		ExpiresAt: expires,
+	}, clk.Now())
+	if err != nil {
+		return nil, fmt.Errorf("envelope: %w", err)
 	}
 	return env, nil
 }

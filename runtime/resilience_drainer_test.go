@@ -106,11 +106,11 @@ func TestRetryUnsupported_NilDLQ_AcksDelivery(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-1",
 		Subject: "test",
 		Payload: []byte("hello"),
-	}
+	})
 
 	del := NewFakeDelivery(env)
 	del.RetryFnErr = shared.ErrNotSupported
@@ -152,11 +152,11 @@ func TestRetryUnsupported_WithDLQ_RoutesToDLQ(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-2",
 		Subject: "test",
 		Payload: []byte("hello"),
-	}
+	})
 
 	del := NewFakeDelivery(env)
 	del.RetryFnErr = shared.ErrNotSupported

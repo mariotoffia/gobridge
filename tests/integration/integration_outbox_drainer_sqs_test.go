@@ -80,11 +80,11 @@ func TestIntegration_OutboxDrainer_RealSQSSender_FullCycle(t *testing.T) {
 			SessionID:  "sess-sq1",
 			RouteID:    "route-sq1",
 			Address:    queueURL,
-			Envelope: messaging.Envelope{
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 				ID:      fmt.Sprintf("env-sq1-%d", i),
 				Subject: "test/sqs/full-cycle",
 				Payload: []byte(fmt.Sprintf(`{"index":%d}`, i)),
-			},
+			}),
 		})
 		if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist record %d: %v", i, err)
@@ -184,12 +184,12 @@ func TestIntegration_OutboxDrainer_RealSQSSender_ExpiredToDLQ(t *testing.T) {
 		RouteID:    "route-sq2",
 		Address:    "test/sqs/expired",
 		ExpiresAt:  past,
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:        "env-sq2",
 			Subject:   "test/sqs/expired",
 			Payload:   []byte(`{"expired":"should-not-reach-sqs"}`),
 			ExpiresAt: past,
-		},
+		}),
 	})
 	if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
@@ -285,11 +285,11 @@ func TestIntegration_OutboxDrainer_RealSQSSender_HeaderPreservation(t *testing.T
 		RouteID:         "route-sq3",
 		Address:         queueURL,
 		DispatchHeaders: customHeaders,
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "env-sq3",
 			Subject: "test/sqs/headers",
 			Payload: []byte(`{"headers":"preservation-test"}`),
-		},
+		}),
 	})
 	if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)

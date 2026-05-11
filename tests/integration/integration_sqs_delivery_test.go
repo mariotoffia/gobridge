@@ -211,7 +211,7 @@ func TestIntegration_SQS_HeaderRoundTrip(t *testing.T) {
 	queueURL, _ := setupSQSQueue(t, "id4")
 	sender := newSQSSender(t, queueURL)
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "hdr-roundtrip-1",
 		Subject: "test-subject-hdr",
 		Payload: []byte(`{"header":"roundtrip"}`),
@@ -220,7 +220,7 @@ func TestIntegration_SQS_HeaderRoundTrip(t *testing.T) {
 			"X-Trace-ID":      "trace-12345",
 			"X-Numeric":       "42",
 		},
-	}
+	})
 
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("sender.Send: %v", err)
@@ -247,9 +247,9 @@ func TestIntegration_SQS_HeaderRoundTrip(t *testing.T) {
 
 	checkHeader := func(key, want string) {
 		t.Helper()
-		got, ok := received.Headers[key].(string)
+		got, ok := received.Headers()[key].(string)
 		if !ok {
-			t.Fatalf("header %q not found or not a string; headers=%v", key, received.Headers)
+			t.Fatalf("header %q not found or not a string; headers=%v", key, received.Headers())
 		}
 		if got != want {
 			t.Fatalf("header %q: got %q, want %q", key, got, want)
@@ -259,8 +259,8 @@ func TestIntegration_SQS_HeaderRoundTrip(t *testing.T) {
 	checkHeader("X-Trace-ID", "trace-12345")
 	checkHeader("X-Numeric", "42")
 
-	if received.Subject != "test-subject-hdr" {
-		t.Fatalf("subject mismatch: got %q, want %q", received.Subject, "test-subject-hdr")
+	if received.Subject() != "test-subject-hdr" {
+		t.Fatalf("subject mismatch: got %q, want %q", received.Subject(), "test-subject-hdr")
 	}
 }
 

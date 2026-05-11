@@ -34,12 +34,12 @@ func makeDLQEntry(id, routeID, category string, failedAt time.Time) routing.DLQE
 		LastError:     "something went wrong",
 		FailedAt:      failedAt,
 		Attempts:      1,
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "env-" + id,
 			Subject: "test/subject",
 			Payload: []byte(`{"key":"value"}`),
 			Headers: map[string]any{"trace": "tid-" + id},
-		},
+		}),
 	}
 }
 
@@ -153,13 +153,13 @@ func dlqWriteAndList(t *testing.T, store ports.DLQStore) {
 	if found.Envelope.ID != "env-wal-1" {
 		t.Fatalf("Envelope.ID: got %q, want %q", found.Envelope.ID, "env-wal-1")
 	}
-	if found.Envelope.Subject != "test/subject" {
-		t.Fatalf("Envelope.Subject: got %q, want %q", found.Envelope.Subject, "test/subject")
+	if found.Envelope.Subject() != "test/subject" {
+		t.Fatalf("Envelope.Subject: got %q, want %q", found.Envelope.Subject(), "test/subject")
 	}
 	if string(found.Envelope.Payload) != `{"key":"value"}` {
 		t.Fatalf("Envelope.Payload: got %q, want %q", found.Envelope.Payload, `{"key":"value"}`)
 	}
-	trace, ok := found.Envelope.Headers["trace"]
+	trace, ok := found.Envelope.Headers()["trace"]
 	if !ok || trace != "tid-wal-1" {
 		t.Fatalf("Envelope.Headers[trace]: got %v, want %q", trace, "tid-wal-1")
 	}

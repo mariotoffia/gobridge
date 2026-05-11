@@ -66,6 +66,12 @@ const (
 	ErrCodePoisonMessage    ErrorCode = "POISON_MESSAGE"
 	ErrCodeProcessorPanic   ErrorCode = "PROCESSOR_PANIC"
 	ErrCodeProcessorTimeout ErrorCode = "PROCESSOR_TIMEOUT"
+	// ErrCodeInternal flags a programmer / invariant-violation error
+	// that should never occur in a correctly-wired bridge (e.g. an
+	// adapter forgot to inject its clock, an envelope constructor
+	// returned a sentinel that signals a missing dependency rather
+	// than bad input). Always Permanent and never recoverable.
+	ErrCodeInternal ErrorCode = "INTERNAL"
 )
 
 // Outbox aggregate state-machine error codes.

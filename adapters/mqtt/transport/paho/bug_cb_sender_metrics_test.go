@@ -44,7 +44,7 @@ func TestBugRES008_CBSender_CircuitOpen_EmitsMetric(t *testing.T) {
 		metrics: rec,
 	}
 
-	env := &messaging.Envelope{ID: "e1", Subject: "t/1", Payload: []byte("p")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Subject: "t/1", Payload: []byte("p")})
 	err := cbs.Send(context.Background(), ports.OutboundMessage{Envelope: env})
 	if err == nil {
 		t.Fatal("expected error from open circuit, got nil")
@@ -97,7 +97,7 @@ func TestBugRES008_CBSender_CircuitClosed_NoExtraMetric(t *testing.T) {
 		metrics: rec,
 	}
 
-	env := &messaging.Envelope{ID: "e2", Subject: "t/2", Payload: []byte("p")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e2", Subject: "t/2", Payload: []byte("p")})
 	_ = cbs.Send(context.Background(), ports.OutboundMessage{Envelope: env})
 
 	// There should be no circuit_open failure metrics.

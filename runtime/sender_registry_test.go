@@ -78,11 +78,11 @@ func TestDirectHold_SenderRegistry_SelectsByBinding(t *testing.T) {
 	<-receiver.Ready()
 
 	// Send message targeting binding A.
-	envA := &messaging.Envelope{
+	envA := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-a",
 		Subject: "test",
 		Headers: map[string]any{"target": "a"},
-	}
+	})
 	delA := NewFakeDelivery(envA)
 	if err := receiver.Emit(ctx, delA); err != nil {
 		t.Fatalf("Emit A: %v", err)
@@ -90,11 +90,11 @@ func TestDirectHold_SenderRegistry_SelectsByBinding(t *testing.T) {
 	waitFor(t, 2*time.Second, "delivery A acked", delA.IsAcked)
 
 	// Send message targeting binding B.
-	envB := &messaging.Envelope{
+	envB := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-b",
 		Subject: "test",
 		Headers: map[string]any{"target": "b"},
-	}
+	})
 	delB := NewFakeDelivery(envB)
 	if err := receiver.Emit(ctx, delB); err != nil {
 		t.Fatalf("Emit B: %v", err)
@@ -149,7 +149,7 @@ func TestDirectHold_SenderRegistry_FallsBackToDefault(t *testing.T) {
 	<-receiver.Ready()
 
 	// Send a message that matches no rule → falls through to default binding.
-	env := &messaging.Envelope{ID: "msg-fb", Subject: "normal"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-fb", Subject: "normal"})
 	del := NewFakeDelivery(env)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit: %v", err)
@@ -184,7 +184,7 @@ func TestDirectHold_SenderRegistry_NilRegistry_UsesDefault(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{ID: "msg-1", Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1", Subject: "test"})
 	del := NewFakeDelivery(env)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit: %v", err)

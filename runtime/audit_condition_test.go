@@ -131,9 +131,9 @@ func TestNumericCompare_LargeInt64Precision(t *testing.T) {
 		},
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Headers: map[string]any{"val": v1},
-	}
+	})
 	ctx := newEvalContext()
 
 	result, err := eval.evaluate(env, ctx)
@@ -156,9 +156,9 @@ func TestConditionEval_Equals_StringFastPath(t *testing.T) {
 		},
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Headers: map[string]any{"type": "order"},
-	}
+	})
 	ctx := newEvalContext()
 
 	result, err := eval.evaluate(env, ctx)
@@ -181,9 +181,9 @@ func TestConditionEval_In_StringSlice(t *testing.T) {
 		},
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Headers: map[string]any{"status": "active"},
-	}
+	})
 	ctx := newEvalContext()
 
 	result, err := eval.evaluate(env, ctx)
@@ -206,9 +206,9 @@ func TestConditionEval_Exists_True(t *testing.T) {
 		},
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Headers: map[string]any{"key": "val"},
-	}
+	})
 	ctx := newEvalContext()
 
 	result, err := eval.evaluate(env, ctx)
@@ -231,9 +231,9 @@ func TestConditionEval_Exists_False(t *testing.T) {
 		},
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Headers: map[string]any{},
-	}
+	})
 	ctx := newEvalContext()
 
 	result, err := eval.evaluate(env, ctx)
@@ -280,9 +280,9 @@ func TestConditionEval_UnsupportedOperator(t *testing.T) {
 		},
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Headers: map[string]any{"key": "val"},
-	}
+	})
 	ctx := newEvalContext()
 
 	_, err := eval.evaluate(env, ctx)

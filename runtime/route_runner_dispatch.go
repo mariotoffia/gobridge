@@ -22,7 +22,7 @@ func (r *RouteRunner) sendDirectHoldForBinding(ctx context.Context, del ports.De
 		if b.ID == bindingID {
 			addr := b.Address
 			if addr != "" {
-				rendered, err := RenderAddress(addr, env.Headers)
+				rendered, err := RenderAddress(addr, env.Headers())
 				if err != nil {
 					addrErr := shared.ErrInvalidTopic.
 						WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
@@ -63,7 +63,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	// address travels via OutboundMessage.Address.
 	outbound := env.Clone()
 	if plan.Headers != nil {
-		outbound.Headers = messaging.MergeHeaders(outbound.Headers, plan.Headers, true)
+		outbound.StampHeaders(messaging.MergeHeaders(outbound.Headers(), plan.Headers, true))
 	}
 
 	sender := r.senderForBinding(plan.BindingID)
@@ -326,10 +326,10 @@ func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, e
 // Handles int, int64, float64, and string representations.
 // Returns 0 when the header is absent or not convertible.
 func receiveCount(env *messaging.Envelope) int {
-	if env.Headers == nil {
+	if env.Headers() == nil {
 		return 0
 	}
-	v, ok := env.Headers["sqs.ApproximateReceiveCount"]
+	v, ok := env.Headers()["sqs.ApproximateReceiveCount"]
 	if !ok {
 		return 0
 	}
@@ -359,14 +359,14 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 	var plans []routing.DispatchPlan
 
 	// Consume HeaderRouteOverride set by processor chain.
-	if override, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderRouteOverride); ok {
-		delete(env.Headers, messaging.HeaderRouteOverride)
+	if override, ok := messaging.GetHeaderString(env.Headers(), messaging.HeaderRouteOverride); ok {
+		env.DeleteHeader(messaging.HeaderRouteOverride)
 		if r.hasBinding(override) {
 			for _, b := range r.bindings {
 				if b.ID == override {
 					addr := b.Address
 					if addr != "" {
-						rendered, err := RenderAddress(addr, env.Headers)
+						rendered, err := RenderAddress(addr, env.Headers())
 						if err != nil {
 							addrErr := shared.ErrInvalidTopic.
 								WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))

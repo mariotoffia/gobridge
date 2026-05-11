@@ -69,17 +69,17 @@ func TestRunChain_Mutation(t *testing.T) {
 	p := &FakeProcessor{
 		NameVal: "mutator",
 		ProcessFn: func(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
-			env.Subject = "mutated"
+			env.SetSubject("mutated")
 			return next(ctx, env)
 		},
 	}
 
-	env := &messaging.Envelope{ID: "msg-1", Subject: "original"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1", Subject: "original"})
 	if err := runtime.RunChain(context.Background(), []ports.Processor{p}, env); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if env.Subject != "mutated" {
-		t.Fatalf("expected subject 'mutated', got %q", env.Subject)
+	if env.Subject() != "mutated" {
+		t.Fatalf("expected subject 'mutated', got %q", env.Subject())
 	}
 }
 

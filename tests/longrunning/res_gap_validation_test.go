@@ -125,12 +125,12 @@ func TestRES003_MQTTSourceDropWithoutDLQ(t *testing.T) {
 	// Publish 100 messages to the MQTT source topic.
 	t.Logf("RES-003: publishing %d messages to MQTT source topic %q", msgCount, srcTopic)
 	for i := 0; i < msgCount; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("res003-msg-%d", i),
 			Subject: srcTopic,
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
 			Headers: map[string]any{"test": "res003"},
-		}
+		})
 		sendErr := pubSender.Send(ctx, ports.OutboundMessage{Envelope: env})
 		if sendErr != nil {
 			t.Logf("RES-003: publish %d failed: %v", i, sendErr)

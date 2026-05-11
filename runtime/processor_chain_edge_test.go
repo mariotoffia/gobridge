@@ -130,20 +130,20 @@ func TestRunChain_ProcessorModifiesEnvelope(t *testing.T) {
 		&FakeProcessor{
 			NameVal: "modifier",
 			ProcessFn: func(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
-				env.Subject = "modified-" + env.Subject
+				env.SetSubject("modified-" + env.Subject())
 				return next(ctx, env)
 			},
 		},
 		&FakeProcessor{
 			NameVal: "reader",
 			ProcessFn: func(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
-				finalSubject = env.Subject
+				finalSubject = env.Subject()
 				return next(ctx, env)
 			},
 		},
 	}
 
-	env := &messaging.Envelope{ID: "1", Subject: "original"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "1", Subject: "original"})
 	err := runtime.RunChain(context.Background(), processors, env)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

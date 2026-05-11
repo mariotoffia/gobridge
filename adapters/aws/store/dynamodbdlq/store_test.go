@@ -32,12 +32,12 @@ func TestMain(m *testing.M) {
 func makeEntry(id, routeID, category string, failedAt time.Time) routing.DLQEntry {
 	return routing.DLQEntry{
 		ID: id,
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "env-" + id,
 			Subject: "test/subject",
 			Payload: []byte(`{"key":"value"}`),
 			Headers: map[string]any{"h1": "v1"},
-		},
+		}),
 		RouteID:       routeID,
 		BindingID:     "bind-" + id,
 		SessionID:     "sess-" + id,
@@ -125,17 +125,17 @@ func TestWriteAndList(t *testing.T) {
 	if got.Envelope.ID != "env-wal-1" {
 		t.Errorf("Envelope.ID: got %q, want %q", got.Envelope.ID, "env-wal-1")
 	}
-	if got.Envelope.Subject != "test/subject" {
-		t.Errorf("Envelope.Subject: got %q, want %q", got.Envelope.Subject, "test/subject")
+	if got.Envelope.Subject() != "test/subject" {
+		t.Errorf("Envelope.Subject: got %q, want %q", got.Envelope.Subject(), "test/subject")
 	}
 	if !bytes.Equal(got.Envelope.Payload, []byte(`{"key":"value"}`)) {
 		t.Errorf("Envelope.Payload: got %q, want %q", got.Envelope.Payload, `{"key":"value"}`)
 	}
-	if len(got.Envelope.Headers) != 1 {
-		t.Fatalf("Envelope.Headers length: got %d, want 1", len(got.Envelope.Headers))
+	if len(got.Envelope.Headers()) != 1 {
+		t.Fatalf("Envelope.Headers length: got %d, want 1", len(got.Envelope.Headers()))
 	}
-	if got.Envelope.Headers["h1"] != "v1" {
-		t.Errorf("Envelope.Headers[h1]: got %v, want %q", got.Envelope.Headers["h1"], "v1")
+	if got.Envelope.Headers()["h1"] != "v1" {
+		t.Errorf("Envelope.Headers[h1]: got %v, want %q", got.Envelope.Headers()["h1"], "v1")
 	}
 }
 

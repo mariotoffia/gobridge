@@ -68,7 +68,7 @@ func messageToHeaders(msg *azservicebus.ReceivedMessage) map[string]any {
 // from the native Service Bus Subject; the queue/topic entity name is
 // NEVER promoted into Envelope.Subject. When the broker carries no
 // native Subject, Envelope.Subject is left empty.
-func receivedToEnvelope(msg *azservicebus.ReceivedMessage, clk clock.Clock) *messaging.Envelope {
+func receivedToEnvelope(msg *azservicebus.ReceivedMessage, clk clock.Clock) (*messaging.Envelope, error) {
 	if clk == nil {
 		clk = clock.System
 	}
@@ -76,17 +76,24 @@ func receivedToEnvelope(msg *azservicebus.ReceivedMessage, clk clock.Clock) *mes
 	if msg.Subject != nil {
 		subject = *msg.Subject
 	}
-	env := &messaging.Envelope{
-		ID:        msg.MessageID,
+	id := msg.MessageID
+	if id == "" {
+		id = generateEnvelopeID()
+	}
+	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
+		ID:        id,
 		Subject:   subject,
 		Payload:   msg.Body,
 		Headers:   messageToHeaders(msg),
 		CreatedAt: clk.Now(),
+	}, clk.Now())
+	if err != nil {
+		return nil, wrapEnvelopeErr(err)
 	}
 	if msg.ExpiresAt != nil {
 		env.ExpiresAt = *msg.ExpiresAt
 	}
-	return env
+	return env, nil
 }
 
 var _ ports.Delivery = (*asbDelivery)(nil)
@@ -332,15 +339,35 @@ func (r *Receiver) receiveAndConvert(ctx context.Context) ([]ports.Delivery, err
 	}
 	out := make([]ports.Delivery, 0, len(msgs))
 	for _, msg := range msgs {
-		out = append(out, r.toDelivery(ctx, msg))
+		d, err := r.toDelivery(ctx, msg)
+		if err != nil {
+			// Malformed inbound — abandon at the broker so it is not
+			// redelivered tightly, then drop. We deliberately do not
+			// fail the poll: a single poison message must not stall
+			// the receive loop.
+			r.metrics.Counter(shared.MetricASBMalformedMessages, 1)
+			if r.logger != nil {
+				r.logger.Warn("servicebus: dropping malformed delivery",
+					"entity", r.entityName(),
+					"message_id", msg.MessageID,
+					"error", err,
+				)
+			}
+			_ = r.client.AbandonMessage(ctx, msg, nil)
+			continue
+		}
+		out = append(out, d)
 	}
 	return out, nil
 }
 
 // toDelivery converts a single received SDK message into an
 // asbDelivery, attaching the configured logger, metrics, and clock.
-func (r *Receiver) toDelivery(ctx context.Context, msg *azservicebus.ReceivedMessage) *asbDelivery {
-	env := receivedToEnvelope(msg, r.clock())
+func (r *Receiver) toDelivery(ctx context.Context, msg *azservicebus.ReceivedMessage) (*asbDelivery, error) {
+	env, err := receivedToEnvelope(msg, r.clock())
+	if err != nil {
+		return nil, err
+	}
 
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelTrace, "servicebus: converting",
@@ -362,5 +389,5 @@ func (r *Receiver) toDelivery(ctx context.Context, msg *azservicebus.ReceivedMes
 		r.metrics,
 		r.clock(),
 		r.cfg.MinAutoExtendInterval,
-	)
+	), nil
 }

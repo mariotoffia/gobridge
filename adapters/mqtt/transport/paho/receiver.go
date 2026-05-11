@@ -78,8 +78,8 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 	r.session.Router().RegisterEnvelope(r.id, r.session.clock(), func(env *messaging.Envelope) {
 		if logging.TraceEnabled(r.logger) {
 			var transportTopic string
-			if env.Headers != nil {
-				if v, ok := env.Headers[HeaderMQTTTopic].(string); ok {
+			if env.Headers() != nil {
+				if v, ok := env.Headers()[HeaderMQTTTopic].(string); ok {
 					transportTopic = v
 				}
 			}

@@ -57,15 +57,15 @@ func Tag(env *messaging.Envelope) (string, Expected) {
 	tidCounter.Add(1)
 	tid := fmt.Sprintf("tid-%d-%d", time.Now().UnixNano(), tidCounter.Load())
 
-	env.Headers = messaging.SetHeader(env.Headers, HeaderTID, tid)
+	env.SetHeader(HeaderTID, tid)
 
 	env.Payload = injectPayloadTID(env.Payload, tid)
 
 	return tid, Expected{
 		TID:     tid,
 		Payload: cpBytes(env.Payload),
-		Headers: cpHeaders(env.Headers),
-		Subject: env.Subject,
+		Headers: cpHeaders(env.Headers()),
+		Subject: env.Subject(),
 	}
 }
 
@@ -81,8 +81,8 @@ func TagN(envs []*messaging.Envelope) []Expected {
 // ExtractTID reads the TID from an envelope, trying the header first,
 // then falling back to the JSON _tid field. Returns "" if neither is present.
 func ExtractTID(env *messaging.Envelope) string {
-	if env.Headers != nil {
-		if v, ok := messaging.GetHeaderString(env.Headers, HeaderTID); ok && v != "" {
+	if env.Headers() != nil {
+		if v, ok := messaging.GetHeaderString(env.Headers(), HeaderTID); ok && v != "" {
 			return v
 		}
 	}
@@ -97,8 +97,8 @@ func ReceivedFromEnvelopes(envs []*messaging.Envelope) []Received {
 		out[i] = Received{
 			TID:     ExtractTID(env),
 			Payload: cpBytes(env.Payload),
-			Headers: cpHeaders(env.Headers),
-			Subject: env.Subject,
+			Headers: cpHeaders(env.Headers()),
+			Subject: env.Subject(),
 		}
 	}
 	return out

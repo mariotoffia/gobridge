@@ -206,7 +206,7 @@ func TestIntegration_PubSubRoundTrip(t *testing.T) {
 		})
 	}()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Subject: "roundtrip/test",
 		Payload: []byte("hello-roundtrip"),
 		Headers: map[string]any{
@@ -214,9 +214,9 @@ func TestIntegration_PubSubRoundTrip(t *testing.T) {
 			messaging.HeaderContentType:   "text/plain",
 			"custom-key":                  "custom-val",
 		},
-	}
+	})
 
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env, Address: env.Subject}); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env, Address: env.Subject()}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -242,19 +242,19 @@ func TestIntegration_PubSubRoundTrip(t *testing.T) {
 	msg := received[0]
 	mu.Unlock()
 
-	if msg.Subject != "roundtrip/test" {
-		t.Errorf("subject = %q, want %q", msg.Subject, "roundtrip/test")
+	if msg.Subject() != "roundtrip/test" {
+		t.Errorf("subject = %q, want %q", msg.Subject(), "roundtrip/test")
 	}
 	if string(msg.Payload) != "hello-roundtrip" {
 		t.Errorf("payload = %q, want %q", msg.Payload, "hello-roundtrip")
 	}
-	if v, _ := messaging.GetHeaderString(msg.Headers, messaging.HeaderCorrelationID); v != "test-corr" {
+	if v, _ := messaging.GetHeaderString(msg.Headers(), messaging.HeaderCorrelationID); v != "test-corr" {
 		t.Errorf("correlation = %q, want %q", v, "test-corr")
 	}
-	if v, _ := messaging.GetHeaderString(msg.Headers, messaging.HeaderContentType); v != "text/plain" {
+	if v, _ := messaging.GetHeaderString(msg.Headers(), messaging.HeaderContentType); v != "text/plain" {
 		t.Errorf("content-type = %q, want %q", v, "text/plain")
 	}
-	if v, _ := messaging.GetHeaderString(msg.Headers, "custom-key"); v != "custom-val" {
+	if v, _ := messaging.GetHeaderString(msg.Headers(), "custom-key"); v != "custom-val" {
 		t.Errorf("custom-key = %q, want %q", v, "custom-val")
 	}
 }
@@ -317,11 +317,11 @@ func TestIntegration_BackpressureNoDrops(t *testing.T) {
 	}()
 
 	for i := 0; i < msgCount; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			Subject: "bp/test",
 			Payload: []byte(fmt.Sprintf("msg-%d", i)),
-		}
-		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env, Address: env.Subject}); err != nil {
+		})
+		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env, Address: env.Subject()}); err != nil {
 			t.Fatalf("Send %d: %v", i, err)
 		}
 	}

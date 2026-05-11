@@ -137,9 +137,9 @@ func TestIntegration_Edge_MulticastRouting(t *testing.T) {
 		}
 	}
 
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "multicast-1", Subject: "test", Payload: []byte("fan-out"),
-	}}); err != nil {
+	})}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -179,9 +179,9 @@ func TestIntegration_Edge_SendBatchPartialVerify(t *testing.T) {
 	wantIDs := make(map[string]bool, msgCount)
 	for i := range envs {
 		id := "batch-" + string(rune('A'+i))
-		envs[i] = &messaging.Envelope{
+		envs[i] = messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID: id, Subject: "test", Payload: []byte("payload"),
-		}
+		})
 		wantIDs[id] = true
 	}
 
@@ -238,7 +238,7 @@ func TestIntegration_Edge_HeaderUnicodeAndLongValues(t *testing.T) {
 	addr := artemislocal.UniqueAddress("edge-headers-unicode")
 
 	longValue := strings.Repeat("x", 4096)
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "unicode-headers", Subject: "test", Payload: []byte("body"),
 		Headers: map[string]any{
 			"emoji":      "hello 🌍🚀",
@@ -246,22 +246,22 @@ func TestIntegration_Edge_HeaderUnicodeAndLongValues(t *testing.T) {
 			"long-value": longValue,
 			"diacritics": "résumé café naïve",
 		},
-	}
+	})
 
 	got := edgeSendRecv(t, sess, addr, env, 20*time.Second)
 
-	if got.Headers["emoji"] != "hello 🌍🚀" {
-		t.Errorf("emoji header = %v", got.Headers["emoji"])
+	if got.Headers()["emoji"] != "hello 🌍🚀" {
+		t.Errorf("emoji header = %v", got.Headers()["emoji"])
 	}
-	if got.Headers["cjk"] != "你好世界" {
-		t.Errorf("cjk header = %v", got.Headers["cjk"])
+	if got.Headers()["cjk"] != "你好世界" {
+		t.Errorf("cjk header = %v", got.Headers()["cjk"])
 	}
-	if got.Headers["long-value"] != longValue {
+	if got.Headers()["long-value"] != longValue {
 		t.Errorf("long-value length = %d, want %d",
-			len(got.Headers["long-value"].(string)), len(longValue))
+			len(got.Headers()["long-value"].(string)), len(longValue))
 	}
-	if got.Headers["diacritics"] != "résumé café naïve" {
-		t.Errorf("diacritics header = %v", got.Headers["diacritics"])
+	if got.Headers()["diacritics"] != "résumé café naïve" {
+		t.Errorf("diacritics header = %v", got.Headers()["diacritics"])
 	}
 
 	assertLogContains(t, &buf, "amqp10: sending", "amqp10: received message")
@@ -279,7 +279,7 @@ func TestIntegration_Edge_EnvelopeFieldsRoundTrip(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	expiresAt := now.Add(1 * time.Hour)
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:        "full-fields",
 		Subject:   "integration.edge",
 		Payload:   []byte(`{"complete":"envelope"}`),
@@ -288,15 +288,15 @@ func TestIntegration_Edge_EnvelopeFieldsRoundTrip(t *testing.T) {
 		Headers: map[string]any{
 			"custom-key": "custom-value",
 		},
-	}
+	})
 
 	got := edgeSendRecv(t, sess, addr, env, 20*time.Second)
 
 	if got.ID != "full-fields" {
 		t.Errorf("ID = %q, want %q", got.ID, "full-fields")
 	}
-	if got.Subject != "integration.edge" {
-		t.Errorf("Subject = %q, want %q", got.Subject, "integration.edge")
+	if got.Subject() != "integration.edge" {
+		t.Errorf("Subject = %q, want %q", got.Subject(), "integration.edge")
 	}
 	if string(got.Payload) != `{"complete":"envelope"}` {
 		t.Errorf("Payload = %q", got.Payload)
@@ -308,8 +308,8 @@ func TestIntegration_Edge_EnvelopeFieldsRoundTrip(t *testing.T) {
 	if drift < -2*time.Second || drift > 2*time.Second {
 		t.Errorf("ExpiresAt drift = %v (sent %v, got %v)", drift, expiresAt, got.ExpiresAt)
 	}
-	if got.Headers["custom-key"] != "custom-value" {
-		t.Errorf("custom-key header = %v", got.Headers["custom-key"])
+	if got.Headers()["custom-key"] != "custom-value" {
+		t.Errorf("custom-key header = %v", got.Headers()["custom-key"])
 	}
 
 	assertLogContains(t, &buf, "amqp10: sending", "amqp10: accepting message")

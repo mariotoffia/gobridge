@@ -218,7 +218,7 @@ func TestOutboxDrainer_AppliesAddress(t *testing.T) {
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
 		Address:    "factory/a/orders/42",
-		Envelope:   messaging.Envelope{ID: "env-addr", Subject: "original-subject", Payload: []byte("data")},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-addr", Subject: "original-subject", Payload: []byte("data")}),
 		Status:     persistence.OutboxPending,
 	})
 	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
@@ -230,8 +230,8 @@ func TestOutboxDrainer_AppliesAddress(t *testing.T) {
 	if sender.SentCount() != 1 {
 		t.Fatalf("expected 1 sent, got %d", sender.SentCount())
 	}
-	if sender.Sent[0].Subject != "original-subject" {
-		t.Fatalf("logical subject must be preserved on outbound envelope, got %q", sender.Sent[0].Subject)
+	if sender.Sent[0].Subject() != "original-subject" {
+		t.Fatalf("logical subject must be preserved on outbound envelope, got %q", sender.Sent[0].Subject())
 	}
 	outbound := sender.GetOutbound()
 	if len(outbound) != 1 || outbound[0].Address != "factory/a/orders/42" {
@@ -242,8 +242,8 @@ func TestOutboxDrainer_AppliesAddress(t *testing.T) {
 	if len(recs) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(recs))
 	}
-	if recs[0].Envelope.Subject != "original-subject" {
-		t.Fatalf("persisted record envelope subject mutated: got %q", recs[0].Envelope.Subject)
+	if recs[0].Envelope.Subject() != "original-subject" {
+		t.Fatalf("persisted record envelope subject mutated: got %q", recs[0].Envelope.Subject())
 	}
 	if recs[0].Address != "factory/a/orders/42" {
 		t.Fatalf("persisted record address = %q, want factory/a/orders/42", recs[0].Address)
@@ -263,7 +263,7 @@ func TestOutboxDrainer_EmptyAddressPreservesSubject(t *testing.T) {
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
 		Address:    "",
-		Envelope:   messaging.Envelope{ID: "env-noaddr", Subject: "original", Payload: []byte("data")},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-noaddr", Subject: "original", Payload: []byte("data")}),
 		Status:     persistence.OutboxPending,
 	})
 	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
@@ -275,8 +275,8 @@ func TestOutboxDrainer_EmptyAddressPreservesSubject(t *testing.T) {
 	if sender.SentCount() != 1 {
 		t.Fatalf("expected 1 sent, got %d", sender.SentCount())
 	}
-	if sender.Sent[0].Subject != "original" {
-		t.Fatalf("empty address should preserve original subject, got %q", sender.Sent[0].Subject)
+	if sender.Sent[0].Subject() != "original" {
+		t.Fatalf("empty address should preserve original subject, got %q", sender.Sent[0].Subject())
 	}
 }
 

@@ -60,11 +60,11 @@ func TestDurability_CloseAndReopen(t *testing.T) {
 		BindingID:  "bind-dur-1",
 		SessionID:  "sess-dur",
 		Address:    "test/topic",
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "env-dur-1",
 			Subject: "test",
 			Payload: []byte("durable payload"),
-		},
+		}),
 	})
 	if err := s1.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
@@ -111,7 +111,7 @@ func TestTempFileCleanup(t *testing.T) {
 		EnvelopeID: "env-tmp-1",
 		BindingID:  "bind-tmp-1",
 		SessionID:  "sess-tmp",
-		Envelope:   messaging.Envelope{ID: "env-tmp-1", Subject: "test"},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-tmp-1", Subject: "test"}),
 	})
 	if err := s.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
@@ -136,7 +136,7 @@ func TestDispatchHeadersRoundTrip(t *testing.T) {
 		EnvelopeID: "env-hdr-1",
 		BindingID:  "bind-hdr-1",
 		SessionID:  "sess-hdr",
-		Envelope:   messaging.Envelope{ID: "env-hdr-1", Subject: "test"},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-hdr-1", Subject: "test"}),
 		DispatchHeaders: map[string]any{
 			"x-custom":  "value",
 			"x-numeric": float64(42),
@@ -174,7 +174,7 @@ func TestWithClockControlsCreatedAt(t *testing.T) {
 		EnvelopeID: "env-clk-1",
 		BindingID:  "bind-clk-1",
 		SessionID:  "sess-clk",
-		Envelope:   messaging.Envelope{ID: "env-clk-1", Subject: "test"},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-clk-1", Subject: "test"}),
 	})
 	if err := s.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
@@ -204,7 +204,7 @@ func TestExpiresAtRoundTrip(t *testing.T) {
 		EnvelopeID: "env-exprt-1",
 		BindingID:  "bind-exprt-1",
 		SessionID:  "sess-exprt",
-		Envelope:   messaging.Envelope{ID: "env-exprt-1", Subject: "test"},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-exprt-1", Subject: "test"}),
 		ExpiresAt:  expiry,
 	})
 	if err := s.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {

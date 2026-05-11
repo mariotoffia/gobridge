@@ -76,8 +76,8 @@ func TestReceiver_RunEmitsDeliveries(t *testing.T) {
 	if string(env.Payload) != `{"key":"value"}` {
 		t.Fatalf("unexpected payload: %s", string(env.Payload))
 	}
-	if env.Subject != "" {
-		t.Fatalf("expected empty Subject (no fallback to queue name), got %s", env.Subject)
+	if env.Subject() != "" {
+		t.Fatalf("expected empty Subject (no fallback to queue name), got %s", env.Subject())
 	}
 }
 
@@ -123,10 +123,10 @@ func TestReceiver_RunStripsReservedHeaders(t *testing.T) {
 		return nil
 	})
 
-	if _, ok := env.Headers[messaging.HeaderCorrelationID]; ok {
+	if _, ok := env.Headers()[messaging.HeaderCorrelationID]; ok {
 		t.Fatal("x-bridge.correlation-id should be stripped at ingress")
 	}
-	if env.Headers["safe-header"] != "ok" {
+	if env.Headers()["safe-header"] != "ok" {
 		t.Fatal("safe-header should be preserved")
 	}
 }
@@ -259,8 +259,8 @@ func TestReceiver_SubjectFromTopic(t *testing.T) {
 		return nil
 	})
 
-	if env.Subject != "" {
-		t.Fatalf("expected empty Subject (no fallback to topic name), got %s", env.Subject)
+	if env.Subject() != "" {
+		t.Fatalf("expected empty Subject (no fallback to topic name), got %s", env.Subject())
 	}
 }
 
@@ -303,8 +303,8 @@ func TestReceiver_SubjectOverrideFromMessage(t *testing.T) {
 		return nil
 	})
 
-	if env.Subject != "override-subject" {
-		t.Fatalf("expected Subject override-subject, got %s", env.Subject)
+	if env.Subject() != "override-subject" {
+		t.Fatalf("expected Subject override-subject, got %s", env.Subject())
 	}
 }
 

@@ -30,14 +30,17 @@ func TestReceiver_ConvertMessage(t *testing.T) {
 		},
 	}
 
-	env := deliveryToEnvelope(d, nil)
+	env, err := deliveryToEnvelope(d, nil)
+	if err != nil {
+		t.Fatalf("deliveryToEnvelope: %v", err)
+	}
 
 	if env.ID != "msg-500" {
 		t.Errorf("ID = %q, want %q", env.ID, "msg-500")
 	}
-	if env.Subject != "order.created" {
+	if env.Subject() != "order.created" {
 		t.Errorf("Subject = %q, want %q (must come only from gobridge.subject)",
-			env.Subject, "order.created")
+			env.Subject(), "order.created")
 	}
 	if string(env.Payload) != `{"item":"widget"}` {
 		t.Errorf("Payload = %q", env.Payload)
@@ -45,17 +48,17 @@ func TestReceiver_ConvertMessage(t *testing.T) {
 	if env.CreatedAt != now {
 		t.Errorf("CreatedAt = %v, want %v", env.CreatedAt, now)
 	}
-	if env.Headers == nil {
+	if env.Headers() == nil {
 		t.Fatal("Headers is nil")
 	}
-	if env.Headers["tenant"] != "acme" {
-		t.Errorf("Headers[tenant] = %v", env.Headers["tenant"])
+	if env.Headers()["tenant"] != "acme" {
+		t.Errorf("Headers[tenant] = %v", env.Headers()["tenant"])
 	}
-	if env.Headers[HeaderRoutingKey] != "order.placed" {
+	if env.Headers()[HeaderRoutingKey] != "order.placed" {
 		t.Errorf("Headers[%s] = %v, want %q",
-			HeaderRoutingKey, env.Headers[HeaderRoutingKey], "order.placed")
+			HeaderRoutingKey, env.Headers()[HeaderRoutingKey], "order.placed")
 	}
-	if _, ok := env.Headers[HeaderGobridgeSubject]; ok {
+	if _, ok := env.Headers()[HeaderGobridgeSubject]; ok {
 		t.Errorf("Headers[%s] should be absent — typed extraction wins over generic pass-through",
 			HeaderGobridgeSubject)
 	}
@@ -68,7 +71,10 @@ func TestReceiver_ConvertMessage_GeneratesID(t *testing.T) {
 		Body:       []byte("body"),
 	}
 
-	env := deliveryToEnvelope(d, nil)
+	env, err := deliveryToEnvelope(d, nil)
+	if err != nil {
+		t.Fatalf("deliveryToEnvelope: %v", err)
+	}
 
 	if env.ID == "" {
 		t.Error("expected auto-generated ID")
@@ -86,7 +92,10 @@ func TestReceiver_ConvertMessage_ZeroTimestamp(t *testing.T) {
 		RoutingKey: "evt",
 	}
 
-	env := deliveryToEnvelope(d, nil)
+	env, err := deliveryToEnvelope(d, nil)
+	if err != nil {
+		t.Fatalf("deliveryToEnvelope: %v", err)
+	}
 
 	if env.CreatedAt.Before(before) {
 		t.Error("CreatedAt should be >= time.Now() at call time")

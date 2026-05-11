@@ -45,11 +45,11 @@ func TestIntegration_RetryRelease(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "retry-release-1",
 		Subject: "test.retry.release",
 		Payload: []byte(`{"action":"release"}`),
-	}
+	})
 	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
@@ -75,7 +75,7 @@ func TestIntegration_RetryRelease(t *testing.T) {
 			}
 			return nil
 		}
-		headers := del.Envelope().Headers
+		headers := del.Envelope().Headers()
 		if dc, ok := headers[headerDeliveryCount]; ok {
 			if count, ok := dc.(uint32); ok && count == 0 {
 				t.Error("expected delivery-count > 0 on redelivery")
@@ -126,11 +126,11 @@ func TestIntegration_RetryModify(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "retry-modify-1",
 		Subject: "test.retry.modify",
 		Payload: []byte(`{"action":"modify"}`),
-	}
+	})
 	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
@@ -157,7 +157,7 @@ func TestIntegration_RetryModify(t *testing.T) {
 			}
 			return nil
 		}
-		headers := del.Envelope().Headers
+		headers := del.Envelope().Headers()
 		if dc, ok := headers[headerDeliveryCount]; ok {
 			if count, ok := dc.(uint32); ok && count == 0 {
 				t.Error("expected delivery-count > 0 on redelivery")
@@ -208,11 +208,11 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "extend-1",
 		Subject: "test.extend",
 		Payload: []byte(`{"action":"extend"}`),
-	}
+	})
 	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}

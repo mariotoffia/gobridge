@@ -92,11 +92,11 @@ func TestGlobalMaxInFlight_NegativeClamp(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-1",
 		Subject: "test",
 		Payload: []byte("data"),
-	}
+	})
 	del := NewFakeDelivery(env)
 	err = receiver.Emit(ctx, del)
 	if err != nil {
@@ -158,12 +158,12 @@ func TestGlobalMaxInFlight_LimitsAcrossRoutes(t *testing.T) {
 	<-receiver1.Ready()
 	<-receiver2.Ready()
 
-	del1 := NewFakeDelivery(&messaging.Envelope{
+	del1 := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "msg-r1", Subject: "test", Payload: []byte("1"),
-	})
-	del2 := NewFakeDelivery(&messaging.Envelope{
+	}))
+	del2 := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "msg-r2", Subject: "test", Payload: []byte("2"),
-	})
+	}))
 
 	_ = receiver1.Emit(ctx, del1)
 	_ = receiver2.Emit(ctx, del2)

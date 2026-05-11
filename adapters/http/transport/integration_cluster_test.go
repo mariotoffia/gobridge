@@ -137,8 +137,8 @@ func TestIntegration_Cluster_ForwardToBridge(t *testing.T) {
 	if len(envs) != 1 {
 		t.Fatalf("expected exactly 1 envelope, got %d", len(envs))
 	}
-	if envs[0].Subject != "orders.created" {
-		t.Fatalf("subject: got %q, want orders.created", envs[0].Subject)
+	if envs[0].Subject() != "orders.created" {
+		t.Fatalf("subject: got %q, want orders.created", envs[0].Subject())
 	}
 	if string(envs[0].Payload) != `{"order":"123"}` {
 		t.Fatalf("payload mismatch: %s", envs[0].Payload)
@@ -221,10 +221,10 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 			return senderB.(*transport.SSESender).ClientCount() >= 1
 		})
 
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID: "sse-evt-1", Subject: "user.created",
 			Payload: []byte(`{"name":"alice"}`),
-		}
+		})
 		if err := senderB.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 			t.Fatalf("Send: %v", err)
 		}
@@ -362,8 +362,8 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 	if len(delivered) != 1 {
 		t.Fatalf("expected exactly 1 delivered envelope, got %d", len(delivered))
 	}
-	if delivered[0].Subject != "loop.test" {
-		t.Fatalf("subject: got %q, want loop.test", delivered[0].Subject)
+	if delivered[0].Subject() != "loop.test" {
+		t.Fatalf("subject: got %q, want loop.test", delivered[0].Subject())
 	}
 	mu.Unlock()
 
@@ -518,18 +518,18 @@ func TestIntegration_Cluster_ForwardPreservesEnvelope(t *testing.T) {
 	if got.ID != "env-rich-001" {
 		t.Fatalf("ID: got %q, want env-rich-001", got.ID)
 	}
-	if got.Subject != "billing.invoice.created" {
-		t.Fatalf("subject: got %q, want billing.invoice.created", got.Subject)
+	if got.Subject() != "billing.invoice.created" {
+		t.Fatalf("subject: got %q, want billing.invoice.created", got.Subject())
 	}
 	wantPayload := `{"invoice":{"id":"inv-42","items":[{"sku":"A","qty":2}]}}`
 	if string(got.Payload) != wantPayload {
 		t.Fatalf("payload:\n got %s\nwant %s", got.Payload, wantPayload)
 	}
-	if got.Headers["x-tenant"] != "acme" {
-		t.Fatalf("x-tenant: got %v, want acme", got.Headers["x-tenant"])
+	if got.Headers()["x-tenant"] != "acme" {
+		t.Fatalf("x-tenant: got %v, want acme", got.Headers()["x-tenant"])
 	}
-	if got.Headers["x-priority"] != "high" {
-		t.Fatalf("x-priority: got %v, want high", got.Headers["x-priority"])
+	if got.Headers()["x-priority"] != "high" {
+		t.Fatalf("x-priority: got %v, want high", got.Headers()["x-priority"])
 	}
 
 	cancel()
@@ -624,8 +624,8 @@ func TestIntegration_Cluster_ForwardDivergentReceiverID(t *testing.T) {
 	if len(envs) != 1 {
 		t.Fatalf("expected exactly 1 envelope, got %d", len(envs))
 	}
-	if envs[0].Subject != "orders.created" {
-		t.Fatalf("subject: got %q, want orders.created", envs[0].Subject)
+	if envs[0].Subject() != "orders.created" {
+		t.Fatalf("subject: got %q, want orders.created", envs[0].Subject())
 	}
 	if string(envs[0].Payload) != `{"order":"divergent-1"}` {
 		t.Fatalf("payload mismatch: %s", envs[0].Payload)

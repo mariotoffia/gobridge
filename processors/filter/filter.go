@@ -70,10 +70,10 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 	case ActionDrop:
 		return shared.ErrMessageFiltered
 	case ActionRoute:
-		if env.Headers == nil {
-			env.Headers = make(map[string]any, 1)
+		if env.Headers() == nil {
+			env.ReplaceHeaders(make(map[string]any, 1))
 		}
-		env.Headers[messaging.HeaderRouteOverride] = p.config.RouteTo
+		env.SetHeader(messaging.HeaderRouteOverride, p.config.RouteTo)
 		return next(ctx, env)
 	default:
 		return next(ctx, env)

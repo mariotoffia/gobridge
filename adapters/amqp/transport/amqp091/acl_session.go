@@ -105,7 +105,17 @@ func (c *amqpChannel) Consume(
 	go func() {
 		defer close(out)
 		for d := range deliveries {
-			env := deliveryToEnvelope(d, clk)
+			env, err := deliveryToEnvelope(d, clk)
+			if err != nil {
+				if logger != nil {
+					logger.Warn("amqp091: dropping malformed delivery",
+						"error", err,
+						"message_id", d.MessageId,
+					)
+				}
+				_ = d.Reject(false)
+				continue
+			}
 			out <- NewDelivery(env, d, logger, metrics, clk)
 		}
 	}()

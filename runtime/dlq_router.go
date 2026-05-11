@@ -218,7 +218,7 @@ func (r *DLQRouter) buildEntry(
 	attempts int,
 ) routing.DLQEntry {
 	category, errorCode := classifyError(err)
-	correlationID, _ := messaging.GetHeaderString(env.Headers, messaging.HeaderCorrelationID)
+	correlationID, _ := messaging.GetHeaderString(env.Headers(), messaging.HeaderCorrelationID)
 	reason := safeErrorReason(err)
 
 	return routing.DLQEntry{

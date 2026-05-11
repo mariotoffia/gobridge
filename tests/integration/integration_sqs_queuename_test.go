@@ -62,11 +62,11 @@ func TestIntegration_SQS_Sender_QueueNameResolution(t *testing.T) {
 		t.Fatalf("NewSender: %v", err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "qn1-msg-1",
 		Subject: "qn1-subject",
 		Payload: []byte("resolved-by-name"),
-	}
+	})
 
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("sender.Send: %v", err)
@@ -175,7 +175,7 @@ func TestIntegration_SQS_SenderReceiver_FullRoundTrip(t *testing.T) {
 		t.Fatalf("NewSender: %v", err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "qn3-roundtrip",
 		Subject: "orders.created",
 		Payload: []byte(`{"order_id":"12345","amount":99.95}`),
@@ -184,7 +184,7 @@ func TestIntegration_SQS_SenderReceiver_FullRoundTrip(t *testing.T) {
 			"X-Priority":       42,
 			"X-Source":         "integration-test",
 		},
-	}
+	})
 
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("sender.Send: %v", err)
@@ -226,15 +226,15 @@ func TestIntegration_SQS_SenderReceiver_FullRoundTrip(t *testing.T) {
 		t.Fatalf("payload mismatch: got %q", string(got.Payload))
 	}
 
-	if got.Subject != "orders.created" {
-		t.Fatalf("subject mismatch: got %q, want %q", got.Subject, "orders.created")
+	if got.Subject() != "orders.created" {
+		t.Fatalf("subject mismatch: got %q, want %q", got.Subject(), "orders.created")
 	}
 
 	checkHdr := func(key, want string) {
 		t.Helper()
-		v, ok := got.Headers[key]
+		v, ok := got.Headers()[key]
 		if !ok {
-			t.Fatalf("header %q missing; headers=%v", key, got.Headers)
+			t.Fatalf("header %q missing; headers=%v", key, got.Headers())
 		}
 		var s string
 		switch val := v.(type) {
@@ -253,9 +253,9 @@ func TestIntegration_SQS_SenderReceiver_FullRoundTrip(t *testing.T) {
 
 	// Numeric headers are serialised as Number attributes; on receive
 	// they come back as string values.
-	numVal, ok := got.Headers["X-Priority"]
+	numVal, ok := got.Headers()["X-Priority"]
 	if !ok {
-		t.Fatalf("header X-Priority missing; headers=%v", got.Headers)
+		t.Fatalf("header X-Priority missing; headers=%v", got.Headers())
 	}
 	switch v := numVal.(type) {
 	case string:
@@ -303,14 +303,14 @@ func TestIntegration_SQS_Sender_BatchThenReceive(t *testing.T) {
 	const total = 15
 	envs := make([]*messaging.Envelope, total)
 	for i := range envs {
-		envs[i] = &messaging.Envelope{
+		envs[i] = messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("qn4-batch-%d", i),
 			Subject: "batch-subject",
 			Payload: []byte(fmt.Sprintf("batch-body-%d", i)),
 			Headers: map[string]any{
 				"X-Seq": strconv.Itoa(i),
 			},
-		}
+		})
 	}
 
 	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {

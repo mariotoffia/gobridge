@@ -36,11 +36,11 @@ func TestUC74_MQTTRetainedMessages(t *testing.T) {
 		Retain:       true,
 		Timeout:      5 * time.Second,
 	})
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "uc74-retained-0",
 		Subject: "uc74/retained",
 		Payload: []byte(`{"retained":true}`),
-	}
+	})
 	require.NoError(t, retainedSnd.Send(ctx, ports.OutboundMessage{Envelope: env}))
 	time.Sleep(1 * time.Second) // SYNC: let retained message propagate to broker
 

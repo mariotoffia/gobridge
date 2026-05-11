@@ -27,7 +27,7 @@ func TestMatchBySubjectPrefix_SelectsCorrectBinding(t *testing.T) {
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchBySubjectPrefix(prefixMap))
 
 	t.Run("orders_prefix", func(t *testing.T) {
-		env := &messaging.Envelope{Subject: "orders.created"}
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "orders.created"})
 		plans, err := resolver.Resolve(context.Background(), env)
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
@@ -38,7 +38,7 @@ func TestMatchBySubjectPrefix_SelectsCorrectBinding(t *testing.T) {
 	})
 
 	t.Run("alerts_prefix", func(t *testing.T) {
-		env := &messaging.Envelope{Subject: "alerts.critical"}
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "alerts.critical"})
 		plans, err := resolver.Resolve(context.Background(), env)
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
@@ -49,7 +49,7 @@ func TestMatchBySubjectPrefix_SelectsCorrectBinding(t *testing.T) {
 	})
 
 	t.Run("no_prefix_match", func(t *testing.T) {
-		env := &messaging.Envelope{Subject: "users.signup"}
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "users.signup"})
 		_, err := resolver.Resolve(context.Background(), env)
 		if err == nil {
 			t.Fatal("expected error for no prefix match")
@@ -94,7 +94,7 @@ func TestRuleResolver_FirstMatchWins(t *testing.T) {
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "")
 
-	env := &messaging.Envelope{Subject: "orders.new"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "orders.new"})
 	plans, err := resolver.Resolve(context.Background(), env)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -121,7 +121,7 @@ func TestRuleResolver_SecondRuleMatches(t *testing.T) {
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "")
 
-	env := &messaging.Envelope{Subject: "orders.new"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "orders.new"})
 	plans, err := resolver.Resolve(context.Background(), env)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -142,7 +142,7 @@ func TestRuleResolver_DefaultBinding(t *testing.T) {
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "fallback")
 
-	env := &messaging.Envelope{Subject: "unmatched"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "unmatched"})
 	plans, err := resolver.Resolve(context.Background(), env)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -161,7 +161,7 @@ func TestRuleResolver_NoMatch_NoDefault_Error(t *testing.T) {
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "")
 
-	env := &messaging.Envelope{Subject: "unmatched"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "unmatched"})
 	_, err := resolver.Resolve(context.Background(), env)
 	if err == nil {
 		t.Fatal("expected error for no match and no default")
@@ -179,10 +179,10 @@ func TestRuleResolver_MultiConditionRule_AND(t *testing.T) {
 	resolver := makeRuleResolver(t, bindings, rules, "fallback")
 
 	t.Run("both_match", func(t *testing.T) {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			Subject: "orders.new",
 			Headers: map[string]any{"priority": "high"},
-		}
+		})
 		plans, err := resolver.Resolve(context.Background(), env)
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
@@ -193,10 +193,10 @@ func TestRuleResolver_MultiConditionRule_AND(t *testing.T) {
 	})
 
 	t.Run("partial_match_falls_through", func(t *testing.T) {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			Subject: "orders.new",
 			Headers: map[string]any{"priority": "low"},
-		}
+		})
 		plans, err := resolver.Resolve(context.Background(), env)
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
@@ -211,7 +211,7 @@ func TestRuleResolver_EmptyRules_DefaultOnly(t *testing.T) {
 	bindings := []routing.DestinationBinding{{ID: "default-bind"}}
 	resolver := makeRuleResolver(t, bindings, nil, "default-bind")
 
-	env := &messaging.Envelope{Subject: "anything"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "anything"})
 	plans, err := resolver.Resolve(context.Background(), env)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -228,7 +228,7 @@ func TestRuleResolver_NoConditions_AlwaysMatch(t *testing.T) {
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "")
 
-	env := &messaging.Envelope{Subject: "anything"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "anything"})
 	plans, err := resolver.Resolve(context.Background(), env)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -273,7 +273,7 @@ func TestRuleResolver_RegexCondition(t *testing.T) {
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "other")
 
-	env := &messaging.Envelope{Subject: "order-42"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "order-42"})
 	plans, _ := resolver.Resolve(context.Background(), env)
 	if plans[0].BindingID != "order-match" {
 		t.Fatalf("expected order-match, got %s", plans[0].BindingID)
@@ -291,10 +291,10 @@ func TestRuleResolver_WithAddressTemplate(t *testing.T) {
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "")
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Subject: "test",
 		Headers: map[string]any{"region": "eu-west"},
-	}
+	})
 	plans, err := resolver.Resolve(context.Background(), env)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -356,7 +356,7 @@ func TestRuleResolver_ConditionEvalError_TreatedAsNoMatch(t *testing.T) {
 	}
 	resolver := makeRuleResolver(t, bindings, rules, "fallback")
 
-	env := &messaging.Envelope{Headers: map[string]any{"x": "not-a-number"}}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Headers: map[string]any{"x": "not-a-number"}})
 	plans, err := resolver.Resolve(context.Background(), env)
 	if err != nil {
 		t.Fatalf("expected no error (eval error treated as no-match), got: %v", err)

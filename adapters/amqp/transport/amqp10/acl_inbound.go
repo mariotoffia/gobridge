@@ -98,7 +98,15 @@ func (r *receiverLink) Receive(
 	if err != nil {
 		return nil, fmt.Errorf("amqp10: receive: %w", err)
 	}
-	env := messageToEnvelope(msg, clk)
+	env, err := messageToEnvelope(msg, clk)
+	if err != nil {
+		// Reject malformed message at the broker so it is not redelivered
+		// in an infinite loop, then surface the classified error to the
+		// caller. We deliberately swallow Reject's error: the receive-side
+		// classification is the authoritative signal.
+		_ = r.raw.RejectMessage(ctx, msg, nil)
+		return nil, err
+	}
 	return NewDelivery(env, msg, r.raw, logger, metrics, clk), nil
 }
 
@@ -119,8 +127,8 @@ func (r *receiverLink) Close(ctx context.Context) error {
 // from Properties.Subject; if the inbound message has no Subject the
 // envelope's Subject is left empty (no fallback to the link address).
 // The raw amqp10.subject header is still recorded under
-// envelope.Headers via messageToHeaders for full property round-trip.
-func messageToEnvelope(msg *amqp.Message, clk clock.Clock) *messaging.Envelope {
+// envelope.Headers() via messageToHeaders for full property round-trip.
+func messageToEnvelope(msg *amqp.Message, clk clock.Clock) (*messaging.Envelope, error) {
 	if clk == nil {
 		clk = clock.System
 	}
@@ -150,17 +158,20 @@ func messageToEnvelope(msg *amqp.Message, clk clock.Clock) *messaging.Envelope {
 		}
 	}
 
-	env := &messaging.Envelope{
+	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
 		ID:        msgID,
 		Subject:   subject,
 		Payload:   body,
 		Headers:   headers,
 		CreatedAt: clk.Now(),
+	}, clk.Now())
+	if err != nil {
+		return nil, wrapEnvelopeErr(err)
 	}
 	if msg.Properties != nil && msg.Properties.AbsoluteExpiryTime != nil {
 		env.ExpiresAt = *msg.Properties.AbsoluteExpiryTime
 	}
-	return env
+	return env, nil
 }
 
 func generateEnvelopeID() string {

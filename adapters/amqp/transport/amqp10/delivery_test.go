@@ -16,11 +16,11 @@ import (
 )
 
 func newTestDelivery(settle settler) *Delivery {
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "env-1",
 		Subject: "test/topic",
 		Payload: []byte("hello"),
-	}
+	})
 	msg := &amqp.Message{Data: [][]byte{[]byte("hello")}}
 	return NewDelivery(env, msg, settle, slog.Default(), &ports.NoopExporter{}, nil)
 }
@@ -36,8 +36,8 @@ func TestDelivery_Envelope(t *testing.T) {
 	if env.ID != "env-1" {
 		t.Fatalf("Envelope().ID = %q, want %q", env.ID, "env-1")
 	}
-	if env.Subject != "test/topic" {
-		t.Fatalf("Envelope().Subject = %q, want %q", env.Subject, "test/topic")
+	if env.Subject() != "test/topic" {
+		t.Fatalf("Envelope().Subject = %q, want %q", env.Subject(), "test/topic")
 	}
 }
 

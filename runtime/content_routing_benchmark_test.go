@@ -15,7 +15,7 @@ import (
 
 func BenchmarkConditionEval_Eq_Header(b *testing.B) {
 	eval, _ := newConditionEval(MatchCondition{Field: "header.tenant", Operator: OpEquals, Value: "acme"})
-	env := &messaging.Envelope{Headers: map[string]any{"tenant": "acme"}}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Headers: map[string]any{"tenant": "acme"}})
 	ctx := newEvalContext()
 
 	b.ResetTimer()
@@ -27,7 +27,7 @@ func BenchmarkConditionEval_Eq_Header(b *testing.B) {
 
 func BenchmarkConditionEval_Prefix_Subject(b *testing.B) {
 	eval, _ := newConditionEval(MatchCondition{Field: "subject", Operator: OpPrefix, Value: "orders."})
-	env := &messaging.Envelope{Subject: "orders.created.eu-west"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "orders.created.eu-west"})
 	ctx := newEvalContext()
 
 	b.ResetTimer()
@@ -39,7 +39,7 @@ func BenchmarkConditionEval_Prefix_Subject(b *testing.B) {
 
 func BenchmarkConditionEval_Regex_Precompiled(b *testing.B) {
 	eval, _ := newConditionEval(MatchCondition{Field: "subject", Operator: OpRegex, Value: `^order-\d{4,8}$`})
-	env := &messaging.Envelope{Subject: "order-12345678"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "order-12345678"})
 	ctx := newEvalContext()
 
 	b.ResetTimer()
@@ -125,10 +125,10 @@ func benchRuleResolver(b *testing.B, numRules int, matchIdx int) {
 		matchVal = "no-match"
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Subject: "test",
 		Headers: map[string]any{"route-key": matchVal},
-	}
+	})
 
 	b.ResetTimer()
 	b.ReportAllocs()

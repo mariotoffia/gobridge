@@ -97,24 +97,24 @@ func (e *conditionEval) extractField(env *messaging.Envelope, ctx *evalContext) 
 
 	switch {
 	case field == "subject":
-		return env.Subject, true, nil
+		return env.Subject(), true, nil
 
 	case strings.HasPrefix(field, "header."):
 		key := strings.TrimPrefix(field, "header.")
-		if env.Headers == nil {
+		if env.Headers() == nil {
 			return nil, false, nil
 		}
-		val, ok := env.Headers[key]
+		val, ok := env.Headers()[key]
 		return val, ok, nil
 
 	case strings.HasPrefix(field, "$."):
 		return ctx.extractPayloadPath(env.Payload, field)
 
 	default:
-		if env.Headers == nil {
+		if env.Headers() == nil {
 			return nil, false, nil
 		}
-		val, ok := env.Headers[field]
+		val, ok := env.Headers()[field]
 		return val, ok, nil
 	}
 }

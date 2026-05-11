@@ -84,7 +84,7 @@ func TestReceiver_RunEmitsDeliveries(t *testing.T) {
 	if string(env.Payload) != `{"key":"value"}` {
 		t.Fatalf("unexpected payload: %s", string(env.Payload))
 	}
-	if env.Headers["custom"] != "val" {
+	if env.Headers()["custom"] != "val" {
 		t.Fatal("custom header not mapped")
 	}
 }
@@ -137,13 +137,13 @@ func TestReceiver_RunStripsReservedHeaders(t *testing.T) {
 		return nil
 	})
 
-	if _, ok := env.Headers[messaging.HeaderCorrelationID]; ok {
+	if _, ok := env.Headers()[messaging.HeaderCorrelationID]; ok {
 		t.Fatal("x-bridge.correlation-id should be stripped at ingress")
 	}
-	if _, ok := env.Headers[messaging.HeaderRouteID]; ok {
+	if _, ok := env.Headers()[messaging.HeaderRouteID]; ok {
 		t.Fatal("x-bridge.route-id should be stripped at ingress")
 	}
-	if env.Headers["safe-header"] != "ok" {
+	if env.Headers()["safe-header"] != "ok" {
 		t.Fatal("safe-header should be preserved")
 	}
 }
@@ -199,13 +199,13 @@ func TestReceiver_RunSNSUnwrap(t *testing.T) {
 		return nil
 	})
 
-	if env.Subject != "Test Subject" {
-		t.Fatalf("expected subject from SNS, got %q", env.Subject)
+	if env.Subject() != "Test Subject" {
+		t.Fatalf("expected subject from SNS, got %q", env.Subject())
 	}
 	if string(env.Payload) != `{"inner":"data"}` {
 		t.Fatalf("expected unwrapped SNS message body, got %q", string(env.Payload))
 	}
-	if env.Headers["sns.topic_arn"] != "arn:aws:sns:us-west-1:123:my-topic" {
+	if env.Headers()["sns.topic_arn"] != "arn:aws:sns:us-west-1:123:my-topic" {
 		t.Fatal("SNS topic ARN should be in headers")
 	}
 }

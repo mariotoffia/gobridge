@@ -87,7 +87,7 @@ func TestSender_Send_RejectsMismatchedAddress(t *testing.T) {
 	s := newSenderWithLink(t, "queue/configured", link)
 
 	err := s.Send(context.Background(), ports.OutboundMessage{
-		Envelope: &messaging.Envelope{ID: "e1", Subject: "evt.x", Payload: []byte("p")},
+		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Subject: "evt.x", Payload: []byte("p")}),
 		Address:  "queue/other",
 	})
 	if err == nil {
@@ -109,7 +109,7 @@ func TestSender_Send_AcceptsMatchingAddress(t *testing.T) {
 	link := &recordingSenderLink{}
 	s := newSenderWithLink(t, "queue/configured", link)
 
-	env := &messaging.Envelope{ID: "e1", Subject: "evt.x", Payload: []byte("p")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Subject: "evt.x", Payload: []byte("p")})
 	err := s.Send(context.Background(), ports.OutboundMessage{
 		Envelope: env,
 		Address:  "queue/configured",
@@ -121,8 +121,8 @@ func TestSender_Send_AcceptsMatchingAddress(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("link saw %d sends, want 1", len(got))
 	}
-	if got[0].Subject != "evt.x" {
-		t.Fatalf("Subject = %q, want %q (subject must survive the dispatch)", got[0].Subject, "evt.x")
+	if got[0].Subject() != "evt.x" {
+		t.Fatalf("Subject = %q, want %q (subject must survive the dispatch)", got[0].Subject(), "evt.x")
 	}
 }
 
@@ -134,7 +134,7 @@ func TestSender_Send_DefaultsToConfiguredAddressOnEmpty(t *testing.T) {
 	s := newSenderWithLink(t, "queue/configured", link)
 
 	err := s.Send(context.Background(), ports.OutboundMessage{
-		Envelope: &messaging.Envelope{ID: "e1", Subject: "evt.x", Payload: []byte("p")},
+		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Subject: "evt.x", Payload: []byte("p")}),
 	})
 	if err != nil {
 		t.Fatalf("Send() error = %v", err)
@@ -161,14 +161,14 @@ func TestSender_Send_PreservesEnvelopeSubject(t *testing.T) {
 			s := newSenderWithLink(t, "queue/configured", link)
 
 			err := s.Send(context.Background(), ports.OutboundMessage{
-				Envelope: &messaging.Envelope{ID: "id-x", Subject: "logical.subject", Payload: []byte("p")},
+				Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "id-x", Subject: "logical.subject", Payload: []byte("p")}),
 				Address:  tc.address,
 			})
 			if err != nil {
 				t.Fatalf("Send() error = %v", err)
 			}
 			got := link.sentCopy()
-			if len(got) != 1 || got[0].Subject != "logical.subject" {
+			if len(got) != 1 || got[0].Subject() != "logical.subject" {
 				t.Fatalf("captured envelopes = %+v, want one with Subject=%q", got, "logical.subject")
 			}
 			// Confirm Subject crosses the SDK seam intact.
@@ -229,8 +229,8 @@ func TestSender_SendBatch_AddressValidation(t *testing.T) {
 		s := newSenderWithLink(t, "queue/configured", link)
 
 		sent, err := s.SendBatch(context.Background(), []ports.OutboundMessage{
-			{Envelope: &messaging.Envelope{ID: "a", Subject: "s.a"}, Address: "queue/configured"},
-			{Envelope: &messaging.Envelope{ID: "b", Subject: "s.b"}}, // empty Address is allowed
+			{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "a", Subject: "s.a"}), Address: "queue/configured"},
+			{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "b", Subject: "s.b"})}, // empty Address is allowed
 		})
 		if err != nil {
 			t.Fatalf("SendBatch() error = %v", err)
@@ -242,9 +242,9 @@ func TestSender_SendBatch_AddressValidation(t *testing.T) {
 		if len(got) != 2 {
 			t.Fatalf("link saw %d sends, want 2", len(got))
 		}
-		if got[0].Subject != "s.a" || got[1].Subject != "s.b" {
+		if got[0].Subject() != "s.a" || got[1].Subject() != "s.b" {
 			t.Fatalf("captured subjects = [%q, %q], want [%q, %q]",
-				got[0].Subject, got[1].Subject, "s.a", "s.b")
+				got[0].Subject(), got[1].Subject(), "s.a", "s.b")
 		}
 	})
 }
@@ -275,11 +275,14 @@ func TestSender_SendBatch_NilEnvelopeFailsFast(t *testing.T) {
 func TestMessageToEnvelope_NoFallbackOnMissingSubject(t *testing.T) {
 	msg := &amqp.Message{Data: [][]byte{[]byte("body")}}
 
-	env := messageToEnvelope(msg, clock.System)
+	env, err := messageToEnvelope(msg, clock.System)
+	if err != nil {
+		t.Fatalf("messageToEnvelope: %v", err)
+	}
 
-	if env.Subject != "" {
+	if env.Subject() != "" {
 		t.Fatalf("Subject = %q, want empty (acceptance: no Properties.Subject ⇒ empty Envelope.Subject)",
-			env.Subject)
+			env.Subject())
 	}
 }
 
@@ -292,15 +295,18 @@ func TestMessageToEnvelope_PreservesProvidedSubject(t *testing.T) {
 		Data:       [][]byte{[]byte("body")},
 	}
 
-	env := messageToEnvelope(msg, clock.System)
+	env, err := messageToEnvelope(msg, clock.System)
+	if err != nil {
+		t.Fatalf("messageToEnvelope: %v", err)
+	}
 
-	if env.Subject != subj {
-		t.Fatalf("Subject = %q, want %q", env.Subject, subj)
+	if env.Subject() != subj {
+		t.Fatalf("Subject = %q, want %q", env.Subject(), subj)
 	}
 	// The raw amqp10.subject header continues to be recorded under
 	// Headers via messageToHeaders for full property round-trip.
-	if env.Headers[headerSubject] != subj {
-		t.Fatalf("Headers[%s] = %v, want %q", headerSubject, env.Headers[headerSubject], subj)
+	if env.Headers()[headerSubject] != subj {
+		t.Fatalf("Headers[%s] = %v, want %q", headerSubject, env.Headers()[headerSubject], subj)
 	}
 }
 
@@ -308,16 +314,19 @@ func TestMessageToEnvelope_PreservesProvidedSubject(t *testing.T) {
 // outbound (envelopeToMessage) → inbound (messageToEnvelope) cycle
 // without leaking the configured link address into Subject.
 func TestRoundTrip_SubjectIndependentOfAddress(t *testing.T) {
-	out := &messaging.Envelope{
+	out := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "rt-1",
 		Subject: "logical.subject",
 		Payload: []byte("body"),
-	}
+	})
 
 	msg := envelopeToMessage(out)
-	in := messageToEnvelope(msg, clock.System)
+	in, err := messageToEnvelope(msg, clock.System)
+	if err != nil {
+		t.Fatalf("messageToEnvelope: %v", err)
+	}
 
-	if in.Subject != "logical.subject" {
-		t.Fatalf("round-trip Subject = %q, want %q", in.Subject, "logical.subject")
+	if in.Subject() != "logical.subject" {
+		t.Fatalf("round-trip Subject = %q, want %q", in.Subject(), "logical.subject")
 	}
 }

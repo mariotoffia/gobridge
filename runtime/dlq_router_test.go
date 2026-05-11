@@ -28,10 +28,10 @@ func TestDLQRouter_WritesEntry(t *testing.T) {
 	store := NewFakeDLQStore()
 	dlq := runtime.NewDLQRouter(store)
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID:      "msg-1",
 		Headers: map[string]any{messaging.HeaderCorrelationID: "corr-abc"},
-	}
+	})
 
 	err := dlq.Route(context.Background(), env, "route-1", "bind-1", "", "sess-1", "src-1", shared.ErrNotFound, 3)
 	if err != nil {
@@ -166,12 +166,12 @@ func TestDLQRouter_Route_AllFieldsPopulated(t *testing.T) {
 		Clock: clk,
 	})
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID:      "msg-all",
 		Subject: "test/topic",
 		Payload: []byte("payload-data"),
 		Headers: map[string]any{messaging.HeaderCorrelationID: "corr-xyz"},
-	}
+	})
 
 	routeErr := shared.ErrThrottled
 	err := dlq.Route(context.Background(), env, "route-all", "bind-all", "", "sess-all", "src-all", routeErr, 7)

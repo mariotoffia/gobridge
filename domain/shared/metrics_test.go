@@ -33,6 +33,7 @@ func TestMetricConstants_NonEmpty(t *testing.T) {
 		shared.MetricSQSReceiveLatency,
 		shared.MetricSQSDeleteLatency,
 		shared.MetricSQSVisibilityExtensions,
+		shared.MetricSQSMalformedMessages,
 		shared.MetricAckLatency,
 		shared.MetricVisibilityExtensions,
 		shared.MetricDeliveryE2ELatency,

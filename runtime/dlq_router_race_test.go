@@ -35,11 +35,11 @@ func TestDLQRouter_ConcurrentCloseAndRoute(t *testing.T) {
 	ctx := context.Background()
 	router.Start(ctx)
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "race-test",
 		Subject: "test/dlq-race",
 		Payload: []byte("payload"),
-	}
+	})
 
 	var wg sync.WaitGroup
 	const routeGoroutines = 10
@@ -99,11 +99,11 @@ func TestDLQRouter_RouteAfterClose(t *testing.T) {
 	router.Close()
 
 	// Route after close should fall back to writeDirect (no panic).
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "after-close",
 		Subject: "test/after-close",
 		Payload: []byte("payload"),
-	}
+	})
 
 	err := router.Route(
 		ctx, env,

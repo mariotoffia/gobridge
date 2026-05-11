@@ -172,10 +172,10 @@ func TestBindingResolver_MatchByHeader_SingleMatch(t *testing.T) {
 	headerMap := map[string]string{"A": "bind-a", "B": "bind-b"}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchByHeader("factory", headerMap))
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-1",
 		Headers: map[string]any{"factory": "A", "device_id": "42"},
-	}
+	})
 
 	plans, err := resolver.Resolve(context.Background(), env)
 	if err != nil {
@@ -200,10 +200,10 @@ func TestBindingResolver_MatchByHeader_NoMatch(t *testing.T) {
 	headerMap := map[string]string{"A": "bind-a"}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchByHeader("factory", headerMap))
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-2",
 		Headers: map[string]any{"factory": "UNKNOWN"},
-	}
+	})
 
 	_, err := resolver.Resolve(context.Background(), env)
 	if err == nil {
@@ -226,7 +226,7 @@ func TestBindingResolver_MatchByHeader_MissingHeader(t *testing.T) {
 	headerMap := map[string]string{"A": "bind-a"}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchByHeader("factory", headerMap))
 
-	env := &messaging.Envelope{ID: "msg-3", Headers: map[string]any{}}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-3", Headers: map[string]any{}})
 
 	_, err := resolver.Resolve(context.Background(), env)
 	if err == nil {
@@ -321,10 +321,10 @@ func TestBindingResolver_MQTTTopicValidation(t *testing.T) {
 	}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchAll())
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-bad",
 		Headers: map[string]any{"wildcard": "sensor+"},
-	}
+	})
 
 	_, err := resolver.Resolve(context.Background(), env)
 	if err == nil {
@@ -364,7 +364,7 @@ func TestBindingResolver_AddressTemplateError(t *testing.T) {
 	}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchAll())
 
-	env := &messaging.Envelope{ID: "msg-tmpl", Headers: map[string]any{}}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-tmpl", Headers: map[string]any{}})
 
 	_, err := resolver.Resolve(context.Background(), env)
 	if err == nil {

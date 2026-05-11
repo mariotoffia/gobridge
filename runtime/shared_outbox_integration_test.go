@@ -98,11 +98,11 @@ func TestSharedOutbox_BasicFlow(t *testing.T) {
 		return session.IsStarted()
 	})
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-basic-1",
 		Subject: "device.state.update",
 		Payload: []byte("hello"),
-	}
+	})
 	del := NewFakeDelivery(env)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit: %v", err)
@@ -123,8 +123,8 @@ func TestSharedOutbox_BasicFlow(t *testing.T) {
 	})
 
 	sent := sender.GetSent()
-	if sent[0].Subject != "device.state.update" {
-		t.Errorf("expected logical subject device.state.update preserved, got %q", sent[0].Subject)
+	if sent[0].Subject() != "device.state.update" {
+		t.Errorf("expected logical subject device.state.update preserved, got %q", sent[0].Subject())
 	}
 	outbound := sender.GetOutbound()
 	if len(outbound) == 0 || outbound[0].Address != "devices/1/state" {
@@ -184,11 +184,11 @@ func TestSharedOutbox_DrainPreservesLogicalSubject(t *testing.T) {
 		return session.IsStarted()
 	})
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-t04-1",
 		Subject: "evt.user.created",
 		Payload: []byte("user-payload"),
-	}
+	})
 	del := NewFakeDelivery(env)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit: %v", err)
@@ -208,7 +208,7 @@ func TestSharedOutbox_DrainPreservesLogicalSubject(t *testing.T) {
 	if len(recs) != 1 {
 		t.Fatalf("expected exactly 1 outbox record, got %d", len(recs))
 	}
-	if got := recs[0].Envelope.Subject; got != "evt.user.created" {
+	if got := recs[0].Envelope.Subject(); got != "evt.user.created" {
 		t.Errorf("outbox record Envelope.Subject = %q, want %q (logical subject must be preserved)",
 			got, "evt.user.created")
 	}
@@ -222,9 +222,9 @@ func TestSharedOutbox_DrainPreservesLogicalSubject(t *testing.T) {
 	})
 
 	sent := sender.GetSent()
-	if sent[0].Subject != "evt.user.created" {
+	if sent[0].Subject() != "evt.user.created" {
 		t.Errorf("sender saw Envelope.Subject = %q, want %q (logical subject must be preserved on outbound)",
-			sent[0].Subject, "evt.user.created")
+			sent[0].Subject(), "evt.user.created")
 	}
 
 	outbound := sender.GetOutbound()
@@ -253,7 +253,7 @@ func TestSharedOutbox_ProcessorChainRuns(t *testing.T) {
 	enricher := &FakeProcessor{
 		NameVal: "enricher",
 		ProcessFn: func(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
-			env.Headers["enriched"] = true
+			env.SetHeader("enriched", true)
 			return next(ctx, env)
 		},
 	}
@@ -294,7 +294,7 @@ func TestSharedOutbox_ProcessorChainRuns(t *testing.T) {
 	})
 
 	sent := sender.GetSent()
-	if v, ok := sent[0].Headers["enriched"]; !ok || v != true {
+	if v, ok := sent[0].Headers()["enriched"]; !ok || v != true {
 		t.Error("expected enriched header on sent envelope")
 	}
 	if enricher.CalledCount() != 1 {
@@ -345,10 +345,10 @@ func TestSharedOutbox_CorrelationIDInjected(t *testing.T) {
 	})
 
 	sent := sender.GetSent()
-	if _, ok := sent[0].Headers[messaging.HeaderCorrelationID]; !ok {
+	if _, ok := sent[0].Headers()[messaging.HeaderCorrelationID]; !ok {
 		t.Error("expected correlation ID header")
 	}
-	if _, ok := sent[0].Headers[messaging.HeaderRouteID]; !ok {
+	if _, ok := sent[0].Headers()[messaging.HeaderRouteID]; !ok {
 		t.Error("expected route ID header")
 	}
 }
@@ -386,14 +386,14 @@ func TestSharedOutbox_ReservedHeadersStripped(t *testing.T) {
 		return session.IsStarted()
 	})
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID:      "msg-hdr-1",
 		Payload: []byte("x"),
 		Headers: map[string]any{
 			"x-bridge.spoofed": "evil",
 			"safe-header":      "ok",
 		},
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -402,10 +402,10 @@ func TestSharedOutbox_ReservedHeadersStripped(t *testing.T) {
 	})
 
 	sent := sender.GetSent()
-	if _, ok := sent[0].Headers["x-bridge.spoofed"]; ok {
+	if _, ok := sent[0].Headers()["x-bridge.spoofed"]; ok {
 		t.Error("reserved header should have been stripped")
 	}
-	if v, ok := sent[0].Headers["safe-header"]; !ok || v != "ok" {
+	if v, ok := sent[0].Headers()["safe-header"]; !ok || v != "ok" {
 		t.Error("safe header should be preserved")
 	}
 }

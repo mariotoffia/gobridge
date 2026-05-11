@@ -65,11 +65,11 @@ func TestIntegration_OutboxDrainer_FullLifecycle(t *testing.T) {
 		SessionID:  "sess-od1",
 		RouteID:    "route-od1",
 		Address:    "test/topic",
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "env-od1",
 			Subject: "test",
 			Payload: []byte(`{"lifecycle":"test"}`),
-		},
+		}),
 	})
 
 	ctx := context.Background()
@@ -129,11 +129,11 @@ func TestIntegration_OutboxDrainer_StaleFencingToken(t *testing.T) {
 		BindingID:  "bind-od2",
 		SessionID:  "sess-od2",
 		RouteID:    "route-od2",
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "env-od2",
 			Subject: "test",
 			Payload: []byte(`{"stale":"test"}`),
-		},
+		}),
 	})
 
 	if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
@@ -183,12 +183,12 @@ func TestIntegration_OutboxDrainer_ExpiredRecordRoutesDLQ(t *testing.T) {
 		SessionID:  "sess-od3",
 		RouteID:    "route-od3",
 		ExpiresAt:  past,
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:        "env-od3",
 			Subject:   "test",
 			Payload:   []byte(`{"expired":"test"}`),
 			ExpiresAt: past,
-		},
+		}),
 	})
 
 	ctx := context.Background()
@@ -251,11 +251,11 @@ func TestIntegration_OutboxDrainer_PoisonMessageRoutesDLQ(t *testing.T) {
 		BindingID:  "bind-od4",
 		SessionID:  "sess-od4",
 		RouteID:    "route-od4",
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "env-od4",
 			Subject: "test",
 			Payload: []byte(`{"poison":"test"}`),
-		},
+		}),
 	})
 
 	if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
@@ -340,11 +340,11 @@ func TestIntegration_OutboxDrainer_ConcurrentDrainers(t *testing.T) {
 			BindingID:  uniqueID("bind-od5"),
 			SessionID:  "sess-od5",
 			RouteID:    "route-od5",
-			Envelope: messaging.Envelope{
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 				ID:      uniqueID("env-od5"),
 				Subject: "test",
 				Payload: []byte(`{"concurrent":"test"}`),
-			},
+			}),
 		})
 		if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist %d: %v", i, err)
@@ -415,11 +415,11 @@ func TestIntegration_OutboxDrainer_AdaptiveBatchSize(t *testing.T) {
 			BindingID:  uniqueID("bind-od6"),
 			SessionID:  "sess-od6",
 			RouteID:    "route-od6",
-			Envelope: messaging.Envelope{
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 				ID:      uniqueID("env-od6"),
 				Subject: "test",
 				Payload: []byte(`{"adaptive":"test"}`),
-			},
+			}),
 		})
 		if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist %d: %v", i, err)

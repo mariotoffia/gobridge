@@ -316,8 +316,8 @@ func TestReceiver_LocalProcessing(t *testing.T) {
 	if gotEnvelope == nil {
 		t.Fatal("emit was never called")
 	}
-	if gotEnvelope.Subject != "orders.created" {
-		t.Fatalf("expected subject orders.created, got %q", gotEnvelope.Subject)
+	if gotEnvelope.Subject() != "orders.created" {
+		t.Fatalf("expected subject orders.created, got %q", gotEnvelope.Subject())
 	}
 	if gotEnvelope.ID != "msg-001" {
 		t.Fatalf("expected ID msg-001, got %q", gotEnvelope.ID)
@@ -495,11 +495,11 @@ func TestSSESender_BroadcastToClients(t *testing.T) {
 		return sender.(*transport.SSESender).ClientCount() >= 1
 	})
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "evt-1",
 		Subject: "user.signup",
 		Payload: []byte(`{"user":"alice"}`),
-	}
+	})
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -622,11 +622,11 @@ func TestHTTPForwarder_ForwardSuccess(t *testing.T) {
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "fwd-msg-1",
 		Subject: "orders.shipped",
 		Payload: []byte(`{"order":"456"}`),
-	}
+	})
 
 	if err := fwd.Forward(context.Background(), peer, "route-X", env); err != nil {
 		t.Fatalf("Forward: %v", err)

@@ -317,7 +317,7 @@ func (r *RouteRunner) processDelivery(ctx context.Context, del ports.Delivery) {
 			r.logger.Log(ctx, logging.LevelDebug, "delivery error detail",
 				"route", r.routeID,
 				"envelope_id", env.ID,
-				"subject", env.Subject,
+				"subject", env.Subject(),
 				"delivery_mode", string(r.policy.DeliveryMode),
 				"error", err,
 			)
@@ -330,18 +330,18 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 
 	env := del.Envelope()
 
-	env.Headers = messaging.StripReservedHeaders(env.Headers)
+	env.ReplaceHeaders(messaging.StripReservedHeaders(env.Headers()))
 	r.injectHeaders(env)
 
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelTrace, "delivery received",
 			"route", r.routeID,
 			"envelope_id", env.ID,
-			"subject", env.Subject,
+			"subject", env.Subject(),
 		)
 	}
 
-	tc, hasTrace := messaging.ExtractTraceContext(env.Headers)
+	tc, hasTrace := messaging.ExtractTraceContext(env.Headers())
 
 	attrs := []shared.Tag{
 		{Key: shared.TagKeyRouteID, Value: r.routeID},
@@ -354,7 +354,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 	ctx, span := r.tracer.StartSpan(ctx, "bridge.handleDelivery", attrs...)
 	defer span.End()
 
-	if corrID, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderCorrelationID); ok {
+	if corrID, ok := messaging.GetHeaderString(env.Headers(), messaging.HeaderCorrelationID); ok {
 		ctx = observability.WithCorrelationID(ctx, corrID)
 	}
 	if hasTrace {
@@ -427,8 +427,8 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *messaging.Envelope) error {
 	// Consume HeaderRouteOverride set by processor chain (e.g., filter ActionRoute).
 	// SEC-1: validate the override references a binding declared on this route.
-	if override, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderRouteOverride); ok {
-		delete(env.Headers, messaging.HeaderRouteOverride)
+	if override, ok := messaging.GetHeaderString(env.Headers(), messaging.HeaderRouteOverride); ok {
+		env.DeleteHeader(messaging.HeaderRouteOverride)
 		if r.hasBinding(override) {
 			return r.sendDirectHoldForBinding(ctx, del, env, override)
 		}

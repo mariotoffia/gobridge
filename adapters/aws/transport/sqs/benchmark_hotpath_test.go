@@ -83,11 +83,11 @@ func BenchmarkGenerateDeduplicationID(b *testing.B) {
 	for _, size := range []int{100, 1024, 10240, 102400} {
 		name := fmt.Sprintf("%dB", size)
 		b.Run(name, func(b *testing.B) {
-			env := &messaging.Envelope{
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{
 				ID:      "bench-msg-id",
 				Subject: "bench/subject",
 				Payload: make([]byte, size),
-			}
+			})
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
@@ -119,12 +119,12 @@ func BenchmarkBuildSendInput(b *testing.B) {
 			s := &Sender{
 				queueURL: "https://sqs.us-west-1.amazonaws.com/123/q",
 			}
-			env := &messaging.Envelope{
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{
 				ID:      "bench-id",
 				Subject: "bench/subject",
 				Payload: make([]byte, 1024),
 				Headers: tc.headers,
-			}
+			})
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {

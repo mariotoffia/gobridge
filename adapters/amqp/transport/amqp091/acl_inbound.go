@@ -68,7 +68,7 @@ func deliveryToHeaders(d amqp.Delivery) map[string]any {
 	for k, v := range d.Headers {
 		if k == HeaderGobridgeSubject {
 			// Reserved cross-transport subject carrier — extracted
-			// separately by deliveryToEnvelope into env.Subject. Do
+			// separately by deliveryToEnvelope into env.Subject(). Do
 			// not duplicate it in the generic header pass-through.
 			continue
 		}
@@ -83,25 +83,33 @@ func deliveryToHeaders(d amqp.Delivery) map[string]any {
 
 // deliveryToEnvelope translates an inbound *amqp091.Delivery to a fresh
 // messaging.Envelope. The CreatedAt field falls back to clk.Now() when the
-// inbound message carries no timestamp.
-func deliveryToEnvelope(d amqp.Delivery, clk clock.Clock) *messaging.Envelope {
+// inbound message carries no timestamp. Returns an error when the
+// validating constructor rejects the input (e.g. ID generation fails);
+// callers MAY wrap into shared.ErrCodeInvalidPayload at the adapter
+// boundary via wrapEnvelopeErr.
+func deliveryToEnvelope(d amqp.Delivery, clk clock.Clock) (*messaging.Envelope, error) {
 	if clk == nil {
 		clk = clock.System
 	}
-	env := &messaging.Envelope{
-		ID:        d.MessageId,
+	id := d.MessageId
+	if id == "" {
+		id = generateEnvelopeID()
+	}
+	created := clk.Now()
+	if !d.Timestamp.IsZero() {
+		created = d.Timestamp
+	}
+	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
+		ID:        id,
 		Subject:   subjectFromHeaders(d.Headers),
 		Payload:   d.Body,
 		Headers:   deliveryToHeaders(d),
-		CreatedAt: clk.Now(),
+		CreatedAt: created,
+	}, clk.Now())
+	if err != nil {
+		return nil, wrapEnvelopeErr(err)
 	}
-	if env.ID == "" {
-		env.ID = generateEnvelopeID()
-	}
-	if !d.Timestamp.IsZero() {
-		env.CreatedAt = d.Timestamp
-	}
-	return env
+	return env, nil
 }
 
 func generateEnvelopeID() string {

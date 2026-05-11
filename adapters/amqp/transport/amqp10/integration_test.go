@@ -52,7 +52,7 @@ func TestIntegration_SendReceive(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:        "integ-msg-1",
 		Subject:   "test.integration",
 		Payload:   []byte(`{"key":"value"}`),
@@ -60,7 +60,7 @@ func TestIntegration_SendReceive(t *testing.T) {
 		Headers: map[string]any{
 			"tenant": "test-tenant",
 		},
-	}
+	})
 
 	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send() error = %v", err)
@@ -100,8 +100,8 @@ func TestIntegration_SendReceive(t *testing.T) {
 	if string(received.Payload) != `{"key":"value"}` {
 		t.Fatalf("received Payload = %q", received.Payload)
 	}
-	if received.Headers["tenant"] != "test-tenant" {
-		t.Fatalf("received Headers[tenant] = %v", received.Headers["tenant"])
+	if received.Headers()["tenant"] != "test-tenant" {
+		t.Fatalf("received Headers[tenant] = %v", received.Headers()["tenant"])
 	}
 }
 

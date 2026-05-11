@@ -48,7 +48,7 @@ func TestRouteRunner_IdleChanged_FiresOnZeroTransition(t *testing.T) {
 	// Capture the idle channel BEFORE emitting (lost-wakeup safety).
 	idle := runner.IdleChanged()
 
-	env := &messaging.Envelope{ID: "m1", Subject: "t"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "m1", Subject: "t"})
 	del := NewFakeDelivery(env)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit: %v", err)
@@ -79,7 +79,7 @@ func TestRouteRunner_IdleChanged_SwapsOnFire(t *testing.T) {
 	<-receiver.Ready()
 
 	first := runner.IdleChanged()
-	env := &messaging.Envelope{ID: "m1", Subject: "t"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "m1", Subject: "t"})
 	if err := receiver.Emit(ctx, NewFakeDelivery(env)); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -147,10 +147,10 @@ func TestRouteRunner_IdleChanged_NoFireWhenNotAtZero(t *testing.T) {
 
 	idle := runner.IdleChanged()
 
-	if err := receiver.Emit(ctx, NewFakeDelivery(&messaging.Envelope{ID: "m1", Subject: "t"})); err != nil {
+	if err := receiver.Emit(ctx, NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "m1", Subject: "t"}))); err != nil {
 		t.Fatalf("Emit m1: %v", err)
 	}
-	if err := receiver.Emit(ctx, NewFakeDelivery(&messaging.Envelope{ID: "m2", Subject: "t"})); err != nil {
+	if err := receiver.Emit(ctx, NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "m2", Subject: "t"}))); err != nil {
 		t.Fatalf("Emit m2: %v", err)
 	}
 	waitFor(t, 2*time.Second, "inflight=2", func() bool { return runner.InFlight() == 2 })

@@ -71,14 +71,14 @@ func TestIntegration_SendReceive(t *testing.T) {
 	})
 
 	payload := []byte(`{"integration":"test"}`)
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "integ-msg-001",
 		Subject: queueName,
 		Payload: payload,
 		Headers: map[string]any{
 			"tenant": "test-tenant",
 		},
-	}
+	})
 
 	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("send: %v", err)
@@ -165,9 +165,9 @@ func TestIntegration_SendBatch(t *testing.T) {
 	})
 
 	envs := []*messaging.Envelope{
-		{ID: "batch-1", Subject: queueName, Payload: []byte("one")},
-		{ID: "batch-2", Subject: queueName, Payload: []byte("two")},
-		{ID: "batch-3", Subject: queueName, Payload: []byte("three")},
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "batch-1", Subject: queueName, Payload: []byte("one")}),
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "batch-2", Subject: queueName, Payload: []byte("two")}),
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "batch-3", Subject: queueName, Payload: []byte("three")}),
 	}
 
 	sent, err := sender.SendBatch(ctx, func() []ports.OutboundMessage {
@@ -268,9 +268,9 @@ func TestIntegration_RetryRedelivers(t *testing.T) {
 		Session:    sess,
 	})
 
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "retry-msg", Subject: queueName, Payload: []byte("retry-me"),
-	}}); err != nil {
+	})}); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 
@@ -291,7 +291,7 @@ func TestIntegration_RetryRedelivers(t *testing.T) {
 				return d.Retry(recvCtx, 0, errors.New("transient"))
 			}
 			env := d.Envelope()
-			if !env.Headers[HeaderRedelivered].(bool) {
+			if !env.Headers()[HeaderRedelivered].(bool) {
 				t.Errorf("expected redelivered=true on second delivery")
 			}
 			_ = d.Ack(recvCtx)

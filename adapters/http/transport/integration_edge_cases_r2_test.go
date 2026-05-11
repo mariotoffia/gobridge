@@ -215,11 +215,11 @@ func TestEdgeR2_ForwarderClusterKey(t *testing.T) {
 		InstanceID: "remote-key",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "fwd-key-1",
 		Subject: "test.cluster-key",
 		Payload: []byte(`{}`),
-	}
+	})
 
 	if err := fwd.Forward(context.Background(), peer, "route-key", env); err != nil {
 		t.Fatalf("Forward: %v", err)
@@ -299,13 +299,13 @@ func TestEdgeR2_CaseInsensitiveHeaderStripping(t *testing.T) {
 
 	<-resultCh
 
-	for k := range env.Headers {
+	for k := range env.Headers() {
 		if strings.HasPrefix(strings.ToLower(k), "x-bridge.") {
 			t.Fatalf("reserved header not stripped: %q", k)
 		}
 	}
 
-	if v, ok := env.Headers["custom"]; !ok || v != "keep" {
+	if v, ok := env.Headers()["custom"]; !ok || v != "keep" {
 		t.Fatalf("custom header missing or wrong: %v", v)
 	}
 }

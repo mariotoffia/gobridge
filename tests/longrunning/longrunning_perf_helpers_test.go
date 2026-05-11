@@ -173,7 +173,7 @@ func (p *tenantSlowProcessor) Name() string { return "tenant-slow" }
 func (p *tenantSlowProcessor) Process(
 	ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc,
 ) error {
-	if tid, ok := messaging.GetHeaderString(env.Headers, "tenant_id"); ok && tid == p.slowTenant {
+	if tid, ok := messaging.GetHeaderString(env.Headers(), "tenant_id"); ok && tid == p.slowTenant {
 		select {
 		case <-time.After(p.delay):
 		case <-ctx.Done():

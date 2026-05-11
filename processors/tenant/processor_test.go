@@ -18,9 +18,9 @@ import (
 func nextOK(_ context.Context, _ *messaging.Envelope) error { return nil }
 
 func envelope(tenantID string, payloadSize int) *messaging.Envelope {
-	env := &messaging.Envelope{Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "test"})
 	if tenantID != "" {
-		env.Headers = map[string]any{messaging.HeaderTenantID: tenantID}
+		env.SetHeader(messaging.HeaderTenantID, tenantID)
 	}
 	if payloadSize > 0 {
 		env.Payload = make([]byte, payloadSize)
@@ -108,7 +108,7 @@ func (m *mockTracker) inFlightDeltas() []int64 {
 // Verifies processing succeeds when tenant header is absent and not required.
 func TestProcess_NoTenantHeader_NotRequired(t *testing.T) {
 	p := New(Config{})
-	env := &messaging.Envelope{Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "test"})
 	if err := p.Process(context.Background(), env, nextOK); err != nil {
 		t.Fatalf("expected nil, got %v", err)
 	}
@@ -117,7 +117,7 @@ func TestProcess_NoTenantHeader_NotRequired(t *testing.T) {
 // Verifies missing tenant returns ErrInvalidPayload when required.
 func TestProcess_NoTenantHeader_Required(t *testing.T) {
 	p := New(Config{RequireTenant: true})
-	env := &messaging.Envelope{Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "test"})
 	err := p.Process(context.Background(), env, nextOK)
 	if err == nil {
 		t.Fatal("expected error for missing tenant")
@@ -277,10 +277,10 @@ func TestProcess_InFlightTrackingError_ReturnedBeforeNext(t *testing.T) {
 func TestProcess_CustomTenantHeader(t *testing.T) {
 	v := &stubValidator{info: ports.TenantInfo{ID: "custom-tenant", Active: true}}
 	p := New(Config{TenantHeader: "x-custom-tenant"}, WithValidator(v))
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Subject: "test",
 		Headers: map[string]any{"x-custom-tenant": "custom-tenant"},
-	}
+	})
 
 	if err := p.Process(context.Background(), env, nextOK); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -338,7 +338,7 @@ func TestProcess_NoValidator_SkipsValidation(t *testing.T) {
 // Verifies nil headers succeed when tenant is not required.
 func TestProcess_NilHeaders_NotRequired(t *testing.T) {
 	p := New(Config{})
-	env := &messaging.Envelope{Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "test"})
 
 	if err := p.Process(context.Background(), env, nextOK); err != nil {
 		t.Fatalf("expected nil for nil headers (not required), got %v", err)
@@ -408,7 +408,7 @@ func TestProcessor_IncrementMessagesSilentlyIgnoresError(t *testing.T) {
 // RequireTenant is true and the tenant header is absent.
 func TestProcessor_RequireTenant_EmptyHeader(t *testing.T) {
 	p := New(Config{RequireTenant: true})
-	env := &messaging.Envelope{Subject: "test", Headers: map[string]any{}}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "test", Headers: map[string]any{}})
 
 	err := p.Process(context.Background(), env, nextOK)
 	require.Error(t, err)

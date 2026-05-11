@@ -132,18 +132,18 @@ func TestIntegration_Edge_EmptyPayload(t *testing.T) {
 	e := edge091Setup(t, logger, "edge-empty")
 
 	t.Run("nil_payload", func(t *testing.T) {
-		got := edge091SendRecv(t, e, &messaging.Envelope{
+		got := edge091SendRecv(t, e, messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID: "empty-nil", Subject: e.queue,
-		}, 15*time.Second)
+		}), 15*time.Second)
 		if len(got.Payload) != 0 {
 			t.Errorf("expected empty payload, got %d bytes", len(got.Payload))
 		}
 	})
 
 	t.Run("zero_length_payload", func(t *testing.T) {
-		got := edge091SendRecv(t, e, &messaging.Envelope{
+		got := edge091SendRecv(t, e, messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID: "empty-zero", Subject: e.queue, Payload: []byte{},
-		}, 15*time.Second)
+		}), 15*time.Second)
 		if len(got.Payload) != 0 {
 			t.Errorf("expected empty payload, got %d bytes", len(got.Payload))
 		}
@@ -166,9 +166,9 @@ func TestIntegration_Edge_LargePayload(t *testing.T) {
 	}
 	sentHash := sha256.Sum256(payload)
 
-	got := edge091SendRecv(t, e, &messaging.Envelope{
+	got := edge091SendRecv(t, e, messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "large-msg", Subject: e.queue, Payload: payload,
-	}, 30*time.Second)
+	}), 30*time.Second)
 
 	gotHash := sha256.Sum256(got.Payload)
 	if sentHash != gotHash {
@@ -194,9 +194,9 @@ func TestIntegration_Edge_SendContextTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "timeout-msg", Subject: e.queue, Payload: []byte("hello"),
-	}})
+	})})
 	if err == nil {
 		t.Fatal("expected error from Send with cancelled context")
 	}
@@ -247,9 +247,9 @@ func TestIntegration_Edge_DoubleAck(t *testing.T) {
 	})
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "dbl-ack", Subject: e.queue, Payload: []byte("ack-me"),
-	}}); err != nil {
+	})}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -293,9 +293,9 @@ func TestIntegration_Edge_DoubleRetry(t *testing.T) {
 	})
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "dbl-retry", Subject: e.queue, Payload: []byte("retry-me"),
-	}}); err != nil {
+	})}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -345,9 +345,9 @@ func TestIntegration_Edge_AckThenRetry(t *testing.T) {
 	})
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "ack-then-retry", Subject: e.queue, Payload: []byte("test"),
-	}}); err != nil {
+	})}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -397,9 +397,9 @@ func TestIntegration_Edge_SendAfterSessionClose(t *testing.T) {
 	})
 	_ = sess.Close(ctx)
 
-	err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "after-close", Subject: "test", Payload: []byte("nope"),
-	}})
+	})})
 	if err == nil {
 		t.Fatal("expected error sending after session close")
 	}

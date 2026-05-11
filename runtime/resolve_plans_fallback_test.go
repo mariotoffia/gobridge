@@ -37,18 +37,18 @@ func TestResolvePlans_NoResolver_RendersAddress(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "render-fallback",
 		Subject: "test",
 		Headers: map[string]any{"tenant": "acme"},
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)
 
 	sent := sender.GetSent()
 	require.Len(t, sent, 1)
-	assert.Equal(t, "test", sent[0].Subject,
+	assert.Equal(t, "test", sent[0].Subject(),
 		"source logical Subject must be preserved on the outbound envelope")
 	out := sender.GetOutbound()
 	require.Len(t, out, 1)
@@ -81,7 +81,7 @@ func TestResolvePlans_NoResolver_RenderError_RoutesDLQ(t *testing.T) {
 	<-receiver.Ready()
 
 	// No "tenant" header -> RenderAddress fails.
-	env := &messaging.Envelope{ID: "render-fallback-err", Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "render-fallback-err", Subject: "test"})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)
@@ -119,16 +119,16 @@ func TestResolvePlans_NoResolver_CopiesBindingHeaders(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{ID: "options-msg", Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "options-msg", Subject: "test"})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)
 
 	sent := sender.GetSent()
 	require.Len(t, sent, 1)
-	assert.Equal(t, 1, sent[0].Headers["qos"],
+	assert.Equal(t, 1, sent[0].Headers()["qos"],
 		"binding Headers should be merged into envelope headers")
-	assert.Equal(t, true, sent[0].Headers["retain"],
+	assert.Equal(t, true, sent[0].Headers()["retain"],
 		"binding Headers should be merged into envelope headers")
 }
 
@@ -157,11 +157,11 @@ func TestResolvePlans_NoResolver_MQTTValidation(t *testing.T) {
 	<-receiver.Ready()
 
 	// Header produces invalid MQTT topic with wildcard.
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "mqtt-fallback-bad",
 		Subject: "test",
 		Headers: map[string]any{"topic": "factory/#"},
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)

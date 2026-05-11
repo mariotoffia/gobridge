@@ -29,12 +29,12 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 	entry := routing.DLQEntry{
 		ID:      "g-1",
 		RouteID: "route-g",
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "env-g-1",
 			Subject: "test/get",
 			Payload: []byte(`{"data":"value"}`),
 			Headers: map[string]any{"h": "v"},
-		},
+		}),
 		FailedAt: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC),
 		Category: "timeout",
 		Attempts: 3,
@@ -56,8 +56,8 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 	if string(got.Envelope.Payload) != `{"data":"value"}` {
 		t.Errorf("Envelope.Payload: got %q", got.Envelope.Payload)
 	}
-	if got.Envelope.Headers["h"] != "v" {
-		t.Errorf("Envelope.Headers[h]: got %v", got.Envelope.Headers["h"])
+	if got.Envelope.Headers()["h"] != "v" {
+		t.Errorf("Envelope.Headers[h]: got %v", got.Envelope.Headers()["h"])
 	}
 }
 
@@ -211,7 +211,7 @@ func write(t *testing.T, s *memorydlq.Store, id, route, cat string, failedAt tim
 	t.Helper()
 	if err := s.Write(context.Background(), routing.DLQEntry{
 		ID: id, RouteID: route, Category: cat, FailedAt: failedAt,
-		Envelope: messaging.Envelope{ID: "env-" + id, Subject: "test"},
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-" + id, Subject: "test"}),
 	}); err != nil {
 		t.Fatalf("write %s: %v", id, err)
 	}

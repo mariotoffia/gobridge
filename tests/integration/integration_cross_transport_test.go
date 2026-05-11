@@ -98,11 +98,11 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("cross-sse-pub"), connectivity.SessionEphemeral)
 	mqttSend := setupMQTTSender(t, pubSess)
 
-	pubEnv := &messaging.Envelope{
+	pubEnv := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "sse-order-99",
 		Subject: logicalSubject,
 		Payload: []byte(`{"order_id":"99"}`),
-	}
+	})
 	if err := mqttSend.Send(ctx, ports.OutboundMessage{Envelope: pubEnv, Address: pubTopic}); err != nil {
 		t.Fatalf("MQTT publish: %v", err)
 	}
@@ -256,17 +256,17 @@ func TestIntegration_HTTP_To_MQTT_CrossTransport(t *testing.T) {
 	// Subject side: logical subject must survive HTTP→bridge→MQTT
 	// publish→MQTT receive (via gobridge.subject user property) and must
 	// NOT be replaced by the destination topic.
-	if env.Subject != logicalSubject {
+	if env.Subject() != logicalSubject {
 		t.Errorf("Subject: got %q, want %q (logical subject must survive HTTP→MQTT)",
-			env.Subject, logicalSubject)
+			env.Subject(), logicalSubject)
 	}
-	if env.Subject == mqttTopic {
+	if env.Subject() == mqttTopic {
 		t.Errorf("Subject equals MQTT topic %q — subject must NOT be conflated with transport address",
 			mqttTopic)
 	}
 	// Address side: the publish topic must surface on the ingress envelope
 	// under the dedicated mqtt.topic header — distinct from Subject.
-	if got, _ := messaging.GetHeaderString(env.Headers, paho.HeaderMQTTTopic); got != mqttTopic {
+	if got, _ := messaging.GetHeaderString(env.Headers(), paho.HeaderMQTTTopic); got != mqttTopic {
 		t.Errorf("headers[%q] = %q, want %q (transport address must travel via header, not Subject)",
 			paho.HeaderMQTTTopic, got, mqttTopic)
 	}

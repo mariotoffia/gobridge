@@ -87,7 +87,7 @@ func TestSender_Send_RejectsMismatchedAddress(t *testing.T) {
 	}
 
 	err = sender.Send(context.Background(), ports.OutboundMessage{
-		Envelope: &messaging.Envelope{ID: "e1", Subject: "evt.x", Payload: []byte("p")},
+		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Subject: "evt.x", Payload: []byte("p")}),
 		Address:  "other-queue",
 	})
 	if err == nil {
@@ -117,7 +117,7 @@ func TestSender_Send_AcceptsMatchingAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{ID: "e1", Subject: "evt.x", Payload: []byte("p")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Subject: "evt.x", Payload: []byte("p")})
 	err = sender.Send(context.Background(), ports.OutboundMessage{
 		Envelope: env,
 		Address:  "configured-queue",
@@ -398,8 +398,8 @@ func TestReceiver_NoNativeSubject_QueueYieldsEmptySubject(t *testing.T) {
 		MessageID: "m1",
 		Body:      []byte("payload"),
 	})
-	if env.Subject != "" {
-		t.Fatalf("Envelope.Subject = %q, want empty (no fallback to queue name)", env.Subject)
+	if env.Subject() != "" {
+		t.Fatalf("Envelope.Subject = %q, want empty (no fallback to queue name)", env.Subject())
 	}
 }
 
@@ -414,8 +414,8 @@ func TestReceiver_NoNativeSubject_TopicYieldsEmptySubject(t *testing.T) {
 		MessageID: "m-topic",
 		Body:      []byte("payload"),
 	})
-	if env.Subject != "" {
-		t.Fatalf("Envelope.Subject = %q, want empty (no fallback to topic name)", env.Subject)
+	if env.Subject() != "" {
+		t.Fatalf("Envelope.Subject = %q, want empty (no fallback to topic name)", env.Subject())
 	}
 }
 
@@ -428,7 +428,7 @@ func TestReceiver_NativeSubject_PopulatesEnvelopeSubject(t *testing.T) {
 		Body:      []byte("payload"),
 		Subject:   strPtr("evt.created"),
 	})
-	if env.Subject != "evt.created" {
-		t.Fatalf("Envelope.Subject = %q, want %q", env.Subject, "evt.created")
+	if env.Subject() != "evt.created" {
+		t.Fatalf("Envelope.Subject = %q, want %q", env.Subject(), "evt.created")
 	}
 }

@@ -33,11 +33,11 @@ func TestBugForwarder_5xxReturnsTransientError(t *testing.T) {
 				InstanceID: "remote-5xx",
 				Endpoints:  map[string]string{"http": remote.URL},
 			}
-			env := &messaging.Envelope{
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{
 				ID:      "msg-5xx",
 				Subject: "test.5xx",
 				Payload: []byte(`{}`),
-			}
+			})
 
 			err := fwd.Forward(context.Background(), peer, "route-5xx", env)
 			if err == nil {
@@ -71,11 +71,11 @@ func TestBugForwarder_4xxReturnsPermanentError(t *testing.T) {
 				InstanceID: "remote-4xx",
 				Endpoints:  map[string]string{"http": remote.URL},
 			}
-			env := &messaging.Envelope{
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{
 				ID:      "msg-4xx",
 				Subject: "test.4xx",
 				Payload: []byte(`{}`),
-			}
+			})
 
 			err := fwd.Forward(context.Background(), peer, "route-4xx", env)
 			if err == nil {
@@ -110,11 +110,11 @@ func TestBugForwarder_2xxReturnsNoError(t *testing.T) {
 		InstanceID: "remote-ok",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-ok",
 		Subject: "test.ok",
 		Payload: []byte(`{}`),
-	}
+	})
 
 	if err := fwd.Forward(context.Background(), peer, "route-ok", env); err != nil {
 		t.Fatalf("expected no error for 200, got %v", err)

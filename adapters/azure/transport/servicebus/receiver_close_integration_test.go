@@ -72,12 +72,12 @@ func TestIntegration_ReceiverClose_ReceiveThenShutdown(t *testing.T) {
 	sender := newTestSender(t, queue)
 	defer sender.Close(ctx) //nolint:errcheck
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:        fmt.Sprintf("close-test-%d", time.Now().UnixNano()),
 		Subject:   "close-test",
 		Payload:   []byte("close-test-payload"),
 		CreatedAt: time.Now(),
-	}
+	})
 
 	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)

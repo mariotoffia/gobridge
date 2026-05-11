@@ -76,6 +76,7 @@ type Server struct {
 	logger             *slog.Logger
 	audit              ports.AuditLogger
 	clk                clock.Clock
+	idGen              idGenFn
 	configTxn          *configTxnManager // nil when config management is disabled
 
 	admin    *http.Server
@@ -109,6 +110,24 @@ func WithClock(c clock.Clock) Option {
 	}
 }
 
+// idGenFn produces a fresh envelope ID. It is the seam used by the
+// admin Inject endpoint when the request body omits an "id" field. A
+// function (rather than a clock.Clock dependency) keeps tests
+// deterministic without pulling crypto/rand into every spec.
+type idGenFn func() string
+
+// WithIDGenerator overrides the envelope-ID generator used by the
+// admin Inject endpoint. Tests inject a deterministic generator;
+// production callers leave it unset so the default crypto/rand UUID
+// generator is used.
+func WithIDGenerator(fn idGenFn) Option {
+	return func(s *Server) {
+		if fn != nil {
+			s.idGen = fn
+		}
+	}
+}
+
 // New creates an HTTP Server bound to the given runtime.
 func New(rt *runtime.Runtime, cfg Config, opts ...Option) *Server {
 	s := &Server{rt: rt, cfg: cfg}
@@ -120,6 +139,9 @@ func New(rt *runtime.Runtime, cfg Config, opts ...Option) *Server {
 	}
 	if s.clk == nil {
 		s.clk = clock.System
+	}
+	if s.idGen == nil {
+		s.idGen = defaultIDGen
 	}
 	if cfg.RuntimeProvider != nil {
 		s.rtProvider = cfg.RuntimeProvider
