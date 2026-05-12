@@ -460,7 +460,6 @@ deps:
       - domain_persistence
       - domain_routing
       - domain_connectivity
-      - domain_events
       - ports
       - logging
       - observability
@@ -501,7 +500,6 @@ deps:
   runtime_cluster:
     mayDependOn:
       - domain_clock
-      - domain_shared
       - domain_persistence
       - ports
 
@@ -518,7 +516,6 @@ deps:
     mayDependOn:
       - domain_clock
       - domain_shared
-      - domain_messaging
       - domain_persistence
       - domain_routing
       - domain_connectivity
@@ -569,8 +566,6 @@ deps:
       - domain_messaging
       - domain_persistence
       - domain_routing
-      - domain_connectivity
-      - domain_events
       - ports
       - logging
       - observability

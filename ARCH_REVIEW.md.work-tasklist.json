@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "ARCH_REVIEW.md",
-  "source_sha": "c6331ca0c65b97f97a0e650f37f126873120137c0f716fd3a3ea95379a09148e",
+  "source_sha": "a84edc13cc2ed53c27e189de0af663ef75442f2328d819eec756b2ba7efb4513",
   "indexed_at": "2026-05-12T09:39:00Z",
   "status_convention": "Uses heading suffixes (- DONE, - BLOCKED) and body status lines (**Status:** Resolved/Done/Complete/Closed or **Status:** Blocked); unmarked items are pending.",
   "tasks": [
@@ -109,7 +109,7 @@
     {
       "id": "H-1g",
       "title": "Update arch-lint + docs to lock in the new package layout",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(AP-001; Docs F#3 \u2014 sub-task of H-1)",
       "suggested_agent": "thiink-clean-arch-reviewer",
       "agent_rationale": "Arch-lint rule design precedes documentation updates; source explicitly suggests thiink-clean-arch-reviewer followed by technical-writer.",

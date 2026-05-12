@@ -1,13 +1,3 @@
-// Package credentials provides credential-store adaptation utilities
-// that live outside the core runtime use-case engine. The first such
-// utility, PollBasedWrapper, lifts a ports.PullCredentialStore into a
-// ports.PushCredentialStore by polling on a fixed cadence and emitting
-// a change-detected stream.
-//
-// Splitting this off of package runtime keeps the runtime focused on
-// route execution and avoids exporting helpers solely for the
-// composition root. The composition root (bridge/builder.go) imports
-// this package directly; runtime never does.
 package credentials
 
 import (

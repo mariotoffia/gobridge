@@ -1,15 +1,3 @@
-// Package cluster owns the runtime's cluster-coordination primitives:
-// route-ownership lookup driven by lease state, peer endpoint
-// projection, and the failure-cooldown circuit that keeps a flaky
-// lease store from amplifying into per-message latency.
-//
-// The package is a leaf within the runtime layer: it depends only on
-// inward layers (`domain/*`, `ports`). The runtime package consumes
-// [Locator] through the standard inward dependency rule (parent →
-// leaf). It MUST NOT depend on its parent (`runtime`) nor on any
-// adapter, bridge, or composition-root code; treat any new outward
-// edge here as a smell that the leaf is absorbing orchestration
-// concerns it should publish back to runtime instead.
 package cluster
 
 import (

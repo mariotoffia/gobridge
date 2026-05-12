@@ -1,14 +1,3 @@
-// Package dlq implements asynchronous dead-letter-queue routing for the
-// runtime use-case engine. It owns the [Router] type that classifies
-// failed deliveries, builds [routing.DLQEntry] values, and persists them
-// through the [ports.DLQStore] port either synchronously or via a buffered
-// background pipeline with bounded retry/backoff.
-//
-// The package is intentionally a leaf within the runtime layer: it
-// depends only on inward-pointing layers (`domain/*`, `ports`) and
-// carries no transport, storage, or composition-root concerns. The
-// runtime package consumes [Router] through the standard inward
-// dependency rule.
 package dlq
 
 import (

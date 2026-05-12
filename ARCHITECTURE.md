@@ -91,7 +91,13 @@ closer to the center. The rules below are enforced by `make lint-arch`
 | `observability/` | Standard library only |
 | `logging/` | Standard library only |
 | `circuitbreaker/` | `domain` (every bounded context), `ports` (`*Breaker` satisfies `ports.CircuitBreaker`; adapters depend on the port, not on this package) |
-| `runtime/` | `domain`, `ports`, `observability`, `logging` |
+| `runtime/` | `domain` (every context except `events`), `ports`, `observability`, `logging`, and the six runtime leaves (`runtime/dlq`, `runtime/cluster`, `runtime/session`, `runtime/outbox`, `runtime/route`, **not** `runtime/credentials`) |
+| `runtime/dlq/` | `domain/clock`, `domain/shared`, `domain/messaging`, `domain/persistence`, `domain/routing`, `ports` |
+| `runtime/cluster/` | `domain/clock`, `domain/persistence`, `ports` |
+| `runtime/session/` | `domain/clock`, `domain/shared`, `domain/persistence`, `domain/routing`, `domain/connectivity`, `ports`, `logging` |
+| `runtime/outbox/` | `domain/clock`, `domain/shared`, `domain/messaging`, `domain/persistence`, `domain/routing`, `ports`, `logging`, sibling `runtime/dlq` |
+| `runtime/route/` | `domain/clock`, `domain/shared`, `domain/messaging`, `domain/persistence`, `domain/routing`, `ports`, `logging`, `observability`, siblings `runtime/dlq` and `runtime/outbox` |
+| `runtime/credentials/` | `domain/clock`, `domain/shared`, `domain/connectivity`, `ports` (consumed only by `bridge`; not imported by parent `runtime`) |
 | `validate/` | `domain`, `ports` |
 | `bridge/` | `ports`, `runtime`, `domain`, `logging` (no `config` import — the composition root injects a `ports.BlueprintValidator`) |
 | transport adapters | `ports`, `domain`, `logging`, vendor SDK only (no `bridge`, no `config`, no `config/parser`, no other adapters, no `circuitbreaker` package — wrap with `ports.CircuitBreaker` instead) |
@@ -1007,7 +1013,13 @@ gobridge/
 ├── observability/                       # Context helpers, slog handler
 ├── config/                              # Declarative config model
 ├── validate/                            # Config validation
-├── runtime/                             # Route execution engine
+├── runtime/                             # Route execution engine (orchestration)
+│   ├── dlq/                             # Dead-letter-queue router
+│   ├── cluster/                         # Route-ownership locator
+│   ├── session/                         # Lease lifecycle + step-down
+│   ├── outbox/                          # Shared-outbox Drainer + DepthCache
+│   ├── route/                           # Per-route ingress pipeline + dispatch
+│   └── credentials/                     # Pull→Push credential wrapper (used by bridge)
 ├── bridge/                              # Composition root (Builder)
 ├── httpapi/                             # Admin + monitor HTTP servers
 ├── adapters/

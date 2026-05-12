@@ -27,7 +27,13 @@ gobridge/
 ├── observability/          # Context helpers, correlation slog handler
 ├── config/                 # Declarative YAML/JSON config model
 ├── validate/               # Startup config validation
-├── runtime/                # Route execution engine
+├── runtime/                # Route execution engine (orchestration)
+│   ├── dlq/                # Dead-letter-queue router
+│   ├── cluster/            # Route-ownership locator
+│   ├── session/            # Lease lifecycle + step-down
+│   ├── outbox/             # Shared-outbox Drainer + DepthCache
+│   ├── route/              # Per-route ingress pipeline + dispatch
+│   └── credentials/        # Pull→Push credential wrapper (used by bridge)
 ├── bridge/                 # Composition root (Builder)
 ├── httpapi/                # Admin + monitor HTTP servers
 │
@@ -276,7 +282,33 @@ and the cross-context dependencies are described in
   satisfies `ports.CircuitBreaker`; adapters depend on the port, not on
   this package).
 - **validate/** — `ports` + every `domain/*` context.
-- **runtime/** — `ports`, every `domain/*` context, `observability`, `logging`.
+- **runtime/** — every `domain/*` context except `domain/events`, plus
+  `ports`, `observability`, `logging`, and the six runtime leaves
+  (`runtime/dlq`, `runtime/cluster`, `runtime/session`, `runtime/outbox`,
+  `runtime/route`; **not** `runtime/credentials`, which is consumed only
+  by `bridge`).
+- **runtime/dlq/** — `domain/clock`, `domain/shared`, `domain/messaging`,
+  `domain/persistence`, `domain/routing`, `ports`.
+- **runtime/cluster/** — `domain/clock`, `domain/persistence`, `ports`.
+- **runtime/session/** — `domain/clock`, `domain/shared`,
+  `domain/persistence`, `domain/routing`, `domain/connectivity`, `ports`,
+  `logging`.
+- **runtime/outbox/** — `domain/clock`, `domain/shared`,
+  `domain/messaging`, `domain/persistence`, `domain/routing`, `ports`,
+  `logging`, plus the sibling `runtime/dlq` leaf.
+- **runtime/route/** — `domain/clock`, `domain/shared`,
+  `domain/messaging`, `domain/persistence`, `domain/routing`, `ports`,
+  `logging`, `observability`, plus the sibling `runtime/dlq` and
+  `runtime/outbox` leaves.
+- **runtime/credentials/** — `domain/clock`, `domain/shared`,
+  `domain/connectivity`, `ports` (consumed by `bridge`'s composition
+  root only; parent `runtime` never imports it).
+
+  Sub-packages MUST NOT import their parent `runtime/` nor unrelated
+  siblings; the parent composes leaves through the inward dependency
+  rule. Enforced by `.go-arch-lint.yml` components `runtime_dlq`,
+  `runtime_cluster`, `runtime_session`, `runtime_outbox`, `runtime_route`,
+  `runtime_credentials`.
 - **bridge/** — `ports`, `runtime`, every `domain/*` context, `logging`.
   Never depends on `config` directly (the composition root injects a
   `ports.BlueprintValidator`).

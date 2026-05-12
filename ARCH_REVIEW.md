@@ -156,7 +156,15 @@ The user's four review questions answered:
 
   Suggested agent: `thiink-clean-arch-reviewer` (architectural-decision phase) followed by `refactoring-specialist` (implementation).
 
-- **H-1g** Update arch-lint + docs to lock in the new package layout: tighten `.go-arch-lint.yml` so the new sub-packages cannot back-slide into a fat `runtime/` root, refresh `scripts/archlint` if applicable, update `ARCHITECTURE.md` §13 and `DEVELOPMENT.md` layout block, and add/refresh `doc.go` headers per new package. **Depends on H-1a..H-1f** (must land last). *(AP-001; Docs F#3 — sub-task of H-1)*
+- **H-1g** Update arch-lint + docs to lock in the new package layout: tighten `.go-arch-lint.yml` so the new sub-packages cannot back-slide into a fat `runtime/` root, refresh `scripts/archlint` if applicable, update `ARCHITECTURE.md` §13 and `DEVELOPMENT.md` layout block, and add/refresh `doc.go` headers per new package. **Depends on H-1a..H-1f** (must land last). *(AP-001; Docs F#3 — sub-task of H-1)* - DONE
+
+  **Status:** Resolved 2026-05-12. H-1g locked the six-leaf runtime package split into architecture lint rules and public documentation: pruned unused domain edges from runtime leaf allowlists, expanded the runtime package map in architecture/development docs, and moved leaf package comments into dedicated `doc.go` files.
+
+  **What landed:** `.go-arch-lint.yml`, `runtime/doc.go`, `runtime/dlq/doc.go`, `runtime/cluster/doc.go`, `runtime/credentials/doc.go`, `runtime/dlq/router.go`, `runtime/cluster/locator.go`, `runtime/credentials/poll.go`, `ARCHITECTURE.md`, `DEVELOPMENT.md`.
+
+  **Tests added:** No net-new behavior scenarios; this is an architecture-lint and documentation lock-in. Existing `make lint-arch-check`, `make lint`, and `make test` coverage validates the constraints.
+
+  **Review:** APPROVED on first pass by `code-reviewer` (model: gpt-5.3-codex). Clean-architecture design/audit was provided first; `refactoring-specialist` applied the change set. The technical-writer pass was not rerun because the applied design already updated `ARCHITECTURE.md` and `DEVELOPMENT.md`.
 
   Suggested agent: `thiink-clean-arch-reviewer` (lint-rule design) followed by `technical-writer` (docs).
 - **H-2** Promote `OutboxRecord` to a real aggregate root with `Claim()`, `Complete()`, `Expire()`, `IsClaimable()` methods returning typed `*shared.BridgeError`. Adapter logic reduces to "load → call → persist". *(DDD R1)* - DONE
