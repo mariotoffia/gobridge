@@ -18,6 +18,7 @@
 //   - CredentialStore: URI-based credential resolution
 //   - CredentialRepository: per-backend credential adapter
 //   - CredentialAdmin: credential lifecycle management (CRUD)
+//   - EventPublisher: egress for typed domain events (past-tense facts)
 //
 // Configuration loader/watcher contracts live in the config package
 // (ports.Loader, ports.Watcher, ports.Reloader) because their

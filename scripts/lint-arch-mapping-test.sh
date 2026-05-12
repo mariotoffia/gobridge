@@ -83,6 +83,7 @@ expect domain_messaging    /domain/messaging
 expect domain_persistence  /domain/persistence
 expect domain_routing      /domain/routing
 expect domain_connectivity /domain/connectivity
+expect domain_events       /domain/events
 expect domain_clock        /domain/clock
 
 # Layer 2 — ports, application services, shared kernel.

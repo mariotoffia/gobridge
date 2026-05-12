@@ -1,8 +1,8 @@
 {
   "$schema": "v2",
   "source": "ARCH_REVIEW.md",
-  "source_sha": "c4f9d6d29bb53313aae455ce7eb975a92a4bd64e3c06bf0065c653cfd5914271",
-  "indexed_at": "2026-05-11T19:03:21Z",
+  "source_sha": "02e04f78aafb7257d69d6422352f2f1443960ea1adf0ec38ddb0e6de982b06f1",
+  "indexed_at": "2026-05-12T00:00:00Z",
   "status_convention": "no explicit markers \u2014 orchestrator will append \" - DONE\" to the item line on completion",
   "tasks": [
     {
@@ -140,7 +140,7 @@
     {
       "id": "M-6",
       "title": "Introduce `domain/events/` with first-wave events and `EventPublisher` port",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(DDD R4)",
       "suggested_agent": "thiink-ddd-expert",
       "agent_rationale": "DDD R4 tag \u2014 first-class domain events.",
