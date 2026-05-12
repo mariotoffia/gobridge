@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -325,7 +327,32 @@ func (e *Envelope) UnmarshalJSON(data []byte) error {
 // (no_must_envelope_in_production_test.go) walks the repository and
 // fails CI on any non-test reference to MustEnvelope or
 // MustEnvelopeWithReserved.
+//
+// PANIC CONTRACT (reserved-header guard):
+//
+// MustEnvelope panics BEFORE allocating an ID or constructing the
+// envelope when EnvelopeInput.Headers contains any key with the
+// reserved bridge prefix (HeaderPrefix = "x-bridge.", case-insensitive).
+// The previous behaviour silently stripped such keys, which masked
+// tests that accidentally relied on caller-supplied bridge metadata
+// surviving construction. The panic message names every offending key
+// (sorted for determinism) and points the caller at
+// MustEnvelopeWithReserved, which is the explicit escape hatch for
+// tests that need to simulate already-stamped envelopes.
+//
+// The validation runs first so that misuse does NOT burn a slot from
+// the mustEnvelopeCounter — a panicking call is observably a no-op for
+// the fallback ID allocator.
 func MustEnvelope(in EnvelopeInput) *Envelope {
+	if offending := reservedHeaderKeys(in.Headers); len(offending) > 0 {
+		panic(fmt.Sprintf(
+			"messaging.MustEnvelope: EnvelopeInput.Headers contains reserved-prefix keys "+
+				"(prefix %q is reserved for bridge metadata); use messaging.MustEnvelopeWithReserved "+
+				"when a test legitimately needs to install pre-stamped bridge headers. "+
+				"Offending keys: [%s]",
+			HeaderPrefix, strings.Join(quoteKeys(offending), ", "),
+		))
+	}
 	if in.ID == "" {
 		in.ID = nextMustEnvelopeID()
 	}
@@ -337,6 +364,41 @@ func MustEnvelope(in EnvelopeInput) *Envelope {
 		panic(err)
 	}
 	return e
+}
+
+// reservedHeaderKeys returns the sorted list of keys in headers that
+// carry the reserved x-bridge.* prefix (case-insensitive match via
+// IsReservedHeader). Returns nil when none are present so callers can
+// short-circuit with len(...) == 0. The sort is required by the
+// MustEnvelope panic-message contract (deterministic ordering across
+// map iteration runs).
+func reservedHeaderKeys(headers map[string]any) []string {
+	if len(headers) == 0 {
+		return nil
+	}
+	var offending []string
+	for k := range headers {
+		if IsReservedHeader(k) {
+			offending = append(offending, k)
+		}
+	}
+	if len(offending) == 0 {
+		return nil
+	}
+	sort.Strings(offending)
+	return offending
+}
+
+// quoteKeys returns a copy of keys with each entry surrounded by
+// double quotes, so the formatted MustEnvelope panic message renders
+// keys unambiguously (e.g. distinguishes "x-bridge." from "x-bridge"
+// with trailing whitespace).
+func quoteKeys(keys []string) []string {
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = strconv.Quote(k)
+	}
+	return out
 }
 
 // mustEnvelopeCounter feeds nextMustEnvelopeID. A monotonically
@@ -365,10 +427,16 @@ func nextMustEnvelopeID() string {
 // path must go through StripReservedHeaders.
 func MustEnvelopeWithReserved(in EnvelopeInput) *Envelope {
 	reserved := make(map[string]any)
-	for k, v := range in.Headers {
-		if IsReservedHeader(k) {
-			reserved[k] = v
+	if len(in.Headers) > 0 {
+		stripped := make(map[string]any, len(in.Headers))
+		for k, v := range in.Headers {
+			if IsReservedHeader(k) {
+				reserved[k] = v
+				continue
+			}
+			stripped[k] = v
 		}
+		in.Headers = stripped
 	}
 	e := MustEnvelope(in)
 	for k, v := range reserved {
