@@ -72,12 +72,19 @@ excludeFiles:
 #
 #   Layer 2 -- Application Business Rules / Use Cases (Clean) /
 #              Application services (DDD) / Inside the hexagon (Hex)
-#       ports     -- Driving + driven port interfaces
-#       config    -- Shared kernel: parsed configuration DTOs that cross
-#                    the hexagon boundary
-#       runtime   -- Use case orchestration (route execution engine)
-#       bridge    -- Composition factory: assembles use cases from config
-#       validate  -- Use case helpers: invariants over ports + domain
+#       ports         -- Driving + driven port interfaces
+#       config        -- Inner-ring shared kernel: pure validation,
+#                        merge, and Manager over *ports.BridgeConfig
+#                        (stdlib-only; no vendor concession)
+#       config_parser -- Wire-format adapter for `config`: YAML / JSON
+#                        parsing, RawConfig.Decode (mapstructure),
+#                        wire-format marshallers, FileStore. The only
+#                        Layer-2 location permitted to import
+#                        yaml.v3 / mapstructure (W-9 / L-2 split)
+#       runtime       -- Use case orchestration (route execution engine)
+#       bridge        -- Composition factory: assembles use cases from
+#                        config
+#       validate      -- Use case helpers: invariants over ports + domain
 #
 #   Layer 3 -- Interface Adapters (Clean) / Adapters (Hex) /
 #              Infrastructure (DDD)
@@ -133,7 +140,13 @@ components:
 
   # ---- Layer 2: Ports + Application Services + Shared Kernel ----
   ports: { in: [ports, ports/**] }
-  config: { in: [config, config/**] }
+  # The pure (vendor-free) inner-ring shared kernel: validation,
+  # merge, manager. The W-9 finding was resolved (L-2) by extracting
+  # the YAML / JSON parser and FileStore into the sibling
+  # `config_parser` component below; this `config` component is now
+  # stdlib-only and carries NO vendor concession.
+  config: { in: [config] }
+  config_parser: { in: [config/parser] }
   runtime: { in: [runtime, runtime/**] }
   bridge: { in: [bridge, bridge/**] }
   validate: { in: [validate, validate/**] }
@@ -225,12 +238,15 @@ vendors:
   # component policy to be updated, making the breach reviewable.
   _no_external_deps_: { in: __no_external_deps_sentinel__ }
 
-  # Inner-ring concession: the config shared kernel parses YAML/JSON.
+  # config_parser concession: the wire-format adapter parses YAML /
+  # JSON. This is the only Layer-2 component allowed to import yaml.v3
+  # (the prior `config` shared kernel carve-out was narrowed to this
+  # adapter component by L-2 / W-9).
   yaml: { in: gopkg.in/yaml.v3 }
-  # Inner-ring concession: typed plugin option decoding for the
+  # config_parser concession: typed plugin option decoding for the
   # two-stage parser (FIX-003). mapstructure honours `json:"..."` tags
   # (the repo-wide adapter Config convention) which yaml.v3 alone does
-  # not. Restricted to the config component just like yaml.
+  # not. Restricted to config_parser just like yaml.
   mapstructure: { in: github.com/go-viper/mapstructure/v2 }
 
   # NOTE on encoding/json (FIX-003 Phase 5):
@@ -343,15 +359,40 @@ deps:
     canUse:
       - _no_external_deps_
 
-  # The config package is the YAML/JSON parser, validator, merger,
-  # and on-disk manager that produces *ports.BridgeConfig values.
-  # The blueprint TYPE definitions live in ports/; this package
-  # contributes only behavior (parse, validate, merge, write, watch).
-  # It depends on ports for the data shape and on yaml.v3 for the
-  # serialization format. It MUST NOT depend on runtime or bridge
-  # (the consumers).
+  # The config package is the inner-ring shared kernel: structural
+  # validation, layered merge, and the multi-source Manager that
+  # produces *ports.BridgeConfig values. It contributes only pure
+  # behaviour over ports; the YAML/JSON parser and FileStore live in
+  # the sibling `config_parser` component which holds the only
+  # remaining vendor concession (yaml.v3, mapstructure). This
+  # component is now stdlib-only -- the W-9 inner-ring vendor carve-
+  # out was removed by L-2.
   config:
     mayDependOn:
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - domain_connectivity
+      - domain_events
+      - ports
+    canUse:
+      - _no_external_deps_
+
+  # The config_parser package is the wire-format adapter: YAML / JSON
+  # parsing (two-stage decode through *ports.Registry), the typed
+  # RawConfig.Decode based on mapstructure, the wire-format
+  # marshallers, atomic on-disk writes, and the FileStore
+  # ports.ConfigStore implementation. It is the only Layer-2
+  # location permitted to import yaml.v3 or mapstructure (the
+  # historical "shared kernel vendor concession" was narrowed to
+  # this component by L-2 / W-9). It MUST NOT depend on runtime,
+  # bridge, or any adapter; it MAY depend on `config` because
+  # FileStore composes Validate / DefaultMerge from the model.
+  config_parser:
+    mayDependOn:
+      - config
       - domain_clock
       - domain_shared
       - domain_messaging
@@ -605,17 +646,24 @@ deps:
 
   # ---- Layer 3: Config-source adapters ----
   #
-  # The single adapter category permitted to import the `config` parser
-  # package. Their job is to produce *ports.BridgeConfig from an
-  # external source (file, DynamoDB, …) using the parser/validator/
-  # merger functions in `config`. They depend on ports for the data
-  # shape (BridgeConfig + Loader/Watcher/Reloader contracts) and on
-  # config for the parsing/serialization behavior.
+  # The single adapter category permitted to import the `config` and
+  # `config_parser` shared-kernel packages. Their job is to produce
+  # *ports.BridgeConfig from an external source (file, DynamoDB, …)
+  # using ParseFile / Parse / MarshalYAML / MarshalBridgeConfigJSON
+  # from `config_parser` and the structural Validate / DefaultMerge
+  # helpers from `config`. They depend on ports for the data shape
+  # (BridgeConfig + Loader/Watcher/Reloader contracts).
+  #
+  # The native file adapter is parser-only today (Format / ParseFile);
+  # the DynamoDB loader is also parser-only (Parse +
+  # MarshalBridgeConfigJSON). Both list `config` in addition so they
+  # remain free to invoke Validate / DefaultMerge without a separate
+  # rule edit.
   adapter_config_native_file:
-    mayDependOn: [config, domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [config, config_parser, domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [fsnotify]
   adapter_config_aws_dynamodb:
-    mayDependOn: [config, domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [config, config_parser, domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [aws]
 
   # ---- Layer 3: Credential adapters ----

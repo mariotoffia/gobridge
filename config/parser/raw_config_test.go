@@ -1,4 +1,4 @@
-package config_test
+package parser_test
 
 import (
 	"strings"
@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/config/parser"
 )
 
 // sqsLikeConfig mirrors the shape of a typical adapter Config struct:
@@ -23,7 +23,7 @@ type sqsLikeConfig struct {
 
 // Verifies a representative map[string]any round-trips into a typed Go struct via RawConfig.Decode.
 func TestRawConfig_Decode_RoundTrip(t *testing.T) {
-	raw := config.NewRawConfig(map[string]any{
+	raw := parser.NewRawConfig(map[string]any{
 		"queueUrl":    "https://sqs.eu-west-1.amazonaws.com/123/queue",
 		"region":      "eu-west-1",
 		"visibility":  "30s",
@@ -42,7 +42,7 @@ func TestRawConfig_Decode_RoundTrip(t *testing.T) {
 // Verifies Decode surfaces a useful error when a scalar is the wrong type
 // (e.g. a string where the target expects an int).
 func TestRawConfig_Decode_WrongScalarType(t *testing.T) {
-	raw := config.NewRawConfig(map[string]any{
+	raw := parser.NewRawConfig(map[string]any{
 		"queueUrl":    "q",
 		"maxMessages": "not-a-number",
 	})
@@ -56,7 +56,7 @@ func TestRawConfig_Decode_WrongScalarType(t *testing.T) {
 // Verifies Decode against a nil map leaves the target at its zero value
 // (an absent `options:` block must not error — Validate() rejects it).
 func TestRawConfig_Decode_NilMap(t *testing.T) {
-	raw := config.NewRawConfig(nil)
+	raw := parser.NewRawConfig(nil)
 
 	var got sqsLikeConfig
 	require.NoError(t, raw.Decode(&got))
@@ -65,7 +65,7 @@ func TestRawConfig_Decode_NilMap(t *testing.T) {
 
 // Verifies Decode against an empty map is a no-op, matching nil-map behaviour.
 func TestRawConfig_Decode_EmptyMap(t *testing.T) {
-	raw := config.NewRawConfig(map[string]any{})
+	raw := parser.NewRawConfig(map[string]any{})
 
 	var got sqsLikeConfig
 	require.NoError(t, raw.Decode(&got))
@@ -74,7 +74,7 @@ func TestRawConfig_Decode_EmptyMap(t *testing.T) {
 
 // Verifies Decode rejects a nil target with a clear error rather than panicking.
 func TestRawConfig_Decode_NilTarget(t *testing.T) {
-	raw := config.NewRawConfig(map[string]any{"queueUrl": "q"})
+	raw := parser.NewRawConfig(map[string]any{"queueUrl": "q"})
 
 	err := raw.Decode(nil)
 	require.Error(t, err)
@@ -89,7 +89,7 @@ func TestRawConfig_Decode_UnknownKey_Rejected(t *testing.T) {
 		Timeout time.Duration `json:"timeout,omitempty"`
 	}
 
-	raw := config.NewRawConfig(map[string]any{
+	raw := parser.NewRawConfig(map[string]any{
 		"timeout":  "30s",
 		"timeoutt": "5s",
 	})
@@ -119,7 +119,7 @@ type otelLikeConfig struct {
 // Verifies camelCase keys decode into json-tagged fields, including
 // time.Duration parsed from a string literal and slice/map composites.
 func TestRawConfig_Decode_JSONTaggedStruct(t *testing.T) {
-	raw := config.NewRawConfig(map[string]any{
+	raw := parser.NewRawConfig(map[string]any{
 		"endpoint":      "https://otel.example.com:4317",
 		"serviceName":   "checkout",
 		"flushInterval": "15s",
@@ -145,7 +145,7 @@ func TestRawConfig_Decode_JSONTaggedStruct(t *testing.T) {
 // rejected with target zeroed — the json tag path enforces strictness
 // just like the canonical key path.
 func TestRawConfig_Decode_JSONTaggedStruct_UnknownKey(t *testing.T) {
-	raw := config.NewRawConfig(map[string]any{
+	raw := parser.NewRawConfig(map[string]any{
 		"serviceName":    "checkout",
 		"flushIntervall": "15s",
 	})
@@ -207,7 +207,7 @@ func TestRawConfig_DecodeRejectsFractionalAndBareFloatDuration(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			var got decodeHookCfg
-			err := config.NewRawConfig(tc.data).Decode(&got)
+			err := parser.NewRawConfig(tc.data).Decode(&got)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got nil; decoded=%+v", got)

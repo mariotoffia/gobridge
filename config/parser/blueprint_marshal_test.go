@@ -1,4 +1,4 @@
-package config_test
+package parser_test
 
 import (
 	"encoding/json"
@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -23,8 +23,8 @@ func (f fakeBlueprintConfig) Validate() error { return nil }
 // Phase 5 of FIX-003 relocates the blueprint marshallers from ports/ to
 // config/ so the inner ring stays format-neutral. These tests lock in
 // the bridge-level options projection for both wire formats so the
-// FileStore (config.WriteFile / config.MarshalYAML) and DynamoDB Save
-// (config.MarshalBridgeConfigJSON) paths do not silently drop typed
+// FileStore (config.WriteFile / parser.MarshalYAML) and DynamoDB Save
+// (parser.MarshalBridgeConfigJSON) paths do not silently drop typed
 // PluginConfig payloads.
 
 func TestMarshalBridgeConfigJSON_ProjectsConfigToOptions(t *testing.T) {
@@ -73,7 +73,7 @@ func TestMarshalBridgeConfigJSON_ProjectsConfigToOptions(t *testing.T) {
 		},
 	}
 
-	data, err := config.MarshalBridgeConfigJSON(cfg)
+	data, err := parser.MarshalBridgeConfigJSON(cfg)
 	require.NoError(t, err)
 
 	var m map[string]any
@@ -107,7 +107,7 @@ func TestMarshalBridgeConfigJSON_ProjectsConfigToOptions(t *testing.T) {
 }
 
 func TestMarshalBridgeConfigJSON_NilCfg(t *testing.T) {
-	data, err := config.MarshalBridgeConfigJSON(nil)
+	data, err := parser.MarshalBridgeConfigJSON(nil)
 	require.NoError(t, err)
 	assert.Equal(t, "null", string(data))
 }
@@ -124,7 +124,7 @@ func TestMarshalYAML_ProjectsConfigToOptions(t *testing.T) {
 		},
 	}
 
-	data, err := config.MarshalYAML(cfg)
+	data, err := parser.MarshalYAML(cfg)
 	require.NoError(t, err)
 
 	var m map[string]any
@@ -159,11 +159,11 @@ func TestMarshalBridgeConfig_NilConfigOmitsOptions(t *testing.T) {
 			m    map[string]any
 		)
 		if format == "json" {
-			data, err = config.MarshalBridgeConfigJSON(cfg)
+			data, err = parser.MarshalBridgeConfigJSON(cfg)
 			require.NoError(t, err)
 			require.NoError(t, json.Unmarshal(data, &m))
 		} else {
-			data, err = config.MarshalYAML(cfg)
+			data, err = parser.MarshalYAML(cfg)
 			require.NoError(t, err)
 			require.NoError(t, yaml.Unmarshal(data, &m))
 		}

@@ -85,7 +85,8 @@ gobridge/
 ├── ports/            Port interfaces (Receiver, Sender, stores, Processor)
 ├── runtime/          Route execution engine (Runtime, RouteRunner)
 ├── bridge/           Composition root (Builder wires config to runtime)
-├── config/           Declarative YAML/JSON configuration model
+├── config/           Inner-ring shared kernel: validate, merge, Manager (stdlib-only)
+│   └── parser/       Wire-format adapter: YAML/JSON parser, FileStore (yaml.v3, mapstructure)
 ├── validate/         Cross-cutting blueprint validation (used by config + admin API)
 ├── httpapi/          Admin and monitor HTTP servers
 ├── observability/    Context helpers and correlation slog handler

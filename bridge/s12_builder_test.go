@@ -4,16 +4,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
+	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
 // rawOutboxOptions wraps a map[string]any as a ports.RawConfig using
-// the canonical config.NewRawConfig implementation so tests exercise
-// the same decode path as production.
+// the canonical cfgparser.NewRawConfig implementation so tests
+// exercise the same decode path as production.
 func rawOutboxOptions(m map[string]any) ports.RawConfig {
-	return config.NewRawConfig(m)
+	return cfgparser.NewRawConfig(m)
 }
 
 func computeStaleClaimBuffer(maxStepDownGrace time.Duration) time.Duration {

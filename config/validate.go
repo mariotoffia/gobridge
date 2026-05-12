@@ -12,8 +12,8 @@ import (
 // ValidationError is the shape the config package returns from
 // Validate / ValidateWithWarnings. It is an alias for the
 // transport-neutral ports.BlueprintValidationError so admin layers
-// (httpapi) can inspect Warnings/Errors without importing the config
-// parser package.
+// (httpapi) can inspect Warnings/Errors without importing this
+// package.
 type ValidationError = ports.BlueprintValidationError
 
 // Validate performs structural validation on a ports.BridgeConfig. It checks

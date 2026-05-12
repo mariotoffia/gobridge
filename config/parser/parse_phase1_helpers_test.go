@@ -1,4 +1,4 @@
-package config
+package parser
 
 import (
 	"github.com/mariotoffia/gobridge/ports"

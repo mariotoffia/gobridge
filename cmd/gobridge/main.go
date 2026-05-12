@@ -12,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
+	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/httpapi"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -126,7 +127,7 @@ func main() {
 			MonitorAPIKey:   cfg.HTTP.MonitorAPIKey,
 			CORSOrigins:     cfg.HTTP.CORSOrigins,
 			RuntimeProvider: sup.Runtime,
-			ConfigStore:     &config.FileStore{Path: *configPath, Registry: reg},
+			ConfigStore:     &cfgparser.FileStore{Path: *configPath, Registry: reg},
 			ConfigProvider:  sup.Config,
 		}
 		if apiCfg.AdminAddr == "" {

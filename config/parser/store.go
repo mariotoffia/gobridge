@@ -1,6 +1,9 @@
-package config
+package parser
 
-import "github.com/mariotoffia/gobridge/ports"
+import (
+	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/ports"
+)
 
 // FileStore is a ports.ConfigStore backed by a single YAML/JSON file
 // on disk. Composition roots that wire the admin HTTP layer to a
@@ -31,10 +34,10 @@ func (s *FileStore) Save(cfg *ports.BridgeConfig) error {
 
 // Validate runs the in-process validator against cfg.
 func (s *FileStore) Validate(cfg *ports.BridgeConfig) ([]string, error) {
-	return ValidateWithWarnings(cfg)
+	return config.ValidateWithWarnings(cfg)
 }
 
 // Merge combines an overlay on top of base. Inputs are not mutated.
 func (s *FileStore) Merge(base, overlay *ports.BridgeConfig) (*ports.BridgeConfig, error) {
-	return DefaultMerge(base, overlay)
+	return config.DefaultMerge(base, overlay)
 }

@@ -164,7 +164,7 @@ The user's four review questions answered:
 - **M-12** Verify panic-recovery scope around the goroutine spawned at `runtime/processor_chain.go:119`. A processor panic in a fan-out goroutine must not take down the host; if recover is not present, add it with metric + structured log. *(C-005)* - DONE
 ### Low
 - **L-1** Drop the lone `json/yaml` tag from `domain/routing/policy.go:97 AllowRetryDrop`, or explicitly declare it parses via a config-side DTO. *(DDD F-03 / R3)* - DONE
-- **L-2** Split `config/` into `config/parser` (vendor-touching) + `config/model` (inner-ring). Or move parsing to `adapters/native/config/file` entirely. *(Clean-Arch F2)*
+- **L-2** Split `config/` into `config/parser` (vendor-touching) + `config/model` (inner-ring). Or move parsing to `adapters/native/config/file` entirely. *(Clean-Arch F2)* - DONE
 - **L-3** Move route-graph validation from `config/validate.go` into the existing `validate/` package. *(Clean-Arch F5)*
 - **L-4** Reposition `bridge/` semantically — either docs-rename to "library-mode composition root" or move `Builder` into `cmd/`. *(Clean-Arch F3)* - DONE
 - **L-5** Add `ports.RuntimeQuery` / `ports.RuntimeCommand` interfaces — only worth doing if a second driving adapter (CLI, gRPC) is on the roadmap. *(Hex F-3)*

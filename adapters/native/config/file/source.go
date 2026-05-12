@@ -3,14 +3,14 @@ package file
 import (
 	"context"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 // Source implements ports.Loader by reading a configuration file from disk.
 type Source struct {
 	path     string
-	format   config.Format
+	format   parser.Format
 	registry *ports.Registry
 }
 
@@ -18,7 +18,7 @@ type Source struct {
 type SourceOption func(*Source)
 
 // WithSourceFormat overrides format auto-detection for the file source.
-func WithSourceFormat(f config.Format) SourceOption {
+func WithSourceFormat(f parser.Format) SourceOption {
 	return func(s *Source) { s.format = f }
 }
 
@@ -30,7 +30,7 @@ func WithSourceFormat(f config.Format) SourceOption {
 func NewSource(path string, registry *ports.Registry, opts ...SourceOption) *Source {
 	s := &Source{
 		path:     path,
-		format:   config.FormatAuto,
+		format:   parser.FormatAuto,
 		registry: registry,
 	}
 	for _, o := range opts {
@@ -41,5 +41,5 @@ func NewSource(path string, registry *ports.Registry, opts ...SourceOption) *Sou
 
 // Load reads and parses the configuration file.
 func (s *Source) Load(_ context.Context) (*ports.BridgeConfig, error) {
-	return config.ParseFile(s.path, s.format, s.registry)
+	return parser.ParseFile(s.path, s.format, s.registry)
 }

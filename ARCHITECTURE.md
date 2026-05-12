@@ -4,7 +4,7 @@
 
 GoBridge is a message-bridge framework written in Go. It routes messages between heterogeneous transports -- MQTT, AWS SQS, Azure Service Bus, RabbitMQ (AMQP 0-9-1), AMQP 1.0 brokers (Artemis, Solace, Qpid) -- with pluggable middleware processing, durable outbox delivery, dead-letter queue management, and full observability.
 
-The core module (`domain/`, `ports/`, `runtime/`, `bridge/`, `config/`) has zero external dependencies. Transport, store, and processor adapters live in separate Go modules within a `go.work` workspace so consumers only import what they need.
+The core module (`domain/`, `ports/`, `runtime/`, `bridge/`, `config/`, `config/parser/`) lives behind a strict Clean / Hexagonal layering. The inner ring (`domain/`, `ports/`, `runtime/`, `bridge/`, `config/`) has zero external dependencies; the wire-format adapter `config/parser/` is the only Layer-2 location that ships `gopkg.in/yaml.v3` and `github.com/go-viper/mapstructure/v2`. Transport, store, and processor adapters live in separate Go modules within a `go.work` workspace so consumers only import what they need.
 
 Key design goals:
 
@@ -40,7 +40,8 @@ graph TB
 
     subgraph "Composition Ring"
         B["bridge/<br/>Composition root (Builder)"]
-        C["config/<br/>Declarative config model"]
+        C["config/<br/>Inner-ring shared kernel<br/>(validate, merge, Manager)"]
+        CP["config/parser/<br/>Wire-format adapter<br/>(YAML/JSON, FileStore)"]
         V["validate/<br/>Config validation"]
     end
 
@@ -85,17 +86,18 @@ closer to the center. The rules below are enforced by `make lint-arch`
 |---|---|
 | `domain/` | Standard library only (no gobridge, no vendor) |
 | `ports/` | `domain` |
-| `config/` | `domain` (every bounded context), `ports`, `gopkg.in/yaml.v3`, and `github.com/go-viper/mapstructure/v2` (the only allowed external deps on the inner ring) |
+| `config/` | `domain` (every bounded context), `ports` — **stdlib-only**: the inner ring carries no vendor concession (W-9 / L-2) |
+| `config/parser/` | `config`, `domain` (every bounded context), `ports`, `gopkg.in/yaml.v3`, `github.com/go-viper/mapstructure/v2` — the only Layer-2 location allowed to ship those vendor deps |
 | `observability/` | Standard library only |
 | `logging/` | Standard library only |
 | `circuitbreaker/` | `domain` (every bounded context), `ports` (`*Breaker` satisfies `ports.CircuitBreaker`; adapters depend on the port, not on this package) |
 | `runtime/` | `domain`, `ports`, `observability`, `logging` |
 | `validate/` | `domain`, `ports` |
-| `bridge/` | `config`, `ports`, `runtime`, `domain`, `logging` |
-| transport adapters | `ports`, `domain`, `logging`, vendor SDK only (no `bridge`, no `config`, no other adapters, no `circuitbreaker` package — wrap with `ports.CircuitBreaker` instead) |
+| `bridge/` | `ports`, `runtime`, `domain`, `logging` (no `config` import — the composition root injects a `ports.BlueprintValidator`) |
+| transport adapters | `ports`, `domain`, `logging`, vendor SDK only (no `bridge`, no `config`, no `config/parser`, no other adapters, no `circuitbreaker` package — wrap with `ports.CircuitBreaker` instead) |
 | store impl adapters | `ports`, `domain`, `logging`, vendor SDK only (no aggregators) |
 | store factory aggregators | `ports`, `domain`, `logging`, only their own store impl packages |
-| config source adapters | `config`, `domain`, `logging`, vendor SDK only (the only adapter category allowed to import `config`) |
+| config source adapters | `config`, `config/parser`, `domain`, `logging`, vendor SDK only (the only adapter category allowed to import either of the config shared-kernel packages) |
 | credential adapters | `ports`, `domain`, `logging`, vendor SDK only |
 | observability adapters | `ports`, `domain`, `logging`, vendor SDK only |
 | cluster resolver adapters | `ports`, `domain`, `logging`, vendor SDK only |
@@ -103,7 +105,7 @@ closer to the center. The rules below are enforced by `make lint-arch`
 | `processors/tenant` | `ports`, `domain/shared`, `domain/messaging` (stdlib only) |
 | `processors/transform` | `ports`, `domain/messaging`, `github.com/ohler55/ojg` (JSONPath) |
 | `processors/circuitbreaker` | `ports`, `domain` contexts, the `circuitbreaker` package (the only processor allowed to depend on it because circuit-breaking IS its role) |
-| `httpapi/` | `runtime`, `config`, `ports`, `domain`, `observability` |
+| `httpapi/` | `runtime`, `ports`, `domain`, `observability` (no `config` / `config/parser` import — the composition root injects a `ports.ConfigStore`) |
 | `cmd/`, `deployment/` | Composition roots — any project package, any vendor |
 
 The architecture lint splits the umbrella `adapters/` into role-specific
@@ -134,7 +136,8 @@ throughout this document.
    │  Driving:   httpapi ──┐                                                                │
    │             adapter_config_native_file, adapter_config_aws_dynamodb (only adapters     │
    │                                                                  allowed to import     │
-   │                                                                  the config package)   │
+   │                                                                  `config` /            │
+   │                                                                  `config_parser`)      │
    │                       │                                                                │
    │  Driven (transports — one component per technology, no sibling edges):                 │
    │     adapter_transport_mqtt_paho   adapter_transport_sqs   adapter_transport_servicebus │
@@ -162,9 +165,11 @@ throughout this document.
    ┌─────────────── Layer 2: Application Services + Ports + Shared Kernel ──────────────┐
    │                                                                                    │
    │   bridge ──▶ runtime ──▶ ports                                                     │
-   │     │          │           ▲                                                       │
-   │     ▼          ▼           │                                                       │
-   │   config ───▶ ports     validate                                                   │
+   │                │           ▲                                                       │
+   │                ▼           │                                                       │
+   │   config_parser ──▶ config ──▶ ports     validate                                  │
+   │   (yaml,           (stdlib-                                                        │
+   │    mapstructure)    only)                                                          │
    │                                                                                    │
    │   Cross-cutting utilities (stdlib-only, usable by any layer above):                │
    │      logging       observability       circuitbreaker (impl of ports.CircuitBreaker)│
@@ -202,7 +207,10 @@ What this map enforces (the F-001 anti-coupling guarantees):
   that need resilience consume the `ports.CircuitBreaker` port and the
   composition root injects a concrete `*circuitbreaker.Breaker`.
 - Only `adapter_config_native_file` and `adapter_config_aws_dynamodb`
-  may import the `config` parser package.
+  may import the `config` shared kernel or its sibling `config/parser`
+  wire-format adapter. The W-9 inner-ring vendor concession was
+  removed by the L-2 split: yaml.v3 / mapstructure now live solely
+  in `config/parser`.
 - `cmd/` and `deployment/` are the only components with
   `anyProjectDeps + anyVendorDeps`. They are the boundary between the
   hexagon and the operating environment.
@@ -239,11 +247,12 @@ typed `ports.PluginConfig` rather than an opaque `map[string]any`.
 Adapters export a concrete `Config` struct that implements
 `Kind() string` and `Validate() error`, and self-register a decoder on
 `*ports.Registry` from an `init()` in their `register.go`. The
-`config/` parser performs a two-stage decode (frame → registry-dispatched
-typed config); `config/blueprint_marshal.go` round-trips the typed
-`Config` back into the canonical `options:` wire form. The
-`cfgshape` analyzer (`scripts/cfgshape/analyzer.go`) enforces the
-shape across `ports/`, `domain/`, and `adapters/**` in `make lint`.
+`config/parser` package performs a two-stage decode (frame →
+registry-dispatched typed config); `config/parser/blueprint_marshal.go`
+round-trips the typed `Config` back into the canonical `options:`
+wire form. The `cfgshape` analyzer (`scripts/cfgshape/analyzer.go`)
+enforces the shape across `ports/`, `domain/`, and `adapters/**` in
+`make lint`.
 
 See `docs/typed-plugin-config.adoc` for the contract, the registry
 API, the per-step checklist for adding a new plugin, and the

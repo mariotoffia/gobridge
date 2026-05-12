@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
+	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/httpapi"
 	"github.com/mariotoffia/gobridge/ports"
@@ -149,7 +150,7 @@ func (a *App) Start(ctx context.Context) error {
 		AdminAPIKeyProvider:   a.apiKeysRef.AdminKey,
 		MonitorAPIKeyProvider: a.apiKeysRef.MonitorKey,
 		RuntimeProvider:       a.runtimeRef.Get,
-		ConfigStore:           &config.FileStore{Path: a.cfg.ConfigFilePath, Registry: a.pluginRegistry},
+		ConfigStore:           &cfgparser.FileStore{Path: a.cfg.ConfigFilePath, Registry: a.pluginRegistry},
 		ConfigProvider:        a.logicalRef.Get,
 	}
 	a.httpServer = httpapi.New(nil, apiCfg,

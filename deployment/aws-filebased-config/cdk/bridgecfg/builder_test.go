@@ -8,7 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/bridgecfg"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/ports"
@@ -33,7 +33,7 @@ func newTestRegistry(t *testing.T) *ports.Registry {
 
 // TestBuilder_Canonical_RoundTrip exercises the documented happy path
 // from the design doc (lines 71-90): build a representative bridge
-// config via the fluent API, marshal it through config.MarshalYAML,
+// config via the fluent API, marshal it through parser.MarshalYAML,
 // re-parse it with config.Parse, and assert every field that crossed
 // the YAML boundary survived intact.
 //
@@ -65,7 +65,7 @@ func TestBuilder_Canonical_RoundTrip(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 
-	yamlBytes, err := config.MarshalYAML(cfg)
+	yamlBytes, err := parser.MarshalYAML(cfg)
 	if err != nil {
 		t.Fatalf("MarshalYAML: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestBuilder_Canonical_RoundTrip(t *testing.T) {
 		t.Fatal("MarshalYAML produced empty output")
 	}
 
-	parsed, err := config.Parse(strings.NewReader(string(yamlBytes)), config.FormatYAML, reg)
+	parsed, err := parser.Parse(strings.NewReader(string(yamlBytes)), parser.FormatYAML, reg)
 	if err != nil {
 		t.Fatalf("Parse round-trip: %v\n--- yaml ---\n%s", err, string(yamlBytes))
 	}

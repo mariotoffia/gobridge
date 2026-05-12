@@ -51,7 +51,7 @@ import (
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -123,7 +123,7 @@ type Source interface {
 
 	// Materialize prepares a Materialized: it reads (asset) or
 	// marshals + writes (inline) the YAML bytes, parses them via
-	// config.ParseFile, and returns the on-disk path together
+	// parser.ParseFile, and returns the on-disk path together
 	// with the parsed *ports.BridgeConfig.
 	//
 	// Materialize is intentionally jsii-free: callers (the
@@ -182,7 +182,7 @@ func (s *assetSource) Materialize() (*Materialized, error) {
 	if _, err := os.Stat(abs); err != nil {
 		return nil, fmt.Errorf("gobridgecdk: BridgeYamlAsset(%q): stat: %w", s.path, err)
 	}
-	cfg, err := config.ParseFile(abs, config.FormatYAML, cdkRegistry())
+	cfg, err := parser.ParseFile(abs, parser.FormatYAML, cdkRegistry())
 	if err != nil {
 		return nil, fmt.Errorf("gobridgecdk: BridgeYamlAsset(%q): parse: %w", s.path, err)
 	}
@@ -204,7 +204,7 @@ func (s *inlineSource) Materialize() (*Materialized, error) {
 	if s.cfg == nil {
 		return nil, ErrNilConfig
 	}
-	data, err := config.MarshalYAML(s.cfg)
+	data, err := parser.MarshalYAML(s.cfg)
 	if err != nil {
 		return nil, fmt.Errorf("gobridgecdk: BridgeYamlInline: marshal: %w", err)
 	}
@@ -218,7 +218,7 @@ func (s *inlineSource) Materialize() (*Materialized, error) {
 		return nil, fmt.Errorf("gobridgecdk: BridgeYamlInline: write %s: %w", path, err)
 	}
 	cleanup := func() error { return os.RemoveAll(dir) }
-	parsed, err := config.ParseFile(path, config.FormatYAML, cdkRegistry())
+	parsed, err := parser.ParseFile(path, parser.FormatYAML, cdkRegistry())
 	if err != nil {
 		_ = cleanup()
 		return nil, fmt.Errorf("gobridgecdk: BridgeYamlInline: re-parse: %w", err)

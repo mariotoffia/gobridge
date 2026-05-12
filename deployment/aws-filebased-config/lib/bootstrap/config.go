@@ -15,7 +15,7 @@ import (
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/config/parser"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -88,7 +88,7 @@ func newOptionalFileSource(path string, registry *ports.Registry, fallback func(
 }
 
 func (s *optionalFileSource) Load(_ context.Context) (*ports.BridgeConfig, error) {
-	cfg, err := config.ParseFile(s.path, config.FormatAuto, s.registry)
+	cfg, err := parser.ParseFile(s.path, parser.FormatAuto, s.registry)
 	if err == nil {
 		return cfg, nil
 	}
@@ -144,11 +144,11 @@ func cloneBridgeConfig(cfg *ports.BridgeConfig, registry *ports.Registry) (*port
 	if cfg == nil {
 		return nil, nil
 	}
-	data, err := config.MarshalYAML(cfg)
+	data, err := parser.MarshalYAML(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return config.Parse(bytes.NewReader(data), config.FormatYAML, registry)
+	return parser.Parse(bytes.NewReader(data), parser.FormatYAML, registry)
 }
 
 func hasHTTPTransportEndpoints(cfg *ports.BridgeConfig) bool {

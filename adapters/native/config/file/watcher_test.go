@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -291,8 +291,8 @@ func TestWatcher_InvalidContent(t *testing.T) {
 // TestWatcher_WithFormat validates that WithFormat overrides the auto-detected
 // format so a .yaml file can be parsed as JSON when explicitly told to.
 func TestWatcher_WithFormat(t *testing.T) {
-	w := NewWatcher("/tmp/fake.yaml", newTestRegistry(t), WithFormat(config.FormatJSON))
-	if w.format != config.FormatJSON {
+	w := NewWatcher("/tmp/fake.yaml", newTestRegistry(t), WithFormat(parser.FormatJSON))
+	if w.format != parser.FormatJSON {
 		t.Fatalf("expected FormatJSON, got %v", w.format)
 	}
 }

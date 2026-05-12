@@ -67,21 +67,24 @@ architectural rule.
 | Layer | Components | Allowed inward deps |
 |---|---|---|
 | 1 — Enterprise / Domain | `domain` (six contexts) | stdlib only |
-| 2 — Use Cases / Application | `ports`, `config`, `runtime`, `bridge`, `validate` | inward layers + cross-cutting |
+| 2 — Use Cases / Application | `ports`, `config`, `config/parser`, `runtime`, `bridge`, `validate` | inward layers + cross-cutting |
 | 2 — Cross-cutting | `logging`, `observability`, `circuitbreaker` | only `domain`/`ports`; no infra |
 | 3 — Interface Adapters | `httpapi`, `processors`, `adapters/*/...` (split by role) | only `ports`, `domain`, allowed utilities, vendor SDK |
 | 4 — Frameworks & Drivers | `cmd`, `deployment` | anything (composition root) |
 
-`config` is a **shared kernel**. It is the only Layer-2 package that
-ships vendor deps (`yaml`, `mapstructure`). Only `adapters/*/config/*`
-components may import `config`.
+`config` is the inner-ring **shared kernel** (validation, merge,
+Manager) and is now stdlib-only. Wire-format parsing lives in the
+sibling `config/parser` component, the only Layer-2 location that
+ships vendor deps (`yaml`, `mapstructure`). The W-9 inner-ring
+vendor concession was removed by L-2. Only `adapters/*/config/*`
+components may import `config` or `config/parser`.
 
 ### 3.2 Invariants (verify with `make lint-arch-check`)
 
 1. **Inward-only.** No `mayDependOn` points outward. `domain` depends on nothing; `ports` depends only on `domain`; `runtime` never on adapters.
 2. **Adapters depend only on ports.** Each adapter component lists `[domain, logging, ports]` plus one vendor in `canUse`. Exceptions:
    - **Aggregator**: `adapter_store_*_factory` MAY depend on its own store impl packages. Only "sideways" rule.
-   - **Config-source**: `adapter_config_*` MAY depend on `config`.
+   - **Config-source**: `adapter_config_*` MAY depend on `config` and `config/parser`.
 3. **One component per technology.** No blanket `adapters: { in: [adapters/**] }`.
 4. **Vendor allowlist mandatory.** `allow.depOnAnyVendor: false`. Inner-ring uses `_no_external_deps_` sentinel and lists no real vendor.
 5. **No deprecation aliases / compatibility components / wrapper adapters.**

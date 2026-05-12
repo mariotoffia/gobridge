@@ -13,6 +13,7 @@ import (
 	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
+	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
@@ -126,13 +127,13 @@ routes:
 // writeBridgeConfigYAML marshals a BridgeConfig to JSON (which is valid
 // YAML) and writes it to a temp file. Returns the file path.
 //
-// Uses config.MarshalBridgeConfigJSON so that typed PluginConfig values
+// Uses cfgparser.MarshalBridgeConfigJSON so that typed PluginConfig values
 // (which carry json:"-" on the field) are projected back into the
 // canonical "options:" wire form and survive the file → config.Parse
 // round-trip.
 func writeBridgeConfigYAML(t *testing.T, cfg *ports.BridgeConfig) string {
 	t.Helper()
-	data, err := config.MarshalBridgeConfigJSON(cfg)
+	data, err := cfgparser.MarshalBridgeConfigJSON(cfg)
 	if err != nil {
 		t.Fatalf("marshal config: %v", err)
 	}

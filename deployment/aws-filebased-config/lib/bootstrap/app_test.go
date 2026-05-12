@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/config/parser"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -87,7 +87,7 @@ func TestApp_ReloadsWhenConfigFileAppearsAndRejectsInvalidChanges(t *testing.T) 
 			LogLevel:       "debug",
 		},
 	}
-	require.NoError(t, config.WriteFile(cfgPath, valid))
+	require.NoError(t, parser.WriteFile(cfgPath, valid))
 
 	require.Eventually(t, func() bool {
 		applied := app.CurrentAppliedConfig()
@@ -103,7 +103,7 @@ func TestApp_ReloadsWhenConfigFileAppearsAndRejectsInvalidChanges(t *testing.T) 
 			{ID: "broken-route", ReceiverID: "missing", Bindings: []string{"missing"}},
 		},
 	}
-	require.NoError(t, config.WriteFile(cfgPath, invalid))
+	require.NoError(t, parser.WriteFile(cfgPath, invalid))
 
 	time.Sleep(2 * time.Second) // SYNC: wait for file watcher to detect and reject invalid config
 	applied := app.CurrentAppliedConfig()

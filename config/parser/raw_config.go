@@ -1,4 +1,4 @@
-package config
+package parser
 
 import (
 	"errors"
@@ -86,18 +86,17 @@ func (r *rawMapConfig) Decode(target any) error {
 	return nil
 }
 
-// rawMap returns the underlying map[string]any if r is the concrete
-// rawMapConfig produced by NewRawConfig. It is used by config-package
-// diagnostics (e.g. cross-cutting outbox store warnings in
-// validate.go) that need to peek at a single option without
-// committing to the strict, all-or-nothing typed Decode contract.
-// Returns nil for nil receivers or any other RawConfig
-// implementation.
-func rawMap(r ports.RawConfig) map[string]any {
-	if rmc, ok := r.(*rawMapConfig); ok && rmc != nil {
-		return rmc.data
+// AsMap returns the underlying option map for diagnostic peeks (e.g.
+// the config model's stale_claim_duration check). It is the satisfier
+// for the unexported rawMapView interface used in package config;
+// alternative ports.RawConfig implementations may return nil. The
+// returned map is the live underlying storage and MUST NOT be mutated
+// by callers.
+func (r *rawMapConfig) AsMap() map[string]any {
+	if r == nil {
+		return nil
 	}
-	return nil
+	return r.data
 }
 
 // floatToIntegerOrDurationHook rejects YAML/JSON float inputs that

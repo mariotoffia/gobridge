@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -157,7 +157,7 @@ func (l *Loader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 		return nil, shared.ErrNotFound.WithMessage("config not found for bridge " + l.bridgeID)
 	}
 
-	cfg, err := config.Parse(bytes.NewReader([]byte(rawData)), config.FormatJSON, l.registry)
+	cfg, err := parser.Parse(bytes.NewReader([]byte(rawData)), parser.FormatJSON, l.registry)
 	if err != nil {
 		return nil, fmt.Errorf("dynamodb config load: parse: %w", err)
 	}
@@ -260,7 +260,7 @@ func (l *Loader) currentVersion(ctx context.Context) (int64, error) {
 // Save writes a BridgeConfig to DynamoDB, auto-incrementing the version.
 // This is useful for tests and admin tooling.
 func (l *Loader) Save(ctx context.Context, cfg *ports.BridgeConfig) error {
-	data, err := config.MarshalBridgeConfigJSON(cfg)
+	data, err := parser.MarshalBridgeConfigJSON(cfg)
 	if err != nil {
 		return fmt.Errorf("dynamodb config save: marshal: %w", err)
 	}

@@ -228,7 +228,7 @@
     {
       "id": "L-2",
       "title": "Split `config/` into `config/parser` (vendor-touching) + `config/model`",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(Clean-Arch F2)",
       "suggested_agent": "thiink-clean-arch-reviewer",
       "agent_rationale": "Clean-Arch F2 tag \u2014 layering split.",
