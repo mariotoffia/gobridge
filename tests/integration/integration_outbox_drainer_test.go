@@ -13,8 +13,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/outbox"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
 
@@ -78,7 +78,7 @@ func TestIntegration_OutboxDrainer_FullLifecycle(t *testing.T) {
 		t.Fatalf("persist: %v", err)
 	}
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outbox.New(outbox.Config{
 		OutboxStore:    store,
 		Sender:         sender,
 		RouteID:        "route-od1",
@@ -201,7 +201,7 @@ func TestIntegration_OutboxDrainer_ExpiredRecordRoutesDLQ(t *testing.T) {
 		Store: dlqStore,
 	})
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outbox.New(outbox.Config{
 		OutboxStore:    store,
 		Sender:         sender,
 		DLQ:            dlqRouter,
@@ -277,7 +277,7 @@ func TestIntegration_OutboxDrainer_PoisonMessageRoutesDLQ(t *testing.T) {
 		Store: dlqStore,
 	})
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outbox.New(outbox.Config{
 		OutboxStore:    store,
 		Sender:         sender,
 		DLQ:            dlqRouter,
@@ -358,8 +358,8 @@ func TestIntegration_OutboxDrainer_ConcurrentDrainers(t *testing.T) {
 	tokA := persistence.LeaseToken{Version: 1, Owner: "drainer-A"}
 	tokB := persistence.LeaseToken{Version: 2, Owner: "drainer-B"}
 
-	makeDrainer := func(sender *collectingSender, tok persistence.LeaseToken, owner string) *goruntime.OutboxDrainer {
-		return goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	makeDrainer := func(sender *collectingSender, tok persistence.LeaseToken, owner string) *outbox.Drainer {
+		return outbox.New(outbox.Config{
 			OutboxStore:    store,
 			Sender:         sender,
 			RouteID:        "route-od5",
@@ -427,7 +427,7 @@ func TestIntegration_OutboxDrainer_AdaptiveBatchSize(t *testing.T) {
 		}
 	}
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outbox.New(outbox.Config{
 		OutboxStore:       store,
 		Sender:            sender,
 		RouteID:           "route-od6",

@@ -10,7 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
@@ -178,7 +178,7 @@ func TestOutboxDrainer_FinalDrainCompletesPendingRecords(t *testing.T) {
 		},
 	}
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:  outbox,
 		LeaseStore:   lease,
 		Sender:       sender,

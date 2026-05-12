@@ -1,8 +1,8 @@
-package runtime
+package outbox
 
 import "time"
 
-// computeBatchDeadline returns the wall-clock timeout to apply to a
+// ComputeBatchDeadline returns the wall-clock timeout to apply to a
 // single drain batch, given the number of records claimed.
 //
 // When neither PerRecordDrainTimeout nor MaxDrainTimeout is set, the
@@ -17,7 +17,7 @@ import "time"
 // still applies so that a batchCount of 0 (which should not occur in
 // practice because drainBatch returns early on empty claims) does not
 // collapse the deadline to zero.
-func computeBatchDeadline(batchCount int, cfg OutboxDrainerConfig) time.Duration {
+func ComputeBatchDeadline(batchCount int, cfg Config) time.Duration {
 	// Backward-compat path: if new fields unset, honor legacy DrainTimeout.
 	if cfg.PerRecordDrainTimeout == 0 && cfg.MaxDrainTimeout == 0 {
 		return cfg.DrainTimeout
@@ -43,12 +43,12 @@ func computeBatchDeadline(batchCount int, cfg OutboxDrainerConfig) time.Duration
 // batchDeadline computes the batch deadline for this drainer instance
 // based on the currently configured values and the provided batch size.
 // It exists so the drain loop can derive a per-batch deadline without
-// holding a copy of OutboxDrainerConfig.
-func (d *OutboxDrainer) batchDeadline(batchCount int) time.Duration {
+// holding a copy of Config.
+func (d *Drainer) batchDeadline(batchCount int) time.Duration {
 	if !d.useScaledTimeout {
 		return d.drainTimeout
 	}
-	return computeBatchDeadline(batchCount, OutboxDrainerConfig{
+	return ComputeBatchDeadline(batchCount, Config{
 		PerRecordDrainTimeout: d.perRecordDrainTimeout,
 		MaxDrainTimeout:       d.maxDrainTimeout,
 		DrainTimeout:          d.drainTimeout,

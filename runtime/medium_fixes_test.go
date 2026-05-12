@@ -15,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -305,7 +306,7 @@ func TestAbsoluteMaxBatchSize_Clamps(t *testing.T) {
 	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:         outbox,
 		LeaseStore:          lease,
 		Sender:              sender,
@@ -366,7 +367,7 @@ func TestOutboxDrainer_EmitsRecordFailureMetric(t *testing.T) {
 	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:    outbox,
 		LeaseStore:     lease,
 		Sender:         sender,

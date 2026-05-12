@@ -17,6 +17,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
@@ -75,7 +76,7 @@ func TestAdaptBatchSize_HalvesOnConsecutiveZeroSuccess(t *testing.T) {
 		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 	}
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:         outbox,
 		LeaseStore:          lease,
 		Sender:              sender,
@@ -311,7 +312,7 @@ func TestNormalMaxBatchSize_NotClamped(t *testing.T) {
 		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 	}
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:       outbox,
 		LeaseStore:        lease,
 		Sender:            sender,
@@ -355,7 +356,7 @@ func TestOutboxDrainer_SuccessEmitsCompletion(t *testing.T) {
 	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:    outbox,
 		LeaseStore:     lease,
 		Sender:         sender,
@@ -425,7 +426,7 @@ func TestBatchSizeClamped_PreventsAbsoluteMaxBypass(t *testing.T) {
 		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 	}
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:       outbox,
 		LeaseStore:        lease,
 		Sender:            sender,
@@ -472,7 +473,7 @@ func TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric(t *testing.T) {
 	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:    outbox,
 		LeaseStore:     lease,
 		Sender:         sender,

@@ -132,7 +132,15 @@ The user's four review questions answered:
 
   Suggested agent: `refactoring-specialist`.
 
-- **H-1e** Extract `runtime/outbox` package: move `OutboxRecord` and outbox machinery out of `runtime/`. Note: H-2 already promoted `OutboxRecord` to a real aggregate root in `domain/persistence/`; this sub-task moves only the runtime-side outbox plumbing (poller, dispatcher, lease accounting), not the aggregate itself. *(AP-001; Clean-Arch F4 — sub-task of H-1)*
+- **H-1e** Extract `runtime/outbox` package: move `OutboxRecord` and outbox machinery out of `runtime/`. Note: H-2 already promoted `OutboxRecord` to a real aggregate root in `domain/persistence/`; this sub-task moves only the runtime-side outbox plumbing (poller, dispatcher, lease accounting), not the aggregate itself. *(AP-001; Clean-Arch F4 — sub-task of H-1)* - DONE
+
+  **Status:** Resolved 2026-05-12. H-1e extracted runtime-side outbox dispatch plumbing into `runtime/outbox`, removed root `runtime` outbox drainer/depth-cache compatibility shims, migrated runtime and integration callers/tests, and locked the new leaf package into architecture linting.
+
+  **What landed:** `runtime/outbox/{doc.go,drainer.go,loop.go,retry.go,timeout.go,depth_cache.go}`, runtime bridge/runner/test migrations, integration outbox drainer test migrations, `.go-arch-lint.yml`, `scripts/lint-arch-mapping-test.sh`, `audit/test-timing-allowlist.txt`; removed root `runtime/outbox_*` drainer/depth-cache files.
+
+  **Tests added:** No net-new behavior scenarios; existing outbox drainer coverage moved/migrated to the `runtime/outbox` package and callers updated to the explicit package API.
+
+  **Review:** APPROVED on first pass by `code-reviewer` (model: gpt-5.3-codex).
 
   Suggested agent: `refactoring-specialist`.
 

@@ -406,13 +406,13 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 	// errors now fail the delivery (fail-closed) rather than silently bypassing.
 	if r.policy.MaxOutboxDepth > 0 && r.depthCache != nil {
 		partitionKey := r.outboxPartitionKey(plans)
-		if partitionKey != "" && !r.depthCache.isUnderCapacity(partitionKey) {
+		if partitionKey != "" && !r.depthCache.IsUnderCapacity(partitionKey) {
 			pending, qErr := r.outboxStore.QueryPending(ctx, partitionKey, r.policy.MaxOutboxDepth+1)
 			if qErr != nil {
 				return r.retryOrFallback(ctx, del, env, time.Second, fmt.Errorf("runtime: route-runner: query outbox depth: %w", qErr))
 			}
 			atCapacity := len(pending) >= r.policy.MaxOutboxDepth
-			r.depthCache.update(partitionKey, atCapacity)
+			r.depthCache.Update(partitionKey, atCapacity)
 			if atCapacity {
 				return r.retryOrFallback(ctx, del, env, 5*time.Second, fmt.Errorf("outbox at capacity (%d pending)", len(pending)))
 			}

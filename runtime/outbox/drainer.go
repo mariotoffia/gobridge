@@ -1,4 +1,4 @@
-package runtime
+package outbox
 
 import (
 	"context"
@@ -13,10 +13,10 @@ import (
 	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
-// OutboxDrainer claims pending outbox records for a partition and sends
-// them through the target sender. It validates fencing tokens to prevent
+// Drainer claims pending outbox records for a partition and sends them
+// through the target sender. It validates fencing tokens to prevent
 // stale owners from sending after a lease transfer.
-type OutboxDrainer struct {
+type Drainer struct {
 	outboxStore    ports.OutboxStore
 	leaseStore     ports.LeaseStore
 	sender         ports.Sender
@@ -59,8 +59,8 @@ type OutboxDrainer struct {
 	onDrained func()
 
 	// tokenFn returns the current lease token and whether the caller
-	// still holds the lease. The OutboxDrainer only processes when
-	// the second return value is true.
+	// still holds the lease. The Drainer only processes when the second
+	// return value is true.
 	tokenFn func() (persistence.LeaseToken, bool)
 
 	// readyFn returns true when the egress transport is connected and
@@ -70,8 +70,8 @@ type OutboxDrainer struct {
 	readyFn func(ctx context.Context) bool
 }
 
-// OutboxDrainerConfig holds the configuration for an OutboxDrainer.
-type OutboxDrainerConfig struct {
+// Config holds the configuration for a Drainer.
+type Config struct {
 	OutboxStore         ports.OutboxStore
 	LeaseStore          ports.LeaseStore
 	Sender              ports.Sender
@@ -127,11 +127,6 @@ type OutboxDrainerConfig struct {
 	OnDrained func()
 }
 
-// NewOutboxDrainerFromConfig creates an OutboxDrainer from a config struct.
-func NewOutboxDrainerFromConfig(cfg OutboxDrainerConfig) *OutboxDrainer {
-	return newOutboxDrainer(cfg)
-}
-
 const (
 	absoluteMaxBatchSize = 10000
 
@@ -147,7 +142,8 @@ const (
 	defaultMaxDrainTimeout = 10 * time.Second
 )
 
-func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
+// New creates a Drainer from a Config.
+func New(cfg Config) *Drainer {
 	if cfg.Strategy == nil {
 		cfg.Strategy = persistence.NewAdaptiveBackoff(0, 0, 0)
 	}
@@ -168,7 +164,7 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 	}
 	// useScaledTimeout captures whether the caller opted into the new
 	// scaled formula. When either new field is non-zero we use
-	// computeBatchDeadline; otherwise we preserve legacy behavior by
+	// ComputeBatchDeadline; otherwise we preserve legacy behavior by
 	// bounding the batch with a fixed DrainTimeout.
 	useScaledTimeout := cfg.PerRecordDrainTimeout > 0 || cfg.MaxDrainTimeout > 0
 	if cfg.DrainTimeout <= 0 {
@@ -196,7 +192,7 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 	if clk == nil {
 		clk = clock.System
 	}
-	return &OutboxDrainer{
+	return &Drainer{
 		outboxStore:           cfg.OutboxStore,
 		leaseStore:            cfg.LeaseStore,
 		sender:                cfg.Sender,
@@ -228,9 +224,15 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 	}
 }
 
+// RouteID returns the route identifier the drainer was configured with.
+func (d *Drainer) RouteID() string { return d.routeID }
+
+// PartitionKey returns the outbox partition key the drainer claims from.
+func (d *Drainer) PartitionKey() string { return d.partitionKey }
+
 // fireBatchComplete invokes the OnBatchComplete callback with a panic
 // guard so a faulty callback cannot kill the drain loop.
-func (d *OutboxDrainer) fireBatchComplete(n int) {
+func (d *Drainer) fireBatchComplete(n int) {
 	if d.onBatchComplete == nil {
 		return
 	}
@@ -239,7 +241,7 @@ func (d *OutboxDrainer) fireBatchComplete(n int) {
 }
 
 // fireDrained invokes the OnDrained callback with a panic guard.
-func (d *OutboxDrainer) fireDrained() {
+func (d *Drainer) fireDrained() {
 	if d.onDrained == nil {
 		return
 	}
@@ -250,7 +252,7 @@ func (d *OutboxDrainer) fireDrained() {
 // IdleSince returns the time at which the drainer last transitioned to
 // idle (no pending outbox records) and true, or a zero time and false
 // if the drainer is not currently idle.
-func (d *OutboxDrainer) IdleSince() (time.Time, bool) {
+func (d *Drainer) IdleSince() (time.Time, bool) {
 	d.idleMu.Lock()
 	defer d.idleMu.Unlock()
 	if d.idleSince.IsZero() {
@@ -262,7 +264,7 @@ func (d *OutboxDrainer) IdleSince() (time.Time, bool) {
 // WaitIdle blocks until the drainer has been idle (no pending outbox
 // records) for at least minQuiet continuous time. It returns nil once
 // the condition is met, or ctx.Err() if the context is cancelled.
-func (d *OutboxDrainer) WaitIdle(ctx context.Context, minQuiet time.Duration) error {
+func (d *Drainer) WaitIdle(ctx context.Context, minQuiet time.Duration) error {
 	for {
 		d.idleMu.Lock()
 		ch := d.idleCh
@@ -282,7 +284,7 @@ func (d *OutboxDrainer) WaitIdle(ctx context.Context, minQuiet time.Duration) er
 	}
 }
 
-func (d *OutboxDrainer) log(ctx context.Context, level slog.Level, msg string, args ...any) {
+func (d *Drainer) log(ctx context.Context, level slog.Level, msg string, args ...any) {
 	if d.logger == nil || !d.logger.Enabled(ctx, level) {
 		return
 	}

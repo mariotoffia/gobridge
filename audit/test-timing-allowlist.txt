@@ -85,10 +85,10 @@
 ./runtime/edge_cases_test.go:323:	time.Sleep(200 * time.Millisecond) // FIXED: wait for message expiry (100ms TTL + margin)
 ./runtime/fakes_test.go:25:		time.Sleep(10 * time.Millisecond) // SYNC: poll interval in waitFor helper
 ./runtime/jitter_clamp_test.go:124:		time.Sleep(100 * time.Millisecond) // OTHER: simulated processing duration
-./runtime/medium_fixes_test.go:158:	time.Sleep(100 * time.Millisecond) // FIXED: wait for DepthCacheTTL (50ms) to expire
-./runtime/metrics_integration_test.go:243:		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
-./runtime/metrics_integration_test.go:249:		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
-./runtime/metrics_integration_test.go:255:		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
+./runtime/medium_fixes_test.go:159:	time.Sleep(100 * time.Millisecond) // FIXED: wait for DepthCacheTTL (50ms) to expire
+./runtime/metrics_integration_test.go:244:		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
+./runtime/metrics_integration_test.go:250:		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
+./runtime/metrics_integration_test.go:256:		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
 ./runtime/outbox_depth_cache_test.go:168:	time.Sleep(1200 * time.Millisecond) // FIXED: wait for depth cache TTL (1s) to expire
 ./runtime/outbox_drainer_concurrent_test.go:156:		time.Sleep(30 * time.Millisecond) // OTHER: simulated processing duration
 ./runtime/outbox_drainer_concurrent_test.go:239:		time.Sleep(20 * time.Millisecond) // OTHER: simulated processing duration
@@ -104,9 +104,9 @@
 ./runtime/route_runner_concurrent_test.go:271:			time.Sleep(50 * time.Millisecond) // OTHER: simulated processing duration
 ./runtime/route_runner_concurrent_test.go:323:	time.Sleep(200 * time.Millisecond) // SYNC: let in-flight sends complete for peak measurement
 ./runtime/route_runner_concurrent_test.go:49:		time.Sleep(50 * time.Millisecond) // OTHER: simulated processing duration
-./runtime/runtime_resilience_test.go:156:	time.Sleep(50 * time.Millisecond) // SYNC: let drainer start and reach poll loop
-./runtime/runtime_resilience_test.go:327:	time.Sleep(200 * time.Millisecond) // NEGATIVE: verify stale fencing token does not kill runtime
-./runtime/runtime_resilience_test.go:465:	time.Sleep(100 * time.Millisecond) // NEGATIVE: verify healthy sess is not restarted on re-acquisition
+./runtime/runtime_resilience_test.go:157:	time.Sleep(50 * time.Millisecond) // SYNC: let drainer start and reach poll loop
+./runtime/runtime_resilience_test.go:328:	time.Sleep(200 * time.Millisecond) // NEGATIVE: verify stale fencing token does not kill runtime
+./runtime/runtime_resilience_test.go:466:	time.Sleep(100 * time.Millisecond) // NEGATIVE: verify healthy sess is not restarted on re-acquisition
 ./runtime/s12_timeout_alignment_test.go:209:			time.Sleep(20 * time.Millisecond) // SYNC: poll interval in inline wait loop
 ./runtime/session/manager_clock_test.go:141:		time.Sleep(5 * time.Millisecond) // OTHER: real-time sync for clocktest.Fake
 ./runtime/session/manager_clock_test.go:145:	time.Sleep(20 * time.Millisecond)

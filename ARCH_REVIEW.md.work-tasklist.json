@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "ARCH_REVIEW.md",
-  "source_sha": "33826a5d020847f8c14b891499f7e57dd650900b7e0480385f2534982e735728",
+  "source_sha": "55770454df3cd15b66115fd8b68bfc3dc43cedbe7c671307a52d9cb62be2fe0d",
   "indexed_at": "2026-05-12T09:39:00Z",
   "status_convention": "Uses heading suffixes (- DONE, - BLOCKED) and body status lines (**Status:** Resolved/Done/Complete/Closed or **Status:** Blocked); unmarked items are pending.",
   "tasks": [
@@ -82,7 +82,7 @@
     {
       "id": "H-1e",
       "title": "Extract `runtime/outbox` package",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(AP-001; Clean-Arch F4 \u2014 sub-task of H-1)",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "Runtime outbox plumbing relocation is package-boundary refactoring; source explicitly suggests refactoring-specialist.",

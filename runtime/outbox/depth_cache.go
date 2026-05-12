@@ -1,4 +1,4 @@
-package runtime
+package outbox
 
 import (
 	"sync"
@@ -12,28 +12,29 @@ type depthEntry struct {
 	checkedAt  time.Time
 }
 
-// outboxDepthCache caches the result of outbox depth queries to avoid
-// hitting the store on every ingress message. Entries expire after the
+// DepthCache caches the result of outbox depth queries to avoid hitting
+// the store on every ingress message. Entries expire after the
 // configured TTL, at which point the next call triggers a fresh query.
-type outboxDepthCache struct {
+type DepthCache struct {
 	mu      sync.RWMutex
 	entries map[string]depthEntry
 	ttl     time.Duration
 	clk     clock.Clock
 }
 
-func newOutboxDepthCache(ttl time.Duration, clk clock.Clock) *outboxDepthCache {
-	return &outboxDepthCache{
+// NewDepthCache constructs a DepthCache with the given TTL and clock.
+func NewDepthCache(ttl time.Duration, clk clock.Clock) *DepthCache {
+	return &DepthCache{
 		entries: make(map[string]depthEntry),
 		ttl:     ttl,
 		clk:     clk,
 	}
 }
 
-// isUnderCapacity returns true if the cache has a fresh "not at capacity"
+// IsUnderCapacity returns true if the cache has a fresh "not at capacity"
 // entry for the given partition key. Returns false if the entry is absent,
 // expired, or indicates the outbox is at capacity (forcing a real query).
-func (c *outboxDepthCache) isUnderCapacity(partitionKey string) bool {
+func (c *DepthCache) IsUnderCapacity(partitionKey string) bool {
 	c.mu.RLock()
 	entry, ok := c.entries[partitionKey]
 	c.mu.RUnlock()
@@ -49,7 +50,10 @@ func (c *outboxDepthCache) isUnderCapacity(partitionKey string) bool {
 
 const depthCacheMaxEntries = 1000
 
-func (c *outboxDepthCache) update(partitionKey string, atCapacity bool) {
+// Update records the capacity status for the given partition key with
+// the current timestamp, evicting stale entries if the cache grows
+// beyond depthCacheMaxEntries.
+func (c *DepthCache) Update(partitionKey string, atCapacity bool) {
 	now := c.clk.Now()
 	c.mu.Lock()
 	c.entries[partitionKey] = depthEntry{

@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
@@ -99,7 +100,7 @@ func TestF2_StopReleasesLeaseWithValidContext(t *testing.T) {
 // at least one drain cycle runs before cancellation.
 func TestF3_DrainOnShutdown(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
-	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Strategy = persistence.NewFixedPoll(10 * time.Millisecond)
 	})
 
@@ -141,7 +142,7 @@ func TestF3_DrainOnShutdown(t *testing.T) {
 // is skipped when the drainer does not hold a lease.
 func TestF3_DrainOnShutdown_NoLease(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
-	_, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	_, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Strategy = persistence.NewFixedPoll(10 * time.Second)
 		cfg.TokenFn = func() (persistence.LeaseToken, bool) {
 			return persistence.LeaseToken{}, false
@@ -240,7 +241,7 @@ func TestF5_DrainBatchSkipsTOCTOUCheck(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	sender := NewFakeSender()
 
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		OutboxStore:  outbox,
 		LeaseStore:   countLease,
 		Sender:       sender,
@@ -253,7 +254,7 @@ func TestF5_DrainBatchSkipsTOCTOUCheck(t *testing.T) {
 		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
 		TokenFn:      func() (persistence.LeaseToken, bool) { return token, true },
 	}
-	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
+	drainer := outboxpkg.New(cfg)
 
 	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-f5", RouteID: "route-1", EnvelopeID: "env-f5",

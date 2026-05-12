@@ -10,8 +10,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 )
 
 type senderFunc func(context.Context, *messaging.Envelope) error
@@ -61,7 +61,7 @@ func TestOutboxDrainer_CompleteSurvivesNearBatchDeadline(t *testing.T) {
 	policy := routing.RoutePolicy{}.WithDefaults()
 	policy.SendTimeout = 300 * time.Millisecond
 	batchCh := make(chan int, 1)
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:           outbox,
 		LeaseStore:            leaseStore,
 		Sender:                &ctxAwareSender{latency: 105 * time.Millisecond},
@@ -161,7 +161,7 @@ func TestOutboxDrainer_CompleteRespectsRuntimeShutdown(t *testing.T) {
 
 	policy := routing.RoutePolicy{}.WithDefaults()
 	policy.SendTimeout = 40 * time.Millisecond
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:         outbox,
 		LeaseStore:          leaseStore,
 		Sender:              sender,

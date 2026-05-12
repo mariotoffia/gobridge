@@ -152,6 +152,7 @@ components:
   runtime_credentials: { in: [runtime/credentials] }
   runtime_cluster: { in: [runtime/cluster] }
   runtime_session: { in: [runtime/session] }
+  runtime_outbox: { in: [runtime/outbox] }
   bridge: { in: [bridge, bridge/**] }
   validate: { in: [validate, validate/**] }
 
@@ -465,6 +466,7 @@ deps:
       - runtime_dlq
       - runtime_cluster
       - runtime_session
+      - runtime_outbox
 
   # runtime_dlq is the dead-letter-queue routing leaf. It owns the
   # asynchronous DLQ router (classify -> enqueue -> drain to DLQStore)
@@ -520,6 +522,29 @@ deps:
       - domain_connectivity
       - ports
       - logging
+
+  # runtime_outbox owns the runtime-side outbox dispatch plumbing: the
+  # per-partition Drainer that claims pending OutboxRecords, validates
+  # fencing tokens, sends through the target Sender, and routes
+  # terminal failures to the DLQ; the DepthCache that short-circuits
+  # repeated QueryPending calls on the shared-outbox hot path; and the
+  # timeout-scaling helper. The OutboxRecord aggregate itself remains
+  # in domain/persistence. The parent runtime composes a *outbox.Drainer
+  # per shared-outbox session and consumes it through the standard
+  # inward dependency rule (parent -> leaf); this leaf MUST NOT depend
+  # on its parent (runtime), on any adapter, on bridge, or on the
+  # composition root. It MAY depend on the sibling runtime_dlq leaf
+  # for terminal-failure routing.
+  runtime_outbox:
+    mayDependOn:
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - ports
+      - logging
+      - runtime_dlq
 
   # runtime_credentials is the credential-store adaptation leaf
   # (PollBasedWrapper lifts a PullCredentialStore into a

@@ -18,6 +18,7 @@ import (
 	"github.com/mariotoffia/gobridge/observability"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/outbox"
 )
 
 // RouteRunner executes the ingress pipeline for a single route.
@@ -44,7 +45,7 @@ type RouteRunner struct {
 	clk                  clock.Clock
 	sem                  chan struct{}
 	globalSem            chan struct{}
-	depthCache           *outboxDepthCache
+	depthCache           *outbox.DepthCache
 	panicRetryTimeout    time.Duration
 	receiverCloseTimeout time.Duration
 	onDelivery           func(env *messaging.Envelope, err error)
@@ -128,9 +129,9 @@ func (c *RouteRunnerConfig) applyDefaults() {
 func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 	cfg.applyDefaults()
 
-	var dc *outboxDepthCache
+	var dc *outbox.DepthCache
 	if cfg.Policy.DeliveryMode == routing.DeliverySharedOutbox {
-		dc = newOutboxDepthCache(cfg.DepthCacheTTL, cfg.Clock)
+		dc = outbox.NewDepthCache(cfg.DepthCacheTTL, cfg.Clock)
 	}
 
 	r := &RouteRunner{

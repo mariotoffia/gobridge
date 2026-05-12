@@ -14,6 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 )
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -75,7 +76,7 @@ func TestOutboxDrainer_SendTimeout(t *testing.T) {
 	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		OutboxStore:  outbox,
 		LeaseStore:   leaseStore,
 		Sender:       blockingSender,
@@ -92,7 +93,7 @@ func TestOutboxDrainer_SendTimeout(t *testing.T) {
 			return token, true
 		},
 	}
-	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
+	drainer := outboxpkg.New(cfg)
 
 	ctx := context.Background()
 	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
@@ -235,7 +236,7 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 	// re-process records on subsequent poll cycles.
 	// Threshold: 1 (Run loop) + 2 (pre-send checks for 2 records) = 3.
 	var tokenCalls atomic.Int32
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		OutboxStore:         outbox,
 		LeaseStore:          leaseStore,
 		Sender:              ctxSender,
@@ -254,7 +255,7 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 			return persistence.LeaseToken{}, false
 		},
 	}
-	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
+	drainer := outboxpkg.New(cfg)
 
 	ctx := context.Background()
 	records := []*persistence.OutboxRecord{
@@ -319,7 +320,7 @@ func TestOutboxDrainer_StaleFencingToken_PropagatedToRunLoop(t *testing.T) {
 
 	// Threshold: 1 (Run loop) + 1 (pre-send check for 1 record) = 2.
 	var tokenCalls atomic.Int32
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		OutboxStore:  outbox,
 		LeaseStore:   leaseStore,
 		Sender:       sender,
@@ -337,7 +338,7 @@ func TestOutboxDrainer_StaleFencingToken_PropagatedToRunLoop(t *testing.T) {
 			return persistence.LeaseToken{}, false
 		},
 	}
-	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
+	drainer := outboxpkg.New(cfg)
 
 	ctx := context.Background()
 	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{

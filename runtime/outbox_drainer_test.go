@@ -12,11 +12,11 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 )
 
-func makeDrainer(t *testing.T, token persistence.LeaseToken, opts ...func(*goruntime.OutboxDrainerConfig)) (*FakeOutboxStore, *FakeSender, *FakeDLQStore, *goruntime.OutboxDrainer) {
+func makeDrainer(t *testing.T, token persistence.LeaseToken, opts ...func(*outboxpkg.Config)) (*FakeOutboxStore, *FakeSender, *FakeDLQStore, *outboxpkg.Drainer) {
 	t.Helper()
 	outbox := NewFakeOutboxStore()
 	sender := NewFakeSender()
@@ -26,7 +26,7 @@ func makeDrainer(t *testing.T, token persistence.LeaseToken, opts ...func(*gorun
 	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		OutboxStore:    outbox,
 		LeaseStore:     leaseStore,
 		Sender:         sender,
@@ -45,7 +45,7 @@ func makeDrainer(t *testing.T, token persistence.LeaseToken, opts ...func(*gorun
 	for _, o := range opts {
 		o(&cfg)
 	}
-	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
+	drainer := outboxpkg.New(cfg)
 	return outbox, sender, dlqStore, drainer
 }
 
@@ -110,7 +110,7 @@ func TestOutboxDrainer_ExpiredRecord(t *testing.T) {
 // TestOutboxDrainer_PoisonMessage verifies replay count above max sends to DLQ without sending.
 func TestOutboxDrainer_PoisonMessage(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
-	outbox, sender, dlqStore, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, sender, dlqStore, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Policy.MaxReplayAttempts = 2
 	})
 
@@ -173,7 +173,7 @@ func TestOutboxDrainer_NoLease(t *testing.T) {
 	sender := NewFakeSender()
 	dlqStore := NewFakeDLQStore()
 
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		OutboxStore:  outbox,
 		Sender:       sender,
 		DLQ:          dlq.New(dlqStore),
@@ -186,7 +186,7 @@ func TestOutboxDrainer_NoLease(t *testing.T) {
 			return persistence.LeaseToken{}, false
 		},
 	}
-	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
+	drainer := outboxpkg.New(cfg)
 
 	ctx := context.Background()
 	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
@@ -347,7 +347,7 @@ func TestOutboxDrainer_CancelDuringBatch_ReturnsPromptly(t *testing.T) {
 	cancelOnce := sync.Once{}
 	var cancelFn context.CancelFunc
 
-	_, _, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	_, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.DrainMaxConcurrency = 1
 		cfg.DrainBatchSize = 50
 		cfg.DrainTimeout = 500 * time.Millisecond
@@ -415,7 +415,7 @@ func TestOutboxDrainer_CancelDuringBatch_ReturnsPromptly(t *testing.T) {
 //   - Run returns before the timeout guard (no deadlock)
 func TestOutboxDrainer_CancelBeforeBatch_ExitsPromptly(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Strategy = persistence.NewFixedPoll(10 * time.Millisecond)
 		cfg.DrainTimeout = 500 * time.Millisecond
 	})
@@ -473,7 +473,7 @@ func TestOutboxDrainer_ConcurrentBatch_SemaphoreConsistency(t *testing.T) {
 	cancelOnce := sync.Once{}
 	var cancelFn context.CancelFunc
 
-	_, _, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	_, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.DrainMaxConcurrency = 3
 		cfg.DrainBatchSize = 20
 		cfg.DrainTimeout = 500 * time.Millisecond

@@ -1,4 +1,4 @@
-package runtime
+package outbox
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-func (d *OutboxDrainer) completeCtx(parent context.Context) (context.Context, context.CancelFunc) {
+func (d *Drainer) completeCtx(parent context.Context) (context.Context, context.CancelFunc) {
 	timeout := d.policy.SendTimeout
 	if timeout <= 0 || timeout > 5*time.Second {
 		timeout = 5 * time.Second
@@ -20,7 +20,7 @@ func (d *OutboxDrainer) completeCtx(parent context.Context) (context.Context, co
 	return context.WithTimeout(context.WithoutCancel(parent), timeout)
 }
 
-func (d *OutboxDrainer) processRecord(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
+func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
 	env := &rec.Envelope
 	routeTag := shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID}
 	attempt := rec.ReplayCount() + 1
@@ -122,7 +122,7 @@ func (d *OutboxDrainer) processRecord(ctx context.Context, rec *persistence.Outb
 	return nil
 }
 
-func (d *OutboxDrainer) handleExpired(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
+func (d *Drainer) handleExpired(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
 	env := &rec.Envelope
 	if d.policy.OnExpired == routing.ExpiredDLQ {
 		if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID, rec.Address, rec.SessionID, "", shared.ErrMessageExpired, rec.ReplayCount()); dlqErr != nil {
@@ -146,7 +146,7 @@ func (d *OutboxDrainer) handleExpired(ctx context.Context, rec *persistence.Outb
 	return completeErr
 }
 
-func (d *OutboxDrainer) handlePoison(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
+func (d *Drainer) handlePoison(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
 	env := &rec.Envelope
 	poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent, "replay count exceeded")
 	if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID, rec.Address, rec.SessionID, "", poisonErr, rec.ReplayCount()); dlqErr != nil {

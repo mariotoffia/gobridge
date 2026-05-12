@@ -12,6 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
@@ -107,7 +108,7 @@ func TestOutboxDrainer_EmitsDrainLatency(t *testing.T) {
 	})}
 	_ = outbox.Persist(context.Background(), records)
 
-	drainer := runtime.NewOutboxDrainerFromConfig(runtime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:    outbox,
 		LeaseStore:     lease,
 		Sender:         sender,
@@ -158,7 +159,7 @@ func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 	})}
 	_ = outbox.Persist(context.Background(), records)
 
-	drainer := runtime.NewOutboxDrainerFromConfig(runtime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:    outbox,
 		LeaseStore:     lease,
 		Sender:         sender,

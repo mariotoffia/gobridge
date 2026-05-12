@@ -14,6 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -167,7 +168,7 @@ func TestDrainerNameGeneration(t *testing.T) {
 // sent, but the drainer must accept the config without error.
 func TestOutboxDrainerConfig_DrainBatchSize_Default(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
-	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.DrainBatchSize = 0
 	})
 
@@ -189,7 +190,7 @@ func TestOutboxDrainerConfig_DrainBatchSize_Default(t *testing.T) {
 func TestOutboxDrainerConfig_DrainBatchSize_Custom(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	var observedLimit int64
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.DrainBatchSize = 42
 	})
 
@@ -236,7 +237,7 @@ func TestOutboxDrainer_FinalDrain_CompletesAfterCancel(t *testing.T) {
 		onSignal: pollEntered,
 	}
 
-	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Strategy = strategy
 		cfg.DrainTimeout = 500 * time.Millisecond
 	})
@@ -366,7 +367,7 @@ func (s *signalingStrategy) NextInterval(n int) time.Duration {
 // ═══════════════════════════════════════════════════════════════════════
 func TestOutboxDrainerConfig_DrainBatchSize_NegativeClamped(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
-	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.DrainBatchSize = -1
 	})
 
@@ -392,7 +393,7 @@ func TestOutboxDrainerConfig_DrainBatchSize_NegativeClamped(t *testing.T) {
 // ═══════════════════════════════════════════════════════════════════════
 func TestOutboxDrainerConfig_DrainMaxBatchSize_FloorsToBatchSize(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
-	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.DrainBatchSize = 200
 		cfg.DrainMaxBatchSize = 50
 	})

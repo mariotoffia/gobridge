@@ -32,6 +32,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 )
 
 // ---------------------------------------------------------------------------
@@ -44,7 +45,7 @@ import (
 func TestDeliveryHook_SharedOutbox_Success(t *testing.T) {
 	hook := &recordingHook{}
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-1"}
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *runtime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Hook = hook
 	})
 
@@ -93,7 +94,7 @@ func TestDeliveryHook_SharedOutbox_Success(t *testing.T) {
 func TestDeliveryHook_SharedOutbox_Poison(t *testing.T) {
 	hook := &recordingHook{}
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-1"}
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *runtime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Hook = hook
 		cfg.Policy.MaxReplayAttempts = 1
 	})
@@ -135,7 +136,7 @@ func TestDeliveryHook_SharedOutbox_Poison(t *testing.T) {
 func TestDeliveryHook_SharedOutbox_Expired(t *testing.T) {
 	hook := &recordingHook{}
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-1"}
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *runtime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Hook = hook
 	})
 
@@ -180,7 +181,7 @@ func TestDeliveryHook_SharedOutbox_PermanentSendError(t *testing.T) {
 	hook := &recordingHook{}
 	permErr := shared.NewBridgeError("PERM", shared.ErrorPermanent, "perm fail")
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-1"}
-	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *runtime.OutboxDrainerConfig) {
+	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Hook = hook
 	})
 	sender.SendErr = permErr
@@ -218,7 +219,7 @@ func TestDeliveryHook_SharedOutbox_TransientNoSettled(t *testing.T) {
 	hook := &recordingHook{}
 	transientErr := shared.NewBridgeError("TRANSIENT", shared.ErrorTransient, "try again")
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-1"}
-	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *runtime.OutboxDrainerConfig) {
+	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Hook = hook
 	})
 	sender.SendErr = transientErr
@@ -258,7 +259,7 @@ func TestDeliveryHook_SharedOutbox_TransientNoSettled(t *testing.T) {
 func TestDeliveryHook_SharedOutbox_AttemptIsReplayCountPlusOne(t *testing.T) {
 	hook := &recordingHook{}
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-1"}
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *runtime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Hook = hook
 	})
 
@@ -295,7 +296,7 @@ func TestDeliveryHook_SharedOutbox_AttemptIsReplayCountPlusOne(t *testing.T) {
 func TestDeliveryHook_SharedOutbox_MultipleBatchRecords(t *testing.T) {
 	hook := &recordingHook{}
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-1"}
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *runtime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Hook = hook
 	})
 

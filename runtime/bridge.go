@@ -15,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/cluster"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/outbox"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
@@ -46,7 +47,7 @@ type Runtime struct {
 	entries         []*routeEntry
 	sessionSenders  map[string]*sessionSenderEntry
 	sessionMgrs     map[string]*session.Manager
-	drainers        []*OutboxDrainer
+	drainers        []*outbox.Drainer
 	dlqRouter       *dlq.Router
 	globalSem       chan struct{}
 	running         bool

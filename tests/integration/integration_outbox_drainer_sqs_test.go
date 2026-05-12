@@ -13,8 +13,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/outbox"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
 
@@ -92,7 +92,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_FullCycle(t *testing.T) {
 		}
 	}
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outbox.New(outbox.Config{
 		OutboxStore:    store,
 		Sender:         sender,
 		RouteID:        "route-sq1",
@@ -200,7 +200,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_ExpiredToDLQ(t *testing.T) {
 		Store: dlqStore,
 	})
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outbox.New(outbox.Config{
 		OutboxStore:    store,
 		Sender:         sender,
 		DLQ:            dlqRouter,
@@ -296,7 +296,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_HeaderPreservation(t *testing.T
 		t.Fatalf("persist: %v", err)
 	}
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outbox.New(outbox.Config{
 		OutboxStore:    store,
 		Sender:         sender,
 		RouteID:        "route-sq3",

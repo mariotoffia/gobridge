@@ -29,6 +29,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 )
 
 // TestDrainer_StaleFencingToken_UsesMinBackoff validates that stale
@@ -51,7 +52,7 @@ func TestDrainer_StaleFencingToken_UsesMinBackoff(t *testing.T) {
 	hasLease := true
 	token := persistence.LeaseToken{Version: 1, Owner: "test"}
 
-	drainer := runtime.NewOutboxDrainerFromConfig(runtime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:  outbox,
 		Sender:       NewFakeSender(),
 		RouteID:      "route-1",

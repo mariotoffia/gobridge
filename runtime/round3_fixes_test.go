@@ -11,8 +11,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 )
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -66,7 +66,7 @@ func TestOutboxDrainer_WorkCtxNotCappedBySendTimeout(t *testing.T) {
 	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
 	var tokenCalls atomic.Int32
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		OutboxStore:  outbox,
 		LeaseStore:   leaseStore,
 		Sender:       ctxSender,
@@ -88,7 +88,7 @@ func TestOutboxDrainer_WorkCtxNotCappedBySendTimeout(t *testing.T) {
 			return persistence.LeaseToken{}, false
 		},
 	}
-	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
+	drainer := outboxpkg.New(cfg)
 
 	ctx := context.Background()
 	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
@@ -146,7 +146,7 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 	}
 
 	var tokenCalls atomic.Int32
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		OutboxStore:  outbox,
 		LeaseStore:   leaseStore,
 		Sender:       sender,
@@ -166,7 +166,7 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 			return persistence.LeaseToken{}, false
 		},
 	}
-	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
+	drainer := outboxpkg.New(cfg)
 
 	ctx := context.Background()
 	outboxRec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{

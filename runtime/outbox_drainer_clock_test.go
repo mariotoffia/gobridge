@@ -13,8 +13,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 )
 
 // fixedNoJitterStrategy returns a constant interval without the ±25%
@@ -84,7 +84,7 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 	persistRecord("rec-1", "env-1")
 
 	batchCh := make(chan int, 8)
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		OutboxStore:         outbox,
 		LeaseStore:          leaseStore,
 		Sender:              sender,
@@ -103,7 +103,7 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 		TokenFn:             func() (persistence.LeaseToken, bool) { return token, true },
 		OnBatchComplete:     func(n int) { batchCh <- n },
 	}
-	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
+	drainer := outboxpkg.New(cfg)
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	var runWG sync.WaitGroup
@@ -208,7 +208,7 @@ func TestOutboxDrainer_DrainLatencyUsesInjectedClock(t *testing.T) {
 	}
 
 	batchCh := make(chan int, 1)
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:         outbox,
 		LeaseStore:          leaseStore,
 		Sender:              sender,

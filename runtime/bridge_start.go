@@ -11,6 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/cluster"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/outbox"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
@@ -111,7 +112,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				drainerSessions[sid] = true
 				mgr := rt.sessionMgrs[sid]
 				sess := entry.session
-				drainer := newOutboxDrainer(OutboxDrainerConfig{
+				drainer := outbox.New(outbox.Config{
 					OutboxStore:           rt.outboxStore,
 					LeaseStore:            rt.leaseStore,
 					Sender:                entry.sender,
@@ -166,7 +167,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				drainerSessions[sid] = true
 				mgr := rt.sessionMgrs[sid]
 				fanSess := sse.session
-				drainer := newOutboxDrainer(OutboxDrainerConfig{
+				drainer := outbox.New(outbox.Config{
 					OutboxStore:           rt.outboxStore,
 					LeaseStore:            rt.leaseStore,
 					Sender:                sse.sender,
@@ -214,9 +215,9 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	}
 
 	for i, drainer := range rt.drainers {
-		name := "drainer:" + drainer.partitionKey
+		name := "drainer:" + drainer.PartitionKey()
 		if name == "drainer:" {
-			name = "drainer:" + drainer.routeID + ":" + strconv.Itoa(i)
+			name = "drainer:" + drainer.RouteID() + ":" + strconv.Itoa(i)
 		}
 		rt.startBackground(ctx, name, drainer.Run)
 	}

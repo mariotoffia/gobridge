@@ -10,7 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -93,7 +93,7 @@ func TestDrainBatch_ParallelSends(t *testing.T) {
 		return nil
 	})
 
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Sender = sender
 		cfg.DrainMaxConcurrency = 10
 		cfg.DrainBatchSize = 20
@@ -157,7 +157,7 @@ func TestDrainBatch_ConcurrencyLimit(t *testing.T) {
 		return nil
 	})
 
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Sender = sender
 		cfg.DrainMaxConcurrency = 3
 		cfg.DrainBatchSize = 10
@@ -199,7 +199,7 @@ func TestDrainBatch_ErrorIsolation(t *testing.T) {
 		return nil
 	})
 
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Sender = sender
 		cfg.DrainMaxConcurrency = 5
 		cfg.DrainBatchSize = 5
@@ -240,7 +240,7 @@ func TestDrainBatch_ConcurrencyDefault(t *testing.T) {
 		return nil
 	})
 
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Sender = sender
 		cfg.DrainBatchSize = 15
 	})
@@ -275,7 +275,7 @@ func TestDrainBatch_ConcurrencyDefault(t *testing.T) {
 func TestAdaptBatchSize_ScalesUpOnFullBatch(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
-	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.DrainBatchSize = 5
 		cfg.DrainMaxBatchSize = 20
 		cfg.DrainMaxConcurrency = 20
@@ -300,7 +300,7 @@ func TestAdaptBatchSize_ScalesUpOnFullBatch(t *testing.T) {
 func TestAdaptBatchSize_CapsAtMaxBatchSize(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
-	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.DrainBatchSize = 5
 		cfg.DrainMaxBatchSize = 8
 		cfg.DrainMaxConcurrency = 20
@@ -322,7 +322,7 @@ func TestAdaptBatchSize_CapsAtMaxBatchSize(t *testing.T) {
 func TestAdaptBatchSize_ResetsOnEmptyBatch(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
-	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.DrainBatchSize = 5
 		cfg.DrainMaxBatchSize = 20
 		cfg.DrainMaxConcurrency = 20

@@ -1,4 +1,4 @@
-package runtime
+package outbox
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 // Run polls the outbox for pending records and sends them. It blocks
 // until the context is cancelled or a fencing error occurs. The polling
 // interval is determined by the configured DrainStrategy.
-func (d *OutboxDrainer) Run(ctx context.Context) error {
+func (d *Drainer) Run(ctx context.Context) error {
 	timer := d.clk.NewTimer(d.strategy.NextInterval(0))
 	defer timer.Stop()
 
@@ -63,7 +63,7 @@ func (d *OutboxDrainer) Run(ctx context.Context) error {
 // Uses context.WithoutCancel(parent)+WithTimeout so the drain can complete
 // during shutdown while retaining trace/correlation values from the parent.
 // Claim is bounded by the batch ceiling; in-flight sends may exceed it.
-func (d *OutboxDrainer) finalDrain(parent context.Context) error {
+func (d *Drainer) finalDrain(parent context.Context) error {
 	if !d.hasDrained {
 		return nil
 	}
@@ -98,7 +98,7 @@ func (d *OutboxDrainer) finalDrain(parent context.Context) error {
 	return nil
 }
 
-func (d *OutboxDrainer) drainBatch(ctx context.Context, token persistence.LeaseToken) (int, error) {
+func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) (int, error) {
 	start := d.clk.Now()
 	sessionTag := shared.Tag{Key: shared.TagKeySessionID, Value: d.partitionKey}
 	routeTag := shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID}
@@ -246,7 +246,7 @@ loop:
 // Scale-down: on each zero-success cycle, halve currentBatchSize
 // (floored at the initial batchSize). This progressively shrinks the
 // batch from any previously scaled-up value down to the floor.
-func (d *OutboxDrainer) adaptBatchSize(drained int) {
+func (d *Drainer) adaptBatchSize(drained int) {
 	if drained >= d.currentBatchSize {
 		d.currentBatchSize = min(d.currentBatchSize*2, d.maxBatchSize)
 	} else if drained == 0 {
