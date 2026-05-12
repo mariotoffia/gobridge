@@ -9,6 +9,14 @@ analyzers (`aclcheck`, `aggcheck`, `cfgshape`).
 
 ---
 
+## 0. Must-read before any reply
+
+| Doc | Why |
+|---|---|
+| [`LANGUAGE.md`](LANGUAGE.md) | Default communication style for every agent reply, status update, review finding, and intra-agent handoff. Terse, technically precise, with explicit auto-clarity and artifact boundaries. Read before producing your first response in any session. |
+
+---
+
 ## 1. Reference docs (read on demand)
 
 Do not preload these. Open one only when the task requires it.
