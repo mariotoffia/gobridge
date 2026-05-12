@@ -1,4 +1,4 @@
-package runtime
+package cluster
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 )
 
-// stubLeaseStore is a minimal LeaseStore used for routeLocator clock tests.
+// stubLeaseStore is a minimal LeaseStore used for Locator clock tests.
 // It only implements Current; other methods panic so a misuse is surfaced
 // immediately.
 type stubLeaseStore struct {
@@ -61,11 +61,11 @@ func (s *stubLeaseStore) Release(context.Context, string, persistence.LeaseToken
 
 func (s *stubLeaseStore) callCount() int32 { return atomic.LoadInt32(&s.calls) }
 
-// TestRouteLocator_CacheTTL_FakeClock verifies that cached lease lookups
+// TestLocator_CacheTTL_FakeClock verifies that cached lease lookups
 // are honored for CacheTTL and the next Locate after the TTL expires
 // refetches from the underlying lease store. The test uses a fake clock
 // so there are no wall-clock sleeps.
-func TestRouteLocator_CacheTTL_FakeClock(t *testing.T) {
+func TestLocator_CacheTTL_FakeClock(t *testing.T) {
 	fake := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 
 	store := &stubLeaseStore{}
@@ -75,12 +75,12 @@ func TestRouteLocator_CacheTTL_FakeClock(t *testing.T) {
 		Endpoints: map[string]string{"http": "http://remote:8080"},
 	})
 
-	cfg := RouteLocatorConfig{
+	cfg := LocatorConfig{
 		CacheTTL:       500 * time.Millisecond,
 		MaxFailures:    3,
 		CooldownPeriod: 5 * time.Second,
 	}
-	rl := newRouteLocator("instance-local", store, cfg, fake)
+	rl := NewLocator("instance-local", store, cfg, fake)
 	rl.RegisterRoute("route-1", "sess-1")
 
 	ctx := context.Background()
@@ -116,21 +116,21 @@ func TestRouteLocator_CacheTTL_FakeClock(t *testing.T) {
 	}
 }
 
-// TestRouteLocator_CircuitCooldown_FakeClock verifies that after
-// MaxFailures consecutive Current() errors the circuit opens and Locate
+// TestLocator_CircuitCooldown_FakeClock verifies that after MaxFailures
+// consecutive Current() errors the circuit opens and Locate
 // short-circuits (returning local=true without hitting the lease store)
 // until CooldownPeriod advances on the fake clock.
-func TestRouteLocator_CircuitCooldown_FakeClock(t *testing.T) {
+func TestLocator_CircuitCooldown_FakeClock(t *testing.T) {
 	fake := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 
 	store := &stubLeaseStore{}
 
-	cfg := RouteLocatorConfig{
+	cfg := LocatorConfig{
 		CacheTTL:       100 * time.Millisecond,
 		MaxFailures:    3,
 		CooldownPeriod: 2 * time.Second,
 	}
-	rl := newRouteLocator("instance-local", store, cfg, fake)
+	rl := NewLocator("instance-local", store, cfg, fake)
 	rl.RegisterRoute("route-1", "sess-1")
 
 	ctx := context.Background()

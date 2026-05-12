@@ -104,7 +104,15 @@ The user's four review questions answered:
 
   Suggested agent: `refactoring-specialist`.
 
-- **H-1c** Extract `runtime/cluster` package: move cluster/leader-election/coordination pieces out of `runtime/`. Few external callers; pre-requisite for H-1d (session lifecycle depends on cluster boundary being settled). *(AP-001; Clean-Arch F4 — sub-task of H-1)*
+- **H-1c** Extract `runtime/cluster` package: move cluster/leader-election/coordination pieces out of `runtime/`. Few external callers; pre-requisite for H-1d (session lifecycle depends on cluster boundary being settled). *(AP-001; Clean-Arch F4 — sub-task of H-1)* - DONE
+
+  **Status:** Resolved 2026-05-12. H-1c extracted the route-locator cluster coordination boundary into `runtime/cluster`, updated runtime wiring to depend on `cluster.Locator`, and registered the new architecture component and mapping sentinel.
+
+  **What landed:** `runtime/cluster/locator.go`, `runtime/cluster/locator_clock_test.go`, `runtime/bridge.go`, `runtime/bridge_start.go`, `.go-arch-lint.yml`, `scripts/lint-arch-mapping-test.sh`; removed `runtime/route_locator.go` and `runtime/route_locator_clock_test.go`.
+
+  **Tests added:** `runtime/cluster/locator_clock_test.go` preserves TTL cache and circuit cooldown coverage after the package move.
+
+  **Review:** APPROVED on first pass by `code-reviewer` (model: gpt-5.3-codex).
 
   Suggested agent: `refactoring-specialist`.
 

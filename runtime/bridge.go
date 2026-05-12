@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/cluster"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
@@ -34,7 +35,7 @@ type Runtime struct {
 	logger            *slog.Logger
 	globalMaxInFlight int
 	clusterEndpoints  map[string]string
-	locator           *routeLocator
+	locator           *cluster.Locator
 
 	shutdownTimeout time.Duration
 

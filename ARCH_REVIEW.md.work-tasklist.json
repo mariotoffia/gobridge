@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "ARCH_REVIEW.md",
-  "source_sha": "072179e818d31fb7db01421ba58594ab6666a3a370286c6f52190b62d29c7966",
+  "source_sha": "d5dc350b0644fd5c7a94a1a020907d49f315118fcfecb28da5ec9c8b6880a1b2",
   "indexed_at": "2026-05-12T09:39:00Z",
   "status_convention": "Uses heading suffixes (- DONE, - BLOCKED) and body status lines (**Status:** Resolved/Done/Complete/Closed or **Status:** Blocked); unmarked items are pending.",
   "tasks": [
@@ -56,7 +56,7 @@
     {
       "id": "H-1c",
       "title": "Extract `runtime/cluster` package",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(AP-001; Clean-Arch F4 — sub-task of H-1)",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "Cluster package extraction is part of runtime decomposition; source explicitly suggests refactoring-specialist.",

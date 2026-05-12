@@ -9,6 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/cluster"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
@@ -55,7 +56,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	}
 
 	if rt.leaseStore != nil {
-		rt.locator = newRouteLocator(rt.instanceID, rt.leaseStore, DefaultRouteLocatorConfig(), rt.clk)
+		rt.locator = cluster.NewLocator(rt.instanceID, rt.leaseStore, cluster.DefaultLocatorConfig(), rt.clk)
 	}
 
 	drainerSessions := make(map[string]bool)

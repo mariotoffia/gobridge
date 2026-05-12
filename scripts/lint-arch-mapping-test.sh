@@ -93,6 +93,7 @@ expect config_parser /config/parser
 expect runtime             /runtime
 expect runtime_dlq         /runtime/dlq
 expect runtime_credentials /runtime/credentials
+expect runtime_cluster     /runtime/cluster
 expect bridge        /bridge
 expect validate      /validate
 expect httpapi       /httpapi

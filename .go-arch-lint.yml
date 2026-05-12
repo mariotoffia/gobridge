@@ -150,6 +150,7 @@ components:
   runtime: { in: [runtime] }
   runtime_dlq: { in: [runtime/dlq] }
   runtime_credentials: { in: [runtime/credentials] }
+  runtime_cluster: { in: [runtime/cluster] }
   bridge: { in: [bridge, bridge/**] }
   validate: { in: [validate, validate/**] }
 
@@ -461,6 +462,7 @@ deps:
       - logging
       - observability
       - runtime_dlq
+      - runtime_cluster
 
   # runtime_dlq is the dead-letter-queue routing leaf. It owns the
   # asynchronous DLQ router (classify -> enqueue -> drain to DLQStore)
@@ -477,6 +479,24 @@ deps:
       - domain_messaging
       - domain_persistence
       - domain_routing
+      - ports
+
+  # runtime_cluster owns the runtime's cluster-coordination primitives:
+  # the route-ownership locator that combines lease state with the
+  # route → session mapping to decide whether this instance handles a
+  # given route or forwards to the peer that holds the lease. The
+  # parent runtime composes a *cluster.Locator and exposes it through
+  # the ports.RouteLocator interface; the dependency direction is
+  # parent -> leaf only. This leaf MUST NOT depend on its parent
+  # (runtime), on any adapter, on bridge, or on the composition root.
+  # Treat any new outward edge here as a smell that the leaf is
+  # absorbing orchestration concerns it should publish back to runtime
+  # instead.
+  runtime_cluster:
+    mayDependOn:
+      - domain_clock
+      - domain_shared
+      - domain_persistence
       - ports
 
   # runtime_credentials is the credential-store adaptation leaf

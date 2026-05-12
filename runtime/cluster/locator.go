@@ -1,4 +1,16 @@
-package runtime
+// Package cluster owns the runtime's cluster-coordination primitives:
+// route-ownership lookup driven by lease state, peer endpoint
+// projection, and the failure-cooldown circuit that keeps a flaky
+// lease store from amplifying into per-message latency.
+//
+// The package is a leaf within the runtime layer: it depends only on
+// inward layers (`domain/*`, `ports`). The runtime package consumes
+// [Locator] through the standard inward dependency rule (parent →
+// leaf). It MUST NOT depend on its parent (`runtime`) nor on any
+// adapter, bridge, or composition-root code; treat any new outward
+// edge here as a smell that the leaf is absorbing orchestration
+// concerns it should publish back to runtime instead.
+package cluster
 
 import (
 	"context"
@@ -10,16 +22,16 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// RouteLocatorConfig configures the cluster-aware route locator.
-type RouteLocatorConfig struct {
+// LocatorConfig configures the cluster-aware route locator.
+type LocatorConfig struct {
 	CacheTTL       time.Duration
 	MaxFailures    int
 	CooldownPeriod time.Duration
 }
 
-// DefaultRouteLocatorConfig returns a RouteLocatorConfig with recommended defaults.
-func DefaultRouteLocatorConfig() RouteLocatorConfig {
-	return RouteLocatorConfig{
+// DefaultLocatorConfig returns a LocatorConfig with recommended defaults.
+func DefaultLocatorConfig() LocatorConfig {
+	return LocatorConfig{
 		CacheTTL:       2 * time.Second,
 		MaxFailures:    3,
 		CooldownPeriod: 5 * time.Second,
@@ -31,9 +43,10 @@ type cachedLease struct {
 	fetchedAt time.Time
 }
 
-// routeLocator implements ports.RouteLocator by combining lease ownership
-// with the route-to-session mapping to determine which instance handles a route.
-type routeLocator struct {
+// Locator implements ports.RouteLocator by combining lease ownership
+// with the route-to-session mapping to determine which instance handles
+// a given route.
+type Locator struct {
 	instanceID     string
 	leaseStore     ports.LeaseStore
 	cacheTTL       time.Duration
@@ -50,8 +63,11 @@ type routeLocator struct {
 	lastFailure         time.Time
 }
 
-func newRouteLocator(instanceID string, leaseStore ports.LeaseStore, cfg RouteLocatorConfig, clk clock.Clock) *routeLocator {
-	defaults := DefaultRouteLocatorConfig()
+// NewLocator constructs a cluster-aware route locator. Zero or negative
+// config fields fall back to [DefaultLocatorConfig]; a nil clock falls
+// back to [clock.System].
+func NewLocator(instanceID string, leaseStore ports.LeaseStore, cfg LocatorConfig, clk clock.Clock) *Locator {
+	defaults := DefaultLocatorConfig()
 	if cfg.CacheTTL <= 0 {
 		cfg.CacheTTL = defaults.CacheTTL
 	}
@@ -64,7 +80,7 @@ func newRouteLocator(instanceID string, leaseStore ports.LeaseStore, cfg RouteLo
 	if clk == nil {
 		clk = clock.System
 	}
-	return &routeLocator{
+	return &Locator{
 		instanceID:      instanceID,
 		leaseStore:      leaseStore,
 		cacheTTL:        cfg.CacheTTL,
@@ -78,7 +94,7 @@ func newRouteLocator(instanceID string, leaseStore ports.LeaseStore, cfg RouteLo
 
 // RegisterRoute records that a route uses an exclusive session, enabling
 // cluster-aware routing for that route.
-func (rl *routeLocator) RegisterRoute(routeID, sessionID string) {
+func (rl *Locator) RegisterRoute(routeID, sessionID string) {
 	rl.mu.Lock()
 	rl.routeSessionMap[routeID] = sessionID
 	rl.mu.Unlock()
@@ -87,7 +103,7 @@ func (rl *routeLocator) RegisterRoute(routeID, sessionID string) {
 // Locate determines if a route should be handled locally or forwarded.
 // Non-exclusive routes always return local=true.
 // Exclusive routes check the lease owner and return PeerInfo if remote.
-func (rl *routeLocator) Locate(ctx context.Context, routeID string) (*persistence.PeerInfo, bool, error) {
+func (rl *Locator) Locate(ctx context.Context, routeID string) (*persistence.PeerInfo, bool, error) {
 	rl.mu.RLock()
 	sessionID, isExclusive := rl.routeSessionMap[routeID]
 	rl.mu.RUnlock()
@@ -147,7 +163,7 @@ func (rl *routeLocator) Locate(ctx context.Context, routeID string) (*persistenc
 	}, false, nil
 }
 
-func (rl *routeLocator) isCircuitOpen(now time.Time) bool {
+func (rl *Locator) isCircuitOpen(now time.Time) bool {
 	rl.failMu.Lock()
 	defer rl.failMu.Unlock()
 	if rl.consecutiveFailures < rl.maxFailures {
@@ -156,15 +172,18 @@ func (rl *routeLocator) isCircuitOpen(now time.Time) bool {
 	return now.Sub(rl.lastFailure) < rl.cooldownPeriod
 }
 
-func (rl *routeLocator) recordFailure(now time.Time) {
+func (rl *Locator) recordFailure(now time.Time) {
 	rl.failMu.Lock()
 	rl.consecutiveFailures++
 	rl.lastFailure = now
 	rl.failMu.Unlock()
 }
 
-func (rl *routeLocator) recordSuccess() {
+func (rl *Locator) recordSuccess() {
 	rl.failMu.Lock()
 	rl.consecutiveFailures = 0
 	rl.failMu.Unlock()
 }
+
+// Compile-time port-conformance assertion.
+var _ ports.RouteLocator = (*Locator)(nil)
