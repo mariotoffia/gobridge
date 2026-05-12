@@ -10,6 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // TestRuntime_WithClock_NilIgnored regresses the contract that
@@ -300,7 +301,7 @@ func TestRuntime_Inject_DoesNotMutateOriginal(t *testing.T) {
 
 // Verifies shared-outbox delivery: message is acked after persist, outbox records appear, drain sends to destination.
 //
-// Scenario: start runtime with session lease and drain; emit one message; assert ack, outbox, then at least one send after drain.
+// Scenario: start runtime with sess lease and drain; emit one message; assert ack, outbox, then at least one send after drain.
 func TestRuntime_SharedOutboxEndToEnd(t *testing.T) {
 	dlqStore := NewFakeDLQStore()
 	outbox := NewFakeOutboxStore()
@@ -315,9 +316,9 @@ func TestRuntime_SharedOutboxEndToEnd(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 
-	sessCfg := goruntime.DefaultSessionConfig("sess-e2e", true)
+	sessCfg := session.DefaultConfig("sess-e2e", true)
 	sessCfg.LeaseTTL = 500 * time.Millisecond
 	sessCfg.RenewInterval = 100 * time.Millisecond
 	sessCfg.DrainStrategy = persistence.NewFixedPoll(50 * time.Millisecond)
@@ -337,7 +338,7 @@ func TestRuntime_SharedOutboxEndToEnd(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 	ctx := context.Background()
 	_ = rt.Start(ctx)
 

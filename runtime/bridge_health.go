@@ -117,7 +117,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 	// Collect session health from route entries.
 	seen := make(map[string]bool)
 	for _, e := range rt.entries {
-		// Routes whose AddRoute caller passed a nil *SessionConfig
+		// Routes whose AddRoute caller passed a nil *session.Config
 		// (e.g. SQS->SQS routes that have no MQTT session at all)
 		// are intentionally excluded from session-health aggregation.
 		// Test authors: passing nil sessCfg for an MQTT route means

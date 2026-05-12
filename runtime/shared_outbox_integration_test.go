@@ -12,6 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // ---------------------------------------------------------------------------
@@ -36,8 +37,8 @@ func newTestRuntime(instanceID string, outbox *FakeOutboxStore, lease *FakeLease
 	return goruntime.New(opts...)
 }
 
-func fastSessionConfig(sessionID string) goruntime.SessionConfig {
-	cfg := goruntime.DefaultSessionConfig(sessionID, true)
+func fastSessionConfig(sessionID string) session.Config {
+	cfg := session.DefaultConfig(sessionID, true)
 	cfg.LeaseTTL = 500 * time.Millisecond
 	cfg.RenewInterval = 80 * time.Millisecond
 	cfg.RenewJitter = 10 * time.Millisecond
@@ -62,7 +63,7 @@ func TestSharedOutbox_BasicFlow(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 
 	sessCfg := fastSessionConfig("mqtt-sess-basic")
 
@@ -81,7 +82,7 @@ func TestSharedOutbox_BasicFlow(t *testing.T) {
 		},
 	}
 
-	if err := rt.AddRoute(cfg, receiver, sender, session, &sessCfg); err != nil {
+	if err := rt.AddRoute(cfg, receiver, sender, sess, &sessCfg); err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
 
@@ -93,9 +94,9 @@ func TestSharedOutbox_BasicFlow(t *testing.T) {
 	}
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	// Wait for lease acquisition and session reconciliation.
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	// Wait for lease acquisition and sess reconciliation.
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{
@@ -149,7 +150,7 @@ func TestSharedOutbox_DrainPreservesLogicalSubject(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 
 	sessCfg := fastSessionConfig("mqtt-sess-t04")
 
@@ -168,7 +169,7 @@ func TestSharedOutbox_DrainPreservesLogicalSubject(t *testing.T) {
 		},
 	}
 
-	if err := rt.AddRoute(cfg, receiver, sender, session, &sessCfg); err != nil {
+	if err := rt.AddRoute(cfg, receiver, sender, sess, &sessCfg); err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
 
@@ -180,8 +181,8 @@ func TestSharedOutbox_DrainPreservesLogicalSubject(t *testing.T) {
 	}
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{
@@ -246,7 +247,7 @@ func TestSharedOutbox_ProcessorChainRuns(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 
 	sessCfg := fastSessionConfig("mqtt-sess-proc")
 
@@ -274,15 +275,15 @@ func TestSharedOutbox_ProcessorChainRuns(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	env := &messaging.Envelope{ID: "msg-proc-1", Payload: []byte("data")}
@@ -311,7 +312,7 @@ func TestSharedOutbox_CorrelationIDInjected(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 
 	sessCfg := fastSessionConfig("mqtt-sess-corr")
 
@@ -325,15 +326,15 @@ func TestSharedOutbox_CorrelationIDInjected(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	env := &messaging.Envelope{ID: "msg-corr-1", Payload: []byte("x")}
@@ -362,7 +363,7 @@ func TestSharedOutbox_ReservedHeadersStripped(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-sess-hdr")
 
 	cfg := goruntime.RouteConfig{
@@ -375,15 +376,15 @@ func TestSharedOutbox_ReservedHeadersStripped(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
@@ -420,8 +421,8 @@ func (s *FakeSession) IsStarted() bool {
 	return s.Started
 }
 
-// TrackingSender wraps a FakeSender and records which session's sender
-// was called, for multi-session fan-out assertions.
+// TrackingSender wraps a FakeSender and records which sess's sender
+// was called, for multi-sess fan-out assertions.
 type TrackingSender struct {
 	Tag string
 	FakeSender

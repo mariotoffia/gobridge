@@ -1,4 +1,4 @@
-package runtime
+package session
 
 import (
 	"context"
@@ -37,9 +37,9 @@ type LeaseStateEvent struct {
 	Err       error
 }
 
-// SessionManager manages the lifecycle of a single session, including
+// Manager manages the lifecycle of a single session, including
 // lease acquisition, renewal, three-phase step-down, and reconciliation.
-type SessionManager struct {
+type Manager struct {
 	sessionID         string
 	session           ports.Session
 	leaseStore        ports.LeaseStore
@@ -66,22 +66,27 @@ type SessionManager struct {
 	leaseEvents chan LeaseStateEvent
 }
 
-// NewSessionManagerFromConfig creates a SessionManager from a config struct.
-func NewSessionManagerFromConfig(cfg SessionConfig, session ports.Session, leaseStore ports.LeaseStore, ownerID string, logger *slog.Logger) *SessionManager {
-	return newSessionManager(cfg, session, leaseStore, ownerID, logger)
+// NewFromConfig creates a Manager from a Config.
+func NewFromConfig(cfg Config, session ports.Session, leaseStore ports.LeaseStore, ownerID string, logger *slog.Logger) *Manager {
+	return newManager(cfg, session, leaseStore, ownerID, logger)
 }
 
-func newSessionManagerWithMetrics(cfg SessionConfig, session ports.Session, leaseStore ports.LeaseStore, ownerID string, logger *slog.Logger, metrics ports.MetricsExporter, clk clock.Clock) *SessionManager {
-	mgr := newSessionManager(cfg, session, leaseStore, ownerID, logger)
-	mgr.metrics = metrics
+// NewWithMetrics creates a Manager from a Config with an explicit
+// metrics exporter and clock. Used by composition roots that want to
+// pre-wire instrumentation and a deterministic clock before Run.
+func NewWithMetrics(cfg Config, session ports.Session, leaseStore ports.LeaseStore, ownerID string, logger *slog.Logger, metrics ports.MetricsExporter, clk clock.Clock) *Manager {
+	mgr := newManager(cfg, session, leaseStore, ownerID, logger)
+	if metrics != nil {
+		mgr.metrics = metrics
+	}
 	if clk != nil {
 		mgr.clk = clk
 	}
 	return mgr
 }
 
-func newSessionManager(cfg SessionConfig, session ports.Session, leaseStore ports.LeaseStore, ownerID string, logger *slog.Logger) *SessionManager {
-	defaults := DefaultSessionConfig(cfg.SessionID, cfg.Exclusive)
+func newManager(cfg Config, session ports.Session, leaseStore ports.LeaseStore, ownerID string, logger *slog.Logger) *Manager {
+	defaults := DefaultConfig(cfg.SessionID, cfg.Exclusive)
 	if cfg.LeaseTTL == 0 {
 		cfg.LeaseTTL = defaults.LeaseTTL
 	}
@@ -98,7 +103,7 @@ func newSessionManager(cfg SessionConfig, session ports.Session, leaseStore port
 		cfg.StepDownGrace = defaults.StepDownGrace
 	}
 
-	return &SessionManager{
+	return &Manager{
 		sessionID:         cfg.SessionID,
 		session:           session,
 		leaseStore:        leaseStore,
@@ -126,7 +131,7 @@ func newSessionManager(cfg SessionConfig, session ports.Session, leaseStore port
 // When ConnectAfterLease is set, the session is not started until the
 // lease has been acquired, preventing premature broker connections that
 // would displace the current owner.
-func (m *SessionManager) Run(ctx context.Context) error {
+func (m *Manager) Run(ctx context.Context) error {
 	if m.exclusive && m.leaseStore != nil && m.connectAfterLease {
 		return m.runExclusiveDeferred(ctx)
 	}
@@ -146,22 +151,29 @@ func (m *SessionManager) Run(ctx context.Context) error {
 	return m.handleEvents(ctx)
 }
 
-// SetMetrics sets the metrics exporter on the session manager.
+// SetMetrics sets the metrics exporter on the manager.
 // Must be called before Run; not safe for concurrent use with Run.
-func (m *SessionManager) SetMetrics(metrics ports.MetricsExporter) {
+func (m *Manager) SetMetrics(metrics ports.MetricsExporter) {
 	m.metrics = metrics
 }
 
-// SetAudit sets the audit logger on the session manager.
+// SetAudit sets the audit logger on the manager.
 // Must be called before Run; not safe for concurrent use with Run.
-func (m *SessionManager) SetAudit(audit ports.AuditLogger) {
+func (m *Manager) SetAudit(audit ports.AuditLogger) {
 	m.audit = audit
 }
 
-// LeaseStateChanged returns a channel that receives lease state transitions.
-func (m *SessionManager) LeaseStateChanged() <-chan LeaseStateEvent { return m.leaseEvents }
+// SetEndpoints sets the cluster endpoints that identify the local
+// instance to peers. Must be called before Run; not safe for concurrent
+// use with Run.
+func (m *Manager) SetEndpoints(endpoints map[string]string) {
+	m.endpoints = endpoints
+}
 
-func (m *SessionManager) pushLeaseEvent(state LeaseState, token persistence.LeaseToken, err error) {
+// LeaseStateChanged returns a channel that receives lease state transitions.
+func (m *Manager) LeaseStateChanged() <-chan LeaseStateEvent { return m.leaseEvents }
+
+func (m *Manager) pushLeaseEvent(state LeaseState, token persistence.LeaseToken, err error) {
 	evt := LeaseStateEvent{State: state, Token: token, Timestamp: m.clk.Now(), Err: err}
 	select {
 	case m.leaseEvents <- evt:
@@ -170,14 +182,14 @@ func (m *SessionManager) pushLeaseEvent(state LeaseState, token persistence.Leas
 }
 
 // Token returns the current lease token and whether the manager holds the lease.
-func (m *SessionManager) Token() (persistence.LeaseToken, bool) {
+func (m *Manager) Token() (persistence.LeaseToken, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.token, m.hasLease
 }
 
 // Close closes the underlying session.
-func (m *SessionManager) Close(ctx context.Context) error {
+func (m *Manager) Close(ctx context.Context) error {
 	m.mu.Lock()
 	hadLease := m.hasLease
 	token := m.token
@@ -192,7 +204,7 @@ func (m *SessionManager) Close(ctx context.Context) error {
 	return m.session.Close(ctx)
 }
 
-func (m *SessionManager) handleEvents(ctx context.Context) error {
+func (m *Manager) handleEvents(ctx context.Context) error {
 	events := m.session.Events()
 	for {
 		select {
@@ -209,7 +221,7 @@ func (m *SessionManager) handleEvents(ctx context.Context) error {
 	}
 }
 
-func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.SessionEvent) error {
+func (m *Manager) handleSessionEvent(ctx context.Context, ev ports.SessionEvent) error {
 	sessionTag := shared.Tag{Key: shared.TagKeySessionID, Value: m.sessionID}
 	switch ev.Type {
 	case ports.SessionConnected:
@@ -241,14 +253,14 @@ func (m *SessionManager) handleSessionEvent(ctx context.Context, ev ports.Sessio
 	return nil
 }
 
-func (m *SessionManager) setToken(token persistence.LeaseToken) {
+func (m *Manager) setToken(token persistence.LeaseToken) {
 	m.mu.Lock()
 	m.token = token
 	m.hasLease = true
 	m.mu.Unlock()
 }
 
-func (m *SessionManager) jitter() time.Duration {
+func (m *Manager) jitter() time.Duration {
 	if m.renewJitter <= 0 {
 		return 0
 	}
@@ -259,11 +271,11 @@ func (m *SessionManager) jitter() time.Duration {
 // clampedInterval returns renewInterval + jitter, floored at 1ms to
 // prevent near-zero or negative timer durations when jitter exceeds
 // the renewal interval.
-func (m *SessionManager) clampedInterval() time.Duration {
+func (m *Manager) clampedInterval() time.Duration {
 	return max(m.renewInterval+m.jitter(), time.Millisecond)
 }
 
-func (m *SessionManager) log(ctx context.Context, level slog.Level, msg string, args ...any) {
+func (m *Manager) log(ctx context.Context, level slog.Level, msg string, args ...any) {
 	if m.logger == nil || !m.logger.Enabled(ctx, level) {
 		return
 	}
@@ -271,7 +283,7 @@ func (m *SessionManager) log(ctx context.Context, level slog.Level, msg string, 
 	m.logger.Log(ctx, level, msg, allArgs...)
 }
 
-func (m *SessionManager) emitLeaseAudit(ctx context.Context, action, outcome string, token persistence.LeaseToken, err error) {
+func (m *Manager) emitLeaseAudit(ctx context.Context, action, outcome string, token persistence.LeaseToken, err error) {
 	detail := map[string]any{
 		"owner_id": m.ownerID,
 		"version":  token.Version,

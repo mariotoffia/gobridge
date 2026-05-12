@@ -6,7 +6,7 @@ import (
 
 	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // rawOutboxOptions wraps a map[string]any as a ports.RawConfig using
@@ -46,7 +46,7 @@ func TestOutboxRuntimeOptions_DefaultDerivation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("outboxRuntimeOptions: %v", err)
 	}
-	defaultGrace := runtime.DefaultSessionConfig("", true).StepDownGrace
+	defaultGrace := session.DefaultConfig("", true).StepDownGrace
 	want := defaultGrace + computeStaleClaimBuffer(defaultGrace)
 	if got.StaleClaimDuration != want {
 		t.Errorf("StaleClaimDuration: got %v, want %v", got.StaleClaimDuration, want)
@@ -129,7 +129,7 @@ func TestOutboxRuntimeOptions_NoRouteSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("outboxRuntimeOptions: %v", err)
 	}
-	defaultGrace2 := runtime.DefaultSessionConfig("", true).StepDownGrace
+	defaultGrace2 := session.DefaultConfig("", true).StepDownGrace
 	want2 := defaultGrace2 + computeStaleClaimBuffer(defaultGrace2)
 	if got.StaleClaimDuration != want2 {
 		t.Errorf("StaleClaimDuration: got %v, want %v", got.StaleClaimDuration, want2)
@@ -187,7 +187,7 @@ func TestToSessionConfig_DefaultsWhenOmitted(t *testing.T) {
 		t.Fatal("expected non-nil SessionConfig")
 	}
 
-	defaults := runtime.DefaultSessionConfig("s1", true)
+	defaults := session.DefaultConfig("s1", true)
 	if sc.MaxRenewFails != defaults.MaxRenewFails {
 		t.Errorf("MaxRenewFails: got %d, want %d", sc.MaxRenewFails, defaults.MaxRenewFails)
 	}

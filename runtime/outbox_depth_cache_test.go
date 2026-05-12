@@ -71,7 +71,7 @@ func TestDepthCache_PreventsRepeatedQueries(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-cache")
 
 	cfg := goruntime.RouteConfig{
@@ -85,15 +85,15 @@ func TestDepthCache_PreventsRepeatedQueries(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	for i := 0; i < 10; i++ {
@@ -133,7 +133,7 @@ func TestDepthCache_ExpiresAfterTTL(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-ttl")
 
 	cfg := goruntime.RouteConfig{
@@ -147,15 +147,15 @@ func TestDepthCache_ExpiresAfterTTL(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	env1 := &messaging.Envelope{ID: "ttl-msg-1", Payload: []byte("x")}

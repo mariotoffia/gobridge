@@ -7,6 +7,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // preparedBuild holds pre-validated state from the prepare phase.
@@ -287,7 +288,7 @@ func (b *Builder) outboxRuntimeOptions(sc *ports.StoreConfig) (ports.OutboxRunti
 		return ports.OutboxRuntimeOptions{StaleClaimDuration: explicit}, nil
 	}
 
-	maxStepDownGrace := runtime.DefaultSessionConfig("", true).StepDownGrace
+	maxStepDownGrace := session.DefaultConfig("", true).StepDownGrace
 	for _, r := range b.cfg.Routes {
 		if r.Session == nil {
 			continue

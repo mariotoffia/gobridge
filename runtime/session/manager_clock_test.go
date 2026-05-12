@@ -1,4 +1,4 @@
-package runtime
+package session
 
 import (
 	"context"
@@ -103,7 +103,7 @@ func TestSessionManager_RenewInterval_FakeClock(t *testing.T) {
 	session := newStubSessionForClockTest()
 
 	const renewInterval = 500 * time.Millisecond
-	cfg := SessionConfig{
+	cfg := Config{
 		SessionID:     "sess-clock",
 		Exclusive:     true,
 		LeaseTTL:      5 * time.Second,
@@ -113,7 +113,7 @@ func TestSessionManager_RenewInterval_FakeClock(t *testing.T) {
 		StepDownGrace: 100 * time.Millisecond,
 	}
 
-	mgr := newSessionManagerWithMetrics(cfg, session, store, "owner-1", nil, &ports.NoopExporter{}, clock.Clock(fake))
+	mgr := NewWithMetrics(cfg, session, store, "owner-1", nil, &ports.NoopExporter{}, clock.Clock(fake))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var runWG sync.WaitGroup

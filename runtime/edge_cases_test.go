@@ -50,7 +50,7 @@ func TestEdge_StaleFencingTokenRejected(t *testing.T) {
 	_ = rtA.AddRoute(cfgA, receiverA, senderA, sessionA, &sessCfgA)
 	_ = rtA.Start(ctxA)
 
-	waitFor(t, 2*time.Second, "session A started", func() bool {
+	waitFor(t, 2*time.Second, "sess A started", func() bool {
 		return sessionA.IsStarted()
 	})
 
@@ -95,11 +95,11 @@ func TestEdge_StaleFencingTokenRejected(t *testing.T) {
 	_ = rtB.AddRoute(cfgB, receiverB, senderB, sessionB, &sessCfgB)
 	_ = rtB.Start(ctxB)
 
-	waitFor(t, 3*time.Second, "session B started", func() bool {
+	waitFor(t, 3*time.Second, "sess B started", func() bool {
 		return sessionB.IsStarted()
 	})
 
-	// Wait for B to actually hold the lease (session start alone does not
+	// Wait for B to actually hold the lease (sess start alone does not
 	// guarantee the SessionManager has completed Acquire). Without this,
 	// lease.Current may return ErrNotFound if A released the lease and B
 	// hasn't acquired it yet.
@@ -157,7 +157,7 @@ func TestEdge_IdempotentPersist(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-idemp")
 
 	cfg := goruntime.RouteConfig{
@@ -170,15 +170,15 @@ func TestEdge_IdempotentPersist(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	// First delivery.
@@ -223,7 +223,7 @@ func TestEdge_ExpiredOutboxEntry(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-expiry")
 
 	cfg := goruntime.RouteConfig{
@@ -237,15 +237,15 @@ func TestEdge_ExpiredOutboxEntry(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	// Send a message that is already expired.
@@ -279,7 +279,7 @@ func TestEdge_ExpiredOutboxEntryDuringDrain(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-drain-exp")
 
 	cfg := goruntime.RouteConfig{
@@ -293,15 +293,15 @@ func TestEdge_ExpiredOutboxEntryDuringDrain(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	// Send a message that will expire in 100ms — it will be persisted
@@ -345,7 +345,7 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
 	sender.SendErr = shared.NewBridgeError("CRASH", shared.ErrorTransient, "always fails")
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-poison")
 
 	cfg := goruntime.RouteConfig{
@@ -359,15 +359,15 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	env := &messaging.Envelope{ID: "poison-msg", Payload: []byte("toxic")}
@@ -406,7 +406,7 @@ func TestEdge_CrashBeforeOutboxPersist(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-crash-pre")
 
 	cfg := goruntime.RouteConfig{
@@ -419,15 +419,15 @@ func TestEdge_CrashBeforeOutboxPersist(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	env := &messaging.Envelope{ID: "crash-pre-msg", Payload: []byte("data")}
@@ -453,7 +453,7 @@ func TestEdge_CrashAfterPersistBeforeAck(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-crash-mid")
 
 	cfg := goruntime.RouteConfig{
@@ -466,15 +466,15 @@ func TestEdge_CrashAfterPersistBeforeAck(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	// First delivery: persists, acked.
@@ -532,7 +532,7 @@ func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 	_ = rtA.AddRoute(cfgA, receiverA, senderA, sessionA, &sessCfgA)
 	_ = rtA.Start(ctxA)
 
-	waitFor(t, 2*time.Second, "session A started", func() bool {
+	waitFor(t, 2*time.Second, "sess A started", func() bool {
 		return sessionA.IsStarted()
 	})
 
@@ -570,7 +570,7 @@ func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 	_ = rtB.AddRoute(cfgB, receiverB, senderB, sessionB, &sessCfgB)
 	_ = rtB.Start(ctxB)
 
-	waitFor(t, 3*time.Second, "session B started", func() bool {
+	waitFor(t, 3*time.Second, "sess B started", func() bool {
 		return sessionB.IsStarted()
 	})
 
@@ -604,7 +604,7 @@ func TestEdge_PermanentSendErrorGoesToDLQ(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
 	sender.SendErr = shared.NewBridgeError("INVALID_PAYLOAD", shared.ErrorPermanent, "bad data")
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-perm")
 
 	cfg := goruntime.RouteConfig{
@@ -617,15 +617,15 @@ func TestEdge_PermanentSendErrorGoesToDLQ(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	env := &messaging.Envelope{ID: "perm-msg", Payload: []byte("bad")}
@@ -688,7 +688,7 @@ func TestEdge_CrashAfterSendBeforeCompletion(t *testing.T) {
 	_ = rtA.AddRoute(cfgA, receiverA, senderA, sessionA, &sessCfgA)
 	_ = rtA.Start(ctxA)
 
-	waitFor(t, 2*time.Second, "session A started", func() bool {
+	waitFor(t, 2*time.Second, "sess A started", func() bool {
 		return sessionA.IsStarted()
 	})
 
@@ -736,7 +736,7 @@ func TestEdge_CrashAfterSendBeforeCompletion(t *testing.T) {
 	_ = rtB.AddRoute(cfgB, receiverB, senderB, sessionB, &sessCfgB)
 	_ = rtB.Start(ctxB)
 
-	waitFor(t, 3*time.Second, "session B started", func() bool {
+	waitFor(t, 3*time.Second, "sess B started", func() bool {
 		return sessionB.IsStarted()
 	})
 
@@ -768,7 +768,7 @@ func TestEdge_FanOutPartialPersist(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-fanout-partial")
 
 	cfg := goruntime.RouteConfig{
@@ -788,15 +788,15 @@ func TestEdge_FanOutPartialPersist(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	// Make Persist fail atomically — the whole batch is rejected.

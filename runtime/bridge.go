@@ -15,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/cluster"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // Runtime is the top-level coordinator for the GoBridge message routing
@@ -44,7 +45,7 @@ type Runtime struct {
 	mu              sync.Mutex
 	entries         []*routeEntry
 	sessionSenders  map[string]*sessionSenderEntry
-	sessionMgrs     map[string]*SessionManager
+	sessionMgrs     map[string]*session.Manager
 	drainers        []*OutboxDrainer
 	dlqRouter       *dlq.Router
 	globalSem       chan struct{}
@@ -61,14 +62,14 @@ type routeEntry struct {
 	receiver ports.Receiver
 	sender   ports.Sender
 	session  ports.Session
-	sessCfg  *SessionConfig
+	sessCfg  *session.Config
 }
 
 // sessionSenderEntry pairs a session with its sender and configuration,
 // allowing the runtime to create drainers for sessions that are not
 // directly attached to a route entry (e.g. fan-out target sessions).
 type sessionSenderEntry struct {
-	config  SessionConfig
+	config  session.Config
 	session ports.Session
 	sender  ports.Sender
 }
@@ -175,7 +176,7 @@ func New(opts ...Option) *Runtime {
 	rt := &Runtime{
 		instanceID:     generateID(),
 		sessionSenders: make(map[string]*sessionSenderEntry),
-		sessionMgrs:    make(map[string]*SessionManager),
+		sessionMgrs:    make(map[string]*session.Manager),
 		healthy:        true,
 		audit:          ports.NoopAuditLogger{},
 		tracer:         &ports.NoopTracer{},

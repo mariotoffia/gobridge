@@ -15,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
@@ -131,7 +132,7 @@ func TestHandleDeepHealth_WithSession(t *testing.T) {
 	receiver := newStubReceiver()
 	sender := &stubSender{}
 	sess := newStubSession(true, true)
-	sessCfg := &runtime.SessionConfig{SessionID: "sess-1"}
+	sessCfg := &session.Config{SessionID: "sess-1"}
 
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID: "route-with-session",

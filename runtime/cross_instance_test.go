@@ -13,7 +13,7 @@ import (
 
 // TestCrossInstance_SQSConsumerAndMQTTOwnerAreDifferent verifies that one
 // bridge instance can consume from SQS and persist to the shared outbox,
-// while a different bridge instance holding the MQTT session lease drains
+// while a different bridge instance holding the MQTT sess lease drains
 // the outbox and publishes. This is the core T11 cross-instance handoff.
 func TestCrossInstance_SQSConsumerAndMQTTOwnerAreDifferent(t *testing.T) {
 	// Shared stores visible to both instances.
@@ -21,9 +21,9 @@ func TestCrossInstance_SQSConsumerAndMQTTOwnerAreDifferent(t *testing.T) {
 	lease := NewFakeLeaseStore()
 	dlq := NewFakeDLQStore()
 
-	const sessionID = "mqtt-exclusive-session"
+	const sessionID = "mqtt-exclusive-sess"
 
-	// --- Instance A: SQS ingress only, no MQTT session ---
+	// --- Instance A: SQS ingress only, no MQTT sess ---
 
 	rtA := newTestRuntime("bridge-A", outbox, lease, dlq)
 
@@ -45,13 +45,13 @@ func TestCrossInstance_SQSConsumerAndMQTTOwnerAreDifferent(t *testing.T) {
 		},
 	}
 
-	// Instance A has no MQTT session — it only runs the receiver and
-	// outbox persist pipeline. Pass nil for session.
+	// Instance A has no MQTT sess — it only runs the receiver and
+	// outbox persist pipeline. Pass nil for sess.
 	if err := rtA.AddRoute(cfgA, receiverA, senderA, nil, nil); err != nil {
 		t.Fatalf("AddRoute A: %v", err)
 	}
 
-	// --- Instance B: MQTT session owner, drains outbox ---
+	// --- Instance B: MQTT sess owner, drains outbox ---
 
 	rtB := newTestRuntime("bridge-B", outbox, lease, dlq)
 
@@ -94,8 +94,8 @@ func TestCrossInstance_SQSConsumerAndMQTTOwnerAreDifferent(t *testing.T) {
 	}
 	defer func() { _ = rtB.Stop(context.Background()) }()
 
-	// Wait for instance B to acquire the lease and start the session.
-	waitFor(t, 3*time.Second, "session B started", func() bool {
+	// Wait for instance B to acquire the lease and start the sess.
+	waitFor(t, 3*time.Second, "sess B started", func() bool {
 		return sessionB.IsStarted()
 	})
 
@@ -114,7 +114,7 @@ func TestCrossInstance_SQSConsumerAndMQTTOwnerAreDifferent(t *testing.T) {
 		return del.IsAcked()
 	})
 
-	// Instance A's sender should NOT have sent (it's not the session owner).
+	// Instance A's sender should NOT have sent (it's not the sess owner).
 	if senderA.SentCount() != 0 {
 		t.Fatalf("instance A sender should not send, got %d", senderA.SentCount())
 	}
@@ -145,7 +145,7 @@ func TestCrossInstance_LeaseTransferDrainsRemaining(t *testing.T) {
 	lease := NewFakeLeaseStore()
 	dlq := NewFakeDLQStore()
 
-	const sessionID = "mqtt-failover-session"
+	const sessionID = "mqtt-failover-sess"
 
 	// --- Instance A: starts first, acquires lease ---
 	ctxA, cancelA := context.WithCancel(context.Background())
@@ -174,7 +174,7 @@ func TestCrossInstance_LeaseTransferDrainsRemaining(t *testing.T) {
 	_ = rtA.Start(ctxA)
 
 	// Wait for A to get the lease.
-	waitFor(t, 2*time.Second, "session A started", func() bool {
+	waitFor(t, 2*time.Second, "sess A started", func() bool {
 		return sessionA.IsStarted()
 	})
 
@@ -224,7 +224,7 @@ func TestCrossInstance_LeaseTransferDrainsRemaining(t *testing.T) {
 	_ = rtB.Start(ctxB)
 
 	// Wait for B to acquire the lease (after A's lease expires).
-	waitFor(t, 3*time.Second, "session B started", func() bool {
+	waitFor(t, 3*time.Second, "sess B started", func() bool {
 		return sessionB.IsStarted()
 	})
 
@@ -243,7 +243,7 @@ func TestCrossInstance_LeaseTransferDrainsRemaining(t *testing.T) {
 }
 
 // TestCrossInstance_ConnectAfterLease verifies that with ConnectAfterLease
-// set, the session is not started until the lease is acquired.
+// set, the sess is not started until the lease is acquired.
 func TestCrossInstance_ConnectAfterLease(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	lease := NewFakeLeaseStore()
@@ -252,7 +252,7 @@ func TestCrossInstance_ConnectAfterLease(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 
 	sessCfg := fastSessionConfig("mqtt-deferred")
 	sessCfg.ConnectAfterLease = true
@@ -270,21 +270,21 @@ func TestCrossInstance_ConnectAfterLease(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	time.Sleep(100 * time.Millisecond) // NEGATIVE: verify session not started before lease acquisition
-	if session.IsStarted() {
-		t.Fatal("session should not start before lease acquisition")
+	time.Sleep(100 * time.Millisecond) // NEGATIVE: verify sess not started before lease acquisition
+	if sess.IsStarted() {
+		t.Fatal("sess should not start before lease acquisition")
 	}
 
 	// Wait for the other owner's lease to expire, then our instance acquires.
-	waitFor(t, 3*time.Second, "session started after lease acquired", func() bool {
-		return session.IsStarted()
+	waitFor(t, 3*time.Second, "sess started after lease acquired", func() bool {
+		return sess.IsStarted()
 	})
 }
 
@@ -339,7 +339,7 @@ func TestCrossInstance_MultipleMessages(t *testing.T) {
 		_ = rtB.Stop(context.Background())
 	}()
 
-	waitFor(t, 3*time.Second, "session B started", func() bool {
+	waitFor(t, 3*time.Second, "sess B started", func() bool {
 		return sessionB.IsStarted()
 	})
 

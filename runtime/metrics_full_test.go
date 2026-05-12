@@ -11,6 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // TestMetrics_FullPipeline_DirectHold verifies that a DirectHold route
@@ -19,7 +20,7 @@ func TestMetrics_FullPipeline_DirectHold(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	sender := NewFakeSender()
 	receiver := NewFakeReceiver()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 
 	rt := runtime.New(
 		runtime.WithInstanceID("metrics-test-instance"),
@@ -36,7 +37,7 @@ func TestMetrics_FullPipeline_DirectHold(t *testing.T) {
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 
-	err := rt.AddRoute(cfg, receiver, sender, session, &runtime.SessionConfig{
+	err := rt.AddRoute(cfg, receiver, sender, sess, &session.Config{
 		SessionID: "s1",
 		Exclusive: false,
 	})
@@ -74,7 +75,7 @@ func TestMetrics_FullPipeline_SharedOutbox(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	sender := NewFakeSender()
 	receiver := NewFakeReceiver()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	outbox := NewFakeOutboxStore()
 	lease := NewFakeLeaseStore()
 
@@ -95,7 +96,7 @@ func TestMetrics_FullPipeline_SharedOutbox(t *testing.T) {
 		Bindings: []routing.DestinationBinding{{ID: "b1", SessionID: "s1"}},
 	}
 
-	err := rt.AddRoute(cfg, receiver, sender, session, &runtime.SessionConfig{
+	err := rt.AddRoute(cfg, receiver, sender, sess, &session.Config{
 		SessionID:      "s1",
 		Exclusive:      true,
 		DrainStrategy:  persistence.NewFixedPoll(50 * time.Millisecond),
@@ -117,8 +118,8 @@ func TestMetrics_FullPipeline_SharedOutbox(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	env := &messaging.Envelope{ID: "outbox-msg-1", Payload: []byte("payload"), ExpiresAt: time.Now().Add(time.Hour)}

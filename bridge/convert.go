@@ -8,6 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 func toRoutePolicy(r ports.RouteDef) routing.RoutePolicy {
@@ -62,17 +63,17 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 	return p, nil
 }
 
-func toSessionConfig(rs *ports.RouteSessionDef) *runtime.SessionConfig {
+func toSessionConfig(rs *ports.RouteSessionDef) *session.Config {
 	sc, _ := toSessionConfigE(rs)
 	return sc
 }
 
-func toSessionConfigE(rs *ports.RouteSessionDef) (*runtime.SessionConfig, error) {
+func toSessionConfigE(rs *ports.RouteSessionDef) (*session.Config, error) {
 	if rs == nil {
 		return nil, nil
 	}
 
-	sc := runtime.DefaultSessionConfig(rs.SessionID, true)
+	sc := session.DefaultConfig(rs.SessionID, true)
 	sc.ConnectAfterLease = rs.ConnectAfterLease
 
 	if rs.LeaseTTL != "" {
@@ -122,7 +123,7 @@ func toSessionConfigE(rs *ports.RouteSessionDef) (*runtime.SessionConfig, error)
 // into a session config when the session does not already set them.
 // This keeps the drain ceiling configurable from a single
 // YAML location while preserving per-session overrides.
-func applyBridgeDrainDefaults(sc *runtime.SessionConfig, bs ports.BridgeSettings) {
+func applyBridgeDrainDefaults(sc *session.Config, bs ports.BridgeSettings) {
 	if sc == nil {
 		return
 	}

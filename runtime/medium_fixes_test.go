@@ -122,7 +122,7 @@ func TestDepthCacheTTL_WiredFromPolicy(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-ttlwire")
 
 	cfg := goruntime.RouteConfig{
@@ -137,15 +137,15 @@ func TestDepthCacheTTL_WiredFromPolicy(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	env1 := &messaging.Envelope{ID: "ttlwire-1", Payload: []byte("x")}
@@ -189,7 +189,7 @@ func TestDrainConfig_WiredFromSessionConfig(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-drainwire")
 	sessCfg.DrainMaxBatchSize = 2
 	sessCfg.DrainMaxConcurrency = 1
@@ -204,7 +204,7 @@ func TestDrainConfig_WiredFromSessionConfig(t *testing.T) {
 		},
 	}
 
-	if err := rt.AddRoute(cfg, receiver, sender, session, &sessCfg); err != nil {
+	if err := rt.AddRoute(cfg, receiver, sender, sess, &sessCfg); err != nil {
 		t.Fatalf("AddRoute failed: %v", err)
 	}
 
@@ -215,8 +215,8 @@ func TestDrainConfig_WiredFromSessionConfig(t *testing.T) {
 	}
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	for i := 0; i < 5; i++ {

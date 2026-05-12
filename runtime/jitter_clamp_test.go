@@ -25,6 +25,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // TestSessionManager_LargeJitter_NoHotLoop validates that configuring
@@ -35,9 +36,9 @@ import (
 // immediately in a hot-loop.
 func TestSessionManager_LargeJitter_NoHotLoop(t *testing.T) {
 	leaseStore := NewFakeLeaseStore()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 
-	cfg := runtime.SessionConfig{
+	cfg := session.Config{
 		SessionID:     "jitter-test",
 		Exclusive:     true,
 		LeaseTTL:      500 * time.Millisecond,
@@ -47,7 +48,7 @@ func TestSessionManager_LargeJitter_NoHotLoop(t *testing.T) {
 		StepDownGrace: 50 * time.Millisecond,
 	}
 
-	mgr := runtime.NewSessionManagerFromConfig(cfg, session, leaseStore, "test-owner", nil)
+	mgr := session.NewFromConfig(cfg, sess, leaseStore, "test-owner", nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -57,8 +58,8 @@ func TestSessionManager_LargeJitter_NoHotLoop(t *testing.T) {
 		t.Logf("run ended with: %v (expected context deadline)", err)
 	}
 
-	if !session.Started {
-		t.Fatal("session should have been started")
+	if !sess.Started {
+		t.Fatal("sess should have been started")
 	}
 }
 

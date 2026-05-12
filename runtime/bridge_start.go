@@ -11,6 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/cluster"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // Start wires up all registered routes, session managers, and outbox
@@ -96,9 +97,9 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		if entry.session != nil && entry.sessCfg != nil {
 			sid := entry.sessCfg.SessionID
 			if _, exists := rt.sessionMgrs[sid]; !exists {
-				mgr := newSessionManagerWithMetrics(*entry.sessCfg, entry.session, rt.leaseStore, rt.instanceID, rt.logger, m, rt.clk)
+				mgr := session.NewWithMetrics(*entry.sessCfg, entry.session, rt.leaseStore, rt.instanceID, rt.logger, m, rt.clk)
 				mgr.SetAudit(rt.audit)
-				mgr.endpoints = rt.clusterEndpoints
+				mgr.SetEndpoints(rt.clusterEndpoints)
 				rt.sessionMgrs[sid] = mgr
 			}
 
@@ -156,9 +157,9 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				}
 
 				if _, exists := rt.sessionMgrs[sid]; !exists {
-					mgr := newSessionManagerWithMetrics(sse.config, sse.session, rt.leaseStore, rt.instanceID, rt.logger, m, rt.clk)
+					mgr := session.NewWithMetrics(sse.config, sse.session, rt.leaseStore, rt.instanceID, rt.logger, m, rt.clk)
 					mgr.SetAudit(rt.audit)
-					mgr.endpoints = rt.clusterEndpoints
+					mgr.SetEndpoints(rt.clusterEndpoints)
 					rt.sessionMgrs[sid] = mgr
 				}
 

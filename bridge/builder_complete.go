@@ -7,6 +7,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // complete creates sessions, receivers, senders, wires routes, and
@@ -217,7 +218,7 @@ func (b *Builder) wireRoutes(
 			if !sndOk {
 				return fmt.Errorf("bridge: route %q: binding %q references unknown sender %q", routeDef.ID, bd.ID, bd.SenderID)
 			}
-			sc := runtime.DefaultSessionConfig(bd.SessionID, true)
+			sc := session.DefaultConfig(bd.SessionID, true)
 			sc.ConnectAfterLease = true
 			if err := rt.RegisterSessionSender(sc, sess, snd); err != nil {
 				return fmt.Errorf("bridge: register session sender %q: %w", bd.SessionID, err)

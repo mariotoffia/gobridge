@@ -17,6 +17,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -123,12 +124,12 @@ func TestAdaptBatchSize_HalvesOnConsecutiveZeroSuccess(t *testing.T) {
 // ═══════════════════════════════════════════════════════════════════════
 func TestSessionManager_LogsLeaseReleaseError(t *testing.T) {
 	lease := NewFakeLeaseStore()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 
 	handler := &logCaptureHandler{}
 	logger := slog.New(handler)
 
-	sessCfg := goruntime.SessionConfig{
+	sessCfg := session.Config{
 		SessionID:     "release-err-sess",
 		Exclusive:     true,
 		LeaseTTL:      500 * time.Millisecond,
@@ -138,7 +139,7 @@ func TestSessionManager_LogsLeaseReleaseError(t *testing.T) {
 		StepDownGrace: 100 * time.Millisecond,
 	}
 
-	mgr := goruntime.NewSessionManagerFromConfig(sessCfg, session, lease, "owner-1", logger)
+	mgr := session.NewFromConfig(sessCfg, sess, lease, "owner-1", logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -150,7 +151,7 @@ func TestSessionManager_LogsLeaseReleaseError(t *testing.T) {
 
 	select {
 	case evt := <-mgr.LeaseStateChanged():
-		if evt.State != goruntime.LeaseStateAcquired {
+		if evt.State != session.LeaseStateAcquired {
 			t.Fatalf("expected LeaseStateAcquired, got %v", evt.State)
 		}
 	case <-time.After(5 * time.Second):
@@ -517,7 +518,7 @@ func TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric(t *testing.T) {
 // DefaultSessionConfig populates DrainMaxBatchSize and
 // DrainMaxConcurrency with their recommended defaults.
 func TestDefaultSessionConfig_IncludesDrainDefaults(t *testing.T) {
-	cfg := goruntime.DefaultSessionConfig("test-sess", true)
+	cfg := session.DefaultConfig("test-sess", true)
 	if cfg.DrainMaxBatchSize != 500 {
 		t.Errorf("expected DrainMaxBatchSize=500, got %d", cfg.DrainMaxBatchSize)
 	}

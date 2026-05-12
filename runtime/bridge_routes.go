@@ -9,16 +9,17 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // RegisterSessionSender registers a session and its sender for use as
 // an egress target. This is needed when SharedOutbox routes fan out to
 // sessions that are not the route's primary session (e.g. one SQS source
 // writes to outbox partitions for multiple exclusive MQTT clients).
-// The runtime creates a SessionManager and OutboxDrainer for each
+// The runtime creates a session.Manager and OutboxDrainer for each
 // registered session during Start.
 func (rt *Runtime) RegisterSessionSender(
-	cfg SessionConfig,
+	cfg session.Config,
 	session ports.Session,
 	sender ports.Sender,
 ) error {
@@ -51,7 +52,7 @@ func (rt *Runtime) AddRoute(
 	receiver ports.Receiver,
 	sender ports.Sender,
 	session ports.Session,
-	sessCfg *SessionConfig,
+	sessCfg *session.Config,
 ) error {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()

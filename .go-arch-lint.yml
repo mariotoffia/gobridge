@@ -151,6 +151,7 @@ components:
   runtime_dlq: { in: [runtime/dlq] }
   runtime_credentials: { in: [runtime/credentials] }
   runtime_cluster: { in: [runtime/cluster] }
+  runtime_session: { in: [runtime/session] }
   bridge: { in: [bridge, bridge/**] }
   validate: { in: [validate, validate/**] }
 
@@ -463,6 +464,7 @@ deps:
       - observability
       - runtime_dlq
       - runtime_cluster
+      - runtime_session
 
   # runtime_dlq is the dead-letter-queue routing leaf. It owns the
   # asynchronous DLQ router (classify -> enqueue -> drain to DLQStore)
@@ -499,6 +501,26 @@ deps:
       - domain_persistence
       - ports
 
+  # runtime_session owns the session-lifecycle primitives: lease
+  # acquisition, renewal, three-phase step-down, reconnect reconcile,
+  # and the lease-state event stream the parent runtime observes. The
+  # parent runtime composes a *session.Manager and consumes it through
+  # the standard inward dependency rule (parent -> leaf); this leaf
+  # MUST NOT depend on its parent (runtime), on any adapter, on
+  # bridge, or on the composition root. Treat any new outward edge
+  # here as a smell that the leaf is absorbing orchestration concerns
+  # it should publish back to runtime instead.
+  runtime_session:
+    mayDependOn:
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - domain_connectivity
+      - ports
+      - logging
+
   # runtime_credentials is the credential-store adaptation leaf
   # (PollBasedWrapper lifts a PullCredentialStore into a
   # PushCredentialStore). It lives outside the core runtime engine so
@@ -531,6 +553,7 @@ deps:
       - ports
       - runtime
       - runtime_credentials
+      - runtime_session
 
   # ---- Layer 3: Interface Adapters ----
 

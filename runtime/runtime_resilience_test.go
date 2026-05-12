@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -20,7 +21,7 @@ import (
 //
 // Tests for lease release context (F2), drain-on-shutdown (F3),
 // direct_hold fencing validation (F4), TOCTOU removal (F5),
-// scoped stale token errors (F6), and session re-Start (F7).
+// scoped stale token errors (F6), and sess re-Start (F7).
 // ═══════════════════════════════════════════════════════════════════
 
 // ---------------------------------------------------------------------------
@@ -42,7 +43,7 @@ func TestF2_StopReleasesLeaseWithValidContext(t *testing.T) {
 
 	receiver := NewSlowExitReceiver(500 * time.Millisecond)
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 
 	sessCfg := fastSessionConfig("sess-f2")
 	sessCfg.LeaseTTL = 2 * time.Second
@@ -57,18 +58,18 @@ func TestF2_StopReleasesLeaseWithValidContext(t *testing.T) {
 		},
 	}
 
-	if err := rt.AddRoute(cfg, receiver, sender, session, &sessCfg); err != nil {
+	if err := rt.AddRoute(cfg, receiver, sender, sess, &sessCfg); err != nil {
 		t.Fatal(err)
 	}
 	if err := rt.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
-	// Wait for the lease to be acquired — session.Start() returns before
+	// Wait for the lease to be acquired — sess.Start() returns before
 	// runExclusive calls acquireLeaseWithRetry, so IsStarted() alone does
 	// not guarantee hasLease is true when Stop is called.
 	waitFor(t, 3*time.Second, "lease acquired", func() bool {
@@ -317,7 +318,7 @@ func TestF6_StaleFencingTokenDoesNotKillRuntime(t *testing.T) {
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session A started", func() bool {
+	waitFor(t, 2*time.Second, "sess A started", func() bool {
 		return sessionA.IsStarted()
 	})
 
@@ -371,13 +372,13 @@ func TestF6_CriticalErrorStillKillsRuntime(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestF7_ReacquiredLeaseRestartsDeadSession validates that after a
-// lease gap where the broker disconnected the session, re-acquisition
-// calls session.Start() again to re-establish the connection.
+// lease gap where the broker disconnected the sess, re-acquisition
+// calls sess.Start() again to re-establish the connection.
 func TestF7_ReacquiredLeaseRestartsDeadSession(t *testing.T) {
-	session := NewControllableSession()
+	sess := NewControllableSession()
 	leaseStore := NewFakeLeaseStore()
 
-	cfg := goruntime.SessionConfig{
+	cfg := session.Config{
 		SessionID:         "sess-f7",
 		Exclusive:         true,
 		ConnectAfterLease: true,
@@ -388,7 +389,7 @@ func TestF7_ReacquiredLeaseRestartsDeadSession(t *testing.T) {
 		StepDownGrace:     50 * time.Millisecond,
 	}
 
-	mgr := goruntime.NewSessionManagerFromConfig(cfg, session, leaseStore, "bridge-1", nil)
+	mgr := session.NewFromConfig(cfg, sess, leaseStore, "bridge-1", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -397,10 +398,10 @@ func TestF7_ReacquiredLeaseRestartsDeadSession(t *testing.T) {
 	go func() { errCh <- mgr.Run(ctx) }()
 
 	waitFor(t, 2*time.Second, "first start", func() bool {
-		return session.GetStartCount() >= 1
+		return sess.GetStartCount() >= 1
 	})
 
-	session.SetConnected(false)
+	sess.SetConnected(false)
 
 	leaseStore.SetRenewErr(shared.ErrVersionMismatch)
 
@@ -411,8 +412,8 @@ func TestF7_ReacquiredLeaseRestartsDeadSession(t *testing.T) {
 
 	leaseStore.SetRenewErr(nil)
 
-	waitFor(t, 5*time.Second, "session restarted", func() bool {
-		return session.GetStartCount() >= 2
+	waitFor(t, 5*time.Second, "sess restarted", func() bool {
+		return sess.GetStartCount() >= 2
 	})
 
 	cancel()
@@ -420,12 +421,12 @@ func TestF7_ReacquiredLeaseRestartsDeadSession(t *testing.T) {
 }
 
 // TestF7_ReacquiredLeaseSkipsRestartIfHealthy validates that a healthy
-// session is NOT restarted on lease re-acquisition.
+// sess is NOT restarted on lease re-acquisition.
 func TestF7_ReacquiredLeaseSkipsRestartIfHealthy(t *testing.T) {
-	session := NewControllableSession()
+	sess := NewControllableSession()
 	leaseStore := NewFakeLeaseStore()
 
-	cfg := goruntime.SessionConfig{
+	cfg := session.Config{
 		SessionID:         "sess-f7b",
 		Exclusive:         true,
 		ConnectAfterLease: true,
@@ -436,7 +437,7 @@ func TestF7_ReacquiredLeaseSkipsRestartIfHealthy(t *testing.T) {
 		StepDownGrace:     50 * time.Millisecond,
 	}
 
-	mgr := goruntime.NewSessionManagerFromConfig(cfg, session, leaseStore, "bridge-1", nil)
+	mgr := session.NewFromConfig(cfg, sess, leaseStore, "bridge-1", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -444,7 +445,7 @@ func TestF7_ReacquiredLeaseSkipsRestartIfHealthy(t *testing.T) {
 	go func() { _ = mgr.Run(ctx) }()
 
 	waitFor(t, 2*time.Second, "first start", func() bool {
-		return session.GetStartCount() >= 1
+		return sess.GetStartCount() >= 1
 	})
 
 	leaseStore.SetRenewErr(shared.ErrVersionMismatch)
@@ -461,10 +462,10 @@ func TestF7_ReacquiredLeaseSkipsRestartIfHealthy(t *testing.T) {
 		return has
 	})
 
-	time.Sleep(100 * time.Millisecond) // NEGATIVE: verify healthy session is not restarted on re-acquisition
+	time.Sleep(100 * time.Millisecond) // NEGATIVE: verify healthy sess is not restarted on re-acquisition
 
-	if c := session.GetStartCount(); c != 1 {
-		t.Fatalf("expected 1 start call (healthy session), got %d", c)
+	if c := sess.GetStartCount(); c != 1 {
+		t.Fatalf("expected 1 start call (healthy sess), got %d", c)
 	}
 
 	cancel()

@@ -1,4 +1,4 @@
-package runtime
+package session
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/logging"
 )
 
-func (m *SessionManager) runExclusiveDeferred(ctx context.Context) error {
+func (m *Manager) runExclusiveDeferred(ctx context.Context) error {
 	sessionStarted := false
 	iteration := 0
 	for {
@@ -77,7 +77,7 @@ func (m *SessionManager) runExclusiveDeferred(ctx context.Context) error {
 	}
 }
 
-func (m *SessionManager) runExclusive(ctx context.Context) error {
+func (m *Manager) runExclusive(ctx context.Context) error {
 	iteration := 0
 	for {
 		token, err := m.acquireLeaseWithRetry(ctx)
@@ -123,7 +123,7 @@ func (m *SessionManager) runExclusive(ctx context.Context) error {
 	}
 }
 
-func (m *SessionManager) acquireLeaseWithRetry(ctx context.Context) (persistence.LeaseToken, error) {
+func (m *Manager) acquireLeaseWithRetry(ctx context.Context) (persistence.LeaseToken, error) {
 	leaseTag := shared.Tag{Key: shared.TagKeyLeaseID, Value: m.sessionID}
 	for {
 		start := m.clk.Now()
@@ -143,7 +143,7 @@ func (m *SessionManager) acquireLeaseWithRetry(ctx context.Context) (persistence
 	}
 }
 
-func (m *SessionManager) renewLoop(ctx context.Context) error {
+func (m *Manager) renewLoop(ctx context.Context) error {
 	consecutiveFailures := 0
 	events := m.session.Events()
 
@@ -203,7 +203,7 @@ func (m *SessionManager) renewLoop(ctx context.Context) error {
 // 1. Stop claiming new outbox entries (clear hasLease)
 // 2. Wait grace period for in-flight completions
 // 3. Release the lease
-func (m *SessionManager) stepDown(ctx context.Context) error {
+func (m *Manager) stepDown(ctx context.Context) error {
 	m.log(ctx, slog.LevelWarn, "stepping down from lease")
 
 	if logging.DebugEnabled(m.logger) {

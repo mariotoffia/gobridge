@@ -3,7 +3,7 @@ package runtime_test
 // ═══════════════════════════════════════════════════════════════════════
 // S9 — Reconnect Reconcile Errors: propagation tests
 //
-// When a session reconnects and Reconcile fails (ACL change, topic
+// When a sess reconnects and Reconcile fails (ACL change, topic
 // deletion), the SessionManager must log the error, emit a metric,
 // and propagate the failure so the bridge can take corrective action.
 //
@@ -35,7 +35,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
@@ -46,7 +46,7 @@ import (
 // Timeline:
 // ───────────────────────────────────────────────────────────────
 //
-//	T0: Start session (non-exclusive), initial Reconcile OK
+//	T0: Start sess (non-exclusive), initial Reconcile OK
 //	T1: Push SessionConnected (reconnect), ReconcileErr set
 //	T2: handleSessionEvent returns error → handleEvents exits
 //	T3: Run returns the reconcile error
@@ -57,14 +57,14 @@ import (
 //   - Run returns non-nil error
 //   - Error message contains "reconcile"
 func TestSessionManager_ReconnectReconcileError_LogsAndPropagates(t *testing.T) {
-	session := NewFakeSession()
+	sess := NewFakeSession()
 
-	mgr := runtime.NewSessionManagerFromConfig(
-		runtime.SessionConfig{
+	mgr := session.NewFromConfig(
+		session.Config{
 			SessionID: "sess-recon-err",
 			Exclusive: false,
 		},
-		session, nil, "bridge-1", slog.Default(),
+		sess, nil, "bridge-1", slog.Default(),
 	)
 
 	errCh := make(chan error, 1)
@@ -73,11 +73,11 @@ func TestSessionManager_ReconnectReconcileError_LogsAndPropagates(t *testing.T) 
 	}()
 
 	wait.Until(t, 2*time.Second, "Run reaches event loop",
-		func() bool { return session.PlanCount() > 0 })
+		func() bool { return sess.PlanCount() > 0 })
 
-	session.SetReconcileErr(errors.New("ACL denied topic"))
+	sess.SetReconcileErr(errors.New("ACL denied topic"))
 
-	session.PushEvent(ports.SessionEvent{
+	sess.PushEvent(ports.SessionEvent{
 		Type:      ports.SessionConnected,
 		Timestamp: time.Now(),
 	})
@@ -101,7 +101,7 @@ func TestSessionManager_ReconnectReconcileError_LogsAndPropagates(t *testing.T) 
 // Timeline:
 // ───────────────────────────────────────────────────────────────
 //
-//	T0: Start session, initial Reconcile OK
+//	T0: Start sess, initial Reconcile OK
 //	T1: Push SessionConnected, ReconcileErr set
 //	T2: MetricReconcileFailures counter incremented
 //	T3: Run exits with error
@@ -113,14 +113,14 @@ func TestSessionManager_ReconnectReconcileError_LogsAndPropagates(t *testing.T) 
 //   - Counter has session_id tag
 func TestSessionManager_ReconnectReconcileError_EmitsMetric(t *testing.T) {
 	rec := &ports.RecordingExporter{}
-	session := NewFakeSession()
+	sess := NewFakeSession()
 
-	mgr := runtime.NewSessionManagerFromConfig(
-		runtime.SessionConfig{
+	mgr := session.NewFromConfig(
+		session.Config{
 			SessionID: "sess-recon-metric",
 			Exclusive: false,
 		},
-		session, nil, "bridge-1", nil,
+		sess, nil, "bridge-1", nil,
 	)
 	mgr.SetMetrics(rec)
 
@@ -130,11 +130,11 @@ func TestSessionManager_ReconnectReconcileError_EmitsMetric(t *testing.T) {
 	}()
 
 	wait.Until(t, 2*time.Second, "Run reaches event loop",
-		func() bool { return session.PlanCount() > 0 })
+		func() bool { return sess.PlanCount() > 0 })
 
-	session.SetReconcileErr(errors.New("topic deleted"))
+	sess.SetReconcileErr(errors.New("topic deleted"))
 
-	session.PushEvent(ports.SessionEvent{
+	sess.PushEvent(ports.SessionEvent{
 		Type:      ports.SessionConnected,
 		Timestamp: time.Now(),
 	})
@@ -168,7 +168,7 @@ func TestSessionManager_ReconnectReconcileError_EmitsMetric(t *testing.T) {
 // Timeline:
 // ───────────────────────────────────────────────────────────────
 //
-//	T0: Start session, initial Reconcile OK
+//	T0: Start sess, initial Reconcile OK
 //	T1: Push SessionConnected (reconnect), Reconcile OK
 //	T2: Manager continues running
 //	T3: Context cancelled → Run returns ctx.Err
@@ -181,14 +181,14 @@ func TestSessionManager_ReconnectReconcileError_EmitsMetric(t *testing.T) {
 //   - MQTTReconnects counter == 1
 func TestSessionManager_ReconnectReconcileOK_NoError(t *testing.T) {
 	rec := &ports.RecordingExporter{}
-	session := NewFakeSession()
+	sess := NewFakeSession()
 
-	mgr := runtime.NewSessionManagerFromConfig(
-		runtime.SessionConfig{
+	mgr := session.NewFromConfig(
+		session.Config{
 			SessionID: "sess-recon-ok",
 			Exclusive: false,
 		},
-		session, nil, "bridge-1", nil,
+		sess, nil, "bridge-1", nil,
 	)
 	mgr.SetMetrics(rec)
 
@@ -200,21 +200,21 @@ func TestSessionManager_ReconnectReconcileOK_NoError(t *testing.T) {
 	}()
 
 	wait.Until(t, 2*time.Second, "initial Reconcile called",
-		func() bool { return session.PlanCount() >= 1 })
+		func() bool { return sess.PlanCount() >= 1 })
 
-	session.PushEvent(ports.SessionEvent{
+	sess.PushEvent(ports.SessionEvent{
 		Type:      ports.SessionConnected,
 		Timestamp: time.Now(),
 	})
 	wait.Until(t, 2*time.Second, "first reconnect Reconcile called",
-		func() bool { return session.PlanCount() >= 2 })
+		func() bool { return sess.PlanCount() >= 2 })
 
-	session.PushEvent(ports.SessionEvent{
+	sess.PushEvent(ports.SessionEvent{
 		Type:      ports.SessionConnected,
 		Timestamp: time.Now(),
 	})
 	wait.Until(t, 2*time.Second, "second reconnect Reconcile called",
-		func() bool { return session.PlanCount() >= 3 })
+		func() bool { return sess.PlanCount() >= 3 })
 
 	cancel()
 
@@ -239,13 +239,13 @@ func TestSessionManager_ReconnectReconcileOK_NoError(t *testing.T) {
 }
 
 // TestSessionManager_RenewLoop_ReconnectReconcileError_Exits validates
-// that during an exclusive session's renewLoop, a reconnect with a
+// that during an exclusive sess's renewLoop, a reconnect with a
 // failing Reconcile causes the renewLoop to exit with the error.
 //
 // Timeline:
 // ───────────────────────────────────────────────────────────────
 //
-//	T0: Start exclusive session, lease acquired, Reconcile OK
+//	T0: Start exclusive sess, lease acquired, Reconcile OK
 //	T1: Enter renewLoop
 //	T2: Push SessionConnected, ReconcileErr set
 //	T3: renewLoop receives error from handleSessionEvent
@@ -256,11 +256,11 @@ func TestSessionManager_ReconnectReconcileOK_NoError(t *testing.T) {
 // Assertions:
 //   - Run returns non-nil error containing "reconcile"
 func TestSessionManager_RenewLoop_ReconnectReconcileError_Exits(t *testing.T) {
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	leaseStore := NewFakeLeaseStore()
 
-	mgr := runtime.NewSessionManagerFromConfig(
-		runtime.SessionConfig{
+	mgr := session.NewFromConfig(
+		session.Config{
 			SessionID:     "sess-renew-recon",
 			Exclusive:     true,
 			LeaseTTL:      5 * time.Second,
@@ -269,7 +269,7 @@ func TestSessionManager_RenewLoop_ReconnectReconcileError_Exits(t *testing.T) {
 			MaxRenewFails: 3,
 			StepDownGrace: 50 * time.Millisecond,
 		},
-		session, leaseStore, "bridge-1", nil,
+		sess, leaseStore, "bridge-1", nil,
 	)
 
 	errCh := make(chan error, 1)
@@ -277,12 +277,12 @@ func TestSessionManager_RenewLoop_ReconnectReconcileError_Exits(t *testing.T) {
 		errCh <- mgr.Run(context.Background())
 	}()
 
-	wait.Until(t, 2*time.Second, "exclusive session acquired lease and reconciled",
-		func() bool { return session.PlanCount() > 0 })
+	wait.Until(t, 2*time.Second, "exclusive sess acquired lease and reconciled",
+		func() bool { return sess.PlanCount() > 0 })
 
-	session.SetReconcileErr(errors.New("subscription denied after reconnect"))
+	sess.SetReconcileErr(errors.New("subscription denied after reconnect"))
 
-	session.PushEvent(ports.SessionEvent{
+	sess.PushEvent(ports.SessionEvent{
 		Type:      ports.SessionConnected,
 		Timestamp: time.Now(),
 	})

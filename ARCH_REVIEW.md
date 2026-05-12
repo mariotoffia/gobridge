@@ -116,7 +116,19 @@ The user's four review questions answered:
 
   Suggested agent: `refactoring-specialist`.
 
-- **H-1d** Extract `runtime/session` package: move session lifecycle out of `runtime/`. **Depends on H-1c** (cluster boundary must land first). *(AP-001; Clean-Arch F4 — sub-task of H-1)*
+- **H-1d** Extract `runtime/session` package: move session lifecycle out of `runtime/`. **Depends on H-1c** (cluster boundary must land first). *(AP-001; Clean-Arch F4 — sub-task of H-1)* - DONE
+
+  **Status:** Resolved 2026-05-12. H-1d extracted session lifecycle into `runtime/session`, removed the previous root `runtime` session manager exports, migrated all internal and external callers to the new package, and added the architecture-lint component boundary.
+
+  **What landed:** `runtime/session/{doc.go,config.go,manager.go,manager_lease.go}`, `runtime/bridge*.go`, `bridge/{convert.go,builder_prepare.go,builder_complete.go}`, runtime/httpapi/integration tests, `.go-arch-lint.yml`, `scripts/lint-arch-mapping-test.sh`, `audit/test-timing-allowlist.txt`; removed `runtime/session_manager.go` and `runtime/session_manager_lease.go`.
+
+  **Tests added:** No net-new behavior scenarios; existing session manager clock coverage moved to `runtime/session`.
+
+  **Follow-ups (not blockers; logged for future passes):**
+  - `runtime/doc.go` still mentions SessionManager in prose.
+  - Sleep calls in `runtime/session/manager_clock_test.go` remain grandfathered in the timing allowlist.
+
+  **Review:** APPROVED on first pass by `code-reviewer` (model: gpt-5.3-codex).
 
   Suggested agent: `refactoring-specialist`.
 

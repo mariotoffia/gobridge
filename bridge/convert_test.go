@@ -79,7 +79,7 @@ func TestToRoutePolicy_BackoffDurations(t *testing.T) {
 }
 
 // TestToSessionConfig_FromRouteSessionDef validates that RouteSessionDef
-// fields are mapped to the runtime.SessionConfig struct.
+// fields are mapped to the session.Config struct.
 func TestToSessionConfig_FromRouteSessionDef(t *testing.T) {
 	rs := &ports.RouteSessionDef{
 		SessionID:         "mqtt-sess",
