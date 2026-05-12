@@ -359,14 +359,18 @@ deps:
     canUse:
       - _no_external_deps_
 
-  # The config package is the inner-ring shared kernel: structural
-  # validation, layered merge, and the multi-source Manager that
+  # The config package is the inner-ring shared kernel: field-level
+  # structural validation (required fields, enum values, duration
+  # formats), layered merge, and the multi-source Manager that
   # produces *ports.BridgeConfig values. It contributes only pure
   # behaviour over ports; the YAML/JSON parser and FileStore live in
   # the sibling `config_parser` component which holds the only
   # remaining vendor concession (yaml.v3, mapstructure). This
-  # component is now stdlib-only -- the W-9 inner-ring vendor carve-
-  # out was removed by L-2.
+  # component is stdlib-only -- the W-9 inner-ring vendor carve-out
+  # was removed by L-2. As of L-3 it MAY depend on `validate` because
+  # cross-reference / route-graph validation now lives there
+  # (config.Validate composes field-level checks with
+  # validate.ValidateBlueprintGraph).
   config:
     mayDependOn:
       - domain_clock
@@ -377,6 +381,7 @@ deps:
       - domain_connectivity
       - domain_events
       - ports
+      - validate
     canUse:
       - _no_external_deps_
 

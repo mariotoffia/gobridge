@@ -441,9 +441,10 @@ linters:
       #   locator — the canonical entry point for production code that
       #   does NOT yet use injected clocks. Documented architectural
       #   exemption.
-      # - config/validate_resolver.go declares two lookup maps used by
-      #   the validator. Go has no const map literal; the maps are
-      #   functionally immutable.
+      # - validate/blueprint_graph.go declares two lookup maps used by
+      #   the resolver/route validator. Go has no const map literal;
+      #   the maps are functionally immutable. (Moved here from
+      #   config/validate_resolver.go by L-3.)
       # - adapters/http/transport/receiver.go declares an atomic.Uint64
       #   counter for HTTP-side monotonic envelope IDs. Package-shared
       #   counter (not per-receiver), legitimate atomic usage.
@@ -470,8 +471,12 @@ linters:
         path: "^adapters/.*register\\.go$"
       - linters: [gochecknoinits]
         path: "^processors/.*register\\.go$"
+      # - validate/blueprint_graph.go declares two lookup maps used by
+      #   the resolver/route validator (moved here from
+      #   config/validate_resolver.go by L-3). Go has no const map
+      #   literal; the maps are functionally immutable.
       - linters: [gochecknoglobals]
-        path: "^config/validate_resolver\\.go$"
+        path: "^validate/blueprint_graph\\.go$"
       # Adapter `headers.go` files declare well-known-header lookup
       # maps (Go has no const map literal). The pattern covers any
       # adapter package's headers.go.
