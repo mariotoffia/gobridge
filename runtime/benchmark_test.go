@@ -7,8 +7,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 func BenchmarkRunChain_NoProcessors(b *testing.B) {
@@ -17,7 +17,7 @@ func BenchmarkRunChain_NoProcessors(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = runtime.RunChain(ctx, nil, env)
+		_ = route.RunChain(ctx, nil, env)
 	}
 }
 
@@ -33,7 +33,7 @@ func BenchmarkRunChain_OneProcessor(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = runtime.RunChain(ctx, procs, env)
+		_ = route.RunChain(ctx, procs, env)
 	}
 }
 
@@ -52,7 +52,7 @@ func BenchmarkRunChain_FiveProcessors(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = runtime.RunChain(ctx, procs, env)
+		_ = route.RunChain(ctx, procs, env)
 	}
 }
 

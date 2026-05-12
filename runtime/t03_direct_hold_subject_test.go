@@ -11,6 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // captureSender records the full OutboundMessage so tests can assert on
@@ -66,7 +67,7 @@ func TestT03_DirectHold_DoesNotMutateSourceEnvelopeSubject(t *testing.T) {
 	}
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:    "t03-route",
 		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
@@ -76,7 +77,7 @@ func TestT03_DirectHold_DoesNotMutateSourceEnvelopeSubject(t *testing.T) {
 		Bindings:   bindings,
 		InstanceID: "bridge-1",
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

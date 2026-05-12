@@ -1,4 +1,4 @@
-package runtime
+package route
 
 import (
 	"time"
@@ -7,11 +7,11 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// retryDelay returns the next retry delay for a recoverable send
+// RetryDelay returns the next retry delay for a recoverable send
 // error: the broker-provided RetryAfter when present, otherwise an
 // exponentially-backed-off interval derived from policy.Backoff,
 // capped by Backoff.MaxInterval.
-func retryDelay(policy routing.RoutePolicy, attempt int, sendErr error) time.Duration {
+func RetryDelay(policy routing.RoutePolicy, attempt int, sendErr error) time.Duration {
 	if d := shared.GetRetryAfter(sendErr); d > 0 {
 		return d
 	}

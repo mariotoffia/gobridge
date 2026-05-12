@@ -11,13 +11,13 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // Verifies RunChain succeeds when the processor list is nil.
 func TestRunChain_Empty(t *testing.T) {
 	env := &messaging.Envelope{ID: "msg-1"}
-	if err := runtime.RunChain(context.Background(), nil, env); err != nil {
+	if err := route.RunChain(context.Background(), nil, env); err != nil {
 		t.Fatalf("empty chain should succeed, got %v", err)
 	}
 }
@@ -27,7 +27,7 @@ func TestRunChain_Single(t *testing.T) {
 	p := &FakeProcessor{NameVal: "p1"}
 	env := &messaging.Envelope{ID: "msg-1"}
 
-	if err := runtime.RunChain(context.Background(), []ports.Processor{p}, env); err != nil {
+	if err := route.RunChain(context.Background(), []ports.Processor{p}, env); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if p.CalledCount() != 1 {
@@ -55,7 +55,7 @@ func TestRunChain_Order(t *testing.T) {
 	}
 
 	env := &messaging.Envelope{ID: "msg-1"}
-	if err := runtime.RunChain(context.Background(), processors, env); err != nil {
+	if err := route.RunChain(context.Background(), processors, env); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -75,7 +75,7 @@ func TestRunChain_Mutation(t *testing.T) {
 	}
 
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1", Subject: "original"})
-	if err := runtime.RunChain(context.Background(), []ports.Processor{p}, env); err != nil {
+	if err := route.RunChain(context.Background(), []ports.Processor{p}, env); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if env.Subject() != "mutated" {
@@ -91,7 +91,7 @@ func TestRunChain_Error(t *testing.T) {
 	}
 
 	env := &messaging.Envelope{ID: "msg-1"}
-	err := runtime.RunChain(context.Background(), []ports.Processor{p}, env)
+	err := route.RunChain(context.Background(), []ports.Processor{p}, env)
 	if err == nil || err.Error() != "boom" {
 		t.Fatalf("expected error 'boom', got %v", err)
 	}
@@ -106,7 +106,7 @@ func TestRunChain_ShortCircuit(t *testing.T) {
 	p2 := &FakeProcessor{NameVal: "never"}
 
 	env := &messaging.Envelope{ID: "msg-1"}
-	err := runtime.RunChain(context.Background(), []ports.Processor{p1, p2}, env)
+	err := route.RunChain(context.Background(), []ports.Processor{p1, p2}, env)
 	if err == nil {
 		t.Fatal("expected error from short-circuit")
 	}
@@ -135,9 +135,9 @@ func TestRunChain_PanicRecovered(t *testing.T) {
 	}
 
 	env := &messaging.Envelope{ID: "msg-panic"}
-	err := runtime.RunChain(context.Background(),
+	err := route.RunChain(context.Background(),
 		[]ports.Processor{panicker, follower, terminal}, env,
-		runtime.WithChainTimeout(time.Second),
+		route.WithChainTimeout(time.Second),
 	)
 	if err == nil {
 		t.Fatal("expected ErrProcessorPanic, got nil")
@@ -173,8 +173,8 @@ func TestRunChain_HangingProcessorTimesOut(t *testing.T) {
 	env := &messaging.Envelope{ID: "msg-hang"}
 
 	start := time.Now()
-	err := runtime.RunChain(context.Background(), []ports.Processor{hang}, env,
-		runtime.WithChainTimeout(50*time.Millisecond),
+	err := route.RunChain(context.Background(), []ports.Processor{hang}, env,
+		route.WithChainTimeout(50*time.Millisecond),
 	)
 	elapsed := time.Since(start)
 
@@ -203,7 +203,7 @@ func TestRunChain_NormalErrorNotMisclassified(t *testing.T) {
 	p := &FakeProcessor{NameVal: "fail", ProcessErr: sentinel}
 
 	env := &messaging.Envelope{ID: "msg-1"}
-	err := runtime.RunChain(context.Background(), []ports.Processor{p}, env)
+	err := route.RunChain(context.Background(), []ports.Processor{p}, env)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel error, got %v", err)
 	}
@@ -225,7 +225,7 @@ func TestRunChain_HappyPathUnderDefaultTimeout(t *testing.T) {
 	}
 	env := &messaging.Envelope{ID: "msg-1"}
 	// No options: defaults should apply (30s timeout, no logger).
-	if err := runtime.RunChain(context.Background(), []ports.Processor{p}, env); err != nil {
+	if err := route.RunChain(context.Background(), []ports.Processor{p}, env); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 }

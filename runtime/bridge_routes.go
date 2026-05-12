@@ -139,7 +139,7 @@ func (rt *Runtime) Inject(ctx context.Context, routeID string, env *messaging.En
 		env.ID = generateID()
 	}
 
-	return entry.runner.handleDelivery(ctx, &syntheticDelivery{env: env})
+	return entry.runner.HandleDelivery(ctx, &syntheticDelivery{env: env})
 }
 
 // syntheticDelivery implements ports.Delivery for programmatically

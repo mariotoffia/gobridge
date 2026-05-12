@@ -1,4 +1,4 @@
-package runtime
+package route
 
 import (
 	"context"
@@ -275,6 +275,12 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 // method has been entered. Callers can select on this to detect readiness.
 func (r *RouteRunner) Started() <-chan struct{} { return r.started }
 
+// Receiver returns the configured ingress receiver. Exposed so the
+// parent runtime's health aggregator can probe transport-level
+// readiness (via [ports.ReceiverStartedSignaler]) without reaching
+// into the route package's internals.
+func (r *RouteRunner) Receiver() ports.Receiver { return r.receiver }
+
 // InFlight returns the number of delivery goroutines currently executing.
 func (r *RouteRunner) InFlight() int64 { return r.inFlight.Load() }
 
@@ -299,8 +305,8 @@ func (r *RouteRunner) fireIdle() {
 	close(old)
 }
 
-// handleDelivery is the synchronous entry point used by Runtime.Inject.
-func (r *RouteRunner) handleDelivery(ctx context.Context, del ports.Delivery) error {
+// HandleDelivery is the synchronous entry point used by Runtime.Inject.
+func (r *RouteRunner) HandleDelivery(ctx context.Context, del ports.Delivery) error {
 	if err := r.acquireSlots(ctx); err != nil {
 		return err
 	}

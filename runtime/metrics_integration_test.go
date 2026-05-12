@@ -10,9 +10,9 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
 	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
+	"github.com/mariotoffia/gobridge/runtime/route"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
@@ -22,7 +22,7 @@ func TestRouteRunner_EmitsE2ELatency(t *testing.T) {
 	sender := NewFakeSender()
 	receiver := NewFakeReceiver()
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "route-e2e",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
@@ -65,7 +65,7 @@ func TestRouteRunner_EmitsDLQEntries(t *testing.T) {
 	receiver := NewFakeReceiver()
 	dlqStore := NewFakeDLQStore()
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "route-dlq",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,

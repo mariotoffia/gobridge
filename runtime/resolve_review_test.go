@@ -3,6 +3,8 @@ package runtime
 import (
 	"strings"
 	"testing"
+
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -19,7 +21,7 @@ import (
 // TestRenderAddress_EmptyPlaceholderKey validates that an empty placeholder
 // key like {} is rejected.
 func TestRenderAddress_EmptyPlaceholderKey(t *testing.T) {
-	_, err := RenderAddress("prefix/{}/suffix", map[string]any{"": "val"})
+	_, err := route.RenderAddress("prefix/{}/suffix", map[string]any{"": "val"})
 	if err == nil {
 		t.Fatal("expected error for empty placeholder key")
 	}
@@ -28,7 +30,7 @@ func TestRenderAddress_EmptyPlaceholderKey(t *testing.T) {
 // TestRenderAddress_UnclosedBrace validates that an unclosed brace is
 // treated as literal text and does not cause an error.
 func TestRenderAddress_UnclosedBrace(t *testing.T) {
-	result, err := RenderAddress("prefix/{unclosed", nil)
+	result, err := route.RenderAddress("prefix/{unclosed", nil)
 	if err != nil {
 		t.Fatalf("unclosed brace should be treated as literal, got: %v", err)
 	}
@@ -44,7 +46,7 @@ func TestRenderAddress_NoRecursiveExpansion(t *testing.T) {
 		"device": "{secret}",
 		"secret": "LEAKED",
 	}
-	result, err := RenderAddress("devices/{device}/data", headers)
+	result, err := route.RenderAddress("devices/{device}/data", headers)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

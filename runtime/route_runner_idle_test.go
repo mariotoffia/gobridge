@@ -7,15 +7,15 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
-	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // newIdleTestRunner builds a minimal RouteRunner wired to a FakeReceiver
 // and a FakeSender whose SendFn blocks until the returned release
 // channel fires. Callers use it to hold a delivery in-flight so they
 // can observe InFlight transitions deterministically.
-func newIdleTestRunner(t *testing.T) (*FakeReceiver, *runtime.RouteRunner, *FakeSender, chan struct{}) {
+func newIdleTestRunner(t *testing.T) (*FakeReceiver, *route.RouteRunner, *FakeSender, chan struct{}) {
 	t.Helper()
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
@@ -24,14 +24,14 @@ func newIdleTestRunner(t *testing.T) (*FakeReceiver, *runtime.RouteRunner, *Fake
 		<-release
 		return nil
 	}
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "idle-test",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      dlq.New(NewFakeDLQStore()),
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 	return receiver, runner, sender, release
 }
 
@@ -132,14 +132,14 @@ func TestRouteRunner_IdleChanged_NoFireWhenNotAtZero(t *testing.T) {
 		}
 		return nil
 	})
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "idle-test-multi",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold, MaxInFlight: 4}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      dlq.New(NewFakeDLQStore()),
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -85,11 +85,11 @@
 ./runtime/edge_cases_test.go:323:	time.Sleep(200 * time.Millisecond) // FIXED: wait for message expiry (100ms TTL + margin)
 ./runtime/fakes_test.go:25:		time.Sleep(10 * time.Millisecond) // SYNC: poll interval in waitFor helper
 ./runtime/jitter_clamp_test.go:124:		time.Sleep(100 * time.Millisecond) // OTHER: simulated processing duration
-./runtime/medium_fixes_test.go:159:	time.Sleep(100 * time.Millisecond) // FIXED: wait for DepthCacheTTL (50ms) to expire
+./runtime/medium_fixes_test.go:160:	time.Sleep(100 * time.Millisecond) // FIXED: wait for DepthCacheTTL (50ms) to expire
 ./runtime/metrics_integration_test.go:244:		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
 ./runtime/metrics_integration_test.go:250:		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
 ./runtime/metrics_integration_test.go:256:		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
-./runtime/outbox_depth_cache_test.go:168:	time.Sleep(1200 * time.Millisecond) // FIXED: wait for depth cache TTL (1s) to expire
+./runtime/outbox_depth_cache_test.go:169:	time.Sleep(1200 * time.Millisecond) // FIXED: wait for depth cache TTL (1s) to expire
 ./runtime/outbox_drainer_concurrent_test.go:156:		time.Sleep(30 * time.Millisecond) // OTHER: simulated processing duration
 ./runtime/outbox_drainer_concurrent_test.go:239:		time.Sleep(20 * time.Millisecond) // OTHER: simulated processing duration
 ./runtime/outbox_drainer_concurrent_test.go:92:		time.Sleep(50 * time.Millisecond) // OTHER: simulated processing duration

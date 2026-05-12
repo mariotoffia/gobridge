@@ -8,6 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // ---------------------------------------------------------------------------
@@ -18,7 +19,7 @@ import (
 func TestRenderAddress_HappyPath(t *testing.T) {
 	vars := map[string]any{"device_id": "42", "zone": "north"}
 
-	got, err := runtime.RenderAddress("factory/a/orders/{device_id}", vars)
+	got, err := route.RenderAddress("factory/a/orders/{device_id}", vars)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -31,7 +32,7 @@ func TestRenderAddress_HappyPath(t *testing.T) {
 func TestRenderAddress_MultiplePlaceholders(t *testing.T) {
 	vars := map[string]any{"zone": "north", "device": "sensor-3"}
 
-	got, err := runtime.RenderAddress("{zone}/devices/{device}/data", vars)
+	got, err := route.RenderAddress("{zone}/devices/{device}/data", vars)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -42,7 +43,7 @@ func TestRenderAddress_MultiplePlaceholders(t *testing.T) {
 
 // Verifies RenderAddress returns the template unchanged when it has no placeholders.
 func TestRenderAddress_NoPlaceholders(t *testing.T) {
-	got, err := runtime.RenderAddress("static/topic", nil)
+	got, err := route.RenderAddress("static/topic", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -53,7 +54,7 @@ func TestRenderAddress_NoPlaceholders(t *testing.T) {
 
 // Verifies RenderAddress accepts an empty template and returns an empty string.
 func TestRenderAddress_EmptyTemplate(t *testing.T) {
-	got, err := runtime.RenderAddress("", nil)
+	got, err := route.RenderAddress("", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestRenderAddress_EmptyTemplate(t *testing.T) {
 func TestRenderAddress_MissingPlaceholder(t *testing.T) {
 	vars := map[string]any{"zone": "north"}
 
-	_, err := runtime.RenderAddress("factory/{missing_key}/data", vars)
+	_, err := route.RenderAddress("factory/{missing_key}/data", vars)
 	if err == nil {
 		t.Fatal("expected error for missing placeholder")
 	}
@@ -74,7 +75,7 @@ func TestRenderAddress_MissingPlaceholder(t *testing.T) {
 
 // Verifies RenderAddress rejects a template with an empty placeholder name.
 func TestRenderAddress_EmptyPlaceholderKey(t *testing.T) {
-	_, err := runtime.RenderAddress("factory/{}/data", nil)
+	_, err := route.RenderAddress("factory/{}/data", nil)
 	if err == nil {
 		t.Fatal("expected error for empty placeholder key")
 	}
@@ -84,7 +85,7 @@ func TestRenderAddress_EmptyPlaceholderKey(t *testing.T) {
 func TestRenderAddress_RendersToEmpty(t *testing.T) {
 	vars := map[string]any{"val": ""}
 
-	_, err := runtime.RenderAddress("{val}", vars)
+	_, err := route.RenderAddress("{val}", vars)
 	if err == nil {
 		t.Fatal("expected error when rendered result is empty")
 	}

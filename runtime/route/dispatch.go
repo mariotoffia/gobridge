@@ -1,4 +1,4 @@
-package runtime
+package route
 
 import (
 	"context"
@@ -37,7 +37,7 @@ func (r *RouteRunner) sendDirectHoldForBinding(ctx context.Context, del ports.De
 			return r.sendDirectHold(ctx, del, env, routing.DispatchPlan{
 				BindingID: b.ID,
 				Address:   addr,
-				Headers:   copyHeaders(b.Headers),
+				Headers:   CopyHeaders(b.Headers),
 			})
 		}
 	}
@@ -150,7 +150,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 			return r.ackDelivery(ctx, del)
 		}
 
-		return r.retryOrFallback(ctx, del, env, retryDelay(r.policy, receiveCount(env)+1, sendErr), sendErr)
+		return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, sendErr), sendErr)
 	}
 
 	if dlqErr := r.dlq.Route(ctx, outbound, r.routeID, plan.BindingID, plan.Address, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
@@ -264,7 +264,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 	if shared.IsRecoverableError(err) {
 		r.metrics.Counter(shared.MetricRouteErrors, 1,
 			shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
-		return r.retryOrFallback(ctx, del, env, retryDelay(r.policy, receiveCount(env)+1, err), err)
+		return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, err), err)
 	}
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", err, 0); dlqErr != nil {
 		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
@@ -377,7 +377,7 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 						}
 					}
 					plans = []routing.DispatchPlan{{
-						BindingID: b.ID, Address: addr, Headers: copyHeaders(b.Headers),
+						BindingID: b.ID, Address: addr, Headers: CopyHeaders(b.Headers),
 					}}
 					break
 				}

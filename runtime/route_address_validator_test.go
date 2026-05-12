@@ -12,8 +12,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // recordingAddressValidator records each ValidateAddress call and
@@ -42,7 +42,7 @@ func TestRouteRunner_AddressValidator_Reject_RoutesDLQ(t *testing.T) {
 	}
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:           "validator-rejects",
 		Policy:            routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:          receiver,
@@ -51,7 +51,7 @@ func TestRouteRunner_AddressValidator_Reject_RoutesDLQ(t *testing.T) {
 		AddressValidators: map[string]ports.AddressValidator{"b1": validator},
 		DLQ:               dlq.New(dlqStore),
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -94,7 +94,7 @@ func TestRouteRunner_AddressValidator_NilSkipsValidation(t *testing.T) {
 	}
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "no-validator",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
@@ -103,7 +103,7 @@ func TestRouteRunner_AddressValidator_NilSkipsValidation(t *testing.T) {
 		// AddressValidators intentionally nil — transport opted out.
 		DLQ: dlq.New(dlqStore),
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

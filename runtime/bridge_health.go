@@ -188,7 +188,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 				ready = true
 			default:
 			}
-			if rss, ok := rr.receiver.(ports.ReceiverStartedSignaler); ok {
+			if rss, ok := rr.Receiver().(ports.ReceiverStartedSignaler); ok {
 				select {
 				case <-rss.Started():
 				default:

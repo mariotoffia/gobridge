@@ -28,8 +28,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // ---------------------------------------------------------------------------
@@ -100,7 +100,7 @@ func (h *funcHook) OnSettled(ctx context.Context, evt ports.DeliveryOutcome) { h
 // fires exactly once with nil error and Terminal=true on successful delivery.
 func TestDeliveryHook_DirectHold_Success(t *testing.T) {
 	hook := &recordingHook{}
-	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Hook = hook
 	})
 
@@ -158,7 +158,7 @@ func TestDeliveryHook_DirectHold_Success(t *testing.T) {
 func TestDeliveryHook_DirectHold_PermanentFailure_DLQ(t *testing.T) {
 	hook := &recordingHook{}
 	permErr := shared.NewBridgeError("PERM", shared.ErrorPermanent, "permanent failure")
-	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Hook = hook
 	})
 	sender.SendErr = permErr
@@ -224,7 +224,7 @@ func TestDeliveryHook_DirectHold_NoHook_NoopSafe(t *testing.T) {
 // ───────────────────────────────────────────────
 func TestDeliveryHook_DirectHold_TransientRetry_NoSettled(t *testing.T) {
 	hook := &recordingHook{}
-	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Hook = hook
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 	})
@@ -263,7 +263,7 @@ func TestDeliveryHook_DirectHold_TransientRetry_NoSettled(t *testing.T) {
 // sqs.ApproximateReceiveCount header.
 func TestDeliveryHook_DirectHold_AttemptCarriesReceiveCount(t *testing.T) {
 	hook := &recordingHook{}
-	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Hook = hook
 	})
 
@@ -298,7 +298,7 @@ func TestDeliveryHook_DirectHold_AttemptCarriesReceiveCount(t *testing.T) {
 // policy's MaxReplayAttempts.
 func TestDeliveryHook_DirectHold_MaxAttemptFromPolicy(t *testing.T) {
 	hook := &recordingHook{}
-	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Hook = hook
 		cfg.Policy.MaxReplayAttempts = 7
 	})
@@ -343,7 +343,7 @@ func TestDeliveryHook_DirectHold_Drop_NoDLQ_RetryUnsupported(t *testing.T) {
 	sender.SendErr = shared.ErrUnavailable
 	receiver := NewFakeReceiver()
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:    "test-route",
 		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
@@ -382,7 +382,7 @@ func TestDeliveryHook_DirectHold_Drop_NoDLQ_RetryUnsupported(t *testing.T) {
 // egress OnAttempt or OnSettled.
 func TestDeliveryHook_DirectHold_ExpiredMessage_NoEgressHook(t *testing.T) {
 	hook := &recordingHook{}
-	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Hook = hook
 	})
 
@@ -424,7 +424,7 @@ func TestDeliveryHook_DirectHold_ExpiredMessage_NoEgressHook(t *testing.T) {
 // OnSettled BindingID matches the dispatch plan's binding.
 func TestDeliveryHook_DirectHold_SettledCarriesBindingID(t *testing.T) {
 	hook := &recordingHook{}
-	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Hook = hook
 		cfg.Bindings = []routing.DestinationBinding{
 			{ID: "bind-alpha", Address: "topic/alpha"},
@@ -455,7 +455,7 @@ func TestDeliveryHook_DirectHold_SettledCarriesBindingID(t *testing.T) {
 // concurrent deliveries each get their own independent hook calls.
 func TestDeliveryHook_DirectHold_ConcurrentDeliveries(t *testing.T) {
 	hook := &recordingHook{}
-	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Hook = hook
 		cfg.Policy.MaxInFlight = 10
 	})

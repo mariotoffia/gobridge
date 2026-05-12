@@ -16,6 +16,7 @@ import (
 	"github.com/mariotoffia/gobridge/runtime/cluster"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
 	"github.com/mariotoffia/gobridge/runtime/outbox"
+	"github.com/mariotoffia/gobridge/runtime/route"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
@@ -59,7 +60,7 @@ type Runtime struct {
 
 type routeEntry struct {
 	config   RouteConfig
-	runner   *RouteRunner
+	runner   *route.RouteRunner
 	receiver ports.Receiver
 	sender   ports.Sender
 	session  ports.Session

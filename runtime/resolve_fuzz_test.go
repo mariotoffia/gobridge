@@ -11,6 +11,8 @@ package runtime
 import (
 	"testing"
 	"time"
+
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // FuzzRenderAddress verifies that arbitrary template+header combinations
@@ -34,7 +36,7 @@ func FuzzRenderAddress(f *testing.F) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			_, _ = RenderAddress(template, vars)
+			_, _ = route.RenderAddress(template, vars)
 		}()
 
 		select {

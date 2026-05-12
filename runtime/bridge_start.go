@@ -12,6 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/runtime/cluster"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
 	"github.com/mariotoffia/gobridge/runtime/outbox"
+	"github.com/mariotoffia/gobridge/runtime/route"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
@@ -64,7 +65,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	drainerSessions := make(map[string]bool)
 
 	for _, entry := range rt.entries {
-		entry.runner = newRouteRunner(RouteRunnerConfig{
+		entry.runner = route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 			RouteID:           entry.config.ID,
 			Policy:            entry.config.Policy,
 			Receiver:          entry.receiver,

@@ -27,9 +27,9 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
-	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
 	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // TestDrainer_StaleFencingToken_UsesMinBackoff validates that stale
@@ -94,7 +94,7 @@ func TestRetryUnsupported_NilDLQ_AcksDelivery(t *testing.T) {
 	sender := NewFakeSender()
 	sender.SendErr = shared.ErrConnectionLost
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "retry-test",
 		Policy:   routing.RoutePolicy{}.WithDefaults(),
 		Receiver: receiver,
@@ -140,7 +140,7 @@ func TestRetryUnsupported_WithDLQ_RoutesToDLQ(t *testing.T) {
 
 	dlqStore := NewFakeDLQStore()
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "retry-dlq-test",
 		Policy:   routing.RoutePolicy{}.WithDefaults(),
 		Receiver: receiver,

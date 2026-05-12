@@ -96,6 +96,7 @@ expect runtime_credentials /runtime/credentials
 expect runtime_cluster     /runtime/cluster
 expect runtime_session     /runtime/session
 expect runtime_outbox      /runtime/outbox
+expect runtime_route       /runtime/route
 expect bridge        /bridge
 expect validate      /validate
 expect httpapi       /httpapi

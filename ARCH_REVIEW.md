@@ -144,7 +144,15 @@ The user's four review questions answered:
 
   Suggested agent: `refactoring-specialist`.
 
-- **H-1f** Extract `runtime/route` package: move route runner + dispatch out of `runtime/`. **Open architectural question (must be resolved before dispatch):** where do `instrumented*.go` and `processor_chain.go` belong — under `route/`, in a dedicated sub-package (`runtime/chain`), or in `runtime/internal/chain`? Resolve via the architect before implementer is invoked. *(AP-001; Clean-Arch F4 — sub-task of H-1)*
+- **H-1f** Extract `runtime/route` package: move route runner + dispatch out of `runtime/`. **Open architectural question (must be resolved before dispatch):** where do `instrumented*.go` and `processor_chain.go` belong — under `route/`, in a dedicated sub-package (`runtime/chain`), or in `runtime/internal/chain`? Resolve via the architect before implementer is invoked. *(AP-001; Clean-Arch F4 — sub-task of H-1)* - DONE
+
+  **Status:** Resolved 2026-05-12. H-1f extracted route runner, dispatch, retry, address rendering, ID generation, and processor-chain code into the new `runtime/route` leaf package. The architecture decision placed `processor_chain.go` in `runtime/route` while keeping `instrumented.go` and `instrumented_transport.go` in parent `runtime/`.
+
+  **What landed:** `runtime/route/{doc.go,chain.go,runner.go,dispatch.go,helpers.go,retry.go,address.go,id.go}`, parent runtime bridge/start/routes/health wiring, runtime route/resolve/processor-chain tests migrated to explicit `route` APIs, root `runtime` route compatibility files removed, `.go-arch-lint.yml`, `scripts/lint-arch-mapping-test.sh`, and `audit/test-timing-allowlist.txt`.
+
+  **Tests added:** No net-new behavior scenarios; existing route-runner and processor-chain coverage moved/migrated with the production code and callers updated to the explicit package API.
+
+  **Review:** APPROVED on first pass by `code-reviewer` (model: gpt-5.3-codex).
 
   Suggested agent: `thiink-clean-arch-reviewer` (architectural-decision phase) followed by `refactoring-specialist` (implementation).
 

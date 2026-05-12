@@ -39,8 +39,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // ---------------------------------------------------------------------------
@@ -109,7 +109,7 @@ func (s *FailOnceDLQStore) Count() int { return s.inner.Count() }
 //   - DLQEntries metric emitted with category "retry_unsupported"
 func TestDirectHold_RetryUnsupported_FallsToDLQ(t *testing.T) {
 	rec := &ports.RecordingExporter{}
-	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 		cfg.Metrics = rec
 	})
@@ -166,7 +166,7 @@ func TestDirectHold_RetryUnsupported_FallsToDLQ(t *testing.T) {
 //   - Delivery is NOT acked
 //   - DLQ has no entries
 func TestDirectHold_RetryUnsupported_DLQAlsoFails_ReturnsError(t *testing.T) {
-	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 	})
 	sender.SendErr = shared.ErrUnavailable
@@ -214,7 +214,7 @@ func TestDirectHold_RetryUnsupported_DLQAlsoFails_ReturnsError(t *testing.T) {
 //   - Delivery is acked
 //   - DLQ contains 1 entry
 func TestHandleProcessorError_RetryUnsupported_FallsToDLQ(t *testing.T) {
-	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 		cfg.Processors = []ports.Processor{
 			&FakeProcessor{
@@ -262,7 +262,7 @@ func TestHandleProcessorError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 //   - Delivery is acked
 //   - DLQ contains 1 entry
 func TestSharedOutbox_RetryUnsupported_FallsToDLQ(t *testing.T) {
-	receiver, _, dlqStore, outbox, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, dlqStore, outbox, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
 	})
 	outbox.PersistErr = errors.New("outbox persist failed")
@@ -311,7 +311,7 @@ func TestHandleExpired_RetryUnsupported_FallsToDLQ(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "route-expired-retry",
 		Policy:   routing.RoutePolicy{OnExpired: routing.ExpiredDLQ}.WithDefaults(),
 		Receiver: receiver,
@@ -359,7 +359,7 @@ func TestHandleExpired_RetryUnsupported_FallsToDLQ(t *testing.T) {
 //   - Delivery is acked
 //   - DLQ contains 1 entry
 func TestHandleResolveError_RetryUnsupported_FallsToDLQ(t *testing.T) {
-	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 		cfg.Resolver = &FakeResolver{ResolveErr: shared.ErrUnavailable}
 	})
@@ -402,7 +402,7 @@ func TestHandleResolveError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 //   - Delivery is NOT acked
 //   - DLQ has no entries
 func TestDirectHold_RetrySupported_NoFallback(t *testing.T) {
-	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 	})
 	sender.SendErr = shared.ErrUnavailable

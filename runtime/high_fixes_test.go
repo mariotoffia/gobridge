@@ -12,9 +12,9 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
 	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -135,7 +135,7 @@ func TestRouteRunner_SendTimeout(t *testing.T) {
 	dlqStore := NewFakeDLQStore()
 	outbox := NewFakeOutboxStore()
 
-	cfg := goruntime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID: "test-route",
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliveryDirectHold,
@@ -147,7 +147,7 @@ func TestRouteRunner_SendTimeout(t *testing.T) {
 		DLQ:         dlq.New(dlqStore),
 		InstanceID:  "bridge-1",
 	}
-	runner := goruntime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

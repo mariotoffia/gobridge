@@ -10,6 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // makeRunnerWithSenders creates a RouteRunner with a resolver and per-binding
@@ -20,14 +21,14 @@ func makeRunnerWithSenders(
 	resolver ports.DestinationResolver,
 	senders map[string]ports.Sender,
 	defaultSender *FakeSender,
-) (*FakeReceiver, *runtime.RouteRunner) {
+) (*FakeReceiver, *route.RouteRunner) {
 	t.Helper()
 	receiver := NewFakeReceiver()
 	if defaultSender == nil {
 		defaultSender = NewFakeSender()
 	}
 
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "test-multi-sender",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
@@ -37,7 +38,7 @@ func makeRunnerWithSenders(
 		Resolver: resolver,
 		Bindings: bindings,
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 	return receiver, runner
 }
 

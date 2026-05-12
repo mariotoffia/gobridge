@@ -153,6 +153,7 @@ components:
   runtime_cluster: { in: [runtime/cluster] }
   runtime_session: { in: [runtime/session] }
   runtime_outbox: { in: [runtime/outbox] }
+  runtime_route: { in: [runtime/route] }
   bridge: { in: [bridge, bridge/**] }
   validate: { in: [validate, validate/**] }
 
@@ -467,6 +468,7 @@ deps:
       - runtime_cluster
       - runtime_session
       - runtime_outbox
+      - runtime_route
 
   # runtime_dlq is the dead-letter-queue routing leaf. It owns the
   # asynchronous DLQ router (classify -> enqueue -> drain to DLQStore)
@@ -545,6 +547,35 @@ deps:
       - ports
       - logging
       - runtime_dlq
+
+  # runtime_route owns the runtime's per-route ingress execution
+  # pipeline: the processor chain (with panic and timeout recovery),
+  # the RouteRunner that drives the configured Receiver, and the
+  # dispatch path that resolves DispatchPlans, renders binding
+  # addresses, and either sends directly (DirectHold) or persists into
+  # the OutboxStore (SharedOutbox). Per-record retry/backoff, DLQ
+  # classification, and idle signalling all live here. The parent
+  # runtime composes a *route.RouteRunner per RouteConfig and consumes
+  # it through the standard inward dependency rule (parent -> leaf);
+  # this leaf MUST NOT depend on its parent (runtime), on its sibling
+  # runtime_session / runtime_cluster / runtime_credentials leaves, on
+  # any adapter, on bridge, or on the composition root. It MAY depend
+  # on the sibling runtime_dlq and runtime_outbox leaves it dispatches
+  # through.
+  runtime_route:
+    mayDependOn:
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - domain_connectivity
+      - domain_events
+      - ports
+      - logging
+      - observability
+      - runtime_dlq
+      - runtime_outbox
 
   # runtime_credentials is the credential-store adaptation leaf
   # (PollBasedWrapper lifts a PullCredentialStore into a

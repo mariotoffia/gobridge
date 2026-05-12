@@ -12,6 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // overrideProcessor sets HeaderRouteOverride during the processor chain,
@@ -50,7 +51,7 @@ func TestDirectHold_HeaderRouteOverride_SelectsBinding(t *testing.T) {
 	// not in the initial envelope — because reserved headers are stripped
 	// at ingress before the processor chain runs.
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:    "override-route",
 		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
@@ -61,7 +62,7 @@ func TestDirectHold_HeaderRouteOverride_SelectsBinding(t *testing.T) {
 		Bindings:   bindings,
 		Processors: []ports.Processor{&overrideProcessor{targetBinding: "bind-b"}},
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -96,7 +97,7 @@ func TestDirectHold_HeaderRouteOverride_StrippedAfterUse(t *testing.T) {
 	}
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:    "strip-route",
 		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
@@ -106,7 +107,7 @@ func TestDirectHold_HeaderRouteOverride_StrippedAfterUse(t *testing.T) {
 		Bindings:   bindings,
 		Processors: []ports.Processor{&overrideProcessor{targetBinding: "bind-b"}},
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -181,7 +182,7 @@ func TestDirectHold_Override_RenderAddressError_RoutesDLQ(t *testing.T) {
 	}
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "render-err-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
@@ -193,7 +194,7 @@ func TestDirectHold_Override_RenderAddressError_RoutesDLQ(t *testing.T) {
 			&overrideProcessor{targetBinding: "bind-template"},
 		},
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -231,7 +232,7 @@ func TestDirectHold_Override_AddressValidator_RoutesDLQ(t *testing.T) {
 	}
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "validator-override-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
@@ -246,7 +247,7 @@ func TestDirectHold_Override_AddressValidator_RoutesDLQ(t *testing.T) {
 			&overrideProcessor{targetBinding: "mqtt-bind"},
 		},
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

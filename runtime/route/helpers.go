@@ -1,4 +1,4 @@
-package runtime
+package route
 
 import (
 	"context"
@@ -50,7 +50,7 @@ func (r *RouteRunner) resolveRawPlans(ctx context.Context, env *messaging.Envelo
 		return []routing.DispatchPlan{{
 			BindingID: b.ID,
 			Address:   addr,
-			Headers:   copyHeaders(b.Headers),
+			Headers:   CopyHeaders(b.Headers),
 		}}, nil
 	}
 	return []routing.DispatchPlan{{BindingID: r.routeID}}, nil

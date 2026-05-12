@@ -9,7 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
-	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 func TestRetryDelay_HonoursRetryAfter(t *testing.T) {
@@ -21,7 +21,7 @@ func TestRetryDelay_HonoursRetryAfter(t *testing.T) {
 	sendErr := shared.ErrThrottled.WithRetryAfter(5 * time.Second)
 
 	for _, attempt := range []int{1, 2, 5} {
-		if got := runtime.RetryDelay(policy, attempt, sendErr); got != 5*time.Second {
+		if got := route.RetryDelay(policy, attempt, sendErr); got != 5*time.Second {
 			t.Fatalf("attempt %d: retryDelay = %v, want %v", attempt, got, 5*time.Second)
 		}
 	}
@@ -45,20 +45,20 @@ func TestRetryDelay_TransientErrorUsesBackoff(t *testing.T) {
 	}
 
 	for attempt, wantDelay := range want {
-		if got := runtime.RetryDelay(policy, attempt+1, sendErr); got != wantDelay {
+		if got := route.RetryDelay(policy, attempt+1, sendErr); got != wantDelay {
 			t.Fatalf("attempt %d: retryDelay = %v, want %v", attempt+1, got, wantDelay)
 		}
 	}
 }
 
 func TestRetryDelay_ZeroPolicyUsesDefaults(t *testing.T) {
-	if got := runtime.RetryDelay(routing.RoutePolicy{}, 1, errors.New("io error")); got <= 0 {
+	if got := route.RetryDelay(routing.RoutePolicy{}, 1, errors.New("io error")); got <= 0 {
 		t.Fatalf("retryDelay = %v, want > 0", got)
 	}
 }
 
 func TestRouteRunner_DirectHoldTransientSendUsesBackoff(t *testing.T) {
-	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.Backoff = routing.BackoffPolicy{
 			InitialInterval: 500 * time.Millisecond,
 			MaxInterval:     30 * time.Second,

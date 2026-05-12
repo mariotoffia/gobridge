@@ -7,6 +7,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -40,7 +41,7 @@ func TestCopyHeaders_ShallowCopy_MutableSlice(t *testing.T) {
 		"meta": map[string]any{"key": "val"},
 	}
 
-	copied := copyHeaders(original)
+	copied := route.CopyHeaders(original)
 
 	copiedTags := copied["tags"].([]string)
 	copiedTags[0] = "modified"
@@ -58,7 +59,7 @@ func TestCopyHeaders_ShallowCopy_MutableMap(t *testing.T) {
 		"meta": map[string]any{"key": "original"},
 	}
 
-	copied := copyHeaders(original)
+	copied := route.CopyHeaders(original)
 
 	copiedMeta := copied["meta"].(map[string]any)
 	copiedMeta["key"] = "modified"
@@ -71,17 +72,17 @@ func TestCopyHeaders_ShallowCopy_MutableMap(t *testing.T) {
 
 // TestCopyHeaders_Nil validates that nil input returns nil.
 func TestCopyHeaders_Nil(t *testing.T) {
-	result := copyHeaders(nil)
+	result := route.CopyHeaders(nil)
 	if result != nil {
-		t.Fatal("copyHeaders(nil) should return nil")
+		t.Fatal("route.CopyHeaders(nil) should return nil")
 	}
 }
 
 // TestCopyHeaders_Empty validates that empty map input returns nil.
 func TestCopyHeaders_Empty(t *testing.T) {
-	result := copyHeaders(map[string]any{})
+	result := route.CopyHeaders(map[string]any{})
 	if result != nil {
-		t.Fatal("copyHeaders(empty) should return nil")
+		t.Fatal("route.CopyHeaders(empty) should return nil")
 	}
 }
 
@@ -93,7 +94,7 @@ func TestRenderAddress_ControlCharInjection(t *testing.T) {
 		"queue": "my-queue\x00injected",
 	}
 
-	result, err := RenderAddress("sqs://{queue}", headers)
+	result, err := route.RenderAddress("sqs://{queue}", headers)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,7 +107,7 @@ func TestRenderAddress_ControlCharInjection(t *testing.T) {
 // TestRenderAddress_EmptyTemplate validates that empty template returns
 // empty string without error.
 func TestRenderAddress_EmptyTemplate(t *testing.T) {
-	result, err := RenderAddress("", nil)
+	result, err := route.RenderAddress("", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestRenderAddress_EmptyTemplate(t *testing.T) {
 // TestRenderAddress_MissingHeader validates that a missing header key
 // returns an error.
 func TestRenderAddress_MissingHeader(t *testing.T) {
-	_, err := RenderAddress("topic/{missing}", map[string]any{})
+	_, err := route.RenderAddress("topic/{missing}", map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for missing header placeholder")
 	}
@@ -127,7 +128,7 @@ func TestRenderAddress_MissingHeader(t *testing.T) {
 // TestRenderAddress_RendersToEmpty validates that a template that
 // renders to empty string returns an error.
 func TestRenderAddress_RendersToEmpty(t *testing.T) {
-	_, err := RenderAddress("{key}", map[string]any{"key": ""})
+	_, err := route.RenderAddress("{key}", map[string]any{"key": ""})
 	if err == nil {
 		t.Fatal("expected error for template that renders to empty string")
 	}

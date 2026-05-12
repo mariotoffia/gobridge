@@ -11,6 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // ---------------------------------------------------------------------------
@@ -39,7 +40,7 @@ func TestIntegration_ContentRouting_HeaderMatch_DirectHold(t *testing.T) {
 	resolver, _ := runtime.NewRuleResolver(bindings, rules, "bind-default")
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "header-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
@@ -53,7 +54,7 @@ func TestIntegration_ContentRouting_HeaderMatch_DirectHold(t *testing.T) {
 		Resolver: resolver,
 		Bindings: bindings,
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -116,7 +117,7 @@ func TestIntegration_ContentRouting_SubjectPrefix_DirectHold(t *testing.T) {
 	resolver, _ := runtime.NewRuleResolver(bindings, rules, "")
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "subject-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
@@ -126,7 +127,7 @@ func TestIntegration_ContentRouting_SubjectPrefix_DirectHold(t *testing.T) {
 		Resolver: resolver,
 		Bindings: bindings,
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -166,7 +167,7 @@ func TestIntegration_ContentRouting_JSONPayload_DirectHold(t *testing.T) {
 	resolver, _ := runtime.NewRuleResolver(bindings, rules, "low-prio")
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "json-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
@@ -176,7 +177,7 @@ func TestIntegration_ContentRouting_JSONPayload_DirectHold(t *testing.T) {
 		Resolver: resolver,
 		Bindings: bindings,
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -233,7 +234,7 @@ func TestIntegration_ContentRouting_ProcessorThenRouting(t *testing.T) {
 	}
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:    "proc-route",
 		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
@@ -244,7 +245,7 @@ func TestIntegration_ContentRouting_ProcessorThenRouting(t *testing.T) {
 		Bindings:   bindings,
 		Processors: []ports.Processor{tierProc},
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -303,7 +304,7 @@ func TestIntegration_ContentRouting_Concurrent(t *testing.T) {
 	resolver, _ := runtime.NewRuleResolver(bindings, rules, "")
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "concurrent-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold, MaxInFlight: 20}.WithDefaults(),
 		Receiver: receiver,
@@ -313,7 +314,7 @@ func TestIntegration_ContentRouting_Concurrent(t *testing.T) {
 		Resolver: resolver,
 		Bindings: bindings,
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
