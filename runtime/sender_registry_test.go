@@ -9,6 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // makeRunnerWithSenders creates a RouteRunner with a resolver and per-binding
@@ -32,7 +33,7 @@ func makeRunnerWithSenders(
 		Receiver: receiver,
 		Sender:   defaultSender,
 		Senders:  senders,
-		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:      dlq.New(NewFakeDLQStore()),
 		Resolver: resolver,
 		Bindings: bindings,
 	}

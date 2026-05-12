@@ -12,6 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // ctxAwareSender is a test sender whose Send respects context
@@ -194,7 +195,7 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 		OutboxStore:         outbox,
 		LeaseStore:          leaseStore,
 		Sender:              slowSender,
-		DLQ:                 goruntime.NewDLQRouter(dlqStore),
+		DLQ:                 dlq.New(dlqStore),
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             "sess-slow",
@@ -302,7 +303,7 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 		OutboxStore:         outbox,
 		LeaseStore:          leaseStore,
 		Sender:              slowSender,
-		DLQ:                 goruntime.NewDLQRouter(dlqStore),
+		DLQ:                 dlq.New(dlqStore),
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             "sess-legacy",

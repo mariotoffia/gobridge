@@ -40,6 +40,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // ---------------------------------------------------------------------------
@@ -315,7 +316,7 @@ func TestHandleExpired_RetryUnsupported_FallsToDLQ(t *testing.T) {
 		Policy:   routing.RoutePolicy{OnExpired: routing.ExpiredDLQ}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(failOnceDLQ),
+		DLQ:      dlq.New(failOnceDLQ),
 		Bindings: []routing.DestinationBinding{{ID: "b1"}},
 	})
 

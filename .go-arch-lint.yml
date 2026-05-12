@@ -147,7 +147,8 @@ components:
   # stdlib-only and carries NO vendor concession.
   config: { in: [config] }
   config_parser: { in: [config/parser] }
-  runtime: { in: [runtime, runtime/**] }
+  runtime: { in: [runtime] }
+  runtime_dlq: { in: [runtime/dlq] }
   bridge: { in: [bridge, bridge/**] }
   validate: { in: [validate, validate/**] }
 
@@ -458,6 +459,24 @@ deps:
       - ports
       - logging
       - observability
+      - runtime_dlq
+
+  # runtime_dlq is the dead-letter-queue routing leaf. It owns the
+  # asynchronous DLQ router (classify -> enqueue -> drain to DLQStore)
+  # and depends only on inward layers + the DLQStore port. It MUST NOT
+  # depend on its parent (runtime) -- the dependency direction is
+  # parent -> leaf only -- nor on any adapter, bridge, or composition
+  # root code. Treat any new outward edge here as a smell that the
+  # leaf is absorbing orchestration concerns it should publish back
+  # to runtime instead.
+  runtime_dlq:
+    mayDependOn:
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - ports
 
   # bridge is the composition factory: it reads ports.BridgeConfig and
   # builds a runtime.Runtime. It MUST NOT depend on the config parser

@@ -11,6 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // overrideProcessor sets HeaderRouteOverride during the processor chain,
@@ -55,7 +56,7 @@ func TestDirectHold_HeaderRouteOverride_SelectsBinding(t *testing.T) {
 		Receiver:   receiver,
 		Sender:     senderA,
 		Senders:    map[string]ports.Sender{"bind-a": senderA, "bind-b": senderB},
-		DLQ:        runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:        dlq.New(NewFakeDLQStore()),
 		Resolver:   resolver,
 		Bindings:   bindings,
 		Processors: []ports.Processor{&overrideProcessor{targetBinding: "bind-b"}},
@@ -101,7 +102,7 @@ func TestDirectHold_HeaderRouteOverride_StrippedAfterUse(t *testing.T) {
 		Receiver:   receiver,
 		Sender:     senderB,
 		Senders:    map[string]ports.Sender{"bind-b": senderB},
-		DLQ:        runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:        dlq.New(NewFakeDLQStore()),
 		Bindings:   bindings,
 		Processors: []ports.Processor{&overrideProcessor{targetBinding: "bind-b"}},
 	}
@@ -186,7 +187,7 @@ func TestDirectHold_Override_RenderAddressError_RoutesDLQ(t *testing.T) {
 		Receiver: receiver,
 		Sender:   sender,
 		Senders:  map[string]ports.Sender{"bind-template": sender},
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		DLQ:      dlq.New(dlqStore),
 		Bindings: bindings,
 		Processors: []ports.Processor{
 			&overrideProcessor{targetBinding: "bind-template"},
@@ -239,7 +240,7 @@ func TestDirectHold_Override_AddressValidator_RoutesDLQ(t *testing.T) {
 		AddressValidators: map[string]ports.AddressValidator{
 			"mqtt-bind": rejectingAddressValidator{},
 		},
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		DLQ:      dlq.New(dlqStore),
 		Bindings: bindings,
 		Processors: []ports.Processor{
 			&overrideProcessor{targetBinding: "mqtt-bind"},

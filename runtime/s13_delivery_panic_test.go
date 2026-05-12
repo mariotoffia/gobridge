@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -109,7 +110,7 @@ func TestRouteRunner_ProcessorPanic_RoutesToDLQ(t *testing.T) {
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		DLQ:      dlq.New(dlqStore),
 		Processors: []ports.Processor{
 			&FakeProcessor{
 				NameVal: "panicker",
@@ -375,7 +376,7 @@ func TestRouteRunner_ProcessorPanic_DLQWriteFails_NoCrash(t *testing.T) {
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		DLQ:      dlq.New(dlqStore),
 		Processors: []ports.Processor{
 			&FakeProcessor{
 				NameVal: "panicker",
@@ -422,7 +423,7 @@ func TestRouteRunner_ProcessorPanic_RetryPanics_NoProcessCrash(t *testing.T) {
 		Policy:   routing.RoutePolicy{MaxInFlight: 1, DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		DLQ:      dlq.New(dlqStore),
 		Processors: []ports.Processor{
 			&FakeProcessor{
 				NameVal: "panicker",

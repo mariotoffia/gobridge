@@ -8,6 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // newIdleTestRunner builds a minimal RouteRunner wired to a FakeReceiver
@@ -28,7 +29,7 @@ func newIdleTestRunner(t *testing.T) (*FakeReceiver, *runtime.RouteRunner, *Fake
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:      dlq.New(NewFakeDLQStore()),
 	}
 	runner := runtime.NewRouteRunnerFromConfig(cfg)
 	return receiver, runner, sender, release
@@ -136,7 +137,7 @@ func TestRouteRunner_IdleChanged_NoFireWhenNotAtZero(t *testing.T) {
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold, MaxInFlight: 4}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:      dlq.New(NewFakeDLQStore()),
 	}
 	runner := runtime.NewRouteRunnerFromConfig(cfg)
 

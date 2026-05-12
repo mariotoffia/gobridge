@@ -17,6 +17,7 @@ import (
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/observability"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // RouteRunner executes the ingress pipeline for a single route.
@@ -31,7 +32,7 @@ type RouteRunner struct {
 	senders              map[string]ports.Sender           // binding ID -> sender (optional)
 	addressValidators    map[string]ports.AddressValidator // binding ID -> validator (optional)
 	outboxStore          ports.OutboxStore
-	dlq                  *DLQRouter
+	dlq                  *dlq.Router
 	resolver             ports.DestinationResolver
 	processors           []ports.Processor
 	bindings             []routing.DestinationBinding
@@ -64,7 +65,7 @@ type RouteRunnerConfig struct {
 	Senders              map[string]ports.Sender           // binding ID -> sender (optional)
 	AddressValidators    map[string]ports.AddressValidator // binding ID -> validator (optional)
 	OutboxStore          ports.OutboxStore
-	DLQ                  *DLQRouter
+	DLQ                  *dlq.Router
 	Resolver             ports.DestinationResolver
 	Processors           []ports.Processor
 	Bindings             []routing.DestinationBinding
@@ -98,7 +99,7 @@ func NewRouteRunnerFromConfig(cfg RouteRunnerConfig) *RouteRunner {
 // without inline default-fill branches. It mutates c in place.
 func (c *RouteRunnerConfig) applyDefaults() {
 	if c.DLQ == nil {
-		c.DLQ = NewDLQRouter(nil)
+		c.DLQ = dlq.New(nil)
 	}
 	if c.Metrics == nil {
 		c.Metrics = &ports.NoopExporter{}

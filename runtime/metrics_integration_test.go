@@ -11,6 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // TestRouteRunner_EmitsE2ELatency verifies DeliveryE2ELatency is recorded with route_id for a direct_hold runner.
@@ -67,7 +68,7 @@ func TestRouteRunner_EmitsDLQEntries(t *testing.T) {
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		DLQ:      dlq.New(dlqStore),
 		Metrics:  rec,
 		Bindings: []routing.DestinationBinding{{ID: "b1"}},
 	})

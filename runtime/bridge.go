@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // Runtime is the top-level coordinator for the GoBridge message routing
@@ -44,7 +45,7 @@ type Runtime struct {
 	sessionSenders  map[string]*sessionSenderEntry
 	sessionMgrs     map[string]*SessionManager
 	drainers        []*OutboxDrainer
-	dlqRouter       *DLQRouter
+	dlqRouter       *dlq.Router
 	globalSem       chan struct{}
 	running         bool
 	healthy         bool

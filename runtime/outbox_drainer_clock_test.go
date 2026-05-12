@@ -14,6 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // fixedNoJitterStrategy returns a constant interval without the ±25%
@@ -87,7 +88,7 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 		OutboxStore:         outbox,
 		LeaseStore:          leaseStore,
 		Sender:              sender,
-		DLQ:                 goruntime.NewDLQRouter(dlqStore),
+		DLQ:                 dlq.New(dlqStore),
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             sessionID,
@@ -211,7 +212,7 @@ func TestOutboxDrainer_DrainLatencyUsesInjectedClock(t *testing.T) {
 		OutboxStore:         outbox,
 		LeaseStore:          leaseStore,
 		Sender:              sender,
-		DLQ:                 goruntime.NewDLQRouter(dlqStore),
+		DLQ:                 dlq.New(dlqStore),
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             sessionID,

@@ -1,4 +1,4 @@
-package runtime_test
+package dlq_test
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
-	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // retryCountingDLQStore fails the first failN writes and succeeds afterwards.
@@ -68,7 +68,7 @@ func (s *retryCountingDLQStore) DeleteByFilter(_ context.Context, _ routing.DLQF
 }
 func (s *retryCountingDLQStore) Purge(_ context.Context, _ time.Time) (int, error) { return 0, nil }
 
-// TestDLQRouter_RetryBackoff_FakeClock proves that the DLQ router's
+// TestRouter_RetryBackoff_FakeClock proves that the DLQ router's
 // exponential backoff between write retries is driven entirely by the
 // injected clock, not wall time.
 //
@@ -80,7 +80,7 @@ func (s *retryCountingDLQStore) Purge(_ context.Context, _ time.Time) (int, erro
 //	T+0ms   — attempt 1: immediate, fails
 //	T+100ms — attempt 2: after 100ms backoff, fails
 //	T+300ms — attempt 3: after 200ms backoff (100ms×2), succeeds
-func TestDLQRouter_RetryBackoff_FakeClock(t *testing.T) {
+func TestRouter_RetryBackoff_FakeClock(t *testing.T) {
 	fake := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 
 	store := &retryCountingDLQStore{
@@ -88,7 +88,7 @@ func TestDLQRouter_RetryBackoff_FakeClock(t *testing.T) {
 		onWrite: make(chan int), // unbuffered — worker blocks until test reads
 	}
 
-	router := runtime.NewDLQRouterFromConfig(runtime.DLQRouterConfig{
+	router := dlq.NewFromConfig(dlq.Config{
 		Store:      store,
 		BufferSize: 1,
 		Workers:    1,

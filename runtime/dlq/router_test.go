@@ -1,39 +1,40 @@
-package runtime_test
+package dlq_test
 
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
-	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // Verifies routing with a nil DLQ store is a no-op and returns no error.
-func TestDLQRouter_NilStore(t *testing.T) {
-	dlq := runtime.NewDLQRouter(nil)
+func TestRouter_NilStore(t *testing.T) {
+	r := dlq.New(nil)
 	env := &messaging.Envelope{ID: "msg-1"}
 
-	err := dlq.Route(context.Background(), env, "route-1", "", "", "", "", shared.ErrNotFound, 1)
+	err := r.Route(context.Background(), env, "route-1", "", "", "", "", shared.ErrNotFound, 1)
 	if err != nil {
 		t.Fatalf("nil store should be a no-op, got %v", err)
 	}
 }
 
 // Verifies Route persists one entry with route, correlation, permanent category, and attempt count.
-func TestDLQRouter_WritesEntry(t *testing.T) {
-	store := NewFakeDLQStore()
-	dlq := runtime.NewDLQRouter(store)
+func TestRouter_WritesEntry(t *testing.T) {
+	store := NewFakeStore()
+	r := dlq.New(store)
 
 	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID:      "msg-1",
 		Headers: map[string]any{messaging.HeaderCorrelationID: "corr-abc"},
 	})
 
-	err := dlq.Route(context.Background(), env, "route-1", "bind-1", "", "sess-1", "src-1", shared.ErrNotFound, 3)
+	err := r.Route(context.Background(), env, "route-1", "bind-1", "", "sess-1", "src-1", shared.ErrNotFound, 3)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -57,12 +58,12 @@ func TestDLQRouter_WritesEntry(t *testing.T) {
 }
 
 // Verifies non-domain errors are categorized as unknown in the DLQ entry.
-func TestDLQRouter_UnknownError(t *testing.T) {
-	store := NewFakeDLQStore()
-	dlq := runtime.NewDLQRouter(store)
+func TestRouter_UnknownError(t *testing.T) {
+	store := NewFakeStore()
+	r := dlq.New(store)
 
 	env := &messaging.Envelope{ID: "msg-1"}
-	_ = dlq.Route(context.Background(), env, "r", "", "", "", "", context.DeadlineExceeded, 0)
+	_ = r.Route(context.Background(), env, "r", "", "", "", "", context.DeadlineExceeded, 0)
 
 	if store.Count() != 1 {
 		t.Fatalf("expected 1 entry, got %d", store.Count())
@@ -73,39 +74,39 @@ func TestDLQRouter_UnknownError(t *testing.T) {
 }
 
 // Verifies HasStore returns true when a store is configured.
-func TestDLQRouter_HasStore_True(t *testing.T) {
-	store := NewFakeDLQStore()
-	dlq := runtime.NewDLQRouter(store)
+func TestRouter_HasStore_True(t *testing.T) {
+	store := NewFakeStore()
+	r := dlq.New(store)
 
-	if !dlq.HasStore() {
+	if !r.HasStore() {
 		t.Fatal("HasStore() should return true when store is non-nil")
 	}
 }
 
 // Verifies HasStore returns false when store is nil.
-func TestDLQRouter_HasStore_False(t *testing.T) {
-	dlq := runtime.NewDLQRouter(nil)
+func TestRouter_HasStore_False(t *testing.T) {
+	r := dlq.New(nil)
 
-	if dlq.HasStore() {
+	if r.HasStore() {
 		t.Fatal("HasStore() should return false when store is nil")
 	}
 }
 
 // Documents RISK: Reason and LastError contain raw err.Error() strings,
 // which may include infrastructure details such as hostnames and ports.
-// TestDLQRouter_Route_RedactsErrorDetails verifies that DLQ entries use
+// TestRouter_Route_RedactsErrorDetails verifies that DLQ entries use
 // sanitized error reasons rather than raw err.Error() to prevent information
 // disclosure of internal infrastructure details.
-func TestDLQRouter_Route_RedactsErrorDetails(t *testing.T) {
-	store := NewFakeDLQStore()
-	dlq := runtime.NewDLQRouter(store)
+func TestRouter_Route_RedactsErrorDetails(t *testing.T) {
+	store := NewFakeStore()
+	r := dlq.New(store)
 	env := &messaging.Envelope{ID: "msg-redact"}
 
 	rawErr := shared.ErrConnectionLost.Wrap(
 		fmt.Errorf("connection to db-prod.internal:5432 refused"),
 	)
 
-	err := dlq.Route(context.Background(), env, "route-redact", "bind-1", "", "sess-1", "src-1", rawErr, 1)
+	err := r.Route(context.Background(), env, "route-redact", "bind-1", "", "sess-1", "src-1", rawErr, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -115,10 +116,10 @@ func TestDLQRouter_Route_RedactsErrorDetails(t *testing.T) {
 
 	entry := store.Entries[0]
 	const sensitiveSubstring = "db-prod.internal:5432"
-	if contains(entry.Reason, sensitiveSubstring) {
+	if strings.Contains(entry.Reason, sensitiveSubstring) {
 		t.Fatalf("Reason should NOT contain sensitive details %q, got %q", sensitiveSubstring, entry.Reason)
 	}
-	if contains(entry.LastError, sensitiveSubstring) {
+	if strings.Contains(entry.LastError, sensitiveSubstring) {
 		t.Fatalf("LastError should NOT contain sensitive details %q, got %q", sensitiveSubstring, entry.LastError)
 	}
 	if entry.Reason != "connection lost" {
@@ -126,28 +127,14 @@ func TestDLQRouter_Route_RedactsErrorDetails(t *testing.T) {
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		findSubstring(s, substr))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
 // Verifies that when the DLQ store returns a write error, Route propagates it.
-func TestDLQRouter_Route_StoreWriteError_Propagated(t *testing.T) {
-	store := NewFakeDLQStore()
+func TestRouter_Route_StoreWriteError_Propagated(t *testing.T) {
+	store := NewFakeStore()
 	store.WriteErr = fmt.Errorf("disk full")
-	dlq := runtime.NewDLQRouter(store)
+	r := dlq.New(store)
 	env := &messaging.Envelope{ID: "msg-fail"}
 
-	err := dlq.Route(context.Background(), env, "r", "", "", "", "", shared.ErrNotFound, 1)
+	err := r.Route(context.Background(), env, "r", "", "", "", "", shared.ErrNotFound, 1)
 	if err == nil {
 		t.Fatal("expected store write error to be propagated")
 	}
@@ -157,11 +144,11 @@ func TestDLQRouter_Route_StoreWriteError_Propagated(t *testing.T) {
 }
 
 // Verifies all DLQEntry fields are correctly populated from the Route call.
-func TestDLQRouter_Route_AllFieldsPopulated(t *testing.T) {
-	store := NewFakeDLQStore()
+func TestRouter_Route_AllFieldsPopulated(t *testing.T) {
+	store := NewFakeStore()
 	failedAt := time.Date(2026, 5, 4, 12, 34, 56, 789, time.UTC)
 	clk := clocktest.NewAt(failedAt)
-	dlq := runtime.NewDLQRouterFromConfig(runtime.DLQRouterConfig{
+	r := dlq.NewFromConfig(dlq.Config{
 		Store: store,
 		Clock: clk,
 	})
@@ -174,7 +161,7 @@ func TestDLQRouter_Route_AllFieldsPopulated(t *testing.T) {
 	})
 
 	routeErr := shared.ErrThrottled
-	err := dlq.Route(context.Background(), env, "route-all", "bind-all", "", "sess-all", "src-all", routeErr, 7)
+	err := r.Route(context.Background(), env, "route-all", "bind-all", "", "sess-all", "src-all", routeErr, 7)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -225,13 +212,13 @@ func TestDLQRouter_Route_AllFieldsPopulated(t *testing.T) {
 }
 
 // Verifies that when the envelope has no correlation ID header, CorrelationID is empty.
-func TestDLQRouter_Route_NoCorrelationID(t *testing.T) {
-	store := NewFakeDLQStore()
-	dlq := runtime.NewDLQRouter(store)
+func TestRouter_Route_NoCorrelationID(t *testing.T) {
+	store := NewFakeStore()
+	r := dlq.New(store)
 
 	env := &messaging.Envelope{ID: "msg-nocorr"}
 
-	err := dlq.Route(context.Background(), env, "route-nocorr", "", "", "", "", shared.ErrNotFound, 1)
+	err := r.Route(context.Background(), env, "route-nocorr", "", "", "", "", shared.ErrNotFound, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -243,10 +230,12 @@ func TestDLQRouter_Route_NoCorrelationID(t *testing.T) {
 	}
 }
 
-// Verifies classifyError with a BridgeError returns the correct class and code.
-func TestDLQRouter_ClassifyError_BridgeError(t *testing.T) {
-	store := NewFakeDLQStore()
-	dlq := runtime.NewDLQRouter(store)
+// Verifies the router classifies BridgeError values via the public Route
+// surface. This is the package-level analogue of the previous internal
+// classifyError helper test.
+func TestRouter_ClassifyError_BridgeError(t *testing.T) {
+	store := NewFakeStore()
+	r := dlq.New(store)
 	env := &messaging.Envelope{ID: "msg-bridge"}
 
 	testCases := []struct {
@@ -284,7 +273,7 @@ func TestDLQRouter_ClassifyError_BridgeError(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			store.Entries = nil
-			err := dlq.Route(context.Background(), env, "route-classify", "", "", "", "", tc.err, 1)
+			err := r.Route(context.Background(), env, "route-classify", "", "", "", "", tc.err, 1)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

@@ -10,6 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // OutboxDrainer claims pending outbox records for a partition and sends
@@ -19,7 +20,7 @@ type OutboxDrainer struct {
 	outboxStore    ports.OutboxStore
 	leaseStore     ports.LeaseStore
 	sender         ports.Sender
-	dlq            *DLQRouter
+	dlq            *dlq.Router
 	routeID        string
 	partitionKey   string
 	leaseID        string
@@ -74,7 +75,7 @@ type OutboxDrainerConfig struct {
 	OutboxStore         ports.OutboxStore
 	LeaseStore          ports.LeaseStore
 	Sender              ports.Sender
-	DLQ                 *DLQRouter
+	DLQ                 *dlq.Router
 	RouteID             string
 	PartitionKey        string
 	LeaseID             string
@@ -163,7 +164,7 @@ func newOutboxDrainer(cfg OutboxDrainerConfig) *OutboxDrainer {
 		cfg.DrainMaxConcurrency = 10
 	}
 	if cfg.DLQ == nil {
-		cfg.DLQ = NewDLQRouter(nil)
+		cfg.DLQ = dlq.New(nil)
 	}
 	// useScaledTimeout captures whether the caller opted into the new
 	// scaled formula. When either new field is non-zero we use

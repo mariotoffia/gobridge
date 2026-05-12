@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -44,7 +45,7 @@ func TestRouteRunner_SharedOutbox_DepthCacheExercised(t *testing.T) {
 			MaxOutboxDepth: 100,
 		},
 		OutboxStore: outbox,
-		DLQ:         goruntime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:         dlq.New(NewFakeDLQStore()),
 		InstanceID:  "bridge-1",
 		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "sess-1", Address: "dest"},
@@ -86,7 +87,7 @@ func TestRouteRunner_DirectHold_NoQueryPending(t *testing.T) {
 			MaxOutboxDepth: 100, // deliberately set to prove depth check is not exercised for DirectHold
 		},
 		OutboxStore: outbox,
-		DLQ:         goruntime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:         dlq.New(NewFakeDLQStore()),
 		InstanceID:  "bridge-1",
 	})
 
@@ -426,7 +427,7 @@ func TestRouteRunner_SharedOutbox_NilOutboxStore_Retries(t *testing.T) {
 			MaxOutboxDepth: 100,
 		},
 		OutboxStore: nil,
-		DLQ:         goruntime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:         dlq.New(NewFakeDLQStore()),
 		InstanceID:  "bridge-1",
 		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "sess-1", Address: "dest"},

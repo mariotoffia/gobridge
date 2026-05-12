@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // recordingAddressValidator records each ValidateAddress call and
@@ -48,7 +49,7 @@ func TestRouteRunner_AddressValidator_Reject_RoutesDLQ(t *testing.T) {
 		Sender:            sender,
 		Bindings:          bindings,
 		AddressValidators: map[string]ports.AddressValidator{"b1": validator},
-		DLQ:               runtime.NewDLQRouter(dlqStore),
+		DLQ:               dlq.New(dlqStore),
 	}
 	runner := runtime.NewRouteRunnerFromConfig(cfg)
 
@@ -100,7 +101,7 @@ func TestRouteRunner_AddressValidator_NilSkipsValidation(t *testing.T) {
 		Sender:   sender,
 		Bindings: bindings,
 		// AddressValidators intentionally nil — transport opted out.
-		DLQ: runtime.NewDLQRouter(dlqStore),
+		DLQ: dlq.New(dlqStore),
 	}
 	runner := runtime.NewRouteRunnerFromConfig(cfg)
 

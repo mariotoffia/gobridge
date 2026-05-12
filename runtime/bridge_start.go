@@ -9,6 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // Start wires up all registered routes, session managers, and outbox
@@ -40,9 +41,9 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 	ctx, rt.cancel = context.WithCancel(ctx)
 
-	dlq := NewDLQRouterFromConfig(DLQRouterConfig{Store: rt.dlqStore, Clock: rt.clk})
-	dlq.Start(ctx)
-	rt.dlqRouter = dlq
+	dlqRouter := dlq.NewFromConfig(dlq.Config{Store: rt.dlqStore, Clock: rt.clk})
+	dlqRouter.Start(ctx)
+	rt.dlqRouter = dlqRouter
 
 	m := rt.metrics
 	if m == nil {
@@ -68,7 +69,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 			Senders:           entry.config.Senders,
 			AddressValidators: entry.config.AddressValidators,
 			OutboxStore:       rt.outboxStore,
-			DLQ:               dlq,
+			DLQ:               dlqRouter,
 			Resolver:          entry.config.Resolver,
 			Processors:        entry.config.Processors,
 			Bindings:          entry.config.Bindings,
@@ -112,7 +113,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					OutboxStore:           rt.outboxStore,
 					LeaseStore:            rt.leaseStore,
 					Sender:                entry.sender,
-					DLQ:                   dlq,
+					DLQ:                   dlqRouter,
 					RouteID:               entry.config.ID,
 					PartitionKey:          persistence.OutboxPartitionKey(sid, ""),
 					LeaseID:               sid,
@@ -167,7 +168,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					OutboxStore:           rt.outboxStore,
 					LeaseStore:            rt.leaseStore,
 					Sender:                sse.sender,
-					DLQ:                   dlq,
+					DLQ:                   dlqRouter,
 					RouteID:               entry.config.ID,
 					PartitionKey:          persistence.OutboxPartitionKey(sid, ""),
 					LeaseID:               sid,
@@ -196,7 +197,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 	if len(rt.sessionMgrs) > 0 {
 		mgrs := rt.sessionMgrs
-		dlq.SetTokenFn(func() (persistence.LeaseToken, bool) {
+		dlqRouter.SetTokenFn(func() (persistence.LeaseToken, bool) {
 			for _, mgr := range mgrs {
 				if tok, held := mgr.Token(); held {
 					return tok, true

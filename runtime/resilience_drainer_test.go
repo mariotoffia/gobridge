@@ -28,6 +28,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // TestDrainer_StaleFencingToken_UsesMinBackoff validates that stale
@@ -143,7 +144,7 @@ func TestRetryUnsupported_WithDLQ_RoutesToDLQ(t *testing.T) {
 		Policy:   routing.RoutePolicy{}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		DLQ:      dlq.New(dlqStore),
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

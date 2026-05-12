@@ -12,6 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -242,7 +243,7 @@ func TestF5_DrainBatchSkipsTOCTOUCheck(t *testing.T) {
 		OutboxStore:  outbox,
 		LeaseStore:   countLease,
 		Sender:       sender,
-		DLQ:          goruntime.NewDLQRouter(nil),
+		DLQ:          dlq.New(nil),
 		RouteID:      "route-1",
 		PartitionKey: persistence.OutboxPartitionKey("sess-1", ""),
 		LeaseID:      "sess-1",

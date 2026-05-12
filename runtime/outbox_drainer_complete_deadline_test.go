@@ -11,6 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 type senderFunc func(context.Context, *messaging.Envelope) error
@@ -64,7 +65,7 @@ func TestOutboxDrainer_CompleteSurvivesNearBatchDeadline(t *testing.T) {
 		OutboxStore:           outbox,
 		LeaseStore:            leaseStore,
 		Sender:                &ctxAwareSender{latency: 105 * time.Millisecond},
-		DLQ:                   goruntime.NewDLQRouter(dlqStore),
+		DLQ:                   dlq.New(dlqStore),
 		RouteID:               "route-1",
 		PartitionKey:          pk,
 		LeaseID:               "sess-complete-deadline",
@@ -164,7 +165,7 @@ func TestOutboxDrainer_CompleteRespectsRuntimeShutdown(t *testing.T) {
 		OutboxStore:         outbox,
 		LeaseStore:          leaseStore,
 		Sender:              sender,
-		DLQ:                 goruntime.NewDLQRouter(dlqStore),
+		DLQ:                 dlq.New(dlqStore),
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             "sess-complete-shutdown",

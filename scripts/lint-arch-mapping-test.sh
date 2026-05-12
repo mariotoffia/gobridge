@@ -91,6 +91,7 @@ expect ports         /ports
 expect config        /config
 expect config_parser /config/parser
 expect runtime       /runtime
+expect runtime_dlq   /runtime/dlq
 expect bridge        /bridge
 expect validate      /validate
 expect httpapi       /httpapi

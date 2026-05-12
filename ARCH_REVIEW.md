@@ -79,7 +79,16 @@ The user's four review questions answered:
 
   **Status:** Decomposed 2026-05-12 into seven independently green-able sub-tasks H-1a..H-1g, promoted to first-class sidecar items below. The umbrella H-1 entry is closed; progress is tracked per sub-task. Investigation context (still relevant): ~6.1K LOC production + ~22K LOC tests under `runtime/`, 30 production files cross-referencing private types, 85 external caller files in `bridge/`, `httpapi/`, `cmd/`, `tests/integration/`, `tests/longrunning/`, `adapters/native/**`, plus arch-lint and `ARCHITECTURE.md`. Sequencing rationale documented per sub-task below.
 
-- **H-1a** Extract `runtime/dlq` package: move `DLQ`, `DLQEntry`, related stores/handlers out of `runtime/` into a dedicated sub-package. Lowest fan-out — safe leaf to validate the splitting pattern. Update arch-lint component map and all import sites in one PR; `make test` / `make lint` must be green at HEAD. *(AP-001; Clean-Arch F4 — sub-task of H-1)*
+- **H-1a** Extract `runtime/dlq` package: move `DLQ`, `DLQEntry`, related stores/handlers out of `runtime/` into a dedicated sub-package. Lowest fan-out — safe leaf to validate the splitting pattern. Update arch-lint component map and all import sites in one PR; `make test` / `make lint` must be green at HEAD. *(AP-001; Clean-Arch F4 — sub-task of H-1)* - DONE
+
+  **Status:** Resolved 2026-05-12. Introduced `runtime/dlq` as a leaf package with `dlq.Router`, `dlq.Config`, `dlq.New`, and `dlq.NewFromConfig`; moved the DLQ router test suite into that package; rewired runtime/integration call sites; and updated `.go-arch-lint.yml` plus `scripts/lint-arch-mapping-test.sh` to enforce the new boundary. `make test` and `make lint` are green.
+
+  **Tests added:** No net-new behavior scenarios; existing DLQ router tests moved to `runtime/dlq` with package-local helpers.
+
+  **Follow-ups (not blockers; logged for future passes):**
+  - Verify or restore the referenced `go-core/PACKAGES.md` path in workflow docs (file not present in this repo tree).
+
+  **Review:** APPROVED on first pass by `code-reviewer` (model: gpt-5.3-codex).
 
   Suggested agent: `refactoring-specialist`.
 

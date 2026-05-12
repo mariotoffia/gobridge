@@ -10,6 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // ---------------------------------------------------------------------------
@@ -48,7 +49,7 @@ func TestIntegration_ContentRouting_HeaderMatch_DirectHold(t *testing.T) {
 			"bind-alerts":  senderAlerts,
 			"bind-default": senderDefault,
 		},
-		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:      dlq.New(NewFakeDLQStore()),
 		Resolver: resolver,
 		Bindings: bindings,
 	}
@@ -121,7 +122,7 @@ func TestIntegration_ContentRouting_SubjectPrefix_DirectHold(t *testing.T) {
 		Receiver: receiver,
 		Sender:   senderEU,
 		Senders:  map[string]ports.Sender{"bind-eu": senderEU, "bind-us": senderUS},
-		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:      dlq.New(NewFakeDLQStore()),
 		Resolver: resolver,
 		Bindings: bindings,
 	}
@@ -171,7 +172,7 @@ func TestIntegration_ContentRouting_JSONPayload_DirectHold(t *testing.T) {
 		Receiver: receiver,
 		Sender:   senderLow,
 		Senders:  map[string]ports.Sender{"high-prio": senderHigh, "low-prio": senderLow},
-		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:      dlq.New(NewFakeDLQStore()),
 		Resolver: resolver,
 		Bindings: bindings,
 	}
@@ -238,7 +239,7 @@ func TestIntegration_ContentRouting_ProcessorThenRouting(t *testing.T) {
 		Receiver:   receiver,
 		Sender:     senderNormal,
 		Senders:    map[string]ports.Sender{"bind-vip": senderVIP, "bind-normal": senderNormal},
-		DLQ:        runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:        dlq.New(NewFakeDLQStore()),
 		Resolver:   resolver,
 		Bindings:   bindings,
 		Processors: []ports.Processor{tierProc},
@@ -308,7 +309,7 @@ func TestIntegration_ContentRouting_Concurrent(t *testing.T) {
 		Receiver: receiver,
 		Sender:   senderA,
 		Senders:  map[string]ports.Sender{"bind-a": senderA, "bind-b": senderB},
-		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:      dlq.New(NewFakeDLQStore()),
 		Resolver: resolver,
 		Bindings: bindings,
 	}

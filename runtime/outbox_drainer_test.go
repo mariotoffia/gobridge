@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 func makeDrainer(t *testing.T, token persistence.LeaseToken, opts ...func(*goruntime.OutboxDrainerConfig)) (*FakeOutboxStore, *FakeSender, *FakeDLQStore, *goruntime.OutboxDrainer) {
@@ -29,7 +30,7 @@ func makeDrainer(t *testing.T, token persistence.LeaseToken, opts ...func(*gorun
 		OutboxStore:    outbox,
 		LeaseStore:     leaseStore,
 		Sender:         sender,
-		DLQ:            goruntime.NewDLQRouter(dlqStore),
+		DLQ:            dlq.New(dlqStore),
 		RouteID:        "route-1",
 		PartitionKey:   pk,
 		LeaseID:        "sess-1",
@@ -175,7 +176,7 @@ func TestOutboxDrainer_NoLease(t *testing.T) {
 	cfg := goruntime.OutboxDrainerConfig{
 		OutboxStore:  outbox,
 		Sender:       sender,
-		DLQ:          goruntime.NewDLQRouter(dlqStore),
+		DLQ:          dlq.New(dlqStore),
 		RouteID:      "route-1",
 		PartitionKey: persistence.OutboxPartitionKey("sess-1", ""),
 		OwnerID:      "bridge-1",

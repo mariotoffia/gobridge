@@ -8,6 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 func BenchmarkRunChain_NoProcessors(b *testing.B) {
@@ -57,7 +58,7 @@ func BenchmarkRunChain_FiveProcessors(b *testing.B) {
 
 func BenchmarkDLQRouter_Route(b *testing.B) {
 	store := NewFakeDLQStore()
-	dlq := runtime.NewDLQRouter(store)
+	dlq := dlq.New(store)
 	ctx := context.Background()
 	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID:      "bench-msg",

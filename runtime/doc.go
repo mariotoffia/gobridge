@@ -10,5 +10,5 @@
 //   - RouteRunner: per-route execution pipeline supporting DirectHold and SharedOutbox delivery
 //   - SessionManager: session lifecycle, lease renewal, and three-phase step-down
 //   - OutboxDrainer: outbox replay loop with fencing, poison detection, and expiry checks
-//   - DLQRouter: error classification and dead-letter queue routing
+//   - Router (in runtime/dlq): error classification and dead-letter queue routing
 package runtime

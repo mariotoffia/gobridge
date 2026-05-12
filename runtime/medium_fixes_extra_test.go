@@ -16,6 +16,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -77,7 +78,7 @@ func TestAdaptBatchSize_HalvesOnConsecutiveZeroSuccess(t *testing.T) {
 		OutboxStore:         outbox,
 		LeaseStore:          lease,
 		Sender:              sender,
-		DLQ:                 goruntime.NewDLQRouter(nil),
+		DLQ:                 dlq.New(nil),
 		RouteID:             "adapt-route",
 		PartitionKey:        pk,
 		LeaseID:             "sess-1",
@@ -313,7 +314,7 @@ func TestNormalMaxBatchSize_NotClamped(t *testing.T) {
 		OutboxStore:       outbox,
 		LeaseStore:        lease,
 		Sender:            sender,
-		DLQ:               goruntime.NewDLQRouter(nil),
+		DLQ:               dlq.New(nil),
 		RouteID:           "normal-route",
 		PartitionKey:      pk,
 		LeaseID:           "sess-1",
@@ -357,7 +358,7 @@ func TestOutboxDrainer_SuccessEmitsCompletion(t *testing.T) {
 		OutboxStore:    outbox,
 		LeaseStore:     lease,
 		Sender:         sender,
-		DLQ:            goruntime.NewDLQRouter(nil),
+		DLQ:            dlq.New(nil),
 		RouteID:        "success-route",
 		PartitionKey:   pk,
 		LeaseID:        "sess-1",
@@ -427,7 +428,7 @@ func TestBatchSizeClamped_PreventsAbsoluteMaxBypass(t *testing.T) {
 		OutboxStore:       outbox,
 		LeaseStore:        lease,
 		Sender:            sender,
-		DLQ:               goruntime.NewDLQRouter(nil),
+		DLQ:               dlq.New(nil),
 		RouteID:           "bsclamp-route",
 		PartitionKey:      pk,
 		LeaseID:           "sess-1",
@@ -474,7 +475,7 @@ func TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric(t *testing.T) {
 		OutboxStore:    outbox,
 		LeaseStore:     lease,
 		Sender:         sender,
-		DLQ:            goruntime.NewDLQRouter(nil),
+		DLQ:            dlq.New(nil),
 		RouteID:        "stale-metric-route",
 		PartitionKey:   pk,
 		LeaseID:        "sess-1",

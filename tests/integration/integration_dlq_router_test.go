@@ -10,7 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
 
@@ -45,7 +45,7 @@ func TestIntegration_DLQRouter_RouteStoresEntry(t *testing.T) {
 	}
 
 	store := newDDBDLQStore(t, "dr1")
-	router := goruntime.NewDLQRouterFromConfig(goruntime.DLQRouterConfig{
+	router := dlq.NewFromConfig(dlq.Config{
 		Store:        store,
 		WriteTimeout: 10 * time.Second,
 	})
@@ -109,7 +109,7 @@ func TestIntegration_DLQRouter_AsyncBufferDrains(t *testing.T) {
 	}
 
 	store := newDDBDLQStore(t, "dr2")
-	router := goruntime.NewDLQRouterFromConfig(goruntime.DLQRouterConfig{
+	router := dlq.NewFromConfig(dlq.Config{
 		Store:        store,
 		BufferSize:   100,
 		Workers:      2,
@@ -159,7 +159,7 @@ func TestIntegration_DLQRouter_ErrorClassification(t *testing.T) {
 	}
 
 	store := newDDBDLQStore(t, "dr3")
-	router := goruntime.NewDLQRouterFromConfig(goruntime.DLQRouterConfig{
+	router := dlq.NewFromConfig(dlq.Config{
 		Store:        store,
 		WriteTimeout: 10 * time.Second,
 	})
@@ -212,7 +212,7 @@ func TestIntegration_DLQRouter_CloseDrainsBuffer(t *testing.T) {
 	}
 
 	store := newDDBDLQStore(t, "dr4")
-	router := goruntime.NewDLQRouterFromConfig(goruntime.DLQRouterConfig{
+	router := dlq.NewFromConfig(dlq.Config{
 		Store:        store,
 		BufferSize:   100,
 		Workers:      1,
@@ -259,7 +259,7 @@ func TestIntegration_DLQRouter_ConcurrentRoutes(t *testing.T) {
 	}
 
 	store := newDDBDLQStore(t, "dr5")
-	router := goruntime.NewDLQRouterFromConfig(goruntime.DLQRouterConfig{
+	router := dlq.NewFromConfig(dlq.Config{
 		Store:        store,
 		BufferSize:   200,
 		Workers:      4,

@@ -1,4 +1,4 @@
-package runtime_test
+package dlq_test
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
-	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -21,11 +21,11 @@ import (
 // the channel, causing a panic. The fix uses a mutex + stopped flag.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestDLQRouter_ConcurrentCloseAndRoute launches goroutines calling Route
+// TestRouter_ConcurrentCloseAndRoute launches goroutines calling Route
 // in a tight loop while Close() is called concurrently. No panic must occur.
-func TestDLQRouter_ConcurrentCloseAndRoute(t *testing.T) {
-	store := NewFakeDLQStore()
-	router := runtime.NewDLQRouterFromConfig(runtime.DLQRouterConfig{
+func TestRouter_ConcurrentCloseAndRoute(t *testing.T) {
+	store := NewFakeStore()
+	router := dlq.NewFromConfig(dlq.Config{
 		Store:      store,
 		BufferSize: 10,
 		EnqTimeout: 50 * time.Millisecond,
@@ -68,10 +68,10 @@ func TestDLQRouter_ConcurrentCloseAndRoute(t *testing.T) {
 	wg.Wait()
 }
 
-// TestDLQRouter_DoubleClose verifies that calling Close twice is safe.
-func TestDLQRouter_DoubleClose(t *testing.T) {
-	store := NewFakeDLQStore()
-	router := runtime.NewDLQRouterFromConfig(runtime.DLQRouterConfig{
+// TestRouter_DoubleClose verifies that calling Close twice is safe.
+func TestRouter_DoubleClose(t *testing.T) {
+	store := NewFakeStore()
+	router := dlq.NewFromConfig(dlq.Config{
 		Store:      store,
 		BufferSize: 10,
 		Workers:    1,
@@ -85,10 +85,10 @@ func TestDLQRouter_DoubleClose(t *testing.T) {
 	router.Close()
 }
 
-// TestDLQRouter_RouteAfterClose falls back to synchronous write.
-func TestDLQRouter_RouteAfterClose(t *testing.T) {
-	store := NewFakeDLQStore()
-	router := runtime.NewDLQRouterFromConfig(runtime.DLQRouterConfig{
+// TestRouter_RouteAfterClose falls back to synchronous write.
+func TestRouter_RouteAfterClose(t *testing.T) {
+	store := NewFakeStore()
+	router := dlq.NewFromConfig(dlq.Config{
 		Store:      store,
 		BufferSize: 10,
 		Workers:    1,

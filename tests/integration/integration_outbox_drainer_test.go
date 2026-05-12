@@ -14,6 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
 
@@ -196,7 +197,7 @@ func TestIntegration_OutboxDrainer_ExpiredRecordRoutesDLQ(t *testing.T) {
 		t.Fatalf("persist: %v", err)
 	}
 
-	dlqRouter := goruntime.NewDLQRouterFromConfig(goruntime.DLQRouterConfig{
+	dlqRouter := dlq.NewFromConfig(dlq.Config{
 		Store: dlqStore,
 	})
 
@@ -272,7 +273,7 @@ func TestIntegration_OutboxDrainer_PoisonMessageRoutesDLQ(t *testing.T) {
 	}
 
 	finalTok := persistence.LeaseToken{Version: 4, Owner: "drainer-od4"}
-	dlqRouter := goruntime.NewDLQRouterFromConfig(goruntime.DLQRouterConfig{
+	dlqRouter := dlq.NewFromConfig(dlq.Config{
 		Store: dlqStore,
 	})
 

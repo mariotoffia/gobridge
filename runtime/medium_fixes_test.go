@@ -14,6 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -308,7 +309,7 @@ func TestAbsoluteMaxBatchSize_Clamps(t *testing.T) {
 		OutboxStore:         outbox,
 		LeaseStore:          lease,
 		Sender:              sender,
-		DLQ:                 goruntime.NewDLQRouter(nil),
+		DLQ:                 dlq.New(nil),
 		RouteID:             "clamp-route",
 		PartitionKey:        pk,
 		LeaseID:             "sess-1",
@@ -369,7 +370,7 @@ func TestOutboxDrainer_EmitsRecordFailureMetric(t *testing.T) {
 		OutboxStore:    outbox,
 		LeaseStore:     lease,
 		Sender:         sender,
-		DLQ:            goruntime.NewDLQRouter(nil),
+		DLQ:            dlq.New(nil),
 		RouteID:        "metric-route",
 		PartitionKey:   pk,
 		LeaseID:        "sess-1",

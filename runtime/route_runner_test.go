@@ -12,6 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/observability"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 func makeRunner(t *testing.T, opts ...func(*runtime.RouteRunnerConfig)) (*FakeReceiver, *FakeSender, *FakeDLQStore, *FakeOutboxStore, *runtime.RouteRunner) {
@@ -27,7 +28,7 @@ func makeRunner(t *testing.T, opts ...func(*runtime.RouteRunnerConfig)) (*FakeRe
 		Receiver:    receiver,
 		Sender:      sender,
 		OutboxStore: outbox,
-		DLQ:         runtime.NewDLQRouter(dlqStore),
+		DLQ:         dlq.New(dlqStore),
 		InstanceID:  "bridge-1",
 	}
 	for _, o := range opts {

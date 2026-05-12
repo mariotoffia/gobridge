@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -78,7 +79,7 @@ func TestOutboxDrainer_SendTimeout(t *testing.T) {
 		OutboxStore:  outbox,
 		LeaseStore:   leaseStore,
 		Sender:       blockingSender,
-		DLQ:          goruntime.NewDLQRouter(dlqStore),
+		DLQ:          dlq.New(dlqStore),
 		RouteID:      "route-1",
 		PartitionKey: pk,
 		LeaseID:      "sess-1",
@@ -142,7 +143,7 @@ func TestRouteRunner_SendTimeout(t *testing.T) {
 		Receiver:    receiver,
 		Sender:      blockingSender,
 		OutboxStore: outbox,
-		DLQ:         goruntime.NewDLQRouter(dlqStore),
+		DLQ:         dlq.New(dlqStore),
 		InstanceID:  "bridge-1",
 	}
 	runner := goruntime.NewRouteRunnerFromConfig(cfg)
@@ -238,7 +239,7 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 		OutboxStore:         outbox,
 		LeaseStore:          leaseStore,
 		Sender:              ctxSender,
-		DLQ:                 goruntime.NewDLQRouter(dlqStore),
+		DLQ:                 dlq.New(dlqStore),
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             "sess-1",
@@ -322,7 +323,7 @@ func TestOutboxDrainer_StaleFencingToken_PropagatedToRunLoop(t *testing.T) {
 		OutboxStore:  outbox,
 		LeaseStore:   leaseStore,
 		Sender:       sender,
-		DLQ:          goruntime.NewDLQRouter(dlqStore),
+		DLQ:          dlq.New(dlqStore),
 		RouteID:      "route-1",
 		PartitionKey: pk,
 		LeaseID:      "sess-1",

@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // rejectingAddressValidator implements ports.AddressValidator for tests
@@ -37,7 +38,7 @@ func TestResolvePlans_NoResolver_RendersAddress(t *testing.T) {
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:      dlq.New(NewFakeDLQStore()),
 		Bindings: bindings,
 		// No Resolver — exercises the fallback path.
 	}
@@ -81,7 +82,7 @@ func TestResolvePlans_NoResolver_RenderError_RoutesDLQ(t *testing.T) {
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		DLQ:      dlq.New(dlqStore),
 		Bindings: bindings,
 	}
 	runner := runtime.NewRouteRunnerFromConfig(cfg)
@@ -120,7 +121,7 @@ func TestResolvePlans_NoResolver_CopiesBindingHeaders(t *testing.T) {
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:      dlq.New(NewFakeDLQStore()),
 		Bindings: bindings,
 	}
 	runner := runtime.NewRouteRunnerFromConfig(cfg)
@@ -157,7 +158,7 @@ func TestResolvePlans_NoResolver_AddressValidatorRejects(t *testing.T) {
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		DLQ:      dlq.New(dlqStore),
 		Bindings: bindings,
 		// AP-005: validation is now a transport-supplied capability
 		// dispatched per binding by the runtime. The test wires a

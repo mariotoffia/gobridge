@@ -29,6 +29,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
 // ---------------------------------------------------------------------------
@@ -347,7 +348,7 @@ func TestDeliveryHook_DirectHold_Drop_NoDLQ_RetryUnsupported(t *testing.T) {
 		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
 		Sender:     sender,
-		DLQ:        runtime.NewDLQRouter(nil),
+		DLQ:        dlq.New(nil),
 		InstanceID: "bridge-1",
 		Hook:       hook,
 	})
