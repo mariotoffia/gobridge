@@ -188,7 +188,12 @@ The user's four review questions answered:
   **Tests added:** none.
   **Follow-ups (not blockers; logged for future passes):** If the capability set grows substantially, consider a `KnownCapabilities()`/validation helper to keep validator seams iterable.
   **Agents/Skills used:** refactoring-specialist, code-reviewer.
-- **L-21** Cross-module sibling import `bridge/builder.go:74 b.pushCredStore = runtime.NewPollBasedWrapper(...)` exports `runtime.NewPollBasedWrapper` solely for the composition root. Acceptable today; if H-1 (split `runtime/`) lands, this should move to `runtime/credentials`. *(AP-020)*
+- **L-21** Cross-module sibling import `bridge/builder.go:74 b.pushCredStore = runtime.NewPollBasedWrapper(...)` exports `runtime.NewPollBasedWrapper` solely for the composition root. Acceptable today; if H-1 (split `runtime/`) lands, this should move to `runtime/credentials`. *(AP-020)* - BLOCKED
+  **Status:** BLOCKED 2026-05-12 — deferred because the explicit precondition has not landed. H-1 is still blocked, `runtime/credentials/` does not exist, and `NewPollBasedWrapper` remains in `runtime/credentials_poll.go` as part of package `runtime`; moving it now would pre-empt H-1's package decomposition and arch-lint component design.
+  **What landed:** none — no code changes required or appropriate before H-1b.
+  **Tests added:** none.
+  **Follow-ups (not blockers; logged for future passes):** When H-1b lands, move the poll-based credential wrapper and tests into `runtime/credentials`, update `bridge/builder.go` imports/usages, and add the new component to `.go-arch-lint.yml`.
+  **Agents/Skills used:** refactoring-specialist.
 - **L-22** `RouteRunnerConfig` (`runtime/route_runner.go:58-87`) is a 22-field data bag with `WithDefaults`-style logic spread across `newRouteRunner` (~15 default-fill `if cfg.X <= 0 {…}` branches). Collapse via a `defaults()` method on the config. *(AP-006)* - DONE
 - **L-23** Concurrency: `closeRefresher` in `runtime/bridge.go:218-224` does not accept `ctx` — closer signature loses cancellation. Acceptable since the closer is in-process and bounded; worth adding ctx for symmetry. *(C-001)* - DONE
 - **L-24** Concurrency: `runtime/bridge.go:228-238` `done` goroutine could outlive `Stop` if ctx fires *and* `wg.Wait` never completes (mitigated by `closeTimeout` line 245). Annotate or restructure. *(C-002)* - DONE

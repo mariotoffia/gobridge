@@ -1,9 +1,9 @@
 {
   "$schema": "v2",
   "source": "ARCH_REVIEW.md",
-  "source_sha": "4d429ed1aeb23d6ae4818df5500545fa16c7240399dce3d10e67b2db7e3206c2",
+  "source_sha": "4c21a3d4cbcc3e5a12b9109292c2125069976dee28939976c6591027475fa096",
   "indexed_at": "2026-05-12T00:00:00Z",
-  "status_convention": "no explicit markers — orchestrator will append \" - DONE\" to the item line on completion",
+  "status_convention": "no explicit markers \u2014 orchestrator will append \" - DONE\" to the item line on completion",
   "tasks": [
     {
       "id": "C-1",
@@ -33,7 +33,7 @@
       "status": "done",
       "category_hint": "(DDD R1)",
       "suggested_agent": "thiink-ddd-expert",
-      "agent_rationale": "DDD R1 tag — tactical DDD aggregate design.",
+      "agent_rationale": "DDD R1 tag \u2014 tactical DDD aggregate design.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -44,7 +44,7 @@
       "status": "done",
       "category_hint": "(DDD R2)",
       "suggested_agent": "thiink-ddd-expert",
-      "agent_rationale": "DDD R2 tag — aggregate constructor / encapsulation.",
+      "agent_rationale": "DDD R2 tag \u2014 aggregate constructor / encapsulation.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -55,18 +55,18 @@
       "status": "done",
       "category_hint": "(AP-003)",
       "suggested_agent": "refactoring-specialist",
-      "agent_rationale": "AP-003 — registry/singleton design refactor.",
+      "agent_rationale": "AP-003 \u2014 registry/singleton design refactor.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
     },
     {
       "id": "H-5",
-      "title": "Add `adapters/amqp/transport/...` rows to ARCHITECTURE.md §13 and DEVELOPMENT.md",
+      "title": "Add `adapters/amqp/transport/...` rows to ARCHITECTURE.md \u00a713 and DEVELOPMENT.md",
       "status": "done",
       "category_hint": "(Docs F#3)",
       "suggested_agent": "technical-writer",
-      "agent_rationale": "Docs F#3 tag — documentation/diagram update.",
+      "agent_rationale": "Docs F#3 tag \u2014 documentation/diagram update.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -77,7 +77,7 @@
       "status": "done",
       "category_hint": "(Docs F#4)",
       "suggested_agent": "technical-writer",
-      "agent_rationale": "Docs F#4 tag — author scenarios index page.",
+      "agent_rationale": "Docs F#4 tag \u2014 author scenarios index page.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -88,7 +88,7 @@
       "status": "done",
       "category_hint": "(AP-005)",
       "suggested_agent": "refactoring-specialist",
-      "agent_rationale": "AP-005 — extensibility/seam refactor moving validation to factory capability.",
+      "agent_rationale": "AP-005 \u2014 extensibility/seam refactor moving validation to factory capability.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -99,7 +99,7 @@
       "status": "done",
       "category_hint": "(AP-004)",
       "suggested_agent": "refactoring-specialist",
-      "agent_rationale": "AP-004 — value-object refactor replacing map[string]any pattern.",
+      "agent_rationale": "AP-004 \u2014 value-object refactor replacing map[string]any pattern.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -110,18 +110,18 @@
       "status": "done",
       "category_hint": "(AP-009)",
       "suggested_agent": "refactoring-specialist",
-      "agent_rationale": "AP-009 — builder/lifecycle design refactor.",
+      "agent_rationale": "AP-009 \u2014 builder/lifecycle design refactor.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
     },
     {
       "id": "M-4",
-      "title": "CI plugin-symmetry analyzer verifying registered kind ↔ wired factory",
+      "title": "CI plugin-symmetry analyzer verifying registered kind \u2194 wired factory",
       "status": "done",
       "category_hint": "(AP-008)",
       "suggested_agent": "golang-pro",
-      "agent_rationale": "AP-008 — Go static analyzer mirroring scripts/registrychk.",
+      "agent_rationale": "AP-008 \u2014 Go static analyzer mirroring scripts/registrychk.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -132,7 +132,7 @@
       "status": "done",
       "category_hint": "(AP-007)",
       "suggested_agent": "refactoring-specialist",
-      "agent_rationale": "AP-007 — naming/interface promotion refactor.",
+      "agent_rationale": "AP-007 \u2014 naming/interface promotion refactor.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -143,7 +143,7 @@
       "status": "done",
       "category_hint": "(DDD R4)",
       "suggested_agent": "thiink-ddd-expert",
-      "agent_rationale": "DDD R4 tag — first-class domain events.",
+      "agent_rationale": "DDD R4 tag \u2014 first-class domain events.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -154,7 +154,7 @@
       "status": "done",
       "category_hint": "(DDD R5)",
       "suggested_agent": "thiink-ddd-expert",
-      "agent_rationale": "DDD R5 tag — aggregate snapshot/encapsulation rule.",
+      "agent_rationale": "DDD R5 tag \u2014 aggregate snapshot/encapsulation rule.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -165,7 +165,7 @@
       "status": "done",
       "category_hint": "(Docs F#5)",
       "suggested_agent": "technical-writer",
-      "agent_rationale": "Docs F#5 — repo hygiene per AGENT.md doc rules.",
+      "agent_rationale": "Docs F#5 \u2014 repo hygiene per AGENT.md doc rules.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -176,7 +176,7 @@
       "status": "done",
       "category_hint": "(Docs F#6)",
       "suggested_agent": "technical-writer",
-      "agent_rationale": "Docs F#6 — README correction.",
+      "agent_rationale": "Docs F#6 \u2014 README correction.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -187,7 +187,7 @@
       "status": "done",
       "category_hint": "(Docs F#8)",
       "suggested_agent": "technical-writer",
-      "agent_rationale": "Docs F#8 — package-level overview docs (doc.go authoring).",
+      "agent_rationale": "Docs F#8 \u2014 package-level overview docs (doc.go authoring).",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -198,7 +198,7 @@
       "status": "done",
       "category_hint": "(Docs F#7)",
       "suggested_agent": "technical-writer",
-      "agent_rationale": "Docs F#7 — author troubleshooting guide.",
+      "agent_rationale": "Docs F#7 \u2014 author troubleshooting guide.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -220,7 +220,7 @@
       "status": "done",
       "category_hint": "(DDD F-03 / R3)",
       "suggested_agent": "thiink-ddd-expert",
-      "agent_rationale": "DDD F-03/R3 tag — inner-ring purity / DDD finding.",
+      "agent_rationale": "DDD F-03/R3 tag \u2014 inner-ring purity / DDD finding.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -231,7 +231,7 @@
       "status": "done",
       "category_hint": "(Clean-Arch F2)",
       "suggested_agent": "thiink-clean-arch-reviewer",
-      "agent_rationale": "Clean-Arch F2 tag — layering split.",
+      "agent_rationale": "Clean-Arch F2 tag \u2014 layering split.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -242,18 +242,18 @@
       "status": "done",
       "category_hint": "(Clean-Arch F5)",
       "suggested_agent": "thiink-clean-arch-reviewer",
-      "agent_rationale": "Clean-Arch F5 tag — package responsibility realignment.",
+      "agent_rationale": "Clean-Arch F5 tag \u2014 package responsibility realignment.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
     },
     {
       "id": "L-4",
-      "title": "Reposition `bridge/` semantically — docs-rename or move `Builder` into `cmd/`",
+      "title": "Reposition `bridge/` semantically \u2014 docs-rename or move `Builder` into `cmd/`",
       "status": "done",
       "category_hint": "(Clean-Arch F3)",
       "suggested_agent": "thiink-clean-arch-reviewer",
-      "agent_rationale": "Clean-Arch F3 tag — layer-role positioning.",
+      "agent_rationale": "Clean-Arch F3 tag \u2014 layer-role positioning.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -264,7 +264,7 @@
       "status": "done",
       "category_hint": "(Hex F-3)",
       "suggested_agent": "thiink-hexagonal-reviewer",
-      "agent_rationale": "Hex F-3 tag — driving-port surface.",
+      "agent_rationale": "Hex F-3 tag \u2014 driving-port surface.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -275,7 +275,7 @@
       "status": "done",
       "category_hint": "(DDD F-10 / R8)",
       "suggested_agent": "thiink-ddd-expert",
-      "agent_rationale": "DDD F-10/R8 tag — value-object validation.",
+      "agent_rationale": "DDD F-10/R8 tag \u2014 value-object validation.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -286,29 +286,29 @@
       "status": "done",
       "category_hint": "(DDD F-08 / R7)",
       "suggested_agent": "thiink-ddd-expert",
-      "agent_rationale": "DDD F-08/R7 tag — strategic DDD context-map update.",
+      "agent_rationale": "DDD F-08/R7 tag \u2014 strategic DDD context-map update.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
     },
     {
       "id": "L-8",
-      "title": "Naming pass: `RegisterTransport → RegisterTransportFactory`; collapse `WithLogger`",
+      "title": "Naming pass: `RegisterTransport \u2192 RegisterTransportFactory`; collapse `WithLogger`",
       "status": "done",
       "category_hint": "(AP-010, AP-012)",
       "suggested_agent": "refactoring-specialist",
-      "agent_rationale": "AP-010/AP-012 — naming/registration symmetry refactor.",
+      "agent_rationale": "AP-010/AP-012 \u2014 naming/registration symmetry refactor.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
     },
     {
       "id": "L-9",
-      "title": "Pick one doc format — convert AsciiDoc to Markdown or document the carve-out",
+      "title": "Pick one doc format \u2014 convert AsciiDoc to Markdown or document the carve-out",
       "status": "done",
       "category_hint": "(Docs F#9)",
       "suggested_agent": "technical-writer",
-      "agent_rationale": "Docs F#9 tag — doc format consistency.",
+      "agent_rationale": "Docs F#9 tag \u2014 doc format consistency.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -319,29 +319,29 @@
       "status": "done",
       "category_hint": "(Docs F#10, F#14, F#15)",
       "suggested_agent": "technical-writer",
-      "agent_rationale": "Docs F#10/F#14/F#15 tags — diagram authoring.",
+      "agent_rationale": "Docs F#10/F#14/F#15 tags \u2014 diagram authoring.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
     },
     {
       "id": "L-11",
-      "title": "Link `spec/httpapi/*.yaml` (OpenAPI) from README and ARCHITECTURE.md §10",
+      "title": "Link `spec/httpapi/*.yaml` (OpenAPI) from README and ARCHITECTURE.md \u00a710",
       "status": "done",
       "category_hint": "(Docs F#12, F#13)",
       "suggested_agent": "technical-writer",
-      "agent_rationale": "Docs F#12/F#13 tags — README/architecture cross-linking.",
+      "agent_rationale": "Docs F#12/F#13 tags \u2014 README/architecture cross-linking.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
     },
     {
       "id": "L-12",
-      "title": "Generate adapter layout block from `find adapters …` via make to prevent drift",
+      "title": "Generate adapter layout block from `find adapters \u2026` via make to prevent drift",
       "status": "done",
-      "category_hint": "(Docs §8)",
+      "category_hint": "(Docs \u00a78)",
       "suggested_agent": "technical-writer",
-      "agent_rationale": "Docs §8 tag — documentation generation tooling.",
+      "agent_rationale": "Docs \u00a78 tag \u2014 documentation generation tooling.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -350,9 +350,9 @@
       "id": "L-13",
       "title": "Add `docs/scenarios/_template.md` with required sections",
       "status": "done",
-      "category_hint": "(Docs §8)",
+      "category_hint": "(Docs \u00a78)",
       "suggested_agent": "technical-writer",
-      "agent_rationale": "Docs §8 tag — scenario template authoring.",
+      "agent_rationale": "Docs \u00a78 tag \u2014 scenario template authoring.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -363,7 +363,7 @@
       "status": "done",
       "category_hint": "(AP-011)",
       "suggested_agent": "golang-pro",
-      "agent_rationale": "AP-011 — Go runtime/* error-return refactor.",
+      "agent_rationale": "AP-011 \u2014 Go runtime/* error-return refactor.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -374,7 +374,7 @@
       "status": "done",
       "category_hint": "(DDD F-11 / R9)",
       "suggested_agent": "thiink-ddd-expert",
-      "agent_rationale": "DDD F-11/R9 tag — global mutable state in domain.",
+      "agent_rationale": "DDD F-11/R9 tag \u2014 global mutable state in domain.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -385,18 +385,18 @@
       "status": "done",
       "category_hint": "(DDD F-12)",
       "suggested_agent": "thiink-ddd-expert",
-      "agent_rationale": "DDD F-12 tag — ubiquitous-language disambiguation.",
+      "agent_rationale": "DDD F-12 tag \u2014 ubiquitous-language disambiguation.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
     },
     {
       "id": "L-17",
-      "title": "README \"Project Structure\" omits `validate/` — add a row",
+      "title": "README \"Project Structure\" omits `validate/` \u2014 add a row",
       "status": "done",
       "category_hint": "(Docs F#11)",
       "suggested_agent": "technical-writer",
-      "agent_rationale": "Docs F#11 tag — README structure fix.",
+      "agent_rationale": "Docs F#11 tag \u2014 README structure fix.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -407,7 +407,7 @@
       "status": "done",
       "category_hint": "(AP-014)",
       "suggested_agent": "golang-pro",
-      "agent_rationale": "AP-014 — Go error-handling convention alignment.",
+      "agent_rationale": "AP-014 \u2014 Go error-handling convention alignment.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -418,7 +418,7 @@
       "status": "done",
       "category_hint": "(AP-013)",
       "suggested_agent": "refactoring-specialist",
-      "agent_rationale": "AP-013 — typed sum/value-object refactor of condition.go.",
+      "agent_rationale": "AP-013 \u2014 typed sum/value-object refactor of condition.go.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -429,7 +429,7 @@
       "status": "done",
       "category_hint": "(AP-030)",
       "suggested_agent": "refactoring-specialist",
-      "agent_rationale": "AP-030 — naming/registry-style design observation.",
+      "agent_rationale": "AP-030 \u2014 naming/registry-style design observation.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -437,10 +437,10 @@
     {
       "id": "L-21",
       "title": "Move `runtime.NewPollBasedWrapper` to `runtime/credentials` after H-1 lands",
-      "status": "pending",
+      "status": "blocked",
       "category_hint": "(AP-020)",
       "suggested_agent": "refactoring-specialist",
-      "agent_rationale": "AP-020 — package-boundary refactor follow-on to H-1.",
+      "agent_rationale": "AP-020 \u2014 package-boundary refactor follow-on to H-1.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -451,7 +451,7 @@
       "status": "done",
       "category_hint": "(AP-006)",
       "suggested_agent": "golang-pro",
-      "agent_rationale": "AP-006 — pure Go config-defaults refactor.",
+      "agent_rationale": "AP-006 \u2014 pure Go config-defaults refactor.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -462,7 +462,7 @@
       "status": "done",
       "category_hint": "(C-001)",
       "suggested_agent": "golang-pro",
-      "agent_rationale": "C-001 concurrency finding — golang-pro per mapping.",
+      "agent_rationale": "C-001 concurrency finding \u2014 golang-pro per mapping.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -473,7 +473,7 @@
       "status": "done",
       "category_hint": "(C-002)",
       "suggested_agent": "golang-pro",
-      "agent_rationale": "C-002 concurrency finding — golang-pro per mapping.",
+      "agent_rationale": "C-002 concurrency finding \u2014 golang-pro per mapping.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -484,7 +484,7 @@
       "status": "done",
       "category_hint": "(C-006)",
       "suggested_agent": "golang-pro",
-      "agent_rationale": "C-006 concurrency finding — golang-pro per mapping.",
+      "agent_rationale": "C-006 concurrency finding \u2014 golang-pro per mapping.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
@@ -495,7 +495,7 @@
       "status": "done",
       "category_hint": "(C-003)",
       "suggested_agent": "golang-pro",
-      "agent_rationale": "C-003 concurrency-style finding in Go runtime/* — golang-pro.",
+      "agent_rationale": "C-003 concurrency-style finding in Go runtime/* \u2014 golang-pro.",
       "body_suggested_agents": [],
       "body_suggested_skills": [],
       "review_round": 0
