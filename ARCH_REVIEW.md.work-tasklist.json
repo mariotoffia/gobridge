@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "ARCH_REVIEW.md",
-  "source_sha": "be74248285e4b229b475cc2f61f3f0fe465e245b85067ee7ed13fe5a1253006d",
+  "source_sha": "4d429ed1aeb23d6ae4818df5500545fa16c7240399dce3d10e67b2db7e3206c2",
   "indexed_at": "2026-05-12T00:00:00Z",
   "status_convention": "no explicit markers — orchestrator will append \" - DONE\" to the item line on completion",
   "tasks": [
@@ -426,7 +426,7 @@
     {
       "id": "L-20",
       "title": "Capability strings in `ports/transport.go` flagged for visibility only",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(AP-030)",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "AP-030 — naming/registry-style design observation.",
