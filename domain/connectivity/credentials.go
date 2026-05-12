@@ -43,7 +43,7 @@ type CredentialSet struct {
 //
 // Why: the PushCredentialStore contract requires implementations to
 // emit only on actual changes; this is the canonical equality check
-// used by runtime.PollBasedWrapper and any future push store.
+// used by runtime/credentials.PollBasedWrapper and any future push store.
 func (c *CredentialSet) Equal(other *CredentialSet) bool {
 	if c == nil || other == nil {
 		return c == nil && other == nil

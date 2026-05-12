@@ -1,7 +1,7 @@
 {
   "$schema": "v2",
   "source": "ARCH_REVIEW.md",
-  "source_sha": "22e05befef93698ff8275b9049b530e61b9a0f0ff7b1113dfcd75ceef697edde",
+  "source_sha": "072179e818d31fb7db01421ba58594ab6666a3a370286c6f52190b62d29c7966",
   "indexed_at": "2026-05-12T09:39:00Z",
   "status_convention": "Uses heading suffixes (- DONE, - BLOCKED) and body status lines (**Status:** Resolved/Done/Complete/Closed or **Status:** Blocked); unmarked items are pending.",
   "tasks": [
@@ -43,7 +43,7 @@
     {
       "id": "H-1b",
       "title": "Extract `runtime/credentials` package and close L-21",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(AP-001; AP-020 — sub-task of H-1)",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "Runtime credentials package extraction and bridge import updates are refactoring-specialist work; source explicitly suggests refactoring-specialist.",
@@ -530,7 +530,7 @@
     {
       "id": "L-21",
       "title": "Move `runtime.NewPollBasedWrapper` to `runtime/credentials` after H-1 lands",
-      "status": "blocked",
+      "status": "done",
       "category_hint": "(AP-020)",
       "suggested_agent": "refactoring-specialist",
       "agent_rationale": "AP-020 — package-boundary refactor follow-on to H-1.",

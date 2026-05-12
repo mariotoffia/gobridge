@@ -92,7 +92,15 @@ The user's four review questions answered:
 
   Suggested agent: `refactoring-specialist`.
 
-- **H-1b** Extract `runtime/credentials` package: move `PollBasedWrapper`, `PollBasedWrapperOption`, `WithPollClock`, `WithPollLogger`, `NewPollBasedWrapper`, `DefaultCredentialPollInterval` from `runtime/credentials_poll.go` into the new package; fold `runtime/credential_refresher_hook.go` (19 lines) into `Runtime.AttachCredentialCloser` as a minor cleanup. Update `bridge/builder.go` import + call sites and add the `runtime_credentials` component to `.go-arch-lint.yml`. **Closes L-21.** *(AP-001; AP-020 — sub-task of H-1)*
+- **H-1b** Extract `runtime/credentials` package: move `PollBasedWrapper`, `PollBasedWrapperOption`, `WithPollClock`, `WithPollLogger`, `NewPollBasedWrapper`, `DefaultCredentialPollInterval` from `runtime/credentials_poll.go` into the new package; fold `runtime/credential_refresher_hook.go` (19 lines) into `Runtime.AttachCredentialCloser` as a minor cleanup. Update `bridge/builder.go` import + call sites and add the `runtime_credentials` component to `.go-arch-lint.yml`. **Closes L-21.** *(AP-001; AP-020 — sub-task of H-1)* - DONE
+
+  **Status:** Resolved 2026-05-12. H-1b extracted the poll-based credential wrapper into `runtime/credentials`, removed the old root `runtime` exports, folded credential closer attachment into `Runtime.AttachCredentialCloser`, and updated the bridge composition root plus architecture lint mapping. This closes L-21 in the same pass.
+
+  **What landed:** `runtime/credentials/poll.go`, `runtime/credentials/poll_test.go`, `runtime/bridge.go`, `bridge/builder.go`, `.go-arch-lint.yml`, `scripts/lint-arch-mapping-test.sh`, related credential docs and type references; removed `runtime/credentials_poll.go`, `runtime/credentials_poll_test.go`, and `runtime/credential_refresher_hook.go`.
+
+  **Tests added:** No net-new behavior scenarios; existing `PollBasedWrapper` scenarios moved to `runtime/credentials` and pass.
+
+  **Review:** APPROVED on first pass by `code-reviewer` (model: gpt-5.3-codex).
 
   Suggested agent: `refactoring-specialist`.
 
@@ -203,12 +211,12 @@ The user's four review questions answered:
   **Tests added:** none.
   **Follow-ups (not blockers; logged for future passes):** If the capability set grows substantially, consider a `KnownCapabilities()`/validation helper to keep validator seams iterable.
   **Agents/Skills used:** refactoring-specialist, code-reviewer.
-- **L-21** Cross-module sibling import `bridge/builder.go:74 b.pushCredStore = runtime.NewPollBasedWrapper(...)` exports `runtime.NewPollBasedWrapper` solely for the composition root. Acceptable today; if H-1 (split `runtime/`) lands, this should move to `runtime/credentials`. *(AP-020)* - BLOCKED
-  **Status:** BLOCKED 2026-05-12 — deferred because the explicit precondition has not landed. H-1 is still blocked, `runtime/credentials/` does not exist, and `NewPollBasedWrapper` remains in `runtime/credentials_poll.go` as part of package `runtime`; moving it now would pre-empt H-1's package decomposition and arch-lint component design.
-  **What landed:** none — no code changes required or appropriate before H-1b.
-  **Tests added:** none.
-  **Follow-ups (not blockers; logged for future passes):** When H-1b lands, move the poll-based credential wrapper and tests into `runtime/credentials`, update `bridge/builder.go` imports/usages, and add the new component to `.go-arch-lint.yml`.
-  **Agents/Skills used:** refactoring-specialist.
+- **L-21** Cross-module sibling import `bridge/builder.go:74 b.pushCredStore = runtime.NewPollBasedWrapper(...)` exports `runtime.NewPollBasedWrapper` solely for the composition root. Acceptable today; if H-1 (split `runtime/`) lands, this should move to `runtime/credentials`. *(AP-020)* - DONE
+  **Status:** Resolved 2026-05-12. Closed by H-1b: the composition root now imports `runtime/credentials` directly and calls `credentials.NewPollBasedWrapper`, so the poll-based credential adapter no longer needs to be exported from root `runtime` solely for `bridge/builder.go`.
+  **What landed:** `runtime/credentials/poll.go`, `runtime/credentials/poll_test.go`, `bridge/builder.go`, `.go-arch-lint.yml`, and `scripts/lint-arch-mapping-test.sh`; removed the old root `runtime` credential polling files.
+  **Tests added:** No net-new behavior scenarios; existing `PollBasedWrapper` tests moved to `runtime/credentials`.
+  **Review:** APPROVED on first pass by `code-reviewer` as part of H-1b (model: gpt-5.3-codex).
+  **Agents/Skills used:** refactoring-specialist, code-reviewer.
 - **L-22** `RouteRunnerConfig` (`runtime/route_runner.go:58-87`) is a 22-field data bag with `WithDefaults`-style logic spread across `newRouteRunner` (~15 default-fill `if cfg.X <= 0 {…}` branches). Collapse via a `defaults()` method on the config. *(AP-006)* - DONE
 - **L-23** Concurrency: `closeRefresher` in `runtime/bridge.go:218-224` does not accept `ctx` — closer signature loses cancellation. Acceptable since the closer is in-process and bounded; worth adding ctx for symmetry. *(C-001)* - DONE
 - **L-24** Concurrency: `runtime/bridge.go:228-238` `done` goroutine could outlive `Stop` if ctx fires *and* `wg.Wait` never completes (mitigated by `closeTimeout` line 245). Annotate or restructure. *(C-002)* - DONE

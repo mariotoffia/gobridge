@@ -30,7 +30,7 @@ flowchart LR
     subgraph DIR["Direction axis"]
         PULL[PullCredentialStore<br/>Resolve(uri)]
         PUSH[PushCredentialStore<br/>Watch(uri)]
-        POLL[runtime.PollBasedWrapper<br/>Pull -> Push adapter]
+        POLL[runtime/credentials.PollBasedWrapper<br/>Pull -> Push adapter]
         PULL -->|"wrap"| POLL
         POLL -->|"satisfies"| PUSH
     end
@@ -86,10 +86,10 @@ whenever the backing material changes. Required contract:
 3. The first value MAY be emitted eagerly (initial snapshot) or
    lazily (on first rotation). Callers don't rely on the timing.
 
-### `runtime.PollBasedWrapper` -- Pull to Push adapter
+### `runtime/credentials.PollBasedWrapper` -- Pull to Push adapter
 
 Most real stores (file, SSM) have no native change notification.
-`runtime.NewPollBasedWrapper(pull, cfg)` turns any pull store into a
+`credentials.NewPollBasedWrapper(pull, cfg)` turns any pull store into a
 push store by polling on a ticker:
 
 ```go
@@ -98,7 +98,7 @@ cfg := ports.PollBasedWrapperConfig{
     Jitter:       5 * time.Second, // spread load across watchers
     EmitOnStart:  false,           // true = snapshot on subscribe
 }
-push := runtime.NewPollBasedWrapper(pullStore, cfg)
+push := credentials.NewPollBasedWrapper(pullStore, cfg)
 ```
 
 Each `Watch` call gets its own ticker goroutine. Dedup happens
@@ -354,6 +354,6 @@ Suppose you want to support OAuth2 bearer tokens:
 - [`ports/credentials.go`](../ports/credentials.go) -- interface definitions
 - [`domain/credentials.go`](../domain/credentials.go) -- `CredentialSet`, `Equal`
 - [`bridge/credential_refresh.go`](../bridge/credential_refresh.go) -- `CredentialRefresher`, `CredentialAware`
-- [`runtime/credentials_poll.go`](../runtime/credentials_poll.go) -- `PollBasedWrapper`
+- [`runtime/credentials/poll.go`](../runtime/credentials/poll.go) -- `PollBasedWrapper`
 - [`docs/credentials-and-http-api.md`](credentials-and-http-api.md) -- build-time resolution, URI schemes
 - [`PLUGIN.md`](../PLUGIN.md) -- writing a new transport plugin

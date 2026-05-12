@@ -73,7 +73,7 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 				refresher.WatchSender(ctx, uri, snd)
 			}
 		}
-		runtime.AttachCredentialCloser(rt, func(_ context.Context) { refresher.Close() })
+		rt.AttachCredentialCloser(func(_ context.Context) { refresher.Close() })
 	}
 
 	return rt, nil

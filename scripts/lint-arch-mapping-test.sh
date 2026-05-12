@@ -90,8 +90,9 @@ expect domain_clock        /domain/clock
 expect ports         /ports
 expect config        /config
 expect config_parser /config/parser
-expect runtime       /runtime
-expect runtime_dlq   /runtime/dlq
+expect runtime             /runtime
+expect runtime_dlq         /runtime/dlq
+expect runtime_credentials /runtime/credentials
 expect bridge        /bridge
 expect validate      /validate
 expect httpapi       /httpapi

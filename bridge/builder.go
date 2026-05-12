@@ -4,7 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/credentials"
 )
 
 // Builder constructs a runtime.Runtime from a declarative BridgeConfig.
@@ -76,7 +76,7 @@ func WithPushCredentialStore(cs ports.PushCredentialStore) BuilderOption {
 func WithPolledCredentialStore(cs ports.PullCredentialStore, cfg ports.PollBasedWrapperConfig) BuilderOption {
 	return func(b *Builder) {
 		b.credStore = cs
-		b.pushCredStore = runtime.NewPollBasedWrapper(cs, cfg, runtime.WithPollLogger(b.logger))
+		b.pushCredStore = credentials.NewPollBasedWrapper(cs, cfg, credentials.WithPollLogger(b.logger))
 	}
 }
 

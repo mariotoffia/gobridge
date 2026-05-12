@@ -114,7 +114,7 @@ func WithSupervisorPushCredentialStore(cs ports.PushCredentialStore) SupervisorO
 
 // WithSupervisorPolledCredentialStore wires a pull store and adaption
 // config together so the builder can lift a pull store into a push
-// store via runtime.NewPollBasedWrapper.
+// store via runtime/credentials.NewPollBasedWrapper.
 func WithSupervisorPolledCredentialStore(cs ports.PullCredentialStore, cfg ports.PollBasedWrapperConfig) SupervisorOption {
 	return func(s *Supervisor) {
 		s.pollCredStore = cs

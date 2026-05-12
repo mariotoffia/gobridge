@@ -149,6 +149,7 @@ components:
   config_parser: { in: [config/parser] }
   runtime: { in: [runtime] }
   runtime_dlq: { in: [runtime/dlq] }
+  runtime_credentials: { in: [runtime/credentials] }
   bridge: { in: [bridge, bridge/**] }
   validate: { in: [validate, validate/**] }
 
@@ -478,6 +479,21 @@ deps:
       - domain_routing
       - ports
 
+  # runtime_credentials is the credential-store adaptation leaf
+  # (PollBasedWrapper lifts a PullCredentialStore into a
+  # PushCredentialStore). It lives outside the core runtime engine so
+  # the composition root can import it without dragging in the route
+  # execution machinery, and it is referenced ONLY by `bridge`. It
+  # MUST NOT depend on its sibling `runtime` -- the dependency
+  # direction is composition-root -> leaf only -- nor on any adapter
+  # or bridge code.
+  runtime_credentials:
+    mayDependOn:
+      - domain_clock
+      - domain_shared
+      - domain_connectivity
+      - ports
+
   # bridge is the composition factory: it reads ports.BridgeConfig and
   # builds a runtime.Runtime. It MUST NOT depend on the config parser
   # package (the composition root injects a ports.BlueprintValidator
@@ -494,6 +510,7 @@ deps:
       - logging
       - ports
       - runtime
+      - runtime_credentials
 
   # ---- Layer 3: Interface Adapters ----
 

@@ -32,7 +32,7 @@ type PullCredentialStore interface {
 //     on first rotation — both are acceptable; callers should not rely
 //     on either timing.
 //
-// Implementations: runtime.PollBasedWrapper (timer over a Pull store),
+// Implementations: runtime/credentials.PollBasedWrapper (timer over a Pull store),
 // Vault lease watchers, Kubernetes secret informers, etc.
 type PushCredentialStore interface {
 	Watch(ctx context.Context, uri string) (<-chan *connectivity.CredentialSet, error)
@@ -50,11 +50,11 @@ type CredentialStore = PullCredentialStore
 
 // PollBasedWrapperConfig configures a poll-based adaptation from a
 // PullCredentialStore into a PushCredentialStore. The wrapper lives in
-// the runtime package (runtime.NewPollBasedWrapper) so the ports layer
-// stays interface-only.
+// the runtime/credentials package (credentials.NewPollBasedWrapper) so
+// the ports layer stays interface-only.
 type PollBasedWrapperConfig struct {
 	// PollInterval is the cadence at which Resolve is invoked. A zero
-	// or negative value causes runtime.NewPollBasedWrapper to use
+	// or negative value causes credentials.NewPollBasedWrapper to use
 	// DefaultCredentialPollInterval (5 minutes).
 	PollInterval time.Duration
 	// Jitter, when > 0, randomises each poll by up to ±Jitter to spread
