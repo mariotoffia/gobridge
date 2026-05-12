@@ -60,7 +60,7 @@ func newConfigAPITestServer(t *testing.T, baseCfg *ports.BridgeConfig) configAPI
 		MonitorAddr:     ":0",
 		AdminAPIKey:     testAdminAPIKey,
 		MonitorAPIKey:   testMonitorAPIKey,
-		RuntimeProvider: func() *goruntime.Runtime { return rt },
+		RuntimeProvider: func() ports.Runtime { return rt },
 		ConfigStore:     &cfgparser.FileStore{Path: cfgPath, Registry: newTestRegistry()},
 		ConfigProvider:  func() *ports.BridgeConfig { return currentCfg },
 	}
@@ -142,13 +142,19 @@ func newConfigAPITestServerWithPipeline(t *testing.T, baseCfg *ports.BridgeConfi
 	rt := waitForSupervisorRuntime(t, sup, 5*time.Second)
 
 	apiCfg := httpapi.Config{
-		AdminAddr:       ":0",
-		MonitorAddr:     ":0",
-		AdminAPIKey:     testAdminAPIKey,
-		MonitorAPIKey:   testMonitorAPIKey,
-		RuntimeProvider: sup.Runtime,
-		ConfigStore:     &cfgparser.FileStore{Path: cfgPath, Registry: newTestRegistry()},
-		ConfigProvider:  sup.Config,
+		AdminAddr:     ":0",
+		MonitorAddr:   ":0",
+		AdminAPIKey:   testAdminAPIKey,
+		MonitorAPIKey: testMonitorAPIKey,
+		RuntimeProvider: func() ports.Runtime {
+			rt := sup.Runtime()
+			if rt == nil {
+				return nil
+			}
+			return rt
+		},
+		ConfigStore:    &cfgparser.FileStore{Path: cfgPath, Registry: newTestRegistry()},
+		ConfigProvider: sup.Config,
 	}
 
 	srv := httpapi.New(rt, apiCfg, httpapi.WithServerLogger(nil))

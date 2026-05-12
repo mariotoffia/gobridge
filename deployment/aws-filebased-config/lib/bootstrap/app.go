@@ -149,9 +149,15 @@ func (a *App) Start(ctx context.Context) error {
 		CORSOrigins:           a.cfg.CORSOrigins,
 		AdminAPIKeyProvider:   a.apiKeysRef.AdminKey,
 		MonitorAPIKeyProvider: a.apiKeysRef.MonitorKey,
-		RuntimeProvider:       a.runtimeRef.Get,
-		ConfigStore:           &cfgparser.FileStore{Path: a.cfg.ConfigFilePath, Registry: a.pluginRegistry},
-		ConfigProvider:        a.logicalRef.Get,
+		RuntimeProvider: func() ports.Runtime {
+			rt := a.runtimeRef.Get()
+			if rt == nil {
+				return nil
+			}
+			return rt
+		},
+		ConfigStore:    &cfgparser.FileStore{Path: a.cfg.ConfigFilePath, Registry: a.pluginRegistry},
+		ConfigProvider: a.logicalRef.Get,
 	}
 	a.httpServer = httpapi.New(nil, apiCfg,
 		httpapi.WithServerLogger(a.logger),

@@ -2,80 +2,30 @@ package runtime
 
 import (
 	"context"
-	"strings"
+
+	"github.com/mariotoffia/gobridge/ports"
 )
 
-// ReadinessLevel describes the highest operational level the runtime
-// has currently achieved. Levels are strictly ordered: each level
-// implies all lower levels are satisfied.
-//
-// Operators choose the level appropriate for their probe:
-//   - K8s liveness: Live (always — the process answering is enough)
-//   - K8s readiness: Connected or Subscribed (accepts intermittent broker hiccups)
-//   - Pre-traffic gate: Full (every route handler registered, ready to dispatch)
-type ReadinessLevel int
+// ReadinessLevel and its constants are defined in the ports package so
+// driving adapters depend on the inner-ring contract; the aliases
+// below preserve the runtime.LevelX spelling at existing call sites
+// (tests, helpers) without forcing an import-site rename.
+type ReadinessLevel = ports.ReadinessLevel
 
 const (
-	// LevelDown means the runtime is not running or has failed.
-	LevelDown ReadinessLevel = iota
-	// LevelLive means the process is alive and serving HTTP. Always
-	// achievable when this method is called from inside the process.
-	LevelLive
-	// LevelRunning means rt.Start was called, the runtime is healthy,
-	// and the supervisor reports it is the active runtime instance.
-	LevelRunning
-	// LevelConnected means LevelRunning plus every registered session
-	// has SessionHealth.Connected == true. Per-session reconnect storms
-	// drop us below this until the session reconnects.
-	LevelConnected
-	// LevelSubscribed means LevelConnected plus every session has
-	// SubscriptionsActive == SubscriptionsWanted (broker has ACKed
-	// every SUBSCRIBE). Routes can safely register handlers at this
-	// point without missing messages from subsequent publishes.
-	LevelSubscribed
-	// LevelFull means LevelSubscribed plus every route has Ready == true
-	// (route runner started AND receiver started AND, for MQTT,
-	// HandlersRegistered > 0). Equivalent to ReadyForTraffic + ServiceLevelFull.
-	LevelFull
+	LevelDown       = ports.LevelDown
+	LevelLive       = ports.LevelLive
+	LevelRunning    = ports.LevelRunning
+	LevelConnected  = ports.LevelConnected
+	LevelSubscribed = ports.LevelSubscribed
+	LevelFull       = ports.LevelFull
 )
 
-// String returns the lowercase, human-readable name of the level.
-// Stable for inclusion in JSON responses and structured log fields.
-func (l ReadinessLevel) String() string {
-	switch l {
-	case LevelLive:
-		return "live"
-	case LevelRunning:
-		return "running"
-	case LevelConnected:
-		return "connected"
-	case LevelSubscribed:
-		return "subscribed"
-	case LevelFull:
-		return "full"
-	default:
-		return "down"
-	}
-}
-
-// ParseReadinessLevel parses a level string (case-insensitive) and
-// reports whether the input is recognised. Used by HTTP handlers that
-// accept a ?level= query parameter.
+// ParseReadinessLevel is re-exported from ports so existing callers
+// (HTTP handlers, CLI flags) keep compiling. New code should call
+// ports.ParseReadinessLevel directly.
 func ParseReadinessLevel(s string) (ReadinessLevel, bool) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "live":
-		return LevelLive, true
-	case "running":
-		return LevelRunning, true
-	case "connected":
-		return LevelConnected, true
-	case "subscribed":
-		return LevelSubscribed, true
-	case "full":
-		return LevelFull, true
-	default:
-		return LevelDown, false
-	}
+	return ports.ParseReadinessLevel(s)
 }
 
 // ReadinessLevel returns the highest level the runtime has currently
@@ -84,17 +34,17 @@ func ParseReadinessLevel(s string) (ReadinessLevel, bool) {
 //
 // Note: this is a snapshot — the level may change between this call and
 // the next call as sessions reconnect / subscriptions complete.
-func (rt *Runtime) ReadinessLevel(ctx context.Context) ReadinessLevel {
+func (rt *Runtime) ReadinessLevel(ctx context.Context) ports.ReadinessLevel {
 	if rt == nil {
-		return LevelDown
+		return ports.LevelDown
 	}
 	if !rt.IsRunning() || !rt.Healthy() {
 		// Process is alive (we are answering) but the bridge is not running.
-		return LevelLive
+		return ports.LevelLive
 	}
 	dh := rt.DeepHealth(ctx)
 	if !dh.Running || !dh.Healthy {
-		return LevelLive
+		return ports.LevelLive
 	}
 
 	// Sender-only sessions report Connected without subscriptions; track
@@ -112,23 +62,23 @@ func (rt *Runtime) ReadinessLevel(ctx context.Context) ReadinessLevel {
 		}
 	}
 	if !allConnected {
-		return LevelRunning
+		return ports.LevelRunning
 	}
 	if !allSubscribed {
-		return LevelConnected
+		return ports.LevelConnected
 	}
 
 	// Full requires every route runner to be Ready (handler registered).
 	for _, rh := range dh.Routes {
 		if !rh.Ready {
-			return LevelSubscribed
+			return ports.LevelSubscribed
 		}
 	}
-	return LevelFull
+	return ports.LevelFull
 }
 
 // AtLeast reports whether the runtime has achieved at least the
 // requested level.
-func (rt *Runtime) AtLeast(ctx context.Context, want ReadinessLevel) bool {
+func (rt *Runtime) AtLeast(ctx context.Context, want ports.ReadinessLevel) bool {
 	return rt.ReadinessLevel(ctx) >= want
 }

@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // nilRuntimeMonitorServer returns a Server whose RuntimeProvider always
@@ -19,7 +19,7 @@ func nilRuntimeMonitorServer() (*Server, *http.ServeMux) {
 		AdminAddr:   ":0",
 		MonitorAddr: ":0",
 		AdminAPIKey: "test-admin-key-1234567890",
-		RuntimeProvider: func() *runtime.Runtime {
+		RuntimeProvider: func() ports.Runtime {
 			return nil
 		},
 	}

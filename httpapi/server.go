@@ -16,7 +16,6 @@ import (
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/runtime"
 )
 
 // Config holds HTTP server configuration.
@@ -37,7 +36,7 @@ type Config struct {
 
 	// RuntimeProvider returns the current runtime backing the admin/monitor
 	// APIs. When nil, the Server uses the runtime passed to New().
-	RuntimeProvider func() *runtime.Runtime `json:"-"`
+	RuntimeProvider func() ports.Runtime `json:"-"`
 
 	// ConfigStore is the persistence boundary used by the admin
 	// transactions API: validate / merge / save / load. The
@@ -68,8 +67,8 @@ func DefaultConfig() Config {
 
 // Server manages the admin and monitor HTTP endpoints.
 type Server struct {
-	rt                 *runtime.Runtime
-	rtProvider         func() *runtime.Runtime
+	rt                 ports.Runtime
+	rtProvider         func() ports.Runtime
 	adminKeyProvider   func() string
 	monitorKeyProvider func() string
 	cfg                Config
@@ -129,7 +128,7 @@ func WithIDGenerator(fn idGenFn) Option {
 }
 
 // New creates an HTTP Server bound to the given runtime.
-func New(rt *runtime.Runtime, cfg Config, opts ...Option) *Server {
+func New(rt ports.Runtime, cfg Config, opts ...Option) *Server {
 	s := &Server{rt: rt, cfg: cfg}
 	for _, o := range opts {
 		o(s)
@@ -146,7 +145,7 @@ func New(rt *runtime.Runtime, cfg Config, opts ...Option) *Server {
 	if cfg.RuntimeProvider != nil {
 		s.rtProvider = cfg.RuntimeProvider
 	} else {
-		s.rtProvider = func() *runtime.Runtime { return rt }
+		s.rtProvider = func() ports.Runtime { return rt }
 	}
 	if cfg.AdminAPIKeyProvider != nil {
 		s.adminKeyProvider = cfg.AdminAPIKeyProvider
@@ -167,7 +166,7 @@ func New(rt *runtime.Runtime, cfg Config, opts ...Option) *Server {
 	return s
 }
 
-func (s *Server) currentRuntime() *runtime.Runtime {
+func (s *Server) currentRuntime() ports.Runtime { //nolint:ireturn // intentional: the server depends on the ports.Runtime driving-port interface, not the concrete runtime type
 	if s.rtProvider != nil {
 		if rt := s.rtProvider(); rt != nil {
 			return rt

@@ -123,7 +123,7 @@
 ./tests/integration/e2e_sqs_mqtt_test.go:347:	time.Sleep(3 * time.Second) // OTHER: simulated crash delay — let message enter pipeline before killing instance A
 ./tests/integration/integration_config_api_edge_test.go:68:	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for 100ms transaction TTL to expire
 ./tests/integration/integration_config_api_edge_test.go:87:	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for 100ms transaction TTL to expire
-./tests/integration/integration_config_api_helpers_test.go:299:		time.Sleep(interval) // SYNC: poll for condition
+./tests/integration/integration_config_api_helpers_test.go:305:		time.Sleep(interval) // SYNC: poll for condition
 ./tests/integration/integration_ddb_config_helpers_test.go:439:		time.Sleep(10 * time.Millisecond) // SYNC: poll for supervisor runtime readiness
 ./tests/integration/integration_ddb_config_helpers_test.go:458:		time.Sleep(10 * time.Millisecond) // SYNC: poll for route availability
 ./tests/integration/integration_ddb_config_rollback_test.go:336:	time.Sleep(300 * time.Millisecond) // SYNC: let config watcher detect invalid overlay

@@ -3,7 +3,7 @@ package httpapi
 import (
 	"net/http"
 
-	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // MonitorMux returns a ServeMux wired with monitor routes. It is intended
@@ -113,7 +113,7 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	want, ok := goruntime.ParseReadinessLevel(rawLevel)
+	want, ok := ports.ParseReadinessLevel(rawLevel)
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "invalid level (want one of: live, running, connected, subscribed, full)")
 		return
@@ -200,7 +200,7 @@ func (s *Server) handleMonitorRoutes(w http.ResponseWriter, r *http.Request) {
 }
 
 // deepHealthResponse is the JSON-serializable representation of a deep
-// health check. It mirrors runtime.DeepHealth with explicit JSON tags.
+// health check. It mirrors ports.DeepHealth with explicit JSON tags.
 type deepHealthResponse struct {
 	Running         bool                        `json:"running"`
 	Healthy         bool                        `json:"healthy"`

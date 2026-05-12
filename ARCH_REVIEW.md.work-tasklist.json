@@ -261,7 +261,7 @@
     {
       "id": "L-5",
       "title": "Add `ports.RuntimeQuery` / `ports.RuntimeCommand` driving-port interfaces",
-      "status": "pending",
+      "status": "done",
       "category_hint": "(Hex F-3)",
       "suggested_agent": "thiink-hexagonal-reviewer",
       "agent_rationale": "Hex F-3 tag — driving-port surface.",

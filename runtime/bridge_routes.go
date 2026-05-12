@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
-	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -77,22 +76,20 @@ func (rt *Runtime) AddRoute(
 	return nil
 }
 
-// RouteInfo describes a registered route for introspection.
-type RouteInfo struct {
-	ID           string
-	DeliveryMode routing.DeliveryMode
-	DispatchMode routing.DispatchMode
-	Policy       routing.RoutePolicy
-}
+// RouteInfo is the read-side route projection. It is defined in the
+// ports package so driving adapters depend on the inner-ring contract,
+// not on the runtime package. The alias is retained here so existing
+// runtime callers keep compiling without an import-site rename.
+type RouteInfo = ports.RouteInfo
 
 // Routes returns information about all registered routes.
-func (rt *Runtime) Routes() []RouteInfo {
+func (rt *Runtime) Routes() []ports.RouteInfo {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
-	infos := make([]RouteInfo, len(rt.entries))
+	infos := make([]ports.RouteInfo, len(rt.entries))
 	for i, e := range rt.entries {
-		infos[i] = RouteInfo{
+		infos[i] = ports.RouteInfo{
 			ID:           e.config.ID,
 			DeliveryMode: e.config.Policy.DeliveryMode,
 			DispatchMode: e.config.Policy.DispatchMode,
