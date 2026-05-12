@@ -3,6 +3,7 @@ package integration_test
 import (
 	"errors"
 
+	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -62,6 +63,10 @@ func registerFakes(reg *ports.Registry) error {
 		registerSimple("broken"),
 		// Store discriminators used by test fixtures.
 		registerSimple("memory"),
+		// Real SQS adapter decoder so DDB-stored / file configs that
+		// reference transport: sqs round-trip through ParseFile and
+		// the DynamoDB loader without needing per-test wiring.
+		sqsadapter.Register(reg),
 	); err != nil {
 		return err
 	}

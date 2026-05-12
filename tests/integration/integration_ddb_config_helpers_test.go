@@ -35,6 +35,7 @@ func ddbConfigLoader(t *testing.T, prefix string) *ddbconfig.Loader {
 		ddbconfig.WithTableName(tableName),
 		ddbconfig.WithBridgeID("test-bridge"),
 		ddbconfig.WithPollInterval(100*time.Millisecond),
+		ddbconfig.WithRegistry(newTestRegistry()),
 	)
 	if err := loader.EnsureTable(context.Background()); err != nil {
 		t.Fatalf("ensure table: %v", err)

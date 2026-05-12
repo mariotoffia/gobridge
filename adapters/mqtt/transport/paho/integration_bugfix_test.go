@@ -211,7 +211,7 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
-			receivedTopics.Store(del.Envelope().Subject, true)
+			receivedTopics.Store(del.Envelope().Subject(), true)
 			return nil
 		})
 	}()

@@ -206,7 +206,7 @@ func TestIntegration_PubSubRoundTrip(t *testing.T) {
 		})
 	}()
 
-	env := messaging.MustEnvelope(messaging.EnvelopeInput{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		Subject: "roundtrip/test",
 		Payload: []byte("hello-roundtrip"),
 		Headers: map[string]any{

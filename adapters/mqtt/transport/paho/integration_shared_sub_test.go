@@ -212,7 +212,7 @@ func TestIntegration_SharedSubscription_PayloadIntegrity(t *testing.T) {
 	t.Cleanup(func() { _ = publisher.Close(context.Background()) })
 	sender := paho.NewSender(publisher, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
-	env := messaging.MustEnvelope(messaging.EnvelopeInput{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		Subject: baseTopic,
 		Payload: []byte("integrity-check"),
 		Headers: map[string]any{
