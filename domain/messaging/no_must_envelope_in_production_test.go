@@ -30,18 +30,25 @@ var productionMustEnvelopeWhitelist = map[string]struct{}{
 }
 
 // repoRoot returns the absolute path to the gobridge repo root,
-// walking up from the test file until a go.work is found. The walk
-// keeps the test independent of CI working-directory quirks.
+// walking up from the test file until a recognisable repo-root
+// sentinel is found. go.work is gitignored and absent on CI, so we
+// look for a tracked root-only file instead. The walk keeps the test
+// independent of CI working-directory quirks.
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
+	// Sentinels are tracked, root-only files; checking several keeps
+	// the test resilient to a single file being renamed.
+	sentinels := []string{"LANGUAGE.md", "ARCHITECTURE.md", "AGENTS.md"}
 	dir := wd
 	for i := 0; i < 12; i++ {
-		if _, err := os.Stat(filepath.Join(dir, "go.work")); err == nil {
-			return dir
+		for _, s := range sentinels {
+			if _, err := os.Stat(filepath.Join(dir, s)); err == nil {
+				return dir
+			}
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -49,7 +56,7 @@ func repoRoot(t *testing.T) string {
 		}
 		dir = parent
 	}
-	t.Fatalf("could not locate go.work walking up from %s", wd)
+	t.Fatalf("could not locate repo root walking up from %s", wd)
 	return ""
 }
 

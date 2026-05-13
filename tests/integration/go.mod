@@ -58,7 +58,9 @@ require (
 	github.com/aws/smithy-go v1.25.1 // indirect
 	github.com/eclipse/paho.golang v0.23.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
+	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
