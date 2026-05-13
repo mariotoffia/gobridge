@@ -55,34 +55,34 @@ func TestUC22_TenRule_MatchRule_Routing(t *testing.T) {
 	// rule 8: contains, rule 9: regex.
 	rules := []goruntime.MatchRule{
 		{BindingID: "bind-0", Conditions: []goruntime.MatchCondition{
-			{Field: "header.route_key", Operator: goruntime.OpEquals, Value: runtime.Val("rule-0")},
+			{Field: "header.route_key", Operator: goruntime.OpEquals, Value: goruntime.Val("rule-0")},
 		}},
 		{BindingID: "bind-1", Conditions: []goruntime.MatchCondition{
-			{Field: "header.route_key", Operator: goruntime.OpPrefix, Value: runtime.Val("pfx-1")},
+			{Field: "header.route_key", Operator: goruntime.OpPrefix, Value: goruntime.Val("pfx-1")},
 		}},
 		{BindingID: "bind-2", Conditions: []goruntime.MatchCondition{
-			{Field: "header.route_key", Operator: goruntime.OpContains, Value: runtime.Val("cnt2")},
+			{Field: "header.route_key", Operator: goruntime.OpContains, Value: goruntime.Val("cnt2")},
 		}},
 		{BindingID: "bind-3", Conditions: []goruntime.MatchCondition{
-			{Field: "header.route_key", Operator: goruntime.OpRegex, Value: runtime.Val(`^rgx-3-\d+$`)},
+			{Field: "header.route_key", Operator: goruntime.OpRegex, Value: goruntime.Val(`^rgx-3-\d+$`)},
 		}},
 		{BindingID: "bind-4", Conditions: []goruntime.MatchCondition{
-			{Field: "header.priority", Operator: goruntime.OpGreaterThan, Value: runtime.Val("900")},
+			{Field: "header.priority", Operator: goruntime.OpGreaterThan, Value: goruntime.Val("900")},
 		}},
 		{BindingID: "bind-5", Conditions: []goruntime.MatchCondition{
-			{Field: "header.route_key", Operator: goruntime.OpIn, Value: []any{"in-5a", "in-5b", "in-5c"}},
+			{Field: "header.route_key", Operator: goruntime.OpIn, Value: goruntime.Val([]any{"in-5a", "in-5b", "in-5c"})},
 		}},
 		{BindingID: "bind-6", Conditions: []goruntime.MatchCondition{
-			{Field: "header.route_key", Operator: goruntime.OpEquals, Value: runtime.Val("rule-6")},
+			{Field: "header.route_key", Operator: goruntime.OpEquals, Value: goruntime.Val("rule-6")},
 		}},
 		{BindingID: "bind-7", Conditions: []goruntime.MatchCondition{
-			{Field: "header.route_key", Operator: goruntime.OpPrefix, Value: runtime.Val("pfx-7")},
+			{Field: "header.route_key", Operator: goruntime.OpPrefix, Value: goruntime.Val("pfx-7")},
 		}},
 		{BindingID: "bind-8", Conditions: []goruntime.MatchCondition{
-			{Field: "header.route_key", Operator: goruntime.OpContains, Value: runtime.Val("cnt8")},
+			{Field: "header.route_key", Operator: goruntime.OpContains, Value: goruntime.Val("cnt8")},
 		}},
 		{BindingID: "bind-9", Conditions: []goruntime.MatchCondition{
-			{Field: "header.route_key", Operator: goruntime.OpRegex, Value: runtime.Val(`^rgx-9-\d+$`)},
+			{Field: "header.route_key", Operator: goruntime.OpRegex, Value: goruntime.Val(`^rgx-9-\d+$`)},
 		}},
 	}
 	compiled, err := goruntime.CompileMatchRules(rules)

@@ -154,7 +154,7 @@
 ./tests/longrunning/longrunning_helpers_test.go:636:// replacing the brittle time.Sleep(200ms) pattern after Reconcile.
 ./tests/longrunning/longrunning_helpers_test.go:687:		time.Sleep(50 * time.Millisecond) // SYNC: poll for bridge readiness
 ./tests/longrunning/longrunning_perf_helpers_test.go:152:		time.Sleep(50 * time.Millisecond) // OTHER: let finalizers run between GC cycles
-./tests/longrunning/longrunning_test.go:451:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
+./tests/longrunning/longrunning_test.go:450:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 ./tests/longrunning/res_gap_validation_test.go:144:	time.Sleep(30 * time.Second) // NEGATIVE: verify no messages reach target after all sends fail
 ./tests/longrunning/res_gap_validation_test.go:265:	time.Sleep(15 * time.Second) // NEGATIVE: verify no additional duplicates from SQS redelivery
 ./tests/longrunning/uc12_cluster_lease_test.go:242:		time.Sleep(2 * time.Second) // SYNC: wait between role samples to verify lease stability
