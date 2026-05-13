@@ -481,8 +481,8 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
    [Typed Plugin Config](#typed-plugin-config).
 7. **Hexagonal direction**: Adapters depend on `ports`, `domain`, and
    their own SDK only. Adapters MUST NOT import `bridge`, `config`,
-   `runtime`, or other unrelated adapters. The architecture lint
-   (`make lint-arch`) enforces this; cross-adapter imports fail CI.
+   `runtime`, or other unrelated adapters. The architecture lint step
+   inside `make lint` enforces this; cross-adapter imports fail CI.
 8. **Config-source adapters are special**: packages under
    `adapters/*/config/*` are the single category allowed to import
    `config` (they exist to load `*config.BridgeConfig`).

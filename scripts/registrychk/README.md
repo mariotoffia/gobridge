@@ -26,8 +26,8 @@ to print skipped kinds.
 go run ./scripts/registrychk            # exit 1 on missing coverage
 go run ./scripts/registrychk -v         # also print skipped non-AWS kinds
 
-# Or via the Makefile (used by CI)
-make lint-registrychk
+# Or as part of the full lint suite (used by CI)
+make lint
 ```
 
 Flags:

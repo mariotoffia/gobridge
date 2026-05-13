@@ -79,7 +79,7 @@ graph TB
 ### Dependency Rule
 
 Dependencies point inward. Each layer may only import from layers
-closer to the center. The rules below are enforced by `make lint-arch`
+closer to the center. The rules below are enforced by `make lint`
 (see `.go-arch-lint.yml`):
 
 | Layer | May Import |
@@ -126,7 +126,7 @@ rule.
 
 The diagram below summarises the policy expressed in
 `.go-arch-lint.yml`. Read it inside-out: every arrow is an *allowed*
-edge; absence of an arrow is a denied edge that `make lint-arch` will
+edge; absence of an arrow is a denied edge that `make lint` will
 reject. The terminology matches `DDD.md` (bounded contexts), `UBIQUITOUS.md`
 (ubiquitous language), and the Clean / Hexagonal layer numbering used
 throughout this document.

@@ -45,8 +45,8 @@ can statically observe).
 go run ./scripts/pluginsym               # exit 1 on any asymmetry
 go run ./scripts/pluginsym -v            # also print discovered registered/wired kinds
 
-# Or via the Makefile (used by CI)
-make lint-pluginsym
+# Or as part of the full lint suite (used by CI)
+make lint
 ```
 
 Flags:

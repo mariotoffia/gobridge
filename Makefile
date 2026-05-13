@@ -3,12 +3,12 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test test-integration test-long-running lint lint-fix lint-gofmt lint-go-vet lint-go lint-arch lint-arch-report lint-arch-mapping lint-arch-mapping-test lint-arch-check clean tidy sync help
+.PHONY: all build test test-integration test-long-running lint lint-fix check check-all clean tidy sync help
 .PHONY: install vulncheck update update-major outdated
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
-.PHONY: arch-graph dupl-report goconst-report arch-quality
-.PHONY: build-aclcheck lint-acl build-aggcheck lint-aggregate build-cfgshape lint-cfgshape build-registrychk lint-registrychk build-pluginsym lint-pluginsym
+.PHONY: arch-graph dupl-report goconst-report
+.PHONY: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-pluginsym
 
 GOBRIDGE_GO_CACHE ?= /tmp/gobridge-go-build-cache
 export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
@@ -102,155 +102,123 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 		exit $$rc'
 
 # ============================================================================
-# Lint targets
+# Lint
+#
+# Single entry point. Runs every static check on the workspace and writes
+# one report per checker under reports/. Used by CI and `make check`.
+# Fail-fast: the first failing checker stops the build; subsequent reports
+# are from the previous successful run. Read reports/<latest-step>.log
+# when something is red.
+#
+# Auto-format escape hatch: `make lint-fix` runs gofmt on all tracked files.
 # ============================================================================
 
-lint: lint-arch-check lint-gofmt lint-go-vet lint-go lint-aggregate lint-acl lint-cfgshape lint-registrychk lint-pluginsym ## Run all static checks across the workspace
-
-lint-go: ## Run golangci-lint across all workspace modules (uses .golangci.yml at the repo root)
-	@echo "Running golangci-lint across all modules..."
-	@bash -c 'set -e; mkdir -p "$(GOBRIDGE_GO_CACHE)"; export GOCACHE="$(GOBRIDGE_GO_CACHE)"; \
-	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" | sort); do \
-		dir=$$(dirname "$$modfile"); \
-		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then \
-			echo "--- Skipping $$dir (no default-tag packages) ---"; \
-			continue; \
-		fi; \
-		echo "--- golangci-lint $$dir ---"; \
-		(cd "$$dir" && golangci-lint run --timeout=5m ./...); \
-	done'
-
-lint-fix: ## Lint and auto-fix all workspace modules
-	@echo "Linting with auto-fix..."
-	@gofmt -w $$(git ls-files '*.go')
-
-lint-gofmt: ## Check Go formatting across tracked Go files
-	@echo "Checking Go formatting..."
+lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-pluginsym ## Run every static check (arch, gofmt, go vet, golangci-lint, aggcheck, aclcheck, cfgshape, registrychk, pluginsym); writes reports/*
+	@mkdir -p reports
+	@echo "=== Architecture lint ==="
+	@bash -c 'set -o pipefail; go-arch-lint check --project-path . --max-warnings 1024 --output-color=false 2>&1 | tee reports/go-arch-lint.log'
+	@go-arch-lint graph --out reports/go-arch-lint-graph.svg
+	@bash -c 'set -o pipefail; bash scripts/lint-arch-mapping-test.sh 2>&1 | tee reports/arch-mapping.log'
+	@echo "=== gofmt ==="
 	@FILES=$$(gofmt -l $$(git ls-files '*.go')); \
+	echo "$$FILES" > reports/gofmt.log; \
 	if [ -n "$$FILES" ]; then \
 		echo "$$FILES"; \
 		echo ""; \
-		echo "Go files need formatting. Run: make lint-fix"; \
+		echo "Go files need formatting (see reports/gofmt.log). Run: make lint-fix"; \
 		exit 1; \
 	fi
-
-lint-go-vet: ## Run go vet across all workspace modules
-	@echo "Running go vet across all modules..."
-	@bash -c 'set -e; mkdir -p "$(GOBRIDGE_GO_CACHE)"; export GOCACHE="$(GOBRIDGE_GO_CACHE)"; \
+	@echo "=== go vet ==="
+	@bash -c 'set -eo pipefail; mkdir -p "$(GOBRIDGE_GO_CACHE)"; export GOCACHE="$(GOBRIDGE_GO_CACHE)"; : > reports/go-vet.log; \
 	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
 		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then \
-			echo "--- Skipping $$dir (no default-tag packages) ---"; \
+			echo "--- Skipping $$dir (no default-tag packages) ---" | tee -a reports/go-vet.log; \
 			continue; \
 		fi; \
-		echo "--- Vetting $$dir ---"; \
-		(cd "$$dir" && go vet ./...); \
+		echo "--- Vetting $$dir ---" | tee -a reports/go-vet.log; \
+		(cd "$$dir" && go vet ./... 2>&1) | tee -a $(PWD)/reports/go-vet.log; \
 	done'
-
-lint-arch: ## Check architecture dependencies (strict)
-	@echo "Linting architecture..."
-	go-arch-lint check --project-path . --max-warnings 1024 --output-color=false
-
-lint-arch-report: ## Write a non-blocking architecture lint report
-	@mkdir -p reports
-	@echo "Linting architecture..."
-	@bash -c 'set -o pipefail; go-arch-lint check --project-path . --max-warnings 1024 --output-color=false 2>&1 | tee reports/go-arch-lint.log; rc=$$?; \
-		if [ $$rc -ne 0 ]; then \
-			echo ""; \
-			echo "Architecture warnings captured in reports/go-arch-lint.log"; \
-			exit 0; \
-		fi'
-	@go-arch-lint graph --out reports/go-arch-lint-graph.svg
-
-lint-arch-mapping: ## Show package-to-component mapping (debug aid)
-	@echo "Resolving architecture component mapping..."
-	@go-arch-lint mapping --project-path . --scheme grouped --output-color=false
-
-lint-arch-check: lint-arch lint-arch-mapping-test ## Run strict lint and the regression mapping test
-	@echo "Architecture lint and mapping test passed."
-
-lint-arch-mapping-test: ## Verify key packages map to their expected lint components
-	@echo "Verifying architecture component mapping..."
-	@bash scripts/lint-arch-mapping-test.sh
-
-build-aclcheck: ## Build the aclcheck custom analyzer
-	@mkdir -p bin
-	@cd scripts/aclcheck && go build -o $(PWD)/bin/aclcheck ./...
-
-# lint-acl is enforcing: it runs aclcheck across every adapter module
-# and fails the build on any vendor SDK import outside an acl_*.go file
-# (or acl/ sub-directory). The aggregated log under reports/aclcheck.log
-# is preserved as a post-mortem aid; the per-module `go vet` invocation
-# is the gate.
-lint-acl: build-aclcheck ## Run aclcheck (enforcing) — fails on any non-ACL SDK import
-	@mkdir -p reports
-	@echo "Running aclcheck..."
-	@bash -c 'set -eo pipefail; : > reports/aclcheck.log; for modfile in $$(find ./adapters -name go.mod -not -path "*/vendor/*" | sort); do \
+	@echo "=== golangci-lint ==="
+	@bash -c 'set -eo pipefail; mkdir -p "$(GOBRIDGE_GO_CACHE)"; export GOCACHE="$(GOBRIDGE_GO_CACHE)"; : > reports/golangci.log; \
+	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" | sort); do \
+		dir=$$(dirname "$$modfile"); \
+		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then \
+			echo "--- Skipping $$dir (no default-tag packages) ---" | tee -a reports/golangci.log; \
+			continue; \
+		fi; \
+		echo "--- golangci-lint $$dir ---" | tee -a reports/golangci.log; \
+		(cd "$$dir" && golangci-lint run --timeout=5m ./... 2>&1) | tee -a $(PWD)/reports/golangci.log; \
+	done'
+	@echo "=== aggcheck (domain aggregate convention) ==="
+	@bash -c 'set -o pipefail; go vet -vettool=$(PWD)/bin/aggcheck ./domain/... 2>&1 | tee reports/aggcheck.log'
+	@echo "=== aclcheck (vendor SDK only via ACL files) ==="
+	@bash -c 'set -eo pipefail; : > reports/aclcheck.log; \
+	for modfile in $$(find ./adapters -name go.mod -not -path "*/vendor/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
 		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then continue; fi; \
 		echo "--- aclcheck $$dir ---" | tee -a reports/aclcheck.log; \
 		(cd "$$dir" && go vet -vettool=$(PWD)/bin/aclcheck ./... 2>&1) | tee -a $(PWD)/reports/aclcheck.log; \
 	done'
-
-build-aggcheck: ## Build the aggcheck custom analyzer
-	@mkdir -p bin
-	@cd scripts/aggcheck && go build -o $(PWD)/bin/aggcheck ./...
-
-# lint-aggregate is enforcing: aggregate-like types in domain/ must
-# live in *_aggregate.go files and declare a Validate() method. The
-# convention is opt-in — pure value objects and types whose mutation
-# is via pointer receiver are NOT aggregates and are exempt.
-lint-aggregate: build-aggcheck ## Enforce aggregate-root naming convention in domain/
-	@echo "Checking domain aggregate conventions..."
-	@go vet -vettool=$(PWD)/bin/aggcheck ./domain/...
-
-build-cfgshape: ## Build the cfgshape custom analyzer
-	@mkdir -p bin
-	@cd scripts/cfgshape && go build -o $(PWD)/bin/cfgshape ./...
-
-# lint-cfgshape is enforcing: it runs cfgshape across the root module
-# and every adapter module to enforce typed pluggable config shapes
-# (see FIX-003). The aggregated log under reports/cfgshape.log is
-# preserved as a post-mortem aid; the per-module `go vet` invocation
-# is the gate. Script and test-only modules (scripts/, tests/,
-# testutil/) are excluded to avoid false positives — the rule targets
-# inner-ring + adapter packages only.
-lint-cfgshape: build-cfgshape ## Enforce typed pluggable config shapes
-	@mkdir -p reports
-	@echo "Running cfgshape..."
-	@bash -c 'set -eo pipefail; : > reports/cfgshape.log; for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "./scripts/*" -not -path "./tests/*" -not -path "./testutil/*" | sort); do \
+	@echo "=== cfgshape (typed plugin config) ==="
+	@bash -c 'set -eo pipefail; : > reports/cfgshape.log; \
+	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "./scripts/*" -not -path "./tests/*" -not -path "./testutil/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
 		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then continue; fi; \
 		echo "--- cfgshape $$dir ---" | tee -a reports/cfgshape.log; \
 		(cd "$$dir" && go vet -vettool=$(PWD)/bin/cfgshape ./... 2>&1) | tee -a $(PWD)/reports/cfgshape.log; \
 	done'
+	@echo "=== registrychk (CDK builder + grants coverage) ==="
+	@bash -c 'set -o pipefail; $(PWD)/bin/registrychk 2>&1 | tee reports/registrychk.log'
+	@echo "=== pluginsym (registry symmetry) ==="
+	@bash -c 'set -o pipefail; $(PWD)/bin/pluginsym 2>&1 | tee reports/pluginsym.log'
+	@echo "=== Module graph (advisory) ==="
+	@go mod graph > reports/arch-graph.txt
+	@echo "reports/arch-graph.txt — $$(wc -l < reports/arch-graph.txt | tr -d ' ') edges"
+	@echo "=== Duplicate scan (advisory) ==="
+	@dupl -threshold 75 ./... > reports/dupl.log 2>&1 || true
+	@echo "reports/dupl.log — $$(wc -l < reports/dupl.log | tr -d ' ') lines"
+	@echo "=== Repeated literals (advisory) ==="
+	@goconst -min-occurrences 4 -min-length 5 ./... > reports/goconst.log 2>&1 || true
+	@echo "reports/goconst.log — $$(wc -l < reports/goconst.log | tr -d ' ') lines"
+	@echo ""
+	@echo "============================================================"
+	@echo "  Lint passed."
+	@echo "  Blocking reports:"
+	@echo "    reports/go-arch-lint.log         reports/go-arch-lint-graph.svg"
+	@echo "    reports/arch-mapping.log         reports/gofmt.log"
+	@echo "    reports/go-vet.log               reports/golangci.log"
+	@echo "    reports/aggcheck.log             reports/aclcheck.log"
+	@echo "    reports/cfgshape.log             reports/registrychk.log"
+	@echo "    reports/pluginsym.log"
+	@echo "  Advisory reports (review aids; never fail the build):"
+	@echo "    reports/arch-graph.txt           reports/dupl.log"
+	@echo "    reports/goconst.log"
+	@echo "============================================================"
 
-build-registrychk: ## Build the registrychk tool
+lint-fix: ## Auto-format all tracked Go files with gofmt
+	@echo "Linting with auto-fix..."
+	@gofmt -w $$(git ls-files '*.go')
+
+build-aclcheck: ## Build the aclcheck custom analyzer (vendor SDKs only via acl_*.go / acl/)
+	@mkdir -p bin
+	@cd scripts/aclcheck && go build -o $(PWD)/bin/aclcheck ./...
+
+build-aggcheck: ## Build the aggcheck custom analyzer (aggregate-root convention in domain/)
+	@mkdir -p bin
+	@cd scripts/aggcheck && go build -o $(PWD)/bin/aggcheck ./...
+
+build-cfgshape: ## Build the cfgshape custom analyzer (typed ports.PluginConfig)
+	@mkdir -p bin
+	@cd scripts/cfgshape && go build -o $(PWD)/bin/cfgshape ./...
+
+build-registrychk: ## Build the registrychk tool (CDK builder + grants coverage)
 	@mkdir -p bin
 	@cd scripts/registrychk && go build -o $(PWD)/bin/registrychk ./...
 
-# lint-registrychk is enforcing: every kind in ports.DefaultRegistry
-# that is AWS-deployable has both a bridgecfg builder (With<Kind>*)
-# and a grants helper (cdk/constructs/internal/grants/<kind>.go).
-# Pure non-AWS kinds (azure.*, amqp.*) are skipped — the file-based
-# config CDK only deploys to AWS.
-lint-registrychk: build-registrychk ## Enforce CDK builder + grants coverage for all AWS-deployable plugin kinds
-	@echo "Running registrychk..."
-	@$(PWD)/bin/registrychk
-
-build-pluginsym: ## Build the pluginsym tool
+build-pluginsym: ## Build the pluginsym tool (decoder ↔ wired factory symmetry)
 	@mkdir -p bin
 	@cd scripts/pluginsym && go build -o $(PWD)/bin/pluginsym ./...
-
-# lint-pluginsym is enforcing: every kind registered into the per-process
-# *ports.Registry by the canonical composition root has a corresponding
-# wired factory (Supervisor.RegisterTransport / RegisterStoreFactory or
-# Builder.RegisterTransportFactory / RegisterStoreFactory) and vice-versa.
-# Aliases (e.g. aws.sqs / sqs, mqtt.paho / mqtt) are collapsed via the
-# curated aliasMap; a canonical group is satisfied if any alias is wired.
-lint-pluginsym: build-pluginsym ## Enforce plugin-registry symmetry between decoders and wired factories
-	@echo "Running pluginsym..."
-	@$(PWD)/bin/pluginsym
 
 # ============================================================================
 # Maintenance targets
@@ -301,17 +269,16 @@ install: ## Install all development and CI tools
 	go install github.com/mibk/dupl@latest
 	go install github.com/jgautheron/goconst/cmd/goconst@latest
 
-check: build lint lint-arch-check test audit-timings audit-test-timings ## Run full CI check (no Docker, integration skipped)
+check: build lint test ## Run full CI check (no Docker, integration skipped) — lint covers arch-check + analyzers; test runs timing audits
 
-check-all: build lint lint-arch-check test-integration audit-timings audit-test-timings ## Run full CI check including integration (Docker required)
+check-all: build lint test-integration ## Run full CI check including integration (Docker required) — lint covers arch-check + analyzers; test-integration runs timing audits
 
 # ============================================================================
-# Architecture-quality reports (advisory, non-blocking)
+# Advisory report sub-targets
 #
-# These targets produce review aids — they are not gates. Forcing them
-# to pass would push contributors toward over-abstraction (the opposite
-# of what good DDD wants). Run them at release time or when
-# investigating a smell that lint cannot pinpoint.
+# These also run as the last three stages of `make lint`. Provided as
+# standalone targets for ad-hoc invocation without running the full
+# lint suite.
 # ============================================================================
 
 arch-graph: ## Dump the workspace module dep graph as text (LLM/grep-friendly)
@@ -332,9 +299,6 @@ goconst-report: ## Find repeated string/numeric literals (advisory)
 	@echo "Scanning for repeated literals (>=4 occurrences, >=5 chars)..."
 	@goconst -min-occurrences 4 -min-length 5 ./... > reports/goconst.log || true
 	@echo "Repeated-literals report at reports/goconst.log"
-
-arch-quality: arch-graph dupl-report goconst-report ## Run all advisory architecture-quality reports
-	@echo "Architecture-quality reports written under reports/"
 
 # ============================================================================
 # Audit targets
