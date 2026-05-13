@@ -65,7 +65,7 @@ func headersToPublishing(headers map[string]any) amqp.Publishing {
 			continue
 		}
 		// HeaderGobridgeSubject is handled by envelopeToPublishing
-		// (which has access to env.Subject). Skip it here so a stale
+		// (which has access to env.Subject()). Skip it here so a stale
 		// header copy does not race the typed write below.
 		if k == HeaderGobridgeSubject {
 			continue
@@ -85,14 +85,14 @@ func headersToPublishing(headers map[string]any) amqp.Publishing {
 //
 // The logical Envelope.Subject is propagated as a HeaderGobridgeSubject
 // entry in the AMQP Headers table — distinct from the transport-level
-// routing key chosen by the Sender. When env.Subject is empty but a
-// peer bridge supplied a HeaderGobridgeSubject in env.Headers (subject
+// routing key chosen by the Sender. When env.Subject() is empty but a
+// peer bridge supplied a HeaderGobridgeSubject in env.Headers() (subject
 // round-trip from another transport), that value is preserved.
 func envelopeToPublishing(env *messaging.Envelope, cfg SenderConfig, clk clock.Clock) amqp.Publishing {
 	if clk == nil {
 		clk = clock.System
 	}
-	pub := headersToPublishing(env.Headers)
+	pub := headersToPublishing(env.Headers())
 	pub.Body = env.Payload
 
 	if env.ID != "" && pub.MessageId == "" {
@@ -100,13 +100,13 @@ func envelopeToPublishing(env *messaging.Envelope, cfg SenderConfig, clk clock.C
 	}
 
 	switch {
-	case env.Subject != "":
+	case env.Subject() != "":
 		if pub.Headers == nil {
 			pub.Headers = amqp.Table{}
 		}
-		pub.Headers[HeaderGobridgeSubject] = env.Subject
-	case env.Headers != nil:
-		if v, ok := env.Headers[HeaderGobridgeSubject].(string); ok && v != "" {
+		pub.Headers[HeaderGobridgeSubject] = env.Subject()
+	case env.Headers() != nil:
+		if v, ok := env.Headers()[HeaderGobridgeSubject].(string); ok && v != "" {
 			if pub.Headers == nil {
 				pub.Headers = amqp.Table{}
 			}
@@ -120,8 +120,8 @@ func envelopeToPublishing(env *messaging.Envelope, cfg SenderConfig, clk clock.C
 		}
 	}
 
-	if pub.ContentType == "" && env.Headers != nil {
-		if ct, ok := env.Headers[messaging.HeaderContentType].(string); ok {
+	if pub.ContentType == "" && env.Headers() != nil {
+		if ct, ok := env.Headers()[messaging.HeaderContentType].(string); ok {
 			pub.ContentType = ct
 		}
 	}

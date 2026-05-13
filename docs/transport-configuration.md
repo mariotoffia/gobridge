@@ -5,7 +5,7 @@ by name and creates sessions, receivers, and senders from declarative YAML
 configuration. The YAML `options:` block under each session, receiver, and
 sender is decoded **once** at config-parse time into the transport's typed
 `ports.PluginConfig` (e.g. `paho.Config`, `sqs.SenderConfig`) by the decoder
-the adapter registered on `ports.DefaultRegistry` from its `register.go`. The
+the adapter registered on `*ports.Registry` from its `register.go`. The
 typed value is then carried on `ports.SessionSpec.Config` /
 `ports.ReceiverSpec.Config` / `ports.SenderSpec.Config` to the factory — the
 runtime never hands `map[string]any` to plugin code. See

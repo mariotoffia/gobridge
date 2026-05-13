@@ -112,8 +112,8 @@ func envelopeToMessage(env *messaging.Envelope, defaultSessionID string, clk clo
 		Body: env.Payload,
 	}
 
-	if env.Subject != "" {
-		msg.Subject = &env.Subject
+	if s := env.Subject(); s != "" {
+		msg.Subject = &s
 	}
 	if env.ID != "" {
 		msg.MessageID = &env.ID
@@ -127,7 +127,7 @@ func envelopeToMessage(env *messaging.Envelope, defaultSessionID string, clk clo
 	sessionID := defaultSessionID
 	var appProps map[string]any
 
-	for k, v := range env.Headers {
+	for k, v := range env.Headers() {
 		switch k {
 		case asbHeaderSessionID:
 			if sv, ok := v.(string); ok {
@@ -154,7 +154,7 @@ func envelopeToMessage(env *messaging.Envelope, defaultSessionID string, clk clo
 				continue
 			}
 			if appProps == nil {
-				appProps = make(map[string]any, len(env.Headers))
+				appProps = make(map[string]any, len(env.Headers()))
 			}
 			appProps[k] = v
 		}

@@ -29,6 +29,7 @@ func (f *stubFactory) NewSender(_ context.Context, _ ports.SenderSpec, _ ports.S
 func (f *stubFactory) Capabilities() []ports.Capability {
 	return f.capabilities
 }
+func (f *stubFactory) AddressValidator() ports.AddressValidator { return nil }
 
 func TestDetectSwapMode_OverlapWhenNoExclusiveIdentity(t *testing.T) {
 	reg := &factoryRegistry{

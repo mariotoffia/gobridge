@@ -9,7 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -66,7 +66,7 @@ func TestRouteRunner_ConcurrentDelivery(t *testing.T) {
 	sender, peak := makePeakTracker()
 
 	receiver := NewFakeReceiver()
-	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "concurrent-route",
 		Policy:   routing.RoutePolicy{MaxInFlight: 5, DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
@@ -141,7 +141,7 @@ func TestRouteRunner_BackpressureOnSemFull(t *testing.T) {
 	})
 
 	receiver := NewFakeReceiver()
-	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "backpressure-route",
 		Policy:   routing.RoutePolicy{MaxInFlight: 2, DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
@@ -203,7 +203,7 @@ func TestRouteRunner_GracefulShutdownWaitsInFlight(t *testing.T) {
 	})
 
 	receiver := NewFakeReceiver()
-	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "shutdown-route",
 		Policy:   routing.RoutePolicy{MaxInFlight: 5, DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
@@ -278,14 +278,14 @@ func TestGlobalSemaphore_LimitsCrossRoute(t *testing.T) {
 	receiver1 := NewFakeReceiver()
 	receiver2 := NewFakeReceiver()
 
-	runner1 := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
+	runner1 := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:   "global-route-1",
 		Policy:    routing.RoutePolicy{MaxInFlight: 5, DeliveryMode: routing.DeliveryDirectHold},
 		Receiver:  receiver1,
 		Sender:    makeSender(),
 		GlobalSem: globalSem,
 	})
-	runner2 := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
+	runner2 := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:   "global-route-2",
 		Policy:    routing.RoutePolicy{MaxInFlight: 5, DeliveryMode: routing.DeliveryDirectHold},
 		Receiver:  receiver2,
@@ -336,7 +336,7 @@ func TestGlobalSemaphore_ZeroDisablesGlobal(t *testing.T) {
 	sender, peak := makePeakTracker()
 
 	receiver := NewFakeReceiver()
-	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "no-global-route",
 		Policy:   routing.RoutePolicy{MaxInFlight: 10, DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,

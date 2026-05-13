@@ -53,20 +53,20 @@ func TestDurability_CloseAndReopen(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	r := persistence.OutboxRecord{
+	r := persistence.MustOutboxRecord(persistence.OutboxSpec{
 		ID:         "dur-1",
 		RouteID:    "route-1",
 		EnvelopeID: "env-dur-1",
 		BindingID:  "bind-dur-1",
 		SessionID:  "sess-dur",
 		Address:    "test/topic",
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "env-dur-1",
 			Subject: "test",
 			Payload: []byte("durable payload"),
-		},
-	}
-	if err := s1.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
+		}),
+	})
+	if err := s1.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 	if err := s1.Close(); err != nil {
@@ -105,15 +105,15 @@ func TestTempFileCleanup(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	r := persistence.OutboxRecord{
+	r := persistence.MustOutboxRecord(persistence.OutboxSpec{
 		ID:         "tmp-1",
 		RouteID:    "route-1",
 		EnvelopeID: "env-tmp-1",
 		BindingID:  "bind-tmp-1",
 		SessionID:  "sess-tmp",
-		Envelope:   messaging.Envelope{ID: "env-tmp-1", Subject: "test"},
-	}
-	if err := s.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-tmp-1", Subject: "test"}),
+	})
+	if err := s.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 	if err := s.Close(); err != nil {
@@ -130,19 +130,19 @@ func TestDispatchHeadersRoundTrip(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
 
-	r := persistence.OutboxRecord{
+	r := persistence.MustOutboxRecord(persistence.OutboxSpec{
 		ID:         "hdr-1",
 		RouteID:    "route-1",
 		EnvelopeID: "env-hdr-1",
 		BindingID:  "bind-hdr-1",
 		SessionID:  "sess-hdr",
-		Envelope:   messaging.Envelope{ID: "env-hdr-1", Subject: "test"},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-hdr-1", Subject: "test"}),
 		DispatchHeaders: map[string]any{
 			"x-custom":  "value",
 			"x-numeric": float64(42),
 		},
-	}
-	if err := s.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
+	})
+	if err := s.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -168,15 +168,15 @@ func TestWithClockControlsCreatedAt(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	ctx := context.Background()
-	r := persistence.OutboxRecord{
+	r := persistence.MustOutboxRecord(persistence.OutboxSpec{
 		ID:         "clk-1",
 		RouteID:    "route-1",
 		EnvelopeID: "env-clk-1",
 		BindingID:  "bind-clk-1",
 		SessionID:  "sess-clk",
-		Envelope:   messaging.Envelope{ID: "env-clk-1", Subject: "test"},
-	}
-	if err := s.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-clk-1", Subject: "test"}),
+	})
+	if err := s.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -198,16 +198,16 @@ func TestExpiresAtRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	expiry := time.Now().Add(2 * time.Hour).Truncate(time.Millisecond)
-	r := persistence.OutboxRecord{
+	r := persistence.MustOutboxRecord(persistence.OutboxSpec{
 		ID:         "exprt-1",
 		RouteID:    "route-1",
 		EnvelopeID: "env-exprt-1",
 		BindingID:  "bind-exprt-1",
 		SessionID:  "sess-exprt",
-		Envelope:   messaging.Envelope{ID: "env-exprt-1", Subject: "test"},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-exprt-1", Subject: "test"}),
 		ExpiresAt:  expiry,
-	}
-	if err := s.Persist(ctx, []persistence.OutboxRecord{r}); err != nil {
+	})
+	if err := s.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 

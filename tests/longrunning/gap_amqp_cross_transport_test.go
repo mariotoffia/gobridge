@@ -122,7 +122,7 @@ func TestGap_AMQP091_To_SQS_CrossTransport(t *testing.T) {
 
 	t.Logf("GAP-CROSS-SQS: publishing %d messages to RabbitMQ", gapCrossMsgCount)
 	for i := 0; i < gapCrossMsgCount; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("gap-cross-sqs-%d", i),
 			Subject: "cross-transport-test",
 			Payload: []byte(fmt.Sprintf(`{"seq":%d,"origin":"amqp091"}`, i)),
@@ -131,7 +131,7 @@ func TestGap_AMQP091_To_SQS_CrossTransport(t *testing.T) {
 				"x-test-seq": fmt.Sprintf("%d", i),
 			},
 			CreatedAt: time.Now().UTC(),
-		}
+		})
 		require.NoError(t, pubSnd.Send(ctx, ports.OutboundMessage{Envelope: env}), "publish msg %d", i)
 	}
 
@@ -247,7 +247,7 @@ func TestGap_AMQP091_To_MQTT_CrossTransport(t *testing.T) {
 
 	t.Logf("GAP-CROSS-MQTT: publishing %d messages to RabbitMQ", gapCrossMsgCount)
 	for i := 0; i < gapCrossMsgCount; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("gap-cross-mqtt-%d", i),
 			Subject: "cross-transport-test",
 			Payload: []byte(fmt.Sprintf(`{"seq":%d,"origin":"amqp091"}`, i)),
@@ -255,7 +255,7 @@ func TestGap_AMQP091_To_MQTT_CrossTransport(t *testing.T) {
 				"x-origin": "rabbitmq",
 			},
 			CreatedAt: time.Now().UTC(),
-		}
+		})
 		require.NoError(t, pubSnd.Send(ctx, ports.OutboundMessage{Envelope: env}), "publish msg %d", i)
 	}
 
@@ -271,7 +271,7 @@ func TestGap_AMQP091_To_MQTT_CrossTransport(t *testing.T) {
 
 	rxPayloads := make(map[string]bool, len(msgs))
 	for i, msg := range msgs {
-		assert.Equal(t, "cross-transport-test", msg.Subject,
+		assert.Equal(t, "cross-transport-test", msg.Subject(),
 			"msg %d: logical Subject must be preserved across AMQP→MQTT (transport address must NOT overwrite Subject)", i)
 		assert.Contains(t, string(msg.Payload), `"origin":"amqp091"`,
 			"msg %d: payload should contain origin marker", i)
@@ -280,9 +280,9 @@ func TestGap_AMQP091_To_MQTT_CrossTransport(t *testing.T) {
 		// (publish topic) under the dedicated mqtt.topic header — distinct
 		// from the logical Envelope.Subject above. This proves that subject
 		// and transport address travel as independent fields end-to-end.
-		gotTopic, ok := messaging.GetHeaderString(msg.Headers, paho.HeaderMQTTTopic)
+		gotTopic, ok := messaging.GetHeaderString(msg.Headers(), paho.HeaderMQTTTopic)
 		if assert.Truef(t, ok, "msg %d: expected %q header on MQTT ingress envelope, headers=%v",
-			i, paho.HeaderMQTTTopic, msg.Headers) {
+			i, paho.HeaderMQTTTopic, msg.Headers()) {
 			assert.Equalf(t, mqttTopic, gotTopic,
 				"msg %d: header %q should equal the configured publish topic",
 				i, paho.HeaderMQTTTopic)

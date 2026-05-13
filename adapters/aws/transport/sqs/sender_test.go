@@ -27,14 +27,14 @@ func TestSender_Send_Basic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "env-1",
 		Subject: "test-subject",
 		Payload: []byte(`{"msg":"hello"}`),
 		Headers: map[string]any{
 			"custom": "value",
 		},
-	}
+	})
 
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -71,14 +71,14 @@ func TestSender_Send_FIFO_WithHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID:      "env-fifo",
 		Payload: []byte("fifo-msg"),
 		Headers: map[string]any{
 			messaging.HeaderOrderingKey:     "group-A",
 			messaging.HeaderDeduplicationID: "dedup-123",
 		},
-	}
+	})
 
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -135,13 +135,13 @@ func TestSender_Send_FIFO_HeaderOverridesDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID:      "env-fifo-override",
 		Payload: []byte("msg"),
 		Headers: map[string]any{
 			messaging.HeaderOrderingKey: "override-group",
 		},
-	}
+	})
 
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -508,11 +508,11 @@ func TestSender_SendBatch_PerBatchTimeout(t *testing.T) {
 
 // Verifies generateDeduplicationID is stable for the same envelope content.
 func TestGenerateDeduplicationID_Deterministic(t *testing.T) {
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-1",
 		Subject: "test",
 		Payload: []byte("data"),
-	}
+	})
 
 	id1 := generateDeduplicationID(env)
 	id2 := generateDeduplicationID(env)

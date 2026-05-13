@@ -7,19 +7,19 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
-	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // RegisterSessionSender registers a session and its sender for use as
 // an egress target. This is needed when SharedOutbox routes fan out to
 // sessions that are not the route's primary session (e.g. one SQS source
 // writes to outbox partitions for multiple exclusive MQTT clients).
-// The runtime creates a SessionManager and OutboxDrainer for each
+// The runtime creates a session.Manager and OutboxDrainer for each
 // registered session during Start.
 func (rt *Runtime) RegisterSessionSender(
-	cfg SessionConfig,
+	cfg session.Config,
 	session ports.Session,
 	sender ports.Sender,
 ) error {
@@ -52,7 +52,7 @@ func (rt *Runtime) AddRoute(
 	receiver ports.Receiver,
 	sender ports.Sender,
 	session ports.Session,
-	sessCfg *SessionConfig,
+	sessCfg *session.Config,
 ) error {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
@@ -77,22 +77,20 @@ func (rt *Runtime) AddRoute(
 	return nil
 }
 
-// RouteInfo describes a registered route for introspection.
-type RouteInfo struct {
-	ID           string
-	DeliveryMode routing.DeliveryMode
-	DispatchMode routing.DispatchMode
-	Policy       routing.RoutePolicy
-}
+// RouteInfo is the read-side route projection. It is defined in the
+// ports package so driving adapters depend on the inner-ring contract,
+// not on the runtime package. The alias is retained here so existing
+// runtime callers keep compiling without an import-site rename.
+type RouteInfo = ports.RouteInfo
 
 // Routes returns information about all registered routes.
-func (rt *Runtime) Routes() []RouteInfo {
+func (rt *Runtime) Routes() []ports.RouteInfo {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
-	infos := make([]RouteInfo, len(rt.entries))
+	infos := make([]ports.RouteInfo, len(rt.entries))
 	for i, e := range rt.entries {
-		infos[i] = RouteInfo{
+		infos[i] = ports.RouteInfo{
 			ID:           e.config.ID,
 			DeliveryMode: e.config.Policy.DeliveryMode,
 			DispatchMode: e.config.Policy.DispatchMode,
@@ -141,7 +139,7 @@ func (rt *Runtime) Inject(ctx context.Context, routeID string, env *messaging.En
 		env.ID = generateID()
 	}
 
-	return entry.runner.handleDelivery(ctx, &syntheticDelivery{env: env})
+	return entry.runner.HandleDelivery(ctx, &syntheticDelivery{env: env})
 }
 
 // syntheticDelivery implements ports.Delivery for programmatically

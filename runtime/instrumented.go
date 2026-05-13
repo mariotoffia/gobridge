@@ -67,7 +67,7 @@ func NewInstrumentedOutboxStore(inner ports.OutboxStore, metrics ports.MetricsEx
 	return &InstrumentedOutboxStore{inner: inner, metrics: metrics, clk: instrumentedClock(clk)}
 }
 
-func (s *InstrumentedOutboxStore) Persist(ctx context.Context, records []persistence.OutboxRecord) error {
+func (s *InstrumentedOutboxStore) Persist(ctx context.Context, records []*persistence.OutboxRecord) error {
 	start := s.clk.Now()
 	err := s.inner.Persist(ctx, records)
 	if len(records) > 0 {
@@ -77,11 +77,11 @@ func (s *InstrumentedOutboxStore) Persist(ctx context.Context, records []persist
 	return err
 }
 
-func (s *InstrumentedOutboxStore) Claim(ctx context.Context, partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error) {
+func (s *InstrumentedOutboxStore) Claim(ctx context.Context, partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
 	recs, err := s.inner.Claim(ctx, partitionKey, ownerID, token, limit)
 	if err == nil && len(recs) > 0 {
 		for _, rec := range recs {
-			if rec.ReplayCount > 1 {
+			if rec.ReplayCount() > 1 {
 				tags := []shared.Tag{{Key: shared.TagKeySessionID, Value: rec.SessionID}}
 				s.metrics.Counter(shared.MetricOutboxClaimRecoveries, 1, tags...)
 			}
@@ -98,7 +98,7 @@ func (s *InstrumentedOutboxStore) Expire(ctx context.Context, before time.Time) 
 	return s.inner.Expire(ctx, before)
 }
 
-func (s *InstrumentedOutboxStore) QueryPending(ctx context.Context, partitionKey string, limit int) ([]persistence.OutboxRecord, error) {
+func (s *InstrumentedOutboxStore) QueryPending(ctx context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error) {
 	recs, err := s.inner.QueryPending(ctx, partitionKey, limit)
 	if err == nil {
 		tags := []shared.Tag{{Key: shared.TagKeyPartition, Value: partitionKey}}

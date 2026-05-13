@@ -34,33 +34,35 @@ func TestRegistry_Decode_ReturnsRegisteredDecoderOutput(t *testing.T) {
 	r := ports.NewRegistry()
 	want := fakeConfig{kind: "demo.kind", val: "hello"}
 
-	r.Register("demo.kind", func(raw ports.RawConfig) (ports.PluginConfig, error) {
+	require.NoError(t, r.Register("demo.kind", func(raw ports.RawConfig) (ports.PluginConfig, error) {
 		return want, nil
-	})
+	}))
 
 	got, err := r.Decode("demo.kind", fakeRaw{})
 	require.NoError(t, err)
 	require.Equal(t, want, got)
 }
 
-// Verifies Register panics when the same kind is registered twice.
-func TestRegistry_Register_PanicsOnDuplicateKind(t *testing.T) {
+// Verifies Register returns ErrDuplicateKind when the same kind is registered twice.
+func TestRegistry_Register_ReturnsErrDuplicateKindOnDuplicate(t *testing.T) {
 	r := ports.NewRegistry()
 	dec := func(ports.RawConfig) (ports.PluginConfig, error) { return fakeConfig{}, nil }
 
-	r.Register("dup.kind", dec)
+	require.NoError(t, r.Register("dup.kind", dec))
 
-	require.PanicsWithValue(t, "ports: duplicate plugin kind dup.kind", func() {
-		r.Register("dup.kind", dec)
-	})
+	err := r.Register("dup.kind", dec)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ports.ErrDuplicateKind)
+	assert.Contains(t, err.Error(), `"dup.kind"`)
 }
 
-// Verifies Register panics on a nil decoder — registering nothing is a programming error.
-func TestRegistry_Register_PanicsOnNilDecoder(t *testing.T) {
+// Verifies Register returns ErrNilDecoder on a nil decoder — registering nothing is a programming error.
+func TestRegistry_Register_ReturnsErrNilDecoderOnNil(t *testing.T) {
 	r := ports.NewRegistry()
-	require.PanicsWithValue(t, "ports: nil ConfigDecoder for kind x", func() {
-		r.Register("x", nil)
-	})
+	err := r.Register("x", nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ports.ErrNilDecoder)
+	assert.Contains(t, err.Error(), `"x"`)
 }
 
 // Verifies Decode returns a clear "unknown plugin kind" error when no decoder is registered.
@@ -79,18 +81,13 @@ func TestRegistry_Decode_PropagatesDecoderError(t *testing.T) {
 	r := ports.NewRegistry()
 	sentinel := errors.New("decode boom")
 
-	r.Register("err.kind", func(ports.RawConfig) (ports.PluginConfig, error) {
+	require.NoError(t, r.Register("err.kind", func(ports.RawConfig) (ports.PluginConfig, error) {
 		return nil, sentinel
-	})
+	}))
 
 	got, err := r.Decode("err.kind", fakeRaw{})
 	assert.Nil(t, got)
 	require.ErrorIs(t, err, sentinel)
-}
-
-// Verifies DefaultRegistry is non-nil and ready to use without further initialization.
-func TestDefaultRegistry_NonNil(t *testing.T) {
-	require.NotNil(t, ports.DefaultRegistry)
 }
 
 // Verifies concurrent Register and Decode calls are race-safe.
@@ -105,16 +102,19 @@ func TestRegistry_ConcurrentRegisterAndDecode(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(writers + readers)
 
-	// Writers register disjoint kinds to avoid duplicate-panic; the
+	// Writers register disjoint kinds to avoid duplicate errors; the
 	// goal is to exercise the mutex, not the dup-detection path.
 	for w := 0; w < writers; w++ {
 		go func(w int) {
 			defer wg.Done()
 			for i := 0; i < perGoroutine; i++ {
 				kind := fmt.Sprintf("kind.%d.%d", w, i)
-				r.Register(kind, func(ports.RawConfig) (ports.PluginConfig, error) {
+				if err := r.Register(kind, func(ports.RawConfig) (ports.PluginConfig, error) {
 					return fakeConfig{kind: kind}, nil
-				})
+				}); err != nil {
+					t.Errorf("register: %v", err)
+					return
+				}
 			}
 		}(w)
 	}

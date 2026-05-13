@@ -1,11 +1,18 @@
 package awsstore
 
 import (
+	"errors"
+
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-func init() {
-	ports.DefaultRegistry.Register(DynamoDBKind, decodeDynamoDBConfig)
+// Register installs this adapter's PluginConfig decoders on the
+// supplied registry. Composition roots call Register exactly once
+// per registry; duplicate registration surfaces ports.ErrDuplicateKind.
+func Register(reg *ports.Registry) error {
+	return errors.Join(
+		reg.Register(DynamoDBKind, decodeDynamoDBConfig),
+	)
 }
 
 func decodeDynamoDBConfig(raw ports.RawConfig) (ports.PluginConfig, error) {

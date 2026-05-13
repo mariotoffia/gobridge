@@ -40,6 +40,7 @@ const (
 	MetricSQSSendLatency          = "SQSSendLatency"
 	MetricSQSSendBatchLatency     = "SQSSendBatchLatency"
 	MetricSQSAutoExtends          = "SQSAutoExtends"
+	MetricSQSMalformedMessages    = "SQSMalformedMessages"
 )
 
 // Generic transport-agnostic delivery metric names.
@@ -90,12 +91,13 @@ const (
 
 // Azure Service Bus metric names.
 const (
-	MetricASBReceiveLatency   = "ASBReceiveLatency"
-	MetricASBCompleteLatency  = "ASBCompleteLatency"
-	MetricASBSendLatency      = "ASBSendLatency"
-	MetricASBSendBatchLatency = "ASBSendBatchLatency"
-	MetricASBScheduleLatency  = "ASBScheduleLatency"
-	MetricASBLockRenewals     = "ASBLockRenewals"
+	MetricASBReceiveLatency    = "ASBReceiveLatency"
+	MetricASBCompleteLatency   = "ASBCompleteLatency"
+	MetricASBSendLatency       = "ASBSendLatency"
+	MetricASBSendBatchLatency  = "ASBSendBatchLatency"
+	MetricASBScheduleLatency   = "ASBScheduleLatency"
+	MetricASBLockRenewals      = "ASBLockRenewals"
+	MetricASBMalformedMessages = "ASBMalformedMessages"
 )
 
 // HTTP transport metric names.

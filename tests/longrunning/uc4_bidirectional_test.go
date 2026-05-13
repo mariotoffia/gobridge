@@ -146,12 +146,12 @@ func TestUC4_Bidirectional_SQS_MQTT(t *testing.T) {
 			Timeout: 10 * time.Second,
 		})
 		for i := 0; i < msgCount; i++ {
-			env := &messaging.Envelope{
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{
 				ID:      fmt.Sprintf("uc4-dirB-%d", i),
 				Subject: "uc4/north/data",
 				Payload: []byte(fmt.Sprintf("dirB-%d", i)),
 				Headers: map[string]any{"direction": "B"},
-			}
+			})
 			if err := pubTx.Send(context.Background(), ports.OutboundMessage{Envelope: env, Address: "uc4/north/data"}); err != nil {
 				t.Errorf("MQTT publish dirB-%d: %v", i, err)
 				return

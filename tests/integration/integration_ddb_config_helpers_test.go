@@ -13,6 +13,7 @@ import (
 	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
+	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
@@ -34,6 +35,7 @@ func ddbConfigLoader(t *testing.T, prefix string) *ddbconfig.Loader {
 		ddbconfig.WithTableName(tableName),
 		ddbconfig.WithBridgeID("test-bridge"),
 		ddbconfig.WithPollInterval(100*time.Millisecond),
+		ddbconfig.WithRegistry(newTestRegistry()),
 	)
 	if err := loader.EnsureTable(context.Background()); err != nil {
 		t.Fatalf("ensure table: %v", err)
@@ -126,13 +128,13 @@ routes:
 // writeBridgeConfigYAML marshals a BridgeConfig to JSON (which is valid
 // YAML) and writes it to a temp file. Returns the file path.
 //
-// Uses config.MarshalBridgeConfigJSON so that typed PluginConfig values
+// Uses cfgparser.MarshalBridgeConfigJSON so that typed PluginConfig values
 // (which carry json:"-" on the field) are projected back into the
 // canonical "options:" wire form and survive the file → config.Parse
 // round-trip.
 func writeBridgeConfigYAML(t *testing.T, cfg *ports.BridgeConfig) string {
 	t.Helper()
-	data, err := config.MarshalBridgeConfigJSON(cfg)
+	data, err := cfgparser.MarshalBridgeConfigJSON(cfg)
 	if err != nil {
 		t.Fatalf("marshal config: %v", err)
 	}
@@ -152,7 +154,7 @@ func writeBridgeConfigYAML(t *testing.T, cfg *ports.BridgeConfig) string {
 func newFileBaseLayer(path string) config.Layer {
 	return config.Layer{
 		Name:   "file",
-		Loader: fileconfig.NewSource(path),
+		Loader: fileconfig.NewSource(path, newTestRegistry()),
 	}
 }
 
@@ -315,6 +317,8 @@ func (f *cfgFakeTransportFactory) Capabilities() []ports.Capability {
 	return []ports.Capability{ports.CapSourceRedelivery, ports.CapVisibilityExtension}
 }
 
+func (f *cfgFakeTransportFactory) AddressValidator() ports.AddressValidator { return nil }
+
 // cfgBrokenTransportFactory returns errors on NewSession for testing
 // rollback when the builder fails.
 type cfgBrokenTransportFactory struct {
@@ -334,6 +338,8 @@ func (f *cfgBrokenTransportFactory) NewSender(_ context.Context, _ ports.SenderS
 }
 
 func (f *cfgBrokenTransportFactory) Capabilities() []ports.Capability { return nil }
+
+func (f *cfgBrokenTransportFactory) AddressValidator() ports.AddressValidator { return nil }
 
 // cfgExclusiveTransportFactory is like cfgFakeTransportFactory but
 // declares CapExclusiveIdentity, triggering SwapPrepareCommit mode.
@@ -367,17 +373,17 @@ func (s *cfgFakeLeaseStore) Current(_ context.Context, _ string) (persistence.Le
 
 type cfgFakeOutboxStore struct{}
 
-func (s *cfgFakeOutboxStore) Persist(_ context.Context, _ []persistence.OutboxRecord) error {
+func (s *cfgFakeOutboxStore) Persist(_ context.Context, _ []*persistence.OutboxRecord) error {
 	return nil
 }
-func (s *cfgFakeOutboxStore) Claim(_ context.Context, _ string, _ string, _ persistence.LeaseToken, _ int) ([]persistence.OutboxRecord, error) {
+func (s *cfgFakeOutboxStore) Claim(_ context.Context, _ string, _ string, _ persistence.LeaseToken, _ int) ([]*persistence.OutboxRecord, error) {
 	return nil, nil
 }
 func (s *cfgFakeOutboxStore) Complete(_ context.Context, _ []string, _ persistence.LeaseToken) error {
 	return nil
 }
 func (s *cfgFakeOutboxStore) Expire(_ context.Context, _ time.Time) (int, error) { return 0, nil }
-func (s *cfgFakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]persistence.OutboxRecord, error) {
+func (s *cfgFakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]*persistence.OutboxRecord, error) {
 	return nil, nil
 }
 

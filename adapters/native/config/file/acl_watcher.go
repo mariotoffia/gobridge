@@ -15,7 +15,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -40,7 +40,8 @@ const (
 // event watching (notify) and periodic content polling (poll).
 type Watcher struct {
 	path         string
-	format       config.Format
+	format       parser.Format
+	registry     *ports.Registry
 	mode         WatchMode
 	debounce     time.Duration
 	pollInterval time.Duration
@@ -75,7 +76,7 @@ func WithMode(m WatchMode) WatcherOption {
 }
 
 // WithFormat overrides format auto-detection for the watched file.
-func WithFormat(f config.Format) WatcherOption {
+func WithFormat(f parser.Format) WatcherOption {
 	return func(w *Watcher) { w.format = f }
 }
 
@@ -120,11 +121,14 @@ func WithWatchConfig(def *ports.ConfigWatchDef) WatcherOption {
 	}
 }
 
-// NewWatcher creates a file Watcher for the given config file path.
-func NewWatcher(path string, opts ...WatcherOption) *Watcher {
+// NewWatcher creates a file Watcher for the given config file path
+// and plugin registry. registry MUST be non-nil — it carries the
+// PluginConfig decoders the two-stage parser needs.
+func NewWatcher(path string, registry *ports.Registry, opts ...WatcherOption) *Watcher {
 	w := &Watcher{
 		path:         path,
-		format:       config.FormatAuto,
+		format:       parser.FormatAuto,
+		registry:     registry,
 		mode:         ModeNotify,
 		debounce:     defaultDebounce,
 		pollInterval: defaultPollInterval,
@@ -294,7 +298,7 @@ func (w *Watcher) pollLoop(ctx context.Context, ch chan<- *ports.BridgeConfig) {
 }
 
 func (w *Watcher) emitParsed(ch chan<- *ports.BridgeConfig) {
-	cfg, err := config.ParseFile(w.path, w.format)
+	cfg, err := parser.ParseFile(w.path, w.format, w.registry)
 	if err != nil {
 		if w.logger != nil {
 			w.logger.Warn("file config watcher: parse failed", "path", w.path, "error", err)

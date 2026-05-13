@@ -18,6 +18,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
@@ -228,8 +229,8 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	t.Fatalf("timed out waiting for: %s", desc)
 }
 
-func fastSessionConfig(sessionID string) goruntime.SessionConfig {
-	cfg := goruntime.DefaultSessionConfig(sessionID, true)
+func fastSessionConfig(sessionID string) session.Config {
+	cfg := session.DefaultConfig(sessionID, true)
 	cfg.LeaseTTL = 500 * time.Millisecond
 	cfg.RenewInterval = 80 * time.Millisecond
 	cfg.RenewJitter = 10 * time.Millisecond
@@ -715,7 +716,7 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 	}
 
 	// Persist a record and claim it with A's token.
-	rec := persistence.OutboxRecord{
+	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID:         "fencing-rec-1",
 		RouteID:    "fencing-route",
 		EnvelopeID: "fencing-env-1",
@@ -724,8 +725,8 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 		Address:    "topic/fencing",
 		Status:     persistence.OutboxPending,
 		Envelope:   messaging.Envelope{ID: "fencing-env-1", Payload: []byte("data")},
-	}
-	if err := outboxStore.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+	})
+	if err := outboxStore.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 

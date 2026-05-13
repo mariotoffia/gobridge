@@ -27,7 +27,13 @@ gobridge/
 ├── observability/          # Context helpers, correlation slog handler
 ├── config/                 # Declarative YAML/JSON config model
 ├── validate/               # Startup config validation
-├── runtime/                # Route execution engine
+├── runtime/                # Route execution engine (orchestration)
+│   ├── dlq/                # Dead-letter-queue router
+│   ├── cluster/            # Route-ownership locator
+│   ├── session/            # Lease lifecycle + step-down
+│   ├── outbox/             # Shared-outbox Drainer + DepthCache
+│   ├── route/              # Per-route ingress pipeline + dispatch
+│   └── credentials/        # Pull→Push credential wrapper (used by bridge)
 ├── bridge/                 # Composition root (Builder)
 ├── httpapi/                # Admin + monitor HTTP servers
 │
@@ -43,6 +49,8 @@ gobridge/
 │   ├── aws/config/dynamodb/
 │   ├── aws/cluster/ecs/          # ECS cluster resolver
 │   ├── azure/transport/servicebus/
+│   ├── amqp/transport/amqp091/   # RabbitMQ (AMQP 0-9-1)
+│   ├── amqp/transport/amqp10/    # AMQP 1.0 (Artemis, Solace, Qpid)
 │   ├── http/transport/            # HTTP POST ingress, SSE egress
 │   ├── native/store/             # Memory + SQLite store factory
 │   │   ├── memorylease/
@@ -136,12 +144,13 @@ When an environment variable is set, the test utility uses the existing service 
 ## Linting
 
 ```bash
-make lint              # Lint all workspace modules (gofmt + go vet + golangci-lint + go-arch-lint)
-make lint-fix          # Lint with auto-fix
-make lint-go           # golangci-lint pass only (uses .golangci.yml at the repo root)
-make lint-arch         # Strict architecture dependency lint (blocking)
-make lint-arch-report  # Same checks, non-blocking; writes reports/go-arch-lint.log
+make lint     # Run every static check; writes one report per checker under reports/
+make lint-fix # Auto-format all tracked Go files with gofmt (escape hatch)
 ```
+
+`make lint` is the single entry point. For the full checker order, report inventory, and failure → fix recipes, see [LINT.md](LINT.md).
+
+Lint is fail-fast: the first failing checker stops the build. Read the latest `reports/<tool>.log` when something is red; older logs are from the previous successful run.
 
 Architecture lint enforces three layers of rules from `.go-arch-lint.yml`:
 
@@ -160,39 +169,17 @@ Adapters are split into role-specific components (one per transport
 technology, one per store backend, one per config-source backend, etc.)
 so cross-adapter coupling fails lint as soon as it is introduced.
 
-### Architecture-quality reports (advisory)
+### Advisory report sub-targets
+
+`make lint` ends with three advisory stages (module graph, duplicate scan, repeated literals) that never fail the build. The same three reports are also produced by these standalone targets for ad-hoc invocation:
 
 ```bash
-make arch-quality      # Run all advisory reports (writes to reports/)
-make arch-graph        # Module dep graph as text (`go mod graph` output)
-make dupl-report       # Find duplicate code blocks (advisory)
-make goconst-report    # Find repeated literals (advisory)
-make lint-acl          # ACL boundary check on adapters (advisory)
+make arch-graph     # Workspace module dep graph (`go mod graph` → reports/arch-graph.txt)
+make dupl-report    # Find duplicate code blocks (reports/dupl.log)
+make goconst-report # Find repeated literals (reports/goconst.log)
 ```
 
-These are **review aids, not gates** — false positives are common
-(test fixtures, repeated HTTP method strings, similar boilerplate).
-Forcing them to pass would push contributors toward over-abstraction.
-Treat them as prompts for human review:
-
-- `dupl.log` — when the same logic appears in two packages, ask
-  whether a missing aggregate root or domain service is hiding.
-- `goconst.log` — when the same literal appears 4+ times, ask whether
-  it deserves a domain-meaningful constant (named from the ubiquitous
-  language, not just a generic helper).
-- `arch-graph.txt` — raw `go mod graph` edges, one per line. Grep
-  for `^github.com/mariotoffia/gobridge ` to see direct deps; diff
-  the file across PRs to spot unintended new module edges (e.g., a
-  transport adapter starting to depend on a store implementation).
-  Plain text so any tool, including LLM agents, can inspect it.
-- `aclcheck.log` — flags adapter files that import a vendor SDK but
-  are not named `acl_*.go` (or under `acl/`). The DDD intent is to
-  concentrate the SDK boundary in named files. Existing adapters are
-  not refactored to satisfy it; treat the report as a prompt for new
-  adapters and gradual cleanup.
-
-Run them at release cuts, before adding a new transport/store
-adapter, or when investigating a smell that lint cannot pinpoint.
+See [LINT.md](LINT.md) for what each report prompts (typically a missing aggregate, domain service, or ubiquitous-language constant).
 
 ## Dependency Management
 
@@ -213,18 +200,21 @@ make vulncheck    # Scan all modules for known vulnerabilities
 ## CI Workflow
 
 ```bash
-make check       # build + golangci-lint + lint-arch-check + unit tests (no Docker)
-make check-all   # build + golangci-lint + lint-arch-check + all tests (Docker required)
+make check     # build + lint + test (no Docker)
+make check-all # build + lint + test-integration (Docker required)
 ```
 
-The `lint-arch-check` step runs both `make lint-arch` (strict
-architecture component-import lint) and `make lint-arch-mapping-test`
-(regression test that verifies `.go-arch-lint.yml` still maps every
-sentinel package to its expected role-based component). Both have to
-succeed for the build to pass.
+`make lint` runs every static check (architecture + mapping regression
++ gofmt + go vet + golangci-lint + aggcheck + aclcheck + cfgshape +
+registrychk + pluginsym) and writes one log per checker under
+`reports/`. `make test` runs unit tests plus timing audits
+(`audit-timings` for production code, `audit-test-timings` for test
+code).
 
-`.github/workflows/ci.yml` runs `lint-arch` as a separate job so
-architectural failures are easy to spot in PR status checks.
+`.github/workflows/ci.yml` runs two jobs: `test` (`make test`) and
+`lint` (`make lint`). The lint job uploads `reports/` as an artifact
+on every run so architectural and analyzer failures are inspectable
+without re-running locally.
 
 ## Adding a New Module
 
@@ -252,7 +242,7 @@ When adding a new adapter or processor module:
 
 ### Hexagonal Layer Rules
 
-These rules are enforced by `make lint-arch`. The full ruleset lives in
+These rules are enforced by `make lint`. The full ruleset lives in
 `.go-arch-lint.yml`. The bounded-context decomposition of `domain/`
 and the cross-context dependencies are described in
 [DDD.md](DDD.md); ubiquitous-language terms are defined in
@@ -274,7 +264,33 @@ and the cross-context dependencies are described in
   satisfies `ports.CircuitBreaker`; adapters depend on the port, not on
   this package).
 - **validate/** — `ports` + every `domain/*` context.
-- **runtime/** — `ports`, every `domain/*` context, `observability`, `logging`.
+- **runtime/** — every `domain/*` context except `domain/events`, plus
+  `ports`, `observability`, `logging`, and the six runtime leaves
+  (`runtime/dlq`, `runtime/cluster`, `runtime/session`, `runtime/outbox`,
+  `runtime/route`; **not** `runtime/credentials`, which is consumed only
+  by `bridge`).
+- **runtime/dlq/** — `domain/clock`, `domain/shared`, `domain/messaging`,
+  `domain/persistence`, `domain/routing`, `ports`.
+- **runtime/cluster/** — `domain/clock`, `domain/persistence`, `ports`.
+- **runtime/session/** — `domain/clock`, `domain/shared`,
+  `domain/persistence`, `domain/routing`, `domain/connectivity`, `ports`,
+  `logging`.
+- **runtime/outbox/** — `domain/clock`, `domain/shared`,
+  `domain/messaging`, `domain/persistence`, `domain/routing`, `ports`,
+  `logging`, plus the sibling `runtime/dlq` leaf.
+- **runtime/route/** — `domain/clock`, `domain/shared`,
+  `domain/messaging`, `domain/persistence`, `domain/routing`, `ports`,
+  `logging`, `observability`, plus the sibling `runtime/dlq` and
+  `runtime/outbox` leaves.
+- **runtime/credentials/** — `domain/clock`, `domain/shared`,
+  `domain/connectivity`, `ports` (consumed by `bridge`'s composition
+  root only; parent `runtime` never imports it).
+
+  Sub-packages MUST NOT import their parent `runtime/` nor unrelated
+  siblings; the parent composes leaves through the inward dependency
+  rule. Enforced by `.go-arch-lint.yml` components `runtime_dlq`,
+  `runtime_cluster`, `runtime_session`, `runtime_outbox`, `runtime_route`,
+  `runtime_credentials`.
 - **bridge/** — `ports`, `runtime`, every `domain/*` context, `logging`.
   Never depends on `config` directly (the composition root injects a
   `ports.BlueprintValidator`).

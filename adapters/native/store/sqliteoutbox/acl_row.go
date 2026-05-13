@@ -10,16 +10,16 @@ import (
 )
 
 // Row-scanning ACL: translate *sql.Rows into persistence.OutboxRecord
-// values. Lives here (not in acl_session.go) so the SDK→domain
-// mapping is reviewable in isolation.
+// aggregates via OutboxSnapshot. Lives here (not in acl_session.go) so
+// the SDK→domain mapping is reviewable in isolation.
 
-// scanOutboxRecords drains rows into a slice of OutboxRecord. The
-// caller is responsible for closing rows.
-func scanOutboxRecords(rows *sql.Rows) ([]persistence.OutboxRecord, error) {
-	var result []persistence.OutboxRecord
+// scanOutboxRecords drains rows into a slice of OutboxRecord aggregates
+// rehydrated from snapshots. The caller is responsible for closing rows.
+func scanOutboxRecords(rows *sql.Rows) ([]*persistence.OutboxRecord, error) {
+	var result []*persistence.OutboxRecord
 	for rows.Next() {
 		var (
-			r           persistence.OutboxRecord
+			snap        persistence.OutboxSnapshot
 			pk          string
 			envJSON     string
 			headersJSON sql.NullString
@@ -29,33 +29,33 @@ func scanOutboxRecords(rows *sql.Rows) ([]persistence.OutboxRecord, error) {
 			completedMs int64
 		)
 		err := rows.Scan(
-			&r.ID, &pk, &r.RouteID, &r.EnvelopeID, &r.BindingID, &r.SessionID,
-			&r.Address, &envJSON, &headersJSON, &status, &r.ClaimedBy, &r.ClaimVersion,
-			&r.ReplayCount, &createdAtMs, &expiresAtMs, &completedMs,
+			&snap.ID, &pk, &snap.RouteID, &snap.EnvelopeID, &snap.BindingID, &snap.SessionID,
+			&snap.Address, &envJSON, &headersJSON, &status, &snap.ClaimedBy, &snap.ClaimVersion,
+			&snap.ReplayCount, &createdAtMs, &expiresAtMs, &completedMs,
 		)
 		if err != nil {
 			return nil, wrapErr(err, "sqliteoutbox: scan record")
 		}
 
-		r.Status = persistence.OutboxStatus(status)
-		r.CreatedAt = time.UnixMilli(createdAtMs)
+		snap.Status = persistence.OutboxStatus(status)
+		snap.CreatedAt = time.UnixMilli(createdAtMs)
 		if expiresAtMs > 0 {
-			r.ExpiresAt = time.UnixMilli(expiresAtMs)
+			snap.ExpiresAt = time.UnixMilli(expiresAtMs)
 		}
 		if completedMs > 0 {
-			r.CompletedAt = time.UnixMilli(completedMs)
+			snap.CompletedAt = time.UnixMilli(completedMs)
 		}
 
-		if err := json.Unmarshal([]byte(envJSON), &r.Envelope); err != nil {
+		if err := json.Unmarshal([]byte(envJSON), &snap.Envelope); err != nil {
 			return nil, fmt.Errorf("sqliteoutbox: unmarshal envelope: %w", err)
 		}
 		if headersJSON.Valid && headersJSON.String != "" {
-			if err := json.Unmarshal([]byte(headersJSON.String), &r.DispatchHeaders); err != nil {
+			if err := json.Unmarshal([]byte(headersJSON.String), &snap.DispatchHeaders); err != nil {
 				return nil, fmt.Errorf("sqliteoutbox: unmarshal headers: %w", err)
 			}
 		}
 
-		result = append(result, r)
+		result = append(result, persistence.RehydrateFromSnapshot(snap))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, wrapErr(err, "sqliteoutbox: rows err scan")

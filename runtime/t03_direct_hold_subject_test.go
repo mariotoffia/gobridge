@@ -10,6 +10,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // captureSender records the full OutboundMessage so tests can assert on
@@ -65,24 +67,24 @@ func TestT03_DirectHold_DoesNotMutateSourceEnvelopeSubject(t *testing.T) {
 	}
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:    "t03-route",
 		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
 		Sender:     sender,
-		DLQ:        runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:        dlq.New(NewFakeDLQStore()),
 		Resolver:   resolver,
 		Bindings:   bindings,
 		InstanceID: "bridge-1",
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	src := &messaging.Envelope{ID: "msg-t03", Subject: logicalSubject, Payload: []byte("p")}
+	src := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-t03", Subject: logicalSubject, Payload: []byte("p")})
 	del := NewFakeDelivery(src)
 
 	if err := receiver.Emit(ctx, del); err != nil {
@@ -106,19 +108,19 @@ func TestT03_DirectHold_DoesNotMutateSourceEnvelopeSubject(t *testing.T) {
 	if msg.Envelope == nil {
 		t.Fatal("OutboundMessage.Envelope is nil")
 	}
-	if msg.Envelope.Subject != logicalSubject {
+	if msg.Envelope.Subject() != logicalSubject {
 		t.Errorf("OutboundMessage.Envelope.Subject = %q, want %q (logical subject must be preserved)",
-			msg.Envelope.Subject, logicalSubject)
+			msg.Envelope.Subject(), logicalSubject)
 	}
 
 	// The source delivery envelope must remain unmutated.
-	if got := del.Envelope().Subject; got != logicalSubject {
+	if got := del.Envelope().Subject(); got != logicalSubject {
 		t.Errorf("source delivery Envelope().Subject = %q, want %q (source must not be mutated)",
 			got, logicalSubject)
 	}
-	if src.Subject != logicalSubject {
+	if src.Subject() != logicalSubject {
 		t.Errorf("source envelope Subject = %q, want %q (source must not be mutated)",
-			src.Subject, logicalSubject)
+			src.Subject(), logicalSubject)
 	}
 
 	// The outbound envelope must not alias the source envelope, otherwise a

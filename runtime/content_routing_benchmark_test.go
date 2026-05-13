@@ -14,8 +14,8 @@ import (
 // ---------------------------------------------------------------------------
 
 func BenchmarkConditionEval_Eq_Header(b *testing.B) {
-	eval, _ := newConditionEval(MatchCondition{Field: "header.tenant", Operator: OpEquals, Value: "acme"})
-	env := &messaging.Envelope{Headers: map[string]any{"tenant": "acme"}}
+	eval, _ := newConditionEval(MatchCondition{Field: "header.tenant", Operator: OpEquals, Value: Val("acme")})
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Headers: map[string]any{"tenant": "acme"}})
 	ctx := newEvalContext()
 
 	b.ResetTimer()
@@ -26,8 +26,8 @@ func BenchmarkConditionEval_Eq_Header(b *testing.B) {
 }
 
 func BenchmarkConditionEval_Prefix_Subject(b *testing.B) {
-	eval, _ := newConditionEval(MatchCondition{Field: "subject", Operator: OpPrefix, Value: "orders."})
-	env := &messaging.Envelope{Subject: "orders.created.eu-west"}
+	eval, _ := newConditionEval(MatchCondition{Field: "subject", Operator: OpPrefix, Value: Val("orders.")})
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "orders.created.eu-west"})
 	ctx := newEvalContext()
 
 	b.ResetTimer()
@@ -38,8 +38,8 @@ func BenchmarkConditionEval_Prefix_Subject(b *testing.B) {
 }
 
 func BenchmarkConditionEval_Regex_Precompiled(b *testing.B) {
-	eval, _ := newConditionEval(MatchCondition{Field: "subject", Operator: OpRegex, Value: `^order-\d{4,8}$`})
-	env := &messaging.Envelope{Subject: "order-12345678"}
+	eval, _ := newConditionEval(MatchCondition{Field: "subject", Operator: OpRegex, Value: Val(`^order-\d{4,8}$`)})
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "order-12345678"})
 	ctx := newEvalContext()
 
 	b.ResetTimer()
@@ -50,7 +50,7 @@ func BenchmarkConditionEval_Regex_Precompiled(b *testing.B) {
 }
 
 func BenchmarkConditionEval_JSONPath_Shallow(b *testing.B) {
-	eval, _ := newConditionEval(MatchCondition{Field: "$.status", Operator: OpEquals, Value: "active"})
+	eval, _ := newConditionEval(MatchCondition{Field: "$.status", Operator: OpEquals, Value: Val("active")})
 	env := &messaging.Envelope{Payload: []byte(`{"status":"active","count":42}`)}
 
 	b.ResetTimer()
@@ -62,7 +62,7 @@ func BenchmarkConditionEval_JSONPath_Shallow(b *testing.B) {
 }
 
 func BenchmarkConditionEval_JSONPath_Deep(b *testing.B) {
-	eval, _ := newConditionEval(MatchCondition{Field: "$.order.item.status", Operator: OpEquals, Value: "shipped"})
+	eval, _ := newConditionEval(MatchCondition{Field: "$.order.item.status", Operator: OpEquals, Value: Val("shipped")})
 	env := &messaging.Envelope{Payload: []byte(`{"order":{"item":{"status":"shipped","qty":3}}}`)}
 
 	b.ResetTimer()
@@ -109,7 +109,7 @@ func benchRuleResolver(b *testing.B, numRules int, matchIdx int) {
 		rules[i] = MatchRule{
 			BindingID: bid,
 			Conditions: []MatchCondition{
-				{Field: "header.route-key", Operator: OpEquals, Value: fmt.Sprintf("key-%d", i)},
+				{Field: "header.route-key", Operator: OpEquals, Value: Val(fmt.Sprintf("key-%d", i))},
 			},
 		}
 	}
@@ -125,10 +125,10 @@ func benchRuleResolver(b *testing.B, numRules int, matchIdx int) {
 		matchVal = "no-match"
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Subject: "test",
 		Headers: map[string]any{"route-key": matchVal},
-	}
+	})
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -142,9 +142,9 @@ func benchRuleResolver(b *testing.B, numRules int, matchIdx int) {
 // ---------------------------------------------------------------------------
 
 func BenchmarkEvalContext_CachedVsUncached(b *testing.B) {
-	eval1, _ := newConditionEval(MatchCondition{Field: "$.order.id", Operator: OpEquals, Value: "42"})
-	eval2, _ := newConditionEval(MatchCondition{Field: "$.order.status", Operator: OpEquals, Value: "active"})
-	eval3, _ := newConditionEval(MatchCondition{Field: "$.order.priority", Operator: OpGreaterThan, Value: float64(5)})
+	eval1, _ := newConditionEval(MatchCondition{Field: "$.order.id", Operator: OpEquals, Value: Val("42")})
+	eval2, _ := newConditionEval(MatchCondition{Field: "$.order.status", Operator: OpEquals, Value: Val("active")})
+	eval3, _ := newConditionEval(MatchCondition{Field: "$.order.priority", Operator: OpGreaterThan, Value: Val(float64(5))})
 
 	env := &messaging.Envelope{
 		Payload: []byte(`{"order":{"id":"42","status":"active","priority":8}}`),

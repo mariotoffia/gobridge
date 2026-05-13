@@ -19,6 +19,14 @@ For term definitions see [UBIQUITOUS.md](UBIQUITOUS.md).
 
 All six contexts are stdlib-only at runtime (the `_no_external_deps_` sentinel in `.go-arch-lint.yml`).
 
+In addition to the six Layer-1 contexts above, GoBridge has a **Blueprint / Configuration** *supporting* subdomain that lives at Layer 2 (in `ports/blueprint*.go` plus the `config/` parser/store) and represents the parsed-but-not-yet-built shape of a bridge:
+
+| Context | Package | Subdomain | Purpose |
+|---|---|---|---|
+| Blueprint / Configuration | `ports` (types) + `config` (parser/store) | Supporting (Layer 2) | The declarative bridge shape: `BridgeConfig`, `BridgeSettings`, `SessionDef`, `BindingDef`, `RouteDef`, `BlueprintValidationError`, `ConfigStore`. Consumed by `bridge.Builder` and the admin `httpapi`. Format-neutral types live in `ports/` (no yaml/json runtime dep); the YAML/JSON parser, validator, merger and on-disk manager live in `config/`. |
+
+The Blueprint context is a **Customer/Supplier** consumer of the Routing, Connectivity, and Persistence cores — it *describes* their runtime composition without owning their invariants. See §5 for the context-map edges.
+
 ---
 
 ## 2. Context map — who imports whom
@@ -357,6 +365,91 @@ classDiagram
 **Invariant:** `Clock` exposes no `Sleep`. Every wait must be expressed as
 `select { case <-ctx.Done(): case <-clk.After(d): }` so cancellability is enforced at the type level. Tests use `domain/clock/clocktest` (excluded from arch lint).
 
+### 3.7 Blueprint / Configuration — Supporting (Layer 2)
+
+Lives in `ports/blueprint*.go` (format-neutral types) and `config/`
+(YAML/JSON parser, validator, merger, on-disk store). Not a Layer-1
+domain context — it is the *application-layer* description of what a
+bridge looks like before `bridge.Builder` materialises it into running
+adapters.
+
+```mermaid
+classDiagram
+    class BridgeConfig {
+        <<aggregate root>>
+        +Version int
+        +Bridge BridgeSettings
+        +ConfigWatch *ConfigWatchDef
+        +Stores StoresConfig
+        +Sessions []SessionDef
+        +Receivers []ReceiverDef
+        +Senders []SenderDef
+        +Bindings []BindingDef
+        +Routes []RouteDef
+        +HTTP *HTTPConfig
+    }
+    class BridgeSettings {
+        +ID string
+        +InstanceID string
+        +DeploymentMode string
+        +ShutdownTimeout string
+        +DrainTimeout string
+        +Cluster *ClusterConfig
+    }
+    class SessionDef {
+        +ID string
+        +Transport string
+        +Mode SessionMode
+        +Config any  %% typed PluginConfig
+    }
+    class BindingDef {
+        +ID string
+        +Transport string
+        +SessionID string
+        +SenderID string
+        +Address string
+        +Config any  %% typed PluginConfig
+    }
+    class RouteDef {
+        +ID string
+        +ReceiverID string
+        +DeliveryMode DeliveryMode
+        +DispatchMode DispatchMode
+        +Bindings []string
+        +Policy RoutePolicy
+    }
+    class BlueprintValidationError {
+        +Errors []string
+        +Warnings []string
+        +Add(msg)
+        +Addf(fmt, args)
+        +Warnf(fmt, args)
+        +HasErrors() bool
+    }
+    class ConfigStore {
+        <<port>>
+        +Load() *BridgeConfig
+        +Save(*BridgeConfig) error
+        +Validate(*BridgeConfig) (warnings, error)
+        +Merge(base, overlay) *BridgeConfig
+    }
+
+    BridgeConfig "1" --> "1" BridgeSettings
+    BridgeConfig "1" --> "*" SessionDef
+    BridgeConfig "1" --> "*" BindingDef
+    BridgeConfig "1" --> "*" RouteDef
+    ConfigStore ..> BridgeConfig : load / save / merge
+    ConfigStore ..> BlueprintValidationError : validate
+```
+
+**Invariants:**
+
+- `BridgeConfig` is the aggregate root of the blueprint. `bridge.Builder` consumes it whole; partial / mutated copies are not valid inputs.
+- The blueprint **is format-neutral** — `ports/` carries no yaml/json runtime dep. The `config/` package owns parsing, defaulting, merging and on-disk transactions; `httpapi` interacts with it only through the `ConfigStore` port.
+- `BlueprintValidationError` separates hard `Errors` (block startup / commit) from advisory `Warnings` (surface in admin UI but allow). The admin layer consumes both without depending on the parser package.
+- Plugin-specific configuration (transport options, store driver options, processor params) is carried as typed `ports.PluginConfig` values inside `SessionDef.Config`, `BindingDef.Config`, `StoreConfig.Config`, etc. — never as `map[string]any`. See [PLUGIN.md §Typed Plugin Config](PLUGIN.md#typed-plugin-config) and `cfgshape` enforcement.
+- `BridgeConfig.Version` is an optimistic-concurrency counter; `ConfigStore.Save` must perform a check-and-set against the version the transaction was started with (so concurrent operators on a shared file/DB cannot silently overwrite).
+
 ---
 
 ## 4. Outer-ring consumers (who depends on the domain)
@@ -460,11 +553,16 @@ flowchart LR
     shared -- "Shared Kernel" --> connectivity
     messaging -- "Customer / Supplier<br/>OutboxRecord embeds Envelope" --> persistence
     messaging -- "Customer / Supplier<br/>DLQEntry embeds Envelope" --> routing
+    blueprint["blueprint<br/><i>Supporting (L2)</i><br/>BridgeConfig, *Def, ConfigStore"]:::supporting
+    blueprint -- "Customer / Supplier<br/>describes routes" --> routing
+    blueprint -- "Customer / Supplier<br/>describes sessions/credentials" --> connectivity
+    blueprint -- "Customer / Supplier<br/>describes stores/outbox" --> persistence
 ```
 
 - **Messaging is upstream** of persistence and routing. Persistence and routing model "an `Envelope` that has been persisted / has failed routing". Messaging is the publisher of the canonical message shape; persistence and routing are consumers (Customer/Supplier in DDD terms).
 - **Shared is the Shared Kernel** — every other context depends on its error class/code taxonomy. Changes to `BridgeError` ripple everywhere; this is intentional and reviewed.
 - **Connectivity, Routing, and Persistence do not know about each other.** They communicate only by exchanging `messaging.Envelope` and `shared.BridgeError` values through ports defined in Layer 2.
+- **Blueprint (Layer 2)** is *upstream* in description but *downstream* in dependency: `bridge.Builder` consumes a `BridgeConfig` and produces concrete adapters for routing, connectivity, and persistence. The blueprint context defines no domain invariants of its own — it borrows the vocabulary of the cores it composes (Customer/Supplier).
 
 ---
 

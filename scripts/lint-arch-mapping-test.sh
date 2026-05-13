@@ -83,15 +83,23 @@ expect domain_messaging    /domain/messaging
 expect domain_persistence  /domain/persistence
 expect domain_routing      /domain/routing
 expect domain_connectivity /domain/connectivity
+expect domain_events       /domain/events
 expect domain_clock        /domain/clock
 
 # Layer 2 — ports, application services, shared kernel.
-expect ports     /ports
-expect config    /config
-expect runtime   /runtime
-expect bridge    /bridge
-expect validate  /validate
-expect httpapi   /httpapi
+expect ports         /ports
+expect config        /config
+expect config_parser /config/parser
+expect runtime             /runtime
+expect runtime_dlq         /runtime/dlq
+expect runtime_credentials /runtime/credentials
+expect runtime_cluster     /runtime/cluster
+expect runtime_session     /runtime/session
+expect runtime_outbox      /runtime/outbox
+expect runtime_route       /runtime/route
+expect bridge        /bridge
+expect validate      /validate
+expect httpapi       /httpapi
 
 # Cross-cutting utilities (stdlib-only inner ring).
 expect logging         /logging

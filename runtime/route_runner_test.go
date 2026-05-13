@@ -12,28 +12,30 @@ import (
 	"github.com/mariotoffia/gobridge/observability"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
-func makeRunner(t *testing.T, opts ...func(*runtime.RouteRunnerConfig)) (*FakeReceiver, *FakeSender, *FakeDLQStore, *FakeOutboxStore, *runtime.RouteRunner) {
+func makeRunner(t *testing.T, opts ...func(*route.RouteRunnerConfig)) (*FakeReceiver, *FakeSender, *FakeDLQStore, *FakeOutboxStore, *route.RouteRunner) {
 	t.Helper()
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
 	dlqStore := NewFakeDLQStore()
 	outbox := NewFakeOutboxStore()
 
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:     "test-route",
 		Policy:      routing.RoutePolicy{}.WithDefaults(),
 		Receiver:    receiver,
 		Sender:      sender,
 		OutboxStore: outbox,
-		DLQ:         runtime.NewDLQRouter(dlqStore),
+		DLQ:         dlq.New(dlqStore),
 		InstanceID:  "bridge-1",
 	}
 	for _, o := range opts {
 		o(&cfg)
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 	return receiver, sender, dlqStore, outbox, runner
 }
 
@@ -67,7 +69,7 @@ func TestRouteRunner_DirectHold_HappyPath(t *testing.T) {
 
 // TestRouteRunner_DirectHold_TransientSendError verifies transient send failure retries the delivery without acking.
 func TestRouteRunner_DirectHold_TransientSendError(t *testing.T) {
-	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 	})
 	sender.SendErr = shared.ErrUnavailable
@@ -152,13 +154,13 @@ func TestRouteRunner_HeaderInjection(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID: "msg-headers",
 		Headers: map[string]any{
 			messaging.HeaderCorrelationID: "injected-by-attacker",
 			"custom-header":               "keep-me",
 		},
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "delivery acked and message sent", func() bool {
@@ -169,10 +171,10 @@ func TestRouteRunner_HeaderInjection(t *testing.T) {
 		t.Fatal("expected 1 sent message")
 	}
 	sent := sender.GetSent()[0]
-	if _, ok := sent.Headers["custom-header"]; !ok {
+	if _, ok := sent.Headers()["custom-header"]; !ok {
 		t.Fatal("custom header should be preserved")
 	}
-	corrID, ok := sent.Headers[messaging.HeaderCorrelationID].(string)
+	corrID, ok := sent.Headers()[messaging.HeaderCorrelationID].(string)
 	if !ok || corrID == "injected-by-attacker" {
 		t.Fatal("reserved header from external source should be stripped and regenerated")
 	}
@@ -180,7 +182,7 @@ func TestRouteRunner_HeaderInjection(t *testing.T) {
 
 // TestRouteRunner_ProcessorError_Permanent verifies permanent processor errors route to DLQ and ack the delivery.
 func TestRouteRunner_ProcessorError_Permanent(t *testing.T) {
-	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Processors = []ports.Processor{
 			&FakeProcessor{NameVal: "reject", ProcessErr: shared.ErrInvalidPayload},
 		}
@@ -207,7 +209,7 @@ func TestRouteRunner_ProcessorError_Permanent(t *testing.T) {
 
 // TestRouteRunner_ProcessorError_Transient verifies transient processor errors trigger source retry without ack.
 func TestRouteRunner_ProcessorError_Transient(t *testing.T) {
-	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Processors = []ports.Processor{
 			&FakeProcessor{NameVal: "flaky", ProcessErr: shared.ErrUnavailable},
 		}
@@ -230,7 +232,7 @@ func TestRouteRunner_ProcessorError_Transient(t *testing.T) {
 // TestRouteRunner_ProcessorError_MessageFiltered_Drop verifies filtered messages ack silently
 // without send, retry, or DLQ when OnPermanentFailure is set to Drop.
 func TestRouteRunner_ProcessorError_MessageFiltered_Drop(t *testing.T) {
-	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.OnPermanentFailure = routing.FailureDrop
 		cfg.Processors = []ports.Processor{
 			&FakeProcessor{NameVal: "filter", ProcessErr: shared.ErrMessageFiltered},
@@ -263,7 +265,7 @@ func TestRouteRunner_ProcessorError_MessageFiltered_Drop(t *testing.T) {
 // TestRouteRunner_ProcessorError_MessageFiltered_DLQ verifies filtered messages are
 // written to DLQ and acked when OnPermanentFailure is set to DLQ.
 func TestRouteRunner_ProcessorError_MessageFiltered_DLQ(t *testing.T) {
-	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.OnPermanentFailure = routing.FailureDLQ
 		cfg.Processors = []ports.Processor{
 			&FakeProcessor{NameVal: "filter", ProcessErr: shared.ErrMessageFiltered},
@@ -298,7 +300,7 @@ func TestRouteRunner_ProcessorError_MessageFiltered_DLQ(t *testing.T) {
 // TestRouteRunner_Tracer_SpanLifecycle verifies span name, completion, success state, and route/envelope attributes.
 func TestRouteRunner_Tracer_SpanLifecycle(t *testing.T) {
 	tracer := &FakeTracer{}
-	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Tracer = tracer
 	})
 
@@ -355,7 +357,7 @@ func TestRouteRunner_Tracer_SpanLifecycle(t *testing.T) {
 // TestRouteRunner_Tracer_TraceContextExtraction verifies W3C traceparent is parsed into trace_id span attributes.
 func TestRouteRunner_Tracer_TraceContextExtraction(t *testing.T) {
 	tracer := &FakeTracer{}
-	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Tracer = tracer
 	})
 
@@ -364,12 +366,12 @@ func TestRouteRunner_Tracer_TraceContextExtraction(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID: "msg-w3c",
 		Headers: map[string]any{
 			"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
 		},
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "delivery acked and span ended for trace extraction", func() bool {
@@ -399,7 +401,7 @@ func TestRouteRunner_Tracer_ContextEnrichment(t *testing.T) {
 	tracer := &FakeTracer{}
 	var capturedCorrID, capturedTraceID, capturedSpanID string
 
-	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Tracer = tracer
 		cfg.Processors = []ports.Processor{
 			&FakeProcessor{
@@ -419,12 +421,12 @@ func TestRouteRunner_Tracer_ContextEnrichment(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID: "msg-ctx",
 		Headers: map[string]any{
 			"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
 		},
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "delivery acked for context enrichment", del.IsAcked)
@@ -443,7 +445,7 @@ func TestRouteRunner_Tracer_ContextEnrichment(t *testing.T) {
 // TestRouteRunner_Tracer_ErrorRecording verifies delivery ack failures are recorded on the span.
 func TestRouteRunner_Tracer_ErrorRecording(t *testing.T) {
 	tracer := &FakeTracer{}
-	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Tracer = tracer
 	})
 
@@ -476,7 +478,7 @@ func TestRouteRunner_Tracer_ErrorRecording(t *testing.T) {
 // TestRouteRunner_Tracer_ProcessorErrorRecording verifies permanent processor errors are recorded on the span.
 func TestRouteRunner_Tracer_ProcessorErrorRecording(t *testing.T) {
 	tracer := &FakeTracer{}
-	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Tracer = tracer
 		cfg.Processors = []ports.Processor{
 			&FakeProcessor{NameVal: "fail", ProcessErr: shared.ErrInvalidPayload},
@@ -508,7 +510,7 @@ func TestRouteRunner_Tracer_ProcessorErrorRecording(t *testing.T) {
 // TestRouteRunner_Tracer_FilteredNoError verifies filtered deliveries end the span without an error.
 func TestRouteRunner_Tracer_FilteredNoError(t *testing.T) {
 	tracer := &FakeTracer{}
-	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Tracer = tracer
 		cfg.Processors = []ports.Processor{
 			&FakeProcessor{NameVal: "filter", ProcessErr: shared.ErrMessageFiltered},
@@ -542,7 +544,7 @@ func TestRouteRunner_Tracer_FilteredNoError(t *testing.T) {
 
 // TestRouteRunner_SharedOutbox_HappyPath verifies shared outbox persists one record and acks the source delivery.
 func TestRouteRunner_SharedOutbox_HappyPath(t *testing.T) {
-	receiver, _, _, outbox, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, _, outbox, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
 		cfg.Resolver = &FakeResolver{
 			Plans: []routing.DispatchPlan{
@@ -573,7 +575,7 @@ func TestRouteRunner_SharedOutbox_HappyPath(t *testing.T) {
 // TestRouteRunner_SharedOutbox_DuplicatePersist verifies a second delivery for the same envelope id is still acked after duplicate persist.
 func TestRouteRunner_SharedOutbox_DuplicatePersist(t *testing.T) {
 	outbox := NewFakeOutboxStore()
-	receiver, _, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
 		cfg.OutboxStore = outbox
 		cfg.Resolver = &FakeResolver{
@@ -604,7 +606,7 @@ func TestRouteRunner_SharedOutbox_DuplicatePersist(t *testing.T) {
 
 // TestRouteRunner_DirectHold_WithResolver verifies header-driven resolver output becomes the outbound subject.
 func TestRouteRunner_DirectHold_WithResolver(t *testing.T) {
-	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 		cfg.Bindings = []routing.DestinationBinding{
 			{ID: "bind-a", Transport: "mqtt", SessionID: "sess-a", Address: "factory/a/orders/{device_id}"},
@@ -621,10 +623,10 @@ func TestRouteRunner_DirectHold_WithResolver(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-resolve",
 		Headers: map[string]any{"factory": "A", "device_id": "42"},
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "send and ack with resolver", func() bool {
@@ -638,11 +640,11 @@ func TestRouteRunner_DirectHold_WithResolver(t *testing.T) {
 	if out[0].Address != "factory/a/orders/42" {
 		t.Fatalf("expected resolved Address, got %q", out[0].Address)
 	}
-	if out[0].Envelope.Subject != "" {
-		t.Fatalf("source envelope had no Subject; outbound must preserve it (got %q)", out[0].Envelope.Subject)
+	if out[0].Envelope.Subject() != "" {
+		t.Fatalf("source envelope had no Subject; outbound must preserve it (got %q)", out[0].Envelope.Subject())
 	}
-	if env.Subject != "" {
-		t.Fatalf("source envelope Subject must not be mutated, got %q", env.Subject)
+	if env.Subject() != "" {
+		t.Fatalf("source envelope Subject must not be mutated, got %q", env.Subject())
 	}
 	if !del.IsAcked() {
 		t.Fatal("delivery should be acked")
@@ -651,7 +653,7 @@ func TestRouteRunner_DirectHold_WithResolver(t *testing.T) {
 
 // TestRouteRunner_DirectHold_ResolverError_Rejected verifies rejected resolve skips send, DLQs, and acks.
 func TestRouteRunner_DirectHold_ResolverError_Rejected(t *testing.T) {
-	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 		cfg.Resolver = &FakeResolver{
 			ResolveErr: shared.NewBridgeError("NO_MATCH", shared.ErrorRejected, "no binding"),
@@ -682,7 +684,7 @@ func TestRouteRunner_DirectHold_ResolverError_Rejected(t *testing.T) {
 
 // TestRouteRunner_DirectHold_ResolverError_Transient verifies transient resolve errors retry without sending.
 func TestRouteRunner_DirectHold_ResolverError_Transient(t *testing.T) {
-	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 		cfg.Resolver = &FakeResolver{
 			ResolveErr: shared.ErrUnavailable,
@@ -708,7 +710,7 @@ func TestRouteRunner_DirectHold_ResolverError_Transient(t *testing.T) {
 
 // TestRouteRunner_DirectHold_ResolverHeaders verifies dispatch plan headers merge with envelope headers on send.
 func TestRouteRunner_DirectHold_ResolverHeaders(t *testing.T) {
-	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 		cfg.Resolver = &FakeResolver{
 			Plans: []routing.DispatchPlan{
@@ -726,7 +728,7 @@ func TestRouteRunner_DirectHold_ResolverHeaders(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{ID: "msg-hdrs", Headers: map[string]any{"custom": "value"}}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-hdrs", Headers: map[string]any{"custom": "value"}})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "send with resolver headers", func() bool {
@@ -741,20 +743,20 @@ func TestRouteRunner_DirectHold_ResolverHeaders(t *testing.T) {
 	if out.Address != "topic/resolved" {
 		t.Fatalf("expected Address topic/resolved, got %q", out.Address)
 	}
-	if sent.Subject != "" {
-		t.Fatalf("source envelope had no Subject; outbound must preserve it (got %q)", sent.Subject)
+	if sent.Subject() != "" {
+		t.Fatalf("source envelope had no Subject; outbound must preserve it (got %q)", sent.Subject())
 	}
-	if sent.Headers["qos"] != 1 {
-		t.Fatalf("expected dispatch header qos=1, got %v", sent.Headers["qos"])
+	if sent.Headers()["qos"] != 1 {
+		t.Fatalf("expected dispatch header qos=1, got %v", sent.Headers()["qos"])
 	}
-	if sent.Headers["custom"] != "value" {
+	if sent.Headers()["custom"] != "value" {
 		t.Fatal("custom header should be preserved")
 	}
 }
 
 // TestRouteRunner_SharedOutbox_FanOut verifies resolver fan-out writes one outbox record per plan and acks.
 func TestRouteRunner_SharedOutbox_FanOut(t *testing.T) {
-	receiver, _, _, outbox, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, _, outbox, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
 		cfg.Bindings = []routing.DestinationBinding{
 			{ID: "bind-a", SessionID: "sess-a"},
@@ -789,7 +791,7 @@ func TestRouteRunner_SharedOutbox_FanOut(t *testing.T) {
 
 // TestRouteRunner_SharedOutbox_ResolverError_Rejected verifies rejected resolve with shared outbox DLQs and acks.
 func TestRouteRunner_SharedOutbox_ResolverError_Rejected(t *testing.T) {
-	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
 		cfg.Resolver = &FakeResolver{
 			ResolveErr: shared.NewBridgeError("NO_MATCH", shared.ErrorRejected, "no binding"),
@@ -819,7 +821,7 @@ func TestRouteRunner_SharedOutbox_ResolverError_Rejected(t *testing.T) {
 //
 // Scenario: first send blocks on a hook; second emit must not finish until the first is released.
 func TestRouteRunner_Backpressure(t *testing.T) {
-	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.MaxInFlight = 1
 	})
 
@@ -869,7 +871,7 @@ func TestRouteRunner_Backpressure(t *testing.T) {
 // an MQTT source receiver emits a delivery that flows through the
 // processor chain and is sent to an SQS-style sender via direct_hold.
 func TestRouteRunner_MQTTToSQS_DirectHold(t *testing.T) {
-	receiver, sender, _, _, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 		cfg.Resolver = &FakeResolver{
 			Plans: []routing.DispatchPlan{
@@ -880,7 +882,7 @@ func TestRouteRunner_MQTTToSQS_DirectHold(t *testing.T) {
 			&FakeProcessor{
 				NameVal: "mqtt-to-sqs-enricher",
 				ProcessFn: func(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
-					env.Headers["source-transport"] = "mqtt"
+					env.SetHeader("source-transport", "mqtt")
 					return next(ctx, env)
 				},
 			},
@@ -892,12 +894,12 @@ func TestRouteRunner_MQTTToSQS_DirectHold(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "mqtt-ingress-1",
 		Subject: "factory/a/telemetry",
 		Payload: []byte(`{"temp":22.5}`),
 		Headers: map[string]any{"qos": 1},
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "MQTT to SQS send and ack", func() bool {
@@ -912,13 +914,13 @@ func TestRouteRunner_MQTTToSQS_DirectHold(t *testing.T) {
 	if out.Address != "arn:aws:sqs:eu-west-1:123456789:orders" {
 		t.Fatalf("expected SQS Address, got %q", out.Address)
 	}
-	if sent.Subject != "factory/a/telemetry" {
-		t.Fatalf("logical Subject must be preserved on outbound, got %q", sent.Subject)
+	if sent.Subject() != "factory/a/telemetry" {
+		t.Fatalf("logical Subject must be preserved on outbound, got %q", sent.Subject())
 	}
-	if env.Subject != "factory/a/telemetry" {
-		t.Fatalf("source envelope Subject must not be mutated, got %q", env.Subject)
+	if env.Subject() != "factory/a/telemetry" {
+		t.Fatalf("source envelope Subject must not be mutated, got %q", env.Subject())
 	}
-	if sent.Headers["source-transport"] != "mqtt" {
+	if sent.Headers()["source-transport"] != "mqtt" {
 		t.Fatal("processor should have set source-transport header")
 	}
 	if !del.IsAcked() {
@@ -929,7 +931,7 @@ func TestRouteRunner_MQTTToSQS_DirectHold(t *testing.T) {
 // TestRouteRunner_MQTTToSQS_SharedOutbox verifies the reverse direction
 // with shared_outbox delivery mode: MQTT source -> outbox persist -> SQS send.
 func TestRouteRunner_MQTTToSQS_SharedOutbox(t *testing.T) {
-	receiver, _, _, outbox, runner := makeRunner(t, func(cfg *runtime.RouteRunnerConfig) {
+	receiver, _, _, outbox, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
 		cfg.Resolver = &FakeResolver{
 			Plans: []routing.DispatchPlan{
@@ -943,11 +945,11 @@ func TestRouteRunner_MQTTToSQS_SharedOutbox(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "mqtt-to-sqs-outbox-1",
 		Subject: "sensors/temp",
 		Payload: []byte(`{"temp":19.3}`),
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "MQTT to SQS outbox persist and ack", func() bool {

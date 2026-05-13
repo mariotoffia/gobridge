@@ -188,11 +188,11 @@ func TestE2E_S3_MQTTToSQS_DirectHold(t *testing.T) {
 	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("s3-pub"), connectivity.SessionEphemeral)
 	pubSender := paho.NewSender(pubSess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "s3-msg-1",
 		Subject: topic,
 		Payload: []byte(`{"event":"created"}`),
-	}
+	})
 	if err := pubSender.Send(context.Background(), ports.OutboundMessage{Envelope: env, Address: topic}); err != nil {
 		t.Fatalf("MQTT Send: %v", err)
 	}
@@ -565,7 +565,7 @@ func TestE2E_S8_SQSToMQTT_ProcessorChain(t *testing.T) {
 	enricher := &testProcessor{
 		name: "enricher",
 		fn: func(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
-			env.Headers["enriched-by"] = "s8-test"
+			env.SetHeader("enriched-by", "s8-test")
 			return next(ctx, env)
 		},
 	}
@@ -604,8 +604,8 @@ func TestE2E_S8_SQSToMQTT_ProcessorChain(t *testing.T) {
 	})
 
 	msgs := collector.getMessages()
-	if msgs[0].Headers["enriched-by"] != "s8-test" {
-		t.Errorf("expected enriched-by header, got headers: %v", msgs[0].Headers)
+	if msgs[0].Headers()["enriched-by"] != "s8-test" {
+		t.Errorf("expected enriched-by header, got headers: %v", msgs[0].Headers())
 	}
 }
 

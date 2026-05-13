@@ -46,11 +46,11 @@ func TestSender_Send_NoSession(t *testing.T) {
 		t.Fatalf("NewSender() error = %v", err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-1",
 		Subject: "test",
 		Payload: []byte("data"),
-	}
+	})
 
 	err = s.Send(context.Background(), ports.OutboundMessage{Envelope: env})
 	if err == nil {
@@ -101,7 +101,7 @@ func TestSender_BuildMessage(t *testing.T) {
 	now := time.Now().UTC()
 	expiry := now.Add(time.Hour)
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:        "build-1",
 		Subject:   "evt.test",
 		Payload:   []byte("payload-data"),
@@ -110,7 +110,7 @@ func TestSender_BuildMessage(t *testing.T) {
 		Headers: map[string]any{
 			"custom-header": "custom-value",
 		},
-	}
+	})
 
 	msg := envelopeToMessage(env)
 

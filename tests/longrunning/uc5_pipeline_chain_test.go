@@ -94,10 +94,10 @@ func (p *stageProcessor) Process(
 	env *messaging.Envelope,
 	next ports.ProcessorFunc,
 ) error {
-	if env.Headers == nil {
-		env.Headers = make(map[string]any)
+	if env.Headers() == nil {
+		env.ReplaceHeaders(make(map[string]any))
 	}
-	env.Headers["stage_"+p.stage] = "true"
+	env.SetHeader("stage_"+p.stage, "true")
 	return next(ctx, env)
 }
 

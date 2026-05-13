@@ -120,7 +120,7 @@ func headersToMessage(headers map[string]any) *amqp.Message {
 // merging headers, payload, and any envelope-level fields (ID, subject,
 // expiry, creation time) into a single SDK message.
 func envelopeToMessage(env *messaging.Envelope) *amqp.Message {
-	msg := headersToMessage(env.Headers)
+	msg := headersToMessage(env.Headers())
 	msg.Data = [][]byte{env.Payload}
 
 	if msg.Properties == nil {
@@ -129,8 +129,8 @@ func envelopeToMessage(env *messaging.Envelope) *amqp.Message {
 	if env.ID != "" {
 		msg.Properties.MessageID = env.ID
 	}
-	if env.Subject != "" {
-		msg.Properties.Subject = &env.Subject
+	if s := env.Subject(); s != "" {
+		msg.Properties.Subject = &s
 	}
 	if env.HasExpiry() {
 		expiry := env.ExpiresAt

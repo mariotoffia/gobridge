@@ -34,6 +34,11 @@ func (f *Factory) Capabilities() []ports.Capability {
 	return []ports.Capability{ports.CapStatefulSession}
 }
 
+// AddressValidator returns nil — AMQP 1.0 link target addresses have
+// no runtime-enforceable rendered-address rules; the broker rejects
+// invalid addresses on attach.
+func (f *Factory) AddressValidator() ports.AddressValidator { return nil }
+
 // NewSession creates an AMQP 1.0 Session from the given spec.
 func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.Session, error) {
 	cfg, err := configFromSpec(spec.Config)

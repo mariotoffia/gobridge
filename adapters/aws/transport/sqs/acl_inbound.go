@@ -66,19 +66,39 @@ func (r *Receiver) pollAndConvert(
 
 	results := make([]rawInbound, 0, len(output.Messages))
 	for _, msg := range output.Messages {
-		env, receiptHandle := r.convertMessage(ctx, queueURL, msg)
+		env, receiptHandle, convErr := r.convertMessage(ctx, queueURL, msg)
+		if convErr != nil {
+			// Drop poison messages: they will hit the broker's
+			// MaxReceiveCount-driven DLQ via VisibilityTimeout
+			// expiration without us issuing a Delete (which would
+			// suppress the redrive policy). Emitting the malformed
+			// metric makes the drop visible in dashboards.
+			r.metrics.Counter(shared.MetricSQSMalformedMessages, 1,
+				shared.Tag{Key: shared.TagKeyQueueURL, Value: queueURL})
+			if r.logger != nil {
+				r.logger.Warn("sqs: dropping malformed message",
+					"queue_url", queueURL,
+					"message_id", aws.ToString(msg.MessageId),
+					"error", convErr,
+				)
+			}
+			_ = receiptHandle
+			continue
+		}
 		results = append(results, rawInbound{env: env, receiptHandle: receiptHandle})
 	}
 	return results, nil
 }
 
 // convertMessage translates a single SDK message into a *messaging.Envelope
-// plus the receipt handle the delivery uses for Ack/Retry/Extend.
+// plus the receipt handle the delivery uses for Ack/Retry/Extend. Returns
+// a wrapped *shared.BridgeError when NewEnvelope rejects the input so the
+// poll loop can surface a malformed-message metric and skip the message.
 func (r *Receiver) convertMessage(
 	ctx context.Context,
 	queueURL string,
 	msg sqstypes.Message,
-) (*messaging.Envelope, string) {
+) (*messaging.Envelope, string, error) {
 	receiptHandle := aws.ToString(msg.ReceiptHandle)
 	body := aws.ToString(msg.Body)
 
@@ -92,31 +112,43 @@ func (r *Receiver) convertMessage(
 		subject = v
 	}
 
-	env := &messaging.Envelope{
-		ID:        aws.ToString(msg.MessageId),
-		Subject:   subject,
-		Payload:   []byte(body),
-		CreatedAt: r.clock().Now(),
-	}
+	payload := []byte(body)
 
 	if r.cfg.SNSUnwrap {
 		if unwrapped, ok := trySNSUnwrap(body, headers); ok {
 			if logging.TraceEnabled(r.logger) {
 				r.logger.Log(ctx, logging.LevelTrace, "sqs: SNS unwrap",
 					"queue_url", queueURL,
-					"message_id", env.ID,
+					"message_id", aws.ToString(msg.MessageId),
 					"new_subject", unwrapped.subject,
 					"has_subject", unwrapped.hasSubject,
 				)
 			}
 			if unwrapped.hasSubject {
-				env.Subject = unwrapped.subject
+				subject = unwrapped.subject
 			}
-			env.Payload = []byte(unwrapped.message)
+			payload = []byte(unwrapped.message)
 		}
 	}
 
-	env.Headers = headers
+	id := aws.ToString(msg.MessageId)
+	if id == "" {
+		id = generateEnvelopeID()
+	}
+
+	// Headers go through EnvelopeInput so NewEnvelope's
+	// StripReservedHeaders is the single chokepoint for reserved-prefix
+	// sanitation — see I4 in the round-1 reviewer notes.
+	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
+		ID:        id,
+		Subject:   subject,
+		Payload:   payload,
+		Headers:   headers,
+		CreatedAt: r.clock().Now(),
+	}, r.clock().Now())
+	if err != nil {
+		return nil, receiptHandle, wrapEnvelopeErr(err)
+	}
 
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelTrace, "sqs: converting",
@@ -126,7 +158,7 @@ func (r *Receiver) convertMessage(
 		)
 	}
 
-	return env, receiptHandle
+	return env, receiptHandle, nil
 }
 
 // attributesToHeaders converts SQS message attributes and system attributes

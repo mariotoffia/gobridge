@@ -28,12 +28,31 @@ func newLoader(t *testing.T, prefix string) *ddbconfig.Loader {
 	loader := ddbconfig.NewLoader(client,
 		ddbconfig.WithTableName(tableName),
 		ddbconfig.WithBridgeID("test-bridge"),
+		ddbconfig.WithRegistry(newDDBTestRegistry(t)),
 	)
 	if err := loader.EnsureTable(context.Background()); err != nil {
 		t.Fatalf("ensure table: %v", err)
 	}
 	ddblocal.CleanupTable(t, client, tableName)
 	return loader
+}
+
+// newDDBTestRegistry returns a *ports.Registry populated with the
+// stub PluginConfig decoders the test fixtures rely on. The DDB
+// loader requires a non-nil registry; tests that exercise round
+// trips through Load() supply this value via WithRegistry.
+func newDDBTestRegistry(t testing.TB) *ports.Registry {
+	t.Helper()
+	reg := ports.NewRegistry()
+	for _, k := range []string{"mqtt", "sqs", "http"} {
+		kind := k
+		if err := reg.Register(kind, func(_ ports.RawConfig) (ports.PluginConfig, error) {
+			return stubPluginConfig{kind: kind}, nil
+		}); err != nil {
+			t.Fatalf("register stub %q: %v", kind, err)
+		}
+	}
+	return reg
 }
 
 func sampleConfig() *ports.BridgeConfig {
@@ -151,6 +170,7 @@ func TestWatchDetectsChanges(t *testing.T) {
 		ddbconfig.WithTableName(tableName),
 		ddbconfig.WithBridgeID("test-bridge"),
 		ddbconfig.WithPollInterval(100*time.Millisecond),
+		ddbconfig.WithRegistry(newDDBTestRegistry(t)),
 	)
 	if err := pollLoader.EnsureTable(ctx); err != nil {
 		t.Fatalf("ensure table: %v", err)
@@ -199,6 +219,7 @@ func TestWatchNoDuplicates(t *testing.T) {
 		ddbconfig.WithBridgeID("test-bridge"),
 		ddbconfig.WithPollInterval(100*time.Millisecond),
 		ddbconfig.WithClock(fc),
+		ddbconfig.WithRegistry(newDDBTestRegistry(t)),
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

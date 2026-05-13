@@ -37,6 +37,13 @@ func (f *Factory) Capabilities() []ports.Capability {
 	}
 }
 
+// AddressValidator returns the MQTT topic validator the runtime
+// invokes against every fully-rendered publish topic. The validator
+// is shared across all bindings backed by this transport.
+func (f *Factory) AddressValidator() ports.AddressValidator {
+	return NewAddressValidator()
+}
+
 // NewSession creates an MQTT Session from the given spec.
 func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.Session, error) {
 	cfg, err := configFromSpec(spec.Config)

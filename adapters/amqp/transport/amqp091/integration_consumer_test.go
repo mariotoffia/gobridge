@@ -60,11 +60,11 @@ func TestIntegration_CompetingConsumers(t *testing.T) {
 		Timeout:    10 * time.Second,
 	})
 	for i := 0; i < msgCount; i++ {
-		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "compete-" + string(rune('A'+i)),
 			Subject: queueName,
 			Payload: []byte("compete"),
-		}}); err != nil {
+		})}); err != nil {
 			t.Fatalf("Send[%d]: %v", i, err)
 		}
 	}
@@ -173,9 +173,9 @@ func TestIntegration_AutoAck(t *testing.T) {
 		Session:    sess,
 		Timeout:    10 * time.Second,
 	})
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "autoack-1", Subject: queueName, Payload: []byte("auto"),
-	}}); err != nil {
+	})}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -207,9 +207,9 @@ func TestIntegration_AutoAck(t *testing.T) {
 		t.Fatal("timed out waiting for auto-ack message")
 	}
 
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "autoack-2", Subject: queueName, Payload: []byte("second"),
-	}}); err != nil {
+	})}); err != nil {
 		t.Fatalf("Send second: %v", err)
 	}
 
@@ -290,11 +290,11 @@ func TestIntegration_PrefetchCount(t *testing.T) {
 		Timeout:    10 * time.Second,
 	})
 	for i := 0; i < totalMessages; i++ {
-		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "pf-" + string(rune('0'+i)),
 			Subject: queueName,
 			Payload: []byte("prefetch-test"),
-		}}); err != nil {
+		})}); err != nil {
 			t.Fatalf("Send[%d]: %v", i, err)
 		}
 	}

@@ -12,7 +12,7 @@ import (
 
 // verifies Delivery.Envelope returns the same envelope pointer passed to NewDelivery.
 func TestDelivery_Envelope(t *testing.T) {
-	env := &messaging.Envelope{ID: "e1", Subject: "t", Payload: []byte("p")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Subject: "t", Payload: []byte("p")})
 	del := NewDelivery(env)
 
 	got := del.Envelope()

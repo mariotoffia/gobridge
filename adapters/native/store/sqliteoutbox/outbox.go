@@ -61,7 +61,7 @@ func (s *Store) Close() error {
 }
 
 // Persist inserts the supplied records in a single transaction.
-func (s *Store) Persist(ctx context.Context, records []persistence.OutboxRecord) error {
+func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: persist", "count", len(records))
 	}
@@ -69,7 +69,7 @@ func (s *Store) Persist(ctx context.Context, records []persistence.OutboxRecord)
 }
 
 // Claim atomically claims up to limit pending records under partition pk.
-func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error) {
+func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: claim", "partition_key", pk, "limit", limit)
 	}
@@ -94,7 +94,7 @@ func (s *Store) Expire(ctx context.Context, before time.Time) (int, error) {
 }
 
 // QueryPending returns up to limit pending records under partition pk.
-func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]persistence.OutboxRecord, error) {
+func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]*persistence.OutboxRecord, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: query_pending", "partition_key", pk, "limit", limit)
 	}

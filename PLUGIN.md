@@ -2,11 +2,11 @@
 
 This guide explains how to extend gobridge with custom transport adapters, store backends, credential repositories, observability exporters, and message processors.
 
-All extension points follow the hexagonal architecture: implement a port interface from `ports/`, expose a typed `ports.PluginConfig`, self-register a decoder on `ports.DefaultRegistry`, register the factory with the `bridge.Builder`, and gobridge handles the rest. The architectural framing for this contract lives in [DDD.md](DDD.md), [UBIQUITOUS.md](UBIQUITOUS.md), and [`docs/typed-plugin-config.adoc`](docs/typed-plugin-config.adoc).
+All extension points follow the hexagonal architecture: implement a port interface from `ports/`, expose a typed `ports.PluginConfig`, self-register a decoder on `*ports.Registry`, register the factory with the `bridge.Builder`, and gobridge handles the rest. The architectural framing for this contract lives in [DDD.md](DDD.md), [UBIQUITOUS.md](UBIQUITOUS.md), and [`docs/typed-plugin-config.adoc`](docs/typed-plugin-config.adoc).
 
 > **Note on options decoding.** Adapters expose a
 > typed `Config` struct (`ports.PluginConfig`) and register a decoder
-> on `ports.DefaultRegistry` from `register.go`; the runtime never
+> on `*ports.Registry` from `register.go`; the runtime never
 > hands `map[string]any` to plugin code. See
 > [Typed Plugin Config](#typed-plugin-config).
 
@@ -21,7 +21,7 @@ From `ports/transport.go`:
 
 ```go
 type Delivery interface {
-    Envelope() *domain.Envelope
+    Envelope() *messaging.Envelope
     Ack(ctx context.Context) error
     Retry(ctx context.Context, after time.Duration, reason error) error
     Extend(ctx context.Context, until time.Time) error
@@ -37,7 +37,7 @@ type Receiver interface {
 // destination out of OutboundMessage.Envelope.Subject (which is the
 // logical event subject and is not a transport destination).
 type OutboundMessage struct {
-    Envelope *domain.Envelope
+    Envelope *messaging.Envelope
     Address  string
 }
 
@@ -52,7 +52,7 @@ type BatchSender interface {
 
 type Session interface {
     Start(ctx context.Context) error
-    Reconcile(ctx context.Context, plan domain.SessionPlan) error
+    Reconcile(ctx context.Context, plan connectivity.SessionPlan) error
     Health(ctx context.Context) SessionHealth
     Events() <-chan SessionEvent
     Close(ctx context.Context) error
@@ -121,7 +121,7 @@ adapters/mycloud/transport/myqueue/
 ├── doc.go              # Package documentation
 ├── go.mod              # Separate module
 ├── config.go           # ReceiverConfig, SenderConfig, option parsing
-├── errors.go           # Map SDK errors to domain.BridgeError
+├── errors.go           # Map SDK errors to shared.BridgeError
 ├── receiver.go         # ports.Receiver implementation
 ├── sender.go           # ports.Sender implementation
 ├── delivery.go         # ports.Delivery implementation
@@ -135,13 +135,13 @@ adapters/mycloud/transport/myqueue/
 
 1. **Delivery mapping**: Map transport-native ack/nack/extend to `ports.Delivery`. For example, SQS maps `Ack` to `DeleteMessage`, `Retry` to `ChangeMessageVisibility`, `Extend` to visibility extension.
 
-2. **Error mapping**: Create an `errors.go` that maps SDK error codes to `domain.BridgeError` with correct classification (Transient vs Permanent vs Rejected).
+2. **Error mapping**: Create an `errors.go` that maps SDK error codes to `shared.BridgeError` with correct classification (Transient vs Permanent vs Rejected).
 
-3. **Header mapping**: Map transport-native message properties to `domain.Envelope.Headers` and vice versa. Strip `x-bridge.*` reserved headers at ingress.
+3. **Header mapping**: Map transport-native message properties to `messaging.Envelope.Headers` and vice versa. Strip `x-bridge.*` reserved headers at ingress.
 
 4. **Typed config**: Export a concrete `Config` struct that satisfies
    `ports.PluginConfig` (`Kind() string`, `Validate() error`) and
-   register a decoder on `ports.DefaultRegistry` from a `register.go`
+   register a decoder on `*ports.Registry` from a `register.go`
    `init()` (see [Typed Plugin Config](#typed-plugin-config) below).
    The adapter receives its already-decoded typed config via
    `Spec.Config`; it does **not** decode `map[string]any`. Plugin-
@@ -185,23 +185,23 @@ From `ports/stores.go`:
 
 ```go
 type LeaseStore interface {
-    Acquire(ctx context.Context, leaseID string, ownerID string, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error)
-    Renew(ctx context.Context, leaseID string, token domain.LeaseToken, ttl time.Duration, endpoints map[string]string) (domain.LeaseToken, error)
-    Release(ctx context.Context, leaseID string, token domain.LeaseToken) error
-    Current(ctx context.Context, leaseID string) (domain.LeaseInfo, error)
+    Acquire(ctx context.Context, leaseID string, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error)
+    Renew(ctx context.Context, leaseID string, token persistence.LeaseToken, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error)
+    Release(ctx context.Context, leaseID string, token persistence.LeaseToken) error
+    Current(ctx context.Context, leaseID string) (persistence.LeaseInfo, error)
 }
 
 type OutboxStore interface {
-    Persist(ctx context.Context, records []domain.OutboxRecord) error
-    Claim(ctx context.Context, partitionKey, ownerID string, token domain.LeaseToken, limit int) ([]domain.OutboxRecord, error)
-    Complete(ctx context.Context, recordIDs []string, token domain.LeaseToken) error
+    Persist(ctx context.Context, records []persistence.OutboxRecord) error
+    Claim(ctx context.Context, partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error)
+    Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error
     Expire(ctx context.Context, before time.Time) (int, error)
-    QueryPending(ctx context.Context, partitionKey string, limit int) ([]domain.OutboxRecord, error)
+    QueryPending(ctx context.Context, partitionKey string, limit int) ([]persistence.OutboxRecord, error)
 }
 
 type DLQStore interface {
-    Write(ctx context.Context, entry domain.DLQEntry) error
-    List(ctx context.Context, filter domain.DLQFilter) ([]domain.DLQEntry, error)
+    Write(ctx context.Context, entry routing.DLQEntry) error
+    List(ctx context.Context, filter routing.DLQFilter) ([]routing.DLQEntry, error)
     Replay(ctx context.Context, entryIDs []string) error
     Purge(ctx context.Context, before time.Time) (int, error)
 }
@@ -220,7 +220,7 @@ type StoreFactory interface {
 ```
 
 Each method receives the typed `ports.PluginConfig` the adapter
-registered on `ports.DefaultRegistry` (see
+registered on `*ports.Registry` (see
 [Typed Plugin Config](#typed-plugin-config) below). The factory does
 its own type assertion on the concrete config type — it never sees
 `map[string]any`.
@@ -282,13 +282,13 @@ From `ports/credentials.go`:
 type CredentialRepository interface {
     Scheme() string
     Namespace() string
-    Get(ctx context.Context, uri string) (*domain.CredentialSet, error)
+    Get(ctx context.Context, uri string) (*connectivity.CredentialSet, error)
 }
 
 type CredentialAdmin interface {
     CredentialRepository
-    Create(ctx context.Context, uri string, creds *domain.CredentialSet) error
-    Update(ctx context.Context, uri string, creds *domain.CredentialSet, version int64) error
+    Create(ctx context.Context, uri string, creds *connectivity.CredentialSet) error
+    Update(ctx context.Context, uri string, creds *connectivity.CredentialSet, version int64) error
     Delete(ctx context.Context, uri string, version int64) error
     List(ctx context.Context, prefix string) ([]string, error)
 }
@@ -308,7 +308,7 @@ The resolver dispatches by URI scheme (`file://`, `pms://`, `vault://`) with lon
 
 ### Domain Types
 
-`domain.CredentialSet` contains optional `*PasswordCredential` and `*TLSMaterial`. Credential values must never appear in logs.
+`connectivity.CredentialSet` contains optional `*PasswordCredential` and `*TLSMaterial`. Credential values must never appear in logs.
 
 ### Reference Implementations
 
@@ -323,7 +323,7 @@ credentials on a live connection implement the
 
 ```go
 type CredentialAware interface {
-    ApplyCredentials(ctx context.Context, creds *domain.CredentialSet) error
+    ApplyCredentials(ctx context.Context, creds *connectivity.CredentialSet) error
 }
 ```
 
@@ -348,10 +348,10 @@ Implement `ports.MetricsExporter`:
 
 ```go
 type MetricsExporter interface {
-    Counter(name string, value int64, tags ...domain.Tag)
-    Gauge(name string, value float64, tags ...domain.Tag)
-    Histogram(name string, value float64, tags ...domain.Tag)
-    Timer(name string, duration time.Duration, tags ...domain.Tag)
+    Counter(name string, value int64, tags ...shared.Tag)
+    Gauge(name string, value float64, tags ...shared.Tag)
+    Histogram(name string, value float64, tags ...shared.Tag)
+    Timer(name string, duration time.Duration, tags ...shared.Tag)
     Flush(ctx context.Context) error
     Close(ctx context.Context) error
 }
@@ -367,14 +367,14 @@ Implement `ports.Tracer`:
 
 ```go
 type Tracer interface {
-    StartSpan(ctx context.Context, name string, attrs ...domain.Tag) (context.Context, Span)
+    StartSpan(ctx context.Context, name string, attrs ...shared.Tag) (context.Context, Span)
 }
 
 type Span interface {
     End()
     SetError(err error)
-    AddEvent(name string, attrs ...domain.Tag)
-    SetAttributes(attrs ...domain.Tag)
+    AddEvent(name string, attrs ...shared.Tag)
+    SetAttributes(attrs ...shared.Tag)
 }
 ```
 
@@ -391,11 +391,11 @@ Processors form an onion-model middleware chain around message delivery.
 From `ports/processor.go`:
 
 ```go
-type ProcessorFunc func(ctx context.Context, env *domain.Envelope) error
+type ProcessorFunc func(ctx context.Context, env *messaging.Envelope) error
 
 type Processor interface {
     Name() string
-    Process(ctx context.Context, env *domain.Envelope, next ProcessorFunc) error
+    Process(ctx context.Context, env *messaging.Envelope, next ProcessorFunc) error
 }
 ```
 
@@ -403,7 +403,7 @@ A processor can:
 - **Pass through**: call `next(ctx, env)` to continue the chain
 - **Modify**: mutate `env` before calling `next`
 - **Short-circuit**: return an error without calling `next`
-- **Filter**: return `domain.ErrMessageFiltered` to silently ack without DLQ
+- **Filter**: return `shared.ErrMessageFiltered` to silently ack without DLQ
 
 ### Registration
 
@@ -428,7 +428,7 @@ package myprocessor
 
 import (
     "context"
-    "github.com/mariotoffia/gobridge/domain"
+    "github.com/mariotoffia/gobridge/domain/messaging"
     "github.com/mariotoffia/gobridge/ports"
 )
 
@@ -444,9 +444,9 @@ func New(name string) *Processor {
 
 func (p *Processor) Name() string { return p.name }
 
-func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
+func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
     // Pre-processing: enrich headers
-    env.Headers = domain.SetHeader(env.Headers, "x-enriched", "true")
+    env.Headers = messaging.SetHeader(env.Headers, "x-enriched", "true")
 
     // Call next processor in chain
     if err := next(ctx, env); err != nil {
@@ -462,7 +462,7 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 
 - **filter**: `processors/filter/` -- condition evaluation with operators (eq, ne, contains, regex, gt, lt, exists, in), actions (pass, drop, route)
 - **transform**: `processors/transform/` -- JSON field mapping with JSONPath, type coercion
-- **circuitbreaker**: `processors/circuitbreaker/` -- per-key state machine, returns `domain.ErrUnavailable.WithRetryAfter()`. Wraps the `circuitbreaker/` package via the `ports.CircuitBreaker` resilience port; adapters that need protection consume the port (never the package). See [ARCHITECTURE.md §2.2 Resilience Ports](ARCHITECTURE.md#22-resilience-ports).
+- **circuitbreaker**: `processors/circuitbreaker/` -- per-key state machine, returns `shared.ErrUnavailable.WithRetryAfter()`. Wraps the `circuitbreaker/` package via the `ports.CircuitBreaker` resilience port; adapters that need protection consume the port (never the package). See [ARCHITECTURE.md §2.2 Resilience Ports](ARCHITECTURE.md#22-resilience-ports).
 - **tenant**: `processors/tenant/` -- header-based tenant extraction, validation, usage tracking
 
 ## Module Conventions
@@ -471,18 +471,18 @@ func (p *Processor) Process(ctx context.Context, env *domain.Envelope, next port
 2. **Add to go.work**: `go work use ./adapters/mycloud/...` then `go work sync`.
 3. **doc.go**: Every package needs a `doc.go` explaining its purpose.
 4. **Compile-time checks**: `var _ ports.X = (*T)(nil)` for all implemented interfaces.
-5. **Error mapping**: Transport adapters must have an `errors.go` mapping SDK errors to `domain.BridgeError`.
+5. **Error mapping**: Transport adapters must have an `errors.go` mapping SDK errors to `shared.BridgeError`.
 6. **Typed config**: Export a concrete `Config` struct that satisfies
    `ports.PluginConfig` (`Kind() string`, `Validate() error`) and
-   register a decoder on `ports.DefaultRegistry` from `register.go`
+   register a decoder on `*ports.Registry` from `register.go`
    `init()`. Typed plugin shapes live inside the plugin package and
    are reached by the runtime via `Spec.Config` — never inside core
    `config` or as `map[string]any`. See
    [Typed Plugin Config](#typed-plugin-config).
 7. **Hexagonal direction**: Adapters depend on `ports`, `domain`, and
    their own SDK only. Adapters MUST NOT import `bridge`, `config`,
-   `runtime`, or other unrelated adapters. The architecture lint
-   (`make lint-arch`) enforces this; cross-adapter imports fail CI.
+   `runtime`, or other unrelated adapters. The architecture lint step
+   inside `make lint` enforces this; cross-adapter imports fail CI.
 8. **Config-source adapters are special**: packages under
    `adapters/*/config/*` are the single category allowed to import
    `config` (they exist to load `*config.BridgeConfig`).
@@ -501,6 +501,55 @@ round-trip, error reporting, and per-step checklist) lives in
 [`docs/typed-plugin-config.adoc`](docs/typed-plugin-config.adoc).
 The summary below is enough to write a new adapter.
 
+### End-to-end flow
+
+The decoder, factory, and adapter are wired together implicitly via the
+`*ports.Registry`. The sequence below traces a single transport `options:`
+block from on-disk YAML to a running adapter at runtime.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Op as Operator
+    participant YAML as bridge.yaml
+    participant Parser as config.ParseFile
+    participant Reg as ports.Registry
+    participant Dec as Adapter decoder<br/>(register.go init)
+    participant Cfg as Typed *Config
+    participant Builder as bridge.Builder
+    participant Fact as Adapter Factory<br/>(NewSender / NewReceiver)
+    participant Adp as Adapter<br/>(ports.Sender / Receiver / Session)
+    participant RT as runtime.Runtime
+
+    Op->>YAML: write transport / options block
+    Op->>Parser: ParseFile("bridge.yaml", ..., reg)
+    Parser->>Reg: Lookup(kind == "mqtt")
+    Reg-->>Parser: registered decoder
+    Parser->>Dec: dec(rawOptionsBlock)
+    Dec->>Cfg: yaml.Decode + Validate()
+    Cfg-->>Dec: typed value or error
+    Dec-->>Parser: ports.PluginConfig
+    Parser-->>Builder: BridgeConfig with *Config inside Spec.Config
+    Builder->>Fact: NewSender(spec, session)
+    Fact->>Cfg: type-assert spec.Config.(*Config)
+    Fact->>Adp: construct adapter from typed Config
+    Fact-->>Builder: ports.Sender
+    Builder-->>RT: wired Runtime
+    RT->>Adp: Send / Run / Reconcile
+```
+
+Key invariants enforced along the path:
+
+- The decoder runs **once**, at parse time. Adapter code never sees raw
+  YAML/JSON or `map[string]any` (`cfgshape` rejects this).
+- `Validate()` is mandatory and must do real work — empty bodies fail
+  lint.
+- `bridge.Builder` does not invent values; it propagates the typed
+  `Config` the decoder produced into `*Spec.Config`.
+- Adapter factories perform a single type assertion and return a clear
+  error on mismatch. The runtime guarantees the assertion succeeds for
+  correctly-registered plugins.
+
 ### The `PluginConfig` interface
 
 From `ports/plugin_config.go`:
@@ -518,7 +567,7 @@ Both methods are mandatory and both must do real work — an empty
 ### Registering the decoder
 
 Each adapter ships a `register.go` containing an `init()` that
-attaches a decoder to `ports.DefaultRegistry`:
+attaches a decoder to `*ports.Registry`:
 
 ```go
 // adapters/mqtt/transport/paho/register.go
@@ -539,8 +588,8 @@ func init() {
         }
         return &c, nil
     }
-    ports.DefaultRegistry.Register("mqtt", dec)
-    ports.DefaultRegistry.Register("mqtt.paho", dec)
+    reg.Register("mqtt", dec)
+    reg.Register("mqtt.paho", dec)
 }
 ```
 
@@ -551,7 +600,7 @@ Rules:
   `builder.RegisterTransport` or `builder.RegisterStoreFactory`).
 - A decoder must call `Validate()` and surface the error; the bridge
   treats parse-time errors as fatal.
-- `ports.DefaultRegistry.Register(kind, dec)` panics on duplicate
+- `reg.Register(kind, dec)` panics on duplicate
   registration of the same `kind`. Use a separate `kind` per
   adapter or per dialect (e.g. `mqtt` and `mqtt.paho`).
 
@@ -582,7 +631,7 @@ The `cfgshape` analyzer (`scripts/cfgshape/analyzer.go`, run by
 - Adapters that accept `map[string]any` instead of a typed `Config`.
 - `Config` types that omit `Kind()` or `Validate()`, or whose
   `Validate()` body is empty / returns `nil` unconditionally.
-- `register.go` files that bypass `ports.DefaultRegistry`.
+- `register.go` files that bypass `*ports.Registry`.
 - Wire-format types (YAML/JSON tags, `json.RawMessage`) leaking
   into `domain/` or `ports/`.
 

@@ -13,6 +13,7 @@ import (
 	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
+	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/httpapi"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -48,7 +49,7 @@ func newConfigAPITestServer(t *testing.T, baseCfg *ports.BridgeConfig) configAPI
 
 	dir := t.TempDir()
 	cfgPath := fmt.Sprintf("%s/config.yaml", dir)
-	if err := config.WriteFile(cfgPath, baseCfg); err != nil {
+	if err := cfgparser.WriteFile(cfgPath, baseCfg); err != nil {
 		t.Fatalf("write base config: %v", err)
 	}
 
@@ -59,8 +60,8 @@ func newConfigAPITestServer(t *testing.T, baseCfg *ports.BridgeConfig) configAPI
 		MonitorAddr:     ":0",
 		AdminAPIKey:     testAdminAPIKey,
 		MonitorAPIKey:   testMonitorAPIKey,
-		RuntimeProvider: func() *goruntime.Runtime { return rt },
-		ConfigStore:     &config.FileStore{Path: cfgPath},
+		RuntimeProvider: func() ports.Runtime { return rt },
+		ConfigStore:     &cfgparser.FileStore{Path: cfgPath, Registry: newTestRegistry()},
 		ConfigProvider:  func() *ports.BridgeConfig { return currentCfg },
 	}
 
@@ -94,13 +95,14 @@ func newConfigAPITestServerWithPipeline(t *testing.T, baseCfg *ports.BridgeConfi
 
 	dir := t.TempDir()
 	cfgPath := fmt.Sprintf("%s/config.yaml", dir)
-	if err := config.WriteFile(cfgPath, baseCfg); err != nil {
+	if err := cfgparser.WriteFile(cfgPath, baseCfg); err != nil {
 		t.Fatalf("write base config: %v", err)
 	}
 
 	// File source + poll-mode watcher (100ms for fast test feedback).
-	fileSource := fileconfig.NewSource(cfgPath)
-	watcher := fileconfig.NewWatcher(cfgPath,
+	reg := newTestRegistry()
+	fileSource := fileconfig.NewSource(cfgPath, reg)
+	watcher := fileconfig.NewWatcher(cfgPath, reg,
 		fileconfig.WithMode(fileconfig.ModePoll),
 		fileconfig.WithPollInterval(100*time.Millisecond),
 	)
@@ -140,13 +142,19 @@ func newConfigAPITestServerWithPipeline(t *testing.T, baseCfg *ports.BridgeConfi
 	rt := waitForSupervisorRuntime(t, sup, 5*time.Second)
 
 	apiCfg := httpapi.Config{
-		AdminAddr:       ":0",
-		MonitorAddr:     ":0",
-		AdminAPIKey:     testAdminAPIKey,
-		MonitorAPIKey:   testMonitorAPIKey,
-		RuntimeProvider: sup.Runtime,
-		ConfigStore:     &config.FileStore{Path: cfgPath},
-		ConfigProvider:  sup.Config,
+		AdminAddr:     ":0",
+		MonitorAddr:   ":0",
+		AdminAPIKey:   testAdminAPIKey,
+		MonitorAPIKey: testMonitorAPIKey,
+		RuntimeProvider: func() ports.Runtime {
+			rt := sup.Runtime()
+			if rt == nil {
+				return nil
+			}
+			return rt
+		},
+		ConfigStore:    &cfgparser.FileStore{Path: cfgPath, Registry: newTestRegistry()},
+		ConfigProvider: sup.Config,
 	}
 
 	srv := httpapi.New(rt, apiCfg, httpapi.WithServerLogger(nil))
@@ -321,7 +329,7 @@ func pollForSupervisorRoute(t *testing.T, sup *bridge.Supervisor, routeID string
 
 func readConfigFromDisk(t *testing.T, path string) *ports.BridgeConfig {
 	t.Helper()
-	cfg, err := config.ParseFile(path, config.FormatYAML)
+	cfg, err := cfgparser.ParseFile(path, cfgparser.FormatYAML, newTestRegistry())
 	if err != nil {
 		t.Fatalf("parse config from disk: %v", err)
 	}

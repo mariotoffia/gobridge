@@ -79,11 +79,11 @@ func (r *Receiver) entityName() string {
 // settlement operations are still in progress.
 func (r *Receiver) Close(ctx context.Context) error {
 	r.closeOnce.Do(func() {
-		if closer, ok := r.client.(interface{ Close(context.Context) error }); ok {
+		if closer, ok := r.client.(ports.ContextCloser); ok {
 			_ = closer.Close(ctx)
 		}
 		if r.scheduler != nil {
-			if closer, ok := r.scheduler.(interface{ Close(context.Context) error }); ok {
+			if closer, ok := r.scheduler.(ports.ContextCloser); ok {
 				_ = closer.Close(ctx)
 			}
 		}

@@ -103,11 +103,11 @@ func BenchmarkSSE_Broadcast(b *testing.B) {
 				time.Sleep(time.Millisecond) // OTHER: polling for SSE client registration in benchmark
 			}
 
-			env := &messaging.Envelope{
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{
 				ID:      "bench-evt",
 				Subject: "bench.broadcast",
 				Payload: []byte(`{"data":"test"}`),
-			}
+			})
 
 			b.ResetTimer()
 			b.ReportAllocs()
@@ -137,12 +137,12 @@ func BenchmarkForwarder_Forward(b *testing.B) {
 		InstanceID: "bench-remote",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "bench-fwd",
 		Subject: "bench.forward",
 		Payload: []byte(`{"order":"123"}`),
 		Headers: map[string]any{"x-tenant": "acme"},
-	}
+	})
 
 	b.ResetTimer()
 	b.ReportAllocs()

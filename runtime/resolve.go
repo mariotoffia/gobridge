@@ -8,14 +8,18 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // MatchFunc determines whether a binding should be selected for a given envelope.
 type MatchFunc func(env *messaging.Envelope, b routing.DestinationBinding) bool
 
 // BindingResolver is a production DestinationResolver that selects bindings
-// using a MatchFunc, renders address templates from envelope headers, and
-// validates MQTT topics when the binding transport is "mqtt".
+// using a MatchFunc and renders address templates from envelope headers.
+// Address validation is no longer the resolver's responsibility — the
+// route runner invokes the per-transport AddressValidator (supplied via
+// TransportFactory.AddressValidator) against each rendered DispatchPlan
+// before dispatch, so resolvers stay transport-agnostic.
 type BindingResolver struct {
 	bindings []routing.DestinationBinding
 	matchFn  MatchFunc
@@ -23,8 +27,7 @@ type BindingResolver struct {
 
 // NewBindingResolver creates a resolver that evaluates matchFn against each
 // configured binding. Bindings whose Address contains {key} placeholders are
-// rendered using envelope headers. MQTT bindings have their rendered addresses
-// validated for wildcard safety.
+// rendered using envelope headers.
 func NewBindingResolver(bindings []routing.DestinationBinding, matchFn MatchFunc) *BindingResolver {
 	return &BindingResolver{
 		bindings: bindings,
@@ -42,23 +45,16 @@ func (r *BindingResolver) Resolve(_ context.Context, env *messaging.Envelope) ([
 			continue
 		}
 
-		addr, err := RenderAddress(b.Address, env.Headers)
+		addr, err := route.RenderAddress(b.Address, env.Headers())
 		if err != nil {
 			return nil, shared.ErrInvalidTopic.
 				WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
 		}
 
-		if strings.EqualFold(b.Transport, "mqtt") {
-			if err := ValidateMQTTTopic(addr); err != nil {
-				return nil, shared.ErrInvalidTopic.
-					WithMessage(fmt.Sprintf("binding %q: %v", b.ID, err))
-			}
-		}
-
 		plans = append(plans, routing.DispatchPlan{
 			BindingID: b.ID,
 			Address:   addr,
-			Headers:   copyHeaders(b.Headers),
+			Headers:   route.CopyHeaders(b.Headers),
 		})
 	}
 
@@ -99,7 +95,7 @@ func (r *StaticResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]ro
 // value "A" maps to binding ID "mqtt-factory-a-orders".
 func MatchByHeader(headerKey string, bindingMap map[string]string) MatchFunc {
 	return func(env *messaging.Envelope, b routing.DestinationBinding) bool {
-		val, ok := messaging.GetHeaderString(env.Headers, headerKey)
+		val, ok := messaging.GetHeaderString(env.Headers(), headerKey)
 		if !ok {
 			return false
 		}
@@ -128,7 +124,7 @@ func MatchByID(bindingID string) MatchFunc {
 func MatchBySubjectPrefix(prefixMap map[string]string) MatchFunc {
 	return func(env *messaging.Envelope, b routing.DestinationBinding) bool {
 		for prefix, targetID := range prefixMap {
-			if strings.HasPrefix(env.Subject, prefix) && targetID == b.ID {
+			if strings.HasPrefix(env.Subject(), prefix) && targetID == b.ID {
 				return true
 			}
 		}
@@ -252,144 +248,15 @@ func (r *RuleResolver) Resolve(_ context.Context, env *messaging.Envelope) ([]ro
 func (r *RuleResolver) planForBinding(bindingID string, env *messaging.Envelope) ([]routing.DispatchPlan, error) {
 	b := r.bindingIndex[bindingID]
 
-	addr, err := RenderAddress(b.Address, env.Headers)
+	addr, err := route.RenderAddress(b.Address, env.Headers())
 	if err != nil {
 		return nil, shared.ErrInvalidTopic.
 			WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
 	}
 
-	if strings.EqualFold(b.Transport, "mqtt") {
-		if err := ValidateMQTTTopic(addr); err != nil {
-			return nil, shared.ErrInvalidTopic.
-				WithMessage(fmt.Sprintf("binding %q: %v", b.ID, err))
-		}
-	}
-
 	return []routing.DispatchPlan{{
 		BindingID: b.ID,
 		Address:   addr,
-		Headers:   copyHeaders(b.Headers),
+		Headers:   route.CopyHeaders(b.Headers),
 	}}, nil
-}
-
-// RenderAddress replaces {key} placeholders in template with values from vars.
-// Returns an error if a placeholder references a missing key or if the rendered
-// result is empty. Substituted values are never re-expanded, preventing
-// infinite loops and header-value injection.
-func RenderAddress(template string, vars map[string]any) (string, error) {
-	if template == "" {
-		return "", nil
-	}
-
-	var b strings.Builder
-	remaining := template
-	for remaining != "" {
-		start := strings.Index(remaining, "{")
-		if start < 0 {
-			b.WriteString(remaining)
-			break
-		}
-		end := strings.Index(remaining[start:], "}")
-		if end < 0 {
-			b.WriteString(remaining)
-			break
-		}
-		end += start
-
-		key := remaining[start+1 : end]
-		if key == "" {
-			return "", fmt.Errorf("empty placeholder in address template %q", template)
-		}
-
-		val, ok := messaging.GetHeaderString(vars, key)
-		if !ok {
-			return "", fmt.Errorf("address template placeholder {%s} not found in headers", key)
-		}
-
-		b.WriteString(remaining[:start])
-		b.WriteString(val)
-		remaining = remaining[end+1:]
-	}
-
-	result := b.String()
-	if result == "" {
-		return "", fmt.Errorf("address template %q rendered to empty string", template)
-	}
-
-	return result, nil
-}
-
-const maxMQTTTopicLen = 65535
-
-// ValidateMQTTTopic rejects MQTT wildcard characters, empty segments, null
-// bytes, reserved $-prefixed topics, and topics exceeding the spec maximum
-// length in a rendered topic string. Call this on resolved addresses before
-// publishing to MQTT.
-func ValidateMQTTTopic(topic string) error {
-	if topic == "" {
-		return fmt.Errorf("MQTT topic must not be empty")
-	}
-	if len(topic) > maxMQTTTopicLen {
-		return fmt.Errorf("MQTT topic exceeds maximum length of %d bytes", maxMQTTTopicLen)
-	}
-	if strings.HasPrefix(topic, "$") {
-		return fmt.Errorf("MQTT publish topic must not start with '$' (reserved)")
-	}
-	if strings.ContainsRune(topic, '+') {
-		return fmt.Errorf("MQTT publish topic must not contain wildcard '+'")
-	}
-	if strings.ContainsRune(topic, '#') {
-		return fmt.Errorf("MQTT publish topic must not contain wildcard '#'")
-	}
-	if strings.ContainsRune(topic, 0) {
-		return fmt.Errorf("MQTT topic must not contain null character")
-	}
-	segments := strings.Split(topic, "/")
-	for _, seg := range segments {
-		if seg == "" {
-			return fmt.Errorf("MQTT topic must not contain empty segments")
-		}
-	}
-	return nil
-}
-
-func copyHeaders(opts map[string]any) map[string]any {
-	if len(opts) == 0 {
-		return nil
-	}
-	cp := make(map[string]any, len(opts))
-	for k, v := range opts {
-		cp[k] = deepCopyHeaderValue(v)
-	}
-	return cp
-}
-
-func deepCopyHeaderValue(v any) any {
-	switch val := v.(type) {
-	case map[string]any:
-		cp := make(map[string]any, len(val))
-		for k, v := range val {
-			cp[k] = deepCopyHeaderValue(v)
-		}
-		return cp
-	case []any:
-		s := make([]any, len(val))
-		for i, elem := range val {
-			s[i] = deepCopyHeaderValue(elem)
-		}
-		return s
-	case []string:
-		s := make([]string, len(val))
-		copy(s, val)
-		return s
-	case []byte:
-		if val == nil {
-			return val
-		}
-		s := make([]byte, len(val))
-		copy(s, val)
-		return s
-	default:
-		return v
-	}
 }

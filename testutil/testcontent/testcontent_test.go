@@ -40,10 +40,10 @@ func (m *mockT) errCount() int {
 // -----------------------------------------------------------------------
 
 func TestTag_SetsHeaderAndPayloadTID(t *testing.T) {
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Subject: "test-topic",
 		Payload: []byte(`{"key":"value"}`),
-	}
+	})
 
 	tid, exp := Tag(env)
 	if tid == "" {
@@ -110,10 +110,10 @@ func TestExtractTID_Empty(t *testing.T) {
 func TestTagN(t *testing.T) {
 	envs := make([]*messaging.Envelope, 5)
 	for i := range envs {
-		envs[i] = &messaging.Envelope{
+		envs[i] = messaging.MustEnvelope(messaging.EnvelopeInput{
 			Subject: fmt.Sprintf("topic-%d", i),
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
-		}
+		})
 	}
 	exps := TagN(envs)
 	if len(exps) != 5 {
@@ -133,10 +133,10 @@ func TestTagN(t *testing.T) {
 // -----------------------------------------------------------------------
 
 func TestReceivedFromEnvelopes(t *testing.T) {
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Payload: []byte(`{"key":"val"}`),
 		Subject: "s",
-	}
+	})
 	tid, _ := Tag(env)
 	rx := ReceivedFromEnvelopes([]*messaging.Envelope{env})
 	if len(rx) != 1 {

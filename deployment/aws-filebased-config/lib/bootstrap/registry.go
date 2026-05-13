@@ -37,7 +37,7 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 	transports["http"] = httpFactory
 
 	for name, factory := range transports {
-		builder.RegisterTransport(name, factory)
+		builder.RegisterTransportFactory(name, factory)
 	}
 	builder.RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory())
 	builder.RegisterStoreFactory("sqlite", nativestore.NewSQLiteStoreFactory())

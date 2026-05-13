@@ -148,9 +148,9 @@ func (f *HTTPForwarder) Forward(
 
 	ir := ingressRequest{
 		ID:      env.ID,
-		Subject: env.Subject,
+		Subject: env.Subject(),
 		Payload: env.Payload,
-		Headers: env.Headers,
+		Headers: env.Headers(),
 	}
 	if !env.ExpiresAt.IsZero() {
 		ir.ExpiresAt = env.ExpiresAt.Format(time.RFC3339)

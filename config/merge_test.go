@@ -60,7 +60,7 @@ func TestDefaultMerge_Stores_OverlayReplacesPerRole(t *testing.T) {
 		Stores: ports.StoresConfig{
 			Lease: func() *ports.StoreConfig {
 				sc := &ports.StoreConfig{Type: "dynamodb"}
-				sc.SetDecoded(nil, NewRawConfig(map[string]any{"table": "leases"}))
+				sc.SetDecoded(nil, fakeRawConfig(map[string]any{"table": "leases"}))
 				return sc
 			}(),
 		},

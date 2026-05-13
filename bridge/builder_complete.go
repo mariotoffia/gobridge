@@ -7,15 +7,20 @@ import (
 
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
-// Complete creates sessions, receivers, senders, wires routes, and
-// returns a ready-to-start Runtime. Call after the old runtime has
-// released exclusive resources (e.g. MQTT client-ids). If prep is
-// nil, Complete returns an error.
-func (b *Builder) Complete(ctx context.Context, prep *PreparedBuild) (_ *runtime.Runtime, retErr error) {
+// complete creates sessions, receivers, senders, wires routes, and
+// returns a ready-to-start Runtime. Callers must ensure the old
+// runtime has released exclusive resources (e.g. MQTT client-ids)
+// before invoking this phase.
+//
+// complete is unexported; external callers reach it through
+// Builder.Build (single-shot) or BuildPlan.Commit (explicit
+// two-phase). See M-3 / W-7.
+func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime.Runtime, retErr error) {
 	if prep == nil {
-		return nil, fmt.Errorf("bridge: Complete called with nil PreparedBuild")
+		return nil, fmt.Errorf("bridge: complete called with nil preparedBuild")
 	}
 
 	sessions, sessionURIs, err := b.buildSessionsWithURIs(ctx)
@@ -69,7 +74,7 @@ func (b *Builder) Complete(ctx context.Context, prep *PreparedBuild) (_ *runtime
 				refresher.WatchSender(ctx, uri, snd)
 			}
 		}
-		runtime.AttachCredentialCloser(rt, refresher.Close)
+		rt.AttachCredentialCloser(func(_ context.Context) { refresher.Close() })
 	}
 
 	return rt, nil
@@ -184,6 +189,15 @@ func (b *Builder) wireRoutes(
 			rcfg.Senders = senderReg
 		}
 
+		// Build per-binding AddressValidator registry. The validator is
+		// supplied by the binding's transport via TransportFactory's
+		// AddressValidator capability (AP-005). Bindings whose transport
+		// returns a nil validator are simply omitted; the runtime then
+		// skips validation for those bindings.
+		if vmap := buildAddressValidators(b.transports, bindings); len(vmap) > 0 {
+			rcfg.AddressValidators = vmap
+		}
+
 		if err := rt.AddRoute(rcfg, recv, routeSender, routeSession, sessCfg); err != nil {
 			return fmt.Errorf("bridge: add route %q: %w", routeDef.ID, err)
 		}
@@ -204,7 +218,7 @@ func (b *Builder) wireRoutes(
 			if !sndOk {
 				return fmt.Errorf("bridge: route %q: binding %q references unknown sender %q", routeDef.ID, bd.ID, bd.SenderID)
 			}
-			sc := runtime.DefaultSessionConfig(bd.SessionID, true)
+			sc := session.DefaultConfig(bd.SessionID, true)
 			sc.ConnectAfterLease = true
 			if err := rt.RegisterSessionSender(sc, sess, snd); err != nil {
 				return fmt.Errorf("bridge: register session sender %q: %w", bd.SessionID, err)

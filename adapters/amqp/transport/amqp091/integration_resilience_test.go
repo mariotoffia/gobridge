@@ -182,11 +182,11 @@ func TestIntegration_Sender_MandatoryUnroutable_ReturnsError(t *testing.T) {
 		Session:    sess,
 	})
 	defer func() { _ = sender.Close(ctx) }()
-	err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "unrouted-1",
 		Subject: "unused",
 		Payload: []byte("nobody home"),
-	}})
+	})})
 	if err == nil {
 		t.Fatal("Send with Mandatory=true to unbound routing key should return an error " +
 			"(broker returned the message via basic.return)")
@@ -228,11 +228,11 @@ func TestIntegration_Sender_MandatoryRouted_Succeeds(t *testing.T) {
 		Session:    sess,
 	})
 	defer func() { _ = sender.Close(ctx) }()
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "routed-1",
 		Subject: queue,
 		Payload: []byte("delivered"),
-	}}); err != nil {
+	})}); err != nil {
 		t.Fatalf("send mandatory routed: %v", err)
 	}
 }

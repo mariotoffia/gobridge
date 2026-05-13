@@ -2,9 +2,12 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
@@ -108,9 +111,29 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 }
 
 type injectRequest struct {
+	// ID, when present (even as the empty string), is treated as a
+	// caller-supplied envelope ID. A nil pointer (field omitted)
+	// triggers server-side generation via Server.idGen; an explicit
+	// empty string is a 400 invalid_payload because it is almost
+	// always a client bug — this is the same contract NewEnvelope
+	// enforces and the admin endpoint must not paper over it.
+	ID      *string        `json:"id,omitempty"`
 	Subject string         `json:"subject"`
 	Payload string         `json:"payload"` // base64-encoded
 	Headers map[string]any `json:"headers"`
+}
+
+// defaultIDGen produces a 32-character hex envelope ID from
+// crypto/rand. The format matches the AMQP/SQS adapter ID fallbacks
+// (see amqp091.generateEnvelopeID) so envelope IDs are uniformly
+// shaped across origin paths. crypto/rand failure is fatal because
+// the platform RNG being unavailable is unrecoverable.
+func defaultIDGen() string {
+	b := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		panic("httpapi: crypto/rand unavailable: " + err.Error())
+	}
+	return hex.EncodeToString(b)
 }
 
 func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
@@ -138,31 +161,60 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	env := &messaging.Envelope{
+	envelopeID := ""
+	switch {
+	case body.ID == nil:
+		envelopeID = s.idGen()
+	case *body.ID == "":
+		s.emitAudit(r, "route.inject", "route", routeID, "failure", map[string]any{
+			"error": string(shared.ErrCodeInvalidPayload),
+		})
+		writeErr(w, http.StatusBadRequest, "envelope id must not be empty")
+		return
+	default:
+		envelopeID = *body.ID
+	}
+
+	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
+		ID:      envelopeID,
 		Subject: body.Subject,
 		Payload: payload,
-		Headers: messaging.StripReservedHeaders(body.Headers),
+		Headers: body.Headers,
+	}, s.clk.Now())
+	if err != nil {
+		s.emitAudit(r, "route.inject", "route", routeID, "failure", map[string]any{
+			"envelope_id": envelopeID,
+			"error":       string(shared.ErrCodeInvalidPayload),
+		})
+		writeErr(w, http.StatusBadRequest, "invalid envelope: "+err.Error())
+		return
 	}
 
 	if err := rt.Inject(r.Context(), routeID, env); err != nil {
 		if errors.Is(err, shared.ErrNotFound) {
 			s.emitAudit(r, "route.inject", "route", routeID, "failure", map[string]any{
-				"error": "route not found",
+				"envelope_id": env.ID,
+				"error":       "route not found",
 			})
 			writeErr(w, http.StatusNotFound, "route not found")
 			return
 		}
 		s.emitAudit(r, "route.inject", "route", routeID, "failure", map[string]any{
-			"error": err.Error(),
+			"envelope_id": env.ID,
+			"error":       err.Error(),
 		})
 		writeErr(w, http.StatusInternalServerError, "message injection failed")
 		return
 	}
 
 	s.emitAudit(r, "route.inject", "route", routeID, "success", map[string]any{
-		"subject": body.Subject,
+		"envelope_id": env.ID,
+		"subject":     body.Subject,
 	})
-	writeJSON(w, http.StatusOK, map[string]string{"status": "injected"})
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":      "injected",
+		"envelope_id": env.ID,
+	})
 }
 
 func (s *Server) emitAudit(r *http.Request, action, resource, resourceID, outcome string, detail map[string]any) {

@@ -67,16 +67,24 @@ excludeFiles:
 #       domain_persistence   -- outbox, lease, dlq value types
 #       domain_routing       -- route policy, slot allocation
 #       domain_connectivity  -- credentials, health
+#       domain_events        -- first-wave domain events (past-tense facts)
 #       domain_clock         -- time abstraction (stdlib-only)
 #
 #   Layer 2 -- Application Business Rules / Use Cases (Clean) /
 #              Application services (DDD) / Inside the hexagon (Hex)
-#       ports     -- Driving + driven port interfaces
-#       config    -- Shared kernel: parsed configuration DTOs that cross
-#                    the hexagon boundary
-#       runtime   -- Use case orchestration (route execution engine)
-#       bridge    -- Composition factory: assembles use cases from config
-#       validate  -- Use case helpers: invariants over ports + domain
+#       ports         -- Driving + driven port interfaces
+#       config        -- Inner-ring shared kernel: pure validation,
+#                        merge, and Manager over *ports.BridgeConfig
+#                        (stdlib-only; no vendor concession)
+#       config_parser -- Wire-format adapter for `config`: YAML / JSON
+#                        parsing, RawConfig.Decode (mapstructure),
+#                        wire-format marshallers, FileStore. The only
+#                        Layer-2 location permitted to import
+#                        yaml.v3 / mapstructure (W-9 / L-2 split)
+#       runtime       -- Use case orchestration (route execution engine)
+#       bridge        -- Composition factory: assembles use cases from
+#                        config
+#       validate      -- Use case helpers: invariants over ports + domain
 #
 #   Layer 3 -- Interface Adapters (Clean) / Adapters (Hex) /
 #              Infrastructure (DDD)
@@ -124,6 +132,7 @@ components:
   domain_persistence: { in: [domain/persistence, domain/persistence/**] }
   domain_routing: { in: [domain/routing, domain/routing/**] }
   domain_connectivity: { in: [domain/connectivity, domain/connectivity/**] }
+  domain_events: { in: [domain/events, domain/events/**] }
   # domain/clock is a stdlib-only timing primitive shared across the
   # core ring; clocktest helper lives outside this component (excluded
   # at the top of the file).
@@ -131,8 +140,20 @@ components:
 
   # ---- Layer 2: Ports + Application Services + Shared Kernel ----
   ports: { in: [ports, ports/**] }
-  config: { in: [config, config/**] }
-  runtime: { in: [runtime, runtime/**] }
+  # The pure (vendor-free) inner-ring shared kernel: validation,
+  # merge, manager. The W-9 finding was resolved (L-2) by extracting
+  # the YAML / JSON parser and FileStore into the sibling
+  # `config_parser` component below; this `config` component is now
+  # stdlib-only and carries NO vendor concession.
+  config: { in: [config] }
+  config_parser: { in: [config/parser] }
+  runtime: { in: [runtime] }
+  runtime_dlq: { in: [runtime/dlq] }
+  runtime_credentials: { in: [runtime/credentials] }
+  runtime_cluster: { in: [runtime/cluster] }
+  runtime_session: { in: [runtime/session] }
+  runtime_outbox: { in: [runtime/outbox] }
+  runtime_route: { in: [runtime/route] }
   bridge: { in: [bridge, bridge/**] }
   validate: { in: [validate, validate/**] }
 
@@ -223,12 +244,15 @@ vendors:
   # component policy to be updated, making the breach reviewable.
   _no_external_deps_: { in: __no_external_deps_sentinel__ }
 
-  # Inner-ring concession: the config shared kernel parses YAML/JSON.
+  # config_parser concession: the wire-format adapter parses YAML /
+  # JSON. This is the only Layer-2 component allowed to import yaml.v3
+  # (the prior `config` shared kernel carve-out was narrowed to this
+  # adapter component by L-2 / W-9).
   yaml: { in: gopkg.in/yaml.v3 }
-  # Inner-ring concession: typed plugin option decoding for the
+  # config_parser concession: typed plugin option decoding for the
   # two-stage parser (FIX-003). mapstructure honours `json:"..."` tags
   # (the repo-wide adapter Config convention) which yaml.v3 alone does
-  # not. Restricted to the config component just like yaml.
+  # not. Restricted to config_parser just like yaml.
   mapstructure: { in: github.com/go-viper/mapstructure/v2 }
 
   # NOTE on encoding/json (FIX-003 Phase 5):
@@ -303,6 +327,14 @@ deps:
     mayDependOn:
       - domain_shared
     canUse: [_no_external_deps_]
+  # domain_events publishes past-tense facts emitted by aggregates in
+  # the persistence, routing, connectivity, and configuration
+  # bounded contexts. The events themselves carry primitive payload
+  # fields only -- they MUST NOT depend on other domain bounded
+  # contexts so consumers can deserialise them without dragging a
+  # producer's dependency graph along.
+  domain_events:
+    canUse: [_no_external_deps_]
   # NOTE on domain_persistence (FIX-004 Phase 5):
   # The strict reading of FIX-004 lists `domain_persistence: { mayDependOn:
   # [domain_shared] }`. In practice OutboxRecord embeds a messaging.Envelope
@@ -329,16 +361,22 @@ deps:
       - domain_persistence
       - domain_routing
       - domain_connectivity
+      - domain_events
     canUse:
       - _no_external_deps_
 
-  # The config package is the YAML/JSON parser, validator, merger,
-  # and on-disk manager that produces *ports.BridgeConfig values.
-  # The blueprint TYPE definitions live in ports/; this package
-  # contributes only behavior (parse, validate, merge, write, watch).
-  # It depends on ports for the data shape and on yaml.v3 for the
-  # serialization format. It MUST NOT depend on runtime or bridge
-  # (the consumers).
+  # The config package is the inner-ring shared kernel: field-level
+  # structural validation (required fields, enum values, duration
+  # formats), layered merge, and the multi-source Manager that
+  # produces *ports.BridgeConfig values. It contributes only pure
+  # behaviour over ports; the YAML/JSON parser and FileStore live in
+  # the sibling `config_parser` component which holds the only
+  # remaining vendor concession (yaml.v3, mapstructure). This
+  # component is stdlib-only -- the W-9 inner-ring vendor carve-out
+  # was removed by L-2. As of L-3 it MAY depend on `validate` because
+  # cross-reference / route-graph validation now lives there
+  # (config.Validate composes field-level checks with
+  # validate.ValidateBlueprintGraph).
   config:
     mayDependOn:
       - domain_clock
@@ -347,6 +385,32 @@ deps:
       - domain_persistence
       - domain_routing
       - domain_connectivity
+      - domain_events
+      - ports
+      - validate
+    canUse:
+      - _no_external_deps_
+
+  # The config_parser package is the wire-format adapter: YAML / JSON
+  # parsing (two-stage decode through *ports.Registry), the typed
+  # RawConfig.Decode based on mapstructure, the wire-format
+  # marshallers, atomic on-disk writes, and the FileStore
+  # ports.ConfigStore implementation. It is the only Layer-2
+  # location permitted to import yaml.v3 or mapstructure (the
+  # historical "shared kernel vendor concession" was narrowed to
+  # this component by L-2 / W-9). It MUST NOT depend on runtime,
+  # bridge, or any adapter; it MAY depend on `config` because
+  # FileStore composes Validate / DefaultMerge from the model.
+  config_parser:
+    mayDependOn:
+      - config
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - domain_connectivity
+      - domain_events
       - ports
     canUse:
       - yaml
@@ -368,6 +432,7 @@ deps:
       - domain_persistence
       - domain_routing
       - domain_connectivity
+      - domain_events
       - ports
 
   # validate hosts invariants over ports + domain. It MUST NOT depend on
@@ -381,6 +446,7 @@ deps:
       - domain_persistence
       - domain_routing
       - domain_connectivity
+      - domain_events
       - ports
 
   # runtime is the use-case engine. Per the Dependency Rule it depends
@@ -397,6 +463,129 @@ deps:
       - ports
       - logging
       - observability
+      - runtime_dlq
+      - runtime_cluster
+      - runtime_session
+      - runtime_outbox
+      - runtime_route
+
+  # runtime_dlq is the dead-letter-queue routing leaf. It owns the
+  # asynchronous DLQ router (classify -> enqueue -> drain to DLQStore)
+  # and depends only on inward layers + the DLQStore port. It MUST NOT
+  # depend on its parent (runtime) -- the dependency direction is
+  # parent -> leaf only -- nor on any adapter, bridge, or composition
+  # root code. Treat any new outward edge here as a smell that the
+  # leaf is absorbing orchestration concerns it should publish back
+  # to runtime instead.
+  runtime_dlq:
+    mayDependOn:
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - ports
+
+  # runtime_cluster owns the runtime's cluster-coordination primitives:
+  # the route-ownership locator that combines lease state with the
+  # route → session mapping to decide whether this instance handles a
+  # given route or forwards to the peer that holds the lease. The
+  # parent runtime composes a *cluster.Locator and exposes it through
+  # the ports.RouteLocator interface; the dependency direction is
+  # parent -> leaf only. This leaf MUST NOT depend on its parent
+  # (runtime), on any adapter, on bridge, or on the composition root.
+  # Treat any new outward edge here as a smell that the leaf is
+  # absorbing orchestration concerns it should publish back to runtime
+  # instead.
+  runtime_cluster:
+    mayDependOn:
+      - domain_clock
+      - domain_persistence
+      - ports
+
+  # runtime_session owns the session-lifecycle primitives: lease
+  # acquisition, renewal, three-phase step-down, reconnect reconcile,
+  # and the lease-state event stream the parent runtime observes. The
+  # parent runtime composes a *session.Manager and consumes it through
+  # the standard inward dependency rule (parent -> leaf); this leaf
+  # MUST NOT depend on its parent (runtime), on any adapter, on
+  # bridge, or on the composition root. Treat any new outward edge
+  # here as a smell that the leaf is absorbing orchestration concerns
+  # it should publish back to runtime instead.
+  runtime_session:
+    mayDependOn:
+      - domain_clock
+      - domain_shared
+      - domain_persistence
+      - domain_routing
+      - domain_connectivity
+      - ports
+      - logging
+
+  # runtime_outbox owns the runtime-side outbox dispatch plumbing: the
+  # per-partition Drainer that claims pending OutboxRecords, validates
+  # fencing tokens, sends through the target Sender, and routes
+  # terminal failures to the DLQ; the DepthCache that short-circuits
+  # repeated QueryPending calls on the shared-outbox hot path; and the
+  # timeout-scaling helper. The OutboxRecord aggregate itself remains
+  # in domain/persistence. The parent runtime composes a *outbox.Drainer
+  # per shared-outbox session and consumes it through the standard
+  # inward dependency rule (parent -> leaf); this leaf MUST NOT depend
+  # on its parent (runtime), on any adapter, on bridge, or on the
+  # composition root. It MAY depend on the sibling runtime_dlq leaf
+  # for terminal-failure routing.
+  runtime_outbox:
+    mayDependOn:
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - ports
+      - logging
+      - runtime_dlq
+
+  # runtime_route owns the runtime's per-route ingress execution
+  # pipeline: the processor chain (with panic and timeout recovery),
+  # the RouteRunner that drives the configured Receiver, and the
+  # dispatch path that resolves DispatchPlans, renders binding
+  # addresses, and either sends directly (DirectHold) or persists into
+  # the OutboxStore (SharedOutbox). Per-record retry/backoff, DLQ
+  # classification, and idle signalling all live here. The parent
+  # runtime composes a *route.RouteRunner per RouteConfig and consumes
+  # it through the standard inward dependency rule (parent -> leaf);
+  # this leaf MUST NOT depend on its parent (runtime), on its sibling
+  # runtime_session / runtime_cluster / runtime_credentials leaves, on
+  # any adapter, on bridge, or on the composition root. It MAY depend
+  # on the sibling runtime_dlq and runtime_outbox leaves it dispatches
+  # through.
+  runtime_route:
+    mayDependOn:
+      - domain_clock
+      - domain_shared
+      - domain_messaging
+      - domain_persistence
+      - domain_routing
+      - ports
+      - logging
+      - observability
+      - runtime_dlq
+      - runtime_outbox
+
+  # runtime_credentials is the credential-store adaptation leaf
+  # (PollBasedWrapper lifts a PullCredentialStore into a
+  # PushCredentialStore). It lives outside the core runtime engine so
+  # the composition root can import it without dragging in the route
+  # execution machinery, and it is referenced ONLY by `bridge`. It
+  # MUST NOT depend on its sibling `runtime` -- the dependency
+  # direction is composition-root -> leaf only -- nor on any adapter
+  # or bridge code.
+  runtime_credentials:
+    mayDependOn:
+      - domain_clock
+      - domain_shared
+      - domain_connectivity
+      - ports
 
   # bridge is the composition factory: it reads ports.BridgeConfig and
   # builds a runtime.Runtime. It MUST NOT depend on the config parser
@@ -410,9 +599,12 @@ deps:
       - domain_persistence
       - domain_routing
       - domain_connectivity
+      - domain_events
       - logging
       - ports
       - runtime
+      - runtime_credentials
+      - runtime_session
 
   # ---- Layer 3: Interface Adapters ----
 
@@ -431,6 +623,7 @@ deps:
       - domain_persistence
       - domain_routing
       - domain_connectivity
+      - domain_events
       - logging
       - observability
       - ports
@@ -495,28 +688,28 @@ deps:
   # consumes the ports.CircuitBreaker contract only — the implementation
   # is supplied by the composition root.
   adapter_transport_mqtt_paho:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [paho]
 
   adapter_transport_sqs:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [aws]
 
   adapter_transport_servicebus:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [asb]
 
   adapter_transport_amqp091:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [amqp091]
 
   adapter_transport_amqp10:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [amqp10]
 
   # HTTP transport is stdlib-only.
   adapter_transport_http:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
 
   # ---- Layer 3: Driven adapters -- store implementations ----
   #
@@ -525,25 +718,25 @@ deps:
   # the aggregator imports them, never the reverse.
 
   adapter_store_native_memorylease:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
   adapter_store_native_memoryoutbox:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
   adapter_store_native_memorydlq:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
   adapter_store_native_sqliteoutbox:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [sqlite]
   adapter_store_native_sqlitedlq:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [sqlite]
   adapter_store_aws_dynamodblease:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [aws]
   adapter_store_aws_dynamodboutbox:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [aws]
   adapter_store_aws_dynamodbdlq:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [aws]
 
   # ---- Layer 3: Store factory aggregators ----
@@ -561,6 +754,7 @@ deps:
       - domain_persistence
       - domain_routing
       - domain_connectivity
+      - domain_events
       - logging
       - ports
       - adapter_store_native_memorylease
@@ -577,6 +771,7 @@ deps:
       - domain_persistence
       - domain_routing
       - domain_connectivity
+      - domain_events
       - logging
       - ports
       - adapter_store_aws_dynamodblease
@@ -586,42 +781,49 @@ deps:
 
   # ---- Layer 3: Config-source adapters ----
   #
-  # The single adapter category permitted to import the `config` parser
-  # package. Their job is to produce *ports.BridgeConfig from an
-  # external source (file, DynamoDB, …) using the parser/validator/
-  # merger functions in `config`. They depend on ports for the data
-  # shape (BridgeConfig + Loader/Watcher/Reloader contracts) and on
-  # config for the parsing/serialization behavior.
+  # The single adapter category permitted to import the `config` and
+  # `config_parser` shared-kernel packages. Their job is to produce
+  # *ports.BridgeConfig from an external source (file, DynamoDB, …)
+  # using ParseFile / Parse / MarshalYAML / MarshalBridgeConfigJSON
+  # from `config_parser` and the structural Validate / DefaultMerge
+  # helpers from `config`. They depend on ports for the data shape
+  # (BridgeConfig + Loader/Watcher/Reloader contracts).
+  #
+  # The native file adapter is parser-only today (Format / ParseFile);
+  # the DynamoDB loader is also parser-only (Parse +
+  # MarshalBridgeConfigJSON). Both list `config` in addition so they
+  # remain free to invoke Validate / DefaultMerge without a separate
+  # rule edit.
   adapter_config_native_file:
-    mayDependOn: [config, domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [config, config_parser, domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [fsnotify]
   adapter_config_aws_dynamodb:
-    mayDependOn: [config, domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [config, config_parser, domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [aws]
 
   # ---- Layer 3: Credential adapters ----
   adapter_credentials_native_file:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
   adapter_credentials_aws_ssm:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [aws]
 
   # ---- Layer 3: Observability adapters ----
   adapter_metrics_cloudwatch:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [aws]
   adapter_metrics_otel:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [otel]
   adapter_tracing_otel:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [otel]
 
   # ---- Layer 3: Cluster resolver adapters ----
   adapter_cluster_native:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
   adapter_cluster_aws:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
     canUse: [aws]
 
   # ---- Layer 4: Composition root ----

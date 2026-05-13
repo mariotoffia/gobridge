@@ -88,12 +88,12 @@ func TestHandleDLQRedrive_AllSuccess(t *testing.T) {
 	seedDLQ(t, dlq,
 		routing.DLQEntry{
 			ID: "e1", RouteID: "test-route",
-			Envelope: messaging.Envelope{Subject: "s1", Payload: []byte("p1")},
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s1", Payload: []byte("p1")}),
 			FailedAt: time.Now(),
 		},
 		routing.DLQEntry{
 			ID: "e2", RouteID: "test-route",
-			Envelope: messaging.Envelope{Subject: "s2", Payload: []byte("p2")},
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s2", Payload: []byte("p2")}),
 			FailedAt: time.Now(),
 		},
 	)
@@ -122,7 +122,7 @@ func TestHandleDLQRedrive_EntryNotFound(t *testing.T) {
 	mux, dlq, _ := redriveSetup(t)
 	seedDLQ(t, dlq, routing.DLQEntry{
 		ID: "e1", RouteID: "test-route",
-		Envelope: messaging.Envelope{Subject: "s1"},
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s1"}),
 		FailedAt: time.Now(),
 	})
 
@@ -148,7 +148,7 @@ func TestHandleDLQRedrive_RouteNotFound(t *testing.T) {
 	mux, dlq, _ := redriveSetup(t)
 	seedDLQ(t, dlq, routing.DLQEntry{
 		ID: "e1", RouteID: "nonexistent-route",
-		Envelope: messaging.Envelope{Subject: "s1"},
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s1"}),
 		FailedAt: time.Now(),
 	})
 
@@ -172,7 +172,7 @@ func TestHandleDLQRedrive_DuplicateIDs(t *testing.T) {
 	mux, dlq, sender := redriveSetup(t)
 	seedDLQ(t, dlq, routing.DLQEntry{
 		ID: "e1", RouteID: "test-route",
-		Envelope: messaging.Envelope{Subject: "s1"},
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s1"}),
 		FailedAt: time.Now(),
 	})
 

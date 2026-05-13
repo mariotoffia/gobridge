@@ -127,13 +127,13 @@ func TestNumericCompare_LargeInt64Precision(t *testing.T) {
 		cond: MatchCondition{
 			Field:    "header.val",
 			Operator: OpLessThan,
-			Value:    v2,
+			Value:    Val(v2),
 		},
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Headers: map[string]any{"val": v1},
-	}
+	})
 	ctx := newEvalContext()
 
 	result, err := eval.evaluate(env, ctx)
@@ -152,13 +152,13 @@ func TestConditionEval_Equals_StringFastPath(t *testing.T) {
 		cond: MatchCondition{
 			Field:    "header.type",
 			Operator: OpEquals,
-			Value:    "order",
+			Value:    Val("order"),
 		},
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Headers: map[string]any{"type": "order"},
-	}
+	})
 	ctx := newEvalContext()
 
 	result, err := eval.evaluate(env, ctx)
@@ -177,13 +177,13 @@ func TestConditionEval_In_StringSlice(t *testing.T) {
 		cond: MatchCondition{
 			Field:    "header.status",
 			Operator: OpIn,
-			Value:    []any{"active", "pending"},
+			Value:    Val([]any{"active", "pending"}),
 		},
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Headers: map[string]any{"status": "active"},
-	}
+	})
 	ctx := newEvalContext()
 
 	result, err := eval.evaluate(env, ctx)
@@ -202,13 +202,13 @@ func TestConditionEval_Exists_True(t *testing.T) {
 		cond: MatchCondition{
 			Field:    "header.key",
 			Operator: OpExists,
-			Value:    true,
+			Value:    Val(true),
 		},
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Headers: map[string]any{"key": "val"},
-	}
+	})
 	ctx := newEvalContext()
 
 	result, err := eval.evaluate(env, ctx)
@@ -227,13 +227,13 @@ func TestConditionEval_Exists_False(t *testing.T) {
 		cond: MatchCondition{
 			Field:    "header.missing",
 			Operator: OpExists,
-			Value:    true,
+			Value:    Val(true),
 		},
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Headers: map[string]any{},
-	}
+	})
 	ctx := newEvalContext()
 
 	result, err := eval.evaluate(env, ctx)
@@ -251,7 +251,7 @@ func TestConditionEval_PayloadPath(t *testing.T) {
 		cond: MatchCondition{
 			Field:    "$.order.status",
 			Operator: OpEquals,
-			Value:    "shipped",
+			Value:    Val("shipped"),
 		},
 	}
 
@@ -276,13 +276,13 @@ func TestConditionEval_UnsupportedOperator(t *testing.T) {
 		cond: MatchCondition{
 			Field:    "header.key",
 			Operator: "bogus",
-			Value:    "val",
+			Value:    Val("val"),
 		},
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Headers: map[string]any{"key": "val"},
-	}
+	})
 	ctx := newEvalContext()
 
 	_, err := eval.evaluate(env, ctx)

@@ -13,7 +13,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -74,7 +74,7 @@ func TestRouteRunner_PullPause_EmitBlocksWhenSaturated(t *testing.T) {
 	})
 
 	receiver := NewFakeReceiver()
-	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID: "pullpause-route",
 		Policy: routing.RoutePolicy{
 			MaxInFlight:  maxInFlight,
@@ -211,7 +211,7 @@ func TestRouteRunner_PullPause_ThroughputResumesAfterSlowSender(t *testing.T) {
 	})
 
 	receiver := NewFakeReceiver()
-	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID: "pullpause-throughput-route",
 		Policy: routing.RoutePolicy{
 			MaxInFlight:  maxInFlight,

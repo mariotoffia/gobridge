@@ -4,12 +4,13 @@ import (
 	"log/slog"
 
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/credentials"
 )
 
 // Builder constructs a runtime.Runtime from a declarative BridgeConfig.
 type Builder struct {
 	cfg              *ports.BridgeConfig
+	registry         *ports.Registry
 	transports       map[string]ports.TransportFactory
 	storeFactories   map[string]ports.StoreFactory
 	processors       map[string]ports.Processor
@@ -24,7 +25,11 @@ type Builder struct {
 // BuilderOption configures a Builder.
 type BuilderOption func(*Builder)
 
-// WithLogger sets the logger for the builder and the resulting runtime.
+// WithLogger sets the structured logger used by the builder during
+// construction and forwarded to the resulting runtime via
+// runtime.WithLogger. There is intentionally one logger seam: the
+// bridge package owns the BuilderOption surface and forwards into
+// runtime so callers configure logging in a single place.
 func WithLogger(l *slog.Logger) BuilderOption {
 	return func(b *Builder) { b.logger = l }
 }
@@ -71,7 +76,7 @@ func WithPushCredentialStore(cs ports.PushCredentialStore) BuilderOption {
 func WithPolledCredentialStore(cs ports.PullCredentialStore, cfg ports.PollBasedWrapperConfig) BuilderOption {
 	return func(b *Builder) {
 		b.credStore = cs
-		b.pushCredStore = runtime.NewPollBasedWrapper(cs, cfg, runtime.WithPollLogger(b.logger))
+		b.pushCredStore = credentials.NewPollBasedWrapper(cs, cfg, credentials.WithPollLogger(b.logger))
 	}
 }
 
@@ -89,9 +94,10 @@ func NewBuilder(cfg *ports.BridgeConfig, opts ...BuilderOption) *Builder {
 	return b
 }
 
-// RegisterTransport registers a transport factory under the given name
-// (e.g. "mqtt", "sqs"). Returns the builder for chaining.
-func (b *Builder) RegisterTransport(name string, factory ports.TransportFactory) *Builder {
+// RegisterTransportFactory registers a transport factory under the given
+// name (e.g. "mqtt", "sqs"). Returns the builder for chaining. Named for
+// symmetry with RegisterStoreFactory.
+func (b *Builder) RegisterTransportFactory(name string, factory ports.TransportFactory) *Builder {
 	b.transports[name] = factory
 	return b
 }
@@ -135,3 +141,20 @@ func (b *Builder) RegisterDeliveryHook(h ports.DeliveryHook) *Builder {
 func WithBlueprintValidator(v ports.BlueprintValidator) BuilderOption {
 	return func(b *Builder) { b.validator = v }
 }
+
+// WithRegistry attaches the *ports.Registry the composition root
+// used to parse BridgeConfig. The Builder itself does not parse
+// blueprints (cfg arrives pre-decoded), but exposing the registry
+// here lets callers retrieve it via Builder.Registry for downstream
+// composition (e.g. an admin endpoint that re-parses uploaded YAML
+// against the same decoder set). The option is purely informative
+// for the runtime; nil is permitted.
+func WithRegistry(r *ports.Registry) BuilderOption {
+	return func(b *Builder) { b.registry = r }
+}
+
+// Registry returns the *ports.Registry passed via WithRegistry, or
+// nil if none was supplied. Callers that need a registry but did
+// not configure one MUST construct one explicitly via
+// ports.NewRegistry — the Builder does not synthesise a default.
+func (b *Builder) Registry() *ports.Registry { return b.registry }

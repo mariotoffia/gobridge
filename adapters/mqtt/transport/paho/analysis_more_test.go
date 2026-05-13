@@ -34,7 +34,7 @@ import (
 // integrating with such consumers should add a stripping middleware
 // at their ACL.
 func TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization(t *testing.T) {
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		Subject: "t",
 		Payload: []byte("p"),
 		Headers: map[string]any{
@@ -46,8 +46,8 @@ func TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization(t *test
 			messaging.HeaderRouteID:        "internal-rt",  // forwarded (debatable)
 			messaging.HeaderSourceID:       "internal-src", // forwarded (debatable)
 		},
-	}
-	pub := PublishFromEnvelope(env, env.Subject, SenderOptions{QoS: 1}, nil)
+	})
+	pub := PublishFromEnvelope(env, env.Subject(), SenderOptions{QoS: 1}, nil)
 	if pub.Properties == nil {
 		t.Fatal("expected properties to be set")
 	}

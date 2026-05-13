@@ -65,6 +65,11 @@ func (f *Factory) Capabilities() []ports.Capability {
 	}
 }
 
+// AddressValidator returns nil — AMQP 0-9-1 routing keys have no
+// runtime-enforceable structural rules; the broker rejects unbound
+// keys at publish time.
+func (f *Factory) AddressValidator() ports.AddressValidator { return nil }
+
 // NewSession creates an AMQP 0-9-1 Session from the given spec.
 func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.Session, error) {
 	cfg, err := configFromSpec(spec.Config)

@@ -108,14 +108,14 @@ func (s *Sender) buildSendInput(env *messaging.Envelope) *awssqs.SendMessageInpu
 		input.DelaySeconds = s.cfg.DelaySeconds
 	}
 
-	attrs := headersToAttributes(env.Headers)
-	if env.Subject != "" {
+	attrs := headersToAttributes(env.Headers())
+	if env.Subject() != "" {
 		if attrs == nil {
 			attrs = make(map[string]sqstypes.MessageAttributeValue, 1)
 		}
 		attrs["Subject"] = sqstypes.MessageAttributeValue{
 			DataType:    aws.String("String"),
-			StringValue: aws.String(env.Subject),
+			StringValue: aws.String(env.Subject()),
 		}
 	}
 	if len(attrs) > 0 {
@@ -137,14 +137,14 @@ func (s *Sender) buildBatchEntry(idx int, env *messaging.Envelope) sqstypes.Send
 		entry.DelaySeconds = s.cfg.DelaySeconds
 	}
 
-	attrs := headersToAttributes(env.Headers)
-	if env.Subject != "" {
+	attrs := headersToAttributes(env.Headers())
+	if env.Subject() != "" {
 		if attrs == nil {
 			attrs = make(map[string]sqstypes.MessageAttributeValue, 1)
 		}
 		attrs["Subject"] = sqstypes.MessageAttributeValue{
 			DataType:    aws.String("String"),
-			StringValue: aws.String(env.Subject),
+			StringValue: aws.String(env.Subject()),
 		}
 	}
 	if len(attrs) > 0 {
@@ -152,7 +152,7 @@ func (s *Sender) buildBatchEntry(idx int, env *messaging.Envelope) sqstypes.Send
 	}
 
 	if s.cfg.isFIFO() {
-		groupID, dedupID := extractFIFOFields(env.Headers)
+		groupID, dedupID := extractFIFOFields(env.Headers())
 		if groupID == "" {
 			groupID = s.cfg.MessageGroupID
 		}
@@ -173,7 +173,7 @@ func (s *Sender) applyFIFO(input *awssqs.SendMessageInput, env *messaging.Envelo
 		return
 	}
 
-	groupID, dedupID := extractFIFOFields(env.Headers)
+	groupID, dedupID := extractFIFOFields(env.Headers())
 	if groupID == "" {
 		groupID = s.cfg.MessageGroupID
 	}
@@ -277,7 +277,7 @@ func extractFIFOFields(headers map[string]any) (groupID, dedupID string) {
 func generateDeduplicationID(env *messaging.Envelope) string {
 	h := md5.New()
 	h.Write(env.Payload)
-	h.Write([]byte(env.Subject))
+	h.Write([]byte(env.Subject()))
 	if env.ID != "" {
 		h.Write([]byte(env.ID))
 	} else {

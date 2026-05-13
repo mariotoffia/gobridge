@@ -84,48 +84,27 @@ func (rt *Runtime) roleUnlocked() string {
 	return "standby"
 }
 
-// DeepHealth is a comprehensive health snapshot of the runtime.
-type DeepHealth struct {
-	Running         bool
-	Healthy         bool
-	InstanceID      string
-	Role            string
-	Routes          []RouteHealth
-	Sessions        []SessionHealthDetail
-	ReadyForTraffic bool               // All sessions connected + runtime healthy
-	ServiceLevel    ports.ServiceLevel // Minimum service level across all sessions
-}
-
-// SessionHealthDetail describes one session's health including
-// subscription readiness and lease ownership.
-type SessionHealthDetail struct {
-	SessionID           string
-	Connected           bool
-	HasLease            bool
-	SubscriptionsWanted int
-	SubscriptionsActive int
-	ActiveTopics        []string // topics the broker has ACK'd subscriptions for
-	Ready               bool
-	ServiceLevel        ports.ServiceLevel
-}
-
-// RouteHealth describes one route's health.
-type RouteHealth struct {
-	ID           string
-	DeliveryMode string
-	Ready        bool // route runner started + receiver ready
-	InFlight     int  // currently-processing delivery count
-}
+// DeepHealth, SessionHealthDetail and RouteHealth are read-side
+// projections used by driving adapters (HTTP monitor / admin, CLI,
+// future gRPC). They are defined in the ports package so adapters
+// depend on the inner-ring contract, not on the runtime package.
+// The aliases below preserve the runtime.X spelling at existing call
+// sites without forcing an import-site rename.
+type (
+	DeepHealth          = ports.DeepHealth
+	SessionHealthDetail = ports.SessionHealthDetail
+	RouteHealth         = ports.RouteHealth
+)
 
 // DeepHealth returns a comprehensive health snapshot including session
 // subscription readiness and lease status. Use ReadyForTraffic to
 // determine if all sessions are connected and subscribed before
 // sending messages through the bridge.
-func (rt *Runtime) DeepHealth(ctx context.Context) DeepHealth {
+func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
-	dh := DeepHealth{
+	dh := ports.DeepHealth{
 		Running:    rt.running,
 		Healthy:    rt.healthy,
 		InstanceID: rt.instanceID,
@@ -138,7 +117,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) DeepHealth {
 	// Collect session health from route entries.
 	seen := make(map[string]bool)
 	for _, e := range rt.entries {
-		// Routes whose AddRoute caller passed a nil *SessionConfig
+		// Routes whose AddRoute caller passed a nil *session.Config
 		// (e.g. SQS->SQS routes that have no MQTT session at all)
 		// are intentionally excluded from session-health aggregation.
 		// Test authors: passing nil sessCfg for an MQTT route means
@@ -154,7 +133,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) DeepHealth {
 		seen[sid] = true
 		sh := e.session.Health(ctx)
 
-		detail := SessionHealthDetail{
+		detail := ports.SessionHealthDetail{
 			SessionID:           sid,
 			Connected:           sh.Connected,
 			SubscriptionsWanted: sh.SubscriptionsWanted,
@@ -180,7 +159,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) DeepHealth {
 		}
 		seen[sid] = true
 		sh := sse.session.Health(ctx)
-		detail := SessionHealthDetail{
+		detail := ports.SessionHealthDetail{
 			SessionID:           sid,
 			Connected:           sh.Connected,
 			SubscriptionsWanted: sh.SubscriptionsWanted,
@@ -209,7 +188,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) DeepHealth {
 				ready = true
 			default:
 			}
-			if rss, ok := rr.receiver.(ports.ReceiverStartedSignaler); ok {
+			if rss, ok := rr.Receiver().(ports.ReceiverStartedSignaler); ok {
 				select {
 				case <-rss.Started():
 				default:
@@ -217,7 +196,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) DeepHealth {
 				}
 			}
 		}
-		dh.Routes = append(dh.Routes, RouteHealth{
+		dh.Routes = append(dh.Routes, ports.RouteHealth{
 			ID:           e.config.ID,
 			DeliveryMode: string(e.config.Policy.DeliveryMode),
 			Ready:        ready,

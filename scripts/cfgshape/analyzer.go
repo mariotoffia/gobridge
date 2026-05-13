@@ -11,11 +11,12 @@
 //     into the inner ring and defeat the purpose of ports.PluginConfig.
 //
 //  2. Adapter shape: every plugin adapter package (a package that
-//     opted into the plugin contract by either calling
-//     ports.DefaultRegistry.Register or by exporting a type that
-//     satisfies ports.PluginConfig) MUST do BOTH: contain a
-//     register.go that calls ports.DefaultRegistry.Register, AND
-//     export at least one type that satisfies ports.PluginConfig.
+//     opted into the plugin contract by either exposing an exported
+//     Register function on a register.go file or by exporting a
+//     type that satisfies ports.PluginConfig) MUST do BOTH:
+//     contain a register.go that declares an exported
+//     Register(reg *ports.Registry) error function, AND export at
+//     least one type that satisfies ports.PluginConfig.
 //     Half-baked plugins (registered but untyped, or typed but not
 //     registered) fail this rule.
 //
@@ -350,18 +351,18 @@ func checkAdapter(pass *analysis.Pass) {
 
 	if !hasPluginType {
 		pass.Reportf(token.NoPos,
-			"cfgshape: adapter package %s calls ports.DefaultRegistry.Register but exports no type satisfying ports.PluginConfig (Kind() string + Validate() error)",
+			"cfgshape: adapter package %s declares Register but exports no type satisfying ports.PluginConfig (Kind() string + Validate() error)",
 			pass.Pkg.Path())
 	}
 	if regFile == "" {
 		pass.Reportf(token.NoPos,
-			"cfgshape: adapter package %s exports a ports.PluginConfig type but is missing a register.go that calls ports.DefaultRegistry.Register",
+			"cfgshape: adapter package %s exports a ports.PluginConfig type but is missing a register.go that declares Register(reg *ports.Registry) error",
 			pass.Pkg.Path())
 		return
 	}
 	if !hasRegisterCall {
 		pass.Reportf(token.NoPos,
-			"cfgshape: adapter package %s has %s but it does not call ports.DefaultRegistry.Register",
+			"cfgshape: adapter package %s has %s but it does not declare an exported Register function",
 			pass.Pkg.Path(), filepath.Base(regFile))
 	}
 }
@@ -395,7 +396,7 @@ func adapterExportsPluginConfig(pass *analysis.Pass) bool {
 	return false
 }
 
-// findRegisterFile returns (filename, sawRegisterCall). filename is
+// findRegisterFile returns (filename, sawRegisterDecl). filename is
 // "" if no register.go exists in the package.
 func findRegisterFile(pass *analysis.Pass, files []*ast.File) (string, bool) {
 	for _, f := range files {
@@ -403,45 +404,27 @@ func findRegisterFile(pass *analysis.Pass, files []*ast.File) (string, bool) {
 		if filepath.Base(path) != "register.go" {
 			continue
 		}
-		return path, fileCallsDefaultRegistryRegister(f)
+		return path, fileDeclaresExportedRegister(f)
 	}
 	return "", false
 }
 
-// fileCallsDefaultRegistryRegister returns true if the AST contains a
-// call expression of the shape <X>.DefaultRegistry.Register(...) or
-// (after import alias resolution) ports.DefaultRegistry.Register(...).
-// We match purely on the selector chain text since the analyzer
-// cannot easily resolve types from a different module.
-func fileCallsDefaultRegistryRegister(f *ast.File) bool {
-	found := false
-	ast.Inspect(f, func(n ast.Node) bool {
-		if found {
-			return false
+// fileDeclaresExportedRegister returns true if the AST contains an
+// exported top-level function declaration named "Register". The
+// signature shape (Register(reg *ports.Registry) error) is enforced
+// by the Go compiler at adapter call sites; the analyzer only
+// asserts the declaration exists.
+func fileDeclaresExportedRegister(f *ast.File) bool {
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || fn.Name == nil {
+			continue
 		}
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
+		if fn.Name.Name == "Register" {
 			return true
 		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "Register" {
-			return true
-		}
-		// Look for "...DefaultRegistry.Register" in the receiver chain.
-		inner, ok := sel.X.(*ast.SelectorExpr)
-		if !ok {
-			// Allow bare `DefaultRegistry.Register` if someone dot-imported.
-			if id, ok := sel.X.(*ast.Ident); ok && id.Name == "DefaultRegistry" {
-				found = true
-			}
-			return true
-		}
-		if inner.Sel.Name == "DefaultRegistry" {
-			found = true
-		}
-		return true
-	})
-	return found
+	}
+	return false
 }
 
 // ----------------------------------------------------------------------

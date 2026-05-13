@@ -17,13 +17,13 @@ func GlobalKey(_ context.Context, _ *messaging.Envelope) string {
 
 // SubjectKey uses the envelope's Subject as the breaker key.
 func SubjectKey(_ context.Context, env *messaging.Envelope) string {
-	return env.Subject
+	return env.Subject()
 }
 
 // HeaderKey returns a KeyExtractor that reads a named header.
 func HeaderKey(name string) KeyExtractor {
 	return func(_ context.Context, env *messaging.Envelope) string {
-		if v, ok := messaging.GetHeaderString(env.Headers, name); ok {
+		if v, ok := messaging.GetHeaderString(env.Headers(), name); ok {
 			return v
 		}
 		return "unknown"

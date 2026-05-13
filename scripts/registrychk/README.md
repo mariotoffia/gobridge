@@ -1,7 +1,8 @@
 # registrychk
 
 CI gate that enforces every AWS-deployable plugin kind registered into
-`ports.DefaultRegistry` has matching CDK helpers in
+the local `*ports.Registry` (built by calling each adapter's exported
+`Register(reg *ports.Registry) error`) has matching CDK helpers in
 `deployment/aws-filebased-config/cdk`.
 
 For each canonical AWS-deployable kind (after collapsing aliases like
@@ -25,8 +26,8 @@ to print skipped kinds.
 go run ./scripts/registrychk            # exit 1 on missing coverage
 go run ./scripts/registrychk -v         # also print skipped non-AWS kinds
 
-# Or via the Makefile (used by CI)
-make lint-registrychk
+# Or as part of the full lint suite (used by CI)
+make lint
 ```
 
 Flags:
@@ -37,8 +38,8 @@ Flags:
 
 ## Adding a new AWS-deployable kind
 
-1. Register the adapter `init()` (and any aliases) into
-   `ports.DefaultRegistry`.
+1. Add the adapter's `Register(reg *ports.Registry) error` call to
+   `buildRegisteredKinds` in `main.go` (and any alias kinds).
 2. Add a bridgecfg builder under `cdk/bridgecfg/` exporting a
    `With<Kind>*` symbol.
 3. If the kind needs IAM grants, add `cdk/constructs/internal/grants/<kind>.go`.

@@ -80,6 +80,7 @@ linters:
         - github.com/mariotoffia/gobridge/ports.LeaseStore
         - github.com/mariotoffia/gobridge/ports.OutboxStore
         - github.com/mariotoffia/gobridge/ports.DLQStore
+        - github.com/mariotoffia/gobridge/ports.AddressValidator
 
         # 3. Runtime accessors.
         - github.com/mariotoffia/gobridge/ports.RouteLocator
@@ -440,12 +441,10 @@ linters:
       #   locator — the canonical entry point for production code that
       #   does NOT yet use injected clocks. Documented architectural
       #   exemption.
-      # - domain/routing/policy.go declares the legacy `var DefaultBackoffPolicy`
-      #   (struct value, cannot be const). Already marked Deprecated in
-      #   the source; new code uses NewDefaultBackoffPolicy().
-      # - config/validate_resolver.go declares two lookup maps used by
-      #   the validator. Go has no const map literal; the maps are
-      #   functionally immutable.
+      # - validate/blueprint_graph.go declares two lookup maps used by
+      #   the resolver/route validator. Go has no const map literal;
+      #   the maps are functionally immutable. (Moved here from
+      #   config/validate_resolver.go by L-3.)
       # - adapters/http/transport/receiver.go declares an atomic.Uint64
       #   counter for HTTP-side monotonic envelope IDs. Package-shared
       #   counter (not per-receiver), legitimate atomic usage.
@@ -456,8 +455,6 @@ linters:
       #   helper init() blocks — outside the rule's scope.
       - linters: [gochecknoglobals]
         path: "^domain/clock/clock\\.go$"
-      - linters: [gochecknoglobals]
-        path: "^domain/routing/policy\\.go$"
       # FIX-003: ports/plugin_config.go declares `var DefaultRegistry`,
       # the process-wide plugin-decoder registry adapters self-register
       # into from init(). Documented architectural exemption — same
@@ -474,8 +471,12 @@ linters:
         path: "^adapters/.*register\\.go$"
       - linters: [gochecknoinits]
         path: "^processors/.*register\\.go$"
+      # - validate/blueprint_graph.go declares two lookup maps used by
+      #   the resolver/route validator (moved here from
+      #   config/validate_resolver.go by L-3). Go has no const map
+      #   literal; the maps are functionally immutable.
       - linters: [gochecknoglobals]
-        path: "^config/validate_resolver\\.go$"
+        path: "^validate/blueprint_graph\\.go$"
       # Adapter `headers.go` files declare well-known-header lookup
       # maps (Go has no const map literal). The pattern covers any
       # adapter package's headers.go.

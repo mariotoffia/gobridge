@@ -10,7 +10,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -36,7 +37,7 @@ import (
 // TestDefaultSessionConfig_S12Defaults validates that DefaultSessionConfig
 // returns the S12-aligned timeout values including drain-related fields.
 func TestDefaultSessionConfig_S12Defaults(t *testing.T) {
-	cfg := goruntime.DefaultSessionConfig("test", true)
+	cfg := session.DefaultConfig("test", true)
 
 	durationChecks := []struct {
 		name string
@@ -81,7 +82,7 @@ func TestDefaultSessionConfig_S12Defaults(t *testing.T) {
 	}
 }
 
-// TestSessionManager_DerivedRenewInterval validates that the session
+// TestSessionManager_DerivedRenewInterval validates that the sess
 // manager derives RenewInterval correctly using a table-driven approach.
 //
 // ═══════════════════════════════════════════════════════════════════════
@@ -119,10 +120,10 @@ func TestSessionManager_DerivedRenewInterval(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			session := NewFakeSession()
+			sess := NewFakeSession()
 			leaseStore := NewFakeLeaseStore()
 
-			cfg := goruntime.SessionConfig{
+			cfg := session.Config{
 				SessionID:     "sess-" + tt.name,
 				Exclusive:     true,
 				LeaseTTL:      tt.leaseTTL,
@@ -132,7 +133,7 @@ func TestSessionManager_DerivedRenewInterval(t *testing.T) {
 				StepDownGrace: 50 * time.Millisecond,
 			}
 
-			mgr := goruntime.NewSessionManagerFromConfig(cfg, session, leaseStore, "owner-1", nil)
+			mgr := session.NewFromConfig(cfg, sess, leaseStore, "owner-1", nil)
 
 			ctx, cancel := context.WithTimeout(context.Background(), tt.leaseTTL*2+200*time.Millisecond)
 			defer cancel()
@@ -161,13 +162,13 @@ func TestOutboxDrainer_FinalDrainCompletesPendingRecords(t *testing.T) {
 	lease := NewFakeLeaseStore()
 	token := persistence.LeaseToken{Version: 1, Owner: "me"}
 
-	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{{
+	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID:        "rec-1",
 		RouteID:   "r1",
 		SessionID: "s1",
 		Status:    persistence.OutboxPending,
 		Envelope:  messaging.Envelope{ID: "env-1", Payload: []byte("hello")},
-	}})
+	})})
 
 	var sent atomic.Int32
 	sender := &FakeSender{
@@ -177,7 +178,7 @@ func TestOutboxDrainer_FinalDrainCompletesPendingRecords(t *testing.T) {
 		},
 	}
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:  outbox,
 		LeaseStore:   lease,
 		Sender:       sender,

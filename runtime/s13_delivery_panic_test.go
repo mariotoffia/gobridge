@@ -12,7 +12,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -57,7 +58,7 @@ func TestRouteRunner_ProcessorPanic_DoesNotCrash(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "panic-proc-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
@@ -104,12 +105,12 @@ func TestRouteRunner_ProcessorPanic_RoutesToDLQ(t *testing.T) {
 	sender := NewFakeSender()
 	dlqStore := NewFakeDLQStore()
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "panic-proc-retry",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		DLQ:      dlq.New(dlqStore),
 		Processors: []ports.Processor{
 			&FakeProcessor{
 				NameVal: "panicker",
@@ -153,7 +154,7 @@ func TestRouteRunner_SenderPanic_DoesNotCrash(t *testing.T) {
 		panic("sender exploded")
 	}
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "panic-send-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
@@ -188,7 +189,7 @@ func TestRouteRunner_SenderPanic_RetriesDelivery(t *testing.T) {
 		panic("sender exploded")
 	}
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "panic-send-retry",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
@@ -219,7 +220,7 @@ func TestRouteRunner_ProcessorPanic_EmitsMetric(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "panic-metric-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
@@ -271,7 +272,7 @@ func TestRouteRunner_DeliveryPanic_SlotsReleased(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "panic-slot-route",
 		Policy:   routing.RoutePolicy{MaxInFlight: 1, DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
@@ -323,7 +324,7 @@ func TestRouteRunner_DeliveryPanic_OtherMessagesUnaffected(t *testing.T) {
 		return nil
 	}
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "panic-concurrent-route",
 		Policy:   routing.RoutePolicy{MaxInFlight: 5, DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
@@ -370,12 +371,12 @@ func TestRouteRunner_ProcessorPanic_DLQWriteFails_NoCrash(t *testing.T) {
 	dlqStore := NewFakeDLQStore()
 	dlqStore.WriteErr = fmt.Errorf("simulated DLQ write failure")
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "panic-retry-fail",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		DLQ:      dlq.New(dlqStore),
 		Processors: []ports.Processor{
 			&FakeProcessor{
 				NameVal: "panicker",
@@ -417,12 +418,12 @@ func TestRouteRunner_ProcessorPanic_RetryPanics_NoProcessCrash(t *testing.T) {
 	dlqStore := NewFakeDLQStore()
 	dlqStore.WriteErr = fmt.Errorf("forced DLQ failure")
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "panic-retry-panic",
 		Policy:   routing.RoutePolicy{MaxInFlight: 1, DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		DLQ:      dlq.New(dlqStore),
 		Processors: []ports.Processor{
 			&FakeProcessor{
 				NameVal: "panicker",

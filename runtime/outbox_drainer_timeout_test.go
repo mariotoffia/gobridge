@@ -11,7 +11,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 )
 
 // ctxAwareSender is a test sender whose Send respects context
@@ -51,11 +52,11 @@ func (s *ctxAwareSender) sentCount() int64 {
 // DrainTimeout verbatim so existing callers keep the pre-scaling
 // semantics (a single fixed batch deadline regardless of batch size).
 func TestComputeBatchDeadline_BackwardCompat(t *testing.T) {
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		DrainTimeout: 7 * time.Second,
 	}
 	for _, batchCount := range []int{0, 1, 5, 100} {
-		got := goruntime.ComputeBatchDeadlineForTest(batchCount, cfg)
+		got := outboxpkg.ComputeBatchDeadline(batchCount, cfg)
 		if got != 7*time.Second {
 			t.Fatalf("batchCount=%d: expected 7s (legacy DrainTimeout), got %v",
 				batchCount, got)
@@ -67,11 +68,11 @@ func TestComputeBatchDeadline_BackwardCompat(t *testing.T) {
 // scaled formula is active and the product stays under the cap, the
 // result is batchCount * PerRecord.
 func TestComputeBatchDeadline_ScalesWithBatchSize(t *testing.T) {
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		PerRecordDrainTimeout: 2 * time.Second,
 		MaxDrainTimeout:       30 * time.Second,
 	}
-	got := goruntime.ComputeBatchDeadlineForTest(3, cfg)
+	got := outboxpkg.ComputeBatchDeadline(3, cfg)
 	want := 6 * time.Second
 	if got != want {
 		t.Fatalf("expected %v, got %v", want, got)
@@ -82,11 +83,11 @@ func TestComputeBatchDeadline_ScalesWithBatchSize(t *testing.T) {
 // cannot produce a deadline longer than MaxDrainTimeout — this is the
 // reason we chose min() over max() for the scaling formula.
 func TestComputeBatchDeadline_CappedAtMax(t *testing.T) {
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		PerRecordDrainTimeout: 2 * time.Second,
 		MaxDrainTimeout:       30 * time.Second,
 	}
-	got := goruntime.ComputeBatchDeadlineForTest(100, cfg)
+	got := outboxpkg.ComputeBatchDeadline(100, cfg)
 	want := 30 * time.Second
 	if got != want {
 		t.Fatalf("expected cap %v, got %v", want, got)
@@ -97,21 +98,21 @@ func TestComputeBatchDeadline_CappedAtMax(t *testing.T) {
 // when the caller sets only PerRecordDrainTimeout, the default
 // MaxDrainTimeout (10s) applies as the ceiling.
 func TestComputeBatchDeadline_DefaultsApplyWhenOneFieldSet(t *testing.T) {
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		PerRecordDrainTimeout: 2 * time.Second,
 	}
 	// batchCount=100 * 2s = 200s, capped at default 10s.
-	got := goruntime.ComputeBatchDeadlineForTest(100, cfg)
+	got := outboxpkg.ComputeBatchDeadline(100, cfg)
 	if got != 10*time.Second {
 		t.Fatalf("expected default MaxDrainTimeout 10s, got %v", got)
 	}
 
 	// And when only MaxDrainTimeout is set, default PerRecord (3s)
 	// applies per record.
-	cfg = goruntime.OutboxDrainerConfig{
+	cfg = outboxpkg.Config{
 		MaxDrainTimeout: 30 * time.Second,
 	}
-	got = goruntime.ComputeBatchDeadlineForTest(2, cfg)
+	got = outboxpkg.ComputeBatchDeadline(2, cfg)
 	if got != 6*time.Second {
 		t.Fatalf("expected 2 * default PerRecord (6s), got %v", got)
 	}
@@ -122,11 +123,11 @@ func TestComputeBatchDeadline_DefaultsApplyWhenOneFieldSet(t *testing.T) {
 // return 0 when the scaled formula is active — that would mean an
 // already-expired context in the caller.
 func TestComputeBatchDeadline_ZeroBatchReturnsFloor(t *testing.T) {
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		PerRecordDrainTimeout: 2 * time.Second,
 		MaxDrainTimeout:       30 * time.Second,
 	}
-	got := goruntime.ComputeBatchDeadlineForTest(0, cfg)
+	got := outboxpkg.ComputeBatchDeadline(0, cfg)
 	if got != 30*time.Second {
 		t.Fatalf("expected MaxDrainTimeout when batch==0, got %v", got)
 	}
@@ -170,7 +171,7 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 
 	ctx := context.Background()
 	for i := range recordCount {
-		rec := persistence.OutboxRecord{
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID:         fmt.Sprintf("rec-%d", i),
 			RouteID:    "route-1",
 			EnvelopeID: fmt.Sprintf("env-%d", i),
@@ -181,8 +182,8 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 				Payload: []byte("payload"),
 			},
 			Status: persistence.OutboxPending,
-		}
-		if err := outbox.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+		})
+		if err := outbox.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist: %v", err)
 		}
 	}
@@ -190,11 +191,11 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 	slowSender := &ctxAwareSender{latency: sendLatency}
 
 	batchCh := make(chan int, 4)
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		OutboxStore:         outbox,
 		LeaseStore:          leaseStore,
 		Sender:              slowSender,
-		DLQ:                 goruntime.NewDLQRouter(dlqStore),
+		DLQ:                 dlq.New(dlqStore),
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             "sess-slow",
@@ -215,7 +216,7 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 		},
 		OnBatchComplete: func(n int) { batchCh <- n },
 	}
-	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
+	drainer := outboxpkg.New(cfg)
 
 	runCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -278,7 +279,7 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 
 	ctx := context.Background()
 	for i := range recordCount {
-		rec := persistence.OutboxRecord{
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID:         fmt.Sprintf("rec-legacy-%d", i),
 			RouteID:    "route-1",
 			EnvelopeID: fmt.Sprintf("env-legacy-%d", i),
@@ -289,8 +290,8 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 				Payload: []byte("payload"),
 			},
 			Status: persistence.OutboxPending,
-		}
-		if err := outbox.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+		})
+		if err := outbox.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist: %v", err)
 		}
 	}
@@ -298,11 +299,11 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 	slowSender := &ctxAwareSender{latency: sendLatency}
 
 	batchCh := make(chan int, 8)
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		OutboxStore:         outbox,
 		LeaseStore:          leaseStore,
 		Sender:              slowSender,
-		DLQ:                 goruntime.NewDLQRouter(dlqStore),
+		DLQ:                 dlq.New(dlqStore),
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             "sess-legacy",
@@ -329,7 +330,7 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 			}
 		},
 	}
-	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
+	drainer := outboxpkg.New(cfg)
 
 	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()

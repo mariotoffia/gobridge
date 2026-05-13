@@ -13,6 +13,6 @@
 // a single statement on the principal's inline policy.
 //
 // File layout mirrors the adapter kind layout in the bridgecfg package:
-// each kind in ports.DefaultRegistry has a matching file here so a CI
+// each kind in *ports.Registry has a matching file here so a CI
 // check (T27) can verify drift-free coverage when new kinds are added.
 package grants

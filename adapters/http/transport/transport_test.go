@@ -316,8 +316,8 @@ func TestReceiver_LocalProcessing(t *testing.T) {
 	if gotEnvelope == nil {
 		t.Fatal("emit was never called")
 	}
-	if gotEnvelope.Subject != "orders.created" {
-		t.Fatalf("expected subject orders.created, got %q", gotEnvelope.Subject)
+	if gotEnvelope.Subject() != "orders.created" {
+		t.Fatalf("expected subject orders.created, got %q", gotEnvelope.Subject())
 	}
 	if gotEnvelope.ID != "msg-001" {
 		t.Fatalf("expected ID msg-001, got %q", gotEnvelope.ID)
@@ -347,7 +347,7 @@ func TestReceiver_ClusterForward(t *testing.T) {
 	}
 
 	// The receiver needs a routeID for cluster logic to kick in.
-	if setter, ok := recv.(interface{ SetRouteID(string) }); ok {
+	if setter, ok := recv.(ports.RouteIDSetter); ok {
 		setter.SetRouteID("route-A")
 	}
 
@@ -410,7 +410,7 @@ func TestReceiver_ForwardedRequestNotReforwarded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
-	if setter, ok := recv.(interface{ SetRouteID(string) }); ok {
+	if setter, ok := recv.(ports.RouteIDSetter); ok {
 		setter.SetRouteID("route-B")
 	}
 
@@ -495,11 +495,11 @@ func TestSSESender_BroadcastToClients(t *testing.T) {
 		return sender.(*transport.SSESender).ClientCount() >= 1
 	})
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "evt-1",
 		Subject: "user.signup",
 		Payload: []byte(`{"user":"alice"}`),
-	}
+	})
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -567,7 +567,7 @@ func TestSSESender_RedirectWhenRemote(t *testing.T) {
 		t.Fatalf("NewSender: %v", err)
 	}
 
-	if setter, ok := sender.(interface{ SetRouteID(string) }); ok {
+	if setter, ok := sender.(ports.RouteIDSetter); ok {
 		setter.SetRouteID("route-C")
 	}
 
@@ -622,11 +622,11 @@ func TestHTTPForwarder_ForwardSuccess(t *testing.T) {
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "fwd-msg-1",
 		Subject: "orders.shipped",
 		Payload: []byte(`{"order":"456"}`),
-	}
+	})
 
 	if err := fwd.Forward(context.Background(), peer, "route-X", env); err != nil {
 		t.Fatalf("Forward: %v", err)

@@ -17,7 +17,7 @@ func nextErr(sentinel error) func(context.Context, *messaging.Envelope) error {
 }
 
 func envelope(subject string, headers map[string]any, payload any) *messaging.Envelope {
-	env := &messaging.Envelope{Subject: subject, Headers: headers}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: subject, Headers: headers})
 	if payload != nil {
 		env.Payload, _ = json.Marshal(payload)
 	}
@@ -98,7 +98,7 @@ func TestRouteFilter_SetsHeaderAndCallsNext(t *testing.T) {
 		if !called {
 			t.Errorf("expected next to be called")
 		}
-		got, ok := env.Headers[messaging.HeaderRouteOverride]
+		got, ok := env.Headers()[messaging.HeaderRouteOverride]
 		if !ok {
 			t.Fatalf("route header not set")
 		}
@@ -113,11 +113,11 @@ func TestRouteFilter_SetsHeaderAndCallsNext(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if env.Headers == nil {
+		if env.Headers() == nil {
 			t.Fatal("expected headers to be initialised")
 		}
-		if env.Headers[messaging.HeaderRouteOverride] != "audit-queue" {
-			t.Errorf("route header = %v, want %q", env.Headers[messaging.HeaderRouteOverride], "audit-queue")
+		if env.Headers()[messaging.HeaderRouteOverride] != "audit-queue" {
+			t.Errorf("route header = %v, want %q", env.Headers()[messaging.HeaderRouteOverride], "audit-queue")
 		}
 	})
 
@@ -127,8 +127,8 @@ func TestRouteFilter_SetsHeaderAndCallsNext(t *testing.T) {
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
-		if env.Headers != nil {
-			if _, ok := env.Headers[messaging.HeaderRouteOverride]; ok {
+		if env.Headers() != nil {
+			if _, ok := env.Headers()[messaging.HeaderRouteOverride]; ok {
 				t.Errorf("route header should not be set for non-matching message")
 			}
 		}
@@ -572,7 +572,7 @@ func TestFilter_NilHeaders(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewDropFilter: %v", err)
 			}
-			env := &messaging.Envelope{Subject: "test"}
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "test"})
 			err = p.Process(context.Background(), env, nextOK)
 			if err != nil {
 				t.Errorf("expected nil (no panic, field not found = no match), got %v", err)
@@ -591,7 +591,7 @@ func TestFilter_EmptyPayload(t *testing.T) {
 	}
 
 	t.Run("nil payload", func(t *testing.T) {
-		env := &messaging.Envelope{Subject: "test"}
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "test"})
 		err := p.Process(context.Background(), env, nextOK)
 		if err != nil {
 			t.Errorf("expected nil (no panic, empty payload = no match), got %v", err)
@@ -599,7 +599,7 @@ func TestFilter_EmptyPayload(t *testing.T) {
 	})
 
 	t.Run("empty byte slice payload", func(t *testing.T) {
-		env := &messaging.Envelope{Subject: "test", Payload: []byte{}}
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "test", Payload: []byte{}})
 		err := p.Process(context.Background(), env, nextOK)
 		if err != nil {
 			t.Errorf("expected nil (no panic, empty payload = no match), got %v", err)

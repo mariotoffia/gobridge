@@ -12,7 +12,9 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -74,11 +76,11 @@ func TestOutboxDrainer_SendTimeout(t *testing.T) {
 	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		OutboxStore:  outbox,
 		LeaseStore:   leaseStore,
 		Sender:       blockingSender,
-		DLQ:          goruntime.NewDLQRouter(dlqStore),
+		DLQ:          dlq.New(dlqStore),
 		RouteID:      "route-1",
 		PartitionKey: pk,
 		LeaseID:      "sess-1",
@@ -91,10 +93,10 @@ func TestOutboxDrainer_SendTimeout(t *testing.T) {
 			return token, true
 		},
 	}
-	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
+	drainer := outboxpkg.New(cfg)
 
 	ctx := context.Background()
-	rec := persistence.OutboxRecord{
+	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID:         "rec-timeout",
 		RouteID:    "route-1",
 		EnvelopeID: "env-timeout",
@@ -102,8 +104,8 @@ func TestOutboxDrainer_SendTimeout(t *testing.T) {
 		SessionID:  "sess-1",
 		Envelope:   messaging.Envelope{ID: "env-timeout", Payload: []byte("data")},
 		Status:     persistence.OutboxPending,
-	}
-	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
+	})
+	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
 	defer cancel()
@@ -133,7 +135,7 @@ func TestRouteRunner_SendTimeout(t *testing.T) {
 	dlqStore := NewFakeDLQStore()
 	outbox := NewFakeOutboxStore()
 
-	cfg := goruntime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID: "test-route",
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliveryDirectHold,
@@ -142,10 +144,10 @@ func TestRouteRunner_SendTimeout(t *testing.T) {
 		Receiver:    receiver,
 		Sender:      blockingSender,
 		OutboxStore: outbox,
-		DLQ:         goruntime.NewDLQRouter(dlqStore),
+		DLQ:         dlq.New(dlqStore),
 		InstanceID:  "bridge-1",
 	}
-	runner := goruntime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -234,11 +236,11 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 	// re-process records on subsequent poll cycles.
 	// Threshold: 1 (Run loop) + 2 (pre-send checks for 2 records) = 3.
 	var tokenCalls atomic.Int32
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		OutboxStore:         outbox,
 		LeaseStore:          leaseStore,
 		Sender:              ctxSender,
-		DLQ:                 goruntime.NewDLQRouter(dlqStore),
+		DLQ:                 dlq.New(dlqStore),
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             "sess-1",
@@ -253,25 +255,24 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 			return persistence.LeaseToken{}, false
 		},
 	}
-	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
+	drainer := outboxpkg.New(cfg)
 
 	ctx := context.Background()
-	records := []persistence.OutboxRecord{
-		{
+	records := []*persistence.OutboxRecord{
+		persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID: "rec-first", RouteID: "route-1", EnvelopeID: "env-first",
 			BindingID: "bind-1", SessionID: "sess-1",
 			Envelope: messaging.Envelope{ID: "env-first", Payload: []byte("data")},
 			Status:   persistence.OutboxPending,
-		},
-		{
+		}),
+		persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID: "rec-slow", RouteID: "route-1", EnvelopeID: "env-slow",
 			BindingID: "bind-1", SessionID: "sess-1",
 			Envelope: messaging.Envelope{ID: "env-slow", Payload: []byte("data")},
 			Status:   persistence.OutboxPending,
-		},
-	}
+		})}
 	for _, r := range records {
-		_ = outbox.Persist(ctx, []persistence.OutboxRecord{r})
+		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{r})
 	}
 
 	drainCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
@@ -319,11 +320,11 @@ func TestOutboxDrainer_StaleFencingToken_PropagatedToRunLoop(t *testing.T) {
 
 	// Threshold: 1 (Run loop) + 1 (pre-send check for 1 record) = 2.
 	var tokenCalls atomic.Int32
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		OutboxStore:  outbox,
 		LeaseStore:   leaseStore,
 		Sender:       sender,
-		DLQ:          goruntime.NewDLQRouter(dlqStore),
+		DLQ:          dlq.New(dlqStore),
 		RouteID:      "route-1",
 		PartitionKey: pk,
 		LeaseID:      "sess-1",
@@ -337,16 +338,16 @@ func TestOutboxDrainer_StaleFencingToken_PropagatedToRunLoop(t *testing.T) {
 			return persistence.LeaseToken{}, false
 		},
 	}
-	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
+	drainer := outboxpkg.New(cfg)
 
 	ctx := context.Background()
-	rec := persistence.OutboxRecord{
+	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-stale", RouteID: "route-1", EnvelopeID: "env-stale",
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: messaging.Envelope{ID: "env-stale", Payload: []byte("data")},
 		Status:   persistence.OutboxPending,
-	}
-	_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
+	})
+	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()

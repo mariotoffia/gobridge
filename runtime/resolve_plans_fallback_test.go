@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,8 +11,19 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
-	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
+
+// rejectingAddressValidator implements ports.AddressValidator for tests
+// that exercise the AP-005 per-binding validator dispatch path. Every
+// call returns an error so the runtime maps it to ErrInvalidTopic.
+type rejectingAddressValidator struct{}
+
+func (rejectingAddressValidator) ValidateAddress(string) error {
+	return errors.New("address rejected by test validator")
+}
 
 func TestResolvePlans_NoResolver_RendersAddress(t *testing.T) {
 	sender := NewFakeSender()
@@ -21,34 +33,34 @@ func TestResolvePlans_NoResolver_RendersAddress(t *testing.T) {
 	}
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "fallback-render",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:      dlq.New(NewFakeDLQStore()),
 		Bindings: bindings,
 		// No Resolver — exercises the fallback path.
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "render-fallback",
 		Subject: "test",
 		Headers: map[string]any{"tenant": "acme"},
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)
 
 	sent := sender.GetSent()
 	require.Len(t, sent, 1)
-	assert.Equal(t, "test", sent[0].Subject,
+	assert.Equal(t, "test", sent[0].Subject(),
 		"source logical Subject must be preserved on the outbound envelope")
 	out := sender.GetOutbound()
 	require.Len(t, out, 1)
@@ -65,15 +77,15 @@ func TestResolvePlans_NoResolver_RenderError_RoutesDLQ(t *testing.T) {
 	}
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "fallback-render-err",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		DLQ:      dlq.New(dlqStore),
 		Bindings: bindings,
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -81,7 +93,7 @@ func TestResolvePlans_NoResolver_RenderError_RoutesDLQ(t *testing.T) {
 	<-receiver.Ready()
 
 	// No "tenant" header -> RenderAddress fails.
-	env := &messaging.Envelope{ID: "render-fallback-err", Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "render-fallback-err", Subject: "test"})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)
@@ -104,35 +116,35 @@ func TestResolvePlans_NoResolver_CopiesBindingHeaders(t *testing.T) {
 	}
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "fallback-options",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:      dlq.New(NewFakeDLQStore()),
 		Bindings: bindings,
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{ID: "options-msg", Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "options-msg", Subject: "test"})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)
 
 	sent := sender.GetSent()
 	require.Len(t, sent, 1)
-	assert.Equal(t, 1, sent[0].Headers["qos"],
+	assert.Equal(t, 1, sent[0].Headers()["qos"],
 		"binding Headers should be merged into envelope headers")
-	assert.Equal(t, true, sent[0].Headers["retain"],
+	assert.Equal(t, true, sent[0].Headers()["retain"],
 		"binding Headers should be merged into envelope headers")
 }
 
-func TestResolvePlans_NoResolver_MQTTValidation(t *testing.T) {
+func TestResolvePlans_NoResolver_AddressValidatorRejects(t *testing.T) {
 	sender := NewFakeSender()
 	dlqStore := NewFakeDLQStore()
 
@@ -141,33 +153,38 @@ func TestResolvePlans_NoResolver_MQTTValidation(t *testing.T) {
 	}
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
-		RouteID:  "fallback-mqtt-validate",
+	cfg := route.RouteRunnerConfig{
+		RouteID:  "fallback-validate",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		DLQ:      dlq.New(dlqStore),
 		Bindings: bindings,
+		// AP-005: validation is now a transport-supplied capability
+		// dispatched per binding by the runtime. The test wires a
+		// rejecting validator to assert the fallback path enforces it.
+		AddressValidators: map[string]ports.AddressValidator{
+			"mqtt-b": rejectingAddressValidator{},
+		},
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	// Header produces invalid MQTT topic with wildcard.
-	env := &messaging.Envelope{
-		ID:      "mqtt-fallback-bad",
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
+		ID:      "validator-fallback-bad",
 		Subject: "test",
 		Headers: map[string]any{"topic": "factory/#"},
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)
 
 	assert.Equal(t, 0, sender.SentCount(),
-		"sender must not be called for invalid MQTT topic")
+		"sender must not be called when AddressValidator rejects")
 	assert.Equal(t, 1, dlqStore.Count(),
-		"expected 1 DLQ entry for MQTT validation")
+		"expected 1 DLQ entry for AddressValidator rejection")
 }

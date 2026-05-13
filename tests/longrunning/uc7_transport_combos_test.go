@@ -250,11 +250,11 @@ func TestUC9_MQTT_QoS2_Stress(t *testing.T) {
 	pubSess := setupMQTTSession(t, mqttlocal.UniqueClientID("uc9-pub"), connectivity.SessionEphemeral)
 	pubSnd := paho.NewSender(pubSess, paho.SenderOptions{QoS: 2, Timeout: 10 * time.Second})
 	for i := 0; i < msgCount; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("uc9-%d", i),
 			Subject: "uc9/input",
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
-		}
+		})
 		require.NoError(t, pubSnd.Send(ctx, ports.OutboundMessage{Envelope: env, Address: "uc9/input"}), "publish msg %d", i)
 	}
 	t.Logf("UC9: published %d QoS 2 messages", msgCount)
@@ -331,11 +331,11 @@ func TestUC10_HTTP_Inject_To_MQTT(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < msgCount; i++ {
-			env := &messaging.Envelope{
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{
 				ID:      fmt.Sprintf("uc10-%d", i),
 				Subject: "uc10/output",
 				Payload: []byte(fmt.Sprintf(`{"inject":%d}`, i)),
-			}
+			})
 			if err := rt.Inject(ctx, "uc10-route", env); err != nil {
 				t.Errorf("Inject %d: %v", i, err)
 				return

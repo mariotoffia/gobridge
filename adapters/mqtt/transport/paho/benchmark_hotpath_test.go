@@ -115,7 +115,7 @@ func BenchmarkEnvelopeFromPublish(b *testing.B) {
 // Publish conversion for the send path.
 func BenchmarkPublishFromEnvelope(b *testing.B) {
 	now := time.Now()
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "bench-id-123",
 		Subject: "bench/topic",
 		Payload: make([]byte, 1024),
@@ -128,7 +128,7 @@ func BenchmarkPublishFromEnvelope(b *testing.B) {
 		},
 		CreatedAt: now,
 		ExpiresAt: now.Add(5 * time.Minute),
-	}
+	})
 	opts := SenderOptions{
 		DefaultTopic: "bench/topic",
 		QoS:          1,
@@ -138,6 +138,6 @@ func BenchmarkPublishFromEnvelope(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = PublishFromEnvelope(env, env.Subject, opts, nil)
+		_ = PublishFromEnvelope(env, env.Subject(), opts, nil)
 	}
 }

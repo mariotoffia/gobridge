@@ -26,7 +26,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -358,8 +358,8 @@ func setupDynamoStoresForRestart(t *testing.T) (ports.LeaseStore, ports.OutboxSt
 // Runtime / session config helpers
 // ---------------------------------------------------------------------------
 
-func lrSessionConfig(sessionID string) goruntime.SessionConfig {
-	cfg := goruntime.DefaultSessionConfig(sessionID, true)
+func lrSessionConfig(sessionID string) session.Config {
+	cfg := session.DefaultConfig(sessionID, true)
 	cfg.LeaseTTL = 2 * time.Second
 	cfg.RenewInterval = 400 * time.Millisecond
 	cfg.RenewJitter = 50 * time.Millisecond

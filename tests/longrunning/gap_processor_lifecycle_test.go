@@ -133,12 +133,12 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 	t.Log("GAP-CB: Phase 1 — injecting 10 transient-error messages for tenant A")
 	var cbRejections int
 	for i := 0; i < 10; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("cb-fail-%d", i),
 			Subject: outTopic,
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
 			Headers: map[string]any{"error_type": "transient", "tenant": "A"},
-		}
+		})
 		if err := rt.Inject(ctx, "gap-cb-route", env); err != nil {
 			cbRejections++
 		}
@@ -173,12 +173,12 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 
 	t.Log("GAP-CB: Phase 2 — injecting success probes for tenant A")
 	for probe := 0; probe < 5; probe++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("cb-probe-%d", probe),
 			Subject: outTopic,
 			Payload: []byte(fmt.Sprintf(`{"probe":%d}`, probe)),
 			Headers: map[string]any{"tenant": "A"},
-		}
+		})
 		_ = rt.Inject(ctx, "gap-cb-route", env)
 		time.Sleep(1 * time.Second) // OTHER: pacing — allow probe to complete before next injection
 		m := cbProc.Metrics()
@@ -207,12 +207,12 @@ func TestGAP_CircuitBreakerProcessor_Lifecycle(t *testing.T) {
 	prePhase3 := collector.count()
 	t.Log("GAP-CB: Phase 3 — injecting 20 normal messages for tenant A")
 	for i := 0; i < 20; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("cb-normal-%d", i),
 			Subject: outTopic,
 			Payload: []byte(fmt.Sprintf(`{"normal":%d}`, i)),
 			Headers: map[string]any{"tenant": "A"},
-		}
+		})
 		err := rt.Inject(ctx, "gap-cb-route", env)
 		require.NoError(t, err, "Phase 3 inject should succeed")
 	}
@@ -389,8 +389,8 @@ type headerErrorProcessor struct{}
 func (p *headerErrorProcessor) Name() string { return "header-error" }
 
 func (p *headerErrorProcessor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
-	if env.Headers != nil {
-		if et, ok := env.Headers["error_type"].(string); ok && et == "transient" {
+	if env.Headers() != nil {
+		if et, ok := env.Headers()["error_type"].(string); ok && et == "transient" {
 			return shared.ErrUnavailable.WithMessage("headerErrorProcessor: transient")
 		}
 	}

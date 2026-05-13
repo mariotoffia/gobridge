@@ -2,14 +2,22 @@ package filter
 
 import (
 	"context"
-	"errors"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-var ErrRouteRequired = errors.New("route action requires routeTo configuration")
+// ErrRouteRequired signals that an ActionRoute filter was constructed
+// without a RouteTo target. It is a setup-time error classified as a
+// permanent invalid-payload condition so callers can match via
+// errors.Is(err, ErrRouteRequired) consistently with per-message
+// errors emitted elsewhere in the runtime.
+var ErrRouteRequired = &shared.BridgeError{
+	Code:    shared.ErrCodeInvalidPayload,
+	Class:   shared.ErrorPermanent,
+	Message: "route action requires routeTo configuration",
+}
 
 // Processor is a filter processor that evaluates conditions against an
 // envelope and applies a configured action (pass, drop, or route).
@@ -70,10 +78,10 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 	case ActionDrop:
 		return shared.ErrMessageFiltered
 	case ActionRoute:
-		if env.Headers == nil {
-			env.Headers = make(map[string]any, 1)
+		if env.Headers() == nil {
+			env.ReplaceHeaders(make(map[string]any, 1))
 		}
-		env.Headers[messaging.HeaderRouteOverride] = p.config.RouteTo
+		env.SetHeader(messaging.HeaderRouteOverride, p.config.RouteTo)
 		return next(ctx, env)
 	default:
 		return next(ctx, env)

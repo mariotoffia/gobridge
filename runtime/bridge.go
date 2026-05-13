@@ -13,6 +13,11 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/cluster"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/outbox"
+	"github.com/mariotoffia/gobridge/runtime/route"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // Runtime is the top-level coordinator for the GoBridge message routing
@@ -33,18 +38,18 @@ type Runtime struct {
 	logger            *slog.Logger
 	globalMaxInFlight int
 	clusterEndpoints  map[string]string
-	locator           *routeLocator
+	locator           *cluster.Locator
 
 	shutdownTimeout time.Duration
 
-	credRefresherClose func()
+	credRefresherClose func(context.Context)
 
 	mu              sync.Mutex
 	entries         []*routeEntry
 	sessionSenders  map[string]*sessionSenderEntry
-	sessionMgrs     map[string]*SessionManager
-	drainers        []*OutboxDrainer
-	dlqRouter       *DLQRouter
+	sessionMgrs     map[string]*session.Manager
+	drainers        []*outbox.Drainer
+	dlqRouter       *dlq.Router
 	globalSem       chan struct{}
 	running         bool
 	healthy         bool
@@ -55,18 +60,18 @@ type Runtime struct {
 
 type routeEntry struct {
 	config   RouteConfig
-	runner   *RouteRunner
+	runner   *route.RouteRunner
 	receiver ports.Receiver
 	sender   ports.Sender
 	session  ports.Session
-	sessCfg  *SessionConfig
+	sessCfg  *session.Config
 }
 
 // sessionSenderEntry pairs a session with its sender and configuration,
 // allowing the runtime to create drainers for sessions that are not
 // directly attached to a route entry (e.g. fan-out target sessions).
 type sessionSenderEntry struct {
-	config  SessionConfig
+	config  session.Config
 	session ports.Session
 	sender  ports.Sender
 }
@@ -173,7 +178,7 @@ func New(opts ...Option) *Runtime {
 	rt := &Runtime{
 		instanceID:     generateID(),
 		sessionSenders: make(map[string]*sessionSenderEntry),
-		sessionMgrs:    make(map[string]*SessionManager),
+		sessionMgrs:    make(map[string]*session.Manager),
 		healthy:        true,
 		audit:          ports.NoopAuditLogger{},
 		tracer:         &ports.NoopTracer{},
@@ -186,6 +191,25 @@ func New(opts ...Option) *Runtime {
 		rt.clk = clock.System
 	}
 	return rt
+}
+
+// AttachCredentialCloser registers a close-on-stop hook with the runtime.
+// The runtime invokes this closure during Stop, before session teardown,
+// so any goroutines that call ApplyCredentials on a session can be
+// cancelled safely. The closer receives a bounded ctx; honouring it lets
+// the runtime cap Stop latency when a watcher is unresponsive.
+//
+// Accepting a closure (rather than an interface value) deliberately keeps
+// runtime free of any structural reference to a caller-defined type:
+// the runtime sees only func(context.Context); deep architecture
+// analysis cannot infer a phantom dependency on the caller's package.
+func (rt *Runtime) AttachCredentialCloser(close func(context.Context)) {
+	if rt == nil || close == nil {
+		return
+	}
+	rt.mu.Lock()
+	rt.credRefresherClose = close
+	rt.mu.Unlock()
 }
 
 // Stop gracefully shuts down the runtime. It cancels all goroutines,
@@ -214,25 +238,52 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 
 	// Close credential refresher BEFORE session teardown so that a
 	// rotation in flight cannot race ApplyCredentials against session
-	// Close (see AttachCredentialCloser rationale).
+	// Close (see AttachCredentialCloser rationale). The closer is
+	// invoked under a bounded timeout so a stuck watcher cannot hang
+	// Stop past the user-supplied ctx.
 	rt.mu.Lock()
 	closeRefresher := rt.credRefresherClose
 	rt.credRefresherClose = nil
 	rt.mu.Unlock()
+
+	closeTimeout := rt.shutdownTimeout
+	if closeTimeout <= 0 {
+		closeTimeout = 5 * time.Second
+	}
+
 	if closeRefresher != nil {
-		closeRefresher()
+		refresherCtx, refresherCancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
+		// Spawn the closer with explicit lifetime; if it overruns the
+		// bounded timer or the caller's ctx, we move on (best-effort)
+		// rather than blocking Stop.
+		refresherDone := make(chan struct{})
+		go func() {
+			defer close(refresherDone)
+			closeRefresher(refresherCtx)
+		}()
+		select {
+		case <-refresherDone:
+		case <-refresherCtx.Done():
+		case <-ctx.Done():
+		}
+		refresherCancel()
 	}
 
 	var errs []error
 
-	done := make(chan struct{})
+	// Wait-goroutine has explicit fire-and-forget lifetime: it survives
+	// only until rt.wg drains. If ctx fires first we record the error
+	// and proceed to session close under closeCtx (below); the bounded
+	// closeCtx ensures Stop cannot hang indefinitely waiting on a stuck
+	// background goroutine.
+	waitDone := make(chan struct{})
 	go func() {
+		defer close(waitDone)
 		rt.wg.Wait()
-		close(done)
 	}()
 
 	select {
-	case <-done:
+	case <-waitDone:
 	case <-ctx.Done():
 		errs = append(errs, ctx.Err())
 	}
@@ -242,10 +293,6 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		rt.dlqRouter.Close()
 	}
 
-	closeTimeout := rt.shutdownTimeout
-	if closeTimeout <= 0 {
-		closeTimeout = 5 * time.Second
-	}
 	// Close/flush must complete regardless of caller ctx cancellation,
 	// but we preserve values (trace/correlation) for logging.
 	closeCtx, closeCancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)

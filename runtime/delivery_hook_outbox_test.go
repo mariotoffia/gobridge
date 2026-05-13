@@ -32,6 +32,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 )
 
 // ---------------------------------------------------------------------------
@@ -44,16 +45,16 @@ import (
 func TestDeliveryHook_SharedOutbox_Success(t *testing.T) {
 	hook := &recordingHook{}
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-1"}
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *runtime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Hook = hook
 	})
 
 	env := messaging.Envelope{ID: "outbox-msg-1", Payload: []byte("payload")}
-	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{{
+	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-1", RouteID: "route-1", EnvelopeID: env.ID,
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: env, Status: persistence.OutboxPending, CreatedAt: time.Now(),
-	}})
+	})})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -93,18 +94,18 @@ func TestDeliveryHook_SharedOutbox_Success(t *testing.T) {
 func TestDeliveryHook_SharedOutbox_Poison(t *testing.T) {
 	hook := &recordingHook{}
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-1"}
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *runtime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Hook = hook
 		cfg.Policy.MaxReplayAttempts = 1
 	})
 
 	env := messaging.Envelope{ID: "poison-msg", Payload: []byte("payload")}
-	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{{
+	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-poison", RouteID: "route-1", EnvelopeID: env.ID,
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: env, ReplayCount: 5,
 		Status: persistence.OutboxPending, CreatedAt: time.Now(),
-	}})
+	})})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -135,7 +136,7 @@ func TestDeliveryHook_SharedOutbox_Poison(t *testing.T) {
 func TestDeliveryHook_SharedOutbox_Expired(t *testing.T) {
 	hook := &recordingHook{}
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-1"}
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *runtime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Hook = hook
 	})
 
@@ -143,11 +144,11 @@ func TestDeliveryHook_SharedOutbox_Expired(t *testing.T) {
 		ID: "expired-msg", Payload: []byte("old"),
 		ExpiresAt: time.Now().Add(-1 * time.Hour),
 	}
-	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{{
+	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-expired", RouteID: "route-1", EnvelopeID: env.ID,
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: env, Status: persistence.OutboxPending, CreatedAt: time.Now(),
-	}})
+	})})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -180,17 +181,17 @@ func TestDeliveryHook_SharedOutbox_PermanentSendError(t *testing.T) {
 	hook := &recordingHook{}
 	permErr := shared.NewBridgeError("PERM", shared.ErrorPermanent, "perm fail")
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-1"}
-	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *runtime.OutboxDrainerConfig) {
+	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Hook = hook
 	})
 	sender.SendErr = permErr
 
 	env := messaging.Envelope{ID: "perm-msg", Payload: []byte("fail")}
-	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{{
+	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-perm", RouteID: "route-1", EnvelopeID: env.ID,
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: env, Status: persistence.OutboxPending, CreatedAt: time.Now(),
-	}})
+	})})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -218,17 +219,17 @@ func TestDeliveryHook_SharedOutbox_TransientNoSettled(t *testing.T) {
 	hook := &recordingHook{}
 	transientErr := shared.NewBridgeError("TRANSIENT", shared.ErrorTransient, "try again")
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-1"}
-	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *runtime.OutboxDrainerConfig) {
+	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Hook = hook
 	})
 	sender.SendErr = transientErr
 
 	env := messaging.Envelope{ID: "transient-msg", Payload: []byte("retry")}
-	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{{
+	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-transient", RouteID: "route-1", EnvelopeID: env.ID,
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: env, Status: persistence.OutboxPending, CreatedAt: time.Now(),
-	}})
+	})})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -258,17 +259,17 @@ func TestDeliveryHook_SharedOutbox_TransientNoSettled(t *testing.T) {
 func TestDeliveryHook_SharedOutbox_AttemptIsReplayCountPlusOne(t *testing.T) {
 	hook := &recordingHook{}
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-1"}
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *runtime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Hook = hook
 	})
 
 	env := messaging.Envelope{ID: "replay-msg", Payload: []byte("replay")}
-	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{{
+	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-replay", RouteID: "route-1", EnvelopeID: env.ID,
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: env, ReplayCount: 3,
 		Status: persistence.OutboxPending, CreatedAt: time.Now(),
-	}})
+	})})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -295,7 +296,7 @@ func TestDeliveryHook_SharedOutbox_AttemptIsReplayCountPlusOne(t *testing.T) {
 func TestDeliveryHook_SharedOutbox_MultipleBatchRecords(t *testing.T) {
 	hook := &recordingHook{}
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-1"}
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *runtime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Hook = hook
 	})
 
@@ -304,11 +305,11 @@ func TestDeliveryHook_SharedOutbox_MultipleBatchRecords(t *testing.T) {
 			ID:      "batch-" + string(rune('A'+i)),
 			Payload: []byte("data"),
 		}
-		_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{{
+		_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID: "rec-batch-" + string(rune('A'+i)), RouteID: "route-1",
 			EnvelopeID: env.ID, BindingID: "bind-1", SessionID: "sess-1",
 			Envelope: env, Status: persistence.OutboxPending, CreatedAt: time.Now(),
-		}})
+		})})
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

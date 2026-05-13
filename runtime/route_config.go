@@ -4,11 +4,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"io"
+	"strconv"
+	"sync/atomic"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain/connectivity"
-	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -34,6 +36,15 @@ type RouteConfig struct {
 	// sender. Optional; when nil all bindings use the default sender.
 	Senders map[string]ports.Sender
 
+	// AddressValidators maps binding IDs to the AddressValidator the
+	// owning transport supplies (via TransportFactory.AddressValidator).
+	// The runtime invokes the validator against every fully-rendered
+	// destination address before dispatch and surfaces a non-nil
+	// validation error as shared.ErrInvalidTopic. Bindings whose
+	// transport returns a nil validator are simply omitted from this
+	// map, in which case the runtime skips validation. Optional.
+	AddressValidators map[string]ports.AddressValidator
+
 	// SourceVisibilityTimeout is the visibility timeout of the source
 	// transport (e.g. SQS VisibilityTimeout). When set, the validator
 	// checks that SendTimeout does not exceed half this value to
@@ -42,81 +53,59 @@ type RouteConfig struct {
 	SourceVisibilityTimeout time.Duration
 }
 
-// SessionConfig configures session management for exclusive sessions.
-type SessionConfig struct {
-	SessionID string
-	Exclusive bool
-	Plan      connectivity.SessionPlan
-
-	// LeaseTTL is how long a lease is valid before it expires in the
-	// backing store. Longer values tolerate network interruptions but
-	// increase failover time. Default: 360s.
-	LeaseTTL time.Duration
-
-	// RenewInterval is how often the lease is renewed. Zero means
-	// "derive as LeaseTTL / MaxRenewFails" at construction time.
-	RenewInterval time.Duration
-
-	// RenewJitter adds random jitter to each renewal timer to avoid
-	// thundering-herd effects. Default: 5s.
-	RenewJitter time.Duration
-
-	// MaxRenewFails is the consecutive renewal failures tolerated
-	// before the session manager initiates step-down. Default: 3.
-	MaxRenewFails int
-
-	// StepDownGrace is how long the session waits for in-flight
-	// outbox Send+Complete operations to finish before releasing
-	// the lease. This is I/O-bound, not lease-bound. Default: 15s.
-	StepDownGrace time.Duration
-
-	DrainStrategy       persistence.DrainStrategy
-	DrainBatchSize      int
-	DrainMaxBatchSize   int
-	DrainMaxConcurrency int
-
-	// DrainTimeout is the legacy fixed ceiling applied to a single
-	// drain batch when both PerRecordDrainTimeout and MaxDrainTimeout
-	// are zero. Retained for backward compatibility.
-	DrainTimeout time.Duration
-	// PerRecordDrainTimeout feeds the scaled formula for the batch
-	// ceiling: ceiling = min(batchCount * PerRecordDrainTimeout,
-	// MaxDrainTimeout). Setting either this or MaxDrainTimeout
-	// activates the scaled formula and supersedes DrainTimeout.
-	PerRecordDrainTimeout time.Duration
-	// MaxDrainTimeout is the upper bound of the scaled drain formula.
-	MaxDrainTimeout time.Duration
-
-	// ConnectAfterLease defers session.Start until the lease is acquired.
-	// This avoids connecting to a broker (e.g. MQTT with an exclusive
-	// ClientID) before ownership is confirmed, which would disconnect
-	// the current owner prematurely.
-	ConnectAfterLease bool
-}
-
-// DefaultSessionConfig returns a SessionConfig with recommended defaults.
-// RenewInterval defaults to zero, which causes the session manager to
-// derive it as LeaseTTL / MaxRenewFails at construction time.
-func DefaultSessionConfig(sessionID string, exclusive bool) SessionConfig {
-	return SessionConfig{
-		SessionID:           sessionID,
-		Exclusive:           exclusive,
-		LeaseTTL:            360 * time.Second,
-		RenewInterval:       0, // derived: LeaseTTL / MaxRenewFails
-		RenewJitter:         5 * time.Second,
-		MaxRenewFails:       3,
-		StepDownGrace:       routing.DefaultStepDownGrace,
-		DrainStrategy:       persistence.NewFixedPoll(persistence.DefaultFixedPollInterval),
-		DrainBatchSize:      100,
-		DrainMaxBatchSize:   500,
-		DrainMaxConcurrency: 10,
+// CheckRandSource probes crypto/rand once and returns a permanent
+// shared.BridgeError when the system random source is unavailable.
+// Composition roots (e.g. bridge.Builder.Build) MUST call this once
+// during wiring so a missing /dev/urandom (or equivalent) surfaces
+// as a structured error before any envelope or instance ID is
+// generated. The probe is cheap and idempotent: subsequent calls
+// after a successful probe return nil without re-reading the source.
+func CheckRandSource() error {
+	if randProbeOK.Load() {
+		return nil
 	}
+	b := make([]byte, 1)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		return (&shared.BridgeError{
+			Code:    shared.ErrCodeInternal,
+			Class:   shared.ErrorPermanent,
+			Message: "runtime: crypto/rand unavailable",
+		}).Wrap(err)
+	}
+	randProbeOK.Store(true)
+	return nil
 }
+
+// randProbeOK records that CheckRandSource has succeeded at least once
+// in this process. It also tells generateID that the eager composition
+// probe ran and the panic-free fallback below should remain dormant.
+//
+//nolint:gochecknoglobals // probe state must outlive every call
+var randProbeOK atomic.Bool
+
+// idFallbackCounter feeds the deterministic-but-unique fallback path in
+// generateID when crypto/rand fails after composition (effectively
+// impossible on supported OSes but kept as defence-in-depth so the
+// runtime never panics on ID generation).
+//
+//nolint:gochecknoglobals // counter must outlive every call
+var idFallbackCounter atomic.Uint64
 
 func generateID() string {
 	b := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		panic("runtime: crypto/rand unavailable: " + err.Error())
+		return fallbackID()
 	}
 	return hex.EncodeToString(b)
+}
+
+// fallbackID returns a 32-hex-character ID assembled from the
+// nanosecond clock (via clock.System, the documented default) and a
+// process-local atomic counter. It is reachable only when crypto/rand
+// fails post-composition; CheckRandSource is the supported way to
+// surface a missing entropy source as a structured error at startup.
+func fallbackID() string {
+	n := idFallbackCounter.Add(1)
+	ts := uint64(clock.System.Now().UnixNano())
+	return strconv.FormatUint(ts, 16) + "-" + strconv.FormatUint(n, 16)
 }

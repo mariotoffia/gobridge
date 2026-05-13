@@ -7,39 +7,39 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
-// Verifies a non-exclusive session manager starts the session and reconciles once without a lease.
+// Verifies a non-exclusive sess manager starts the sess and reconciles once without a lease.
 func TestSessionManager_NonExclusive(t *testing.T) {
-	session := NewFakeSession()
-	cfg := goruntime.SessionConfig{
+	sess := NewFakeSession()
+	cfg := session.Config{
 		SessionID: "sess-1",
 		Exclusive: false,
 		Plan:      connectivity.SessionPlan{},
 	}
 
-	mgr := goruntime.NewSessionManagerFromConfig(cfg, session, nil, "bridge-1", nil)
+	mgr := session.NewFromConfig(cfg, sess, nil, "bridge-1", nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
 	_ = mgr.Run(ctx)
 
-	if !session.Started {
-		t.Fatal("session should be started")
+	if !sess.Started {
+		t.Fatal("sess should be started")
 	}
-	if len(session.Plans) != 1 {
-		t.Fatalf("expected 1 reconcile call, got %d", len(session.Plans))
+	if len(sess.Plans) != 1 {
+		t.Fatalf("expected 1 reconcile call, got %d", len(sess.Plans))
 	}
 }
 
-// Verifies exclusive mode acquires a lease, exposes a token with owner and version, and starts the session.
+// Verifies exclusive mode acquires a lease, exposes a token with owner and version, and starts the sess.
 func TestSessionManager_ExclusiveLease(t *testing.T) {
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	leaseStore := NewFakeLeaseStore()
 
-	cfg := goruntime.SessionConfig{
+	cfg := session.Config{
 		SessionID:     "sess-exclusive",
 		Exclusive:     true,
 		LeaseTTL:      500 * time.Millisecond,
@@ -49,7 +49,7 @@ func TestSessionManager_ExclusiveLease(t *testing.T) {
 		StepDownGrace: 50 * time.Millisecond,
 	}
 
-	mgr := goruntime.NewSessionManagerFromConfig(cfg, session, leaseStore, "bridge-1", nil)
+	mgr := session.NewFromConfig(cfg, sess, leaseStore, "bridge-1", nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
@@ -67,8 +67,8 @@ func TestSessionManager_ExclusiveLease(t *testing.T) {
 		t.Fatalf("expected owner 'bridge-1', got %q", token.Owner)
 	}
 
-	if !session.Started {
-		t.Fatal("session should be started")
+	if !sess.Started {
+		t.Fatal("sess should be started")
 	}
 }
 
@@ -76,10 +76,10 @@ func TestSessionManager_ExclusiveLease(t *testing.T) {
 //
 // Scenario: run manager; force renew errors; poll until lease cleared; cancel context and assert Run returns non-nil error.
 func TestSessionManager_StepDown(t *testing.T) {
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	leaseStore := NewFakeLeaseStore()
 
-	cfg := goruntime.SessionConfig{
+	cfg := session.Config{
 		SessionID:     "sess-stepdown",
 		Exclusive:     true,
 		LeaseTTL:      500 * time.Millisecond,
@@ -89,7 +89,7 @@ func TestSessionManager_StepDown(t *testing.T) {
 		StepDownGrace: 50 * time.Millisecond,
 	}
 
-	mgr := goruntime.NewSessionManagerFromConfig(cfg, session, leaseStore, "bridge-1", nil)
+	mgr := session.NewFromConfig(cfg, sess, leaseStore, "bridge-1", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -101,7 +101,7 @@ func TestSessionManager_StepDown(t *testing.T) {
 
 	select {
 	case evt := <-mgr.LeaseStateChanged():
-		if evt.State != goruntime.LeaseStateAcquired {
+		if evt.State != session.LeaseStateAcquired {
 			t.Fatalf("expected LeaseStateAcquired, got %v", evt.State)
 		}
 	case <-time.After(5 * time.Second):
@@ -114,7 +114,7 @@ func TestSessionManager_StepDown(t *testing.T) {
 	for {
 		select {
 		case evt := <-mgr.LeaseStateChanged():
-			if evt.State == goruntime.LeaseStateLost {
+			if evt.State == session.LeaseStateLost {
 				goto leaseLost
 			}
 		case <-lossDeadline:
@@ -135,12 +135,12 @@ leaseLost:
 	}
 }
 
-// Verifies Close succeeds after Run is cancelled following an exclusive session with lease renewal.
+// Verifies Close succeeds after Run is cancelled following an exclusive sess with lease renewal.
 func TestSessionManager_Close(t *testing.T) {
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	leaseStore := NewFakeLeaseStore()
 
-	cfg := goruntime.SessionConfig{
+	cfg := session.Config{
 		SessionID:     "sess-close",
 		Exclusive:     true,
 		LeaseTTL:      500 * time.Millisecond,
@@ -150,7 +150,7 @@ func TestSessionManager_Close(t *testing.T) {
 		StepDownGrace: 50 * time.Millisecond,
 	}
 
-	mgr := goruntime.NewSessionManagerFromConfig(cfg, session, leaseStore, "bridge-1", nil)
+	mgr := session.NewFromConfig(cfg, sess, leaseStore, "bridge-1", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -162,7 +162,7 @@ func TestSessionManager_Close(t *testing.T) {
 
 	select {
 	case evt := <-mgr.LeaseStateChanged():
-		if evt.State != goruntime.LeaseStateAcquired {
+		if evt.State != session.LeaseStateAcquired {
 			t.Fatalf("expected LeaseStateAcquired, got %v", evt.State)
 		}
 	case <-time.After(5 * time.Second):

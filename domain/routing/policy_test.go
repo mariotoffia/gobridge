@@ -86,9 +86,9 @@ func TestRoutePolicy_WithDefaults_PreservesExplicit(t *testing.T) {
 	}
 }
 
-// TestDefaultBackoffPolicy_Values validates the package-level DefaultBackoffPolicy variable.
-func TestDefaultBackoffPolicy_Values(t *testing.T) {
-	bp := routing.DefaultBackoffPolicy
+// TestNewDefaultBackoffPolicy_Values validates the recommended default backoff values.
+func TestNewDefaultBackoffPolicy_Values(t *testing.T) {
+	bp := routing.NewDefaultBackoffPolicy()
 	if bp.InitialInterval != 1*time.Second {
 		t.Fatalf("InitialInterval: got %v, want 1s", bp.InitialInterval)
 	}
@@ -272,14 +272,14 @@ func TestRoutePolicy_WithDefaults_AllDefaults(t *testing.T) {
 	if p.MaxOutboxDepth != routing.DefaultMaxOutboxDepth {
 		t.Fatalf("MaxOutboxDepth = %d, want %d", p.MaxOutboxDepth, routing.DefaultMaxOutboxDepth)
 	}
-	if p.Backoff.InitialInterval != routing.DefaultBackoffPolicy.InitialInterval {
-		t.Fatalf("Backoff.InitialInterval = %v, want %v", p.Backoff.InitialInterval, routing.DefaultBackoffPolicy.InitialInterval)
+	if p.Backoff.InitialInterval != routing.NewDefaultBackoffPolicy().InitialInterval {
+		t.Fatalf("Backoff.InitialInterval = %v, want %v", p.Backoff.InitialInterval, routing.NewDefaultBackoffPolicy().InitialInterval)
 	}
-	if p.Backoff.MaxInterval != routing.DefaultBackoffPolicy.MaxInterval {
-		t.Fatalf("Backoff.MaxInterval = %v, want %v", p.Backoff.MaxInterval, routing.DefaultBackoffPolicy.MaxInterval)
+	if p.Backoff.MaxInterval != routing.NewDefaultBackoffPolicy().MaxInterval {
+		t.Fatalf("Backoff.MaxInterval = %v, want %v", p.Backoff.MaxInterval, routing.NewDefaultBackoffPolicy().MaxInterval)
 	}
-	if p.Backoff.Multiplier != routing.DefaultBackoffPolicy.Multiplier {
-		t.Fatalf("Backoff.Multiplier = %v, want %v", p.Backoff.Multiplier, routing.DefaultBackoffPolicy.Multiplier)
+	if p.Backoff.Multiplier != routing.NewDefaultBackoffPolicy().Multiplier {
+		t.Fatalf("Backoff.Multiplier = %v, want %v", p.Backoff.Multiplier, routing.NewDefaultBackoffPolicy().Multiplier)
 	}
 	if p.OnExpired != routing.ExpiredDLQ {
 		t.Fatalf("OnExpired = %s, want %s", p.OnExpired, routing.ExpiredDLQ)
@@ -304,18 +304,14 @@ func TestRoutePolicy_WithDefaults_AllDefaults(t *testing.T) {
 	}
 }
 
-// TestDefaultBackoffPolicy_MutationDoesNotAffectWithDefaults verifies that
-// mutating the global DefaultBackoffPolicy var does not affect WithDefaults().
-// WithDefaults() uses NewDefaultBackoffPolicy() for immutable defaults.
-func TestDefaultBackoffPolicy_MutationDoesNotAffectWithDefaults(t *testing.T) {
-	saved := routing.DefaultBackoffPolicy
-	t.Cleanup(func() { routing.DefaultBackoffPolicy = saved })
-
-	routing.DefaultBackoffPolicy = routing.BackoffPolicy{
-		InitialInterval: 999 * time.Millisecond,
-		MaxInterval:     999 * time.Millisecond,
-		Multiplier:      99.0,
-	}
+// TestNewDefaultBackoffPolicy_Immutable verifies that NewDefaultBackoffPolicy
+// returns an independent value: mutating one return value does not affect
+// later calls.
+func TestNewDefaultBackoffPolicy_Immutable(t *testing.T) {
+	first := routing.NewDefaultBackoffPolicy()
+	first.Multiplier = 99.0
+	first.InitialInterval = 999 * time.Millisecond
+	first.MaxInterval = 999 * time.Millisecond
 
 	p := routing.RoutePolicy{}.WithDefaults()
 	defaults := routing.NewDefaultBackoffPolicy()

@@ -395,9 +395,9 @@ type FakeOutboxStore struct {
 	mu            sync.Mutex
 	records       map[string]*persistence.OutboxRecord
 	PersistErr    error
-	PersistFn     func([]persistence.OutboxRecord) error
+	PersistFn     func([]*persistence.OutboxRecord) error
 	ClaimErr      error
-	ClaimFn       func(partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error)
+	ClaimFn       func(partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error)
 	CompleteErr   error
 	CompleteFn    func([]string, persistence.LeaseToken) error
 	CompleteCtxFn func(context.Context, []string, persistence.LeaseToken) error
@@ -408,7 +408,7 @@ func NewFakeOutboxStore() *FakeOutboxStore {
 	return &FakeOutboxStore{records: make(map[string]*persistence.OutboxRecord)}
 }
 
-func (s *FakeOutboxStore) Persist(_ context.Context, records []persistence.OutboxRecord) error {
+func (s *FakeOutboxStore) Persist(_ context.Context, records []*persistence.OutboxRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -420,8 +420,7 @@ func (s *FakeOutboxStore) Persist(_ context.Context, records []persistence.Outbo
 		return s.PersistErr
 	}
 
-	for i := range records {
-		rec := records[i]
+	for _, rec := range records {
 		dedupKey := rec.EnvelopeID + ":" + rec.BindingID
 		for _, existing := range s.records {
 			existingKey := existing.EnvelopeID + ":" + existing.BindingID
@@ -429,14 +428,12 @@ func (s *FakeOutboxStore) Persist(_ context.Context, records []persistence.Outbo
 				return shared.ErrDuplicateRecord
 			}
 		}
-		rec.Status = persistence.OutboxPending
-		clone := rec
-		s.records[rec.ID] = &clone
+		s.records[rec.ID] = persistence.RehydrateFromSnapshot(rec.PersistenceSnapshot())
 	}
 	return nil
 }
 
-func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error) {
+func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -453,7 +450,7 @@ func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string,
 	}
 	staleThreshold := time.Now().Add(-staleAge)
 
-	var claimed []persistence.OutboxRecord
+	var claimed []*persistence.OutboxRecord
 	for _, rec := range s.records {
 		if len(claimed) >= limit {
 			break
@@ -462,17 +459,28 @@ func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string,
 		if recPK != partitionKey {
 			continue
 		}
-		claimable := rec.Status == persistence.OutboxPending ||
-			(rec.Status == persistence.OutboxClaimed && rec.ClaimedAt.Before(staleThreshold))
+		claimable := rec.IsClaimable(token.Version) ||
+			(rec.Status() == persistence.OutboxClaimed && rec.ClaimedAt().Before(staleThreshold))
 		if !claimable {
 			continue
 		}
-		rec.Status = persistence.OutboxClaimed
-		rec.ClaimedBy = ownerID
-		rec.ClaimedAt = time.Now()
-		rec.ClaimVersion = token.Version
-		rec.ReplayCount++
-		claimed = append(claimed, *rec)
+		// Time-based stale take-over: domain Claim refuses the same
+		// token version, so reset back to Pending via snapshot to mimic
+		// the production behaviour where the lease token would have
+		// advanced.
+		if !rec.IsClaimable(token.Version) {
+			snap := rec.PersistenceSnapshot()
+			snap.Status = persistence.OutboxPending
+			snap.ClaimedBy = ""
+			snap.ClaimedAt = time.Time{}
+			snap.ClaimVersion = 0
+			rec = persistence.RehydrateFromSnapshot(snap)
+			s.records[rec.ID] = rec
+		}
+		if claimErr := rec.Claim(time.Now(), ownerID, token.Version); claimErr != nil {
+			continue
+		}
+		claimed = append(claimed, persistence.RehydrateFromSnapshot(rec.PersistenceSnapshot()))
 	}
 	return claimed, nil
 }
@@ -498,11 +506,12 @@ func (s *FakeOutboxStore) Complete(ctx context.Context, recordIDs []string, toke
 		if !exists {
 			continue
 		}
-		if rec.ClaimVersion != token.Version {
+		if rec.ClaimVersion() != token.Version {
 			return shared.ErrStaleFencingToken
 		}
-		rec.Status = persistence.OutboxCompleted
-		rec.CompletedAt = time.Now()
+		if completeErr := rec.Complete(time.Now()); completeErr != nil {
+			return completeErr
+		}
 	}
 	return nil
 }
@@ -513,9 +522,10 @@ func (s *FakeOutboxStore) Expire(_ context.Context, before time.Time) (int, erro
 
 	count := 0
 	for _, rec := range s.records {
-		if rec.Status == persistence.OutboxPending && !rec.ExpiresAt.IsZero() && rec.ExpiresAt.Before(before) {
-			rec.Status = persistence.OutboxExpired
-			count++
+		if rec.Status() == persistence.OutboxPending && !rec.ExpiresAt.IsZero() && rec.ExpiresAt.Before(before) {
+			if expErr := rec.Expire(time.Now()); expErr == nil {
+				count++
+			}
 		}
 	}
 	return count, nil
@@ -527,11 +537,11 @@ func (s *FakeOutboxStore) SetClaimErr(err error) {
 	s.ClaimErr = err
 }
 
-func (s *FakeOutboxStore) QueryPending(_ context.Context, partitionKey string, limit int) ([]persistence.OutboxRecord, error) {
+func (s *FakeOutboxStore) QueryPending(_ context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var result []persistence.OutboxRecord
+	var result []*persistence.OutboxRecord
 	for _, rec := range s.records {
 		if len(result) >= limit {
 			break
@@ -540,8 +550,8 @@ func (s *FakeOutboxStore) QueryPending(_ context.Context, partitionKey string, l
 		if recPK != partitionKey {
 			continue
 		}
-		if rec.Status == persistence.OutboxPending {
-			result = append(result, *rec)
+		if rec.Status() == persistence.OutboxPending {
+			result = append(result, persistence.RehydrateFromSnapshot(rec.PersistenceSnapshot()))
 		}
 	}
 	return result, nil
@@ -558,7 +568,7 @@ func (s *FakeOutboxStore) CompletedCount() int {
 	defer s.mu.Unlock()
 	n := 0
 	for _, rec := range s.records {
-		if rec.Status == persistence.OutboxCompleted {
+		if rec.Status() == persistence.OutboxCompleted {
 			n++
 		}
 	}
@@ -567,12 +577,12 @@ func (s *FakeOutboxStore) CompletedCount() int {
 
 // Records returns a snapshot of all persisted outbox records (any status).
 // The returned slice is a copy; mutating it does not affect the store.
-func (s *FakeOutboxStore) Records() []persistence.OutboxRecord {
+func (s *FakeOutboxStore) Records() []*persistence.OutboxRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]persistence.OutboxRecord, 0, len(s.records))
+	out := make([]*persistence.OutboxRecord, 0, len(s.records))
 	for _, rec := range s.records {
-		out = append(out, *rec)
+		out = append(out, persistence.RehydrateFromSnapshot(rec.PersistenceSnapshot()))
 	}
 	return out
 }

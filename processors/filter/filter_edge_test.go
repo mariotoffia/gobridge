@@ -98,10 +98,10 @@ func TestCondition_InvalidJSONPayload_SilentNoMatch(t *testing.T) {
 		t.Fatalf("NewDropFilter: %v", err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Subject: "test",
 		Payload: []byte("not json {{{"),
-	}
+	})
 
 	called := false
 	err = p.Process(context.Background(), env, func(_ context.Context, _ *messaging.Envelope) error {

@@ -364,11 +364,11 @@ func TestEdgeR3_ForwarderContextCancelled(t *testing.T) {
 		InstanceID: "slow-peer",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "ctx-cancel-1",
 		Subject: "test.cancel",
 		Payload: []byte(`{}`),
-	}
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -427,8 +427,8 @@ func TestEdgeR3_NilPayload(t *testing.T) {
 			select {
 			case d := <-deliveryCh:
 				env := d.Envelope()
-				if env.Subject != "test" {
-					t.Fatalf("subject: got %q, want test", env.Subject)
+				if env.Subject() != "test" {
+					t.Fatalf("subject: got %q, want test", env.Subject())
 				}
 				_ = d.Ack(context.Background())
 			case <-time.After(2 * time.Second):
@@ -467,7 +467,7 @@ func TestEdgeR3_RemoteRouteNoForwarderReturns502(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
-	if setter, ok := recv.(interface{ SetRouteID(string) }); ok {
+	if setter, ok := recv.(ports.RouteIDSetter); ok {
 		setter.SetRouteID("route-nofwd")
 	}
 
@@ -550,11 +550,11 @@ func TestEdgeR3_SSESendContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // immediately cancelled
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "ctx-1",
 		Subject: "test.ctx",
 		Payload: []byte(`{}`),
-	}
+	})
 
 	err = sender.Send(ctx, ports.OutboundMessage{Envelope: env})
 	if err == nil {

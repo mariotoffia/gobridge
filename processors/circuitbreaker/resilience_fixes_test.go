@@ -328,7 +328,7 @@ func TestProcessor_PermanentError_PassesThrough(t *testing.T) {
 		return shared.ErrInvalidPayload
 	}
 
-	env := &messaging.Envelope{ID: "1", Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "1", Subject: "test"})
 	for i := 0; i < 10; i++ {
 		err := p.Process(context.Background(), env, next)
 		if !errors.Is(err, shared.ErrInvalidPayload) {

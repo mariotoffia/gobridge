@@ -200,14 +200,14 @@ type chainOrderProcessor struct {
 func (p *chainOrderProcessor) Name() string { return "chain-" + p.stage }
 
 func (p *chainOrderProcessor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
-	if env.Headers == nil {
-		env.Headers = make(map[string]any)
+	if env.Headers() == nil {
+		env.ReplaceHeaders(make(map[string]any))
 	}
-	env.Headers["stage_"+p.stage] = "true"
-	if prev, ok := env.Headers["chain_order"].(string); ok {
-		env.Headers["chain_order"] = prev + "," + p.stage
+	env.SetHeader("stage_"+p.stage, "true")
+	if prev, ok := env.Headers()["chain_order"].(string); ok {
+		env.SetHeader("chain_order", prev+","+p.stage)
 	} else {
-		env.Headers["chain_order"] = p.stage
+		env.SetHeader("chain_order", p.stage)
 	}
 	return next(ctx, env)
 }
@@ -470,8 +470,8 @@ type errorClassSender struct {
 
 func (s *errorClassSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	env := msg.Envelope
-	if env.Headers != nil {
-		if et, ok := env.Headers["error_type"].(string); ok {
+	if env.Headers() != nil {
+		if et, ok := env.Headers()["error_type"].(string); ok {
 			switch et {
 			case "transient":
 				return shared.ErrUnavailable.WithMessage("errorClassSender: transient")

@@ -231,12 +231,12 @@ func sendToRabbitMQ(
 	t.Helper()
 	ctx := context.Background()
 	for i := 0; i < count; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:        fmt.Sprintf("%s-%d", idPrefix, i),
 			Subject:   "test",
 			Payload:   []byte(fmt.Sprintf(`{"seq":%d}`, i)),
 			CreatedAt: time.Now().UTC(),
-		}
+		})
 		require.NoError(t, sender.Send(ctx, ports.OutboundMessage{Envelope: env}), "sendToRabbitMQ msg %d", i)
 	}
 }
@@ -249,12 +249,12 @@ func sendToArtemis(
 	t.Helper()
 	ctx := context.Background()
 	for i := 0; i < count; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:        fmt.Sprintf("%s-%d", idPrefix, i),
 			Subject:   "test",
 			Payload:   []byte(fmt.Sprintf(`{"seq":%d}`, i)),
 			CreatedAt: time.Now().UTC(),
-		}
+		})
 		require.NoError(t, sender.Send(ctx, ports.OutboundMessage{Envelope: env}), "sendToArtemis msg %d", i)
 	}
 }

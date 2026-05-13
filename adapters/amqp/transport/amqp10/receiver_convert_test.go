@@ -33,7 +33,10 @@ func TestReceiver_ConvertMessage_MissingID(t *testing.T) {
 		Data: [][]byte{[]byte("payload")},
 	}
 
-	env := messageToEnvelope(msg, r.clock())
+	env, err := messageToEnvelope(msg, r.clock())
+	if err != nil {
+		t.Fatalf("messageToEnvelope: %v", err)
+	}
 
 	if env.ID == "" {
 		t.Fatal("Envelope.ID should be auto-generated when message has no MessageID (BUG-4)")
@@ -57,7 +60,10 @@ func TestReceiver_ConvertMessage_WithID(t *testing.T) {
 		Data: [][]byte{[]byte("payload")},
 	}
 
-	env := messageToEnvelope(msg, r.clock())
+	env, err := messageToEnvelope(msg, r.clock())
+	if err != nil {
+		t.Fatalf("messageToEnvelope: %v", err)
+	}
 
 	if env.ID != "msg-123" {
 		t.Fatalf("Envelope.ID = %q, want %q", env.ID, "msg-123")
@@ -78,7 +84,10 @@ func TestReceiver_ConvertMessage_ValueBodyExtraction(t *testing.T) {
 		Value: []byte("value-body"),
 	}
 
-	env := messageToEnvelope(msg, r.clock())
+	env, err := messageToEnvelope(msg, r.clock())
+	if err != nil {
+		t.Fatalf("messageToEnvelope: %v", err)
+	}
 
 	if string(env.Payload) != "value-body" {
 		t.Fatalf("Payload = %q, want %q", env.Payload, "value-body")
@@ -100,7 +109,10 @@ func TestReceiver_ConvertMessage_ValueBodyNonBytes(t *testing.T) {
 		Value: "not-bytes",
 	}
 
-	env := messageToEnvelope(msg, r.clock())
+	env, err := messageToEnvelope(msg, r.clock())
+	if err != nil {
+		t.Fatalf("messageToEnvelope: %v", err)
+	}
 
 	if env.Payload != nil {
 		t.Fatalf("Payload = %v, want nil for non-[]byte Value", env.Payload)
@@ -125,10 +137,13 @@ func TestReceiver_ConvertMessage_Subject(t *testing.T) {
 		Data: [][]byte{[]byte("data")},
 	}
 
-	env := messageToEnvelope(msg, r.clock())
+	env, err := messageToEnvelope(msg, r.clock())
+	if err != nil {
+		t.Fatalf("messageToEnvelope: %v", err)
+	}
 
-	if env.Subject != subject {
-		t.Fatalf("Subject = %q, want %q", env.Subject, subject)
+	if env.Subject() != subject {
+		t.Fatalf("Subject = %q, want %q", env.Subject(), subject)
 	}
 }
 
@@ -148,9 +163,12 @@ func TestReceiver_ConvertMessage_SubjectAbsent(t *testing.T) {
 		Data: [][]byte{[]byte("data")},
 	}
 
-	env := messageToEnvelope(msg, r.clock())
+	env, err := messageToEnvelope(msg, r.clock())
+	if err != nil {
+		t.Fatalf("messageToEnvelope: %v", err)
+	}
 
-	if env.Subject != "" {
-		t.Fatalf("Subject = %q, want empty (no link-address fallback)", env.Subject)
+	if env.Subject() != "" {
+		t.Fatalf("Subject = %q, want empty (no link-address fallback)", env.Subject())
 	}
 }

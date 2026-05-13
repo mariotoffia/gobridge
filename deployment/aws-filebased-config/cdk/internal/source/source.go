@@ -44,10 +44,36 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
-	"github.com/mariotoffia/gobridge/config"
+	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
+	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
+	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
+	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
+	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
+	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+// cdkRegistry returns the *ports.Registry used by Materialize to
+// parse the YAML bytes into a *ports.BridgeConfig. It is built once
+// per process by registering every PluginConfig decoder the CDK
+// surface knows how to deploy. Adding a new CDK-deployable adapter
+// means extending this set; failing to do so will surface as
+// "unknown plugin kind" at synth time.
+var cdkRegistry = sync.OnceValue(func() *ports.Registry {
+	reg := ports.NewRegistry()
+	if err := errors.Join(
+		paho.Register(reg),
+		sqsadapter.Register(reg),
+		httptransport.Register(reg),
+		nativestore.Register(reg),
+		awsstore.Register(reg),
+	); err != nil {
+		panic("gobridgecdk: register bundled plugin decoders: " + err.Error())
+	}
+	return reg
+})
 
 // Materialized is the common contract every Source produces. The
 // downstream tier-B validator and the awss3assets.NewAsset call site
@@ -97,7 +123,7 @@ type Source interface {
 
 	// Materialize prepares a Materialized: it reads (asset) or
 	// marshals + writes (inline) the YAML bytes, parses them via
-	// config.ParseFile, and returns the on-disk path together
+	// parser.ParseFile, and returns the on-disk path together
 	// with the parsed *ports.BridgeConfig.
 	//
 	// Materialize is intentionally jsii-free: callers (the
@@ -156,7 +182,7 @@ func (s *assetSource) Materialize() (*Materialized, error) {
 	if _, err := os.Stat(abs); err != nil {
 		return nil, fmt.Errorf("gobridgecdk: BridgeYamlAsset(%q): stat: %w", s.path, err)
 	}
-	cfg, err := config.ParseFile(abs, config.FormatYAML)
+	cfg, err := parser.ParseFile(abs, parser.FormatYAML, cdkRegistry())
 	if err != nil {
 		return nil, fmt.Errorf("gobridgecdk: BridgeYamlAsset(%q): parse: %w", s.path, err)
 	}
@@ -178,7 +204,7 @@ func (s *inlineSource) Materialize() (*Materialized, error) {
 	if s.cfg == nil {
 		return nil, ErrNilConfig
 	}
-	data, err := config.MarshalYAML(s.cfg)
+	data, err := parser.MarshalYAML(s.cfg)
 	if err != nil {
 		return nil, fmt.Errorf("gobridgecdk: BridgeYamlInline: marshal: %w", err)
 	}
@@ -192,7 +218,7 @@ func (s *inlineSource) Materialize() (*Materialized, error) {
 		return nil, fmt.Errorf("gobridgecdk: BridgeYamlInline: write %s: %w", path, err)
 	}
 	cleanup := func() error { return os.RemoveAll(dir) }
-	parsed, err := config.ParseFile(path, config.FormatYAML)
+	parsed, err := parser.ParseFile(path, parser.FormatYAML, cdkRegistry())
 	if err != nil {
 		_ = cleanup()
 		return nil, fmt.Errorf("gobridgecdk: BridgeYamlInline: re-parse: %w", err)

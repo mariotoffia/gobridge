@@ -110,3 +110,8 @@ func (f *Factory) NewSender(ctx context.Context, spec ports.SenderSpec, session 
 func (f *Factory) Capabilities() []ports.Capability {
 	return []ports.Capability{ports.CapVisibilityExtension}
 }
+
+// AddressValidator returns nil — Azure Service Bus entity names are
+// validated by the SDK at send time and have no runtime-enforceable
+// rendered-address rules of the kind MQTT topics need.
+func (f *Factory) AddressValidator() ports.AddressValidator { return nil }

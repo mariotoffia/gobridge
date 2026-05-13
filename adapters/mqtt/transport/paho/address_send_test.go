@@ -16,7 +16,7 @@ import (
 // TestSender_UsesOutboundAddressNotSubject pins the T05 contract:
 // Sender.Send selects the publish topic from msg.Address (or
 // SenderOptions.DefaultTopic when Address is empty); it never reads
-// msg.Envelope.Subject for topic selection. The logical subject is
+// msg.Envelope.Subject() for topic selection. The logical subject is
 // propagated as a HeaderGobridgeSubject user property.
 //
 // Send itself requires a real MQTT broker, so we exercise the topic-
@@ -26,10 +26,10 @@ import (
 // the topic.
 func TestSender_UsesOutboundAddressNotSubject(t *testing.T) {
 	t.Run("address selects topic and subject becomes user property", func(t *testing.T) {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			Subject: "logical.subject",
 			Payload: []byte("p"),
-		}
+		})
 		// Sender.Send resolves topic = msg.Address ("topic/from/address")
 		// then calls PublishFromEnvelope with that topic. We verify the
 		// resulting on-the-wire packet directly.
@@ -57,7 +57,7 @@ func TestSender_UsesOutboundAddressNotSubject(t *testing.T) {
 	})
 
 	t.Run("empty address falls back to opts.DefaultTopic", func(t *testing.T) {
-		env := &messaging.Envelope{Subject: "logical.subject", Payload: []byte("p")}
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "logical.subject", Payload: []byte("p")})
 		opts := SenderOptions{QoS: 0, DefaultTopic: "default/topic"}
 
 		// Replicate Sender.Send's fallback: address is empty → DefaultTopic.
@@ -86,7 +86,7 @@ func TestSender_UsesOutboundAddressNotSubject(t *testing.T) {
 		s := NewSender(sess, SenderOptions{Timeout: time.Second})
 
 		err := s.Send(context.Background(), ports.OutboundMessage{
-			Envelope: &messaging.Envelope{Subject: "logical.subject", Payload: []byte("p")},
+			Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "logical.subject", Payload: []byte("p")}),
 		})
 		if err == nil {
 			t.Fatal("expected ErrInvalidTopic when Address and DefaultTopic are both empty")
@@ -106,11 +106,11 @@ func TestSender_UsesOutboundAddressNotSubject(t *testing.T) {
 // Envelope.Subject (carried via HeaderGobridgeSubject) and records the
 // publish topic separately under HeaderMQTTTopic.
 func TestMQTTRoundTrip_PreservesLogicalSubjectAndRecordsTopic(t *testing.T) {
-	original := &messaging.Envelope{
+	original := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "rt-id-1",
 		Subject: "orders.created",
 		Payload: []byte("data"),
-	}
+	})
 
 	pub := PublishFromEnvelope(original, "topic/orders/v1", SenderOptions{QoS: 1}, nil)
 	if pub.Topic != "topic/orders/v1" {
@@ -119,11 +119,11 @@ func TestMQTTRoundTrip_PreservesLogicalSubjectAndRecordsTopic(t *testing.T) {
 
 	received := EnvelopeFromPublish(pub, nil)
 
-	if received.Subject != "orders.created" {
+	if received.Subject() != "orders.created" {
 		t.Errorf("received.Subject = %q, want %q (logical subject must round-trip)",
-			received.Subject, "orders.created")
+			received.Subject(), "orders.created")
 	}
-	if v, _ := messaging.GetHeaderString(received.Headers, HeaderMQTTTopic); v != "topic/orders/v1" {
+	if v, _ := messaging.GetHeaderString(received.Headers(), HeaderMQTTTopic); v != "topic/orders/v1" {
 		t.Errorf("received.Headers[%q] = %q, want %q (transport topic must be recorded)",
 			HeaderMQTTTopic, v, "topic/orders/v1")
 	}
@@ -142,10 +142,10 @@ func TestEnvelopeFromPublish_NoGobridgeSubjectLeavesSubjectEmpty(t *testing.T) {
 
 	received := EnvelopeFromPublish(pub, nil)
 
-	if received.Subject != "" {
-		t.Errorf("received.Subject = %q, want empty", received.Subject)
+	if received.Subject() != "" {
+		t.Errorf("received.Subject = %q, want empty", received.Subject())
 	}
-	if v, _ := messaging.GetHeaderString(received.Headers, HeaderMQTTTopic); v != "transport/only/topic" {
+	if v, _ := messaging.GetHeaderString(received.Headers(), HeaderMQTTTopic); v != "transport/only/topic" {
 		t.Errorf("received.Headers[%q] = %q, want %q", HeaderMQTTTopic, v, "transport/only/topic")
 	}
 }
@@ -169,12 +169,12 @@ func TestEnvelopeFromPublish_HostileMQTTTopicUserPropertyIsIgnored(t *testing.T)
 
 	received := EnvelopeFromPublish(pub, nil)
 
-	if v, _ := messaging.GetHeaderString(received.Headers, HeaderMQTTTopic); v != "real/topic" {
+	if v, _ := messaging.GetHeaderString(received.Headers(), HeaderMQTTTopic); v != "real/topic" {
 		t.Errorf("headers[%q] = %q, want %q (hostile spoof must be ignored)",
 			HeaderMQTTTopic, v, "real/topic")
 	}
-	if received.Subject != "preserved.subject" {
+	if received.Subject() != "preserved.subject" {
 		t.Errorf("Subject = %q, want %q (gobridge.subject must round-trip on receive)",
-			received.Subject, "preserved.subject")
+			received.Subject(), "preserved.subject")
 	}
 }

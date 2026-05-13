@@ -46,7 +46,7 @@ func toDLQEntryView(e routing.DLQEntry) dlqEntryView {
 		SessionID:     e.SessionID,
 		SourceID:      e.SourceID,
 		CorrelationID: e.CorrelationID,
-		Subject:       e.Envelope.Subject,
+		Subject:       e.Envelope.Subject(),
 		Reason:        e.Reason,
 		Category:      e.Category,
 		ErrorCode:     e.ErrorCode,

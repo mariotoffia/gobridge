@@ -105,7 +105,7 @@ func TestSharedOutbox_TransientSenderFailure_RecoversOnRetry(t *testing.T) {
 		return nil
 	}
 
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-sess-transient")
 
 	cfg := goruntime.RouteConfig{
@@ -126,15 +126,15 @@ func TestSharedOutbox_TransientSenderFailure_RecoversOnRetry(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, rt.AddRoute(cfg, receiver, sender, session, &sessCfg))
+	require.NoError(t, rt.AddRoute(cfg, receiver, sender, sess, &sessCfg))
 
 	ctx := t.Context()
 
 	require.NoError(t, rt.Start(ctx))
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	// Emit while sender is "down".

@@ -13,7 +13,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/outbox"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
 
@@ -73,25 +74,25 @@ func TestIntegration_OutboxDrainer_RealSQSSender_FullCycle(t *testing.T) {
 
 	const recordCount = 5
 	for i := 0; i < recordCount; i++ {
-		rec := persistence.OutboxRecord{
+		rec := persistence.MustOutboxRecord(persistence.OutboxSpec{
 			ID:         uniqueID("sq1-rec"),
 			EnvelopeID: fmt.Sprintf("env-sq1-%d", i),
 			BindingID:  "bind-sq1",
 			SessionID:  "sess-sq1",
 			RouteID:    "route-sq1",
 			Address:    queueURL,
-			Envelope: messaging.Envelope{
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 				ID:      fmt.Sprintf("env-sq1-%d", i),
 				Subject: "test/sqs/full-cycle",
 				Payload: []byte(fmt.Sprintf(`{"index":%d}`, i)),
-			},
-		}
-		if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+			}),
+		})
+		if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist record %d: %v", i, err)
 		}
 	}
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outbox.New(outbox.Config{
 		OutboxStore:    store,
 		Sender:         sender,
 		RouteID:        "route-sq1",
@@ -176,7 +177,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_ExpiredToDLQ(t *testing.T) {
 	ctx := context.Background()
 
 	past := time.Now().Add(-1 * time.Hour)
-	rec := persistence.OutboxRecord{
+	rec := persistence.MustOutboxRecord(persistence.OutboxSpec{
 		ID:         uniqueID("sq2-rec"),
 		EnvelopeID: "env-sq2",
 		BindingID:  "bind-sq2",
@@ -184,22 +185,22 @@ func TestIntegration_OutboxDrainer_RealSQSSender_ExpiredToDLQ(t *testing.T) {
 		RouteID:    "route-sq2",
 		Address:    "test/sqs/expired",
 		ExpiresAt:  past,
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:        "env-sq2",
 			Subject:   "test/sqs/expired",
 			Payload:   []byte(`{"expired":"should-not-reach-sqs"}`),
 			ExpiresAt: past,
-		},
-	}
-	if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+		}),
+	})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
-	dlqRouter := goruntime.NewDLQRouterFromConfig(goruntime.DLQRouterConfig{
+	dlqRouter := dlq.NewFromConfig(dlq.Config{
 		Store: dlqStore,
 	})
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outbox.New(outbox.Config{
 		OutboxStore:    store,
 		Sender:         sender,
 		DLQ:            dlqRouter,
@@ -277,7 +278,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_HeaderPreservation(t *testing.T
 		"X-Priority": "high",
 	}
 
-	rec := persistence.OutboxRecord{
+	rec := persistence.MustOutboxRecord(persistence.OutboxSpec{
 		ID:              uniqueID("sq3-rec"),
 		EnvelopeID:      "env-sq3",
 		BindingID:       "bind-sq3",
@@ -285,17 +286,17 @@ func TestIntegration_OutboxDrainer_RealSQSSender_HeaderPreservation(t *testing.T
 		RouteID:         "route-sq3",
 		Address:         queueURL,
 		DispatchHeaders: customHeaders,
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "env-sq3",
 			Subject: "test/sqs/headers",
 			Payload: []byte(`{"headers":"preservation-test"}`),
-		},
-	}
-	if err := store.Persist(ctx, []persistence.OutboxRecord{rec}); err != nil {
+		}),
+	})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outbox.New(outbox.Config{
 		OutboxStore:    store,
 		Sender:         sender,
 		RouteID:        "route-sq3",

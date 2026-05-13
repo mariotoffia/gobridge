@@ -9,7 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 type emptyResolver struct{}
@@ -23,7 +23,7 @@ func TestDirectHold_EmptyPlans_DoesNotPanic(t *testing.T) {
 	receiver := NewFakeReceiver()
 	rec := &ports.RecordingExporter{}
 
-	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "empty-plans-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,

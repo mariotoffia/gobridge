@@ -12,7 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 func TestRouteRunner_E2ELatencyUsesInjectedClock(t *testing.T) {
@@ -25,7 +25,7 @@ func TestRouteRunner_E2ELatencyUsesInjectedClock(t *testing.T) {
 	}
 	receiver := NewFakeReceiver()
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "route-clocked-latency",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: receiver,
@@ -59,10 +59,10 @@ func TestRouteRunner_SharedOutboxCreatedAtUsesInjectedClock(t *testing.T) {
 	fake := clocktest.NewAt(createdAt)
 	var (
 		persistMu sync.Mutex
-		persisted []persistence.OutboxRecord
+		persisted []*persistence.OutboxRecord
 	)
 	outbox := NewFakeOutboxStore()
-	outbox.PersistFn = func(records []persistence.OutboxRecord) error {
+	outbox.PersistFn = func(records []*persistence.OutboxRecord) error {
 		persistMu.Lock()
 		defer persistMu.Unlock()
 		persisted = append(persisted, records...)
@@ -70,7 +70,7 @@ func TestRouteRunner_SharedOutboxCreatedAtUsesInjectedClock(t *testing.T) {
 	}
 	receiver := NewFakeReceiver()
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:     "route-clocked-outbox",
 		Policy:      routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
 		Receiver:    receiver,

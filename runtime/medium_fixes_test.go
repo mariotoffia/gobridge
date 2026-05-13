@@ -14,6 +14,9 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -61,7 +64,7 @@ func TestDepthCache_EvictionClearsOnBurst(t *testing.T) {
 	countingOutbox := NewQueryCountingOutboxStore()
 	resolver := &varyingResolver{}
 
-	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:       "burst-route",
 		Policy:        routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox, MaxOutboxDepth: 100000},
 		Receiver:      receiver,
@@ -121,7 +124,7 @@ func TestDepthCacheTTL_WiredFromPolicy(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-ttlwire")
 
 	cfg := goruntime.RouteConfig{
@@ -136,15 +139,15 @@ func TestDepthCacheTTL_WiredFromPolicy(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	env1 := &messaging.Envelope{ID: "ttlwire-1", Payload: []byte("x")}
@@ -188,7 +191,7 @@ func TestDrainConfig_WiredFromSessionConfig(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-drainwire")
 	sessCfg.DrainMaxBatchSize = 2
 	sessCfg.DrainMaxConcurrency = 1
@@ -203,7 +206,7 @@ func TestDrainConfig_WiredFromSessionConfig(t *testing.T) {
 		},
 	}
 
-	if err := rt.AddRoute(cfg, receiver, sender, session, &sessCfg); err != nil {
+	if err := rt.AddRoute(cfg, receiver, sender, sess, &sessCfg); err != nil {
 		t.Fatalf("AddRoute failed: %v", err)
 	}
 
@@ -214,8 +217,8 @@ func TestDrainConfig_WiredFromSessionConfig(t *testing.T) {
 	}
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	for i := 0; i < 5; i++ {
@@ -251,7 +254,7 @@ func NewErrorOutboxStore(qErr error) *ErrorOutboxStore {
 	}
 }
 
-func (s *ErrorOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]persistence.OutboxRecord, error) {
+func (s *ErrorOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]*persistence.OutboxRecord, error) {
 	if s.queryErr != nil {
 		return nil, s.queryErr
 	}
@@ -265,7 +268,7 @@ func TestQueryPendingError_FailsClosed(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
 
-	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:     "failclosed-route",
 		Policy:      routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox, MaxOutboxDepth: 100},
 		Receiver:    receiver,
@@ -304,11 +307,11 @@ func TestAbsoluteMaxBatchSize_Clamps(t *testing.T) {
 	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:         outbox,
 		LeaseStore:          lease,
 		Sender:              sender,
-		DLQ:                 goruntime.NewDLQRouter(nil),
+		DLQ:                 dlq.New(nil),
 		RouteID:             "clamp-route",
 		PartitionKey:        pk,
 		LeaseID:             "sess-1",
@@ -325,14 +328,14 @@ func TestAbsoluteMaxBatchSize_Clamps(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		rec := persistence.OutboxRecord{
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID: fmt.Sprintf("clamp-%d", i), RouteID: "clamp-route",
 			EnvelopeID: fmt.Sprintf("env-clamp-%d", i), BindingID: "bind-1",
 			SessionID: "sess-1",
 			Envelope:  messaging.Envelope{ID: fmt.Sprintf("env-clamp-%d", i), Payload: []byte("data")},
 			Status:    persistence.OutboxPending,
-		}
-		_ = outbox.Persist(ctx, []persistence.OutboxRecord{rec})
+		})
+		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 	}
 
 	drainCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
@@ -365,11 +368,11 @@ func TestOutboxDrainer_EmitsRecordFailureMetric(t *testing.T) {
 	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:    outbox,
 		LeaseStore:     lease,
 		Sender:         sender,
-		DLQ:            goruntime.NewDLQRouter(nil),
+		DLQ:            dlq.New(nil),
 		RouteID:        "metric-route",
 		PartitionKey:   pk,
 		LeaseID:        "sess-1",
@@ -384,14 +387,14 @@ func TestOutboxDrainer_EmitsRecordFailureMetric(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	outboxRec := persistence.OutboxRecord{
+	outboxRec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-fail", RouteID: "metric-route",
 		EnvelopeID: "env-fail", BindingID: "bind-1",
 		SessionID: "sess-1",
 		Envelope:  messaging.Envelope{ID: "env-fail", Payload: []byte("data")},
 		Status:    persistence.OutboxPending,
-	}
-	_ = outbox.Persist(ctx, []persistence.OutboxRecord{outboxRec})
+	})
+	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{outboxRec})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()

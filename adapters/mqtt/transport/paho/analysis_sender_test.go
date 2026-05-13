@@ -35,7 +35,7 @@ func TestAnaSender_NoSession_NoCM_ReturnsErrUnavailable(t *testing.T) {
 
 	s := NewSender(sess, SenderOptions{Timeout: time.Second, DefaultTopic: "t/x"})
 
-	err := s.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{Subject: "t/x", Payload: []byte("p")}})
+	err := s.Send(context.Background(), ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "t/x", Payload: []byte("p")})})
 	if err == nil {
 		t.Fatal("expected error from Send when CM is nil")
 	}
@@ -301,7 +301,7 @@ func TestAnaSender_ContextDoneBeforeSend_ReturnsClassifiedError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := s.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{Subject: "t", Payload: []byte("p")}})
+	err := s.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "t", Payload: []byte("p")})})
 	if err == nil {
 		t.Fatal("expected error from Send with cancelled ctx")
 	}

@@ -27,7 +27,7 @@ import (
 func TestResolveRoutingKey_AddressWinsOverConfig(t *testing.T) {
 	cfg := SenderConfig{RoutingKey: "rk-cfg"}
 	msg := ports.OutboundMessage{
-		Envelope: &messaging.Envelope{ID: "e", Subject: "logical.subject"},
+		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e", Subject: "logical.subject"}),
 		Address:  "rk-addr",
 	}
 
@@ -44,7 +44,7 @@ func TestResolveRoutingKey_AddressWinsOverConfig(t *testing.T) {
 func TestResolveRoutingKey_FallsBackToConfig(t *testing.T) {
 	cfg := SenderConfig{RoutingKey: "rk-cfg"}
 	msg := ports.OutboundMessage{
-		Envelope: &messaging.Envelope{ID: "e", Subject: "logical.subject"},
+		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e", Subject: "logical.subject"}),
 	}
 
 	got, err := resolveRoutingKey(cfg, msg)
@@ -61,7 +61,7 @@ func TestResolveRoutingKey_FallsBackToConfig(t *testing.T) {
 func TestResolveRoutingKey_SubjectIsNotConsulted(t *testing.T) {
 	cfg := SenderConfig{}
 	msg := ports.OutboundMessage{
-		Envelope: &messaging.Envelope{ID: "e", Subject: "logical.subject"},
+		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e", Subject: "logical.subject"}),
 	}
 
 	_, err := resolveRoutingKey(cfg, msg)
@@ -77,11 +77,11 @@ func TestResolveRoutingKey_SubjectIsNotConsulted(t *testing.T) {
 // verifies envelopeToPublishing emits the logical Subject as a typed
 // HeaderGobridgeSubject entry in the AMQP Headers table.
 func TestEnvelopeToPublishing_EmitsGobridgeSubjectHeader(t *testing.T) {
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "env-subj",
 		Subject: "logical.subject",
 		Payload: []byte("body"),
-	}
+	})
 
 	pub := envelopeToPublishing(env, SenderConfig{}, nil)
 
@@ -102,7 +102,7 @@ func TestEnvelopeToPublishing_EmitsGobridgeSubjectHeader(t *testing.T) {
 }
 
 // verifies envelopeToPublishing does NOT emit gobridge.subject when
-// env.Subject is empty and no peer-bridge round-trip header was supplied.
+// env.Subject() is empty and no peer-bridge round-trip header was supplied.
 func TestEnvelopeToPublishing_OmitsSubjectWhenEmpty(t *testing.T) {
 	env := &messaging.Envelope{
 		ID:      "env-no-subj",
@@ -123,13 +123,13 @@ func TestEnvelopeToPublishing_OmitsSubjectWhenEmpty(t *testing.T) {
 // header when Envelope.Subject itself is empty (subject round-trip from
 // another transport).
 func TestEnvelopeToPublishing_PreservesPeerSuppliedSubjectHeader(t *testing.T) {
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "env-peer",
 		Payload: []byte("body"),
 		Headers: map[string]any{
 			HeaderGobridgeSubject: "peer.subject",
 		},
-	}
+	})
 
 	pub := envelopeToPublishing(env, SenderConfig{}, nil)
 
@@ -143,23 +143,23 @@ func TestEnvelopeToPublishing_PreservesPeerSuppliedSubjectHeader(t *testing.T) {
 	}
 }
 
-// verifies envelopeToPublishing prefers env.Subject over a stale
+// verifies envelopeToPublishing prefers env.Subject() over a stale
 // gobridge.subject header when both are present.
 func TestEnvelopeToPublishing_SubjectWinsOverStaleHeader(t *testing.T) {
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "env-both",
 		Subject: "current.subject",
 		Payload: []byte("body"),
 		Headers: map[string]any{
 			HeaderGobridgeSubject: "stale.subject",
 		},
-	}
+	})
 
 	pub := envelopeToPublishing(env, SenderConfig{}, nil)
 
 	got, _ := pub.Headers[HeaderGobridgeSubject].(string)
 	if got != "current.subject" {
-		t.Errorf("Headers[%s] = %q, want %q (env.Subject must win)",
+		t.Errorf("Headers[%s] = %q, want %q (env.Subject() must win)",
 			HeaderGobridgeSubject, got, "current.subject")
 	}
 }
@@ -177,15 +177,18 @@ func TestDeliveryToEnvelope_SubjectFromGobridgeHeader(t *testing.T) {
 		},
 	}
 
-	env := deliveryToEnvelope(d, nil)
-
-	if env.Subject != "logical.subject" {
-		t.Errorf("Subject = %q, want %q (must come only from gobridge.subject)",
-			env.Subject, "logical.subject")
+	env, err := deliveryToEnvelope(d, nil)
+	if err != nil {
+		t.Fatalf("deliveryToEnvelope: %v", err)
 	}
-	if env.Headers[HeaderRoutingKey] != "rk-x" {
+
+	if env.Subject() != "logical.subject" {
+		t.Errorf("Subject = %q, want %q (must come only from gobridge.subject)",
+			env.Subject(), "logical.subject")
+	}
+	if env.Headers()[HeaderRoutingKey] != "rk-x" {
 		t.Errorf("Headers[%s] = %v, want %q",
-			HeaderRoutingKey, env.Headers[HeaderRoutingKey], "rk-x")
+			HeaderRoutingKey, env.Headers()[HeaderRoutingKey], "rk-x")
 	}
 }
 
@@ -199,21 +202,24 @@ func TestDeliveryToEnvelope_NoSubjectHeaderLeavesSubjectEmpty(t *testing.T) {
 		Body:       []byte("payload"),
 	}
 
-	env := deliveryToEnvelope(d, nil)
-
-	if env.Subject != "" {
-		t.Errorf("Subject = %q, want empty (no gobridge.subject header present)",
-			env.Subject)
+	env, err := deliveryToEnvelope(d, nil)
+	if err != nil {
+		t.Fatalf("deliveryToEnvelope: %v", err)
 	}
-	if env.Headers[HeaderRoutingKey] != "rk-y" {
+
+	if env.Subject() != "" {
+		t.Errorf("Subject = %q, want empty (no gobridge.subject header present)",
+			env.Subject())
+	}
+	if env.Headers()[HeaderRoutingKey] != "rk-y" {
 		t.Errorf("Headers[%s] = %v, want %q",
-			HeaderRoutingKey, env.Headers[HeaderRoutingKey], "rk-y")
+			HeaderRoutingKey, env.Headers()[HeaderRoutingKey], "rk-y")
 	}
 }
 
 // verifies deliveryToHeaders strips HeaderGobridgeSubject from the
 // generic pass-through map: the typed extraction in deliveryToEnvelope
-// owns it, and it must not be duplicated under env.Headers.
+// owns it, and it must not be duplicated under env.Headers().
 func TestDeliveryToHeaders_StripsGobridgeSubject(t *testing.T) {
 	d := amqp.Delivery{
 		Headers: amqp.Table{

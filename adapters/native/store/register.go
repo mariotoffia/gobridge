@@ -1,12 +1,19 @@
 package nativestore
 
 import (
+	"errors"
+
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-func init() {
-	ports.DefaultRegistry.Register(MemoryKind, decodeMemoryConfig)
-	ports.DefaultRegistry.Register(SQLiteKind, decodeSQLiteConfig)
+// Register installs this adapter's PluginConfig decoders on the
+// supplied registry. Composition roots call Register exactly once
+// per registry; duplicate registration surfaces ports.ErrDuplicateKind.
+func Register(reg *ports.Registry) error {
+	return errors.Join(
+		reg.Register(MemoryKind, decodeMemoryConfig),
+		reg.Register(SQLiteKind, decodeSQLiteConfig),
+	)
 }
 
 func decodeMemoryConfig(_ ports.RawConfig) (ports.PluginConfig, error) {

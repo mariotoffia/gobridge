@@ -51,7 +51,7 @@ func BenchmarkProcessor_PerKey_Lookup(b *testing.B) {
 	}
 
 	ctx := context.Background()
-	env := &messaging.Envelope{ID: "1", Subject: "bench-subject"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "1", Subject: "bench-subject"})
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -76,7 +76,7 @@ func BenchmarkProcessor_MultiKey(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		env := &messaging.Envelope{ID: "1", Subject: subjects[i%len(subjects)]}
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "1", Subject: subjects[i%len(subjects)]})
 		_ = p.Process(ctx, env, next)
 	}
 }

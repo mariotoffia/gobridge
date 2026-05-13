@@ -25,6 +25,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // TestRouteLocator_Locate_NonExclusive validates that non-exclusive
@@ -81,7 +82,7 @@ func TestRouteLocator_Locate_Exclusive_LocalOwner(t *testing.T) {
 	leaseStore := NewFakeLeaseStore()
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 
 	rt := runtime.New(
 		runtime.WithInstanceID("instance-1"),
@@ -90,13 +91,13 @@ func TestRouteLocator_Locate_Exclusive_LocalOwner(t *testing.T) {
 		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
-	sessCfg := runtime.DefaultSessionConfig("sess-1", true)
+	sessCfg := session.DefaultConfig("sess-1", true)
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID: "exclusive-route",
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliverySharedOutbox,
 		}.WithDefaults(),
-	}, receiver, sender, session, &sessCfg)
+	}, receiver, sender, sess, &sessCfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +148,7 @@ func TestRouteLocator_Locate_Exclusive_RemoteOwner(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 
 	rt := runtime.New(
 		runtime.WithInstanceID("instance-1"),
@@ -156,13 +157,13 @@ func TestRouteLocator_Locate_Exclusive_RemoteOwner(t *testing.T) {
 		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
-	sessCfg := runtime.DefaultSessionConfig("sess-1", true)
+	sessCfg := session.DefaultConfig("sess-1", true)
 	err = rt.AddRoute(runtime.RouteConfig{
 		ID: "exclusive-route",
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliverySharedOutbox,
 		}.WithDefaults(),
-	}, receiver, sender, session, &sessCfg)
+	}, receiver, sender, sess, &sessCfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +212,7 @@ func TestRouteLocator_Locate_LeaseStoreError(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 
 	rt := runtime.New(
 		runtime.WithInstanceID("instance-1"),
@@ -220,13 +221,13 @@ func TestRouteLocator_Locate_LeaseStoreError(t *testing.T) {
 		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
-	sessCfg := runtime.DefaultSessionConfig("sess-err", true)
+	sessCfg := session.DefaultConfig("sess-err", true)
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID: "err-route",
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliverySharedOutbox,
 		}.WithDefaults(),
-	}, receiver, sender, session, &sessCfg)
+	}, receiver, sender, sess, &sessCfg)
 	if err != nil {
 		t.Fatal(err)
 	}

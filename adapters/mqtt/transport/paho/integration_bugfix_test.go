@@ -75,10 +75,10 @@ func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
 		})
 	}()
 
-	if err := sender1.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender1.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		Subject: topic,
 		Payload: []byte("phase1-msg"),
-	}, Address: topic}); err != nil {
+	}), Address: topic}); err != nil {
 		t.Fatalf("Send phase1: %v", err)
 	}
 
@@ -129,10 +129,10 @@ func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
 		})
 	}()
 
-	if err := sender2.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender2.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		Subject: topic,
 		Payload: []byte("phase2-msg"),
-	}, Address: topic}); err != nil {
+	}), Address: topic}); err != nil {
 		t.Fatalf("Send phase2: %v", err)
 	}
 
@@ -211,17 +211,17 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
-			receivedTopics.Store(del.Envelope().Subject, true)
+			receivedTopics.Store(del.Envelope().Subject(), true)
 			return nil
 		})
 	}()
 
 	// Send to both topics.
 	for _, topic := range []string{topicA, topicB} {
-		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 			Subject: topic,
 			Payload: []byte("test-" + topic),
-		}, Address: topic}); err != nil {
+		}), Address: topic}); err != nil {
 			t.Fatalf("Send to %s: %v", topic, err)
 		}
 	}
@@ -420,10 +420,10 @@ func TestIntegration_ConcurrentReconcile_ActiveSubsIntegrity(t *testing.T) {
 	}()
 
 	wait.RequireClosed(t, recv.Started(), 5*time.Second)
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		Subject: verifyTopic,
 		Payload: []byte("verify"),
-	}, Address: verifyTopic}); err != nil {
+	}), Address: verifyTopic}); err != nil {
 		t.Fatalf("Send verify: %v", err)
 	}
 

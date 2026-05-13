@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
+	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/httpapi"
 	"github.com/mariotoffia/gobridge/ports"
@@ -30,6 +31,16 @@ func WithCredentialStore(store ports.CredentialStore) Option {
 	return func(a *App) { a.credentialStore = store }
 }
 
+// WithPluginRegistry overrides the *ports.Registry used to decode
+// blueprints loaded from the file source / re-parsed during secret
+// resolution. When unset (the default) the App constructs a fresh
+// registry and populates it with the adapters this binary bundles
+// (paho, sqs, native store, http transport). Tests use this option
+// to inject hermetic stubs.
+func WithPluginRegistry(reg *ports.Registry) Option {
+	return func(a *App) { a.pluginRegistry = reg }
+}
+
 // WithShutdownTimeout sets the graceful shutdown deadline. Defaults to 30s.
 func WithShutdownTimeout(d time.Duration) Option {
 	return func(a *App) { a.shutdownTimeout = d }
@@ -41,6 +52,7 @@ type App struct {
 	logger            *slog.Logger
 	parameterResolver parameterResolver
 	credentialStore   ports.CredentialStore
+	pluginRegistry    *ports.Registry
 
 	manager         *config.Manager
 	httpServer      *httpapi.Server
@@ -75,6 +87,9 @@ func NewApp(cfg deployinfra.BootstrapConfig, opts ...Option) *App {
 	if app.shutdownTimeout <= 0 {
 		app.shutdownTimeout = 30 * time.Second
 	}
+	if app.pluginRegistry == nil {
+		app.pluginRegistry = newDefaultPluginRegistry()
+	}
 	return app
 }
 
@@ -104,10 +119,10 @@ func (a *App) Start(ctx context.Context) error {
 		a.credentialStore = store
 	}
 
-	source := newOptionalFileSource(a.cfg.ConfigFilePath, func() *ports.BridgeConfig {
+	source := newOptionalFileSource(a.cfg.ConfigFilePath, a.pluginRegistry, func() *ports.BridgeConfig {
 		return defaultLogicalConfig(a.cfg)
 	})
-	watcher := newPollWatcher(a.cfg, a.logger)
+	watcher := newPollWatcher(a.cfg, a.pluginRegistry, a.logger)
 	a.manager = config.NewManager(
 		config.Layer{Name: "file", Loader: source, Watcher: watcher},
 		config.WithManagerLogger(a.logger),
@@ -134,9 +149,15 @@ func (a *App) Start(ctx context.Context) error {
 		CORSOrigins:           a.cfg.CORSOrigins,
 		AdminAPIKeyProvider:   a.apiKeysRef.AdminKey,
 		MonitorAPIKeyProvider: a.apiKeysRef.MonitorKey,
-		RuntimeProvider:       a.runtimeRef.Get,
-		ConfigStore:           &config.FileStore{Path: a.cfg.ConfigFilePath},
-		ConfigProvider:        a.logicalRef.Get,
+		RuntimeProvider: func() ports.Runtime {
+			rt := a.runtimeRef.Get()
+			if rt == nil {
+				return nil
+			}
+			return rt
+		},
+		ConfigStore:    &cfgparser.FileStore{Path: a.cfg.ConfigFilePath, Registry: a.pluginRegistry},
+		ConfigProvider: a.logicalRef.Get,
 	}
 	a.httpServer = httpapi.New(nil, apiCfg,
 		httpapi.WithServerLogger(a.logger),
@@ -293,7 +314,7 @@ type runtimePlan struct {
 	mode     swapMode
 
 	registry *factoryRegistry
-	prepared *bridge.PreparedBuild
+	plan     *bridge.BuildPlan
 	runtime  *goruntime.Runtime
 }
 
@@ -319,7 +340,7 @@ func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfi
 }
 
 func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfig) (*runtimePlan, error) {
-	inputs, err := resolveInputs(ctx, a.parameterResolver, a.cfg, logical)
+	inputs, err := resolveInputs(ctx, a.parameterResolver, a.cfg, a.pluginRegistry, logical)
 	if err != nil {
 		return nil, err
 	}
@@ -337,11 +358,11 @@ func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfi
 
 	switch mode {
 	case swapModePrepareCommit:
-		prepared, err := registry.builder.Prepare(ctx)
+		bp, err := registry.builder.Plan(ctx)
 		if err != nil {
 			return nil, err
 		}
-		plan.prepared = prepared
+		plan.plan = bp
 	default:
 		rt, err := registry.builder.Build(ctx)
 		if err != nil {
@@ -395,7 +416,7 @@ func (a *App) applyPrepareCommit(
 	}
 	a.runtimeRef.Set(nil)
 
-	newRuntime, err := plan.registry.builder.Complete(ctx, plan.prepared)
+	newRuntime, err := plan.plan.Commit(ctx)
 	if err != nil {
 		a.recoverPrevious(ctx, oldApplied)
 		return fmt.Errorf("bootstrap: complete runtime: %w", err)
@@ -428,7 +449,7 @@ func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) 
 
 	switch plan.mode {
 	case swapModePrepareCommit:
-		plan.runtime, err = plan.registry.builder.Complete(ctx, plan.prepared)
+		plan.runtime, err = plan.plan.Commit(ctx)
 	default:
 		// Overlap mode: plan.runtime was already built by prepareRuntimePlan.
 	}

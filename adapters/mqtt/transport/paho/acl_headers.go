@@ -24,8 +24,8 @@ const HeaderMessageID = "mqtt.message-id"
 // HeaderGobridgeSubject is the user-property key used to round-trip
 // the logical Envelope.Subject through MQTT, distinct from the
 // transport-level publish topic. PublishFromEnvelope writes this
-// property when env.Subject is non-empty; EnvelopeFromPublish reads
-// it back into env.Subject. Inbound user properties carrying this
+// property when env.Subject() is non-empty; EnvelopeFromPublish reads
+// it back into env.Subject(). Inbound user properties carrying this
 // key from a peer bridge are honoured (subject-preserving round
 // trip is intentional); broker-injected duplicates lose to typed
 // extraction because the generic user-property loop skips this
@@ -108,7 +108,7 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 		for _, u := range pub.Properties.User {
 			if u.Key == HeaderGobridgeSubject {
 				if len(u.Value) <= maxHeaderValueLen && isPrintableASCII(u.Value) {
-					env.Subject = u.Value
+					env.SetSubject(u.Value)
 				}
 				continue
 			}
@@ -147,7 +147,12 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 		env.ID = generateEnvelopeID()
 	}
 
-	env.Headers = headers
+	// Headers carry adapter-stamped reserved keys (correlation ID,
+	// content type, …) that are sourced from MQTT5 PUBLISH properties
+	// — the broker controls them, not external user properties. Use
+	// the trusted whole-map setter so those are not stripped; user
+	// properties are filtered through IsReservedHeader above.
+	env.StampHeaders(headers)
 
 	return env
 }
@@ -181,9 +186,9 @@ func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptio
 		hasProps = true
 	}
 
-	if env.Subject != "" {
+	if env.Subject() != "" {
 		props.User = append(props.User, pahov5.UserProperty{
-			Key: HeaderGobridgeSubject, Value: env.Subject,
+			Key: HeaderGobridgeSubject, Value: env.Subject(),
 		})
 		hasProps = true
 	}
@@ -200,21 +205,21 @@ func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptio
 		}
 	}
 
-	if env.Headers != nil {
-		if v, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderCorrelationID); ok {
+	if env.Headers() != nil {
+		if v, ok := messaging.GetHeaderString(env.Headers(), messaging.HeaderCorrelationID); ok {
 			props.CorrelationData = []byte(v)
 			hasProps = true
 		}
-		if v, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderContentType); ok {
+		if v, ok := messaging.GetHeaderString(env.Headers(), messaging.HeaderContentType); ok {
 			props.ContentType = v
 			hasProps = true
 		}
-		if v, ok := messaging.GetHeaderString(env.Headers, headerMQTTResponseTopic); ok {
+		if v, ok := messaging.GetHeaderString(env.Headers(), headerMQTTResponseTopic); ok {
 			props.ResponseTopic = v
 			hasProps = true
 		}
 
-		for k, v := range env.Headers {
+		for k, v := range env.Headers() {
 			if k == messaging.HeaderCorrelationID || k == messaging.HeaderContentType ||
 				k == headerMQTTResponseTopic || k == HeaderMessageID ||
 				k == HeaderGobridgeSubject || k == HeaderMQTTTopic {

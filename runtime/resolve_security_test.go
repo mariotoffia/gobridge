@@ -30,6 +30,7 @@ import (
 	"testing"
 
 	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // TestRenderAddress_SelfReference validates that a header value containing
@@ -46,7 +47,7 @@ import (
 // ───────────────────────────────────────────────
 func TestRenderAddress_SelfReference(t *testing.T) {
 	vars := map[string]any{"id": "{id}"}
-	result, err := RenderAddress("devices/{id}/cmd", vars)
+	result, err := route.RenderAddress("devices/{id}/cmd", vars)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -59,7 +60,7 @@ func TestRenderAddress_SelfReference(t *testing.T) {
 // grows the string on each substitution pass (SEC-012 variant).
 func TestRenderAddress_GrowingValue(t *testing.T) {
 	vars := map[string]any{"x": "grow{x}"}
-	result, err := RenderAddress("{x}", vars)
+	result, err := route.RenderAddress("{x}", vars)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestRenderAddress_TemplateInjection(t *testing.T) {
 		"device_id": "{api_token}",
 		"api_token": "SECRET-KEY-12345",
 	}
-	result, err := RenderAddress("devices/{device_id}/commands", vars)
+	result, err := route.RenderAddress("devices/{device_id}/commands", vars)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestRenderAddress_MultiplePlaceholders(t *testing.T) {
 		"factory": "factory-A",
 		"line":    "line-3",
 	}
-	result, err := RenderAddress("{region}/{factory}/{line}/orders", vars)
+	result, err := route.RenderAddress("{region}/{factory}/{line}/orders", vars)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestRenderAddress_AdjacentBraces(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			result, err := RenderAddress(tc.template, tc.vars)
+			result, err := route.RenderAddress(tc.template, tc.vars)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")

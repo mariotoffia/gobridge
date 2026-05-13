@@ -139,9 +139,9 @@ func (s *SSESender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 
 	data, err := json.Marshal(sseEvent{
 		ID:      env.ID,
-		Subject: env.Subject,
+		Subject: env.Subject(),
 		Payload: env.Payload,
-		Headers: env.Headers,
+		Headers: env.Headers(),
 	})
 	if err != nil {
 		return fmt.Errorf("sse: marshal event: %w", err)

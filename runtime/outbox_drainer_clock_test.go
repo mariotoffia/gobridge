@@ -13,7 +13,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 )
 
 // fixedNoJitterStrategy returns a constant interval without the ±25%
@@ -66,7 +67,7 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 	}
 
 	persistRecord := func(id, envID string) {
-		rec := persistence.OutboxRecord{
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID:         id,
 			RouteID:    "route-1",
 			EnvelopeID: envID,
@@ -74,8 +75,8 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 			SessionID:  sessionID,
 			Envelope:   messaging.Envelope{ID: envID, Payload: []byte("payload")},
 			Status:     persistence.OutboxPending,
-		}
-		if err := outbox.Persist(context.Background(), []persistence.OutboxRecord{rec}); err != nil {
+		})
+		if err := outbox.Persist(context.Background(), []*persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist %s: %v", id, err)
 		}
 	}
@@ -83,11 +84,11 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 	persistRecord("rec-1", "env-1")
 
 	batchCh := make(chan int, 8)
-	cfg := goruntime.OutboxDrainerConfig{
+	cfg := outboxpkg.Config{
 		OutboxStore:         outbox,
 		LeaseStore:          leaseStore,
 		Sender:              sender,
-		DLQ:                 goruntime.NewDLQRouter(dlqStore),
+		DLQ:                 dlq.New(dlqStore),
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             sessionID,
@@ -102,7 +103,7 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 		TokenFn:             func() (persistence.LeaseToken, bool) { return token, true },
 		OnBatchComplete:     func(n int) { batchCh <- n },
 	}
-	drainer := goruntime.NewOutboxDrainerFromConfig(cfg)
+	drainer := outboxpkg.New(cfg)
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	var runWG sync.WaitGroup
@@ -193,7 +194,7 @@ func TestOutboxDrainer_DrainLatencyUsesInjectedClock(t *testing.T) {
 		t.Fatalf("acquire lease: %v", err)
 	}
 
-	rec := persistence.OutboxRecord{
+	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID:         "rec-1",
 		RouteID:    "route-1",
 		EnvelopeID: "env-1",
@@ -201,17 +202,17 @@ func TestOutboxDrainer_DrainLatencyUsesInjectedClock(t *testing.T) {
 		SessionID:  sessionID,
 		Envelope:   messaging.Envelope{ID: "env-1", Payload: []byte("payload")},
 		Status:     persistence.OutboxPending,
-	}
-	if err := outbox.Persist(context.Background(), []persistence.OutboxRecord{rec}); err != nil {
+	})
+	if err := outbox.Persist(context.Background(), []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist record: %v", err)
 	}
 
 	batchCh := make(chan int, 1)
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:         outbox,
 		LeaseStore:          leaseStore,
 		Sender:              sender,
-		DLQ:                 goruntime.NewDLQRouter(dlqStore),
+		DLQ:                 dlq.New(dlqStore),
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             sessionID,

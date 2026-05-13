@@ -9,6 +9,11 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/cluster"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/outbox"
+	"github.com/mariotoffia/gobridge/runtime/route"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // Start wires up all registered routes, session managers, and outbox
@@ -40,9 +45,9 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 	ctx, rt.cancel = context.WithCancel(ctx)
 
-	dlq := NewDLQRouterFromConfig(DLQRouterConfig{Store: rt.dlqStore, Clock: rt.clk})
-	dlq.Start(ctx)
-	rt.dlqRouter = dlq
+	dlqRouter := dlq.NewFromConfig(dlq.Config{Store: rt.dlqStore, Clock: rt.clk})
+	dlqRouter.Start(ctx)
+	rt.dlqRouter = dlqRouter
 
 	m := rt.metrics
 	if m == nil {
@@ -54,31 +59,32 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	}
 
 	if rt.leaseStore != nil {
-		rt.locator = newRouteLocator(rt.instanceID, rt.leaseStore, DefaultRouteLocatorConfig(), rt.clk)
+		rt.locator = cluster.NewLocator(rt.instanceID, rt.leaseStore, cluster.DefaultLocatorConfig(), rt.clk)
 	}
 
 	drainerSessions := make(map[string]bool)
 
 	for _, entry := range rt.entries {
-		entry.runner = newRouteRunner(RouteRunnerConfig{
-			RouteID:       entry.config.ID,
-			Policy:        entry.config.Policy,
-			Receiver:      entry.receiver,
-			Sender:        entry.sender,
-			Senders:       entry.config.Senders,
-			OutboxStore:   rt.outboxStore,
-			DLQ:           dlq,
-			Resolver:      entry.config.Resolver,
-			Processors:    entry.config.Processors,
-			Bindings:      entry.config.Bindings,
-			InstanceID:    rt.instanceID,
-			Metrics:       m,
-			Tracer:        rt.tracer,
-			Hook:          rt.hook,
-			Logger:        rt.logger,
-			GlobalSem:     rt.globalSem,
-			DepthCacheTTL: entry.config.Policy.DepthCacheTTL,
-			Clock:         rt.clk,
+		entry.runner = route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
+			RouteID:           entry.config.ID,
+			Policy:            entry.config.Policy,
+			Receiver:          entry.receiver,
+			Sender:            entry.sender,
+			Senders:           entry.config.Senders,
+			AddressValidators: entry.config.AddressValidators,
+			OutboxStore:       rt.outboxStore,
+			DLQ:               dlqRouter,
+			Resolver:          entry.config.Resolver,
+			Processors:        entry.config.Processors,
+			Bindings:          entry.config.Bindings,
+			InstanceID:        rt.instanceID,
+			Metrics:           m,
+			Tracer:            rt.tracer,
+			Hook:              rt.hook,
+			Logger:            rt.logger,
+			GlobalSem:         rt.globalSem,
+			DepthCacheTTL:     entry.config.Policy.DepthCacheTTL,
+			Clock:             rt.clk,
 		})
 
 		if rt.locator != nil {
@@ -93,9 +99,9 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		if entry.session != nil && entry.sessCfg != nil {
 			sid := entry.sessCfg.SessionID
 			if _, exists := rt.sessionMgrs[sid]; !exists {
-				mgr := newSessionManagerWithMetrics(*entry.sessCfg, entry.session, rt.leaseStore, rt.instanceID, rt.logger, m, rt.clk)
+				mgr := session.NewWithMetrics(*entry.sessCfg, entry.session, rt.leaseStore, rt.instanceID, rt.logger, m, rt.clk)
 				mgr.SetAudit(rt.audit)
-				mgr.endpoints = rt.clusterEndpoints
+				mgr.SetEndpoints(rt.clusterEndpoints)
 				rt.sessionMgrs[sid] = mgr
 			}
 
@@ -107,11 +113,11 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				drainerSessions[sid] = true
 				mgr := rt.sessionMgrs[sid]
 				sess := entry.session
-				drainer := newOutboxDrainer(OutboxDrainerConfig{
+				drainer := outbox.New(outbox.Config{
 					OutboxStore:           rt.outboxStore,
 					LeaseStore:            rt.leaseStore,
 					Sender:                entry.sender,
-					DLQ:                   dlq,
+					DLQ:                   dlqRouter,
 					RouteID:               entry.config.ID,
 					PartitionKey:          persistence.OutboxPartitionKey(sid, ""),
 					LeaseID:               sid,
@@ -153,20 +159,20 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				}
 
 				if _, exists := rt.sessionMgrs[sid]; !exists {
-					mgr := newSessionManagerWithMetrics(sse.config, sse.session, rt.leaseStore, rt.instanceID, rt.logger, m, rt.clk)
+					mgr := session.NewWithMetrics(sse.config, sse.session, rt.leaseStore, rt.instanceID, rt.logger, m, rt.clk)
 					mgr.SetAudit(rt.audit)
-					mgr.endpoints = rt.clusterEndpoints
+					mgr.SetEndpoints(rt.clusterEndpoints)
 					rt.sessionMgrs[sid] = mgr
 				}
 
 				drainerSessions[sid] = true
 				mgr := rt.sessionMgrs[sid]
 				fanSess := sse.session
-				drainer := newOutboxDrainer(OutboxDrainerConfig{
+				drainer := outbox.New(outbox.Config{
 					OutboxStore:           rt.outboxStore,
 					LeaseStore:            rt.leaseStore,
 					Sender:                sse.sender,
-					DLQ:                   dlq,
+					DLQ:                   dlqRouter,
 					RouteID:               entry.config.ID,
 					PartitionKey:          persistence.OutboxPartitionKey(sid, ""),
 					LeaseID:               sid,
@@ -195,7 +201,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 	if len(rt.sessionMgrs) > 0 {
 		mgrs := rt.sessionMgrs
-		dlq.SetTokenFn(func() (persistence.LeaseToken, bool) {
+		dlqRouter.SetTokenFn(func() (persistence.LeaseToken, bool) {
 			for _, mgr := range mgrs {
 				if tok, held := mgr.Token(); held {
 					return tok, true
@@ -210,17 +216,15 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	}
 
 	for i, drainer := range rt.drainers {
-		d := drainer
-		name := "drainer:" + d.partitionKey
+		name := "drainer:" + drainer.PartitionKey()
 		if name == "drainer:" {
-			name = "drainer:" + d.routeID + ":" + strconv.Itoa(i)
+			name = "drainer:" + drainer.RouteID() + ":" + strconv.Itoa(i)
 		}
-		rt.startBackground(ctx, name, d.Run)
+		rt.startBackground(ctx, name, drainer.Run)
 	}
 
 	for _, entry := range rt.entries {
-		e := entry
-		rt.startBackground(ctx, "route:"+e.config.ID, e.runner.Run)
+		rt.startBackground(ctx, "route:"+entry.config.ID, entry.runner.Run)
 	}
 
 	return nil

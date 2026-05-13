@@ -259,7 +259,7 @@ func TestHeadersToPublishing_Nil(t *testing.T) {
 
 // verifies envelopeToPublishing maps envelope fields to an AMQP Publishing.
 func TestEnvelopeToPublishing(t *testing.T) {
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID:      "env-001",
 		Subject: "order.created",
 		Payload: []byte(`{"order":1}`),
@@ -268,7 +268,7 @@ func TestEnvelopeToPublishing(t *testing.T) {
 			messaging.HeaderContentType: "application/json",
 			"tenant":                    "acme",
 		},
-	}
+	})
 
 	pub := envelopeToPublishing(env, SenderConfig{}, nil)
 
@@ -285,12 +285,12 @@ func TestEnvelopeToPublishing(t *testing.T) {
 
 // verifies envelopeToPublishing does not override MessageId if already set in headers.
 func TestEnvelopeToPublishing_HeaderMessageIDPrecedence(t *testing.T) {
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "env-from-id",
 		Headers: map[string]any{
 			HeaderMessageID: "from-header",
 		},
-	}
+	})
 
 	pub := envelopeToPublishing(env, SenderConfig{}, nil)
 
@@ -316,12 +316,12 @@ func TestEnvelopeToPublishing_Expiry(t *testing.T) {
 // verifies envelopeToPublishing falls back to x-bridge.content-type when
 // amqp091.content-type header is absent.
 func TestEnvelopeToPublishing_FallbackContentType(t *testing.T) {
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID: "env-ct",
 		Headers: map[string]any{
 			messaging.HeaderContentType: "text/xml",
 		},
-	}
+	})
 
 	pub := envelopeToPublishing(env, SenderConfig{}, nil)
 

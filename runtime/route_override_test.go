@@ -11,6 +11,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // overrideProcessor sets HeaderRouteOverride during the processor chain,
@@ -22,7 +24,7 @@ type overrideProcessor struct {
 func (p *overrideProcessor) Name() string { return "test-override" }
 
 func (p *overrideProcessor) Process(_ context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
-	env.Headers = messaging.SetHeader(env.Headers, messaging.HeaderRouteOverride, p.targetBinding)
+	env.SetHeader(messaging.HeaderRouteOverride, p.targetBinding)
 	return next(context.Background(), env)
 }
 
@@ -49,25 +51,25 @@ func TestDirectHold_HeaderRouteOverride_SelectsBinding(t *testing.T) {
 	// not in the initial envelope — because reserved headers are stripped
 	// at ingress before the processor chain runs.
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:    "override-route",
 		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
 		Sender:     senderA,
 		Senders:    map[string]ports.Sender{"bind-a": senderA, "bind-b": senderB},
-		DLQ:        runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:        dlq.New(NewFakeDLQStore()),
 		Resolver:   resolver,
 		Bindings:   bindings,
 		Processors: []ports.Processor{&overrideProcessor{targetBinding: "bind-b"}},
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{ID: "override-msg", Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "override-msg", Subject: "test"})
 	del := NewFakeDelivery(env)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit: %v", err)
@@ -95,24 +97,24 @@ func TestDirectHold_HeaderRouteOverride_StrippedAfterUse(t *testing.T) {
 	}
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:    "strip-route",
 		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
 		Sender:     senderB,
 		Senders:    map[string]ports.Sender{"bind-b": senderB},
-		DLQ:        runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:        dlq.New(NewFakeDLQStore()),
 		Bindings:   bindings,
 		Processors: []ports.Processor{&overrideProcessor{targetBinding: "bind-b"}},
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{ID: "strip-msg", Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "strip-msg", Subject: "test"})
 	del := NewFakeDelivery(env)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit: %v", err)
@@ -124,7 +126,7 @@ func TestDirectHold_HeaderRouteOverride_StrippedAfterUse(t *testing.T) {
 		t.Fatalf("expected 1 sent, got %d", len(sent))
 	}
 	// The override header should have been stripped before sending.
-	if _, exists := sent[0].Headers[messaging.HeaderRouteOverride]; exists {
+	if _, exists := sent[0].Headers()[messaging.HeaderRouteOverride]; exists {
 		t.Fatal("HeaderRouteOverride was not stripped from outbound envelope")
 	}
 }
@@ -148,13 +150,13 @@ func TestDirectHold_HeaderRouteOverride_InvalidBinding_FallsThrough(t *testing.T
 	<-receiver.Ready()
 
 	// Override references a binding that doesn't exist on this route.
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID:      "bad-override",
 		Subject: "test",
 		Headers: map[string]any{
 			messaging.HeaderRouteOverride: "nonexistent-bind",
 		},
-	}
+	})
 	del := NewFakeDelivery(env)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit: %v", err)
@@ -180,19 +182,19 @@ func TestDirectHold_Override_RenderAddressError_RoutesDLQ(t *testing.T) {
 	}
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "render-err-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		Senders:  map[string]ports.Sender{"bind-template": sender},
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		DLQ:      dlq.New(dlqStore),
 		Bindings: bindings,
 		Processors: []ports.Processor{
 			&overrideProcessor{targetBinding: "bind-template"},
 		},
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -200,7 +202,7 @@ func TestDirectHold_Override_RenderAddressError_RoutesDLQ(t *testing.T) {
 	<-receiver.Ready()
 
 	// Envelope has no "tenant" header -> RenderAddress fails.
-	env := &messaging.Envelope{ID: "missing-header-msg", Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "missing-header-msg", Subject: "test"})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)
@@ -213,10 +215,15 @@ func TestDirectHold_Override_RenderAddressError_RoutesDLQ(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestDirectHold_Override_MQTTValidation_RoutesDLQ
+// TestDirectHold_Override_AddressValidator_RoutesDLQ
 // ---------------------------------------------------------------------------
+//
+// AP-005: replaces the old MQTT-specific override validation test. The
+// runtime no longer hardcodes mqtt — it dispatches to a per-binding
+// AddressValidator supplied by the transport. This test wires a
+// rejecting validator and asserts the override path routes to DLQ.
 
-func TestDirectHold_Override_MQTTValidation_RoutesDLQ(t *testing.T) {
+func TestDirectHold_Override_AddressValidator_RoutesDLQ(t *testing.T) {
 	sender := NewFakeSender()
 	dlqStore := NewFakeDLQStore()
 
@@ -225,39 +232,41 @@ func TestDirectHold_Override_MQTTValidation_RoutesDLQ(t *testing.T) {
 	}
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
-		RouteID:  "mqtt-validate-route",
+	cfg := route.RouteRunnerConfig{
+		RouteID:  "validator-override-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		Senders:  map[string]ports.Sender{"mqtt-bind": sender},
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		AddressValidators: map[string]ports.AddressValidator{
+			"mqtt-bind": rejectingAddressValidator{},
+		},
+		DLQ:      dlq.New(dlqStore),
 		Bindings: bindings,
 		Processors: []ports.Processor{
 			&overrideProcessor{targetBinding: "mqtt-bind"},
 		},
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	// Header value produces invalid MQTT topic (contains wildcard).
-	env := &messaging.Envelope{
-		ID:      "bad-mqtt-msg",
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
+		ID:      "bad-validator-msg",
 		Subject: "test",
 		Headers: map[string]any{"topic": "factory/+/data"},
-	}
+	})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "delivery acked", del.IsAcked)
 
 	assert.Equal(t, 0, sender.SentCount(),
-		"sender must not be called for invalid MQTT topic")
+		"sender must not be called when AddressValidator rejects override binding")
 	assert.Equal(t, 1, dlqStore.Count(),
-		"expected 1 DLQ entry for invalid MQTT topic")
+		"expected 1 DLQ entry for AddressValidator rejection on override path")
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +294,7 @@ func TestDirectHold_NoOverrideHeader_NormalResolution(t *testing.T) {
 	<-receiver.Ready()
 
 	// No override header — normal resolution path.
-	env := &messaging.Envelope{ID: "normal-msg", Subject: "test"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "normal-msg", Subject: "test"})
 	del := NewFakeDelivery(env)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit: %v", err)

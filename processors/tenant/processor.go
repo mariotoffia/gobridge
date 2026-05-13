@@ -44,7 +44,7 @@ func (p *Processor) Name() string {
 }
 
 func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
-	tenantID, _ := messaging.GetHeaderString(env.Headers, p.config.TenantHeader)
+	tenantID, _ := messaging.GetHeaderString(env.Headers(), p.config.TenantHeader)
 
 	if tenantID == "" {
 		if p.config.RequireTenant {

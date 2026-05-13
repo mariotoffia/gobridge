@@ -27,11 +27,11 @@ func makeEntry(id, routeID, category string, failedAt time.Time) routing.DLQEntr
 		RouteID:  routeID,
 		Category: category,
 		FailedAt: failedAt,
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "env-" + id,
 			Subject: "test/subject",
 			Payload: []byte("payload-" + id),
-		},
+		}),
 		BindingID:     "binding-1",
 		SessionID:     "session-1",
 		SourceID:      "source-1",

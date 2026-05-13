@@ -43,7 +43,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "headers-rt-1",
 		Subject: "test.headers",
 		Payload: []byte(`{"test":"headers"}`),
@@ -56,7 +56,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 			headerGroupID:       "group-1",
 			"x-custom-key":      "custom-value",
 		},
-	}
+	})
 	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
@@ -89,7 +89,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 		t.Fatal("no message received")
 	}
 
-	h := received.Headers
+	h := received.Headers()
 	assertHeader(t, h, headerCorrelationID, "corr-123")
 	assertHeader(t, h, headerContentType, "application/json")
 	assertHeader(t, h, headerSubject, "test.headers")
@@ -131,12 +131,12 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 	defer func() { _ = sender.Close(context.Background()) }()
 
 	expiry := time.Now().Add(time.Hour).UTC().Truncate(time.Millisecond)
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:        "ttl-1",
 		Subject:   "test.ttl",
 		Payload:   []byte(`{"test":"ttl"}`),
 		ExpiresAt: expiry,
-	}
+	})
 	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
@@ -169,7 +169,7 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 		t.Fatal("no message received")
 	}
 
-	if _, ok := received.Headers[headerAbsoluteExpiry]; !ok {
+	if _, ok := received.Headers()[headerAbsoluteExpiry]; !ok {
 		t.Fatal("expected absolute-expiry-time header")
 	}
 	if received.ExpiresAt.IsZero() {
@@ -212,7 +212,7 @@ func TestIntegration_ApplicationProperties(t *testing.T) {
 	}
 	defer func() { _ = sender.Close(context.Background()) }()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID:      "appprops-1",
 		Subject: "test.appprops",
 		Payload: []byte(`{"test":"appprops"}`),
@@ -223,7 +223,7 @@ func TestIntegration_ApplicationProperties(t *testing.T) {
 			"x-bridge.route-id":   "should-be-stripped",
 			"x-bridge.session-id": "should-be-stripped",
 		},
-	}
+	})
 	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
@@ -256,7 +256,7 @@ func TestIntegration_ApplicationProperties(t *testing.T) {
 		t.Fatal("no message received")
 	}
 
-	h := received.Headers
+	h := received.Headers()
 	assertHeader(t, h, "tenant", "acme")
 	assertHeader(t, h, "region", "eu-west-1")
 	assertHeader(t, h, "priority", "high")

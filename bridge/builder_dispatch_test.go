@@ -70,7 +70,7 @@ func TestT11_BridgeBuilder_PropagatesAddress_PreservesSubject(t *testing.T) {
 	tf := &dispatchTransportFactory{sender: sender}
 
 	rt, err := NewBuilder(cfg, WithBlueprintValidator(config.Validate)).
-		RegisterTransport("sqs", tf).
+		RegisterTransportFactory("sqs", tf).
 		Build(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, rt)
@@ -85,11 +85,11 @@ func TestT11_BridgeBuilder_PropagatesAddress_PreservesSubject(t *testing.T) {
 		_ = rt.Stop(stopCtx)
 	})
 
-	src := &messaging.Envelope{
+	src := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      envelopeID,
 		Subject: logicalSubject,
 		Payload: []byte("payload-t11"),
-	}
+	})
 
 	require.NoError(t, rt.Inject(ctx, "r1", src))
 
@@ -106,11 +106,11 @@ func TestT11_BridgeBuilder_PropagatesAddress_PreservesSubject(t *testing.T) {
 	assert.Equal(t, bindingAddress, msg.Address,
 		"BindingDef.Address must propagate end-to-end into OutboundMessage.Address")
 	require.NotNil(t, msg.Envelope, "OutboundMessage.Envelope must not be nil")
-	assert.Equal(t, logicalSubject, msg.Envelope.Subject,
+	assert.Equal(t, logicalSubject, msg.Envelope.Subject(),
 		"logical Envelope.Subject must be preserved (not replaced by Address)")
 	assert.NotSame(t, src, msg.Envelope,
 		"OutboundMessage.Envelope must be an isolated clone, not the source pointer")
-	assert.Equal(t, logicalSubject, src.Subject,
+	assert.Equal(t, logicalSubject, src.Subject(),
 		"source envelope Subject must remain unmutated")
 }
 
@@ -141,7 +141,7 @@ func TestT11_BridgeBuilder_RejectsEmptyBindingAddress(t *testing.T) {
 	}
 
 	_, err := NewBuilder(cfg, WithBlueprintValidator(config.Validate)).
-		RegisterTransport("sqs", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
 		Build(context.Background())
 
 	require.Error(t, err)

@@ -188,10 +188,10 @@ func TestAnaRecv_MessagesArriveAsDeliveries(t *testing.T) {
 	if envSeen == nil {
 		t.Fatal("envSeen nil")
 	}
-	if envSeen.Subject != "" {
-		t.Errorf("subject = %q, want empty (no gobridge.subject user property)", envSeen.Subject)
+	if envSeen.Subject() != "" {
+		t.Errorf("subject = %q, want empty (no gobridge.subject user property)", envSeen.Subject())
 	}
-	if v, _ := messaging.GetHeaderString(envSeen.Headers, HeaderMQTTTopic); v != "test/happy" {
+	if v, _ := messaging.GetHeaderString(envSeen.Headers(), HeaderMQTTTopic); v != "test/happy" {
 		t.Errorf("headers[%q] = %q, want test/happy", HeaderMQTTTopic, v)
 	}
 	if string(envSeen.Payload) != "payload" {

@@ -100,8 +100,8 @@ func TestFanOut_SingleRouteMultipleSessions(t *testing.T) {
 	})
 
 	sentA := senderA.GetSent()
-	if sentA[0].Subject != "" {
-		t.Errorf("sender A: expected logical Subject preserved (empty), got %q", sentA[0].Subject)
+	if sentA[0].Subject() != "" {
+		t.Errorf("sender A: expected logical Subject preserved (empty), got %q", sentA[0].Subject())
 	}
 	outA := senderA.GetOutbound()
 	if len(outA) == 0 || outA[0].Address != "factory/a/orders/42" {
@@ -109,8 +109,8 @@ func TestFanOut_SingleRouteMultipleSessions(t *testing.T) {
 	}
 
 	sentB := senderB.GetSent()
-	if sentB[0].Subject != "" {
-		t.Errorf("sender B: expected logical Subject preserved (empty), got %q", sentB[0].Subject)
+	if sentB[0].Subject() != "" {
+		t.Errorf("sender B: expected logical Subject preserved (empty), got %q", sentB[0].Subject())
 	}
 	outB := senderB.GetOutbound()
 	if len(outB) == 0 || outB[0].Address != "factory/b/orders/42" {

@@ -10,6 +10,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // ---------------------------------------------------------------------------
@@ -29,16 +31,16 @@ func TestIntegration_ContentRouting_HeaderMatch_DirectHold(t *testing.T) {
 
 	rules, _ := runtime.CompileMatchRules([]runtime.MatchRule{
 		{BindingID: "bind-orders", Conditions: []runtime.MatchCondition{
-			{Field: "header.category", Operator: "eq", Value: "order"},
+			{Field: "header.category", Operator: "eq", Value: runtime.Val("order")},
 		}},
 		{BindingID: "bind-alerts", Conditions: []runtime.MatchCondition{
-			{Field: "header.category", Operator: "eq", Value: "alert"},
+			{Field: "header.category", Operator: "eq", Value: runtime.Val("alert")},
 		}},
 	})
 	resolver, _ := runtime.NewRuleResolver(bindings, rules, "bind-default")
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "header-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
@@ -48,11 +50,11 @@ func TestIntegration_ContentRouting_HeaderMatch_DirectHold(t *testing.T) {
 			"bind-alerts":  senderAlerts,
 			"bind-default": senderDefault,
 		},
-		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:      dlq.New(NewFakeDLQStore()),
 		Resolver: resolver,
 		Bindings: bindings,
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -69,11 +71,11 @@ func TestIntegration_ContentRouting_HeaderMatch_DirectHold(t *testing.T) {
 		{"msg-3", "unknown"},
 	}
 	for _, m := range msgs {
-		del := NewFakeDelivery(&messaging.Envelope{
+		del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      m.id,
 			Subject: "test",
 			Headers: map[string]any{"category": m.category},
-		})
+		}))
 		if err := receiver.Emit(ctx, del); err != nil {
 			t.Fatalf("Emit %s: %v", m.id, err)
 		}
@@ -106,33 +108,33 @@ func TestIntegration_ContentRouting_SubjectPrefix_DirectHold(t *testing.T) {
 
 	rules, _ := runtime.CompileMatchRules([]runtime.MatchRule{
 		{BindingID: "bind-eu", Conditions: []runtime.MatchCondition{
-			{Field: "subject", Operator: "prefix", Value: "eu."},
+			{Field: "subject", Operator: "prefix", Value: runtime.Val("eu.")},
 		}},
 		{BindingID: "bind-us", Conditions: []runtime.MatchCondition{
-			{Field: "subject", Operator: "prefix", Value: "us."},
+			{Field: "subject", Operator: "prefix", Value: runtime.Val("us.")},
 		}},
 	})
 	resolver, _ := runtime.NewRuleResolver(bindings, rules, "")
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "subject-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   senderEU,
 		Senders:  map[string]ports.Sender{"bind-eu": senderEU, "bind-us": senderUS},
-		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:      dlq.New(NewFakeDLQStore()),
 		Resolver: resolver,
 		Bindings: bindings,
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "eu-1", Subject: "eu.orders.new"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "eu-1", Subject: "eu.orders.new"}))
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "eu acked", del.IsAcked)
 
@@ -159,23 +161,23 @@ func TestIntegration_ContentRouting_JSONPayload_DirectHold(t *testing.T) {
 
 	rules, _ := runtime.CompileMatchRules([]runtime.MatchRule{
 		{BindingID: "high-prio", Conditions: []runtime.MatchCondition{
-			{Field: "$.priority", Operator: "gt", Value: float64(7)},
+			{Field: "$.priority", Operator: "gt", Value: runtime.Val(float64(7))},
 		}},
 	})
 	resolver, _ := runtime.NewRuleResolver(bindings, rules, "low-prio")
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "json-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   senderLow,
 		Senders:  map[string]ports.Sender{"high-prio": senderHigh, "low-prio": senderLow},
-		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:      dlq.New(NewFakeDLQStore()),
 		Resolver: resolver,
 		Bindings: bindings,
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -183,16 +185,16 @@ func TestIntegration_ContentRouting_JSONPayload_DirectHold(t *testing.T) {
 	<-receiver.Ready()
 
 	// High priority message
-	delH := NewFakeDelivery(&messaging.Envelope{
+	delH := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "high-1", Subject: "evt", Payload: []byte(`{"priority":9}`),
-	})
+	}))
 	_ = receiver.Emit(ctx, delH)
 	waitFor(t, 2*time.Second, "high acked", delH.IsAcked)
 
 	// Low priority message
-	delL := NewFakeDelivery(&messaging.Envelope{
+	delL := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "low-1", Subject: "evt", Payload: []byte(`{"priority":3}`),
-	})
+	}))
 	_ = receiver.Emit(ctx, delL)
 	waitFor(t, 2*time.Second, "low acked", delL.IsAcked)
 
@@ -219,38 +221,38 @@ func TestIntegration_ContentRouting_ProcessorThenRouting(t *testing.T) {
 
 	rules, _ := runtime.CompileMatchRules([]runtime.MatchRule{
 		{BindingID: "bind-vip", Conditions: []runtime.MatchCondition{
-			{Field: "header.tier", Operator: "eq", Value: "vip"},
+			{Field: "header.tier", Operator: "eq", Value: runtime.Val("vip")},
 		}},
 	})
 	resolver, _ := runtime.NewRuleResolver(bindings, rules, "bind-normal")
 
 	// Processor that sets tier=vip when subject starts with "premium."
 	tierProc := &headerInjector{
-		matchFn:   func(env *messaging.Envelope) bool { return len(env.Subject) > 8 && env.Subject[:8] == "premium." },
+		matchFn:   func(env *messaging.Envelope) bool { return len(env.Subject()) > 8 && env.Subject()[:8] == "premium." },
 		headerKey: "tier",
 		headerVal: "vip",
 	}
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:    "proc-route",
 		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
 		Receiver:   receiver,
 		Sender:     senderNormal,
 		Senders:    map[string]ports.Sender{"bind-vip": senderVIP, "bind-normal": senderNormal},
-		DLQ:        runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:        dlq.New(NewFakeDLQStore()),
 		Resolver:   resolver,
 		Bindings:   bindings,
 		Processors: []ports.Processor{tierProc},
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "vip-msg", Subject: "premium.order"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "vip-msg", Subject: "premium.order"}))
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "vip acked", del.IsAcked)
 
@@ -273,7 +275,7 @@ func (p *headerInjector) Name() string { return "test-header-injector" }
 
 func (p *headerInjector) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
 	if p.matchFn(env) {
-		env.Headers = messaging.SetHeader(env.Headers, p.headerKey, p.headerVal)
+		env.SetHeader(p.headerKey, p.headerVal)
 	}
 	return next(ctx, env)
 }
@@ -293,26 +295,26 @@ func TestIntegration_ContentRouting_Concurrent(t *testing.T) {
 
 	rules, _ := runtime.CompileMatchRules([]runtime.MatchRule{
 		{BindingID: "bind-a", Conditions: []runtime.MatchCondition{
-			{Field: "header.target", Operator: "eq", Value: "a"},
+			{Field: "header.target", Operator: "eq", Value: runtime.Val("a")},
 		}},
 		{BindingID: "bind-b", Conditions: []runtime.MatchCondition{
-			{Field: "header.target", Operator: "eq", Value: "b"},
+			{Field: "header.target", Operator: "eq", Value: runtime.Val("b")},
 		}},
 	})
 	resolver, _ := runtime.NewRuleResolver(bindings, rules, "")
 
 	receiver := NewFakeReceiver()
-	cfg := runtime.RouteRunnerConfig{
+	cfg := route.RouteRunnerConfig{
 		RouteID:  "concurrent-route",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold, MaxInFlight: 20}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   senderA,
 		Senders:  map[string]ports.Sender{"bind-a": senderA, "bind-b": senderB},
-		DLQ:      runtime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:      dlq.New(NewFakeDLQStore()),
 		Resolver: resolver,
 		Bindings: bindings,
 	}
-	runner := runtime.NewRouteRunnerFromConfig(cfg)
+	runner := route.NewRouteRunnerFromConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -329,11 +331,11 @@ func TestIntegration_ContentRouting_Concurrent(t *testing.T) {
 			if idx%2 == 1 {
 				target = "b"
 			}
-			del := NewFakeDelivery(&messaging.Envelope{
+			del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{
 				ID:      "msg-" + target + "-" + string(rune('0'+idx%10)),
 				Subject: "test",
 				Headers: map[string]any{"target": target},
-			})
+			}))
 			_ = receiver.Emit(ctx, del)
 			waitFor(t, 5*time.Second, "concurrent msg acked", del.IsAcked)
 		}(i)

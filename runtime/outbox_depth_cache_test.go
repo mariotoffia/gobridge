@@ -10,6 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -38,7 +39,7 @@ func NewQueryCountingOutboxStore() *QueryCountingOutboxStore {
 	return &QueryCountingOutboxStore{FakeOutboxStore: NewFakeOutboxStore()}
 }
 
-func (s *QueryCountingOutboxStore) QueryPending(ctx context.Context, partitionKey string, limit int) ([]persistence.OutboxRecord, error) {
+func (s *QueryCountingOutboxStore) QueryPending(ctx context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error) {
 	atomic.AddInt64(&s.queryCount, 1)
 	return s.FakeOutboxStore.QueryPending(ctx, partitionKey, limit)
 }
@@ -71,7 +72,7 @@ func TestDepthCache_PreventsRepeatedQueries(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-cache")
 
 	cfg := goruntime.RouteConfig{
@@ -85,15 +86,15 @@ func TestDepthCache_PreventsRepeatedQueries(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	for i := 0; i < 10; i++ {
@@ -133,7 +134,7 @@ func TestDepthCache_ExpiresAfterTTL(t *testing.T) {
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
-	session := NewFakeSession()
+	sess := NewFakeSession()
 	sessCfg := fastSessionConfig("mqtt-ttl")
 
 	cfg := goruntime.RouteConfig{
@@ -147,15 +148,15 @@ func TestDepthCache_ExpiresAfterTTL(t *testing.T) {
 		},
 	}
 
-	_ = rt.AddRoute(cfg, receiver, sender, session, &sessCfg)
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = rt.Start(ctx)
 	defer func() { _ = rt.Stop(context.Background()) }()
 
-	waitFor(t, 2*time.Second, "session started", func() bool {
-		return session.IsStarted()
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
 	})
 
 	env1 := &messaging.Envelope{ID: "ttl-msg-1", Payload: []byte("x")}
@@ -196,7 +197,7 @@ func TestDepthCache_AtCapacityCachedImmediately(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		rec := persistence.OutboxRecord{
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID:         "prefill-" + string(rune('a'+i)),
 			RouteID:    "cap-route",
 			EnvelopeID: "prefill-env-" + string(rune('a'+i)),
@@ -204,14 +205,14 @@ func TestDepthCache_AtCapacityCachedImmediately(t *testing.T) {
 			SessionID:  "mqtt-cap",
 			Envelope:   messaging.Envelope{ID: "prefill-env-" + string(rune('a'+i)), Payload: []byte("x")},
 			Status:     persistence.OutboxPending,
-		}
-		_ = countingOutbox.Persist(ctx, []persistence.OutboxRecord{rec})
+		})
+		_ = countingOutbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 	}
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
 
-	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:     "cap-route",
 		Policy:      routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox, MaxOutboxDepth: 3},
 		Receiver:    receiver,

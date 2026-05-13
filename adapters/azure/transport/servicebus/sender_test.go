@@ -126,11 +126,11 @@ func TestSender_Send_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-123",
 		Subject: "order.created",
 		Payload: []byte(`{"order_id":"42"}`),
-	}
+	})
 
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -162,7 +162,7 @@ func TestSender_Send_HeaderMapping(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		ID:      "hdr-msg",
 		Subject: "test",
 		Payload: []byte("body"),
@@ -175,7 +175,7 @@ func TestSender_Send_HeaderMapping(t *testing.T) {
 			"custom-header":      "custom-value",
 			"x-bridge.route-id":  "route-1",
 		},
-	}
+	})
 
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -253,12 +253,12 @@ func TestSender_Send_HeaderSessionOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Payload: []byte("override-session"),
 		Headers: map[string]any{
 			"asb.session-id": "override-sess",
 		},
-	}
+	})
 
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -311,10 +311,10 @@ func TestSender_Send_SubjectMapping(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Subject: "my-subject",
 		Payload: []byte("data"),
-	}
+	})
 
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)

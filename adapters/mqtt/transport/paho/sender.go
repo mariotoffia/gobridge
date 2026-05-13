@@ -37,7 +37,7 @@ func NewSender(session *Session, opts SenderOptions) *Sender {
 // Send publishes the envelope to the MQTT broker.
 //
 // The publish topic is derived from msg.Address; when Address is empty,
-// SenderOptions.DefaultTopic is used as a fallback. msg.Envelope.Subject
+// SenderOptions.DefaultTopic is used as a fallback. msg.Envelope.Subject()
 // is the LOGICAL event subject and is propagated to the broker as the
 // HeaderGobridgeSubject user property — it never selects the publish
 // topic. When neither msg.Address nor opts.DefaultTopic is set, Send

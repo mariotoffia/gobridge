@@ -1,6 +1,7 @@
+// Package dynamodb_test holds the test-only stub PluginConfig used
+// by loader_test for transport kinds whose real adapter packages
+// are not imported into this test binary.
 package dynamodb_test
-
-import "github.com/mariotoffia/gobridge/ports"
 
 // stubPluginConfig is a permissive PluginConfig stand-in registered for
 // transport kinds that the loader_test fixtures reference (e.g. "mqtt")
@@ -11,15 +12,3 @@ type stubPluginConfig struct{ kind string }
 
 func (s stubPluginConfig) Kind() string    { return s.kind }
 func (s stubPluginConfig) Validate() error { return nil }
-
-func init() {
-	for _, k := range []string{"mqtt", "sqs", "http"} {
-		kind := k
-		func() {
-			defer func() { _ = recover() }()
-			ports.DefaultRegistry.Register(kind, func(_ ports.RawConfig) (ports.PluginConfig, error) {
-				return stubPluginConfig{kind: kind}, nil
-			})
-		}()
-	}
-}

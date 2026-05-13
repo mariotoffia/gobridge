@@ -263,11 +263,11 @@ func TestGAP_HTTPBridgeStartStop(t *testing.T) {
 
 	// Use rt.Inject directly as well.
 	for i := 0; i < 10; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("ha2-inject-%d", i),
 			Subject: "gap-ha2/out",
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
-		}
+		})
 		_ = rt.Inject(ctx, "gap-ha2-route", env)
 	}
 

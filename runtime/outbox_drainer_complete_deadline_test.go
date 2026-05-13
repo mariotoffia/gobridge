@@ -10,7 +10,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 )
 
 type senderFunc func(context.Context, *messaging.Envelope) error
@@ -31,7 +32,7 @@ func TestOutboxDrainer_CompleteSurvivesNearBatchDeadline(t *testing.T) {
 		t.Fatalf("acquire lease: %v", err)
 	}
 
-	rec := persistence.OutboxRecord{
+	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID:         "rec-complete-deadline",
 		RouteID:    "route-1",
 		EnvelopeID: "env-complete-deadline",
@@ -39,8 +40,8 @@ func TestOutboxDrainer_CompleteSurvivesNearBatchDeadline(t *testing.T) {
 		SessionID:  "sess-complete-deadline",
 		Envelope:   messaging.Envelope{ID: "env-complete-deadline", Payload: []byte("payload")},
 		Status:     persistence.OutboxPending,
-	}
-	if err := outbox.Persist(context.Background(), []persistence.OutboxRecord{rec}); err != nil {
+	})
+	if err := outbox.Persist(context.Background(), []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -60,11 +61,11 @@ func TestOutboxDrainer_CompleteSurvivesNearBatchDeadline(t *testing.T) {
 	policy := routing.RoutePolicy{}.WithDefaults()
 	policy.SendTimeout = 300 * time.Millisecond
 	batchCh := make(chan int, 1)
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:           outbox,
 		LeaseStore:            leaseStore,
 		Sender:                &ctxAwareSender{latency: 105 * time.Millisecond},
-		DLQ:                   goruntime.NewDLQRouter(dlqStore),
+		DLQ:                   dlq.New(dlqStore),
 		RouteID:               "route-1",
 		PartitionKey:          pk,
 		LeaseID:               "sess-complete-deadline",
@@ -126,7 +127,7 @@ func TestOutboxDrainer_CompleteRespectsRuntimeShutdown(t *testing.T) {
 		t.Fatalf("acquire lease: %v", err)
 	}
 
-	rec := persistence.OutboxRecord{
+	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID:         "rec-complete-shutdown",
 		RouteID:    "route-1",
 		EnvelopeID: "env-complete-shutdown",
@@ -134,8 +135,8 @@ func TestOutboxDrainer_CompleteRespectsRuntimeShutdown(t *testing.T) {
 		SessionID:  "sess-complete-shutdown",
 		Envelope:   messaging.Envelope{ID: "env-complete-shutdown", Payload: []byte("payload")},
 		Status:     persistence.OutboxPending,
-	}
-	if err := outbox.Persist(context.Background(), []persistence.OutboxRecord{rec}); err != nil {
+	})
+	if err := outbox.Persist(context.Background(), []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -160,11 +161,11 @@ func TestOutboxDrainer_CompleteRespectsRuntimeShutdown(t *testing.T) {
 
 	policy := routing.RoutePolicy{}.WithDefaults()
 	policy.SendTimeout = 40 * time.Millisecond
-	drainer := goruntime.NewOutboxDrainerFromConfig(goruntime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:         outbox,
 		LeaseStore:          leaseStore,
 		Sender:              sender,
-		DLQ:                 goruntime.NewDLQRouter(dlqStore),
+		DLQ:                 dlq.New(dlqStore),
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             "sess-complete-shutdown",

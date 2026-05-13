@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -17,16 +17,22 @@ type stubPluginConfig struct{ kind string }
 func (s stubPluginConfig) Kind() string    { return s.kind }
 func (s stubPluginConfig) Validate() error { return nil }
 
-func init() {
+// newTestRegistry returns a hermetic *ports.Registry pre-populated
+// with stub decoders for the transport kinds the test fixtures use.
+// Each test constructs its own registry and passes it explicitly to
+// NewSource / NewWatcher; there is no process-wide singleton.
+func newTestRegistry(t testing.TB) *ports.Registry {
+	t.Helper()
+	reg := ports.NewRegistry()
 	for _, k := range []string{"mqtt", "sqs", "http"} {
 		kind := k
-		func() {
-			defer func() { _ = recover() }()
-			ports.DefaultRegistry.Register(kind, func(raw ports.RawConfig) (ports.PluginConfig, error) {
-				return stubPluginConfig{kind: kind}, nil
-			})
-		}()
+		if err := reg.Register(kind, func(raw ports.RawConfig) (ports.PluginConfig, error) {
+			return stubPluginConfig{kind: kind}, nil
+		}); err != nil {
+			t.Fatalf("register stub %q: %v", kind, err)
+		}
 	}
+	return reg
 }
 
 func writeYAML(t *testing.T, path string, bridgeID string) {
@@ -46,7 +52,7 @@ func TestSource_Load(t *testing.T) {
 	path := filepath.Join(dir, "bridge.yaml")
 	writeYAML(t, path, "test-bridge")
 
-	src := NewSource(path)
+	src := NewSource(path, newTestRegistry(t))
 	cfg, err := src.Load(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +67,7 @@ func TestWatcher_NotifyMode(t *testing.T) {
 	path := filepath.Join(dir, "bridge.yaml")
 	writeYAML(t, path, "initial")
 
-	w := NewWatcher(path, WithDebounce(50*time.Millisecond))
+	w := NewWatcher(path, newTestRegistry(t), WithDebounce(50*time.Millisecond))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -96,7 +102,7 @@ func TestWatcher_PollMode(t *testing.T) {
 	writeYAML(t, path, "initial")
 
 	fc := clocktest.New()
-	w := NewWatcher(path,
+	w := NewWatcher(path, newTestRegistry(t),
 		WithMode(ModePoll),
 		WithPollInterval(100*time.Millisecond),
 		WithClock(fc),
@@ -135,7 +141,7 @@ func TestWatcher_WithWatchConfig_Poll(t *testing.T) {
 		Mode:         "poll",
 		PollInterval: "100ms",
 	}
-	w := NewWatcher(path, WithWatchConfig(def))
+	w := NewWatcher(path, newTestRegistry(t), WithWatchConfig(def))
 
 	if w.mode != ModePoll {
 		t.Fatal("expected poll mode")
@@ -150,7 +156,7 @@ func TestWatcher_WithWatchConfig_Notify(t *testing.T) {
 		Mode:     "notify",
 		Debounce: "200ms",
 	}
-	w := NewWatcher("/tmp/fake.yaml", WithWatchConfig(def))
+	w := NewWatcher("/tmp/fake.yaml", newTestRegistry(t), WithWatchConfig(def))
 
 	if w.mode != ModeNotify {
 		t.Fatal("expected notify mode")
@@ -161,7 +167,7 @@ func TestWatcher_WithWatchConfig_Notify(t *testing.T) {
 }
 
 func TestWatcher_WithWatchConfig_Nil(t *testing.T) {
-	w := NewWatcher("/tmp/fake.yaml", WithWatchConfig(nil))
+	w := NewWatcher("/tmp/fake.yaml", newTestRegistry(t), WithWatchConfig(nil))
 	if w.mode != ModeNotify {
 		t.Fatal("nil ConfigWatchDef should default to notify")
 	}
@@ -172,7 +178,7 @@ func TestWatcher_AlreadyRunning(t *testing.T) {
 	path := filepath.Join(dir, "bridge.yaml")
 	writeYAML(t, path, "test")
 
-	w := NewWatcher(path)
+	w := NewWatcher(path, newTestRegistry(t))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -197,7 +203,7 @@ func TestWatcher_DebounceCoalesces(t *testing.T) {
 	path := filepath.Join(dir, "bridge.yaml")
 	writeYAML(t, path, "initial")
 
-	w := NewWatcher(path, WithDebounce(200*time.Millisecond))
+	w := NewWatcher(path, newTestRegistry(t), WithDebounce(200*time.Millisecond))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -252,7 +258,7 @@ func TestWatcher_InvalidContent(t *testing.T) {
 	writeYAML(t, path, "valid")
 
 	fc := clocktest.New()
-	w := NewWatcher(path,
+	w := NewWatcher(path, newTestRegistry(t),
 		WithMode(ModePoll),
 		WithPollInterval(100*time.Millisecond),
 		WithClock(fc),
@@ -285,8 +291,8 @@ func TestWatcher_InvalidContent(t *testing.T) {
 // TestWatcher_WithFormat validates that WithFormat overrides the auto-detected
 // format so a .yaml file can be parsed as JSON when explicitly told to.
 func TestWatcher_WithFormat(t *testing.T) {
-	w := NewWatcher("/tmp/fake.yaml", WithFormat(config.FormatJSON))
-	if w.format != config.FormatJSON {
+	w := NewWatcher("/tmp/fake.yaml", newTestRegistry(t), WithFormat(parser.FormatJSON))
+	if w.format != parser.FormatJSON {
 		t.Fatalf("expected FormatJSON, got %v", w.format)
 	}
 }
@@ -296,7 +302,7 @@ func TestWatcher_StopClosesChannel(t *testing.T) {
 	path := filepath.Join(dir, "bridge.yaml")
 	writeYAML(t, path, "test")
 
-	w := NewWatcher(path, WithMode(ModePoll), WithPollInterval(50*time.Millisecond))
+	w := NewWatcher(path, newTestRegistry(t), WithMode(ModePoll), WithPollInterval(50*time.Millisecond))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -27,7 +27,9 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
-	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // TestDrainer_StaleFencingToken_UsesMinBackoff validates that stale
@@ -43,14 +45,14 @@ import (
 // ───────────────────────────────────────────────
 func TestDrainer_StaleFencingToken_UsesMinBackoff(t *testing.T) {
 	outbox := NewFakeOutboxStore()
-	outbox.ClaimFn = func(_, _ string, _ persistence.LeaseToken, _ int) ([]persistence.OutboxRecord, error) {
+	outbox.ClaimFn = func(_, _ string, _ persistence.LeaseToken, _ int) ([]*persistence.OutboxRecord, error) {
 		return nil, shared.ErrStaleFencingToken
 	}
 
 	hasLease := true
 	token := persistence.LeaseToken{Version: 1, Owner: "test"}
 
-	drainer := runtime.NewOutboxDrainerFromConfig(runtime.OutboxDrainerConfig{
+	drainer := outboxpkg.New(outboxpkg.Config{
 		OutboxStore:  outbox,
 		Sender:       NewFakeSender(),
 		RouteID:      "route-1",
@@ -92,7 +94,7 @@ func TestRetryUnsupported_NilDLQ_AcksDelivery(t *testing.T) {
 	sender := NewFakeSender()
 	sender.SendErr = shared.ErrConnectionLost
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "retry-test",
 		Policy:   routing.RoutePolicy{}.WithDefaults(),
 		Receiver: receiver,
@@ -106,11 +108,11 @@ func TestRetryUnsupported_NilDLQ_AcksDelivery(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-1",
 		Subject: "test",
 		Payload: []byte("hello"),
-	}
+	})
 
 	del := NewFakeDelivery(env)
 	del.RetryFnErr = shared.ErrNotSupported
@@ -138,12 +140,12 @@ func TestRetryUnsupported_WithDLQ_RoutesToDLQ(t *testing.T) {
 
 	dlqStore := NewFakeDLQStore()
 
-	runner := runtime.NewRouteRunnerFromConfig(runtime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "retry-dlq-test",
 		Policy:   routing.RoutePolicy{}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
-		DLQ:      runtime.NewDLQRouter(dlqStore),
+		DLQ:      dlq.New(dlqStore),
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -152,11 +154,11 @@ func TestRetryUnsupported_WithDLQ_RoutesToDLQ(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "msg-2",
 		Subject: "test",
 		Payload: []byte("hello"),
-	}
+	})
 
 	del := NewFakeDelivery(env)
 	del.RetryFnErr = shared.ErrNotSupported

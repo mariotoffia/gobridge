@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/bridgecfg"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
@@ -203,9 +203,9 @@ func buildSmallConfig(t *testing.T) *ports.BridgeConfig {
 
 func mustMarshal(t *testing.T, cfg *ports.BridgeConfig) []byte {
 	t.Helper()
-	data, err := config.MarshalYAML(cfg)
+	data, err := parser.MarshalYAML(cfg)
 	if err != nil {
-		t.Fatalf("config.MarshalYAML: %v", err)
+		t.Fatalf("parser.MarshalYAML: %v", err)
 	}
 	return data
 }

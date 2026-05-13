@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -74,6 +74,7 @@ type Loader struct {
 	mode               WatchMode
 	logger             *slog.Logger
 	clk                clock.Clock
+	registry           *ports.Registry
 
 	mu          sync.Mutex
 	lastVersion int64
@@ -119,6 +120,14 @@ func WithStreamPollInterval(d time.Duration) Option {
 	}
 }
 
+// WithRegistry sets the *ports.Registry used to decode the JSON
+// payload stored in DynamoDB into typed PluginConfig values. The
+// registry MUST be supplied (no global default exists); the loader
+// surfaces a parse error if Load runs without one.
+func WithRegistry(r *ports.Registry) Option {
+	return func(l *Loader) { l.registry = r }
+}
+
 // WithLogger sets the logger used for diagnostic messages (mode
 // fallbacks, stream errors). Nil is safe: diagnostics are suppressed.
 func WithLogger(logger *slog.Logger) Option {
@@ -148,7 +157,7 @@ func (l *Loader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 		return nil, shared.ErrNotFound.WithMessage("config not found for bridge " + l.bridgeID)
 	}
 
-	cfg, err := config.Parse(bytes.NewReader([]byte(rawData)), config.FormatJSON)
+	cfg, err := parser.Parse(bytes.NewReader([]byte(rawData)), parser.FormatJSON, l.registry)
 	if err != nil {
 		return nil, fmt.Errorf("dynamodb config load: parse: %w", err)
 	}
@@ -251,7 +260,7 @@ func (l *Loader) currentVersion(ctx context.Context) (int64, error) {
 // Save writes a BridgeConfig to DynamoDB, auto-incrementing the version.
 // This is useful for tests and admin tooling.
 func (l *Loader) Save(ctx context.Context, cfg *ports.BridgeConfig) error {
-	data, err := config.MarshalBridgeConfigJSON(cfg)
+	data, err := parser.MarshalBridgeConfigJSON(cfg)
 	if err != nil {
 		return fmt.Errorf("dynamodb config save: marshal: %w", err)
 	}

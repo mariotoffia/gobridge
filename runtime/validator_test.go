@@ -8,9 +8,10 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
-func validDirectHoldEntry() (runtime.RouteConfig, ports.Receiver, ports.Sender, ports.Session, *runtime.SessionConfig) {
+func validDirectHoldEntry() (runtime.RouteConfig, ports.Receiver, ports.Sender, ports.Session, *session.Config) {
 	cfg := runtime.RouteConfig{
 		ID: "sqs-to-mqtt-dh",
 		Policy: routing.RoutePolicy{
@@ -22,7 +23,7 @@ func validDirectHoldEntry() (runtime.RouteConfig, ports.Receiver, ports.Sender, 
 			ports.CapVisibilityExtension,
 		},
 	}
-	sessCfg := runtime.DefaultSessionConfig("mqtt-gateway", false)
+	sessCfg := session.DefaultConfig("mqtt-gateway", false)
 	return cfg, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &sessCfg
 }
 
@@ -66,7 +67,7 @@ func TestValidator_DirectHold_RejectsFanOut(t *testing.T) {
 func TestValidator_DirectHold_RejectsExclusiveSession(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, _ := validDirectHoldEntry()
-	exclusiveCfg := runtime.DefaultSessionConfig("mqtt-exclusive", true)
+	exclusiveCfg := session.DefaultConfig("mqtt-exclusive", true)
 
 	if err := rt.AddRoute(cfg, rx, tx, sess, &exclusiveCfg); err != nil {
 		t.Fatal(err)
@@ -128,7 +129,7 @@ func TestValidator_DirectHold_CollectsMultipleErrors(t *testing.T) {
 	cfg, rx, tx, sess, _ := validDirectHoldEntry()
 	cfg.Policy.DispatchMode = routing.DispatchFanOut
 	cfg.SourceCapabilities = nil
-	exclusiveCfg := runtime.DefaultSessionConfig("mqtt-exclusive", true)
+	exclusiveCfg := session.DefaultConfig("mqtt-exclusive", true)
 
 	if err := rt.AddRoute(cfg, rx, tx, sess, &exclusiveCfg); err != nil {
 		t.Fatal(err)
@@ -188,7 +189,7 @@ func TestValidator_SharedOutbox_Valid(t *testing.T) {
 			Plans: []routing.DispatchPlan{{BindingID: "b1", Address: "topic/a"}},
 		},
 	}
-	sessCfg := runtime.DefaultSessionConfig("mqtt-sess", true)
+	sessCfg := session.DefaultConfig("mqtt-sess", true)
 
 	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &sessCfg); err != nil {
 		t.Fatal(err)
@@ -298,7 +299,7 @@ func TestValidator_SharedOutbox_NonExclusiveNoLeaseStore(t *testing.T) {
 			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 	}
-	nonExclusiveCfg := runtime.DefaultSessionConfig("mqtt-persistent", false)
+	nonExclusiveCfg := session.DefaultConfig("mqtt-persistent", false)
 
 	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &nonExclusiveCfg); err != nil {
 		t.Fatal(err)
@@ -364,7 +365,7 @@ func TestValidator_SharedOutbox_RejectsMissingLeaseStoreForExclusive(t *testing.
 			DeliveryMode: routing.DeliverySharedOutbox,
 		},
 	}
-	exclusiveCfg := runtime.DefaultSessionConfig("mqtt-exclusive", true)
+	exclusiveCfg := session.DefaultConfig("mqtt-exclusive", true)
 
 	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &exclusiveCfg); err != nil {
 		t.Fatal(err)
@@ -454,7 +455,7 @@ func TestValidator_SharedOutbox_FanOutExceedsTransactionLimit(t *testing.T) {
 		},
 		Bindings: bindings,
 	}
-	sessCfg := runtime.DefaultSessionConfig("sess", false)
+	sessCfg := session.DefaultConfig("sess", false)
 
 	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &sessCfg); err != nil {
 		t.Fatal(err)
@@ -495,7 +496,7 @@ func TestValidator_SharedOutbox_FanOutAtLimit(t *testing.T) {
 		},
 		Bindings: bindings,
 	}
-	sessCfg := runtime.DefaultSessionConfig("sess", false)
+	sessCfg := session.DefaultConfig("sess", false)
 
 	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &sessCfg); err != nil {
 		t.Fatal(err)

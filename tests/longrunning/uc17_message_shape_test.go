@@ -21,7 +21,6 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
-	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -275,7 +274,7 @@ func TestUC19_MixedPayloadSizes(t *testing.T) {
 	msgs := collector.getMessages()
 	counts := map[string]int{}
 	for _, m := range msgs {
-		if cls, ok := messaging.GetHeaderString(m.Headers, "size_class"); ok {
+		if cls, ok := m.Headers().GetString("size_class"); ok {
 			counts[cls]++
 		}
 	}
@@ -341,7 +340,7 @@ func TestUC20_HeaderHeavy_50Headers(t *testing.T) {
 	for idx, m := range msgs[:msgCount] {
 		for h := 0; h < 10; h++ {
 			key := fmt.Sprintf("hdr-%02d", h)
-			_, ok := m.Headers[key]
+			_, ok := m.Headers().Get(key)
 			require.True(t, ok, "msg %d missing header %s", idx, key)
 		}
 	}

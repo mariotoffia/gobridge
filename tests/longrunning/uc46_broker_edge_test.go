@@ -72,22 +72,22 @@ func TestUC46_BrokerMessageSizeLimit(t *testing.T) {
 
 	// Inject small messages.
 	for i := 0; i < smallCount; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("uc46-small-%d", i),
 			Subject: outTopic,
 			Payload: []byte(fmt.Sprintf(`{"seq":%d,"size":"small"}`, i)),
-		}
+		})
 		_ = rt.Inject(ctx, "uc46-route", env)
 	}
 
 	// Inject oversized messages.
 	bigPayload := []byte(strings.Repeat("x", 2000))
 	for i := 0; i < bigCount; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("uc46-big-%d", i),
 			Subject: outTopic,
 			Payload: bigPayload,
-		}
+		})
 		_ = rt.Inject(ctx, "uc46-route", env)
 	}
 

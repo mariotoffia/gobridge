@@ -102,6 +102,21 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **Timer / Ticker** | Domain-owned interfaces wrapping `time.Timer` / `time.Ticker`. Faked in tests via `domain/clock/clocktest`. |
 | **System clock** | The default `Clock` backed by the stdlib `time` package. |
 
+## Blueprint / Configuration (`ports/blueprint*.go` + `config/`)
+
+Layer-2 *supporting subdomain*: the parsed-but-not-yet-built shape of a bridge. Format-neutral types live in `ports/`; the YAML/JSON parser, validator, merger and on-disk store live in `config/`. See [DDD.md §3.7](DDD.md#37-blueprint--configuration--supporting-layer-2).
+
+| Term | Meaning |
+|---|---|
+| **BridgeConfig** | Aggregate root of the blueprint. Carries `Version` (optimistic-concurrency counter), `Bridge` settings, optional `ConfigWatch`, `Stores`, `Sessions`, `Receivers`, `Senders`, `Bindings`, `Routes`, optional `HTTP`. Consumed whole by `bridge.Builder`. |
+| **BridgeSettings** | Bridge-level operational settings: `ID`, `InstanceID`, `DeploymentMode`, shutdown / drain timeouts, `LogLevel`, optional `Cluster`. |
+| **SessionDef** | Declarative description of one transport session: `ID`, `Transport`, `Mode` (`ephemeral` / `persistent` / `exclusive`), credential URI, typed plugin `Config`. |
+| **BindingDef** | Declarative description of one destination binding: `ID`, `Transport`, `SessionID`, `SenderID`, `Address` (transport destination), typed plugin `Config`, static headers. |
+| **RouteDef** | Declarative description of one route: `ID`, `ReceiverID`, `DeliveryMode`, `DispatchMode`, list of `Bindings`, `RoutePolicy`. |
+| **BlueprintValidationError** | Structured outcome of blueprint validation. Splits hard `Errors` (block startup or commit) from advisory `Warnings` (surface in admin UI but allow). Returned by the validator and inspected directly by `httpapi`. |
+| **ConfigStore** | Port (`ports.ConfigStore`) consumed by the admin HTTP layer for `Load` / `Save` / `Validate` / `Merge` over a `*BridgeConfig`. Decouples `httpapi` from the parser package; composition root supplies the implementation (file-backed, DynamoDB, Vault, …). |
+| **Blueprint** | Synonym for an in-memory `*BridgeConfig`: a parsed-but-not-yet-built configuration shape. The blueprint validator runs invariants before `bridge.Builder` is invoked. |
+
 ## Cross-cutting (Layer 2)
 
 | Term | Meaning |
@@ -113,5 +128,4 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **Composition root** | `cmd/` — the only place that wires adapters into the runtime. |
 | **Bridge** | The composition factory in `bridge/` that turns a parsed `BridgeConfig` into a running `Runtime`. |
 | **Runtime** | The use-case engine in `runtime/` that executes routes, drains outboxes, manages leases. |
-| **Blueprint** | A parsed-but-not-yet-validated configuration shape (`ports.BridgeConfig`). The blueprint validator runs invariants before the bridge is built. |
 | **Plugin config** | Transport- or processor-specific typed configuration carried as `any` through the domain and type-asserted at the adapter boundary. |

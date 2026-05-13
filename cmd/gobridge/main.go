@@ -12,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
+	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/httpapi"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -19,6 +20,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 func main() {
@@ -28,14 +30,26 @@ func main() {
 
 	logger := newLogger(*logLevel)
 
-	fileSource := fileconfig.NewSource(*configPath)
+	// Build the per-process plugin registry by registering each
+	// adapter we link in. Adding a new transport/store means a new
+	// Register call here — the import alone no longer suffices.
+	reg := ports.NewRegistry()
+	if err := errors.Join(
+		paho.Register(reg),
+		nativestore.Register(reg),
+	); err != nil {
+		logger.Error("failed to register plugin decoders", "error", err)
+		os.Exit(1)
+	}
+
+	fileSource := fileconfig.NewSource(*configPath, reg)
 	baseCfg, err := fileSource.Load(context.Background())
 	if err != nil {
 		logger.Error("failed to load config", "path", *configPath, "error", err)
 		os.Exit(1)
 	}
 
-	fileWatcher := fileconfig.NewWatcher(*configPath,
+	fileWatcher := fileconfig.NewWatcher(*configPath, reg,
 		fileconfig.WithWatchConfig(baseCfg.ConfigWatch),
 		fileconfig.WithLogger(logger),
 	)
@@ -70,6 +84,7 @@ func main() {
 
 	sup.RegisterTransport("mqtt", paho.NewFactory(logger))
 	sup.RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory())
+	sup.RegisterStoreFactory("sqlite", nativestore.NewSQLiteStoreFactory())
 
 	// AWS adapters require an AWS SDK client. Uncomment and configure
 	// when deploying with AWS backing services:
@@ -106,14 +121,20 @@ func main() {
 
 	if cfg.HTTP != nil {
 		apiCfg := httpapi.Config{
-			AdminAddr:       cfg.HTTP.AdminAddr,
-			MonitorAddr:     cfg.HTTP.MonitorAddr,
-			AdminAPIKey:     cfg.HTTP.AdminAPIKey,
-			MonitorAPIKey:   cfg.HTTP.MonitorAPIKey,
-			CORSOrigins:     cfg.HTTP.CORSOrigins,
-			RuntimeProvider: sup.Runtime,
-			ConfigStore:     &config.FileStore{Path: *configPath},
-			ConfigProvider:  sup.Config,
+			AdminAddr:     cfg.HTTP.AdminAddr,
+			MonitorAddr:   cfg.HTTP.MonitorAddr,
+			AdminAPIKey:   cfg.HTTP.AdminAPIKey,
+			MonitorAPIKey: cfg.HTTP.MonitorAPIKey,
+			CORSOrigins:   cfg.HTTP.CORSOrigins,
+			RuntimeProvider: func() ports.Runtime {
+				rt := sup.Runtime()
+				if rt == nil {
+					return nil
+				}
+				return rt
+			},
+			ConfigStore:    &cfgparser.FileStore{Path: *configPath, Registry: reg},
+			ConfigProvider: sup.Config,
 		}
 		if apiCfg.AdminAddr == "" {
 			apiCfg.AdminAddr = ":8080"

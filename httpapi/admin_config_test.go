@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -28,22 +28,23 @@ type stubPluginConfig struct{ kind string }
 func (s stubPluginConfig) Kind() string    { return s.kind }
 func (s stubPluginConfig) Validate() error { return nil }
 
-// init registers stub decoders for the transport kinds used by the
-// test fixtures so the two-stage config parser can decode them
-// without requiring real adapter packages to be linked into the test
-// binary. Each kind is registered at most once via
-// DefaultRegistry.RegisterIfAbsent semantics (best-effort: panics from
-// duplicate registration are recovered).
-func init() {
+// newTestRegistry builds a hermetic *ports.Registry for the httpapi
+// tests, pre-populated with stub decoders for the transport kinds
+// the test fixtures reference. Each test that calls parser.ParseFile
+// supplies its own registry instance via this helper instead of
+// relying on a process-wide singleton.
+func newTestRegistry(t testing.TB) *ports.Registry {
+	t.Helper()
+	reg := ports.NewRegistry()
 	for _, k := range []string{"mqtt", "sqs", "http"} {
 		kind := k
-		func() {
-			defer func() { _ = recover() }()
-			ports.DefaultRegistry.Register(kind, func(raw ports.RawConfig) (ports.PluginConfig, error) {
-				return stubPluginConfig{kind: kind}, nil
-			})
-		}()
+		if err := reg.Register(kind, func(raw ports.RawConfig) (ports.PluginConfig, error) {
+			return stubPluginConfig{kind: kind}, nil
+		}); err != nil {
+			t.Fatalf("register stub %q: %v", kind, err)
+		}
 	}
+	return reg
 }
 
 // sampleBridgeConfig returns a minimal valid BridgeConfig for testing.
@@ -89,11 +90,11 @@ func newConfigTestServer(t *testing.T, cfg *ports.BridgeConfig, opts ...Option) 
 	path := filepath.Join(dir, "config.yaml")
 
 	// Write initial config to disk.
-	require.NoError(t, config.WriteFile(path, cfg))
+	require.NoError(t, parser.WriteFile(path, cfg))
 
 	rt := runtime.New(runtime.WithInstanceID("config-test"))
 	apiCfg := testConfig()
-	apiCfg.ConfigStore = &config.FileStore{Path: path}
+	apiCfg.ConfigStore = &parser.FileStore{Path: path, Registry: newTestRegistry(t)}
 	apiCfg.ConfigProvider = func() *ports.BridgeConfig { return cfg }
 
 	s := New(rt, apiCfg, opts...)
@@ -330,7 +331,7 @@ func TestHandleConfigTxnCommit_WritesFile(t *testing.T) {
 	assert.Equal(t, float64(1), body["version"]) // first commit: 0 → 1
 
 	// Verify file was actually written with version.
-	parsed, err := config.ParseFile(path, config.FormatYAML)
+	parsed, err := parser.ParseFile(path, parser.FormatYAML, newTestRegistry(t))
 	require.NoError(t, err)
 	assert.Equal(t, "error", parsed.Bridge.LogLevel)
 	assert.Equal(t, "test-bridge", parsed.Bridge.ID)

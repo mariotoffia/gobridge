@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -49,7 +50,7 @@ func TestMinServiceLevel(t *testing.T) {
 // registering a session sender with an empty session ID returns an error.
 func TestRuntime_RegisterSessionSender_EmptySessionID(t *testing.T) {
 	rt := New()
-	err := rt.RegisterSessionSender(SessionConfig{}, nil, nil)
+	err := rt.RegisterSessionSender(session.Config{}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for empty session ID")
 	}
@@ -59,7 +60,7 @@ func TestRuntime_RegisterSessionSender_EmptySessionID(t *testing.T) {
 // the same session ID twice returns an error.
 func TestRuntime_RegisterSessionSender_Duplicate(t *testing.T) {
 	rt := New()
-	cfg := SessionConfig{SessionID: "sess-1"}
+	cfg := session.Config{SessionID: "sess-1"}
 
 	if err := rt.RegisterSessionSender(cfg, nil, nil); err != nil {
 		t.Fatalf("first registration should succeed: %v", err)

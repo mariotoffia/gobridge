@@ -211,13 +211,13 @@ func TestAnaErr_ContainsAnyEmptySubstrs(t *testing.T) {
 // TestAnaHdr_PublishFromEnvelope_NilEnvelopeHeaders_NoCrash validates
 // the helper against nil headers (common case).
 func TestAnaHdr_PublishFromEnvelope_NilEnvelopeHeaders_NoCrash(t *testing.T) {
-	env := &messaging.Envelope{Subject: "t", Payload: []byte("p")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "t", Payload: []byte("p")})
 	defer func() {
 		if rv := recover(); rv != nil {
 			t.Fatalf("PublishFromEnvelope panicked: %v", rv)
 		}
 	}()
-	pub := PublishFromEnvelope(env, env.Subject, SenderOptions{QoS: 0}, nil)
+	pub := PublishFromEnvelope(env, env.Subject(), SenderOptions{QoS: 0}, nil)
 	if pub == nil || pub.Topic != "t" {
 		t.Fatalf("expected pub with topic t, got %+v", pub)
 	}
@@ -228,7 +228,7 @@ func TestAnaHdr_PublishFromEnvelope_NilEnvelopeHeaders_NoCrash(t *testing.T) {
 // properties; non-string values (int, struct, ...) are silently
 // dropped.
 func TestAnaHdr_PublishFromEnvelope_NonStringHeaderValueIsSkipped(t *testing.T) {
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Subject: "t",
 		Payload: []byte("p"),
 		Headers: map[string]any{
@@ -236,8 +236,8 @@ func TestAnaHdr_PublishFromEnvelope_NonStringHeaderValueIsSkipped(t *testing.T) 
 			"struct-key": struct{ A int }{A: 1},
 			"good-key":   "ok",
 		},
-	}
-	pub := PublishFromEnvelope(env, env.Subject, SenderOptions{QoS: 1}, nil)
+	})
+	pub := PublishFromEnvelope(env, env.Subject(), SenderOptions{QoS: 1}, nil)
 
 	if pub.Properties == nil {
 		t.Fatal("properties should be set when at least one mappable header is present")
@@ -295,7 +295,7 @@ func TestAnaHdr_EnvelopeFromPublish_OversizedResponseTopic_Dropped(t *testing.T)
 		},
 	}
 	env := EnvelopeFromPublish(pub, nil)
-	if _, ok := env.Headers[headerMQTTResponseTopic]; ok {
+	if _, ok := env.Headers()[headerMQTTResponseTopic]; ok {
 		t.Error("oversized response topic must be dropped")
 	}
 }
@@ -311,7 +311,7 @@ func TestAnaHdr_EnvelopeFromPublish_AcceptsEmptyUserPropertyValue(t *testing.T) 
 		},
 	}
 	env := EnvelopeFromPublish(pub, nil)
-	if v, ok := messaging.GetHeaderString(env.Headers, "k"); !ok || v != "" {
+	if v, ok := messaging.GetHeaderString(env.Headers(), "k"); !ok || v != "" {
 		t.Fatalf("empty user property value should be accepted, got ok=%v v=%q", ok, v)
 	}
 }
@@ -319,7 +319,7 @@ func TestAnaHdr_EnvelopeFromPublish_AcceptsEmptyUserPropertyValue(t *testing.T) 
 // TestAnaHdr_PublishFromEnvelope_EmptyEnvelope_NoProperties verifies
 // the publish has nil Properties when no header-derived data exists.
 func TestAnaHdr_PublishFromEnvelope_EmptyEnvelope_NoProperties(t *testing.T) {
-	// Note: env.Subject is intentionally empty so PublishFromEnvelope
+	// Note: env.Subject() is intentionally empty so PublishFromEnvelope
 	// does NOT emit a HeaderGobridgeSubject user property.
 	env := &messaging.Envelope{Payload: []byte{}}
 	pub := PublishFromEnvelope(env, "t", SenderOptions{QoS: 0}, nil)
@@ -333,8 +333,8 @@ func TestAnaHdr_PublishFromEnvelope_EmptyEnvelope_NoProperties(t *testing.T) {
 func TestAnaHdr_EnvelopeFromPublish_EmptyTopicAccepted(t *testing.T) {
 	pub := &pahov5.Publish{Topic: "", Payload: []byte("p")}
 	env := EnvelopeFromPublish(pub, nil)
-	if env.Subject != "" {
-		t.Errorf("Subject = %q, want empty", env.Subject)
+	if env.Subject() != "" {
+		t.Errorf("Subject = %q, want empty", env.Subject())
 	}
 }
 
@@ -342,12 +342,12 @@ func TestAnaHdr_EnvelopeFromPublish_EmptyTopicAccepted(t *testing.T) {
 // verifies that an envelope with only ExpiresAt produces a publish
 // with Properties set (and only MessageExpiry populated).
 func TestAnaHdr_PublishFromEnvelope_OnlyMessageExpiry_HasProperties(t *testing.T) {
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Subject:   "t",
 		Payload:   []byte("p"),
 		ExpiresAt: nowPlus(60),
-	}
-	pub := PublishFromEnvelope(env, env.Subject, SenderOptions{QoS: 1}, nil)
+	})
+	pub := PublishFromEnvelope(env, env.Subject(), SenderOptions{QoS: 1}, nil)
 	if pub.Properties == nil {
 		t.Fatal("expected Properties because ExpiresAt was set")
 	}

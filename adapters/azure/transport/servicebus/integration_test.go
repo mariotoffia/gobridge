@@ -88,11 +88,11 @@ func warmupRoundtrip(cs string, timeout time.Duration) error {
 	}
 	defer sender.Close(context.Background()) //nolint:errcheck
 
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      fmt.Sprintf("warmup-%d", time.Now().UnixNano()),
 		Subject: "asb-warmup",
 		Payload: []byte(`{"warmup":true}`),
-	}}); err != nil {
+	})}); err != nil {
 		return fmt.Errorf("warmup send: %w", err)
 	}
 
@@ -213,7 +213,7 @@ func TestIntegration_SendReceive(t *testing.T) {
 	defer sender.Close(ctx) //nolint:errcheck
 
 	payload := []byte(`{"msg":"hello"}`)
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      fmt.Sprintf("test-msg-%d", time.Now().UnixNano()),
 		Subject: "test-subject",
 		Payload: payload,
@@ -222,7 +222,7 @@ func TestIntegration_SendReceive(t *testing.T) {
 			"asb.content-type": "application/json",
 		},
 		CreatedAt: time.Now(),
-	}
+	})
 
 	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -245,13 +245,13 @@ func TestIntegration_SendReceive(t *testing.T) {
 	if string(got.Payload) != string(payload) {
 		t.Errorf("payload = %q, want %q", got.Payload, payload)
 	}
-	if got.Subject != "test-subject" {
-		t.Errorf("subject = %q, want %q", got.Subject, "test-subject")
+	if got.Subject() != "test-subject" {
+		t.Errorf("subject = %q, want %q", got.Subject(), "test-subject")
 	}
-	if v, ok := got.Headers["custom-key"]; !ok || v != "custom-value" {
+	if v, ok := got.Headers()["custom-key"]; !ok || v != "custom-value" {
 		t.Errorf("custom-key header = %v, want %q", v, "custom-value")
 	}
-	if v, ok := got.Headers["asb.content-type"]; !ok || v != "application/json" {
+	if v, ok := got.Headers()["asb.content-type"]; !ok || v != "application/json" {
 		t.Errorf("content-type = %v, want %q", v, "application/json")
 	}
 }
@@ -266,12 +266,12 @@ func TestIntegration_AckRetryExtend(t *testing.T) {
 	sender := newTestSender(t, asblocal.TestQueue)
 	defer sender.Close(ctx) //nolint:errcheck
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:        fmt.Sprintf("ack-test-%d", time.Now().UnixNano()),
 		Subject:   "ack-test",
 		Payload:   []byte("ack-retry-extend-test"),
 		CreatedAt: time.Now(),
-	}
+	})
 
 	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -346,12 +346,12 @@ func TestIntegration_BatchSend(t *testing.T) {
 	const batchSize = 5
 	envs := make([]*messaging.Envelope, batchSize)
 	for i := range envs {
-		envs[i] = &messaging.Envelope{
+		envs[i] = messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:        fmt.Sprintf("batch-%d-%d", i, time.Now().UnixNano()),
 			Subject:   "batch-test",
 			Payload:   []byte(fmt.Sprintf("batch-message-%d", i)),
 			CreatedAt: time.Now(),
-		}
+		})
 	}
 
 	sent, err := sender.SendBatch(ctx, func() []ports.OutboundMessage {
@@ -415,12 +415,12 @@ func TestIntegration_ErrorMapping(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	sendErr := s.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	sendErr := s.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:        "error-test",
 		Subject:   "error-test",
 		Payload:   []byte("error-test"),
 		CreatedAt: time.Now(),
-	}})
+	})})
 
 	if sendErr == nil {
 		t.Fatal("expected error when sending to non-existent queue")
@@ -445,12 +445,12 @@ func TestIntegration_AutoExtend(t *testing.T) {
 	sender := newTestSender(t, asblocal.TestQueue)
 	defer sender.Close(ctx) //nolint:errcheck
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:        fmt.Sprintf("autoextend-%d", time.Now().UnixNano()),
 		Subject:   "auto-extend-test",
 		Payload:   []byte("auto-extend-payload"),
 		CreatedAt: time.Now(),
-	}
+	})
 
 	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -514,7 +514,7 @@ func TestIntegration_TopicSubscription(t *testing.T) {
 	}
 	defer topicSender.Close(ctx) //nolint:errcheck
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      fmt.Sprintf("topic-msg-%d", time.Now().UnixNano()),
 		Subject: "topic-test",
 		Payload: []byte("topic-payload"),
@@ -522,7 +522,7 @@ func TestIntegration_TopicSubscription(t *testing.T) {
 			"env": "test",
 		},
 		CreatedAt: time.Now(),
-	}
+	})
 
 	if err := topicSender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send to topic: %v", err)

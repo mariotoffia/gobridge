@@ -13,6 +13,9 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -35,7 +38,7 @@ func TestRouteRunner_SharedOutbox_DepthCacheExercised(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
 
-	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "route-shared",
 		Receiver: receiver,
 		Sender:   sender,
@@ -44,7 +47,7 @@ func TestRouteRunner_SharedOutbox_DepthCacheExercised(t *testing.T) {
 			MaxOutboxDepth: 100,
 		},
 		OutboxStore: outbox,
-		DLQ:         goruntime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:         dlq.New(NewFakeDLQStore()),
 		InstanceID:  "bridge-1",
 		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "sess-1", Address: "dest"},
@@ -77,7 +80,7 @@ func TestRouteRunner_DirectHold_NoQueryPending(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
 
-	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "route-direct",
 		Receiver: receiver,
 		Sender:   sender,
@@ -86,7 +89,7 @@ func TestRouteRunner_DirectHold_NoQueryPending(t *testing.T) {
 			MaxOutboxDepth: 100, // deliberately set to prove depth check is not exercised for DirectHold
 		},
 		OutboxStore: outbox,
-		DLQ:         goruntime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:         dlq.New(NewFakeDLQStore()),
 		InstanceID:  "bridge-1",
 	})
 
@@ -166,16 +169,15 @@ func TestDrainerNameGeneration(t *testing.T) {
 // sent, but the drainer must accept the config without error.
 func TestOutboxDrainerConfig_DrainBatchSize_Default(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
-	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.DrainBatchSize = 0
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = drainer.Run(ctx) }()
 
-	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{
-		{ID: "rec-def", RouteID: "route-1", EnvelopeID: "env-def", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-def", Payload: []byte("x")}},
-	})
+	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{
+		persistence.MustOutboxRecord(persistence.OutboxSpec{ID: "rec-def", RouteID: "route-1", EnvelopeID: "env-def", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-def", Payload: []byte("x")}})})
 
 	waitFor(t, 2*time.Second, "record sent", func() bool {
 		return sender.SentCount() >= 1
@@ -189,11 +191,11 @@ func TestOutboxDrainerConfig_DrainBatchSize_Default(t *testing.T) {
 func TestOutboxDrainerConfig_DrainBatchSize_Custom(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	var observedLimit int64
-	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.DrainBatchSize = 42
 	})
 
-	outbox.ClaimFn = func(_ string, _ string, _ persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error) {
+	outbox.ClaimFn = func(_ string, _ string, _ persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
 		atomic.StoreInt64(&observedLimit, int64(limit))
 		return nil, nil
 	}
@@ -236,15 +238,14 @@ func TestOutboxDrainer_FinalDrain_CompletesAfterCancel(t *testing.T) {
 		onSignal: pollEntered,
 	}
 
-	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Strategy = strategy
 		cfg.DrainTimeout = 500 * time.Millisecond
 	})
 
 	ctx := context.Background()
-	_ = outbox.Persist(ctx, []persistence.OutboxRecord{
-		{ID: "final-1", RouteID: "route-1", EnvelopeID: "env-f1", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-f1", Payload: []byte("final")}},
-	})
+	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{
+		persistence.MustOutboxRecord(persistence.OutboxSpec{ID: "final-1", RouteID: "route-1", EnvelopeID: "env-f1", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-f1", Payload: []byte("final")}})})
 
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
@@ -367,16 +368,15 @@ func (s *signalingStrategy) NextInterval(n int) time.Duration {
 // ═══════════════════════════════════════════════════════════════════════
 func TestOutboxDrainerConfig_DrainBatchSize_NegativeClamped(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
-	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.DrainBatchSize = -1
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = drainer.Run(ctx) }()
 
-	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{
-		{ID: "rec-neg", RouteID: "route-1", EnvelopeID: "env-neg", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-neg", Payload: []byte("neg")}},
-	})
+	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{
+		persistence.MustOutboxRecord(persistence.OutboxSpec{ID: "rec-neg", RouteID: "route-1", EnvelopeID: "env-neg", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-neg", Payload: []byte("neg")}})})
 
 	waitFor(t, 2*time.Second, "record sent with clamped batch size", func() bool {
 		return sender.SentCount() >= 1
@@ -394,7 +394,7 @@ func TestOutboxDrainerConfig_DrainBatchSize_NegativeClamped(t *testing.T) {
 // ═══════════════════════════════════════════════════════════════════════
 func TestOutboxDrainerConfig_DrainMaxBatchSize_FloorsToBatchSize(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
-	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *goruntime.OutboxDrainerConfig) {
+	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.DrainBatchSize = 200
 		cfg.DrainMaxBatchSize = 50
 	})
@@ -402,9 +402,8 @@ func TestOutboxDrainerConfig_DrainMaxBatchSize_FloorsToBatchSize(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = drainer.Run(ctx) }()
 
-	_ = outbox.Persist(context.Background(), []persistence.OutboxRecord{
-		{ID: "rec-floor", RouteID: "route-1", EnvelopeID: "env-floor", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-floor", Payload: []byte("f")}},
-	})
+	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{
+		persistence.MustOutboxRecord(persistence.OutboxSpec{ID: "rec-floor", RouteID: "route-1", EnvelopeID: "env-floor", BindingID: "b1", SessionID: "sess-1", Envelope: messaging.Envelope{ID: "env-floor", Payload: []byte("f")}})})
 
 	waitFor(t, 2*time.Second, "record sent with floored max batch size", func() bool {
 		return sender.SentCount() >= 1
@@ -421,7 +420,7 @@ func TestRouteRunner_SharedOutbox_NilOutboxStore_Retries(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
 
-	runner := goruntime.NewRouteRunnerFromConfig(goruntime.RouteRunnerConfig{
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:  "route-nil-outbox",
 		Receiver: receiver,
 		Sender:   sender,
@@ -430,7 +429,7 @@ func TestRouteRunner_SharedOutbox_NilOutboxStore_Retries(t *testing.T) {
 			MaxOutboxDepth: 100,
 		},
 		OutboxStore: nil,
-		DLQ:         goruntime.NewDLQRouter(NewFakeDLQStore()),
+		DLQ:         dlq.New(NewFakeDLQStore()),
 		InstanceID:  "bridge-1",
 		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "sess-1", Address: "dest"},

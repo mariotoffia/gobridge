@@ -145,16 +145,16 @@ func TestIntegration_HTTPPost_RuntimePipeline_FakeSender(t *testing.T) {
 		return len(sender.getSent()) >= 1
 	})
 	env := sender.getSent()[0]
-	if env.Subject != "order.created" {
-		t.Fatalf("subject: got %q, want order.created", env.Subject)
+	if env.Subject() != "order.created" {
+		t.Fatalf("subject: got %q, want order.created", env.Subject())
 	}
 	if !strings.Contains(string(env.Payload), `"id":"42"`) {
 		t.Fatalf("payload mismatch: %s", env.Payload)
 	}
-	if _, ok := env.Headers[messaging.HeaderRouteID]; !ok {
+	if _, ok := env.Headers()[messaging.HeaderRouteID]; !ok {
 		t.Fatal("missing x-bridge.route-id header")
 	}
-	if _, ok := env.Headers[messaging.HeaderCorrelationID]; !ok {
+	if _, ok := env.Headers()[messaging.HeaderCorrelationID]; !ok {
 		t.Fatal("missing x-bridge.correlation-id header")
 	}
 }
@@ -173,7 +173,7 @@ func TestIntegration_HTTPPost_FilterDrop_NoSend(t *testing.T) {
 	}
 	sender := &fakeSender{}
 	filter := &filterProcessor{dropFn: func(env *messaging.Envelope) bool {
-		return strings.HasPrefix(env.Subject, "spam.")
+		return strings.HasPrefix(env.Subject(), "spam.")
 	}}
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	if err := rt.AddRoute(directHoldRouteConfig("filter-route", []ports.Processor{filter}), recv, sender, nil, nil); err != nil {
@@ -211,8 +211,8 @@ func TestIntegration_HTTPPost_FilterDrop_NoSend(t *testing.T) {
 		return len(sender.getSent()) == 1
 	})
 	env := sender.getSent()[0]
-	if env.Subject != "order.created" {
-		t.Fatalf("subject: got %q, want order.created", env.Subject)
+	if env.Subject() != "order.created" {
+		t.Fatalf("subject: got %q, want order.created", env.Subject())
 	}
 }
 
@@ -249,7 +249,7 @@ func TestIntegration_SSEClient_ReceivesMultipleEvents(t *testing.T) {
 
 	subjects := []string{"evt.one", "evt.two", "evt.three"}
 	for i, subj := range subjects {
-		env := &messaging.Envelope{ID: subj, Subject: subj, Payload: []byte(`{}`)}
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: subj, Subject: subj, Payload: []byte(`{}`)})
 		if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 			t.Fatalf("Send[%d]: %v", i, err)
 		}
@@ -293,9 +293,9 @@ func TestIntegration_SSEClient_ReceivesMultipleEvents(t *testing.T) {
 
 	_ = resp.Body.Close()
 
-	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "after-close", Subject: "evt.four", Payload: []byte(`{}`),
-	}}); err != nil {
+	})}); err != nil {
 		t.Fatalf("Send after client disconnect should not error: %v", err)
 	}
 }
@@ -477,17 +477,17 @@ func TestIntegration_HTTPPost_HeaderProcessing(t *testing.T) {
 
 	env := sender.getSent()[0]
 
-	routeID, ok := messaging.GetHeaderString(env.Headers, messaging.HeaderRouteID)
+	routeID, ok := messaging.GetHeaderString(env.Headers(), messaging.HeaderRouteID)
 	if !ok || routeID != "hdr-route" {
 		t.Fatalf("route-id: got %q, want hdr-route", routeID)
 	}
 
-	custom, ok := env.Headers["custom-header"]
+	custom, ok := env.Headers()["custom-header"]
 	if !ok || custom != "keep-me" {
 		t.Fatalf("custom-header: got %v, want keep-me", custom)
 	}
 
-	if _, ok := env.Headers[messaging.HeaderCorrelationID]; !ok {
+	if _, ok := env.Headers()[messaging.HeaderCorrelationID]; !ok {
 		t.Fatal("missing auto-injected correlation-id")
 	}
 }

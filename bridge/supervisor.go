@@ -114,7 +114,7 @@ func WithSupervisorPushCredentialStore(cs ports.PushCredentialStore) SupervisorO
 
 // WithSupervisorPolledCredentialStore wires a pull store and adaption
 // config together so the builder can lift a pull store into a push
-// store via runtime.NewPollBasedWrapper.
+// store via runtime/credentials.NewPollBasedWrapper.
 func WithSupervisorPolledCredentialStore(cs ports.PullCredentialStore, cfg ports.PollBasedWrapperConfig) SupervisorOption {
 	return func(s *Supervisor) {
 		s.pollCredStore = cs
@@ -368,7 +368,7 @@ func (s *Supervisor) applyPrepareCommit(
 ) (*runtime.Runtime, error) {
 	builder := s.newBuilder(newCfg)
 
-	prep, err := builder.Prepare(ctx)
+	prep, err := builder.prepare(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("prepare: %w", err)
 	}
@@ -383,7 +383,7 @@ func (s *Supervisor) applyPrepareCommit(
 		cancel()
 	}
 
-	newRt, err := builder.Complete(ctx, prep)
+	newRt, err := builder.complete(ctx, prep)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Error("supervisor: Complete failed, attempting recovery with old config", "error", err)
@@ -455,7 +455,7 @@ func (s *Supervisor) newBuilder(cfg *ports.BridgeConfig) *Builder {
 	}
 	b := NewBuilder(cfg, opts...)
 	for name, tf := range transports {
-		b.RegisterTransport(name, tf)
+		b.RegisterTransportFactory(name, tf)
 	}
 	for name, sf := range stores {
 		b.RegisterStoreFactory(name, sf)

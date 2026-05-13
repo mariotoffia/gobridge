@@ -10,8 +10,12 @@ import (
 	"os"
 	"strings"
 
+	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
+	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
+	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
-	"github.com/mariotoffia/gobridge/config"
+	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
+	"github.com/mariotoffia/gobridge/config/parser"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -75,15 +79,16 @@ func LoadBootstrapConfigJSON(data []byte) (deployinfra.BootstrapConfig, error) {
 
 type optionalFileSource struct {
 	path     string
+	registry *ports.Registry
 	fallback func() *ports.BridgeConfig
 }
 
-func newOptionalFileSource(path string, fallback func() *ports.BridgeConfig) ports.Loader {
-	return &optionalFileSource{path: path, fallback: fallback}
+func newOptionalFileSource(path string, registry *ports.Registry, fallback func() *ports.BridgeConfig) ports.Loader {
+	return &optionalFileSource{path: path, registry: registry, fallback: fallback}
 }
 
 func (s *optionalFileSource) Load(_ context.Context) (*ports.BridgeConfig, error) {
-	cfg, err := config.ParseFile(s.path, config.FormatAuto)
+	cfg, err := parser.ParseFile(s.path, parser.FormatAuto, s.registry)
 	if err == nil {
 		return cfg, nil
 	}
@@ -93,7 +98,7 @@ func (s *optionalFileSource) Load(_ context.Context) (*ports.BridgeConfig, error
 	return nil, err
 }
 
-func newPollWatcher(cfg deployinfra.BootstrapConfig, logger *slog.Logger) ports.Watcher {
+func newPollWatcher(cfg deployinfra.BootstrapConfig, registry *ports.Registry, logger *slog.Logger) ports.Watcher {
 	var opts []fileconfig.WatcherOption
 	opts = append(opts,
 		fileconfig.WithMode(fileconfig.ModePoll),
@@ -102,7 +107,7 @@ func newPollWatcher(cfg deployinfra.BootstrapConfig, logger *slog.Logger) ports.
 	if logger != nil {
 		opts = append(opts, fileconfig.WithLogger(logger))
 	}
-	return fileconfig.NewWatcher(cfg.ConfigFilePath, opts...)
+	return fileconfig.NewWatcher(cfg.ConfigFilePath, registry, opts...)
 }
 
 func defaultLogicalConfig(cfg deployinfra.BootstrapConfig) *ports.BridgeConfig {
@@ -116,15 +121,34 @@ func defaultLogicalConfig(cfg deployinfra.BootstrapConfig) *ports.BridgeConfig {
 	}
 }
 
-func cloneBridgeConfig(cfg *ports.BridgeConfig) (*ports.BridgeConfig, error) {
+// newDefaultPluginRegistry returns a *ports.Registry populated with
+// the PluginConfig decoders for the adapters this binary bundles.
+// Adding a new adapter to the file-based-config deployment means
+// adding its Register call here. Registration errors are surfaced
+// as panics: a duplicate kind in the bundled set is a programming
+// error that must be caught at process start.
+func newDefaultPluginRegistry() *ports.Registry {
+	reg := ports.NewRegistry()
+	if err := errors.Join(
+		paho.Register(reg),
+		sqsadapter.Register(reg),
+		nativestore.Register(reg),
+		httptransport.Register(reg),
+	); err != nil {
+		panic("bootstrap: register bundled plugin decoders: " + err.Error())
+	}
+	return reg
+}
+
+func cloneBridgeConfig(cfg *ports.BridgeConfig, registry *ports.Registry) (*ports.BridgeConfig, error) {
 	if cfg == nil {
 		return nil, nil
 	}
-	data, err := config.MarshalYAML(cfg)
+	data, err := parser.MarshalYAML(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return config.Parse(bytes.NewReader(data), config.FormatYAML)
+	return parser.Parse(bytes.NewReader(data), parser.FormatYAML, registry)
 }
 
 func hasHTTPTransportEndpoints(cfg *ports.BridgeConfig) bool {

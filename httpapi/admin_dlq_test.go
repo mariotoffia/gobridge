@@ -111,7 +111,7 @@ func TestToDLQEntryView_MapsAllFields(t *testing.T) {
 		SourceID: "src1", CorrelationID: "c1", Reason: "timeout",
 		Category: "transient", ErrorCode: "TIMEOUT", LastError: "dial err",
 		FailedAt: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC), Attempts: 5,
-		Envelope: messaging.Envelope{Subject: "test/topic"},
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "test/topic"}),
 	}
 	v := toDLQEntryView(e)
 	assert.Equal(t, "v-1", v.ID)
@@ -149,10 +149,10 @@ func TestToDLQEntryDetailView_EmptyPayload(t *testing.T) {
 func TestHandleDLQMessageByID_ReturnsEntry(t *testing.T) {
 	entry := routing.DLQEntry{
 		ID: "msg-1", RouteID: "r1", Category: "timeout",
-		Envelope: messaging.Envelope{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			Subject: "test/sub",
 			Payload: []byte("binary-data"),
-		},
+		}),
 		FailedAt: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC),
 	}
 	store := &mockDLQStore{

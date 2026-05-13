@@ -21,7 +21,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
-	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
@@ -324,8 +324,8 @@ func setupDynamoStores(t *testing.T) (ports.LeaseStore, ports.OutboxStore) {
 // Runtime helpers
 // ---------------------------------------------------------------------------
 
-func e2eFastSessionConfig(sessionID string) goruntime.SessionConfig {
-	cfg := goruntime.DefaultSessionConfig(sessionID, true)
+func e2eFastSessionConfig(sessionID string) session.Config {
+	cfg := session.DefaultConfig(sessionID, true)
 	cfg.LeaseTTL = 800 * time.Millisecond
 	cfg.RenewInterval = 150 * time.Millisecond
 	cfg.RenewJitter = 20 * time.Millisecond

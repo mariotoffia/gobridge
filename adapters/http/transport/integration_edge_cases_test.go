@@ -158,13 +158,13 @@ func TestEdge_ReservedHeadersStrippedAtIngress(t *testing.T) {
 
 	<-resultCh
 
-	if _, ok := env.Headers["x-bridge.route-id"]; ok {
+	if _, ok := env.Headers()["x-bridge.route-id"]; ok {
 		t.Fatal("reserved header x-bridge.route-id was NOT stripped")
 	}
-	if _, ok := env.Headers["x-bridge.tenant-id"]; ok {
+	if _, ok := env.Headers()["x-bridge.tenant-id"]; ok {
 		t.Fatal("reserved header x-bridge.tenant-id was NOT stripped")
 	}
-	if v, ok := env.Headers["x-custom-safe"]; !ok || v != "keep-me" {
+	if v, ok := env.Headers()["x-custom-safe"]; !ok || v != "keep-me" {
 		t.Fatalf("non-reserved header x-custom-safe missing or wrong: %v", v)
 	}
 }
@@ -190,12 +190,12 @@ func TestEdge_ForwarderPreservesExpiresAt(t *testing.T) {
 	}
 
 	expiresAt := time.Now().Add(10 * time.Minute).Truncate(time.Second).UTC()
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:        "exp-msg-1",
 		Subject:   "order.expiring",
 		Payload:   []byte(`{"id":"42"}`),
 		ExpiresAt: expiresAt,
-	}
+	})
 
 	if err := fwd.Forward(context.Background(), peer, "route-exp", env); err != nil {
 		t.Fatalf("Forward: %v", err)
@@ -233,11 +233,11 @@ func TestEdge_ForwarderMissingHTTPEndpoint(t *testing.T) {
 		InstanceID: "grpc-only",
 		Endpoints:  map[string]string{"grpc": "grpc://remote:50051"},
 	}
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "no-http-1",
 		Subject: "test.no-http",
 		Payload: []byte(`{}`),
-	}
+	})
 
 	err := fwd.Forward(context.Background(), peer, "route-nohttp", env)
 	if err == nil {
@@ -262,11 +262,11 @@ func TestEdge_ForwarderRemoteReturns500(t *testing.T) {
 		InstanceID: "error-node",
 		Endpoints:  map[string]string{"http": remote.URL},
 	}
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "err-500",
 		Subject: "test.error",
 		Payload: []byte(`{}`),
-	}
+	})
 
 	err := fwd.Forward(context.Background(), peer, "route-500", env)
 	if err == nil {
@@ -308,11 +308,11 @@ func TestEdge_SSEFieldSanitization(t *testing.T) {
 		return sender.(*transport.SSESender).ClientCount() >= 1
 	})
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "evil\ninjection",
 		Subject: "sanitize.test",
 		Payload: []byte(`{}`),
-	}
+	})
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -404,11 +404,11 @@ func TestEdge_SendWithNoClients(t *testing.T) {
 		t.Fatalf("NewSender: %v", err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "orphan-1",
 		Subject: "no.listeners",
 		Payload: []byte(`{}`),
-	}
+	})
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send with no clients should succeed, got: %v", err)
 	}
