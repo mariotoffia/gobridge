@@ -67,7 +67,7 @@ func TestUC22_TenRule_MatchRule_Routing(t *testing.T) {
 			{Field: "header.route_key", Operator: goruntime.OpRegex, Value: goruntime.Val(`^rgx-3-\d+$`)},
 		}},
 		{BindingID: "bind-4", Conditions: []goruntime.MatchCondition{
-			{Field: "header.priority", Operator: goruntime.OpGreaterThan, Value: goruntime.Val("900")},
+			{Field: "header.priority", Operator: goruntime.OpGreaterThan, Value: goruntime.Val(float64(900))},
 		}},
 		{BindingID: "bind-5", Conditions: []goruntime.MatchCondition{
 			{Field: "header.route_key", Operator: goruntime.OpIn, Value: goruntime.Val([]any{"in-5a", "in-5b", "in-5c"})},
