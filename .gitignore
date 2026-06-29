@@ -13,10 +13,17 @@
 /gobridge
 /cmd/gobridge/gobridge
 
-# Local build outputs
+# Local build outputs — analyzer/checker binaries built by `make lint`
+# (bare names, no .out postfix; also backstopped by scripts/hooks/check-binaries.sh).
 /bin/
 /scripts/aclcheck/aclcheck
 /scripts/aggcheck/aggcheck
+/scripts/cfgshape/cfgshape
+/scripts/pluginsym/pluginsym
+/scripts/registrychk/registrychk
+
+# Agent / workflow scratch (superpowers SDD progress ledger, etc.)
+.superpowers/
 
 # Test binary, built with `go test -c`
 *.test
