@@ -89,7 +89,7 @@ func TestUC27_Intermittent_SendFailures(t *testing.T) {
 		msgs := collector.getMessages()
 		seen := make(map[string]struct{}, len(msgs))
 		for _, m := range msgs {
-			seen[string(m.Payload)] = struct{}{}
+			seen[string(m.Payload())] = struct{}{}
 		}
 		if time.Since(lastLog) > 10*time.Second {
 			t.Logf("UC27: progress unique=%d/%d total=%d, elapsed=%v, faulty_calls=%d",
@@ -105,7 +105,7 @@ func TestUC27_Intermittent_SendFailures(t *testing.T) {
 	msgs := collector.getMessages()
 	unique := make(map[string]bool, len(msgs))
 	for _, m := range msgs {
-		unique[string(m.Payload)] = true
+		unique[string(m.Payload())] = true
 	}
 
 	// Log diagnostics BEFORE assertions so we always get visibility.
@@ -148,7 +148,7 @@ func (p *variableDelayProcessor) Process(
 
 // extractSeq parses a seq number from the payload JSON like {"seq":42}.
 func extractSeq(env *messaging.Envelope) int {
-	body := string(env.Payload)
+	body := string(env.Payload())
 	var seq int
 	_, _ = fmt.Sscanf(body, `{"seq":%d}`, &seq)
 	return seq
@@ -220,7 +220,7 @@ func TestUC28_VisibilityTimeout_Race(t *testing.T) {
 		msgs := collector.getMessages()
 		unique := make(map[string]bool, len(msgs))
 		for _, m := range msgs {
-			unique[string(m.Payload)] = true
+			unique[string(m.Payload())] = true
 		}
 		return len(unique) >= msgCount
 	})
@@ -230,7 +230,7 @@ func TestUC28_VisibilityTimeout_Race(t *testing.T) {
 	msgs := collector.getMessages()
 	unique := make(map[string]bool, len(msgs))
 	for _, m := range msgs {
-		unique[string(m.Payload)] = true
+		unique[string(m.Payload())] = true
 	}
 
 	require.GreaterOrEqual(t, len(unique), msgCount,
@@ -291,11 +291,11 @@ func TestUC29_MessageTTL_Expiry(t *testing.T) {
 	// Inject messages with ExpiresAt in the past (already expired).
 	// The route runner checks env.IsExpired(clock) before processing.
 	for i := 0; i < msgCount; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:        fmt.Sprintf("uc29-msg-%d", i),
 			Payload:   []byte(fmt.Sprintf(`{"seq":%d}`, i)),
 			ExpiresAt: time.Now().Add(-1 * time.Second),
-		}
+		})
 		err := rt.Inject(ctx, "uc29-route", env)
 		require.NoError(t, err, "inject message %d", i)
 	}
@@ -317,8 +317,8 @@ func TestUC29_MessageTTL_Expiry(t *testing.T) {
 	// Verify DLQ entries have expired category.
 	entries := dlqStore.getEntries()
 	for i, entry := range entries {
-		assert.Equal(t, string(shared.ErrorExpired), entry.Category,
-			"DLQ entry %d should have 'expired' category, got %q", i, entry.Category)
+		assert.Equal(t, string(shared.ErrorExpired), entry.Category(),
+			"DLQ entry %d should have 'expired' category, got %q", i, entry.Category())
 	}
 
 	t.Logf("UC29: DLQ=%d (all expired), MQTT=%d", gotDLQ, gotMQTT)

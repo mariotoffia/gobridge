@@ -38,10 +38,10 @@ func (s *FakeStore) List(_ context.Context, filter routing.DLQFilter) ([]routing
 	defer s.mu.Unlock()
 	var out []routing.DLQEntry
 	for _, e := range s.Entries {
-		if filter.RouteID != "" && e.RouteID != filter.RouteID {
+		if filter.RouteID != "" && e.RouteID() != filter.RouteID {
 			continue
 		}
-		if filter.Category != "" && e.Category != filter.Category {
+		if filter.Category != "" && e.Category() != filter.Category {
 			continue
 		}
 		out = append(out, e)
@@ -56,7 +56,7 @@ func (s *FakeStore) Get(_ context.Context, id string) (routing.DLQEntry, error) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, e := range s.Entries {
-		if e.ID == id {
+		if e.ID() == id {
 			return e, nil
 		}
 	}
@@ -73,7 +73,7 @@ func (s *FakeStore) Delete(_ context.Context, ids []string) (int, error) {
 	var remaining []routing.DLQEntry
 	var count int
 	for _, e := range s.Entries {
-		if _, ok := idSet[e.ID]; ok {
+		if _, ok := idSet[e.ID()]; ok {
 			count++
 		} else {
 			remaining = append(remaining, e)

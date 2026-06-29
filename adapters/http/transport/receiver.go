@@ -13,7 +13,6 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -135,12 +134,11 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	env, err := body.toEnvelope(r.cfg.clock)
+	env, err := body.toEnvelope(r.cfg.clock, externalKeysFromRequest(req))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	env.ReplaceHeaders(messaging.StripReservedHeaders(env.Headers()))
 
 	r.mu.Lock()
 	routeID := r.routeID
@@ -164,17 +162,17 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				writeError(w, http.StatusBadGateway, "no forwarder configured for remote route")
 				return
 			}
-			r.cfg.metrics.Counter(shared.MetricClusterForwards, 1)
+			r.cfg.metrics.Counter(MetricClusterForwards, 1)
 			fwdStart := r.cfg.clock.Now()
 			if err := r.cfg.forwarder.Forward(ctx, node, r.cfg.id, env); err != nil {
-				r.cfg.metrics.Timer(shared.MetricHTTPForwardLatency, r.cfg.clock.Since(fwdStart))
+				r.cfg.metrics.Timer(MetricHTTPForwardLatency, r.cfg.clock.Since(fwdStart))
 				if r.cfg.logger != nil {
 					r.cfg.logger.Error("forward failed", "route", routeID, "peer", node.InstanceID, "error", err)
 				}
 				writeError(w, http.StatusBadGateway, "forward failed")
 				return
 			}
-			r.cfg.metrics.Timer(shared.MetricHTTPForwardLatency, r.cfg.clock.Since(fwdStart))
+			r.cfg.metrics.Timer(MetricHTTPForwardLatency, r.cfg.clock.Since(fwdStart))
 			writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
 			return
 		}
@@ -191,7 +189,7 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	select {
 	case result := <-del.done:
-		r.cfg.metrics.Timer(shared.MetricHTTPIngressLatency, r.cfg.clock.Since(start))
+		r.cfg.metrics.Timer(MetricHTTPIngressLatency, r.cfg.clock.Since(start))
 		if result.err != nil {
 			writeError(w, http.StatusInternalServerError, "processing failed")
 		} else {
@@ -210,7 +208,30 @@ type ingressRequest struct {
 	ExpiresAt string          `json:"expires_at,omitempty"`
 }
 
-func (r *ingressRequest) toEnvelope(clk clock.Clock) (*messaging.Envelope, error) {
+// externalKeys carries the standard, NON-reserved request headers that
+// let an external HTTP producer supply idempotency / dedup / ordering
+// keys without touching the anti-spoofed x-bridge.* namespace. They are
+// routed through EnvelopeInput's first-class fields so NewEnvelope
+// stamps the reserved headers on the trusted side of the ingress strip.
+type externalKeys struct {
+	idempotencyKey  string
+	deduplicationID string
+	orderingKey     string
+}
+
+// externalKeysFromRequest reads the supported external-producer key
+// headers. Idempotency-Key is the IETF-draft standard header; the dedup
+// and ordering keys use the bridge's X- convention as no standard HTTP
+// header exists for them.
+func externalKeysFromRequest(req *http.Request) externalKeys {
+	return externalKeys{
+		idempotencyKey:  req.Header.Get("Idempotency-Key"),
+		deduplicationID: req.Header.Get("X-Dedup-Id"),
+		orderingKey:     req.Header.Get("X-Ordering-Key"),
+	}
+}
+
+func (r *ingressRequest) toEnvelope(clk clock.Clock, keys externalKeys) (*messaging.Envelope, error) {
 	if clk == nil {
 		clk = clock.System
 	}
@@ -227,12 +248,15 @@ func (r *ingressRequest) toEnvelope(clk clock.Clock) (*messaging.Envelope, error
 		expires = parsed
 	}
 	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
-		ID:        id,
-		Subject:   r.Subject,
-		Payload:   []byte(r.Payload),
-		Headers:   r.Headers,
-		CreatedAt: clk.Now(),
-		ExpiresAt: expires,
+		ID:              id,
+		Subject:         r.Subject,
+		Payload:         []byte(r.Payload),
+		Headers:         r.Headers,
+		CreatedAt:       clk.Now(),
+		ExpiresAt:       expires,
+		IdempotencyKey:  keys.idempotencyKey,
+		DeduplicationID: keys.deduplicationID,
+		OrderingKey:     keys.orderingKey,
 	}, clk.Now())
 	if err != nil {
 		return nil, fmt.Errorf("envelope: %w", err)

@@ -187,8 +187,8 @@ func TestAnaIntg_LargePayload_RoundTrip(t *testing.T) {
 		defer wg.Done()
 		_ = recv.Run(rctx, func(_ context.Context, del ports.Delivery) error {
 			mu.Lock()
-			recvBuf = make([]byte, len(del.Envelope().Payload))
-			copy(recvBuf, del.Envelope().Payload)
+			recvBuf = make([]byte, len(del.Envelope().Payload()))
+			copy(recvBuf, del.Envelope().Payload())
 			mu.Unlock()
 			rcancel() // we have what we need
 			return nil

@@ -33,7 +33,7 @@ func TestBug3_Delivery_ProcessingCancelSetAfterConstruction(t *testing.T) {
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	env := &messaging.Envelope{ID: "bug3-test", Payload: []byte("data")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "bug3-test", Payload: []byte("data")})
 	del := newDelivery(
 		context.Background(),
 		env,
@@ -74,7 +74,7 @@ func TestBug3_Delivery_AutoExtendExhaustsCancelsProcessing(t *testing.T) {
 		},
 	}
 
-	env := &messaging.Envelope{ID: "bug3-autoext", Payload: []byte("data")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "bug3-autoext", Payload: []byte("data")})
 
 	// Create a processing context with cancel — this simulates what
 	// the receiver's Run loop does: the cancel func is now passed into

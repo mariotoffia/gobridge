@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -92,7 +93,7 @@ func (s *Server) handleConfigTxnCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConfigTxnGet(w http.ResponseWriter, r *http.Request) {
 	txnID := r.PathValue("txnID")
 
-	preview, err := s.configTxn.Preview(txnID)
+	preview, err := s.configTxn.Preview(r.Context(), txnID)
 	if err != nil {
 		s.writeConfigTxnError(w, r, "config.txn.read", txnID, err)
 		return
@@ -120,7 +121,7 @@ func (s *Server) handleConfigTxnPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	merged, warnings, err := s.configTxn.Patch(txnID, &overlay)
+	merged, warnings, err := s.configTxn.Patch(r.Context(), txnID, &overlay)
 	if err != nil {
 		s.writeConfigTxnError(w, r, "config.txn.patch", txnID, err)
 		return
@@ -141,7 +142,7 @@ func (s *Server) handleConfigTxnPatch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConfigTxnCommit(w http.ResponseWriter, r *http.Request) {
 	txnID := r.PathValue("txnID")
 
-	newVersion, err := s.configTxn.Commit(txnID)
+	newVersion, err := s.configTxn.Commit(r.Context(), txnID)
 	if err != nil {
 		s.writeConfigTxnError(w, r, "config.txn.commit", txnID, err)
 		return
@@ -201,23 +202,27 @@ func (s *Server) writeConfigTxnError(w http.ResponseWriter, r *http.Request, act
 	}
 }
 
-// sanitizeConfig returns a shallow copy of the config with sensitive fields
-// redacted. The returned value must NOT be mutated — other nested fields
-// (Sessions, Routes, Stores, etc.) still share references with the original.
+// sanitizeConfig returns a shallow copy of the config for JSON
+// responses with secret values EXPLICITLY redacted at this read
+// boundary. shared.Secret now also redacts structurally on marshal
+// (json.Marshal yields "[REDACTED]"), so this explicit redaction is
+// defense in depth — it keeps the read path correct even if the
+// response shape ever changes to surface a Secret through a different
+// marshaller. The returned value must NOT be mutated — non-secret
+// nested fields (Sessions, Routes, Stores, etc.) still share references
+// with the original.
 func sanitizeConfig(cfg *ports.BridgeConfig) *ports.BridgeConfig {
 	if cfg == nil {
 		return nil
 	}
 	out := *cfg
-	if out.HTTP != nil {
-		h := *out.HTTP
-		if h.AdminAPIKey != "" {
-			h.AdminAPIKey = "***"
-		}
-		if h.MonitorAPIKey != "" {
-			h.MonitorAPIKey = "***"
-		}
-		out.HTTP = &h
+	// Redact the HTTP admin/monitor API keys via a deep copy of the
+	// HTTP block so the original config is left untouched.
+	if cfg.HTTP != nil {
+		httpCopy := *cfg.HTTP
+		httpCopy.AdminAPIKey = redactSecret(httpCopy.AdminAPIKey)
+		httpCopy.MonitorAPIKey = redactSecret(httpCopy.MonitorAPIKey)
+		out.HTTP = &httpCopy
 	}
 	// Receiver/Sender plugin configs live in the typed Config field
 	// (json:"-"), so secrets in adapter-specific config never reach
@@ -229,6 +234,16 @@ func sanitizeConfig(cfg *ports.BridgeConfig) *ports.BridgeConfig {
 		out.Senders = append([]ports.SenderDef(nil), cfg.Senders...)
 	}
 	return &out
+}
+
+// redactSecret returns a redaction-marker secret for a non-empty value
+// and leaves an empty secret empty, so the admin config response
+// signals "a key is configured" without exposing it.
+func redactSecret(s shared.Secret) shared.Secret {
+	if s.IsZero() {
+		return s
+	}
+	return shared.RedactedSecret()
 }
 
 // isValidationError checks whether the error is a blueprint

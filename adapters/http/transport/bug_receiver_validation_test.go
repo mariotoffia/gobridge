@@ -259,7 +259,7 @@ func TestBugReceiver_GeneratesIDWhenEmpty(t *testing.T) {
 	var gotID string
 	select {
 	case d := <-deliveryCh:
-		gotID = d.Envelope().ID
+		gotID = d.Envelope().ID()
 		_ = d.Ack(context.Background())
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for delivery")
@@ -319,7 +319,7 @@ func TestBugReceiver_PreservesExplicitID(t *testing.T) {
 	var gotID string
 	select {
 	case d := <-deliveryCh:
-		gotID = d.Envelope().ID
+		gotID = d.Envelope().ID()
 		_ = d.Ack(context.Background())
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for delivery")
@@ -374,7 +374,7 @@ func TestBugReceiver_GeneratedIDsAreUnique(t *testing.T) {
 	for i := 0; i < count; i++ {
 		select {
 		case d := <-deliveryCh:
-			id := d.Envelope().ID
+			id := d.Envelope().ID()
 			if id == "" {
 				t.Fatal("got empty ID")
 			}

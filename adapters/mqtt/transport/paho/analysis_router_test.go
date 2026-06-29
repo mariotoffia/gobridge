@@ -11,7 +11,6 @@ import (
 	"github.com/eclipse/paho.golang/packets"
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -85,7 +84,7 @@ func TestAnaRouter_RouteWithNoHandlers_IncrementsDropCounterAndMetric(t *testing
 		t.Fatalf("Stats dropped = %d, want %d", dropped, n)
 	}
 
-	entries := rec.FindEntries(shared.MetricMQTTRouterDropped)
+	entries := rec.FindEntries(MetricMQTTRouterDropped)
 	if len(entries) != n {
 		t.Fatalf("MetricMQTTRouterDropped entries = %d, want %d", len(entries), n)
 	}
@@ -248,7 +247,7 @@ func TestAnaRouter_PanicHandler_DoesNotAffectLargeFanOut(t *testing.T) {
 	if ok.Load() != int32(total-panickers) {
 		t.Fatalf("non-panic handlers ran %d, want %d", ok.Load(), total-panickers)
 	}
-	entries := rec.FindEntries(shared.MetricMQTTHandlerPanics)
+	entries := rec.FindEntries(MetricMQTTHandlerPanics)
 	if len(entries) != panickers {
 		t.Fatalf("panic metric count = %d, want %d", len(entries), panickers)
 	}

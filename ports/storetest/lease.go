@@ -85,6 +85,9 @@ func RunLeaseStoreTests(t *testing.T, store ports.LeaseStore, opts *LeaseTestOpt
 	t.Run("CurrentReturnsInfo", func(t *testing.T) {
 		leaseCurrentReturnsInfo(t, store)
 	})
+	t.Run("EndpointsIsolation", func(t *testing.T) {
+		leaseEndpointsIsolation(t, store)
+	})
 	t.Run("CurrentNonExistent", func(t *testing.T) {
 		leaseCurrentNonExistent(t, store)
 	})
@@ -415,5 +418,47 @@ func leaseFullLifecycle(t *testing.T, store ports.LeaseStore, opts *LeaseTestOpt
 	}
 	if tok2.Version <= tok1.Version {
 		t.Fatalf("re-acquire version must increase: v1=%d, v2=%d", tok1.Version, tok2.Version)
+	}
+}
+
+// leaseEndpointsIsolation proves LeaseInfo is a read-only snapshot DTO:
+// the LeaseStore defensively copies endpoints at every boundary, so
+// neither mutating the caller's map after Acquire nor mutating a
+// returned LeaseInfo.Endpoints can corrupt the store's view (finding
+// #29).
+func leaseEndpointsIsolation(t *testing.T, store ports.LeaseStore) {
+	ctx := context.Background()
+	const want = "10.0.0.1:50051"
+	endpoints := map[string]string{"grpc": want}
+
+	if _, err := store.Acquire(ctx, "lt-ep-iso", "owner-A", 30*time.Second, endpoints); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+
+	// Mutating the caller's map after Acquire must not change the store:
+	// the store must copy endpoints on the way in.
+	endpoints["grpc"] = "tampered-in"
+	endpoints["added"] = "late"
+
+	info, err := store.Current(ctx, "lt-ep-iso")
+	if err != nil {
+		t.Fatalf("current: %v", err)
+	}
+	if info.Endpoints["grpc"] != want {
+		t.Fatalf("stored endpoint mutated via caller map: got %q, want %q", info.Endpoints["grpc"], want)
+	}
+	if _, ok := info.Endpoints["added"]; ok {
+		t.Fatal("late-added caller endpoint leaked into the store")
+	}
+
+	// Mutating a returned LeaseInfo.Endpoints must not change a subsequent
+	// Current(): the store must copy endpoints on the way out too.
+	info.Endpoints["grpc"] = "tampered-out"
+	info2, err := store.Current(ctx, "lt-ep-iso")
+	if err != nil {
+		t.Fatalf("current after return mutation: %v", err)
+	}
+	if info2.Endpoints["grpc"] != want {
+		t.Fatalf("returned LeaseInfo.Endpoints aliases store state: got %q, want %q", info2.Endpoints["grpc"], want)
 	}
 }

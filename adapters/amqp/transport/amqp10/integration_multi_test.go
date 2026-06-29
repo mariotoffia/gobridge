@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 )
@@ -24,7 +25,7 @@ func TestIntegration_MultipleSenders(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address:        ep,
 		Username:       user,
-		Password:       pass,
+		Password:       shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 	}, connectivity.SessionEphemeral, slog.Default())
 
@@ -49,10 +50,10 @@ func TestIntegration_MultipleSenders(t *testing.T) {
 			t.Fatalf("NewSender(%d) error = %v", s, err)
 		}
 		for m := 0; m < msgsPerSender; m++ {
-			env := &messaging.Envelope{
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{
 				ID:      fmt.Sprintf("multi-s%d-m%d", s, m),
 				Payload: []byte(fmt.Sprintf("sender-%d-msg-%d", s, m)),
-			}
+			})
 			if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 				t.Fatalf("sender %d Send(%d) error = %v", s, m, err)
 			}
@@ -76,7 +77,7 @@ func TestIntegration_MultipleSenders(t *testing.T) {
 
 	seen := make(map[string]bool)
 	runErr := recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
-		seen[del.Envelope().ID] = true
+		seen[del.Envelope().ID()] = true
 		if err := del.Ack(recvCtx); err != nil {
 			t.Errorf("Ack() error = %v", err)
 		}
@@ -103,7 +104,7 @@ func TestIntegration_CompetingReceivers(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address:        ep,
 		Username:       user,
-		Password:       pass,
+		Password:       shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 	}, connectivity.SessionEphemeral, slog.Default())
 
@@ -125,10 +126,10 @@ func TestIntegration_CompetingReceivers(t *testing.T) {
 		t.Fatalf("NewSender() error = %v", err)
 	}
 	for i := 0; i < totalMsgs; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("competing-%d", i),
 			Payload: []byte(fmt.Sprintf("msg-%d", i)),
-		}
+		})
 		if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env}); err != nil {
 			t.Fatalf("Send(%d) error = %v", i, err)
 		}
@@ -155,7 +156,7 @@ func TestIntegration_CompetingReceivers(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
-				collected <- del.Envelope().ID
+				collected <- del.Envelope().ID()
 				if err := del.Ack(ctx); err != nil {
 					t.Errorf("Ack() error = %v", err)
 				}
@@ -192,7 +193,7 @@ func TestIntegration_SessionReconcileEvents(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address:        ep,
 		Username:       user,
-		Password:       pass,
+		Password:       shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 	}, connectivity.SessionEphemeral, slog.Default())
 
@@ -240,7 +241,7 @@ func TestIntegration_SenderCloseReopen(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address:        ep,
 		Username:       user,
-		Password:       pass,
+		Password:       shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 	}, connectivity.SessionEphemeral, slog.Default())
 
@@ -259,10 +260,10 @@ func TestIntegration_SenderCloseReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSender(1) error = %v", err)
 	}
-	env1 := &messaging.Envelope{
+	env1 := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "reopen-1",
 		Payload: []byte("first"),
-	}
+	})
 	if err := sender1.Send(ctx, ports.OutboundMessage{Envelope: env1}); err != nil {
 		t.Fatalf("sender1 Send() error = %v", err)
 	}
@@ -279,10 +280,10 @@ func TestIntegration_SenderCloseReopen(t *testing.T) {
 	}
 	defer func() { _ = sender2.Close(context.Background()) }()
 
-	env2 := &messaging.Envelope{
+	env2 := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "reopen-2",
 		Payload: []byte("second"),
-	}
+	})
 	if err := sender2.Send(ctx, ports.OutboundMessage{Envelope: env2}); err != nil {
 		t.Fatalf("sender2 Send() error = %v", err)
 	}
@@ -301,7 +302,7 @@ func TestIntegration_SenderCloseReopen(t *testing.T) {
 
 	seen := make(map[string]bool)
 	runErr := recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
-		seen[del.Envelope().ID] = true
+		seen[del.Envelope().ID()] = true
 		if err := del.Ack(recvCtx); err != nil {
 			t.Errorf("Ack() error = %v", err)
 		}

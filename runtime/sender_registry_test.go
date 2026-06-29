@@ -108,16 +108,16 @@ func TestDirectHold_SenderRegistry_SelectsByBinding(t *testing.T) {
 	if len(sentA) != 1 {
 		t.Fatalf("senderA: expected 1 message, got %d", len(sentA))
 	}
-	if sentA[0].ID != "msg-a" {
-		t.Fatalf("senderA: expected msg-a, got %s", sentA[0].ID)
+	if sentA[0].ID() != "msg-a" {
+		t.Fatalf("senderA: expected msg-a, got %s", sentA[0].ID())
 	}
 
 	sentB := senderB.GetSent()
 	if len(sentB) != 1 {
 		t.Fatalf("senderB: expected 1 message, got %d", len(sentB))
 	}
-	if sentB[0].ID != "msg-b" {
-		t.Fatalf("senderB: expected msg-b, got %s", sentB[0].ID)
+	if sentB[0].ID() != "msg-b" {
+		t.Fatalf("senderB: expected msg-b, got %s", sentB[0].ID())
 	}
 }
 

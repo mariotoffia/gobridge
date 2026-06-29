@@ -90,8 +90,8 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqs: sending",
 			"queue_url", s.queueURL,
-			"envelope_id", env.ID,
-			"payload_len", len(env.Payload),
+			"envelope_id", env.ID(),
+			"payload_len", len(env.Payload()),
 		)
 	}
 
@@ -101,20 +101,23 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	return s.sendOne(sendCtx, env)
 }
 
-// SendBatch sends multiple envelopes in batches of up to BatchSize.
-// Returns the number of successfully sent messages. When some batches
-// fail (partial failures or API errors), the method continues sending
-// the remaining batches and returns a combined error with the total
-// successful count.
+// SendBatch sends each envelope in chunks of up to BatchSize via the SQS
+// SendMessageBatch API. The whole slice is pre-validated before any SDK
+// dispatch: a nil envelope yields shared.ErrInvalidPayload and a
+// non-empty address that does not match the resolved queue URL yields
+// shared.ErrInvalidTopic; either rejects the entire batch with
+// (nil, joined-errs) — fail-fast, no chunk is dispatched. A client setup
+// failure likewise returns (nil, err).
 //
-// The entire slice is pre-validated before any SDK dispatch: a nil
-// envelope yields shared.ErrInvalidPayload and a non-empty address
-// that does not match the resolved queue URL yields
-// shared.ErrInvalidTopic. Either failure aborts the whole batch with
-// (0, joined-errs) — fail-fast, no chunk is dispatched.
-func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (int, error) {
+// Once dispatched, SendBatch returns (results, nil): one BatchResult per
+// input message, index-aligned with msgs. SQS reports per-entry success
+// and failure, so each result carries nil Err (Successful) or the
+// classified per-entry error (Failed); a whole-chunk API error marks
+// every entry in that chunk. Chunks continue independently after a
+// partial or chunk-level failure. See ports.BatchSender for the contract.
+func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([]ports.BatchResult, error) {
 	if err := s.ensureClient(ctx); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	var preErrs []error
@@ -131,7 +134,7 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (i
 		}
 	}
 	if len(preErrs) > 0 {
-		return 0, errors.Join(preErrs...)
+		return nil, errors.Join(preErrs...)
 	}
 
 	envs := make([]*messaging.Envelope, len(msgs))
@@ -139,10 +142,7 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (i
 		envs[i] = m.Envelope
 	}
 
-	var (
-		sent int
-		errs []error
-	)
+	results := make([]ports.BatchResult, len(envs))
 
 	for i := 0; i < len(envs); i += s.cfg.BatchSize {
 		end := i + s.cfg.BatchSize
@@ -159,14 +159,10 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (i
 			)
 		}
 
-		n, batchErrs := s.sendBatchChunk(ctx, batch)
-		sent += n
-		errs = append(errs, batchErrs...)
+		for _, cr := range s.sendBatchChunk(ctx, batch) {
+			results[i+cr.Index] = ports.BatchResult{Index: i + cr.Index, Err: cr.Err}
+		}
 	}
 
-	if len(errs) > 0 {
-		return sent, errors.Join(errs...)
-	}
-
-	return sent, nil
+	return results, nil
 }

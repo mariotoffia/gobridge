@@ -91,19 +91,22 @@ func (a *sessionReceiverAdapter) Close(ctx context.Context) error {
 //     any PEM field is set, buildClientOptions constructs a fresh
 //     *tls.Config from them.
 type ConnectionConfig struct {
-	ConnectionString   string
+	ConnectionString   shared.Secret
 	Namespace          string
 	UseManagedIdentity bool
 	TenantID           string
 	ClientID           string
-	ClientSecret       string
+	ClientSecret       shared.Secret
 	TLSConfig          *tls.Config
-	CaPEM              string
+	CaPEM              shared.Secret
 	// ClientCertPEM and ClientKeyPEM carry an in-memory client
 	// certificate/key pair for mutual TLS. Both must be set; one
-	// without the other is a configuration error.
-	ClientCertPEM      string
-	ClientKeyPEM       string
+	// without the other is a configuration error. They are
+	// shared.Secret so the (sensitive) private key — and, for
+	// uniformity, the cert/CA bundles — redact on JSON/YAML/log
+	// marshal; the config-save path reveals explicitly.
+	ClientCertPEM      shared.Secret
+	ClientKeyPEM       shared.Secret
 	InsecureSkipVerify bool
 }
 
@@ -228,8 +231,8 @@ func rawNewAzClient(cfg ConnectionConfig) (*asbClientHandle, error) {
 		return nil, err
 	}
 
-	if cfg.ConnectionString != "" {
-		c, err := azservicebus.NewClientFromConnectionString(cfg.ConnectionString, opts)
+	if !cfg.ConnectionString.IsZero() {
+		c, err := azservicebus.NewClientFromConnectionString(cfg.ConnectionString.Reveal(), opts)
 		if err != nil {
 			return nil, fmt.Errorf("servicebus: new client from connection string: %w", err)
 		}
@@ -241,9 +244,9 @@ func rawNewAzClient(cfg ConnectionConfig) (*asbClientHandle, error) {
 	switch {
 	case cfg.UseManagedIdentity:
 		cred, err = azidentity.NewManagedIdentityCredential(nil)
-	case cfg.ClientID != "" && cfg.ClientSecret != "":
+	case cfg.ClientID != "" && !cfg.ClientSecret.IsZero():
 		cred, err = azidentity.NewClientSecretCredential(
-			cfg.TenantID, cfg.ClientID, cfg.ClientSecret, nil,
+			cfg.TenantID, cfg.ClientID, cfg.ClientSecret.Reveal(), nil,
 		)
 	default:
 		cred, err = azidentity.NewDefaultAzureCredential(nil)
@@ -283,7 +286,7 @@ func buildClientOptions(cfg ConnectionConfig) (*azservicebus.ClientOptions, erro
 	tc := cfg.TLSConfig
 	if tc == nil {
 		var err error
-		tc, err = buildTLSConfig(cfg.CaPEM, cfg.ClientCertPEM, cfg.ClientKeyPEM, cfg.InsecureSkipVerify)
+		tc, err = buildTLSConfig(cfg.CaPEM.Reveal(), cfg.ClientCertPEM.Reveal(), cfg.ClientKeyPEM.Reveal(), cfg.InsecureSkipVerify)
 		if err != nil {
 			return nil, err
 		}

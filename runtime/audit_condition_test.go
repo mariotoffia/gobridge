@@ -255,9 +255,9 @@ func TestConditionEval_PayloadPath(t *testing.T) {
 		},
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Payload: []byte(`{"order": {"status": "shipped", "id": 123}}`),
-	}
+	})
 	ctx := newEvalContext()
 
 	result, err := eval.evaluate(env, ctx)

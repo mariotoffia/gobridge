@@ -69,6 +69,12 @@ func WithLogger(l *slog.Logger) Option {
 }
 
 // NewStore creates a new DynamoDB-backed DLQStore.
+//
+// The *dynamodb.Client parameter is the SDK boundary input this ACL
+// constructor exists to wrap; it is injected by the composition root and
+// stored behind unexported fields.
+//
+//aclcheck:allow-export
 func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 	s := &Store{
 		client:      client,
@@ -140,31 +146,31 @@ func (s *Store) EnsureTable(ctx context.Context) error {
 func (s *Store) Write(ctx context.Context, entry routing.DLQEntry) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodbdlq: write",
-			"entry_id", entry.ID, "route_id", entry.RouteID, "category", entry.Category)
+			"entry_id", entry.ID(), "route_id", entry.RouteID(), "category", entry.Category())
 	}
 
-	envJSON, err := json.Marshal(&entry.Envelope)
+	envJSON, err := json.Marshal(entry.Snapshot())
 	if err != nil {
 		return fmt.Errorf("dynamodbdlq: marshal envelope: %w", err)
 	}
 
-	failedAtMs := entry.FailedAt.UnixMilli()
-	ttlEpoch := entry.FailedAt.Add(s.gracePeriod).Unix()
+	failedAtMs := entry.FailedAt().UnixMilli()
+	ttlEpoch := entry.FailedAt().Add(s.gracePeriod).Unix()
 
 	item := map[string]ddbtypes.AttributeValue{
-		attrPK:            &ddbtypes.AttributeValueMemberS{Value: dlqKey(entry.ID)},
-		attrRouteID:       &ddbtypes.AttributeValueMemberS{Value: entry.RouteID},
-		attrBindingID:     &ddbtypes.AttributeValueMemberS{Value: entry.BindingID},
-		attrSessionID:     &ddbtypes.AttributeValueMemberS{Value: entry.SessionID},
-		attrSourceID:      &ddbtypes.AttributeValueMemberS{Value: entry.SourceID},
-		attrCorrelationID: &ddbtypes.AttributeValueMemberS{Value: entry.CorrelationID},
-		attrReason:        &ddbtypes.AttributeValueMemberS{Value: entry.Reason},
-		attrCategory:      &ddbtypes.AttributeValueMemberS{Value: entry.Category},
-		attrErrorCode:     &ddbtypes.AttributeValueMemberS{Value: entry.ErrorCode},
-		attrLastError:     &ddbtypes.AttributeValueMemberS{Value: entry.LastError},
+		attrPK:            &ddbtypes.AttributeValueMemberS{Value: dlqKey(entry.ID())},
+		attrRouteID:       &ddbtypes.AttributeValueMemberS{Value: entry.RouteID()},
+		attrBindingID:     &ddbtypes.AttributeValueMemberS{Value: entry.BindingID()},
+		attrSessionID:     &ddbtypes.AttributeValueMemberS{Value: entry.SessionID()},
+		attrSourceID:      &ddbtypes.AttributeValueMemberS{Value: entry.SourceID()},
+		attrCorrelationID: &ddbtypes.AttributeValueMemberS{Value: entry.CorrelationID()},
+		attrReason:        &ddbtypes.AttributeValueMemberS{Value: entry.Reason()},
+		attrCategory:      &ddbtypes.AttributeValueMemberS{Value: entry.Category()},
+		attrErrorCode:     &ddbtypes.AttributeValueMemberS{Value: entry.ErrorCode()},
+		attrLastError:     &ddbtypes.AttributeValueMemberS{Value: entry.LastError()},
 		attrEnvelopeJSON:  &ddbtypes.AttributeValueMemberS{Value: string(envJSON)},
 		attrFailedAt:      &ddbtypes.AttributeValueMemberN{Value: i64(failedAtMs)},
-		attrAttempts:      &ddbtypes.AttributeValueMemberN{Value: strconv.Itoa(entry.Attempts)},
+		attrAttempts:      &ddbtypes.AttributeValueMemberN{Value: strconv.Itoa(entry.Attempts())},
 		attrTTL:           &ddbtypes.AttributeValueMemberN{Value: i64(ttlEpoch)},
 	}
 
@@ -180,9 +186,9 @@ func (s *Store) Write(ctx context.Context, entry routing.DLQEntry) error {
 		if isConditionFailed(err) {
 			return shared.ErrDuplicateRecord.
 				WithMessage("duplicate DLQ entry").
-				With("entryID", entry.ID)
+				With("entryID", entry.ID())
 		}
-		return wrapErr(err, "dlq write failed", "entryID", entry.ID, "routeID", entry.RouteID)
+		return wrapErr(err, "dlq write failed", "entryID", entry.ID(), "routeID", entry.RouteID())
 	}
 	return nil
 }
@@ -297,7 +303,7 @@ func (s *Store) listByIndex(
 	}
 
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].FailedAt.Before(entries[j].FailedAt)
+		return entries[i].FailedAt().Before(entries[j].FailedAt())
 	})
 
 	if len(entries) > limit {
@@ -371,7 +377,7 @@ func (s *Store) listByScan(ctx context.Context, filter routing.DLQFilter) ([]rou
 	}
 
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].FailedAt.Before(entries[j].FailedAt)
+		return entries[i].FailedAt().Before(entries[j].FailedAt())
 	})
 
 	if len(entries) > limit {
@@ -455,11 +461,11 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter routing.DLQFilter) (i
 		_, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 			TableName: aws.String(s.tableName),
 			Key: map[string]ddbtypes.AttributeValue{
-				attrPK: &ddbtypes.AttributeValueMemberS{Value: dlqKey(e.ID)},
+				attrPK: &ddbtypes.AttributeValueMemberS{Value: dlqKey(e.ID())},
 			},
 		})
 		if err != nil {
-			return count, wrapErr(err, "dlq delete_by_filter delete failed", "entryID", e.ID)
+			return count, wrapErr(err, "dlq delete_by_filter delete failed", "entryID", e.ID())
 		}
 		count++
 	}

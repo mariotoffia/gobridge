@@ -31,18 +31,6 @@ const (
 	MetricOutboxDuplicateRisk     = "OutboxDuplicateRisk"
 )
 
-// SQS metric names.
-const (
-	MetricSQSReceiveLatency       = "SQSReceiveLatency"
-	MetricSQSDeleteLatency        = "SQSDeleteLatency"
-	MetricSQSVisibilityExtensions = "SQSVisibilityExtensions"
-	MetricSQSPollLatency          = "SQSPollLatency"
-	MetricSQSSendLatency          = "SQSSendLatency"
-	MetricSQSSendBatchLatency     = "SQSSendBatchLatency"
-	MetricSQSAutoExtends          = "SQSAutoExtends"
-	MetricSQSMalformedMessages    = "SQSMalformedMessages"
-)
-
 // Generic transport-agnostic delivery metric names.
 const (
 	MetricAckLatency           = "AckLatency"
@@ -72,64 +60,13 @@ const (
 	MetricProcessorTimeouts = "ProcessorTimeouts"
 )
 
-// MQTT metric names.
+// Session metric names. Emitted by the generic runtime session manager
+// (runtime/session), not by any single transport adapter.
+// MetricMQTTReconnects keeps its historical "MQTTReconnects" wire value to
+// avoid an observability break, despite the transport-flavored identifier.
 const (
-	MetricMQTTPublishLatency   = "MQTTPublishLatency"
-	MetricMQTTPublishFailures  = "MQTTPublishFailures"
-	MetricMQTTHandlerPanics    = "MQTTHandlerPanics"
-	MetricMQTTReconnects       = "MQTTReconnects"
-	MetricMQTTConnectLatency   = "MQTTConnectLatency"
-	MetricMQTTReconcileLatency = "MQTTReconcileLatency"
-	MetricMQTTRouterDropped    = "MQTTRouterDropped"
-	MetricMQTTEventDropped     = "MQTTEventDropped"
-)
-
-// Session metric names.
-const (
+	MetricMQTTReconnects    = "MQTTReconnects"
 	MetricReconcileFailures = "ReconcileFailures"
-)
-
-// Azure Service Bus metric names.
-const (
-	MetricASBReceiveLatency    = "ASBReceiveLatency"
-	MetricASBCompleteLatency   = "ASBCompleteLatency"
-	MetricASBSendLatency       = "ASBSendLatency"
-	MetricASBSendBatchLatency  = "ASBSendBatchLatency"
-	MetricASBScheduleLatency   = "ASBScheduleLatency"
-	MetricASBLockRenewals      = "ASBLockRenewals"
-	MetricASBMalformedMessages = "ASBMalformedMessages"
-)
-
-// HTTP transport metric names.
-const (
-	MetricHTTPIngressLatency  = "HTTPIngressLatency"
-	MetricHTTPForwardLatency  = "HTTPForwardLatency"
-	MetricSSEClients          = "SSEClients"
-	MetricSSEBroadcastLatency = "SSEBroadcastLatency"
-	MetricClusterForwards     = "ClusterForwards"
-	MetricSSEDroppedEvents    = "SSEDroppedEvents"
-)
-
-// AMQP 0-9-1 metric names.
-const (
-	MetricAMQP091ConnectLatency   = "AMQP091ConnectLatency"
-	MetricAMQP091ReconcileLatency = "AMQP091ReconcileLatency"
-	MetricAMQP091PublishLatency   = "AMQP091PublishLatency"
-	MetricAMQP091ConsumeLatency   = "AMQP091ConsumeLatency"
-	MetricAMQP091AckLatency       = "AMQP091AckLatency"
-	MetricAMQP091Reconnects       = "AMQP091Reconnects"
-	MetricAMQP091EventDropped     = "AMQP091EventDropped"
-)
-
-// AMQP 1.0 metric names.
-const (
-	MetricAMQP10ConnectLatency   = "AMQP10ConnectLatency"
-	MetricAMQP10ReconcileLatency = "AMQP10ReconcileLatency"
-	MetricAMQP10SendLatency      = "AMQP10SendLatency"
-	MetricAMQP10ReceiveLatency   = "AMQP10ReceiveLatency"
-	MetricAMQP10AcceptLatency    = "AMQP10AcceptLatency"
-	MetricAMQP10Reconnects       = "AMQP10Reconnects"
-	MetricAMQP10EventDropped     = "AMQP10EventDropped"
 )
 
 // Standard dimension key names for metric tags.
@@ -138,7 +75,6 @@ const (
 	TagKeyRouteID   = "route_id"
 	TagKeySessionID = "session_id"
 	TagKeyPartition = "partition"
-	TagKeyQueueURL  = "queue_url"
 	TagKeyCategory  = "category"
 	TagKeyTransport = "transport"
 	TagKeyEntity    = "entity"

@@ -8,6 +8,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 )
@@ -22,7 +23,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address:        ep,
 		Username:       user,
-		Password:       pass,
+		Password:       shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 	}, connectivity.SessionEphemeral, slog.Default())
 
@@ -109,7 +110,7 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address:        ep,
 		Username:       user,
-		Password:       pass,
+		Password:       shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 	}, connectivity.SessionEphemeral, slog.Default())
 
@@ -172,12 +173,12 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 	if _, ok := received.Headers()[headerAbsoluteExpiry]; !ok {
 		t.Fatal("expected absolute-expiry-time header")
 	}
-	if received.ExpiresAt.IsZero() {
+	if received.ExpiresAt().IsZero() {
 		t.Fatal("expected non-zero ExpiresAt on received envelope")
 	}
-	diff := received.ExpiresAt.Sub(expiry).Abs()
+	diff := received.ExpiresAt().Sub(expiry).Abs()
 	if diff > 2*time.Second {
-		t.Fatalf("ExpiresAt drift = %v (received=%v, sent=%v)", diff, received.ExpiresAt, expiry)
+		t.Fatalf("ExpiresAt drift = %v (received=%v, sent=%v)", diff, received.ExpiresAt(), expiry)
 	}
 }
 
@@ -191,7 +192,7 @@ func TestIntegration_ApplicationProperties(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address:        ep,
 		Username:       user,
-		Password:       pass,
+		Password:       shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 	}, connectivity.SessionEphemeral, slog.Default())
 

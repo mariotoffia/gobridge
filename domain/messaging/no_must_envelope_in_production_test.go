@@ -25,8 +25,9 @@ import (
 // helpers despite not having the _test.go suffix and are explicitly
 // allowed.
 var productionMustEnvelopeWhitelist = map[string]struct{}{
-	"ports/storetest/dlq.go":    {},
-	"ports/storetest/outbox.go": {},
+	"ports/storetest/dlq.go":            {},
+	"ports/storetest/outbox.go":         {},
+	"ports/storetest/outbox_fencing.go": {},
 }
 
 // repoRoot returns the absolute path to the gobridge repo root,
@@ -139,7 +140,7 @@ func TestNewEnvelopeReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEnvelope: %v", err)
 	}
-	if env == nil || env.ID != "id" {
+	if env == nil || env.ID() != "id" {
 		t.Fatalf("unexpected env: %+v", env)
 	}
 
@@ -160,13 +161,13 @@ func TestMustEnvelopeProducesUniqueFallbackIDs(t *testing.T) {
 	seen := map[string]struct{}{}
 	for i := 0; i < 50; i++ {
 		env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s"})
-		if env.ID == "" || env.ID == "test-envelope" {
-			t.Fatalf("regression: env.ID = %q", env.ID)
+		if env.ID() == "" || env.ID() == "test-envelope" {
+			t.Fatalf("regression: env.ID = %q", env.ID())
 		}
-		if _, dup := seen[env.ID]; dup {
-			t.Fatalf("duplicate fallback ID at iter %d: %q", i, env.ID)
+		if _, dup := seen[env.ID()]; dup {
+			t.Fatalf("duplicate fallback ID at iter %d: %q", i, env.ID())
 		}
-		seen[env.ID] = struct{}{}
+		seen[env.ID()] = struct{}{}
 	}
 }
 

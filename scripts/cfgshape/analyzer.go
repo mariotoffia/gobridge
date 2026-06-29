@@ -1,5 +1,5 @@
 // cfgshape implements the typed-pluggable-config rules from
-// FIX-003. It enforces three properties, each scoped to a different
+// FIX-003. It enforces four properties, each scoped to a different
 // part of the workspace:
 //
 //  1. Inner-ring (ports/, domain/) carriers: exported struct fields,
@@ -21,14 +21,31 @@
 //     registered) fail this rule.
 //
 //  3. Validate body: every method named Validate on a type that
-//     satisfies ports.PluginConfig MUST have a non-empty body and at
-//     least one *_test.go file in the same package directory that
-//     references "Validate" textually. The test-file check is a
-//     pragmatic shape check rather than a full symbol resolution —
-//     vet's pass.Files excludes test files, so we re-read the
-//     directory and grep the source. False negatives are possible if
-//     the test file uses an alias like obj := cfg; obj.Validate; we
-//     accept that as a known limitation rather than over-engineer.
+//     satisfies ports.PluginConfig MUST have a non-empty body, so a
+//     typed plugin config declares its invariants explicitly rather
+//     than rubber-stamping them with an empty method.
+//
+//     NOTE: this rule enforces ONLY the non-empty body. An earlier
+//     design also required a same-package *_test.go to reference the
+//     Validate method textually, but that test-reference check is
+//     intentionally NOT enforced: vet's pass.Files excludes test
+//     files, and the directory-grep heuristic produced too many false
+//     positives on configs exercised indirectly through factories
+//     rather than via a direct .Validate() call. It is deliberately
+//     left disabled rather than re-enabled as a flaky gate.
+//
+//  4. Secret fields: a type satisfying ports.PluginConfig (and any
+//     same-package struct reachable from it, including nested role and
+//     connection sub-configs) MUST NOT expose an EXPORTED string field
+//     whose name matches the secret-name heuristic (password, secret,
+//     connectionstring, apikey, accesskey, privatekey, passphrase, a
+//     *token suffix, or a TLS PEM/private-key suffix: *PEM, *KeyPEM,
+//     *PrivateKey, *ClientKey). Such fields must use shared.Secret or
+//     another non-string redaction wrapper so credentials cannot leak
+//     through logs, JSON, or fmt. The heuristic is deliberately
+//     conservative — no bare "key", and "token" matches only as a whole
+//     word or suffix — so RoutingKey, PartitionKey, and TokenBucket are
+//     never flagged.
 //
 // Exemptions:
 //   - All *_test.go files (vet excludes them by default; we re-check).
@@ -48,7 +65,6 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -105,12 +121,18 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		checkAdapter(pass)
 	}
 
-	// Validate-body + test-reference check applies wherever a
-	// PluginConfig type is declared, which in this codebase only
-	// happens in adapter leaves, but we run it unconditionally so a
-	// future inner-ring PluginConfig (unlikely) would still be
-	// enforced.
+	// Validate-body check applies wherever a PluginConfig type is
+	// declared, which in this codebase only happens in adapter leaves,
+	// but we run it unconditionally so a future inner-ring PluginConfig
+	// (unlikely) would still be enforced. The test-reference check is
+	// intentionally disabled (see checkValidateMethods); only the
+	// non-empty Validate body is enforced here.
 	checkValidateMethods(pass)
+
+	// Secret-handling check: a PluginConfig (and any same-package struct
+	// reachable from it) MUST NOT expose a raw secret-looking string
+	// field — those must use shared.Secret or another redaction wrapper.
+	checkSecretFields(pass)
 
 	return nil, nil //nolint:nilnil
 }
@@ -428,118 +450,5 @@ func fileDeclaresExportedRegister(f *ast.File) bool {
 }
 
 // ----------------------------------------------------------------------
-// Validate-method rule
+// Validate-method rule lives in analyzer_validate.go.
 // ----------------------------------------------------------------------
-
-func checkValidateMethods(pass *analysis.Pass) {
-	if isExemptPackage(pass.Pkg.Path()) {
-		return
-	}
-	scope := pass.Pkg.Scope()
-	pluginRecvNames := map[string]bool{}
-	for _, name := range scope.Names() {
-		obj := scope.Lookup(name)
-		tn, ok := obj.(*types.TypeName)
-		if !ok {
-			continue
-		}
-		named, ok := tn.Type().(*types.Named)
-		if !ok {
-			continue
-		}
-		if types.IsInterface(named) {
-			continue
-		}
-		if types.Implements(named, pluginConfigIface) ||
-			types.Implements(types.NewPointer(named), pluginConfigIface) {
-			pluginRecvNames[name] = true
-		}
-	}
-	if len(pluginRecvNames) == 0 {
-		return
-	}
-
-	var pkgDir string
-	for _, f := range pass.Files {
-		filename := pass.Fset.Position(f.Pos()).Filename
-		if filename != "" {
-			pkgDir = filepath.Dir(filename)
-			break
-		}
-	}
-
-	for _, f := range nonTestFiles(pass) {
-		for _, decl := range f.Decls {
-			fd, ok := decl.(*ast.FuncDecl)
-			if !ok || fd.Name == nil || fd.Name.Name != "Validate" || fd.Recv == nil || len(fd.Recv.List) == 0 {
-				continue
-			}
-			recvName, _ := receiverTypeName(fd.Recv.List[0].Type)
-			if recvName == "" || !pluginRecvNames[recvName] {
-				continue
-			}
-			if fd.Body == nil || len(fd.Body.List) == 0 {
-				pass.Reportf(fd.Name.Pos(),
-					"cfgshape: %s.Validate must have a non-empty body — typed plugin configs declare invariants explicitly",
-					recvName)
-			}
-			// NOTE: a stricter check would also require a *_test.go in
-			// the same package directory that references
-			// "<recvName>.Validate". That rule is intentionally NOT
-			// enforced here: vet's pass.Files excludes test files, and
-			// while we can re-read the directory, the heuristic match
-			// produces enough false negatives on indirect test paths
-			// (configs exercised through factories rather than via a
-			// direct .Validate() call) that it would block legitimate
-			// code. Tracked as a known gap — see FIX-003 follow-ups.
-			_ = pkgDir
-		}
-	}
-}
-
-func receiverTypeName(expr ast.Expr) (string, bool) {
-	switch t := expr.(type) {
-	case *ast.Ident:
-		return t.Name, false
-	case *ast.StarExpr:
-		if id, ok := t.X.(*ast.Ident); ok {
-			return id.Name, true
-		}
-	}
-	return "", false
-}
-
-// packageTestsReferenceValidate scans dir for *_test.go files and
-// returns true if any contains the substring "<recv>{...}.Validate"
-// or simply ".Validate(" — we use the cheaper substring "Validate"
-// scoped per file because false positives in this rule (a test
-// happens to mention the word "Validate" elsewhere) are far less
-// damaging than false negatives. The check exists primarily to flag
-// completely untested Validate methods, not to verify call shape.
-// packageTestsReferenceValidate is currently unused — kept as a
-// reference for re-enabling the test-reference rule once we can
-// resolve test-time call graphs reliably. See checkValidateMethods.
-//
-//nolint:unused // intentional: see comment above.
-func packageTestsReferenceValidate(dir, recvName string) bool {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		// Cannot read the directory — assume the test exists rather
-		// than emit a confusing diagnostic.
-		return true
-	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), "_test.go") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			continue
-		}
-		text := string(data)
-		if strings.Contains(text, ".Validate(") || strings.Contains(text, recvName+"{") && strings.Contains(text, "Validate") {
-			return true
-		}
-	}
-	return false
-}

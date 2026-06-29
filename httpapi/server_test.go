@@ -17,6 +17,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -30,7 +31,7 @@ func testConfig() Config {
 	return Config{
 		AdminAddr:   ":0",
 		MonitorAddr: ":0",
-		AdminAPIKey: "test-secret-key-0123456789",
+		AdminAPIKey: shared.NewSecret("test-secret-key-0123456789"),
 	}
 }
 
@@ -138,7 +139,7 @@ func TestValidateConfig_EmptyCORSAllowed(t *testing.T) {
 func TestValidateConfig_AdminAPIKeyTooShort(t *testing.T) {
 	rt := testRuntime()
 	cfg := DefaultConfig()
-	cfg.AdminAPIKey = "short"
+	cfg.AdminAPIKey = shared.NewSecret("short")
 	s := New(rt, cfg)
 	err := s.validateConfig()
 	require.Error(t, err)
@@ -149,7 +150,7 @@ func TestValidateConfig_AdminAPIKeyTooShort(t *testing.T) {
 func TestValidateConfig_MonitorAPIKeyTooShort(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
-	cfg.MonitorAPIKey = "short"
+	cfg.MonitorAPIKey = shared.NewSecret("short")
 	s := New(rt, cfg)
 	err := s.validateConfig()
 	require.Error(t, err)
@@ -285,7 +286,7 @@ func TestMonitorSensitive_RequiresAuth(t *testing.T) {
 func TestMonitorSensitive_SeparateMonitorKey(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
-	cfg.MonitorAPIKey = "monitor-key-0123456789ab"
+	cfg.MonitorAPIKey = shared.NewSecret("monitor-key-0123456789ab")
 	s := New(rt, cfg)
 
 	mux := http.NewServeMux()

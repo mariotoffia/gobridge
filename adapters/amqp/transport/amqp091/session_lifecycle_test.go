@@ -284,7 +284,7 @@ func runReceiverSelect(
 			if !ok {
 				return
 			}
-			env := &messaging.Envelope{ID: "x", Payload: d.Body}
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "x", Payload: d.Body})
 			if err := emit(ctx, &Delivery{env: env, raw: d}); err != nil {
 				return
 			}

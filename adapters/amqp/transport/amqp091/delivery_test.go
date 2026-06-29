@@ -36,8 +36,8 @@ func TestDelivery_Envelope(t *testing.T) {
 	if got != env {
 		t.Fatal("Envelope() returned a different pointer")
 	}
-	if got.ID != "test-env" {
-		t.Errorf("Envelope.ID = %q", got.ID)
+	if got.ID() != "test-env" {
+		t.Errorf("Envelope.ID() = %q", got.ID())
 	}
 }
 
@@ -155,7 +155,7 @@ func TestDelivery_AckThenRetry(t *testing.T) {
 
 // verifies NewDelivery uses a NoopExporter when nil metrics are provided.
 func TestDelivery_NilMetrics(t *testing.T) {
-	env := &messaging.Envelope{ID: "x"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "x"})
 	raw := amqp.Delivery{Acknowledger: newMockAcknowledger()}
 	del := NewDelivery(env, raw, nil, nil, nil)
 

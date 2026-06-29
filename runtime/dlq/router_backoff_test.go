@@ -155,5 +155,5 @@ func TestRouter_RetryBackoff_FakeClock(t *testing.T) {
 	// The third attempt succeeds (failN == 2). Verify the entry landed.
 	entries := store.storedEntries()
 	require.Len(t, entries, 1, "entry should be persisted after third attempt")
-	assert.Equal(t, "backoff-test-1", entries[0].Envelope.ID)
+	assert.Equal(t, "backoff-test-1", entries[0].Snapshot().ID())
 }

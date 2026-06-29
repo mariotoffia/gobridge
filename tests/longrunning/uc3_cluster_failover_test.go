@@ -181,7 +181,7 @@ func TestUC3_ClusterFailover_ThreeInstances(t *testing.T) {
 
 	uniqueIDs := make(map[string]int, len(msgs))
 	for _, m := range msgs {
-		uniqueIDs[string(m.Payload)]++
+		uniqueIDs[string(m.Payload())]++
 	}
 	assert.GreaterOrEqual(t, len(uniqueIDs), uc3MsgCount,
 		"should have at least %d unique message payloads", uc3MsgCount)

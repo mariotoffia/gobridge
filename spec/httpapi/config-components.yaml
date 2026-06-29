@@ -382,6 +382,13 @@ schemas:
         type: string
       multiplier:
         type: number
+      jitter:
+        type: number
+        minimum: 0
+        maximum: 1
+        description: >
+          Equal-jitter fraction in [0,1] applied to each computed backoff
+          delay to de-correlate retries (0 = deterministic).
 
   HTTPConfig:
     type: object

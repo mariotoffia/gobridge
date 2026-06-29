@@ -13,7 +13,7 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════
 // GAP-15: SQS SendBatch with Empty Slice — Contract Compliance
 //
-// ports.BatchSender contract: SendBatch(ctx, []) should return (0, nil).
+// ports.BatchSender contract: SendBatch(ctx, []) returns an empty result and a nil error.
 // The for-loop skips entirely when len(envs)==0; verify this is stable.
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -25,9 +25,9 @@ func TestSendBatch_NilSlice_ReturnsZeroNil(t *testing.T) {
 		cfg:      SenderConfig{BatchSize: 10, Timeout: 30},
 	}
 
-	n, err := s.SendBatch(context.Background(), []ports.OutboundMessage(nil))
+	results, err := s.SendBatch(context.Background(), []ports.OutboundMessage(nil))
 	require.NoError(t, err)
-	assert.Equal(t, 0, n, "SendBatch(nil) should return 0 sent")
+	assert.Equal(t, 0, batchSent(results), "SendBatch(nil) should return 0 sent")
 }
 
 func TestSendBatch_EmptySlice_ReturnsZeroNil(t *testing.T) {
@@ -38,7 +38,7 @@ func TestSendBatch_EmptySlice_ReturnsZeroNil(t *testing.T) {
 		cfg:      SenderConfig{BatchSize: 10, Timeout: 30},
 	}
 
-	n, err := s.SendBatch(context.Background(), []ports.OutboundMessage{})
+	results, err := s.SendBatch(context.Background(), []ports.OutboundMessage{})
 	require.NoError(t, err)
-	assert.Equal(t, 0, n, "SendBatch([]) should return 0 sent")
+	assert.Equal(t, 0, batchSent(results), "SendBatch([]) should return 0 sent")
 }

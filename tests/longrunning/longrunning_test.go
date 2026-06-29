@@ -264,7 +264,7 @@ func newMQTTCollector(
 			n := len(c.messages)
 			c.mu.Unlock()
 			if n <= 5 || n%500 == 0 {
-				t.Logf("collector: received msg #%d id=%s", n, del.Envelope().ID)
+				t.Logf("collector: received msg #%d id=%s", n, del.Envelope().ID())
 			}
 			return nil
 		})
@@ -509,7 +509,7 @@ func (s *lrDLQStore) Get(_ context.Context, id string) (routing.DLQEntry, error)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, e := range s.entries {
-		if e.ID == id {
+		if e.ID() == id {
 			return e, nil
 		}
 	}

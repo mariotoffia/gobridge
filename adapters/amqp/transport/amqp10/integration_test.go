@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 )
@@ -29,7 +30,7 @@ func TestIntegration_SendReceive(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address:        ep,
 		Username:       user,
-		Password:       pass,
+		Password:       shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 		IdleTimeout:    1 * time.Minute,
 	}, connectivity.SessionEphemeral, slog.Default())
@@ -94,11 +95,11 @@ func TestIntegration_SendReceive(t *testing.T) {
 	if received == nil {
 		t.Fatal("no message received")
 	}
-	if received.ID != "integ-msg-1" {
-		t.Fatalf("received ID = %q, want %q", received.ID, "integ-msg-1")
+	if received.ID() != "integ-msg-1" {
+		t.Fatalf("received ID = %q, want %q", received.ID(), "integ-msg-1")
 	}
-	if string(received.Payload) != `{"key":"value"}` {
-		t.Fatalf("received Payload = %q", received.Payload)
+	if string(received.Payload()) != `{"key":"value"}` {
+		t.Fatalf("received Payload = %q", received.Payload())
 	}
 	if received.Headers()["tenant"] != "test-tenant" {
 		t.Fatalf("received Headers[tenant] = %v", received.Headers()["tenant"])
@@ -113,7 +114,7 @@ func TestIntegration_SendBatch(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address:        ep,
 		Username:       user,
-		Password:       pass,
+		Password:       shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 	}, connectivity.SessionEphemeral, slog.Default())
 
@@ -135,12 +136,12 @@ func TestIntegration_SendBatch(t *testing.T) {
 	defer func() { _ = sender.Close(context.Background()) }()
 
 	envs := []*messaging.Envelope{
-		{ID: "batch-1", Payload: []byte("one")},
-		{ID: "batch-2", Payload: []byte("two")},
-		{ID: "batch-3", Payload: []byte("three")},
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "batch-1", Payload: []byte("one")}),
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "batch-2", Payload: []byte("two")}),
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "batch-3", Payload: []byte("three")}),
 	}
 
-	sent, err := sender.SendBatch(ctx, func() []ports.OutboundMessage {
+	results, err := sender.SendBatch(ctx, func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -150,7 +151,7 @@ func TestIntegration_SendBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendBatch() error = %v", err)
 	}
-	if sent != 3 {
+	if sent := batchSent(results); sent != 3 {
 		t.Fatalf("sent = %d, want 3", sent)
 	}
 
@@ -184,7 +185,7 @@ func TestIntegration_SendBatch(t *testing.T) {
 
 	rxBodies := make(map[string]bool, 3)
 	for _, env := range received {
-		rxBodies[string(env.Payload)] = true
+		rxBodies[string(env.Payload())] = true
 	}
 	for _, want := range []string{"one", "two", "three"} {
 		if !rxBodies[want] {
@@ -200,7 +201,7 @@ func TestIntegration_SessionHealth(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address:        ep,
 		Username:       user,
-		Password:       pass,
+		Password:       shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 	}, connectivity.SessionEphemeral, slog.Default())
 

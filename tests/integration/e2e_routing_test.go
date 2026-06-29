@@ -282,7 +282,7 @@ func TestE2E_Routing_AddressTemplate_DynamicTopic(t *testing.T) {
 	e2eWaitFor(t, 15*time.Second, "MQTT on dynamic topic", func() bool {
 		return col.count() >= 1
 	})
-	if p := string(col.getMessages()[0].Payload); p != `{"temp":21.3}` {
+	if p := string(col.getMessages()[0].Payload()); p != `{"temp":21.3}` {
 		t.Errorf("payload = %q, want %q", p, `{"temp":21.3}`)
 	}
 }
@@ -334,7 +334,7 @@ func TestE2E_Routing_AddressTemplate_MultiPlaceholder(t *testing.T) {
 	e2eWaitFor(t, 15*time.Second, "MQTT on multi-placeholder topic", func() bool {
 		return col.count() >= 1
 	})
-	if p := string(col.getMessages()[0].Payload); p != `{"status":"online"}` {
+	if p := string(col.getMessages()[0].Payload()); p != `{"status":"online"}` {
 		t.Errorf("payload = %q, want %q", p, `{"status":"online"}`)
 	}
 }

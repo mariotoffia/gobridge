@@ -103,10 +103,10 @@ func TestSender_ConcurrentSends_DoNotSerialiseOnNetwork(t *testing.T) {
 	for i := range callers {
 		go func(i int) {
 			defer wg.Done()
-			_ = s.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{
+			_ = s.Send(context.Background(), ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 				ID:      "x",
 				Payload: []byte{byte(i)},
-			}})
+			})})
 		}(i)
 	}
 
@@ -150,7 +150,7 @@ func TestSender_ConcurrentSendFailure_OnlyClosesLinkOnce(t *testing.T) {
 	for range callers {
 		go func() {
 			defer wg.Done()
-			_ = s.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "x"}})
+			_ = s.Send(context.Background(), ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "x"})})
 		}()
 	}
 
@@ -192,7 +192,7 @@ func TestSender_Send_ReleasesLockBeforeNetworkIO(t *testing.T) {
 
 	sendDone := make(chan error, 1)
 	go func() {
-		sendDone <- s.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "x"}})
+		sendDone <- s.Send(context.Background(), ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "x"})})
 	}()
 
 	// Wait until the Send is parked inside link.Send.
@@ -245,7 +245,7 @@ func TestSender_NoLink_AfterFailure(t *testing.T) {
 	close(failing.sendBlock)
 	failing.sendBlock = nil
 
-	if err := s.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "x"}}); err == nil {
+	if err := s.Send(context.Background(), ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "x"})}); err == nil {
 		t.Fatal("expected Send error from failing link")
 	}
 
@@ -272,7 +272,7 @@ func TestSender_NoLink_AfterFailure(t *testing.T) {
 	s.link = healthy
 	s.mu.Unlock()
 
-	if err := s.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "y"}}); err != nil {
+	if err := s.Send(context.Background(), ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "y"})}); err != nil {
 		t.Fatalf("Send on fresh link after failure: %v", err)
 	}
 }
@@ -305,7 +305,7 @@ func TestSender_ConcurrentSends_RaceDetector(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range perG {
-				_ = s.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "z"}})
+				_ = s.Send(context.Background(), ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "z"})})
 			}
 		}()
 	}

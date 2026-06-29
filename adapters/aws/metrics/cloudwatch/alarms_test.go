@@ -46,11 +46,11 @@ func TestDefaultAlarms_SNSTopic(t *testing.T) {
 func TestDefaultAlarms_MetricNames(t *testing.T) {
 	alarms := DefaultAlarms("", "")
 	want := map[string]bool{
-		shared.MetricOutboxDepth:             false,
-		shared.MetricLeaseExpiries:           false,
-		shared.MetricDLQEntries:              false,
-		shared.MetricLeaseAcquireFailures:    false,
-		shared.MetricSQSVisibilityExtensions: false,
+		shared.MetricOutboxDepth:          false,
+		shared.MetricLeaseExpiries:        false,
+		shared.MetricDLQEntries:           false,
+		shared.MetricLeaseAcquireFailures: false,
+		"SQSVisibilityExtensions":         false,
 	}
 	for _, a := range alarms {
 		want[a.MetricName] = true

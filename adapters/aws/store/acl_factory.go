@@ -24,6 +24,12 @@ type DynamoDBStoreFactory struct {
 
 // NewDynamoDBStoreFactory returns a factory that creates DynamoDB stores
 // using the provided client.
+//
+// The *dynamodb.Client parameter is the SDK boundary input this ACL
+// factory exists to wrap; it is injected by the composition root and
+// stored behind unexported fields.
+//
+//aclcheck:allow-export
 func NewDynamoDBStoreFactory(client *dynamodb.Client) *DynamoDBStoreFactory {
 	return &DynamoDBStoreFactory{client: client}
 }

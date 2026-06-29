@@ -135,8 +135,8 @@ func TestIntegration_Edge_ExchangeRouting(t *testing.T) {
 	if received == nil {
 		t.Fatal("no message received")
 	}
-	if received.ID != "exchange-routed" {
-		t.Errorf("ID = %q, want %q", received.ID, "exchange-routed")
+	if received.ID() != "exchange-routed" {
+		t.Errorf("ID = %q, want %q", received.ID(), "exchange-routed")
 	}
 
 	assertLog091Contains(t, &buf, "amqp091: publishing", "amqp091: message received")
@@ -213,7 +213,7 @@ func TestIntegration_Edge_SendBatchAllReceived(t *testing.T) {
 		wantIDs[id] = true
 	}
 
-	sent, err := sender.SendBatch(ctx, func() []ports.OutboundMessage {
+	results, err := sender.SendBatch(ctx, func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -223,7 +223,7 @@ func TestIntegration_Edge_SendBatchAllReceived(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
-	if sent != msgCount {
+	if sent := batchSent(results); sent != msgCount {
 		t.Fatalf("sent %d, want %d", sent, msgCount)
 	}
 
@@ -239,7 +239,7 @@ func TestIntegration_Edge_SendBatchAllReceived(t *testing.T) {
 	go func() {
 		defer close(done)
 		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
-			ids[del.Envelope().ID] = true
+			ids[del.Envelope().ID()] = true
 			_ = del.Ack(recvCtx)
 			if len(ids) >= msgCount {
 				recvCancel()

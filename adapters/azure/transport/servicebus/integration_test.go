@@ -80,7 +80,7 @@ func warmupRoundtrip(cs string, timeout time.Duration) error {
 
 	sender, err := servicebus.NewSender(servicebus.SenderConfig{
 		QueueName:  asblocal.TestQueue,
-		Connection: servicebus.ConnectionConfig{ConnectionString: cs},
+		Connection: servicebus.ConnectionConfig{ConnectionString: shared.NewSecret(cs)},
 		Timeout:    timeout,
 	})
 	if err != nil {
@@ -99,7 +99,7 @@ func warmupRoundtrip(cs string, timeout time.Duration) error {
 	recv, err := servicebus.NewReceiver(servicebus.ReceiverConfig{
 		QueueName:   asblocal.TestQueue,
 		MaxMessages: 1,
-		Connection:  servicebus.ConnectionConfig{ConnectionString: cs},
+		Connection:  servicebus.ConnectionConfig{ConnectionString: shared.NewSecret(cs)},
 	}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
 	if err != nil {
 		return fmt.Errorf("warmup receiver: %w", err)
@@ -147,7 +147,7 @@ func newTestSender(t *testing.T, queueName string) *servicebus.Sender {
 	s, err := servicebus.NewSender(servicebus.SenderConfig{
 		QueueName: queueName,
 		Connection: servicebus.ConnectionConfig{
-			ConnectionString: cs,
+			ConnectionString: shared.NewSecret(cs),
 		},
 	})
 	if err != nil {
@@ -159,8 +159,8 @@ func newTestSender(t *testing.T, queueName string) *servicebus.Sender {
 func newTestReceiver(t *testing.T, cfg servicebus.ReceiverConfig) *servicebus.Receiver {
 	t.Helper()
 	cs := asblocal.ConnectionString(t)
-	if cfg.Connection.ConnectionString == "" {
-		cfg.Connection = servicebus.ConnectionConfig{ConnectionString: cs}
+	if cfg.Connection.ConnectionString.IsZero() {
+		cfg.Connection = servicebus.ConnectionConfig{ConnectionString: shared.NewSecret(cs)}
 	}
 	r, err := servicebus.NewReceiver(cfg, testLogger())
 	if err != nil {
@@ -242,8 +242,8 @@ func TestIntegration_SendReceive(t *testing.T) {
 
 	got := deliveries[0].Envelope()
 
-	if string(got.Payload) != string(payload) {
-		t.Errorf("payload = %q, want %q", got.Payload, payload)
+	if string(got.Payload()) != string(payload) {
+		t.Errorf("payload = %q, want %q", got.Payload(), payload)
 	}
 	if got.Subject() != "test-subject" {
 		t.Errorf("subject = %q, want %q", got.Subject(), "test-subject")
@@ -327,8 +327,8 @@ func TestIntegration_AckRetryExtend(t *testing.T) {
 		}
 
 		got := deliveries[0].Envelope()
-		if string(got.Payload) != "ack-retry-extend-test" {
-			t.Errorf("re-delivered payload = %q", got.Payload)
+		if string(got.Payload()) != "ack-retry-extend-test" {
+			t.Errorf("re-delivered payload = %q", got.Payload())
 		}
 	})
 }
@@ -354,7 +354,7 @@ func TestIntegration_BatchSend(t *testing.T) {
 		})
 	}
 
-	sent, err := sender.SendBatch(ctx, func() []ports.OutboundMessage {
+	results, err := sender.SendBatch(ctx, func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -364,7 +364,7 @@ func TestIntegration_BatchSend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
-	if sent != batchSize {
+	if sent := batchSent(results); sent != batchSize {
 		t.Fatalf("sent = %d, want %d", sent, batchSize)
 	}
 
@@ -382,7 +382,7 @@ func TestIntegration_BatchSend(t *testing.T) {
 
 	rxBodies := make(map[string]bool, batchSize)
 	for _, d := range deliveries {
-		rxBodies[string(d.Envelope().Payload)] = true
+		rxBodies[string(d.Envelope().Payload())] = true
 	}
 	for i := 0; i < batchSize; i++ {
 		want := fmt.Sprintf("batch-message-%d", i)
@@ -404,7 +404,7 @@ func TestIntegration_ErrorMapping(t *testing.T) {
 	s, err := servicebus.NewSender(servicebus.SenderConfig{
 		QueueName: "nonexistent-queue-" + fmt.Sprintf("%d", time.Now().UnixNano()),
 		Connection: servicebus.ConnectionConfig{
-			ConnectionString: cs,
+			ConnectionString: shared.NewSecret(cs),
 		},
 	})
 	if err != nil {
@@ -506,7 +506,7 @@ func TestIntegration_TopicSubscription(t *testing.T) {
 	topicSender, err := servicebus.NewSender(servicebus.SenderConfig{
 		TopicName: asblocal.TestTopic,
 		Connection: servicebus.ConnectionConfig{
-			ConnectionString: cs,
+			ConnectionString: shared.NewSecret(cs),
 		},
 	})
 	if err != nil {
@@ -542,8 +542,8 @@ func TestIntegration_TopicSubscription(t *testing.T) {
 			t.Fatal("sub-all: expected 1 delivery, got 0")
 		}
 		got := deliveries[0].Envelope()
-		if string(got.Payload) != "topic-payload" {
-			t.Errorf("payload = %q, want %q", got.Payload, "topic-payload")
+		if string(got.Payload()) != "topic-payload" {
+			t.Errorf("payload = %q, want %q", got.Payload(), "topic-payload")
 		}
 	})
 
@@ -561,8 +561,19 @@ func TestIntegration_TopicSubscription(t *testing.T) {
 			t.Fatal("sub-filtered: expected 1 delivery, got 0")
 		}
 		got := deliveries[0].Envelope()
-		if string(got.Payload) != "topic-payload" {
-			t.Errorf("payload = %q, want %q", got.Payload, "topic-payload")
+		if string(got.Payload()) != "topic-payload" {
+			t.Errorf("payload = %q, want %q", got.Payload(), "topic-payload")
 		}
 	})
+}
+
+// batchSent counts the successful (nil-Err) entries in a SendBatch result.
+func batchSent(results []ports.BatchResult) int {
+	n := 0
+	for _, r := range results {
+		if r.Err == nil {
+			n++
+		}
+	}
+	return n
 }

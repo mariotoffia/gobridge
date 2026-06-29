@@ -258,7 +258,7 @@ func TestUC55_FIFOOrdering(t *testing.T) {
 	groups := make(map[string][]int)
 	for _, m := range msgs {
 		var sm seqMsg
-		if err := json.Unmarshal(m.Payload, &sm); err != nil {
+		if err := json.Unmarshal(m.Payload(), &sm); err != nil {
 			continue
 		}
 		g := fmt.Sprintf("g-%d", sm.Seq%5)

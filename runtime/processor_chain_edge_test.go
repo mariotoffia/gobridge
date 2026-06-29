@@ -29,7 +29,7 @@ import (
 
 // TestRunChain_EmptyProcessors validates that an empty chain returns nil.
 func TestRunChain_EmptyProcessors(t *testing.T) {
-	err := route.RunChain(context.Background(), nil, &messaging.Envelope{ID: "1"})
+	err := route.RunChain(context.Background(), nil, messaging.MustEnvelope(messaging.EnvelopeInput{ID: "1"}))
 	if err != nil {
 		t.Fatalf("expected nil from empty chain, got %v", err)
 	}
@@ -46,7 +46,7 @@ func TestRunChain_SingleProcessor(t *testing.T) {
 		},
 	}
 
-	err := route.RunChain(context.Background(), []ports.Processor{proc}, &messaging.Envelope{ID: "1"})
+	err := route.RunChain(context.Background(), []ports.Processor{proc}, messaging.MustEnvelope(messaging.EnvelopeInput{ID: "1"}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestRunChain_ProcessorOrdering(t *testing.T) {
 		makeProc("third"),
 	}
 
-	err := route.RunChain(context.Background(), processors, &messaging.Envelope{ID: "1"})
+	err := route.RunChain(context.Background(), processors, messaging.MustEnvelope(messaging.EnvelopeInput{ID: "1"}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestRunChain_ShortCircuit_ErrorPropagation(t *testing.T) {
 		},
 	}
 
-	err := route.RunChain(context.Background(), processors, &messaging.Envelope{ID: "1"})
+	err := route.RunChain(context.Background(), processors, messaging.MustEnvelope(messaging.EnvelopeInput{ID: "1"}))
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel error, got %v", err)
 	}

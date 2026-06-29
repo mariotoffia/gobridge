@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/bridgecfg"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -126,7 +127,7 @@ func TestIsCredentialURI(t *testing.T) {
 
 func TestScan_HTTPAdminAPIKey_Plaintext(t *testing.T) {
 	cfg := &ports.BridgeConfig{
-		HTTP: &ports.HTTPConfig{AdminAPIKey: "hunter2"},
+		HTTP: &ports.HTTPConfig{AdminAPIKey: shared.NewSecret("hunter2")},
 	}
 	err := bridgecfg.ScanForPlaintextSecrets(cfg)
 	if err == nil {
@@ -143,8 +144,8 @@ func TestScan_HTTPAdminAPIKey_Plaintext(t *testing.T) {
 func TestScan_HTTPAdminAPIKey_PmsURI_OK(t *testing.T) {
 	cfg := &ports.BridgeConfig{
 		HTTP: &ports.HTTPConfig{
-			AdminAPIKey:   "pms:///bridge/admin-key",
-			MonitorAPIKey: "pms:///bridge/monitor-key",
+			AdminAPIKey:   shared.NewSecret("pms:///bridge/admin-key"),
+			MonitorAPIKey: shared.NewSecret("pms:///bridge/monitor-key"),
 		},
 	}
 	if err := bridgecfg.ScanForPlaintextSecrets(cfg); err != nil {
@@ -173,7 +174,7 @@ func TestScan_AggregatesMultipleViolations(t *testing.T) {
 	fc.Auth.Token = "t1"
 
 	cfg := &ports.BridgeConfig{
-		HTTP:     &ports.HTTPConfig{AdminAPIKey: "x"},
+		HTTP:     &ports.HTTPConfig{AdminAPIKey: shared.NewSecret("x")},
 		Sessions: []ports.SessionDef{newSession(fc)},
 	}
 	err := bridgecfg.ScanForPlaintextSecrets(cfg)

@@ -95,10 +95,10 @@ func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 	wait.RequireClosed(t, r2.Started(), 5*time.Second)
 
 	sender := NewSender(SenderConfig{Exchange: exchange, Session: sess, Timeout: 5 * time.Second})
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "pre-A", Payload: []byte("a1")}, Address: queueA}); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "pre-A", Payload: []byte("a1")}), Address: queueA}); err != nil {
 		t.Fatalf("send pre-A: %v", err)
 	}
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "pre-B", Payload: []byte("b1")}, Address: queueB}); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "pre-B", Payload: []byte("b1")}), Address: queueB}); err != nil {
 		t.Fatalf("send pre-B: %v", err)
 	}
 
@@ -132,8 +132,8 @@ func TestIntegration_TwoReceivers_BothResumeAfterReconnect(t *testing.T) {
 	defer sendCancel()
 	go func() {
 		for sendCtx.Err() == nil {
-			_ = sender2.Send(sendCtx, ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "post-A", Payload: []byte("a2")}, Address: queueA})
-			_ = sender2.Send(sendCtx, ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "post-B", Payload: []byte("b2")}, Address: queueB})
+			_ = sender2.Send(sendCtx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "post-A", Payload: []byte("a2")}), Address: queueA})
+			_ = sender2.Send(sendCtx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "post-B", Payload: []byte("b2")}), Address: queueB})
 			select {
 			case <-sendCtx.Done():
 			case <-time.After(100 * time.Millisecond):
@@ -291,7 +291,7 @@ func TestIntegration_ConsumerTag_ReuseAfterReconnect(t *testing.T) {
 	wait.RequireClosed(t, recv.Started(), 5*time.Second)
 
 	sender := NewSender(SenderConfig{Exchange: exchange, RoutingKey: queue, Session: sess, Timeout: 5 * time.Second})
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "tag-pre", Payload: []byte("pre")}}); err != nil {
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "tag-pre", Payload: []byte("pre")})}); err != nil {
 		t.Fatalf("send pre: %v", err)
 	}
 
@@ -317,7 +317,7 @@ func TestIntegration_ConsumerTag_ReuseAfterReconnect(t *testing.T) {
 	defer sendCancel()
 	go func() {
 		for sendCtx.Err() == nil {
-			_ = postSender.Send(sendCtx, ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "tag-post", Payload: []byte("post")}})
+			_ = postSender.Send(sendCtx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "tag-post", Payload: []byte("post")})})
 			select {
 			case <-sendCtx.Done():
 			case <-time.After(100 * time.Millisecond):

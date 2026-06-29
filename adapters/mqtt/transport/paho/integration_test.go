@@ -245,8 +245,8 @@ func TestIntegration_PubSubRoundTrip(t *testing.T) {
 	if msg.Subject() != "roundtrip/test" {
 		t.Errorf("subject = %q, want %q", msg.Subject(), "roundtrip/test")
 	}
-	if string(msg.Payload) != "hello-roundtrip" {
-		t.Errorf("payload = %q, want %q", msg.Payload, "hello-roundtrip")
+	if string(msg.Payload()) != "hello-roundtrip" {
+		t.Errorf("payload = %q, want %q", msg.Payload(), "hello-roundtrip")
 	}
 	if v, _ := messaging.GetHeaderString(msg.Headers(), messaging.HeaderCorrelationID); v != "test-corr" {
 		t.Errorf("correlation = %q, want %q", v, "test-corr")
@@ -310,7 +310,7 @@ func TestIntegration_BackpressureNoDrops(t *testing.T) {
 		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
 			time.Sleep(10 * time.Millisecond) // OTHER: slow consumer backpressure simulation
 			mu.Lock()
-			rxPayloads = append(rxPayloads, string(del.Envelope().Payload))
+			rxPayloads = append(rxPayloads, string(del.Envelope().Payload()))
 			mu.Unlock()
 			return nil
 		})
@@ -397,9 +397,9 @@ func TestIntegration_QoS1Completion(t *testing.T) {
 		Timeout:      5 * time.Second,
 	})
 
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: &messaging.Envelope{
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		Payload: []byte("qos1-message"),
-	}}); err != nil {
+	})}); err != nil {
 		t.Fatalf("QoS 1 Send: %v", err)
 	}
 }

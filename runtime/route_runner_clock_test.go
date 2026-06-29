@@ -38,10 +38,11 @@ func TestRouteRunner_E2ELatencyUsesInjectedClock(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{
-		ID:        "msg-clocked-latency",
-		ExpiresAt: fake.Now().Add(time.Hour),
-	})
+	del := NewFakeDelivery(func() *messaging.Envelope {
+		e := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-clocked-latency"})
+		_ = e.SetExpiry(fake.Now().Add(time.Hour))
+		return e
+	}())
 	_ = receiver.Emit(ctx, del)
 
 	waitFor(t, time.Second, "clocked latency timer", func() bool {
@@ -87,10 +88,11 @@ func TestRouteRunner_SharedOutboxCreatedAtUsesInjectedClock(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{
-		ID:        "msg-clocked-outbox",
-		ExpiresAt: fake.Now().Add(time.Hour),
-	})
+	del := NewFakeDelivery(func() *messaging.Envelope {
+		e := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-clocked-outbox"})
+		_ = e.SetExpiry(fake.Now().Add(time.Hour))
+		return e
+	}())
 	_ = receiver.Emit(ctx, del)
 
 	waitFor(t, time.Second, "clocked outbox record", func() bool {
@@ -101,7 +103,7 @@ func TestRouteRunner_SharedOutboxCreatedAtUsesInjectedClock(t *testing.T) {
 	})
 
 	persistMu.Lock()
-	got := persisted[0].CreatedAt
+	got := persisted[0].CreatedAt()
 	persistMu.Unlock()
 	if !got.Equal(createdAt) {
 		t.Fatalf("expected outbox CreatedAt from injected clock %s, got %s", createdAt, got)

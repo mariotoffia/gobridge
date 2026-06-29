@@ -74,8 +74,8 @@ func TestSessionOptionsFromMap_Auth(t *testing.T) {
 	if opts.Username != "user" {
 		t.Errorf("Username = %q, want %q", opts.Username, "user")
 	}
-	if opts.Password != "pass" {
-		t.Errorf("Password = %q, want %q", opts.Password, "pass")
+	if opts.Password.Reveal() != "pass" {
+		t.Errorf("Password = %q, want %q", opts.Password.Reveal(), "pass")
 	}
 }
 

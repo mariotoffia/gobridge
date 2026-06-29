@@ -99,7 +99,7 @@ func (f *fakeLeaseStore) Current(_ context.Context, _ string) (persistence.Lease
 type fakeOutboxStore struct{}
 
 func (f *fakeOutboxStore) Persist(_ context.Context, _ []*persistence.OutboxRecord) error { return nil }
-func (f *fakeOutboxStore) Claim(_ context.Context, _ string, _ string, _ persistence.LeaseToken, _ int) ([]*persistence.OutboxRecord, error) {
+func (f *fakeOutboxStore) Claim(_ context.Context, _ string, _ persistence.LeaseToken, _ int) ([]*persistence.OutboxRecord, error) {
 	return nil, nil
 }
 func (f *fakeOutboxStore) Complete(_ context.Context, _ []string, _ persistence.LeaseToken) error {
@@ -150,19 +150,19 @@ func (c *capturingTransportFactory) NewSession(_ context.Context, spec ports.Ses
 type testCredConfig struct {
 	URI      string
 	Username string
-	Password string
+	Password shared.Secret
 }
 
 func (c *testCredConfig) Kind() string           { return "test.cred" }
 func (c *testCredConfig) Validate() error        { return nil }
 func (c *testCredConfig) CredentialsURI() string { return c.URI }
 func (c *testCredConfig) ApplyCredentials(creds *connectivity.CredentialSet) error {
-	if creds != nil && creds.Password != nil {
+	if creds != nil && creds.Password() != nil {
 		if c.Username == "" {
-			c.Username = creds.Password.Username
+			c.Username = creds.Password().Username()
 		}
-		if c.Password == "" {
-			c.Password = creds.Password.Password
+		if c.Password.IsZero() {
+			c.Password = creds.Password().Password()
 		}
 	}
 	c.URI = ""
@@ -306,12 +306,7 @@ func TestBuilder_WithCredentialStore(t *testing.T) {
 
 	cs := &fakeCredentialStore{
 		creds: map[string]*connectivity.CredentialSet{
-			"file://test/creds": {
-				Password: &connectivity.PasswordCredential{
-					Username: "resolved-user",
-					Password: "resolved-pass",
-				},
-			},
+			"file://test/creds": connectivity.NewCredentialSet(pwCred("resolved-user", "resolved-pass"), nil),
 		},
 	}
 
@@ -329,7 +324,7 @@ func TestBuilder_WithCredentialStore(t *testing.T) {
 	captured, ok := mqttFactory.capturedSessionSpec.Config.(*testCredConfig)
 	require.True(t, ok, "captured session config should be *testCredConfig")
 	assert.Equal(t, "resolved-user", captured.Username)
-	assert.Equal(t, "resolved-pass", captured.Password)
+	assert.Equal(t, "resolved-pass", captured.Password.Reveal())
 	assert.Equal(t, "", captured.URI, "credentials_uri should be cleared after resolution")
 }
 
@@ -341,12 +336,7 @@ func TestBuilder_CredentialInlineOverride(t *testing.T) {
 
 	cs := &fakeCredentialStore{
 		creds: map[string]*connectivity.CredentialSet{
-			"file://test/creds": {
-				Password: &connectivity.PasswordCredential{
-					Username: "resolved-user",
-					Password: "resolved-pass",
-				},
-			},
+			"file://test/creds": connectivity.NewCredentialSet(pwCred("resolved-user", "resolved-pass"), nil),
 		},
 	}
 
@@ -365,7 +355,7 @@ func TestBuilder_CredentialInlineOverride(t *testing.T) {
 	require.True(t, ok, "captured session config should be *testCredConfig")
 	assert.Equal(t, "inline-user", captured.Username,
 		"inline value should take precedence over resolved credential")
-	assert.Equal(t, "resolved-pass", captured.Password,
+	assert.Equal(t, "resolved-pass", captured.Password.Reveal(),
 		"password should be resolved from credential store")
 }
 

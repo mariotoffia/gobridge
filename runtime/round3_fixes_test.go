@@ -74,7 +74,6 @@ func TestOutboxDrainer_WorkCtxNotCappedBySendTimeout(t *testing.T) {
 		RouteID:      "route-1",
 		PartitionKey: pk,
 		LeaseID:      "sess-1",
-		OwnerID:      token.Owner,
 		Policy: routing.RoutePolicy{
 			SendTimeout: 2 * time.Second,
 		}.WithDefaults(),
@@ -97,7 +96,7 @@ func TestOutboxDrainer_WorkCtxNotCappedBySendTimeout(t *testing.T) {
 		EnvelopeID: "env-m1",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   messaging.Envelope{ID: "env-m1", Payload: []byte("data")},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-m1", Payload: []byte("data")}),
 		Status:     persistence.OutboxPending,
 	})
 	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
@@ -154,7 +153,6 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 		RouteID:      "route-1",
 		PartitionKey: pk,
 		LeaseID:      "sess-1",
-		OwnerID:      token.Owner,
 		Policy:       routing.RoutePolicy{}.WithDefaults(),
 		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
 		Metrics:      rec,
@@ -175,7 +173,7 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 		EnvelopeID: "env-m3",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   messaging.Envelope{ID: "env-m3", Payload: []byte("data")},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-m3", Payload: []byte("data")}),
 		Status:     persistence.OutboxPending,
 	})
 	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{outboxRec})

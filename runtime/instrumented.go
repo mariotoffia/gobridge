@@ -71,18 +71,18 @@ func (s *InstrumentedOutboxStore) Persist(ctx context.Context, records []*persis
 	start := s.clk.Now()
 	err := s.inner.Persist(ctx, records)
 	if len(records) > 0 {
-		tags := []shared.Tag{{Key: shared.TagKeyRouteID, Value: records[0].RouteID}}
+		tags := []shared.Tag{{Key: shared.TagKeyRouteID, Value: records[0].RouteID()}}
 		s.metrics.Timer(shared.MetricOutboxPersistLatency, s.clk.Since(start), tags...)
 	}
 	return err
 }
 
-func (s *InstrumentedOutboxStore) Claim(ctx context.Context, partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
-	recs, err := s.inner.Claim(ctx, partitionKey, ownerID, token, limit)
+func (s *InstrumentedOutboxStore) Claim(ctx context.Context, partitionKey string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
+	recs, err := s.inner.Claim(ctx, partitionKey, token, limit)
 	if err == nil && len(recs) > 0 {
 		for _, rec := range recs {
 			if rec.ReplayCount() > 1 {
-				tags := []shared.Tag{{Key: shared.TagKeySessionID, Value: rec.SessionID}}
+				tags := []shared.Tag{{Key: shared.TagKeySessionID, Value: rec.SessionID()}}
 				s.metrics.Counter(shared.MetricOutboxClaimRecoveries, 1, tags...)
 			}
 		}

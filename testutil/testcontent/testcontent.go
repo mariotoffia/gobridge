@@ -59,11 +59,11 @@ func Tag(env *messaging.Envelope) (string, Expected) {
 
 	env.SetHeader(HeaderTID, tid)
 
-	env.Payload = injectPayloadTID(env.Payload, tid)
+	env.SetPayload(injectPayloadTID(env.Payload(), tid))
 
 	return tid, Expected{
 		TID:     tid,
-		Payload: cpBytes(env.Payload),
+		Payload: cpBytes(env.Payload()),
 		Headers: cpHeaders(env.Headers()),
 		Subject: env.Subject(),
 	}
@@ -86,7 +86,7 @@ func ExtractTID(env *messaging.Envelope) string {
 			return v
 		}
 	}
-	return extractPayloadTID(env.Payload)
+	return extractPayloadTID(env.Payload())
 }
 
 // ReceivedFromEnvelopes converts a slice of messaging.Envelope pointers
@@ -96,7 +96,7 @@ func ReceivedFromEnvelopes(envs []*messaging.Envelope) []Received {
 	for i, env := range envs {
 		out[i] = Received{
 			TID:     ExtractTID(env),
-			Payload: cpBytes(env.Payload),
+			Payload: cpBytes(env.Payload()),
 			Headers: cpHeaders(env.Headers()),
 			Subject: env.Subject(),
 		}

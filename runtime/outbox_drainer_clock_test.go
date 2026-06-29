@@ -73,7 +73,7 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 			EnvelopeID: envID,
 			BindingID:  "bind-1",
 			SessionID:  sessionID,
-			Envelope:   messaging.Envelope{ID: envID, Payload: []byte("payload")},
+			Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: envID, Payload: []byte("payload")}),
 			Status:     persistence.OutboxPending,
 		})
 		if err := outbox.Persist(context.Background(), []*persistence.OutboxRecord{rec}); err != nil {
@@ -92,7 +92,6 @@ func TestOutboxDrainer_PollInterval_FakeClock(t *testing.T) {
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             sessionID,
-		OwnerID:             ownerID,
 		Policy:              routing.RoutePolicy{}.WithDefaults(),
 		Strategy:            fixedNoJitterStrategy{d: interval},
 		DrainBatchSize:      100,
@@ -200,7 +199,7 @@ func TestOutboxDrainer_DrainLatencyUsesInjectedClock(t *testing.T) {
 		EnvelopeID: "env-1",
 		BindingID:  "bind-1",
 		SessionID:  sessionID,
-		Envelope:   messaging.Envelope{ID: "env-1", Payload: []byte("payload")},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-1", Payload: []byte("payload")}),
 		Status:     persistence.OutboxPending,
 	})
 	if err := outbox.Persist(context.Background(), []*persistence.OutboxRecord{rec}); err != nil {
@@ -216,7 +215,6 @@ func TestOutboxDrainer_DrainLatencyUsesInjectedClock(t *testing.T) {
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             sessionID,
-		OwnerID:             ownerID,
 		Policy:              routing.RoutePolicy{}.WithDefaults(),
 		Strategy:            fixedNoJitterStrategy{d: interval},
 		DrainBatchSize:      100,

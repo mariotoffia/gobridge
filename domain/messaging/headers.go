@@ -33,6 +33,56 @@ func IsReservedHeader(key string) bool {
 		strings.EqualFold(key[:len(HeaderPrefix)], HeaderPrefix)
 }
 
+// Reserved-header classification.
+//
+// Every reserved header falls into exactly one of two categories that
+// govern whether it may be observed OUTSIDE the bridge. The predicates
+// below report a header's category (case-insensitive, consistent with
+// IsReservedHeader); the full table lives in the package doc.
+//
+//   - INTERNAL-ONLY (IsInternalOnlyHeader): stamped by the bridge for
+//     its own dispatch bookkeeping. MUST NOT be exposed to a non-bridge
+//     consumer — route-id, route-override, source-id, content-type.
+//   - BRIDGE-TO-BRIDGE PROPAGATED (IsBridgeToBridgeHeader): part of the
+//     cross-hop chaining / idempotency / tracing contract; MAY cross a
+//     bridge-to-bridge boundary so a receiving bridge can correlate,
+//     deduplicate and continue a trace.
+//
+// The two reserved categories are exhaustive and disjoint over the
+// well-known header constants. A non-reserved (application) key belongs
+// to neither: both predicates return false.
+
+// IsInternalOnlyHeader reports whether key is a reserved header the
+// bridge stamps for internal dispatch bookkeeping and that MUST NOT be
+// exposed to a non-bridge consumer. Case-insensitive.
+func IsInternalOnlyHeader(key string) bool {
+	return equalsAnyFold(key,
+		HeaderRouteID, HeaderRouteOverride, HeaderSourceID, HeaderContentType)
+}
+
+// IsBridgeToBridgeHeader reports whether key is a reserved header that
+// may legitimately cross a bridge-to-bridge boundary as part of the
+// chaining / idempotency / tracing contract. Case-insensitive.
+func IsBridgeToBridgeHeader(key string) bool {
+	return equalsAnyFold(key,
+		HeaderCorrelationID, HeaderCausationID, HeaderIdempotencyKey,
+		HeaderDeduplicationID, HeaderOrderingKey, HeaderTenantID,
+		HeaderForwardedFrom, HeaderForwardedHop,
+		HeaderTraceParent, HeaderTraceState)
+}
+
+// equalsAnyFold reports whether key case-insensitively equals any
+// candidate. The candidates are a compile-time literal that does not
+// escape equalsAnyFold, so the variadic call stays allocation-free.
+func equalsAnyFold(key string, candidates ...string) bool {
+	for _, c := range candidates {
+		if strings.EqualFold(key, c) {
+			return true
+		}
+	}
+	return false
+}
+
 // StripReservedHeaders returns a new map with all reserved-prefix headers removed.
 // Returns nil if the input is nil.
 func StripReservedHeaders(headers map[string]any) map[string]any {
@@ -42,6 +92,27 @@ func StripReservedHeaders(headers map[string]any) map[string]any {
 	out := make(map[string]any, len(headers))
 	for k, v := range headers {
 		if !IsReservedHeader(k) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// StripInternalOnlyHeaders returns a new map with every INTERNAL-ONLY
+// reserved header (IsInternalOnlyHeader) removed, leaving BRIDGE-TO-
+// BRIDGE PROPAGATED and application headers intact. It is the egress
+// counterpart an operator ACL applies before handing an envelope's
+// headers to a NON-bridge consumer, since a transport sender cannot
+// otherwise tell a peer bridge from an external subscriber. The runtime
+// does not call this today — see the package doc for why no
+// destination-type egress hook exists. Returns nil if headers is nil.
+func StripInternalOnlyHeaders(headers map[string]any) map[string]any {
+	if headers == nil {
+		return nil
+	}
+	out := make(map[string]any, len(headers))
+	for k, v := range headers {
+		if !IsInternalOnlyHeader(k) {
 			out[k] = v
 		}
 	}

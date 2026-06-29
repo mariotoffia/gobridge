@@ -324,7 +324,7 @@ func (r *RouteRunner) processDelivery(ctx context.Context, del ports.Delivery) {
 			env := del.Envelope()
 			r.logger.Log(ctx, logging.LevelDebug, "delivery error detail",
 				"route", r.routeID,
-				"envelope_id", env.ID,
+				"envelope_id", env.ID(),
 				"subject", env.Subject(),
 				"delivery_mode", string(r.policy.DeliveryMode),
 				"error", err,
@@ -344,7 +344,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelTrace, "delivery received",
 			"route", r.routeID,
-			"envelope_id", env.ID,
+			"envelope_id", env.ID(),
 			"subject", env.Subject(),
 		)
 	}
@@ -353,7 +353,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 
 	attrs := []shared.Tag{
 		{Key: shared.TagKeyRouteID, Value: r.routeID},
-		{Key: "envelope_id", Value: env.ID},
+		{Key: "envelope_id", Value: env.ID()},
 	}
 	if hasTrace {
 		attrs = append(attrs, shared.Tag{Key: "trace_id", Value: tc.TraceID})
@@ -392,6 +392,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		WithChainMetrics(r.metrics),
 		WithChainTimeout(r.policy.ProcessorTimeout),
 		WithChainRouteID(r.routeID),
+		WithChainClock(r.clk),
 	); err != nil {
 		pErr := r.handleProcessorError(ctx, del, env, err)
 		if !errors.Is(err, shared.ErrMessageFiltered) {
@@ -403,7 +404,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelTrace, "processors complete",
 			"route", r.routeID,
-			"envelope_id", env.ID,
+			"envelope_id", env.ID(),
 		)
 	}
 

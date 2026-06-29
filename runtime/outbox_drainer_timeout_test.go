@@ -177,11 +177,8 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 			EnvelopeID: fmt.Sprintf("env-%d", i),
 			BindingID:  "bind-1",
 			SessionID:  "sess-slow",
-			Envelope: messaging.Envelope{
-				ID:      fmt.Sprintf("env-%d", i),
-				Payload: []byte("payload"),
-			},
-			Status: persistence.OutboxPending,
+			Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("env-%d", i), Payload: []byte("payload")}),
+			Status:     persistence.OutboxPending,
 		})
 		if err := outbox.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist: %v", err)
@@ -199,7 +196,6 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             "sess-slow",
-		OwnerID:             token.Owner,
 		Policy:              routing.RoutePolicy{}.WithDefaults(),
 		Strategy:            persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:      recordCount,
@@ -285,11 +281,8 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 			EnvelopeID: fmt.Sprintf("env-legacy-%d", i),
 			BindingID:  "bind-1",
 			SessionID:  "sess-legacy",
-			Envelope: messaging.Envelope{
-				ID:      fmt.Sprintf("env-legacy-%d", i),
-				Payload: []byte("payload"),
-			},
-			Status: persistence.OutboxPending,
+			Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("env-legacy-%d", i), Payload: []byte("payload")}),
+			Status:     persistence.OutboxPending,
 		})
 		if err := outbox.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 			t.Fatalf("persist: %v", err)
@@ -307,7 +300,6 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             "sess-legacy",
-		OwnerID:             token.Owner,
 		Policy:              routing.RoutePolicy{}.WithDefaults(),
 		Strategy:            persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:      recordCount,

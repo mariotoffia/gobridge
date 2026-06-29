@@ -3,7 +3,6 @@ package paho
 import (
 	"context"
 
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -93,7 +92,7 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 		case s.events <- ev:
 		default:
 			// Event channel still full after draining oldest; event lost.
-			s.metrics.Counter(shared.MetricMQTTEventDropped, 1)
+			s.metrics.Counter(MetricMQTTEventDropped, 1)
 		}
 	}
 }

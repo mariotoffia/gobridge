@@ -26,10 +26,10 @@ func TestEnvelopeFromPublish_BasicFields(t *testing.T) {
 	if v, _ := messaging.GetHeaderString(env.Headers(), HeaderMQTTTopic); v != "test/topic" {
 		t.Errorf("headers[%q] = %q, want %q", HeaderMQTTTopic, v, "test/topic")
 	}
-	if string(env.Payload) != "hello" {
-		t.Errorf("payload = %q, want %q", env.Payload, "hello")
+	if string(env.Payload()) != "hello" {
+		t.Errorf("payload = %q, want %q", env.Payload(), "hello")
 	}
-	if env.CreatedAt.IsZero() {
+	if env.CreatedAt().IsZero() {
 		t.Error("CreatedAt should be set")
 	}
 }
@@ -70,13 +70,13 @@ func TestEnvelopeFromPublish_MessageExpiry(t *testing.T) {
 	env := EnvelopeFromPublish(pub, nil)
 	after := time.Now()
 
-	if env.ExpiresAt.IsZero() {
+	if env.ExpiresAt().IsZero() {
 		t.Fatal("ExpiresAt should be set")
 	}
 	earliest := before.Add(60 * time.Second)
 	latest := after.Add(60 * time.Second)
-	if env.ExpiresAt.Before(earliest) || env.ExpiresAt.After(latest) {
-		t.Errorf("ExpiresAt = %v, want between %v and %v", env.ExpiresAt, earliest, latest)
+	if env.ExpiresAt().Before(earliest) || env.ExpiresAt().After(latest) {
+		t.Errorf("ExpiresAt = %v, want between %v and %v", env.ExpiresAt(), earliest, latest)
 	}
 }
 
@@ -172,7 +172,7 @@ func TestPublishFromEnvelope_BasicFields(t *testing.T) {
 // even when the envelope subject is empty (the topic is the transport
 // destination — independent from the logical subject).
 func TestPublishFromEnvelope_DefaultTopic(t *testing.T) {
-	env := &messaging.Envelope{Payload: []byte("x")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte("x")})
 	opts := SenderOptions{DefaultTopic: "fallback/topic", QoS: 0}
 
 	pub := PublishFromEnvelope(env, opts.DefaultTopic, opts, nil)
@@ -245,16 +245,17 @@ func TestPublishFromEnvelope_MessageExpiry(t *testing.T) {
 func TestPublishFromEnvelope_NoProperties(t *testing.T) {
 	// Note: env.Subject() is intentionally empty so PublishFromEnvelope
 	// does NOT emit a HeaderGobridgeSubject user property.
-	env := &messaging.Envelope{
-		Payload: []byte("x"),
-	}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte("x")})
 	opts := SenderOptions{QoS: 0}
 
 	pub := PublishFromEnvelope(env, "t", opts, nil)
 
 	if pub.Properties != nil {
 		for _, u := range pub.Properties.User {
-			t.Errorf("unexpected user property: %s=%s", u.Key, u.Value)
+			// MustEnvelope auto-assigns an ID, so mqtt.message-id is expected; all others are unexpected.
+			if u.Key != "mqtt.message-id" {
+				t.Errorf("unexpected user property: %s=%s", u.Key, u.Value)
+			}
 		}
 	}
 }
@@ -351,7 +352,7 @@ func TestEnvelopeFromPublish_TimeConsistency(t *testing.T) {
 
 	env := EnvelopeFromPublish(pub, nil)
 
-	diff := env.ExpiresAt.Sub(env.CreatedAt)
+	diff := env.ExpiresAt().Sub(env.CreatedAt())
 	if diff != 300*time.Second {
 		t.Errorf("ExpiresAt - CreatedAt = %v, want exactly 300s (same time base)", diff)
 	}
@@ -485,15 +486,15 @@ func TestEnvelopeFromPublish_IDFromMessageIDHeader(t *testing.T) {
 
 	env := EnvelopeFromPublish(pub, nil)
 
-	if env.ID != "my-envelope-id" {
-		t.Errorf("ID = %q, want %q", env.ID, "my-envelope-id")
+	if env.ID() != "my-envelope-id" {
+		t.Errorf("ID = %q, want %q", env.ID(), "my-envelope-id")
 	}
 	if v, _ := messaging.GetHeaderString(env.Headers(), HeaderMessageID); v != "my-envelope-id" {
 		t.Errorf("header %s = %q, want %q", HeaderMessageID, v, "my-envelope-id")
 	}
 }
 
-// verifies that mqtt.message-id takes precedence over correlation-id for Envelope.ID.
+// verifies that mqtt.message-id takes precedence over correlation-id for Envelope.ID().
 func TestEnvelopeFromPublish_IDPrecedence_MsgIDOverCorrelation(t *testing.T) {
 	pub := &pahov5.Publish{
 		Topic: "t",
@@ -507,12 +508,12 @@ func TestEnvelopeFromPublish_IDPrecedence_MsgIDOverCorrelation(t *testing.T) {
 
 	env := EnvelopeFromPublish(pub, nil)
 
-	if env.ID != "msg-id" {
-		t.Errorf("ID = %q, want %q (mqtt.message-id should take precedence)", env.ID, "msg-id")
+	if env.ID() != "msg-id" {
+		t.Errorf("ID = %q, want %q (mqtt.message-id should take precedence)", env.ID(), "msg-id")
 	}
 }
 
-// verifies that correlation-id is used as Envelope.ID when mqtt.message-id is absent.
+// verifies that correlation-id is used as Envelope.ID() when mqtt.message-id is absent.
 func TestEnvelopeFromPublish_IDFromCorrelation(t *testing.T) {
 	pub := &pahov5.Publish{
 		Topic: "t",
@@ -523,8 +524,8 @@ func TestEnvelopeFromPublish_IDFromCorrelation(t *testing.T) {
 
 	env := EnvelopeFromPublish(pub, nil)
 
-	if env.ID != "corr-fallback" {
-		t.Errorf("ID = %q, want %q (should fall back to correlation-id)", env.ID, "corr-fallback")
+	if env.ID() != "corr-fallback" {
+		t.Errorf("ID = %q, want %q (should fall back to correlation-id)", env.ID(), "corr-fallback")
 	}
 }
 
@@ -539,18 +540,18 @@ func TestEnvelopeFromPublish_IDFallbackRandom(t *testing.T) {
 	env1 := EnvelopeFromPublish(pub, nil)
 	env2 := EnvelopeFromPublish(pub, nil)
 
-	if env1.ID == "" {
+	if env1.ID() == "" {
 		t.Fatal("fallback ID should not be empty")
 	}
-	if env2.ID == "" {
+	if env2.ID() == "" {
 		t.Fatal("fallback ID should not be empty")
 	}
-	if env1.ID == env2.ID {
-		t.Errorf("each call should produce a unique random ID, got same: %q", env1.ID)
+	if env1.ID() == env2.ID() {
+		t.Errorf("each call should produce a unique random ID, got same: %q", env1.ID())
 	}
 }
 
-// verifies PublishFromEnvelope includes Envelope.ID as mqtt.message-id user property.
+// verifies PublishFromEnvelope includes Envelope.ID() as mqtt.message-id user property.
 func TestPublishFromEnvelope_IncludesMessageID(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "my-id-123",
@@ -573,7 +574,7 @@ func TestPublishFromEnvelope_IncludesMessageID(t *testing.T) {
 	}
 }
 
-// verifies full round-trip of Envelope.ID through Publish and back.
+// verifies full round-trip of Envelope.ID() through Publish and back.
 func TestRoundTrip_EnvelopeID(t *testing.T) {
 	original := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "round-trip-id-456",
@@ -584,8 +585,8 @@ func TestRoundTrip_EnvelopeID(t *testing.T) {
 	pub := PublishFromEnvelope(original, original.Subject(), SenderOptions{QoS: 1}, nil)
 	restored := EnvelopeFromPublish(pub, nil)
 
-	if restored.ID != original.ID {
-		t.Errorf("Envelope.ID round-trip: got %q, want %q", restored.ID, original.ID)
+	if restored.ID() != original.ID() {
+		t.Errorf("Envelope.ID() round-trip: got %q, want %q", restored.ID(), original.ID())
 	}
 }
 
@@ -608,8 +609,8 @@ func TestRoundTrip_EnvelopePublishEnvelope(t *testing.T) {
 	if restored.Subject() != original.Subject() {
 		t.Errorf("subject = %q, want %q", restored.Subject(), original.Subject())
 	}
-	if string(restored.Payload) != string(original.Payload) {
-		t.Errorf("payload = %q, want %q", restored.Payload, original.Payload)
+	if string(restored.Payload()) != string(original.Payload()) {
+		t.Errorf("payload = %q, want %q", restored.Payload(), original.Payload())
 	}
 	if v, _ := messaging.GetHeaderString(restored.Headers(), messaging.HeaderCorrelationID); v != "rt-id" {
 		t.Errorf("correlation = %q, want %q", v, "rt-id")

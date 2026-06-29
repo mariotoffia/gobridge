@@ -1,6 +1,9 @@
 package bridgecfg
 
-import "github.com/mariotoffia/gobridge/ports"
+import (
+	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
+)
 
 // WithHTTPAdminAPI populates BridgeConfig.HTTP from the supplied
 // HTTPAdminAPIOptions. Calling WithHTTPAdminAPI multiple times
@@ -16,8 +19,8 @@ func (b *Builder) WithHTTPAdminAPI(opts HTTPAdminAPIOptions) *Builder {
 	b.cfg.HTTP = &ports.HTTPConfig{
 		AdminAddr:     opts.AdminAddr,
 		MonitorAddr:   opts.MonitorAddr,
-		AdminAPIKey:   opts.AdminAPIKey,
-		MonitorAPIKey: opts.MonitorAPIKey,
+		AdminAPIKey:   shared.NewSecret(opts.AdminAPIKey),
+		MonitorAPIKey: shared.NewSecret(opts.MonitorAPIKey),
 		CORSOrigins:   opts.CORSOrigins,
 	}
 	return b

@@ -106,13 +106,13 @@ func dlqDo(mux *http.ServeMux, req *http.Request) *httptest.ResponseRecorder {
 // TestToDLQEntryView_MapsAllFields validates that toDLQEntryView
 // correctly maps all domain fields including Subject from Envelope.
 func TestToDLQEntryView_MapsAllFields(t *testing.T) {
-	e := routing.DLQEntry{
+	e := routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID: "v-1", RouteID: "r1", BindingID: "b1", SessionID: "s1",
 		SourceID: "src1", CorrelationID: "c1", Reason: "timeout",
 		Category: "transient", ErrorCode: "TIMEOUT", LastError: "dial err",
 		FailedAt: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC), Attempts: 5,
 		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "test/topic"}),
-	}
+	})
 	v := toDLQEntryView(e)
 	assert.Equal(t, "v-1", v.ID)
 	assert.Equal(t, "r1", v.RouteID)
@@ -124,9 +124,9 @@ func TestToDLQEntryView_MapsAllFields(t *testing.T) {
 // TestToDLQEntryDetailView_IncludesBase64Payload validates that the
 // detail view includes the envelope payload as base64.
 func TestToDLQEntryDetailView_IncludesBase64Payload(t *testing.T) {
-	e := routing.DLQEntry{
-		Envelope: messaging.Envelope{Payload: []byte(`{"msg":"hello"}`)},
-	}
+	e := routing.NewDLQEntry(routing.DLQEntrySpec{
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte(`{"msg":"hello"}`)}),
+	})
 	v := toDLQEntryDetailView(e)
 	decoded, err := base64.StdEncoding.DecodeString(v.Payload)
 	require.NoError(t, err)
@@ -147,14 +147,14 @@ func TestToDLQEntryDetailView_EmptyPayload(t *testing.T) {
 // TestHandleDLQMessageByID_ReturnsEntry validates a successful get-by-id
 // returns 200 with all dlqEntryDetailView fields including base64 payload.
 func TestHandleDLQMessageByID_ReturnsEntry(t *testing.T) {
-	entry := routing.DLQEntry{
+	entry := routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID: "msg-1", RouteID: "r1", Category: "timeout",
 		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			Subject: "test/sub",
 			Payload: []byte("binary-data"),
 		}),
 		FailedAt: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC),
-	}
+	})
 	store := &mockDLQStore{
 		getFunc: func(_ context.Context, id string) (routing.DLQEntry, error) {
 			if id == "msg-1" {
@@ -362,10 +362,10 @@ func TestHandleDLQDeleteByFilter_WithTimeRange(t *testing.T) {
 func TestHandleDLQMessages_Pagination(t *testing.T) {
 	entries := make([]routing.DLQEntry, 10)
 	for i := range entries {
-		entries[i] = routing.DLQEntry{
+		entries[i] = routing.RehydrateDLQEntry(routing.DLQEntrySpec{
 			ID:       fmt.Sprintf("p-%d", i),
 			FailedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Hour),
-		}
+		})
 	}
 	store := &mockDLQStore{
 		listFunc: func(_ context.Context, _ routing.DLQFilter) ([]routing.DLQEntry, error) {

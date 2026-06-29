@@ -72,8 +72,8 @@ func TestE2E_S1_SQSToMQTT_DirectHold(t *testing.T) {
 	})
 
 	msgs := collector.getMessages()
-	if string(msgs[0].Payload) != `{"temp":22.5}` {
-		t.Errorf("payload = %q, want %q", string(msgs[0].Payload), `{"temp":22.5}`)
+	if string(msgs[0].Payload()) != `{"temp":22.5}` {
+		t.Errorf("payload = %q, want %q", string(msgs[0].Payload()), `{"temp":22.5}`)
 	}
 }
 
@@ -131,8 +131,8 @@ func TestE2E_S2_SQSToMQTT_SharedOutbox(t *testing.T) {
 	})
 
 	msgs := collector.getMessages()
-	if string(msgs[0].Payload) != `{"order":"abc"}` {
-		t.Errorf("payload = %q, want %q", string(msgs[0].Payload), `{"order":"abc"}`)
+	if string(msgs[0].Payload()) != `{"order":"abc"}` {
+		t.Errorf("payload = %q, want %q", string(msgs[0].Payload()), `{"order":"abc"}`)
 	}
 }
 
@@ -298,8 +298,8 @@ func TestE2E_S4_SQSToMQTT_BridgeCrashAndRestart(t *testing.T) {
 	if len(msgs) == 0 {
 		t.Fatal("S4: expected at least 1 message")
 	}
-	if string(msgs[0].Payload) != `{"crash":"test"}` {
-		t.Errorf("S4: payload = %q, want %q", string(msgs[0].Payload), `{"crash":"test"}`)
+	if string(msgs[0].Payload()) != `{"crash":"test"}` {
+		t.Errorf("S4: payload = %q, want %q", string(msgs[0].Payload()), `{"crash":"test"}`)
 	}
 }
 
@@ -391,8 +391,8 @@ func TestE2E_S5_SQSToMQTT_SecondaryBridgeTakeover(t *testing.T) {
 	if len(msgs) == 0 {
 		t.Fatal("S5: expected at least 1 message")
 	}
-	if string(msgs[0].Payload) != `{"takeover":"test"}` {
-		t.Errorf("S5: payload = %q, want %q", string(msgs[0].Payload), `{"takeover":"test"}`)
+	if string(msgs[0].Payload()) != `{"takeover":"test"}` {
+		t.Errorf("S5: payload = %q, want %q", string(msgs[0].Payload()), `{"takeover":"test"}`)
 	}
 }
 
@@ -539,7 +539,7 @@ func TestE2E_S7_SQSToMQTT_MultipleMessages(t *testing.T) {
 
 	rxPayloads := make(map[string]bool, len(msgs))
 	for _, m := range msgs {
-		rxPayloads[string(m.Payload)] = true
+		rxPayloads[string(m.Payload())] = true
 	}
 	for i := 0; i < msgCount; i++ {
 		want := fmt.Sprintf(`{"seq":%d}`, i)

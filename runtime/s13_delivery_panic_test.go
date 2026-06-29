@@ -79,7 +79,7 @@ func TestRouteRunner_ProcessorPanic_DoesNotCrash(t *testing.T) {
 	runDone := make(chan error, 1)
 	go func() { runDone <- runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-proc-panic"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-proc-panic"}))
 	_ = receiver.Emit(ctx, del)
 
 	// With no DLQ store, Permanent errors fall through to ack (drop).
@@ -125,7 +125,7 @@ func TestRouteRunner_ProcessorPanic_RoutesToDLQ(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-proc-retry"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-proc-retry"}))
 	_ = receiver.Emit(ctx, del)
 
 	waitFor(t, 2*time.Second, "delivery acked after processor panic", del.IsAcked)
@@ -140,8 +140,8 @@ func TestRouteRunner_ProcessorPanic_RoutesToDLQ(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 DLQ entry, got %d", len(entries))
 	}
-	if !strings.Contains(entries[0].LastError, "processor panicked") {
-		t.Fatalf("DLQ LastError should mention processor panic, got %q", entries[0].LastError)
+	if !strings.Contains(entries[0].LastError(), "processor panicked") {
+		t.Fatalf("DLQ LastError should mention processor panic, got %q", entries[0].LastError())
 	}
 }
 
@@ -167,7 +167,7 @@ func TestRouteRunner_SenderPanic_DoesNotCrash(t *testing.T) {
 	runDone := make(chan error, 1)
 	go func() { runDone <- runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-send-panic"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-send-panic"}))
 	_ = receiver.Emit(ctx, del)
 
 	waitFor(t, 2*time.Second, "delivery retried after sender panic", del.IsRetried)
@@ -200,7 +200,7 @@ func TestRouteRunner_SenderPanic_RetriesDelivery(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-send-retry"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-send-retry"}))
 	_ = receiver.Emit(ctx, del)
 
 	waitFor(t, 2*time.Second, "delivery retried after sender panic", del.IsRetried)
@@ -240,7 +240,7 @@ func TestRouteRunner_ProcessorPanic_EmitsMetric(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-metric-panic"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-metric-panic"}))
 	_ = receiver.Emit(ctx, del)
 
 	waitFor(t, 2*time.Second, "delivery acked after panic", del.IsAcked)
@@ -295,11 +295,11 @@ func TestRouteRunner_DeliveryPanic_SlotsReleased(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del1 := NewFakeDelivery(&messaging.Envelope{ID: "msg-panic-slot"})
+	del1 := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-panic-slot"}))
 	_ = receiver.Emit(ctx, del1)
 	waitFor(t, 2*time.Second, "first delivery acked (panic routed to DLQ/drop)", del1.IsAcked)
 
-	del2 := NewFakeDelivery(&messaging.Envelope{ID: "msg-ok-slot"})
+	del2 := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-ok-slot"}))
 	_ = receiver.Emit(ctx, del2)
 	waitFor(t, 2*time.Second, "second delivery acked (slot released)", del2.IsAcked)
 
@@ -318,7 +318,7 @@ func TestRouteRunner_DeliveryPanic_OtherMessagesUnaffected(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
 	sender.SendFn = func(env *messaging.Envelope) error {
-		if env.ID == "msg-panic-concurrent" {
+		if env.ID() == "msg-panic-concurrent" {
 			panic("targeted panic")
 		}
 		return nil
@@ -335,15 +335,15 @@ func TestRouteRunner_DeliveryPanic_OtherMessagesUnaffected(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	panicDel := NewFakeDelivery(&messaging.Envelope{ID: "msg-panic-concurrent"})
+	panicDel := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-panic-concurrent"}))
 	_ = receiver.Emit(ctx, panicDel)
 
 	okDels := make([]*FakeDelivery, 4)
 	for i := range okDels {
-		okDels[i] = NewFakeDelivery(&messaging.Envelope{
+		okDels[i] = NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("msg-ok-%d", i),
 			Payload: []byte("data"),
-		})
+		}))
 		_ = receiver.Emit(ctx, okDels[i])
 	}
 
@@ -393,7 +393,7 @@ func TestRouteRunner_ProcessorPanic_DLQWriteFails_NoCrash(t *testing.T) {
 	runDone := make(chan error, 1)
 	go func() { runDone <- runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-retry-fail"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-retry-fail"}))
 	del.RetryFnErr = fmt.Errorf("simulated retry transport failure")
 	_ = receiver.Emit(ctx, del)
 
@@ -441,7 +441,7 @@ func TestRouteRunner_ProcessorPanic_RetryPanics_NoProcessCrash(t *testing.T) {
 	go func() { runDone <- runner.Run(ctx) }()
 
 	del := &panickingRetryDelivery{
-		env: &messaging.Envelope{ID: "msg-retry-panics"},
+		env: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-retry-panics"}),
 	}
 	_ = receiver.Emit(ctx, del)
 

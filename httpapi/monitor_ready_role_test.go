@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/httpapi"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -26,7 +27,7 @@ func TestHandleReady_RoleStandalone(t *testing.T) {
 		_ = rt.Stop(context.Background())
 	})
 
-	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: "key-0123456789abcdef"})
+	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: shared.NewSecret("key-0123456789abcdef")})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/ready", nil)
@@ -43,7 +44,7 @@ func TestHandleReady_RoleStandalone(t *testing.T) {
 // TestHandleReady_MethodNotAllowed verifies POST returns 405 Method Not Allowed.
 func TestHandleReady_MethodNotAllowed(t *testing.T) {
 	rt := testRuntimeForMonitor()
-	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: "key-0123456789abcdef"})
+	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: shared.NewSecret("key-0123456789abcdef")})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/monitor/ready", nil)
@@ -54,7 +55,7 @@ func TestHandleReady_MethodNotAllowed(t *testing.T) {
 
 func TestHandleReady_NotRunning_NoRole(t *testing.T) {
 	rt := testRuntimeForMonitor()
-	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: "key-0123456789abcdef"})
+	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: shared.NewSecret("key-0123456789abcdef")})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/ready", nil)

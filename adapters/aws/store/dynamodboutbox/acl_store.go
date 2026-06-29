@@ -2,7 +2,6 @@ package dynamodboutbox
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -96,6 +95,12 @@ func WithLogger(l *slog.Logger) Option {
 }
 
 // NewStore creates a DynamoDB-backed OutboxStore.
+//
+// The *dynamodb.Client parameter is the SDK boundary input this ACL
+// constructor exists to wrap; it is injected by the composition root and
+// stored behind unexported fields.
+//
+//aclcheck:allow-export
 func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 	s := &Store{
 		client:         client,
@@ -214,10 +219,10 @@ func (s *Store) persistSingle(ctx context.Context, r *persistence.OutboxRecord, 
 		if isConditionFailed(err) {
 			return shared.ErrDuplicateRecord.
 				WithMessage("duplicate outbox record").
-				With("envelopeID", r.EnvelopeID).
-				With("bindingID", r.BindingID)
+				With("envelopeID", r.EnvelopeID()).
+				With("bindingID", r.BindingID())
 		}
-		return wrapErr(err, "outbox persist failed", "envelopeID", r.EnvelopeID, "bindingID", r.BindingID)
+		return wrapErr(err, "outbox persist failed", "envelopeID", r.EnvelopeID(), "bindingID", r.BindingID())
 	}
 	return nil
 }
@@ -260,7 +265,7 @@ func (s *Store) persistFanOut(ctx context.Context, records []*persistence.Outbox
 // Uses strongly consistent reads with pagination to handle the DynamoDB
 // Limit+Filter interaction (Limit caps evaluated items, not filtered results).
 // Records that have exceeded the max replay count are skipped.
-func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
+func (s *Store) Claim(ctx context.Context, partitionKey string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: claim", "partition_key", partitionKey, "limit", limit)
 	}
@@ -268,13 +273,33 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, 
 	now := s.clk.Now()
 	staleThreshold := now.Add(-s.staleClaim)
 
-	filterExpr := "(#st = :pending) OR (#st = :claimed AND claimed_at < :stale)"
+	// Version-monotonic fence: reject a token whose version is older than the
+	// highest claim_version the partition has already observed, so a preempted
+	// owner cannot win a freshly pending row (matches memory/sqlite and the
+	// ports.OutboxStore contract).
+	maxVersion, err := s.maxClaimVersion(ctx, partitionKey)
+	if err != nil {
+		return nil, err
+	}
+	if token.Version < maxVersion {
+		return nil, shared.ErrStaleFencingToken.
+			WithMessage("claim rejected: token version is stale").
+			With("givenVersion", token.Version).
+			With("latestVersion", maxVersion)
+	}
+
+	// A claimed record is reclaimable when its claim_version is strictly
+	// older than the incoming token (version-monotonic preemption, matching
+	// the port contract and memory/sqlite) OR when its claim has gone stale
+	// past the wall-clock threshold (crash-recovery fallback).
+	filterExpr := "(#st = :pending) OR (#st = :claimed AND (claim_version < :ver OR claimed_at < :stale))"
 	exprNames := map[string]string{"#st": "status"}
 	exprValues := map[string]ddbtypes.AttributeValue{
 		":pk":      &ddbtypes.AttributeValueMemberS{Value: partitionKey},
 		":prefix":  &ddbtypes.AttributeValueMemberS{Value: skPrefix},
 		":pending": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxPending)},
 		":claimed": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxClaimed)},
+		":ver":     &ddbtypes.AttributeValueMemberN{Value: u64(token.Version)},
 		":stale":   &ddbtypes.AttributeValueMemberN{Value: i64(staleThreshold.UnixMilli())},
 	}
 
@@ -315,12 +340,12 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, 
 			pk := strAttr(item, "PK")
 			sk := strAttr(item, "SK")
 
-			condExpr := "(#st = :pending) OR (#st = :cur_claimed AND claimed_at < :stale)"
+			condExpr := "(#st = :pending) OR (#st = :cur_claimed AND (claim_version < :ver OR claimed_at < :stale))"
 			condValues := map[string]ddbtypes.AttributeValue{
 				":claimed":     &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxClaimed)},
 				":pending":     &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxPending)},
 				":cur_claimed": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxClaimed)},
-				":owner":       &ddbtypes.AttributeValueMemberS{Value: ownerID},
+				":owner":       &ddbtypes.AttributeValueMemberS{Value: token.Owner},
 				":ver":         &ddbtypes.AttributeValueMemberN{Value: u64(token.Version)},
 				":now":         &ddbtypes.AttributeValueMemberN{Value: i64(now.UnixMilli())},
 				":stale":       &ddbtypes.AttributeValueMemberN{Value: i64(staleThreshold.UnixMilli())},
@@ -351,7 +376,7 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, 
 				if isConditionFailed(err) {
 					continue
 				}
-				return nil, wrapErr(err, "outbox claim update failed", "partitionKey", pk, "ownerID", ownerID)
+				return nil, wrapErr(err, "outbox claim update failed", "partitionKey", pk, "ownerID", token.Owner)
 			}
 
 			rec, err := unmarshalRecord(updateOut.Attributes)
@@ -366,6 +391,17 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, ownerID string, 
 		}
 		startKey = queryOut.LastEvaluatedKey
 	}
+
+	// Return claimed records in persisted created_at order with envelopeID
+	// as a stable tiebreaker, so equal-millisecond timestamps are
+	// deterministic and ordering matches the memory/sqlite backends.
+	sort.Slice(claimed, func(i, j int) bool {
+		ci, cj := claimed[i].CreatedAt(), claimed[j].CreatedAt()
+		if ci.Equal(cj) {
+			return claimed[i].EnvelopeID() < claimed[j].EnvelopeID()
+		}
+		return ci.Before(cj)
+	})
 
 	return claimed, nil
 }
@@ -404,13 +440,14 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 			UpdateExpression: aws.String(
 				"SET #st = :completed, completed_at = :now, #ttl = :ttl"),
 			ConditionExpression: aws.String(
-				"claimed_by = :owner AND claim_version = :ver"),
+				"#st = :claimed AND claimed_by = :owner AND claim_version = :ver"),
 			ExpressionAttributeNames: map[string]string{
 				"#st":  "status",
 				"#ttl": "ttl",
 			},
 			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 				":completed": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxCompleted)},
+				":claimed":   &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxClaimed)},
 				":now":       &ddbtypes.AttributeValueMemberN{Value: i64(now.UnixMilli())},
 				":ttl":       &ddbtypes.AttributeValueMemberN{Value: i64(ttlEpoch)},
 				":owner":     &ddbtypes.AttributeValueMemberS{Value: token.Owner},
@@ -431,22 +468,14 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 	return nil
 }
 
-// Expire marks pending or claimed records whose ExpiresAt is before the given
-// time as expired. Returns the count of expired records.
+// Expire marks pending records whose ExpiresAt is before the given time as
+// expired. Claimed records are never expired here. Returns the count.
 func (s *Store) Expire(ctx context.Context, before time.Time) (int, error) {
 	beforeMs := before.UnixMilli()
 	ttlEpoch := before.Add(s.compactGrace).Unix()
-	count := 0
-
-	for _, status := range []string{string(persistence.OutboxPending), string(persistence.OutboxClaimed)} {
-		n, err := s.expireByStatus(ctx, status, beforeMs, ttlEpoch)
-		if err != nil {
-			return count, err
-		}
-		count += n
-	}
-
-	return count, nil
+	// Pending-only: a claimed record is reclaimed via Claim/IsClaimable,
+	// never expired out from under a potentially still-valid owner.
+	return s.expireByStatus(ctx, string(persistence.OutboxPending), beforeMs, ttlEpoch)
 }
 
 func (s *Store) expireByStatus(ctx context.Context, status string, beforeMs, ttlEpoch int64) (int, error) {
@@ -488,16 +517,18 @@ func (s *Store) expireByStatus(ctx context.Context, status string, beforeMs, ttl
 					"SK": &ddbtypes.AttributeValueMemberS{Value: sk},
 				},
 				UpdateExpression: aws.String("SET #st = :expired, #ttl = :ttl"),
+				// Condition gates on the same status the query selected so the
+				// guard cannot silently match zero rows if this is reused for
+				// another status.
 				ConditionExpression: aws.String(
-					"(#st = :pending OR #st = :claimed) AND expires_at > :zero AND expires_at < :before"),
+					"#st = :status AND expires_at > :zero AND expires_at < :before"),
 				ExpressionAttributeNames: map[string]string{
 					"#st":  "status",
 					"#ttl": "ttl",
 				},
 				ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 					":expired": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxExpired)},
-					":pending": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxPending)},
-					":claimed": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxClaimed)},
+					":status":  &ddbtypes.AttributeValueMemberS{Value: status},
 					":zero":    &ddbtypes.AttributeValueMemberN{Value: "0"},
 					":before":  &ddbtypes.AttributeValueMemberN{Value: i64(beforeMs)},
 					":ttl":     &ddbtypes.AttributeValueMemberN{Value: i64(ttlEpoch)},
@@ -571,7 +602,7 @@ func (s *Store) QueryPending(ctx context.Context, partitionKey string, limit int
 	}
 
 	sort.Slice(records, func(i, j int) bool {
-		return records[i].CreatedAt.Before(records[j].CreatedAt)
+		return records[i].CreatedAt().Before(records[j].CreatedAt())
 	})
 
 	if len(records) > limit {
@@ -579,6 +610,48 @@ func (s *Store) QueryPending(ctx context.Context, partitionKey string, limit int
 	}
 
 	return records, nil
+}
+
+// maxClaimVersion returns the highest claim_version stamped on any record in
+// the partition (0 if none). Used by Claim to enforce a version-monotonic
+// fence against preempted (stale-version) tokens. Uses strongly consistent
+// reads and projects only claim_version to keep the scan cheap.
+func (s *Store) maxClaimVersion(ctx context.Context, partitionKey string) (uint64, error) {
+	var maxVersion uint64
+	var startKey map[string]ddbtypes.AttributeValue
+
+	for {
+		out, err := s.client.Query(ctx, &dynamodb.QueryInput{
+			TableName:              aws.String(s.table),
+			KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
+			ExpressionAttributeNames: map[string]string{
+				"#cv": "claim_version",
+			},
+			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+				":pk":     &ddbtypes.AttributeValueMemberS{Value: partitionKey},
+				":prefix": &ddbtypes.AttributeValueMemberS{Value: skPrefix},
+			},
+			ProjectionExpression: aws.String("#cv"),
+			ConsistentRead:       aws.Bool(true),
+			ExclusiveStartKey:    startKey,
+		})
+		if err != nil {
+			return 0, wrapErr(err, "outbox max claim version query failed", "partitionKey", partitionKey)
+		}
+
+		for _, item := range out.Items {
+			if v := numAttrU64(item, "claim_version"); v > maxVersion {
+				maxVersion = v
+			}
+		}
+
+		if out.LastEvaluatedKey == nil {
+			break
+		}
+		startKey = out.LastEvaluatedKey
+	}
+
+	return maxVersion, nil
 }
 
 // resolveRecordKeys uses the RecordIDIndex GSI to find the base table PK/SK
@@ -602,145 +675,4 @@ func (s *Store) resolveRecordKeys(ctx context.Context, recordID string) (string,
 	}
 
 	return strAttr(out.Items[0], "PK"), strAttr(out.Items[0], "SK"), nil
-}
-
-// --- marshaling ---
-
-func sortKey(envelopeID, bindingID string) string {
-	return skPrefix + envelopeID + "#" + bindingID
-}
-
-func partitionKey(r *persistence.OutboxRecord) string {
-	return persistence.OutboxPartitionKey(r.SessionID, r.BindingID)
-}
-
-func marshalRecord(r *persistence.OutboxRecord, now time.Time, compactGrace time.Duration) (map[string]ddbtypes.AttributeValue, error) {
-	createdAt := r.CreatedAt
-	if createdAt.IsZero() {
-		createdAt = now
-	}
-
-	envJSON, err := json.Marshal(&r.Envelope)
-	if err != nil {
-		return nil, fmt.Errorf("dynamodboutbox: marshal envelope: %w", err)
-	}
-
-	item := map[string]ddbtypes.AttributeValue{
-		"PK":            &ddbtypes.AttributeValueMemberS{Value: partitionKey(r)},
-		"SK":            &ddbtypes.AttributeValueMemberS{Value: sortKey(r.EnvelopeID, r.BindingID)},
-		"record_id":     &ddbtypes.AttributeValueMemberS{Value: r.ID},
-		"route_id":      &ddbtypes.AttributeValueMemberS{Value: r.RouteID},
-		"envelope_id":   &ddbtypes.AttributeValueMemberS{Value: r.EnvelopeID},
-		"binding_id":    &ddbtypes.AttributeValueMemberS{Value: r.BindingID},
-		"session_id":    &ddbtypes.AttributeValueMemberS{Value: r.SessionID},
-		"address":       &ddbtypes.AttributeValueMemberS{Value: r.Address},
-		"envelope_json": &ddbtypes.AttributeValueMemberS{Value: string(envJSON)},
-		"status":        &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxPending)},
-		"claim_version": &ddbtypes.AttributeValueMemberN{Value: "0"},
-		"replay_count":  &ddbtypes.AttributeValueMemberN{Value: "0"},
-		"created_at":    &ddbtypes.AttributeValueMemberN{Value: i64(createdAt.UnixMilli())},
-		"expires_at":    &ddbtypes.AttributeValueMemberN{Value: i64(millisOrZero(r.ExpiresAt))},
-		"completed_at":  &ddbtypes.AttributeValueMemberN{Value: "0"},
-	}
-	// Omit claimed_by and claimed_at for unclaimed records — DynamoDB
-	// sparse GSI semantics: items without the GSI key attributes are
-	// excluded from the ClaimedByIndex, which is exactly what we want.
-
-	if r.DispatchHeaders != nil {
-		hdrJSON, err := json.Marshal(r.DispatchHeaders)
-		if err != nil {
-			return nil, fmt.Errorf("dynamodboutbox: marshal headers: %w", err)
-		}
-		item["headers_json"] = &ddbtypes.AttributeValueMemberS{Value: string(hdrJSON)}
-	}
-
-	if !r.ExpiresAt.IsZero() {
-		item["ttl"] = &ddbtypes.AttributeValueMemberN{
-			Value: i64(r.ExpiresAt.Add(compactGrace).Unix()),
-		}
-	}
-
-	return item, nil
-}
-
-func unmarshalRecord(item map[string]ddbtypes.AttributeValue) (*persistence.OutboxRecord, error) {
-	snap := persistence.OutboxSnapshot{
-		ID:           strAttr(item, "record_id"),
-		RouteID:      strAttr(item, "route_id"),
-		EnvelopeID:   strAttr(item, "envelope_id"),
-		BindingID:    strAttr(item, "binding_id"),
-		SessionID:    strAttr(item, "session_id"),
-		Address:      strAttr(item, "address"),
-		Status:       persistence.OutboxStatus(strAttr(item, "status")),
-		ClaimedBy:    strAttr(item, "claimed_by"),
-		ClaimVersion: numAttrU64(item, "claim_version"),
-		ReplayCount:  int(numAttrI64(item, "replay_count")),
-		CreatedAt:    timeFromMillis(numAttrI64(item, "created_at")),
-		CompletedAt:  timeFromMillis(numAttrI64(item, "completed_at")),
-	}
-
-	if expiresMs := numAttrI64(item, "expires_at"); expiresMs > 0 {
-		snap.ExpiresAt = timeFromMillis(expiresMs)
-	}
-
-	if envJSON := strAttr(item, "envelope_json"); envJSON != "" {
-		if err := json.Unmarshal([]byte(envJSON), &snap.Envelope); err != nil {
-			return nil, fmt.Errorf("dynamodboutbox: unmarshal envelope: %w", err)
-		}
-	}
-
-	if hdrJSON := strAttr(item, "headers_json"); hdrJSON != "" {
-		if err := json.Unmarshal([]byte(hdrJSON), &snap.DispatchHeaders); err != nil {
-			return nil, fmt.Errorf("dynamodboutbox: unmarshal headers: %w", err)
-		}
-	}
-
-	return persistence.RehydrateFromSnapshot(snap), nil
-}
-
-// --- attribute helpers ---
-
-func strAttr(item map[string]ddbtypes.AttributeValue, key string) string {
-	if v, ok := item[key].(*ddbtypes.AttributeValueMemberS); ok {
-		return v.Value
-	}
-	return ""
-}
-
-func numAttrI64(item map[string]ddbtypes.AttributeValue, key string) int64 {
-	if v, ok := item[key].(*ddbtypes.AttributeValueMemberN); ok {
-		n, _ := strconv.ParseInt(v.Value, 10, 64)
-		return n
-	}
-	return 0
-}
-
-func numAttrU64(item map[string]ddbtypes.AttributeValue, key string) uint64 {
-	if v, ok := item[key].(*ddbtypes.AttributeValueMemberN); ok {
-		n, _ := strconv.ParseUint(v.Value, 10, 64)
-		return n
-	}
-	return 0
-}
-
-func i64(n int64) string {
-	return strconv.FormatInt(n, 10)
-}
-
-func u64(n uint64) string {
-	return strconv.FormatUint(n, 10)
-}
-
-func millisOrZero(t time.Time) int64 {
-	if t.IsZero() {
-		return 0
-	}
-	return t.UnixMilli()
-}
-
-func timeFromMillis(ms int64) time.Time {
-	if ms == 0 {
-		return time.Time{}
-	}
-	return time.UnixMilli(ms)
 }

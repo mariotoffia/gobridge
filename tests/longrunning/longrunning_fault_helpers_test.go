@@ -34,12 +34,12 @@ func newFailFirstNSender(inner ports.Sender, maxFails int) *failFirstNSender {
 func (s *failFirstNSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	env := msg.Envelope
 	s.mu.Lock()
-	s.attempts[env.ID]++
-	n := s.attempts[env.ID]
+	s.attempts[env.ID()]++
+	n := s.attempts[env.ID()]
 	s.mu.Unlock()
 	if n <= s.maxFails {
 		return shared.ErrUnavailable.WithMessage(
-			fmt.Sprintf("failFirstN: attempt %d/%d for %s", n, s.maxFails, env.ID))
+			fmt.Sprintf("failFirstN: attempt %d/%d for %s", n, s.maxFails, env.ID()))
 	}
 	return s.inner.Send(ctx, msg)
 }
@@ -152,10 +152,10 @@ func (s *replayableDLQStore) List(_ context.Context, filter routing.DLQFilter) (
 	entries := s.getEntries()
 	var result []routing.DLQEntry
 	for _, e := range entries {
-		if filter.RouteID != "" && e.RouteID != filter.RouteID {
+		if filter.RouteID != "" && e.RouteID() != filter.RouteID {
 			continue
 		}
-		if filter.Category != "" && e.Category != filter.Category {
+		if filter.Category != "" && e.Category() != filter.Category {
 			continue
 		}
 		result = append(result, e)
@@ -176,7 +176,7 @@ func (s *replayableDLQStore) Delete(_ context.Context, ids []string) (int, error
 	var remaining []routing.DLQEntry
 	var count int
 	for _, e := range s.entries {
-		if _, ok := idSet[e.ID]; ok {
+		if _, ok := idSet[e.ID()]; ok {
 			count++
 		} else {
 			remaining = append(remaining, e)

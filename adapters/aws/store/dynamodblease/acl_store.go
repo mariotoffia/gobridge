@@ -77,6 +77,12 @@ func WithLogger(l *slog.Logger) Option {
 }
 
 // NewStore creates a new DynamoDB-backed LeaseStore.
+//
+// The *dynamodb.Client parameter is the SDK boundary input this ACL
+// constructor exists to wrap; it is injected by the composition root and
+// stored behind unexported fields.
+//
+//aclcheck:allow-export
 func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 	s := &Store{
 		client:      client,

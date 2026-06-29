@@ -63,23 +63,31 @@ no test reference in a `*_test.go` file in the same package.
 
 == The registry
 
-`*ports.Registry` is a process-wide `*ports.Registry` that maps
-`kind string` to `ConfigDecoder`. Adapters self-register from `init()`;
-the import graph at the composition root determines which kinds are
-available at runtime.
+`*ports.Registry` maps `kind string` to `ConfigDecoder`. It is *not* a
+process-wide singleton: the composition root constructs one with
+`ports.NewRegistry()` and calls each adapter's exported
+`Register(reg *ports.Registry) error` explicitly. There is no `init()`
+side effect; the set of imported-and-registered adapters at the
+composition root determines which kinds are available at runtime.
 
 [source,go]
 ----
 type ConfigDecoder func(raw RawConfig) (PluginConfig, error)
 
-func (r *Registry) Register(kind string, dec ConfigDecoder)
+func NewRegistry() *Registry
+func (r *Registry) Register(kind string, dec ConfigDecoder) error
 func (r *Registry) Decode(kind string, raw RawConfig) (PluginConfig, error)
 ----
 
-`Register` panics on duplicate kinds (`ports/plugin_config.go:80`):
-duplicate registration is always a programming error (typically a
-copy/paste `init()` in two adapters claiming the same discriminator)
-and must be caught at process start, not deferred to runtime.
+`Register` does *not* panic. It returns `ports.ErrDuplicateKind` when
+`kind` is already registered and `ports.ErrNilDecoder` when `dec` is
+nil — both typed `*shared.BridgeError` values recoverable via
+`errors.Is`. Duplicate registration is still a programming error
+(typically a copy/paste in two adapters claiming the same
+discriminator), but the registry surfaces it as an error so the
+composition root decides whether to fail-fast or degrade. Join the
+per-adapter `Register` calls with `errors.Join` so every failure is
+reported at once.
 
 `RawConfig` is interface-only inside `ports/`. The concrete
 implementation that wraps stage-1 yaml/json output lives in
@@ -124,15 +132,27 @@ are required; any one missing fails `make lint`.
   `*_test.go` file in the same package that references `Validate`
   textually (the test must compile and run; cfgshape rule 3 re-reads
   the directory and greps because vet excludes test files).
-. *Write `register.go`.* An `init()` that calls
-  `reg.Register(kind, decoder)`. The decoder
-  decodes `raw` into the typed `Config`, calls `Validate()`, and
-  returns the value (or a pointer to it, when the type satisfies
-  `ports.CredentialedConfig` and needs mutation).
+. *Write `register.go`.* An exported
+  `func Register(reg *ports.Registry) error` that calls
+  `reg.Register(kind, decoder)` on the registry it is handed. The
+  decoder decodes `raw` into the typed `Config`, calls `Validate()`,
+  and returns the value (or a pointer to it, when the type satisfies
+  `ports.CredentialedConfig` and needs mutation). There is no `init()`.
 
-The composition root then imports the package for its side effect:
-`_ "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"`.
-Unimported adapters never reach the binary.
+The composition root constructs a registry and calls each adapter's
+`Register` explicitly, joining the errors:
+
+[source,go]
+----
+reg := ports.NewRegistry()
+err := errors.Join(
+    sqs.Register(reg),
+    paho.Register(reg),
+    // ...one call per imported adapter
+)
+----
+
+Unregistered adapters never contribute a kind.
 
 === Worked example — transport adapter
 
@@ -178,9 +198,15 @@ func (c Config) Validate() error {
 // adapters/aws/transport/sqs/register.go
 package sqs
 
-import "github.com/mariotoffia/gobridge/ports"
+import (
+    "errors"
 
-func init() {
+    "github.com/mariotoffia/gobridge/ports"
+)
+
+// Register installs this adapter's decoder on the supplied registry.
+// The composition root calls it explicitly; there is no init().
+func Register(reg *ports.Registry) error {
     dec := func(raw ports.RawConfig) (ports.PluginConfig, error) {
         var c Config
         if raw != nil {
@@ -196,8 +222,10 @@ func init() {
     // Short discriminator matches the conventional YAML form
     // (`transport: sqs`); the long form mirrors Kind() for callers
     // that prefer a fully-qualified name.
-    reg.Register("sqs", dec)
-    reg.Register("aws.sqs", dec)
+    return errors.Join(
+        reg.Register("sqs", dec),
+        reg.Register("aws.sqs", dec),
+    )
 }
 ----
 
@@ -250,9 +278,13 @@ func (c SQLiteConfig) Validate() error {
 [source,go]
 ----
 // adapters/native/store/register.go
-func init() {
-    reg.Register(MemoryKind, decodeMemoryConfig)
-    reg.Register(SQLiteKind, decodeSQLiteConfig)
+
+// Register installs both store decoders on the supplied registry.
+func Register(reg *ports.Registry) error {
+    return errors.Join(
+        reg.Register(MemoryKind, decodeMemoryConfig),
+        reg.Register(SQLiteKind, decodeSQLiteConfig),
+    )
 }
 
 func decodeSQLiteConfig(raw ports.RawConfig) (ports.PluginConfig, error) {

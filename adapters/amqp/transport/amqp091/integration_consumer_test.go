@@ -82,7 +82,7 @@ func TestIntegration_CompetingConsumers(t *testing.T) {
 	makeHandler := func(ids *[]string) func(context.Context, ports.Delivery) error {
 		return func(_ context.Context, d ports.Delivery) error {
 			mu.Lock()
-			*ids = append(*ids, d.Envelope().ID)
+			*ids = append(*ids, d.Envelope().ID())
 			mu.Unlock()
 
 			if err := d.Ack(recvCtx); err != nil {
@@ -200,8 +200,8 @@ func TestIntegration_AutoAck(t *testing.T) {
 
 	select {
 	case env := <-received:
-		if env.ID != "autoack-1" {
-			t.Errorf("ID = %q, want %q", env.ID, "autoack-1")
+		if env.ID() != "autoack-1" {
+			t.Errorf("ID = %q, want %q", env.ID(), "autoack-1")
 		}
 	case <-recvCtx.Done():
 		t.Fatal("timed out waiting for auto-ack message")
@@ -234,8 +234,8 @@ func TestIntegration_AutoAck(t *testing.T) {
 
 	select {
 	case env := <-received2:
-		if env.ID != "autoack-2" {
-			t.Errorf("second message ID = %q, want %q (first message leaked?)", env.ID, "autoack-2")
+		if env.ID() != "autoack-2" {
+			t.Errorf("second message ID = %q, want %q (first message leaked?)", env.ID(), "autoack-2")
 		}
 	case <-recv2Ctx.Done():
 		t.Fatal("timed out waiting for second message")

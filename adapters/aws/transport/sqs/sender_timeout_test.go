@@ -48,7 +48,7 @@ func TestSendBatch_PerBatchTimeout_FreshDeadline(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(6) // 3 batches of 2
-	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -58,7 +58,7 @@ func TestSendBatch_PerBatchTimeout_FreshDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
-	if sent != 6 {
+	if sent := batchSent(results); sent != 6 {
 		t.Fatalf("expected 6 sent, got %d", sent)
 	}
 	if len(deadlines) != 3 {
@@ -103,21 +103,24 @@ func TestSendBatch_TimeoutOneBatch_OthersUnaffected(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(4) // 2 batches of 2
-	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
 		}
 		return _msgs
 	}())
-	if sendErr == nil {
-		t.Fatal("expected error from timed-out first batch")
+	if sendErr != nil {
+		t.Fatalf("chunk timeout must not yield a whole-batch error, got %v", sendErr)
 	}
 	if callNum != 2 {
 		t.Fatalf("expected 2 batch calls, got %d", callNum)
 	}
-	// Second batch should succeed with its own timeout.
-	if sent != 2 {
+	// First batch timed out; its entries carry the error, the second batch succeeds.
+	if results[0].Err == nil {
+		t.Fatal("expected the timed-out first-batch entry (index 0) to carry an error")
+	}
+	if sent := batchSent(results); sent != 2 {
 		t.Fatalf("expected 2 sent from second batch, got %d", sent)
 	}
 }
@@ -158,7 +161,7 @@ func TestSendBatch_ParentContextCancel_PropagatesAllBatches(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(4) // 2 batches
-	sent, sendErr := sender.SendBatch(ctx, func() []ports.OutboundMessage {
+	results, sendErr := sender.SendBatch(ctx, func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -167,12 +170,15 @@ func TestSendBatch_ParentContextCancel_PropagatesAllBatches(t *testing.T) {
 	}())
 
 	// First batch should have succeeded.
-	if sent < 2 {
+	if sent := batchSent(results); sent < 2 {
 		t.Fatalf("expected at least 2 sent from first batch, got %d", sent)
 	}
-	// The second batch should fail due to cancelled context.
-	if sendErr == nil && callNum > 1 {
-		t.Fatal("expected error after parent context cancellation")
+	if sendErr != nil {
+		t.Fatalf("dispatched batch must not yield a whole-batch error, got %v", sendErr)
+	}
+	// The second batch saw the cancelled parent context; its entries carry the error.
+	if callNum > 1 && results[len(results)-1].Err == nil {
+		t.Fatal("expected the post-cancellation entry to carry an error")
 	}
 }
 
@@ -215,7 +221,7 @@ func TestSendBatch_LargeBatch_LastBatchFullTimeout(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(totalMsgs)
-	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -225,7 +231,7 @@ func TestSendBatch_LargeBatch_LastBatchFullTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
-	if sent != totalMsgs {
+	if sent := batchSent(results); sent != totalMsgs {
 		t.Fatalf("expected %d sent, got %d", totalMsgs, sent)
 	}
 	if len(deadlines) != expectedBatches {

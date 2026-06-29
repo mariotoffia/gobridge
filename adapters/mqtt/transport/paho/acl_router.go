@@ -12,7 +12,6 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -60,7 +59,7 @@ func (r *router) Route(pb *packets.Publish) {
 	if len(r.handlers) == 0 {
 		r.mu.RUnlock()
 		r.dropCount.Add(1)
-		r.metrics.Counter(shared.MetricMQTTRouterDropped, 1)
+		r.metrics.Counter(MetricMQTTRouterDropped, 1)
 		if r.logger != nil && r.logger.Enabled(context.Background(), slog.LevelDebug) {
 			r.logger.Log(context.Background(), slog.LevelDebug,
 				"mqtt: dropped message (no handler registered)",
@@ -125,7 +124,7 @@ func (r *router) Route(pb *packets.Publish) {
 			defer r.wg.Done()
 			defer func() {
 				if rv := recover(); rv != nil {
-					r.metrics.Counter(shared.MetricMQTTHandlerPanics, 1)
+					r.metrics.Counter(MetricMQTTHandlerPanics, 1)
 					if r.logger != nil {
 						r.logger.Error("mqtt: handler panicked",
 							"recovered", rv,

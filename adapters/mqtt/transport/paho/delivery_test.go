@@ -23,7 +23,7 @@ func TestDelivery_Envelope(t *testing.T) {
 
 // verifies Ack is a no-op and returns nil for MQTT at-most-once semantics.
 func TestDelivery_AckIsNoop(t *testing.T) {
-	del := NewDelivery(&messaging.Envelope{})
+	del := NewDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{}))
 	if err := del.Ack(context.Background()); err != nil {
 		t.Errorf("Ack() = %v, want nil", err)
 	}
@@ -31,7 +31,7 @@ func TestDelivery_AckIsNoop(t *testing.T) {
 
 // verifies Retry returns ErrNotSupported.
 func TestDelivery_RetryNotSupported(t *testing.T) {
-	del := NewDelivery(&messaging.Envelope{})
+	del := NewDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{}))
 	err := del.Retry(context.Background(), time.Second, errors.New("reason"))
 	if !errors.Is(err, shared.ErrNotSupported) {
 		t.Errorf("Retry() = %v, want ErrNotSupported", err)
@@ -40,7 +40,7 @@ func TestDelivery_RetryNotSupported(t *testing.T) {
 
 // verifies Extend returns ErrNotSupported.
 func TestDelivery_ExtendNotSupported(t *testing.T) {
-	del := NewDelivery(&messaging.Envelope{})
+	del := NewDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{}))
 	err := del.Extend(context.Background(), time.Now().Add(time.Minute))
 	if !errors.Is(err, shared.ErrNotSupported) {
 		t.Errorf("Extend() = %v, want ErrNotSupported", err)

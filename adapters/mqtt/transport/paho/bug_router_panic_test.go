@@ -8,7 +8,6 @@ import (
 	pahov5 "github.com/eclipse/paho.golang/paho"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -58,7 +57,7 @@ func TestRouterPanic_OtherHandlerStillRuns(t *testing.T) {
 	assert.True(t, handler2Called.Load(),
 		"second handler should still run despite first handler panicking")
 
-	entries := rec.FindEntries(shared.MetricMQTTHandlerPanics)
+	entries := rec.FindEntries(MetricMQTTHandlerPanics)
 	assert.Len(t, entries, 1,
 		"MetricMQTTHandlerPanics should be incremented exactly once")
 
@@ -82,7 +81,7 @@ func TestRouterPanic_WaitReturns(t *testing.T) {
 	// properly after panic recovery, this will deadlock.
 	r.Wait()
 
-	entries := rec.FindEntries(shared.MetricMQTTHandlerPanics)
+	entries := rec.FindEntries(MetricMQTTHandlerPanics)
 	assert.Len(t, entries, 2,
 		"both panics should be counted")
 }

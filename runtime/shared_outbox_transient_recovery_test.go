@@ -93,7 +93,7 @@ func TestSharedOutbox_TransientSenderFailure_RecoversOnRetry(t *testing.T) {
 	sender.SendFn = func(env *messaging.Envelope) error {
 		sendAttempts.Add(1)
 		mu.Lock()
-		attempts = append(attempts, env.ID)
+		attempts = append(attempts, env.ID())
 		mu.Unlock()
 		if !senderUp.Load() {
 			return shared.NewBridgeError(
@@ -141,10 +141,10 @@ func TestSharedOutbox_TransientSenderFailure_RecoversOnRetry(t *testing.T) {
 	const msgCount = 3
 	dels := make([]*FakeDelivery, msgCount)
 	for i := range msgCount {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      envID(i),
 			Payload: []byte("payload"),
-		}
+		})
 		dels[i] = NewFakeDelivery(env)
 		require.NoError(t, receiver.Emit(ctx, dels[i]))
 	}

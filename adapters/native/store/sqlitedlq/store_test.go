@@ -36,12 +36,12 @@ func newTempStore(t *testing.T) *sqlitedlq.Store {
 func mustWrite(t *testing.T, s *sqlitedlq.Store, ctx context.Context, entry routing.DLQEntry) {
 	t.Helper()
 	if err := s.Write(ctx, entry); err != nil {
-		t.Fatalf("Write %s: %v", entry.ID, err)
+		t.Fatalf("Write %s: %v", entry.ID(), err)
 	}
 }
 
 func makeEntry(id, routeID, category string, failedAt time.Time) routing.DLQEntry {
-	return routing.DLQEntry{
+	return routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID:            id,
 		RouteID:       routeID,
 		BindingID:     "bind-" + id,
@@ -60,7 +60,7 @@ func makeEntry(id, routeID, category string, failedAt time.Time) routing.DLQEntr
 			Payload: []byte(`{"key":"value"}`),
 			Headers: map[string]any{"x-test": "header"},
 		}),
-	}
+	})
 }
 
 // Verifies Write persists a full entry and List returns matching fields.
@@ -84,53 +84,54 @@ func TestWriteAndList(t *testing.T) {
 	}
 
 	g := got[0]
-	if g.ID != "e1" {
-		t.Fatalf("ID: got %q, want %q", g.ID, "e1")
+	if g.ID() != "e1" {
+		t.Fatalf("ID: got %q, want %q", g.ID(), "e1")
 	}
-	if g.RouteID != "route-A" {
-		t.Fatalf("RouteID: got %q, want %q", g.RouteID, "route-A")
+	if g.RouteID() != "route-A" {
+		t.Fatalf("RouteID: got %q, want %q", g.RouteID(), "route-A")
 	}
-	if g.BindingID != "bind-e1" {
-		t.Fatalf("BindingID: got %q, want %q", g.BindingID, "bind-e1")
+	if g.BindingID() != "bind-e1" {
+		t.Fatalf("BindingID: got %q, want %q", g.BindingID(), "bind-e1")
 	}
-	if g.SessionID != "sess-e1" {
-		t.Fatalf("SessionID: got %q, want %q", g.SessionID, "sess-e1")
+	if g.SessionID() != "sess-e1" {
+		t.Fatalf("SessionID: got %q, want %q", g.SessionID(), "sess-e1")
 	}
-	if g.SourceID != "src-e1" {
-		t.Fatalf("SourceID: got %q, want %q", g.SourceID, "src-e1")
+	if g.SourceID() != "src-e1" {
+		t.Fatalf("SourceID: got %q, want %q", g.SourceID(), "src-e1")
 	}
-	if g.CorrelationID != "corr-e1" {
-		t.Fatalf("CorrelationID: got %q, want %q", g.CorrelationID, "corr-e1")
+	if g.CorrelationID() != "corr-e1" {
+		t.Fatalf("CorrelationID: got %q, want %q", g.CorrelationID(), "corr-e1")
 	}
-	if g.Reason != "test failure" {
-		t.Fatalf("Reason: got %q, want %q", g.Reason, "test failure")
+	if g.Reason() != "test failure" {
+		t.Fatalf("Reason: got %q, want %q", g.Reason(), "test failure")
 	}
-	if g.Category != "timeout" {
-		t.Fatalf("Category: got %q, want %q", g.Category, "timeout")
+	if g.Category() != "timeout" {
+		t.Fatalf("Category: got %q, want %q", g.Category(), "timeout")
 	}
-	if g.ErrorCode != "TEST_ERROR" {
-		t.Fatalf("ErrorCode: got %q, want %q", g.ErrorCode, "TEST_ERROR")
+	if g.ErrorCode() != "TEST_ERROR" {
+		t.Fatalf("ErrorCode: got %q, want %q", g.ErrorCode(), "TEST_ERROR")
 	}
-	if g.LastError != "something went wrong" {
-		t.Fatalf("LastError: got %q, want %q", g.LastError, "something went wrong")
+	if g.LastError() != "something went wrong" {
+		t.Fatalf("LastError: got %q, want %q", g.LastError(), "something went wrong")
 	}
-	if !g.FailedAt.Equal(now) {
-		t.Fatalf("FailedAt: got %v, want %v", g.FailedAt, now)
+	if !g.FailedAt().Equal(now) {
+		t.Fatalf("FailedAt: got %v, want %v", g.FailedAt(), now)
 	}
-	if g.Attempts != 3 {
-		t.Fatalf("Attempts: got %d, want 3", g.Attempts)
+	if g.Attempts() != 3 {
+		t.Fatalf("Attempts: got %d, want 3", g.Attempts())
 	}
-	if g.Envelope.ID != "env-e1" {
-		t.Fatalf("Envelope.ID: got %q, want %q", g.Envelope.ID, "env-e1")
+	genv := g.Snapshot()
+	if genv.ID() != "env-e1" {
+		t.Fatalf("Envelope.ID: got %q, want %q", genv.ID(), "env-e1")
 	}
-	if g.Envelope.Subject() != "test/subject" {
-		t.Fatalf("Envelope.Subject: got %q, want %q", g.Envelope.Subject(), "test/subject")
+	if genv.Subject() != "test/subject" {
+		t.Fatalf("Envelope.Subject: got %q, want %q", genv.Subject(), "test/subject")
 	}
-	if string(g.Envelope.Payload) != `{"key":"value"}` {
-		t.Fatalf("Envelope.Payload: got %q", g.Envelope.Payload)
+	if string(genv.Payload()) != `{"key":"value"}` {
+		t.Fatalf("Envelope.Payload(): got %q", genv.Payload())
 	}
-	if v, ok := g.Envelope.Headers()["x-test"]; !ok || v != "header" {
-		t.Fatalf("Envelope.Headers: got %v", g.Envelope.Headers())
+	if v, ok := genv.Headers()["x-test"]; !ok || v != "header" {
+		t.Fatalf("Envelope.Headers: got %v", genv.Headers())
 	}
 }
 
@@ -158,8 +159,8 @@ func TestListFilterByRouteID(t *testing.T) {
 		t.Fatalf("expected 2 entries for route-A, got %d", len(got))
 	}
 	for _, e := range got {
-		if e.RouteID != "route-A" {
-			t.Fatalf("unexpected RouteID %q in filtered results", e.RouteID)
+		if e.RouteID() != "route-A" {
+			t.Fatalf("unexpected RouteID %q in filtered results", e.RouteID())
 		}
 	}
 }
@@ -188,8 +189,8 @@ func TestListFilterByCategory(t *testing.T) {
 		t.Fatalf("expected 2 entries for category timeout, got %d", len(got))
 	}
 	for _, e := range got {
-		if e.Category != "timeout" {
-			t.Fatalf("unexpected Category %q in filtered results", e.Category)
+		if e.Category() != "timeout" {
+			t.Fatalf("unexpected Category %q in filtered results", e.Category())
 		}
 	}
 }
@@ -216,8 +217,8 @@ func TestListFilterBySince(t *testing.T) {
 		t.Fatalf("expected 2 entries since 45min ago, got %d", len(got))
 	}
 	for _, e := range got {
-		if e.FailedAt.Before(since) {
-			t.Fatalf("entry %q FailedAt %v is before Since %v", e.ID, e.FailedAt, since)
+		if e.FailedAt().Before(since) {
+			t.Fatalf("entry %q FailedAt %v is before Since %v", e.ID(), e.FailedAt(), since)
 		}
 	}
 }
@@ -244,8 +245,8 @@ func TestListFilterByBefore(t *testing.T) {
 		t.Fatalf("expected 2 entries before 20min ago, got %d", len(got))
 	}
 	for _, e := range got {
-		if !e.FailedAt.Before(before) {
-			t.Fatalf("entry %q FailedAt %v is not before %v", e.ID, e.FailedAt, before)
+		if !e.FailedAt().Before(before) {
+			t.Fatalf("entry %q FailedAt %v is not before %v", e.ID(), e.FailedAt(), before)
 		}
 	}
 }
@@ -323,8 +324,8 @@ func TestDeleteRemovesEntries(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 entry after delete, got %d", len(got))
 	}
-	if got[0].ID != "rp2" {
-		t.Fatalf("remaining entry ID: got %q, want %q", got[0].ID, "rp2")
+	if got[0].ID() != "rp2" {
+		t.Fatalf("remaining entry ID: got %q, want %q", got[0].ID(), "rp2")
 	}
 
 	// Deleting the same ID again silently returns count=0, no error.
@@ -366,8 +367,8 @@ func TestPurgeRemovesOld(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 remaining entry after purge, got %d", len(got))
 	}
-	if got[0].ID != "p3" {
-		t.Fatalf("remaining entry ID: got %q, want %q", got[0].ID, "p3")
+	if got[0].ID() != "p3" {
+		t.Fatalf("remaining entry ID: got %q, want %q", got[0].ID(), "p3")
 	}
 }
 
@@ -471,8 +472,8 @@ func TestInMemoryMode(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(got))
 	}
-	if got[0].ID != "mem-1" {
-		t.Fatalf("ID: got %q, want %q", got[0].ID, "mem-1")
+	if got[0].ID() != "mem-1" {
+		t.Fatalf("ID: got %q, want %q", got[0].ID(), "mem-1")
 	}
 }
 
@@ -510,14 +511,14 @@ func TestDurability_CloseAndReopen(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 entry after reopen, got %d", len(got))
 	}
-	if got[0].ID != "dur-1" {
-		t.Fatalf("ID: got %q, want %q", got[0].ID, "dur-1")
+	if got[0].ID() != "dur-1" {
+		t.Fatalf("ID: got %q, want %q", got[0].ID(), "dur-1")
 	}
-	if !got[0].FailedAt.Equal(now) {
-		t.Fatalf("FailedAt: got %v, want %v", got[0].FailedAt, now)
+	if !got[0].FailedAt().Equal(now) {
+		t.Fatalf("FailedAt: got %v, want %v", got[0].FailedAt(), now)
 	}
-	if string(got[0].Envelope.Payload) != `{"key":"value"}` {
-		t.Fatalf("Envelope.Payload: got %q", got[0].Envelope.Payload)
+	if string(got[0].Snapshot().Payload()) != `{"key":"value"}` {
+		t.Fatalf("Envelope.Payload(): got %q", got[0].Snapshot().Payload())
 	}
 }
 
@@ -567,20 +568,20 @@ func TestListOrderByFailedAtDesc(t *testing.T) {
 		t.Fatalf("expected 3 entries, got %d", len(got))
 	}
 
-	if got[0].ID != "ord-3" {
-		t.Fatalf("first entry should be newest (ord-3), got %q", got[0].ID)
+	if got[0].ID() != "ord-3" {
+		t.Fatalf("first entry should be newest (ord-3), got %q", got[0].ID())
 	}
-	if got[1].ID != "ord-2" {
-		t.Fatalf("second entry should be middle (ord-2), got %q", got[1].ID)
+	if got[1].ID() != "ord-2" {
+		t.Fatalf("second entry should be middle (ord-2), got %q", got[1].ID())
 	}
-	if got[2].ID != "ord-1" {
-		t.Fatalf("third entry should be oldest (ord-1), got %q", got[2].ID)
+	if got[2].ID() != "ord-1" {
+		t.Fatalf("third entry should be oldest (ord-1), got %q", got[2].ID())
 	}
 
 	for i := 1; i < len(got); i++ {
-		if got[i].FailedAt.After(got[i-1].FailedAt) {
+		if got[i].FailedAt().After(got[i-1].FailedAt()) {
 			t.Fatalf("entries not in descending order: [%d].FailedAt=%v > [%d].FailedAt=%v",
-				i, got[i].FailedAt, i-1, got[i-1].FailedAt)
+				i, got[i].FailedAt(), i-1, got[i-1].FailedAt())
 		}
 	}
 }

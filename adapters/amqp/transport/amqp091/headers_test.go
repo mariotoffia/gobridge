@@ -301,10 +301,10 @@ func TestEnvelopeToPublishing_HeaderMessageIDPrecedence(t *testing.T) {
 
 // verifies envelopeToPublishing sets expiration from envelope TTL.
 func TestEnvelopeToPublishing_Expiry(t *testing.T) {
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:        "env-ttl",
 		ExpiresAt: time.Now().Add(5 * time.Second),
-	}
+	})
 
 	pub := envelopeToPublishing(env, SenderConfig{}, nil)
 

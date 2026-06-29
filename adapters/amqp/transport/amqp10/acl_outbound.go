@@ -121,23 +121,24 @@ func headersToMessage(headers map[string]any) *amqp.Message {
 // expiry, creation time) into a single SDK message.
 func envelopeToMessage(env *messaging.Envelope) *amqp.Message {
 	msg := headersToMessage(env.Headers())
-	msg.Data = [][]byte{env.Payload}
+	msg.Data = [][]byte{env.Payload()}
 
 	if msg.Properties == nil {
 		msg.Properties = &amqp.MessageProperties{}
 	}
-	if env.ID != "" {
-		msg.Properties.MessageID = env.ID
+	if env.ID() != "" {
+		msg.Properties.MessageID = env.ID()
 	}
 	if s := env.Subject(); s != "" {
 		msg.Properties.Subject = &s
 	}
 	if env.HasExpiry() {
-		expiry := env.ExpiresAt
+		expiry := env.ExpiresAt()
 		msg.Properties.AbsoluteExpiryTime = &expiry
 	}
-	if !env.CreatedAt.IsZero() {
-		msg.Properties.CreationTime = &env.CreatedAt
+	if !env.CreatedAt().IsZero() {
+		createdAt := env.CreatedAt()
+		msg.Properties.CreationTime = &createdAt
 	}
 	return msg
 }

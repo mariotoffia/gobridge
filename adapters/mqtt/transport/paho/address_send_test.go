@@ -134,7 +134,7 @@ func TestMQTTRoundTrip_PreservesLogicalSubjectAndRecordsTopic(t *testing.T) {
 // Envelope.Subject is left empty (no longer populated from pub.Topic).
 func TestEnvelopeFromPublish_NoGobridgeSubjectLeavesSubjectEmpty(t *testing.T) {
 	pub := PublishFromEnvelope(
-		&messaging.Envelope{Payload: []byte("p")}, // Subject empty → no user property emitted
+		messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte("p")}), // Subject empty → no user property emitted
 		"transport/only/topic",
 		SenderOptions{QoS: 0},
 		nil,

@@ -19,9 +19,41 @@ type Delivery interface {
 	Extend(ctx context.Context, until time.Time) error
 }
 
-// Receiver reads deliveries from a transport. The emit callback is invoked
-// for each received delivery; Run blocks until the context is cancelled or
-// an unrecoverable error occurs.
+// Receiver reads deliveries from a transport and hands each one to the
+// emit callback. Run blocks until ctx is cancelled (returning ctx.Err()
+// or nil) or an unrecoverable error occurs.
+//
+// Emit-callback contract. Every Receiver in this repository honours the
+// following contract; an implementation MUST document any deviation:
+//
+//   - Invocation concurrency: emit is invoked SEQUENTIALLY from Run's
+//     own goroutine, never concurrently. A delivery is fully handed off
+//     (emit returns) before the next is pulled from the transport. A
+//     Receiver that needs to fan emit out across goroutines MUST
+//     document that choice, because the default pipeline assumes serial
+//     invocation.
+//
+//   - emit returns a non-nil error: the runtime could not accept the
+//     delivery for processing. The Receiver MUST NOT treat the delivery
+//     as settled — it MUST NOT Ack/delete it — and leaves it to the
+//     transport's redelivery/visibility policy (AMQP requeue on channel
+//     close, SQS visibility-timeout expiry, Service Bus lock expiry).
+//     The prevailing adapters surface the failure by returning it from
+//     Run so the supervisor can re-establish the receive loop.
+//
+//   - emit returns nil: ownership of the delivery transfers to the
+//     processing pipeline. Settlement (Ack/Retry/Extend) is from then on
+//     performed exclusively through the Delivery handle by that pipeline;
+//     the Receiver MUST NOT settle the delivery itself. (AMQP 0-9-1
+//     AutoAck mode, where the broker settles at delivery time, is the
+//     documented exception.) The receive loop simply advances to the
+//     next delivery.
+//
+//   - Backpressure: because emit is synchronous and serial, the Receiver
+//     throttles itself — it does not read ahead past an in-flight
+//     delivery. Transport prefetch / visibility windows (AMQP
+//     PrefetchCount, SQS in-flight limit) bound the working set; a
+//     Receiver MUST NOT buffer deliveries unboundedly ahead of emit.
 type Receiver interface {
 	Run(ctx context.Context, emit func(context.Context, Delivery) error) error
 }
@@ -61,14 +93,34 @@ type Sender interface {
 	Send(ctx context.Context, msg OutboundMessage) error
 }
 
+// BatchResult reports the outcome of one message in a SendBatch call,
+// keyed by its index in the input slice. Err is nil on success.
+type BatchResult struct {
+	Index int
+	Err   error
+}
+
 // BatchSender extends Sender with batch send capability for transports
 // that support it (e.g., SQS SendMessageBatch).
 //
 // Each OutboundMessage in the batch carries its own Address (transport
 // destination) alongside the logical Envelope.Subject.
+//
+// SendBatch result contract. The returned error is non-nil ONLY for a
+// whole-batch failure where per-message attribution is impossible: a
+// client/connection setup failure, or a fail-fast pre-validation that
+// rejects the entire batch before any message is dispatched (e.g. a nil
+// envelope, or an Address that does not match the sender's destination).
+// In that case SendBatch returns (nil, err) and nothing was sent.
+//
+// Once the batch is dispatched, SendBatch returns (results, nil) with
+// len(results) == len(msgs); results is index-aligned with msgs and each
+// BatchResult carries either a nil Err (that message succeeded) or the
+// per-message failure. Callers count successes as the number of nil-Err
+// results. An empty input returns (nil-or-empty, nil).
 type BatchSender interface {
 	Sender
-	SendBatch(ctx context.Context, msgs []OutboundMessage) (int, error)
+	SendBatch(ctx context.Context, msgs []OutboundMessage) ([]BatchResult, error)
 }
 
 // SessionEventType classifies session lifecycle events.

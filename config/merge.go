@@ -1,6 +1,9 @@
 package config
 
-import "github.com/mariotoffia/gobridge/ports"
+import (
+	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
+)
 
 // DefaultMerge merges an overlay ports.BridgeConfig on top of a base config.
 // The merge follows these rules:
@@ -32,10 +35,32 @@ func DefaultMerge(base, overlay *ports.BridgeConfig) (*ports.BridgeConfig, error
 
 	if overlay.HTTP != nil {
 		h := *overlay.HTTP
+		var baseHTTP ports.HTTPConfig
+		if base.HTTP != nil {
+			baseHTTP = *base.HTTP
+		}
+		// A client that PATCHes an HTTP block previously read back from the
+		// redacted admin GET carries "[REDACTED]" in the API-key fields. Treat
+		// the redaction marker as "unchanged" so it never overwrites the real
+		// stored secret; a genuinely new key still wins, and an empty overlay
+		// key still clears (preserving the existing wholesale-replace semantics).
+		h.AdminAPIKey = preserveRedactedSecret(baseHTTP.AdminAPIKey, h.AdminAPIKey)
+		h.MonitorAPIKey = preserveRedactedSecret(baseHTTP.MonitorAPIKey, h.MonitorAPIKey)
 		out.HTTP = &h
 	}
 
 	return &out, nil
+}
+
+// preserveRedactedSecret returns base when overlay carries the redaction
+// marker (a value echoed back from a redacted read), otherwise overlay. This
+// stops a sanitized-config round-trip from persisting "[REDACTED]" as a real
+// secret on commit.
+func preserveRedactedSecret(base, overlay shared.Secret) shared.Secret {
+	if overlay.IsRedacted() {
+		return base
+	}
+	return overlay
 }
 
 func mergeBridgeSettings(base, overlay *ports.BridgeSettings) {

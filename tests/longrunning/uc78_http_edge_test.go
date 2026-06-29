@@ -118,7 +118,7 @@ func TestUC79_FIFOMultiGroupConcurrent(t *testing.T) {
 
 	for _, m := range msgs {
 		var sm seqMsg
-		if err := json.Unmarshal(m.Payload, &sm); err != nil {
+		if err := json.Unmarshal(m.Payload(), &sm); err != nil {
 			t.Logf("UC79: skipping unparseable message: %v", err)
 			continue
 		}

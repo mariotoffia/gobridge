@@ -70,7 +70,7 @@ func TestAdaptBatchSize_HalvesOnConsecutiveZeroSuccess(t *testing.T) {
 			ID: fmt.Sprintf("adapt-%d", i), RouteID: "adapt-route",
 			EnvelopeID: fmt.Sprintf("env-adapt-%d", i), BindingID: "bind-1",
 			SessionID: "sess-1",
-			Envelope:  messaging.Envelope{ID: fmt.Sprintf("env-adapt-%d", i), Payload: []byte("data")},
+			Envelope:  *messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("env-adapt-%d", i), Payload: []byte("data")}),
 			Status:    persistence.OutboxPending,
 		})
 		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
@@ -84,7 +84,6 @@ func TestAdaptBatchSize_HalvesOnConsecutiveZeroSuccess(t *testing.T) {
 		RouteID:             "adapt-route",
 		PartitionKey:        pk,
 		LeaseID:             "sess-1",
-		OwnerID:             token.Owner,
 		Policy:              routing.RoutePolicy{}.WithDefaults(),
 		Strategy:            persistence.NewFixedPoll(30 * time.Millisecond),
 		DrainBatchSize:      5,
@@ -233,7 +232,7 @@ func TestFakeProcessor_AtomicCalled(t *testing.T) {
 
 	for i := 0; i < goroutines; i++ {
 		go func() {
-			env := &messaging.Envelope{ID: "test"}
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "test"})
 			_ = p.Process(context.Background(), env, func(_ context.Context, _ *messaging.Envelope) error {
 				return nil
 			})
@@ -276,7 +275,7 @@ func TestQueryPendingSuccess_PersistsNormally(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{ID: "query-ok-1", Payload: []byte("x")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "query-ok-1", Payload: []byte("x")})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
@@ -306,7 +305,7 @@ func TestNormalMaxBatchSize_NotClamped(t *testing.T) {
 			ID: fmt.Sprintf("normal-%d", i), RouteID: "normal-route",
 			EnvelopeID: fmt.Sprintf("env-normal-%d", i), BindingID: "bind-1",
 			SessionID: "sess-1",
-			Envelope:  messaging.Envelope{ID: fmt.Sprintf("env-normal-%d", i), Payload: []byte("data")},
+			Envelope:  *messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("env-normal-%d", i), Payload: []byte("data")}),
 			Status:    persistence.OutboxPending,
 		})
 		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
@@ -320,7 +319,6 @@ func TestNormalMaxBatchSize_NotClamped(t *testing.T) {
 		RouteID:           "normal-route",
 		PartitionKey:      pk,
 		LeaseID:           "sess-1",
-		OwnerID:           token.Owner,
 		Policy:            routing.RoutePolicy{}.WithDefaults(),
 		Strategy:          persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:    100,
@@ -364,7 +362,6 @@ func TestOutboxDrainer_SuccessEmitsCompletion(t *testing.T) {
 		RouteID:        "success-route",
 		PartitionKey:   pk,
 		LeaseID:        "sess-1",
-		OwnerID:        token.Owner,
 		Policy:         routing.RoutePolicy{}.WithDefaults(),
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
@@ -379,7 +376,7 @@ func TestOutboxDrainer_SuccessEmitsCompletion(t *testing.T) {
 		ID: "rec-ok", RouteID: "success-route",
 		EnvelopeID: "env-ok", BindingID: "bind-1",
 		SessionID: "sess-1",
-		Envelope:  messaging.Envelope{ID: "env-ok", Payload: []byte("data")},
+		Envelope:  *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-ok", Payload: []byte("data")}),
 		Status:    persistence.OutboxPending,
 	})
 	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{outboxRec})
@@ -420,7 +417,7 @@ func TestBatchSizeClamped_PreventsAbsoluteMaxBypass(t *testing.T) {
 			ID: fmt.Sprintf("bsclamp-%d", i), RouteID: "bsclamp-route",
 			EnvelopeID: fmt.Sprintf("env-bsclamp-%d", i), BindingID: "bind-1",
 			SessionID: "sess-1",
-			Envelope:  messaging.Envelope{ID: fmt.Sprintf("env-bsclamp-%d", i), Payload: []byte("data")},
+			Envelope:  *messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("env-bsclamp-%d", i), Payload: []byte("data")}),
 			Status:    persistence.OutboxPending,
 		})
 		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
@@ -434,7 +431,6 @@ func TestBatchSizeClamped_PreventsAbsoluteMaxBypass(t *testing.T) {
 		RouteID:           "bsclamp-route",
 		PartitionKey:      pk,
 		LeaseID:           "sess-1",
-		OwnerID:           token.Owner,
 		Policy:            routing.RoutePolicy{}.WithDefaults(),
 		Strategy:          persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:    50000,
@@ -481,7 +477,6 @@ func TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric(t *testing.T) {
 		RouteID:        "stale-metric-route",
 		PartitionKey:   pk,
 		LeaseID:        "sess-1",
-		OwnerID:        token.Owner,
 		Policy:         routing.RoutePolicy{}.WithDefaults(),
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
@@ -496,7 +491,7 @@ func TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric(t *testing.T) {
 		ID: "rec-stale-metric", RouteID: "stale-metric-route",
 		EnvelopeID: "env-stale-metric", BindingID: "bind-1",
 		SessionID: "sess-1",
-		Envelope:  messaging.Envelope{ID: "env-stale-metric", Payload: []byte("data")},
+		Envelope:  *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-stale-metric", Payload: []byte("data")}),
 		Status:    persistence.OutboxPending,
 	})
 	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{outboxRec})

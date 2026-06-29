@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -122,7 +123,7 @@ func (c *ReceiverConfig) validate() error {
 	if c.QueueName == "" && (c.TopicName == "" || c.SubscriptionName == "") {
 		return errors.New("servicebus: either QueueName or TopicName+SubscriptionName is required")
 	}
-	if c.Client == nil && c.Connection.ConnectionString == "" && c.Connection.Namespace == "" {
+	if c.Client == nil && c.Connection.ConnectionString.IsZero() && c.Connection.Namespace == "" {
 		return errors.New("servicebus: Connection.ConnectionString or Connection.Namespace is required")
 	}
 	return nil
@@ -160,7 +161,7 @@ func (c *SenderConfig) validate() error {
 	if c.QueueName == "" && c.TopicName == "" {
 		return errors.New("servicebus: either QueueName or TopicName is required")
 	}
-	if c.Client == nil && c.Connection.ConnectionString == "" && c.Connection.Namespace == "" {
+	if c.Client == nil && c.Connection.ConnectionString.IsZero() && c.Connection.Namespace == "" {
 		return errors.New("servicebus: Connection.ConnectionString or Connection.Namespace is required")
 	}
 	return nil
@@ -220,13 +221,16 @@ func SenderConfigFromOptions(opts map[string]any) SenderConfig {
 
 func connectionFromOptions(opts map[string]any) ConnectionConfig {
 	var c ConnectionConfig
-	c.ConnectionString, _ = optString(opts, "connection_string")
+	cs, _ := optString(opts, "connection_string")
+	c.ConnectionString = shared.NewSecret(cs)
 	c.Namespace, _ = optString(opts, "namespace")
 	c.UseManagedIdentity, _ = optBool(opts, "use_managed_identity")
 	c.TenantID, _ = optString(opts, "tenant_id")
 	c.ClientID, _ = optString(opts, "client_id")
-	c.ClientSecret, _ = optString(opts, "client_secret")
-	c.CaPEM, _ = optString(opts, "ca_pem")
+	csec, _ := optString(opts, "client_secret")
+	c.ClientSecret = shared.NewSecret(csec)
+	capem, _ := optString(opts, "ca_pem")
+	c.CaPEM = shared.NewSecret(capem)
 	c.InsecureSkipVerify, _ = optBool(opts, "insecure_skip_verify")
 	return c
 }

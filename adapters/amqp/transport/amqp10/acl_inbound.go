@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/Azure/go-amqp"
 
@@ -76,12 +77,23 @@ func messageToHeaders(msg *amqp.Message) map[string]any {
 	return h
 }
 
+// linkReceiver is the subset of receiver-link operations the adapter's
+// Receiver depends on. It enables test-double injection of the receive
+// loop (mirroring the settler seam in acl_delivery.go) without leaking
+// the SDK link type.
+type linkReceiver interface {
+	Receive(ctx context.Context, logger *slog.Logger, metrics ports.MetricsExporter, clk clock.Clock) (*Delivery, error)
+	Close(ctx context.Context) error
+}
+
 // receiverLink wraps a *amqp.Receiver, exposing only the operations
 // the adapter's Receiver needs and converting incoming messages to
 // domain-typed *Delivery values inside the ACL.
 type receiverLink struct {
 	raw *amqp.Receiver
 }
+
+var _ linkReceiver = (*receiverLink)(nil)
 
 // Receive blocks until a message is available, then translates it into
 // a fresh *Delivery (with envelope, settler, etc.) without leaking SDK
@@ -158,18 +170,25 @@ func messageToEnvelope(msg *amqp.Message, clk clock.Clock) (*messaging.Envelope,
 		}
 	}
 
+	// A received broker absolute-expiry is stamped at construction (permissive):
+	// a message that expired in transit (its AbsoluteExpiryTime is already past
+	// at receive time) is accepted as an already-expired envelope and dropped
+	// downstream by the TTL/IsExpired logic — it must NOT fail ingress, which
+	// on this transport would tear down the receiver link.
+	var expiresAt time.Time
+	if msg.Properties != nil && msg.Properties.AbsoluteExpiryTime != nil {
+		expiresAt = *msg.Properties.AbsoluteExpiryTime
+	}
 	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
 		ID:        msgID,
 		Subject:   subject,
 		Payload:   body,
 		Headers:   headers,
 		CreatedAt: clk.Now(),
+		ExpiresAt: expiresAt,
 	}, clk.Now())
 	if err != nil {
 		return nil, wrapEnvelopeErr(err)
-	}
-	if msg.Properties != nil && msg.Properties.AbsoluteExpiryTime != nil {
-		env.ExpiresAt = *msg.Properties.AbsoluteExpiryTime
 	}
 	return env, nil
 }

@@ -86,11 +86,11 @@ func TestDurability_CloseAndReopen(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("expected 1 record after reopen, got %d", len(pending))
 	}
-	if pending[0].ID != "dur-1" {
-		t.Fatalf("id: got %q, want %q", pending[0].ID, "dur-1")
+	if pending[0].ID() != "dur-1" {
+		t.Fatalf("id: got %q, want %q", pending[0].ID(), "dur-1")
 	}
-	if string(pending[0].Envelope.Payload) != "durable payload" {
-		t.Fatalf("payload mismatch: %q", pending[0].Envelope.Payload)
+	if string(pending[0].Snapshot().Payload()) != "durable payload" {
+		t.Fatalf("payload mismatch: %q", pending[0].Snapshot().Payload())
 	}
 }
 
@@ -153,8 +153,8 @@ func TestDispatchHeadersRoundTrip(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("expected 1, got %d", len(pending))
 	}
-	if v, ok := pending[0].DispatchHeaders["x-custom"]; !ok || v != "value" {
-		t.Fatalf("dispatch header x-custom: %v", pending[0].DispatchHeaders)
+	if v, ok := pending[0].DispatchHeaders()["x-custom"]; !ok || v != "value" {
+		t.Fatalf("dispatch header x-custom: %v", pending[0].DispatchHeaders())
 	}
 }
 
@@ -187,8 +187,8 @@ func TestWithClockControlsCreatedAt(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("expected 1, got %d", len(pending))
 	}
-	if !pending[0].CreatedAt.Equal(clk.Now()) {
-		t.Fatalf("createdAt: got %v, want %v", pending[0].CreatedAt, clk.Now())
+	if !pending[0].CreatedAt().Equal(clk.Now()) {
+		t.Fatalf("createdAt: got %v, want %v", pending[0].CreatedAt(), clk.Now())
 	}
 }
 
@@ -218,7 +218,7 @@ func TestExpiresAtRoundTrip(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("expected 1, got %d", len(pending))
 	}
-	if !pending[0].ExpiresAt.Equal(expiry) {
-		t.Fatalf("expiresAt: got %v, want %v", pending[0].ExpiresAt, expiry)
+	if !pending[0].ExpiresAt().Equal(expiry) {
+		t.Fatalf("expiresAt: got %v, want %v", pending[0].ExpiresAt(), expiry)
 	}
 }

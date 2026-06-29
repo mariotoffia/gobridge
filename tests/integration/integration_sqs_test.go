@@ -64,8 +64,8 @@ func TestIntegration_SQS_Receiver_ReceivesMessages(t *testing.T) {
 		t.Fatalf("expected 1 delivery, got %d", len(received))
 	}
 	env := received[0].Envelope()
-	if string(env.Payload) != `{"key":"value"}` {
-		t.Fatalf("payload mismatch: got %q", string(env.Payload))
+	if string(env.Payload()) != `{"key":"value"}` {
+		t.Fatalf("payload mismatch: got %q", string(env.Payload()))
 	}
 }
 
@@ -123,10 +123,10 @@ func TestIntegration_SQS_Sender_FIFO(t *testing.T) {
 	sender := newSQSSenderFIFO(t, queueURL, "test-group")
 
 	for i := 0; i < 5; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "msg-" + string(rune('a'+i)),
 			Payload: []byte("order-" + string(rune('0'+i))),
-		}
+		})
 		if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 			t.Fatalf("sender.Send[%d]: %v", i, err)
 		}

@@ -105,11 +105,11 @@ func TestIntegration_SendReceive(t *testing.T) {
 	select {
 	case del := <-received:
 		gotEnv := del.Envelope()
-		if gotEnv.ID != "integ-msg-001" {
-			t.Errorf("received ID = %q, want %q", gotEnv.ID, "integ-msg-001")
+		if gotEnv.ID() != "integ-msg-001" {
+			t.Errorf("received ID = %q, want %q", gotEnv.ID(), "integ-msg-001")
 		}
-		if string(gotEnv.Payload) != string(payload) {
-			t.Errorf("received Payload = %q", gotEnv.Payload)
+		if string(gotEnv.Payload()) != string(payload) {
+			t.Errorf("received Payload = %q", gotEnv.Payload())
 		}
 
 		if err := del.Ack(ctx); err != nil {
@@ -170,7 +170,7 @@ func TestIntegration_SendBatch(t *testing.T) {
 		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "batch-3", Subject: queueName, Payload: []byte("three")}),
 	}
 
-	sent, err := sender.SendBatch(ctx, func() []ports.OutboundMessage {
+	results, err := sender.SendBatch(ctx, func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -180,7 +180,7 @@ func TestIntegration_SendBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("send batch: %v", err)
 	}
-	if sent != 3 {
+	if sent := batchSent(results); sent != 3 {
 		t.Errorf("sent = %d, want 3", sent)
 	}
 
@@ -213,7 +213,7 @@ func TestIntegration_SendBatch(t *testing.T) {
 	// Verify each sent payload was received.
 	rxBodies := make(map[string]bool, 3)
 	for _, d := range deliveries {
-		rxBodies[string(d.Envelope().Payload)] = true
+		rxBodies[string(d.Envelope().Payload())] = true
 		if err := d.Ack(ctx); err != nil {
 			t.Errorf("ack: %v", err)
 		}

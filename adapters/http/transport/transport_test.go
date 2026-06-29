@@ -319,8 +319,8 @@ func TestReceiver_LocalProcessing(t *testing.T) {
 	if gotEnvelope.Subject() != "orders.created" {
 		t.Fatalf("expected subject orders.created, got %q", gotEnvelope.Subject())
 	}
-	if gotEnvelope.ID != "msg-001" {
-		t.Fatalf("expected ID msg-001, got %q", gotEnvelope.ID)
+	if gotEnvelope.ID() != "msg-001" {
+		t.Fatalf("expected ID msg-001, got %q", gotEnvelope.ID())
 	}
 }
 

@@ -16,7 +16,7 @@ import (
 
 // Verifies RunChain succeeds when the processor list is nil.
 func TestRunChain_Empty(t *testing.T) {
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	if err := route.RunChain(context.Background(), nil, env); err != nil {
 		t.Fatalf("empty chain should succeed, got %v", err)
 	}
@@ -25,7 +25,7 @@ func TestRunChain_Empty(t *testing.T) {
 // Verifies a single processor in the chain is invoked once.
 func TestRunChain_Single(t *testing.T) {
 	p := &FakeProcessor{NameVal: "p1"}
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 
 	if err := route.RunChain(context.Background(), []ports.Processor{p}, env); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -54,7 +54,7 @@ func TestRunChain_Order(t *testing.T) {
 		makeProcessor("third"),
 	}
 
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	if err := route.RunChain(context.Background(), processors, env); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestRunChain_Error(t *testing.T) {
 		ProcessErr: fmt.Errorf("boom"),
 	}
 
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	err := route.RunChain(context.Background(), []ports.Processor{p}, env)
 	if err == nil || err.Error() != "boom" {
 		t.Fatalf("expected error 'boom', got %v", err)
@@ -105,7 +105,7 @@ func TestRunChain_ShortCircuit(t *testing.T) {
 	}
 	p2 := &FakeProcessor{NameVal: "never"}
 
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	err := route.RunChain(context.Background(), []ports.Processor{p1, p2}, env)
 	if err == nil {
 		t.Fatal("expected error from short-circuit")
@@ -134,7 +134,7 @@ func TestRunChain_PanicRecovered(t *testing.T) {
 		},
 	}
 
-	env := &messaging.Envelope{ID: "msg-panic"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-panic"})
 	err := route.RunChain(context.Background(),
 		[]ports.Processor{panicker, follower, terminal}, env,
 		route.WithChainTimeout(time.Second),
@@ -170,7 +170,7 @@ func TestRunChain_HangingProcessorTimesOut(t *testing.T) {
 			return ctx.Err()
 		},
 	}
-	env := &messaging.Envelope{ID: "msg-hang"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-hang"})
 
 	start := time.Now()
 	err := route.RunChain(context.Background(), []ports.Processor{hang}, env,
@@ -202,7 +202,7 @@ func TestRunChain_NormalErrorNotMisclassified(t *testing.T) {
 	sentinel := errors.New("normal failure")
 	p := &FakeProcessor{NameVal: "fail", ProcessErr: sentinel}
 
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	err := route.RunChain(context.Background(), []ports.Processor{p}, env)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel error, got %v", err)
@@ -223,7 +223,7 @@ func TestRunChain_HappyPathUnderDefaultTimeout(t *testing.T) {
 			return next(ctx, env)
 		},
 	}
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	// No options: defaults should apply (30s timeout, no logger).
 	if err := route.RunChain(context.Background(), []ports.Processor{p}, env); err != nil {
 		t.Fatalf("expected success, got %v", err)

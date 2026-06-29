@@ -37,12 +37,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 
-	// Adapter Register functions are invoked explicitly below to
-	// populate the per-process registry the composition root would
-	// build. The set here MUST mirror the adapter Register calls in
-	// cmd/gobridge/main.go; adding a new adapter to the composition
-	// root means adding it here too.
+	// Adapter Register functions are invoked through the
+	// adapterRegistrars binding below. WHICH adapters are invoked is
+	// PARSED from the composition root (cmd/gobridge/main.go) at run
+	// time, so this import set only has to provide the compile-time
+	// binding for every adapter the composition root may register.
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
 
@@ -88,7 +89,7 @@ func main() {
 		*mainPath = filepath.Join(cwd, "cmd", "gobridge", "main.go")
 	}
 
-	registered, err := buildRegisteredKinds()
+	registered, err := buildRegisteredKinds(*mainPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pluginsym: build registry: %v\n", err)
 		os.Exit(2)
@@ -115,20 +116,102 @@ func main() {
 	os.Exit(1)
 }
 
-// buildRegisteredKinds constructs the local *ports.Registry by
-// invoking the exported Register function for each adapter the
-// canonical composition root (cmd/gobridge/main.go) links in, then
-// returns the sorted list of registered kinds. Adding a new adapter
-// to the composition root means extending this set.
-func buildRegisteredKinds() ([]string, error) {
-	reg := ports.NewRegistry()
-	if err := errors.Join(
-		paho.Register(reg),
-		nativestore.Register(reg),
-	); err != nil {
+// adapterRegistrars binds each adapter package import path to its
+// Register function. WHICH adapters get invoked is parsed from the
+// composition root (see parseRegisteredAdapterPaths); this map only
+// supplies the compile-time binding Go's static linking requires. A
+// Register call in the composition root whose import path is absent
+// here is a drift error — add the adapter here and to go.mod.
+var adapterRegistrars = map[string]func(*ports.Registry) error{
+	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho": paho.Register,
+	"github.com/mariotoffia/gobridge/adapters/native/store":        nativestore.Register,
+}
+
+// buildRegisteredKinds parses the composition root at mainPath for the
+// adapter Register(reg) calls it makes, invokes each via the
+// adapterRegistrars binding, and returns the sorted registered kinds.
+// The set therefore mirrors the real composition root automatically
+// instead of a hand-maintained list. A Register call for an adapter not
+// present in adapterRegistrars is reported as drift.
+func buildRegisteredKinds(mainPath string) ([]string, error) {
+	paths, err := parseRegisteredAdapterPaths(mainPath)
+	if err != nil {
 		return nil, err
 	}
+	reg := ports.NewRegistry()
+	var errs []error
+	for _, p := range paths {
+		register, ok := adapterRegistrars[p]
+		if !ok {
+			return nil, fmt.Errorf(
+				"composition root %s registers adapter %q but pluginsym has no binding for it; add it to adapterRegistrars (and go.mod)",
+				mainPath, p)
+		}
+		errs = append(errs, register(reg))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, fmt.Errorf("register adapters: %w", err)
+	}
 	return reg.Kinds(), nil
+}
+
+// parseRegisteredAdapterPaths parses the composition-root file at path
+// and returns the import paths of every adapter whose Register(reg) it
+// invokes — i.e. selector calls `pkg.Register(...)` whose pkg resolves
+// to an imported "/adapters/" package. Calls on a non-package receiver
+// (e.g. reg.Register(kind, dec)) are ignored because the receiver does
+// not resolve to an imported adapter path.
+func parseRegisteredAdapterPaths(path string) ([]string, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		return nil, fmt.Errorf("parse %q: %w", path, err)
+	}
+	imports := fileImports(f)
+	seen := map[string]bool{}
+	var paths []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel == nil || sel.Sel.Name != "Register" {
+			return true
+		}
+		id, ok := sel.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		pkgPath, ok := imports[id.Name]
+		if !ok || !strings.Contains(pkgPath, "/adapters/") {
+			return true
+		}
+		if !seen[pkgPath] {
+			seen[pkgPath] = true
+			paths = append(paths, pkgPath)
+		}
+		return true
+	})
+	sort.Strings(paths)
+	return paths, nil
+}
+
+// fileImports maps each import's local name to its import path.
+func fileImports(f *ast.File) map[string]string {
+	out := map[string]string{}
+	for _, imp := range f.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		name := p[strings.LastIndex(p, "/")+1:]
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		out[name] = p
+	}
+	return out
 }
 
 // parseWiredKinds parses the supplied main.go and returns the set of

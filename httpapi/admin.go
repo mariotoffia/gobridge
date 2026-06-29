@@ -193,14 +193,14 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 	if err := rt.Inject(r.Context(), routeID, env); err != nil {
 		if errors.Is(err, shared.ErrNotFound) {
 			s.emitAudit(r, "route.inject", "route", routeID, "failure", map[string]any{
-				"envelope_id": env.ID,
+				"envelope_id": env.ID(),
 				"error":       "route not found",
 			})
 			writeErr(w, http.StatusNotFound, "route not found")
 			return
 		}
 		s.emitAudit(r, "route.inject", "route", routeID, "failure", map[string]any{
-			"envelope_id": env.ID,
+			"envelope_id": env.ID(),
 			"error":       err.Error(),
 		})
 		writeErr(w, http.StatusInternalServerError, "message injection failed")
@@ -208,12 +208,12 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.emitAudit(r, "route.inject", "route", routeID, "success", map[string]any{
-		"envelope_id": env.ID,
+		"envelope_id": env.ID(),
 		"subject":     body.Subject,
 	})
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":      "injected",
-		"envelope_id": env.ID,
+		"envelope_id": env.ID(),
 	})
 }
 

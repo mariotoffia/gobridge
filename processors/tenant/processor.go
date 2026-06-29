@@ -65,10 +65,10 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 			)
 		}
 
-		if info.MaxMessageSizeBytes > 0 && int64(len(env.Payload)) > info.MaxMessageSizeBytes {
+		if info.MaxMessageSizeBytes > 0 && int64(len(env.Payload())) > info.MaxMessageSizeBytes {
 			return shared.ErrInvalidPayload.WithMessage(
 				fmt.Sprintf("message size %d exceeds tenant limit %d",
-					len(env.Payload), info.MaxMessageSizeBytes),
+					len(env.Payload()), info.MaxMessageSizeBytes),
 			)
 		}
 	}

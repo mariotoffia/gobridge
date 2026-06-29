@@ -60,7 +60,7 @@ func TestDeliveryRetryWithDelaySchedulesMessage(t *testing.T) {
 
 	mock := &mockASBClient{}
 	sched := &mockRetryScheduler{}
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	body := []byte("payload")
 	msg := &azservicebus.ReceivedMessage{MessageID: "orig", Body: body}
 	d := newDelivery(context.Background(), env, mock, sched, msg, 30*time.Second, false, nil, nil, nil)
@@ -102,7 +102,7 @@ func TestDeliveryRetryZeroDelayAbandons(t *testing.T) {
 
 	mock := &mockASBClient{}
 	sched := &mockRetryScheduler{}
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "orig"}
 	d := newDelivery(context.Background(), env, mock, sched, msg, 30*time.Second, false, nil, nil, nil)
 
@@ -134,7 +134,7 @@ func TestDeliveryRetryScheduleFailsNoComplete(t *testing.T) {
 
 	mock := &mockASBClient{}
 	sched := &mockRetryScheduler{Err: errors.New("schedule failed")}
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "orig", Body: []byte("payload")}
 	d := newDelivery(context.Background(), env, mock, sched, msg, 30*time.Second, false, nil, nil, nil)
 
@@ -165,7 +165,7 @@ func TestDeliveryRetryCompleteFailCancelsScheduled(t *testing.T) {
 		},
 	}
 	sched := &mockRetryScheduler{}
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "orig", Body: []byte("payload")}
 	d := newDelivery(context.Background(), env, mock, sched, msg, 30*time.Second, false, nil, nil, nil)
 
@@ -191,7 +191,7 @@ func TestDeliveryRetryNegativeDelayAbandons(t *testing.T) {
 
 	mock := &mockASBClient{}
 	sched := &mockRetryScheduler{}
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "orig"}
 	d := newDelivery(context.Background(), env, mock, sched, msg, 30*time.Second, false, nil, nil, nil)
 
@@ -219,7 +219,7 @@ func TestDeliveryRetryNoSchedulerFallsBackToAbandon(t *testing.T) {
 	t.Parallel()
 
 	mock := &mockASBClient{}
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "orig"}
 	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil, nil)
 

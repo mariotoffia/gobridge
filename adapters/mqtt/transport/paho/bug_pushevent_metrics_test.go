@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -13,7 +12,7 @@ import (
 //
 // When the event channel is full and pushEvent drops an event (the final
 // default case), no metric is emitted. The fix adds a counter for
-// shared.MetricMQTTEventDropped so operators can detect event loss.
+// MetricMQTTEventDropped so operators can detect event loss.
 // ═══════════════════════════════════════════════════════════════════════════
 
 // TestBugRES011_PushEvent_DropEmitsMetric verifies that when the event
@@ -44,7 +43,7 @@ func TestBugRES011_PushEvent_NormalDropOldest_NoMetric(t *testing.T) {
 
 	// The normal drop-oldest path should NOT emit a dropped metric
 	// because the re-insert succeeds.
-	entries := rec.FindEntries(shared.MetricMQTTEventDropped)
+	entries := rec.FindEntries(MetricMQTTEventDropped)
 	if len(entries) != 0 {
 		t.Fatalf("expected 0 dropped-event metrics in normal path, got %d", len(entries))
 	}
@@ -72,10 +71,10 @@ done:
 	}
 }
 
-// TestBugRES011_MetricConstant_Exists verifies shared.MetricMQTTEventDropped
+// TestBugRES011_MetricConstant_Exists verifies MetricMQTTEventDropped
 // is defined and usable.
 func TestBugRES011_MetricConstant_Exists(t *testing.T) {
-	if shared.MetricMQTTEventDropped == "" {
-		t.Fatal("shared.MetricMQTTEventDropped should not be empty")
+	if MetricMQTTEventDropped == "" {
+		t.Fatal("MetricMQTTEventDropped should not be empty")
 	}
 }

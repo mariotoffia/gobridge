@@ -248,7 +248,7 @@ func TestRuleResolver_JSONPayloadCondition(t *testing.T) {
 	resolver := makeRuleResolver(t, bindings, rules, "low-prio")
 
 	t.Run("high_priority", func(t *testing.T) {
-		env := &messaging.Envelope{Payload: []byte(`{"priority":10}`)}
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte(`{"priority":10}`)})
 		plans, _ := resolver.Resolve(context.Background(), env)
 		if plans[0].BindingID != "high-prio" {
 			t.Fatalf("expected high-prio, got %s", plans[0].BindingID)
@@ -256,7 +256,7 @@ func TestRuleResolver_JSONPayloadCondition(t *testing.T) {
 	})
 
 	t.Run("low_priority_default", func(t *testing.T) {
-		env := &messaging.Envelope{Payload: []byte(`{"priority":2}`)}
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte(`{"priority":2}`)})
 		plans, _ := resolver.Resolve(context.Background(), env)
 		if plans[0].BindingID != "low-prio" {
 			t.Fatalf("expected low-prio, got %s", plans[0].BindingID)

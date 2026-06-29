@@ -6,37 +6,75 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
-// DLQEntry represents a dead-letter queue record. Use NewDLQEntry to
-// construct entries: the constructor deep-clones the supplied envelope
-// so the entry's Envelope cannot be mutated through references retained
-// by the caller (DDD R5 aggregate-snapshot rule).
+// DLQEntry represents a dead-letter queue record. The embedded envelope
+// is private and isolated: NewDLQEntry deep-clones the supplied envelope
+// so it cannot be mutated through references retained by the caller, and
+// Snapshot returns a clone for any read or hand-off (the DDD R5
+// aggregate-snapshot rule). All identity fields are private; access is
+// via read-only value-receiver accessors. DLQEntry is passed by value
+// through ports.DLQStore, so a copy's accessor values cannot affect
+// another copy or the persisted entry.
 //
-// Storage adapters that materialize entries from durable rows MAY
-// populate the struct fields directly; runtime code MUST go through the
-// constructor and access the envelope via Snapshot when the value will
-// be handed to mutator code (e.g. the redrive path).
+// Storage adapters materializing an entry from a durable row MUST use
+// RehydrateDLQEntry, which assigns the already-owned envelope without a
+// redundant clone; runtime code MUST construct through NewDLQEntry.
+//
+// aggregate-root
 type DLQEntry struct {
-	ID        string
-	Envelope  messaging.Envelope
-	RouteID   string
-	BindingID string
-	// Address is the transport destination address that was the
-	// target of the failed delivery (e.g. MQTT topic, SQS queue URL,
-	// AMQP routing key) on egress, or the source address on ingress.
-	// It is the concrete transport-level address and is NOT the
-	// logical Envelope.Subject. Empty when not known at the call
-	// site.
-	Address       string
-	SessionID     string
-	SourceID      string
-	CorrelationID string
-	Reason        string
-	Category      string
-	ErrorCode     string
-	LastError     string
-	FailedAt      time.Time
-	Attempts      int
+	id            string
+	envelope      messaging.Envelope
+	routeID       string
+	bindingID     string
+	address       string
+	sessionID     string
+	sourceID      string
+	correlationID string
+	reason        string
+	category      string
+	errorCode     string
+	lastError     string
+	failedAt      time.Time
+	attempts      int
 }
+
+// ID returns the DLQ entry identifier.
+func (e DLQEntry) ID() string { return e.id }
+
+// RouteID returns the route that produced this entry.
+func (e DLQEntry) RouteID() string { return e.routeID }
+
+// BindingID returns the binding identifier associated with the entry.
+func (e DLQEntry) BindingID() string { return e.bindingID }
+
+// Address returns the transport destination address of the failed delivery.
+func (e DLQEntry) Address() string { return e.address }
+
+// SessionID returns the session identifier associated with the entry.
+func (e DLQEntry) SessionID() string { return e.sessionID }
+
+// SourceID returns the source identifier associated with the entry.
+func (e DLQEntry) SourceID() string { return e.sourceID }
+
+// CorrelationID returns the correlation identifier propagated from the envelope.
+func (e DLQEntry) CorrelationID() string { return e.correlationID }
+
+// Reason returns the human-readable failure reason.
+func (e DLQEntry) Reason() string { return e.reason }
+
+// Category returns the error classification category (e.g. "transient", "permanent").
+func (e DLQEntry) Category() string { return e.category }
+
+// ErrorCode returns the machine-readable error code.
+func (e DLQEntry) ErrorCode() string { return e.errorCode }
+
+// LastError returns the last error message recorded for this entry.
+func (e DLQEntry) LastError() string { return e.lastError }
+
+// FailedAt returns the time at which the delivery failure was recorded.
+func (e DLQEntry) FailedAt() time.Time { return e.failedAt }
+
+// Attempts returns the number of delivery attempts made before DLQ routing.
+func (e DLQEntry) Attempts() int { return e.attempts }
 
 // DLQEntrySpec carries the inputs required to construct a DLQEntry.
 // The supplied Envelope is deep-cloned by NewDLQEntry so callers may
@@ -64,29 +102,41 @@ type DLQEntrySpec struct {
 // boundary the DDD aggregate rules require: subsequent mutations of
 // the input envelope (headers, payload) do not leak into the entry.
 func NewDLQEntry(spec DLQEntrySpec) DLQEntry {
+	spec.Envelope = *spec.Envelope.Clone()
+	return RehydrateDLQEntry(spec)
+}
+
+// RehydrateDLQEntry materializes a DLQEntry from a spec WITHOUT cloning
+// the envelope. It is the storage-adapter boundary for entries read back
+// from durable rows, where the envelope was freshly decoded (JSON
+// unmarshal, attribute decode) and is therefore already owned, so a
+// second deep clone would be wasted work. Runtime code that still holds
+// a live reference to the envelope MUST use NewDLQEntry instead.
+func RehydrateDLQEntry(spec DLQEntrySpec) DLQEntry {
 	return DLQEntry{
-		ID:            spec.ID,
-		Envelope:      *spec.Envelope.Clone(),
-		RouteID:       spec.RouteID,
-		BindingID:     spec.BindingID,
-		Address:       spec.Address,
-		SessionID:     spec.SessionID,
-		SourceID:      spec.SourceID,
-		CorrelationID: spec.CorrelationID,
-		Reason:        spec.Reason,
-		Category:      spec.Category,
-		ErrorCode:     spec.ErrorCode,
-		LastError:     spec.LastError,
-		FailedAt:      spec.FailedAt,
-		Attempts:      spec.Attempts,
+		id:            spec.ID,
+		envelope:      spec.Envelope,
+		routeID:       spec.RouteID,
+		bindingID:     spec.BindingID,
+		address:       spec.Address,
+		sessionID:     spec.SessionID,
+		sourceID:      spec.SourceID,
+		correlationID: spec.CorrelationID,
+		reason:        spec.Reason,
+		category:      spec.Category,
+		errorCode:     spec.ErrorCode,
+		lastError:     spec.LastError,
+		failedAt:      spec.FailedAt,
+		attempts:      spec.Attempts,
 	}
 }
 
 // Snapshot returns a deep copy of the entry's embedded envelope so
-// callers can mutate or hand off the envelope without compromising the
-// entry's persisted state.
+// callers can read, mutate, or hand off the envelope without
+// compromising the entry's persisted state. It is the only read path to
+// the envelope now that the field is unexported.
 func (e DLQEntry) Snapshot() *messaging.Envelope {
-	return e.Envelope.Clone()
+	return e.envelope.Clone()
 }
 
 // DLQFilter specifies criteria for querying DLQ entries.

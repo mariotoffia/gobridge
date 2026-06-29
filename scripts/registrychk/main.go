@@ -30,12 +30,18 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
-	// Adapter Register functions are invoked explicitly below to
-	// populate the per-process registry the CDK can synthesise.
+	// Adapter Register functions are invoked through the
+	// adapterRegistrars binding below. WHICH adapters are invoked is
+	// PARSED from the CDK composition root (the cdkRegistry constructor
+	// in deployment/.../internal/source/source.go) at run time, so this
+	// import set only provides the compile-time binding for every
+	// adapter the CDK may register.
 	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
+	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
 
@@ -100,6 +106,7 @@ func main() {
 	var (
 		bridgecfgDir = flag.String("bridgecfg-dir", "", "path to deployment/aws-filebased-config/cdk/bridgecfg (default: derived from cwd)")
 		grantsDir    = flag.String("grants-dir", "", "path to deployment/aws-filebased-config/cdk/constructs/internal/grants (default: derived from cwd)")
+		registrySrc  = flag.String("registry-src", "", "path to the CDK composition root that constructs the plugin registry (default: derived from cwd)")
 		verbose      = flag.Bool("v", false, "print skipped (non-AWS) kinds")
 	)
 	flag.Parse()
@@ -115,8 +122,11 @@ func main() {
 	if *grantsDir == "" {
 		*grantsDir = filepath.Join(cwd, "deployment", "aws-filebased-config", "cdk", "constructs", "internal", "grants")
 	}
+	if *registrySrc == "" {
+		*registrySrc = filepath.Join(cwd, "deployment", "aws-filebased-config", "cdk", "internal", "source", "source.go")
+	}
 
-	registered, err := buildRegisteredKinds()
+	registered, err := buildRegisteredKinds(*registrySrc)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "registrychk: build registry: %v\n", err)
 		os.Exit(2)
@@ -145,21 +155,104 @@ func main() {
 	os.Exit(1)
 }
 
-// buildRegisteredKinds constructs the local *ports.Registry by
-// invoking the exported Register function for each adapter the CDK
-// supports, then returns the sorted list of registered kinds.
-// Adding a new CDK-deployable adapter means extending this set.
-func buildRegisteredKinds() ([]string, error) {
-	reg := ports.NewRegistry()
-	if err := errors.Join(
-		awsstore.Register(reg),
-		sqsadapter.Register(reg),
-		paho.Register(reg),
-		nativestore.Register(reg),
-	); err != nil {
+// adapterRegistrars binds each adapter package import path to its
+// Register function. WHICH adapters get invoked is parsed from the CDK
+// composition root (see parseRegisteredAdapterPaths); this map only
+// supplies the compile-time binding Go's static linking requires. A
+// Register call in the composition root whose import path is absent
+// here is a drift error — add the adapter here and to go.mod.
+var adapterRegistrars = map[string]func(*ports.Registry) error{
+	"github.com/mariotoffia/gobridge/adapters/aws/store":           awsstore.Register,
+	"github.com/mariotoffia/gobridge/adapters/aws/transport/sqs":   sqsadapter.Register,
+	"github.com/mariotoffia/gobridge/adapters/http/transport":      httptransport.Register,
+	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho": paho.Register,
+	"github.com/mariotoffia/gobridge/adapters/native/store":        nativestore.Register,
+}
+
+// buildRegisteredKinds parses the CDK composition root at srcPath for the
+// adapter Register(reg) calls it makes, invokes each via the
+// adapterRegistrars binding, and returns the sorted registered kinds.
+// The set therefore mirrors the real CDK plugin registry automatically
+// instead of a hand-maintained list. A Register call for an adapter not
+// present in adapterRegistrars is reported as drift.
+func buildRegisteredKinds(srcPath string) ([]string, error) {
+	paths, err := parseRegisteredAdapterPaths(srcPath)
+	if err != nil {
 		return nil, err
 	}
+	reg := ports.NewRegistry()
+	var errs []error
+	for _, p := range paths {
+		register, ok := adapterRegistrars[p]
+		if !ok {
+			return nil, fmt.Errorf(
+				"CDK composition root %s registers adapter %q but registrychk has no binding for it; add it to adapterRegistrars (and go.mod)",
+				srcPath, p)
+		}
+		errs = append(errs, register(reg))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, fmt.Errorf("register adapters: %w", err)
+	}
 	return reg.Kinds(), nil
+}
+
+// parseRegisteredAdapterPaths parses the composition-root file at path
+// and returns the import paths of every adapter whose Register(reg) it
+// invokes — i.e. selector calls `pkg.Register(...)` whose pkg resolves
+// to an imported "/adapters/" package. Calls on a non-package receiver
+// (e.g. reg.Register(kind, dec)) are ignored.
+func parseRegisteredAdapterPaths(path string) ([]string, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		return nil, fmt.Errorf("parse %q: %w", path, err)
+	}
+	imports := fileImports(f)
+	seen := map[string]bool{}
+	var paths []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel == nil || sel.Sel.Name != "Register" {
+			return true
+		}
+		id, ok := sel.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		pkgPath, ok := imports[id.Name]
+		if !ok || !strings.Contains(pkgPath, "/adapters/") {
+			return true
+		}
+		if !seen[pkgPath] {
+			seen[pkgPath] = true
+			paths = append(paths, pkgPath)
+		}
+		return true
+	})
+	sort.Strings(paths)
+	return paths, nil
+}
+
+// fileImports maps each import's local name to its import path.
+func fileImports(f *ast.File) map[string]string {
+	out := map[string]string{}
+	for _, imp := range f.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		name := p[strings.LastIndex(p, "/")+1:]
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		out[name] = p
+	}
+	return out
 }
 
 // classify partitions the registered kinds into:

@@ -51,40 +51,39 @@ func TestBug6_SendBatch_SenderFaultClassifiedAsPermanent(t *testing.T) {
 	}
 
 	envs := []*messaging.Envelope{
-		{ID: "msg-0", Payload: []byte(`{"ok":true}`)},
-		{ID: "msg-1", Payload: []byte(`{"bad":true}`)},
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-0", Payload: []byte(`{"ok":true}`)}),
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1", Payload: []byte(`{"bad":true}`)}),
 	}
 
-	sent, err := s.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, err := s.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
 		}
 		return _msgs
 	}())
-	if err == nil {
-		t.Fatal("batch with failures should return error")
+	if err != nil {
+		t.Fatalf("dispatched batch must not yield a whole-batch error, got %v", err)
 	}
-	if sent != 1 {
+	if sent := batchSent(results); sent != 1 {
 		t.Fatalf("expected 1 sent, got %d", sent)
 	}
 
 	// FIX VERIFIED: SenderFault=true now uses ErrInvalidPayload (Rejected).
 	// ErrorRejected is a non-retriable, payload-level error — semantically
-	// correct for SQS sender faults (malformed requests).
-	be, ok := shared.AsBridgeError(err)
-	if ok {
-		if be.Class != shared.ErrorRejected {
-			t.Errorf("expected ErrorRejected for SenderFault=true, got %s", be.Class)
-		}
-		t.Logf("BUG-6 FIX VERIFIED: SenderFault=true classified as %s", be.Class)
-	} else {
-		// errors.Join wraps multiple; check the string.
-		if got := err.Error(); got == "" {
-			t.Error("expected non-empty error")
-		}
-		t.Logf("BUG-6: joined error: %v", err)
+	// correct for SQS sender faults (malformed requests). The failed entry
+	// is input index 1; its per-message error carries the classification.
+	if results[1].Err == nil {
+		t.Fatal("expected the sender-fault entry (index 1) to carry an error")
 	}
+	be, ok := shared.AsBridgeError(results[1].Err)
+	if !ok {
+		t.Fatalf("expected BridgeError, got %T: %v", results[1].Err, results[1].Err)
+	}
+	if be.Class != shared.ErrorRejected {
+		t.Errorf("expected ErrorRejected for SenderFault=true, got %s", be.Class)
+	}
+	t.Logf("BUG-6 FIX VERIFIED: SenderFault=true classified as %s", be.Class)
 }
 
 // TestBug6_SendBatch_AllFailuresCorrectClassification verifies that server
@@ -126,23 +125,26 @@ func TestBug6_SendBatch_AllFailuresCorrectClassification(t *testing.T) {
 			}
 
 			envs := []*messaging.Envelope{
-				{ID: "msg-0", Payload: []byte(`{"test":true}`)},
+				messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-0", Payload: []byte(`{"test":true}`)}),
 			}
 
-			_, err := s.SendBatch(context.Background(), func() []ports.OutboundMessage {
+			results, err := s.SendBatch(context.Background(), func() []ports.OutboundMessage {
 				_msgs := make([]ports.OutboundMessage, len(envs))
 				for _i, _e := range envs {
 					_msgs[_i] = ports.OutboundMessage{Envelope: _e}
 				}
 				return _msgs
 			}())
-			if err == nil {
-				t.Fatal("expected error from batch failure")
+			if err != nil {
+				t.Fatalf("dispatched batch must not yield a whole-batch error, got %v", err)
+			}
+			if results[0].Err == nil {
+				t.Fatal("expected the failed entry (index 0) to carry an error")
 			}
 
-			be, ok := shared.AsBridgeError(err)
+			be, ok := shared.AsBridgeError(results[0].Err)
 			if !ok {
-				t.Fatalf("expected BridgeError, got %T: %v", err, err)
+				t.Fatalf("expected BridgeError, got %T: %v", results[0].Err, results[0].Err)
 			}
 			if be.Class != tc.expectedClass {
 				t.Errorf("SenderFault=%v Code=%s: expected %s, got %s",

@@ -133,14 +133,8 @@ func TestCredentialSet(commonName string) *connectivity.CredentialSet {
 		IsCA:       true,
 	})
 
-	return &connectivity.CredentialSet{
-		TLS: &connectivity.TLSMaterial{
-			CertPEM:            r.CertPEM,
-			KeyPEM:             r.KeyPEM,
-			CAPEMs:             []string{r.CAPEM},
-			InsecureSkipVerify: true,
-		},
-	}
+	tls := connectivity.NewTLSMaterial(r.CertPEM, r.KeyPEM, []string{r.CAPEM}, true)
+	return connectivity.NewCredentialSet(nil, &tls)
 }
 
 func generateKeyPair(keyType string, keySize int) (any, any, error) {

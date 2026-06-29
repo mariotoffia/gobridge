@@ -348,7 +348,7 @@ func TestRouter_Route_EmptyPayload(t *testing.T) {
 }
 
 // TestRouter_Route_OriginalPayloadUnmutated validates that the original
-// Publish.Payload bytes are not affected by handler mutations.
+// Publish.Payload() bytes are not affected by handler mutations.
 func TestRouter_Route_OriginalPayloadUnmutated(t *testing.T) {
 	r := newRouter(nil, nil)
 	original := []byte("immutable")

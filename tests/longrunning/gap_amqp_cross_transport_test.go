@@ -273,7 +273,7 @@ func TestGap_AMQP091_To_MQTT_CrossTransport(t *testing.T) {
 	for i, msg := range msgs {
 		assert.Equal(t, "cross-transport-test", msg.Subject(),
 			"msg %d: logical Subject must be preserved across AMQP→MQTT (transport address must NOT overwrite Subject)", i)
-		assert.Contains(t, string(msg.Payload), `"origin":"amqp091"`,
+		assert.Contains(t, string(msg.Payload()), `"origin":"amqp091"`,
 			"msg %d: payload should contain origin marker", i)
 
 		// T12: the MQTT ingress side must surface the *transport address*
@@ -288,7 +288,7 @@ func TestGap_AMQP091_To_MQTT_CrossTransport(t *testing.T) {
 				i, paho.HeaderMQTTTopic)
 		}
 
-		rxPayloads[string(msg.Payload)] = true
+		rxPayloads[string(msg.Payload())] = true
 	}
 	for i := 0; i < gapCrossMsgCount; i++ {
 		want := fmt.Sprintf(`{"seq":%d,"origin":"amqp091"}`, i)

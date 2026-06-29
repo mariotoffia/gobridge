@@ -270,8 +270,8 @@ func TestIntegration_HTTP_To_MQTT_CrossTransport(t *testing.T) {
 		t.Errorf("headers[%q] = %q, want %q (transport address must travel via header, not Subject)",
 			paho.HeaderMQTTTopic, got, mqttTopic)
 	}
-	if string(env.Payload) != `{"user":"bob"}` {
-		t.Errorf("payload = %q, want exact %q", string(env.Payload), `{"user":"bob"}`)
+	if string(env.Payload()) != `{"user":"bob"}` {
+		t.Errorf("payload = %q, want exact %q", string(env.Payload()), `{"user":"bob"}`)
 	}
 }
 

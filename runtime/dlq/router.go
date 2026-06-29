@@ -257,8 +257,8 @@ func (r *Router) runWorker(_ context.Context) {
 			if _, hasLease := r.tokenFn(); !hasLease {
 				if r.logger != nil {
 					r.logger.Warn("DLQ write skipped, lease not held",
-						"entry_id", entry.ID,
-						"route_id", entry.RouteID,
+						"entry_id", entry.ID(),
+						"route_id", entry.RouteID(),
 					)
 				}
 				r.metrics.Counter(shared.MetricDLQWriteFailures, 1)
@@ -292,8 +292,8 @@ func (r *Router) runWorker(_ context.Context) {
 			r.metrics.Counter(shared.MetricDLQWriteFailures, 1)
 			if r.logger != nil {
 				r.logger.Error("DLQ write failed after retries",
-					"entry_id", entry.ID,
-					"route_id", entry.RouteID,
+					"entry_id", entry.ID(),
+					"route_id", entry.RouteID(),
 					"error", writeErr,
 					"attempts", maxAttempts,
 				)

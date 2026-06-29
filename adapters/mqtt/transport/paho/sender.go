@@ -73,8 +73,8 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		s.logger.Log(ctx, logging.LevelTrace, "mqtt: publishing",
 			"topic", topic,
 			"qos", pub.QoS,
-			"payload_len", len(env.Payload),
-			"envelope_id", env.ID,
+			"payload_len", len(env.Payload()),
+			"envelope_id", env.ID(),
 		)
 	}
 
@@ -90,8 +90,8 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	elapsed := s.session.clock().Since(start)
 
 	if err != nil {
-		s.metrics.Timer(shared.MetricMQTTPublishLatency, elapsed, sessionTag)
-		s.metrics.Counter(shared.MetricMQTTPublishFailures, 1, sessionTag)
+		s.metrics.Timer(MetricMQTTPublishLatency, elapsed, sessionTag)
+		s.metrics.Counter(MetricMQTTPublishFailures, 1, sessionTag)
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(ctx, logging.LevelDebug, "mqtt: publish failed",
 				"topic", topic, "error", err)
@@ -101,8 +101,8 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 
 	if resp != nil && resp.ReasonCode != 0 {
 		if berr := MapPublishReasonCode(resp.ReasonCode); berr != nil {
-			s.metrics.Timer(shared.MetricMQTTPublishLatency, elapsed, sessionTag)
-			s.metrics.Counter(shared.MetricMQTTPublishFailures, 1, sessionTag)
+			s.metrics.Timer(MetricMQTTPublishLatency, elapsed, sessionTag)
+			s.metrics.Counter(MetricMQTTPublishFailures, 1, sessionTag)
 			if logging.DebugEnabled(s.logger) {
 				s.logger.Log(ctx, logging.LevelDebug, "mqtt: publish rejected",
 					"topic", topic,
@@ -122,12 +122,12 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		}
 	}
 
-	s.metrics.Timer(shared.MetricMQTTPublishLatency, elapsed, sessionTag)
+	s.metrics.Timer(MetricMQTTPublishLatency, elapsed, sessionTag)
 
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "mqtt: published",
 			"topic", topic,
-			"envelope_id", env.ID,
+			"envelope_id", env.ID(),
 			"duration", elapsed,
 		)
 	}

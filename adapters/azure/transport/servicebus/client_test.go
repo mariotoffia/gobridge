@@ -10,6 +10,8 @@ import (
 	"math/big"
 	"testing"
 	"time"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 func generateSelfSignedCAPEM(t *testing.T) string {
@@ -121,7 +123,7 @@ func TestBuildClientOptions_WithTLSConfig(t *testing.T) {
 // TestBuildClientOptions_InvalidPEM validates that buildClientOptions returns
 // an error when ConnectionConfig has invalid CaPEM.
 func TestBuildClientOptions_InvalidPEM(t *testing.T) {
-	cfg := ConnectionConfig{CaPEM: "garbage"}
+	cfg := ConnectionConfig{CaPEM: shared.NewSecret("garbage")}
 	_, err := buildClientOptions(cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid CaPEM in ConnectionConfig")

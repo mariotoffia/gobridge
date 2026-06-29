@@ -140,7 +140,7 @@ func TestAnaMore_ReconcileMetric_NotEmittedOnNoOp(t *testing.T) {
 	if err := s.Reconcile(context.Background(), connectivity.SessionPlan{}); err != nil {
 		t.Fatalf("no-op Reconcile error: %v", err)
 	}
-	if entries := rec.FindEntries(shared.MetricMQTTReconcileLatency); len(entries) != 0 {
+	if entries := rec.FindEntries(MetricMQTTReconcileLatency); len(entries) != 0 {
 		t.Fatalf("no-op Reconcile must NOT emit MQTTReconcileLatency, got %d entries", len(entries))
 	}
 }

@@ -14,7 +14,11 @@
 // *ports.BridgeConfig values.
 package ports
 
-import "time"
+import (
+	"time"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
+)
 
 // BridgeConfig is the root configuration for a GoBridge instance.
 type BridgeConfig struct {
@@ -344,6 +348,10 @@ type BackoffDef struct {
 	InitialInterval string  `yaml:"initial_interval,omitempty" json:"initial_interval,omitempty"`
 	MaxInterval     string  `yaml:"max_interval,omitempty" json:"max_interval,omitempty"`
 	Multiplier      float64 `yaml:"multiplier,omitempty" json:"multiplier,omitempty"`
+	// Jitter is the equal-jitter fraction in [0,1] applied to each
+	// computed backoff delay (0 = deterministic). Maps to
+	// routing.BackoffPolicy.JitterFactor.
+	Jitter float64 `yaml:"jitter,omitempty" json:"jitter,omitempty"`
 }
 
 // BlueprintValidator is the contract a config validator implements so
@@ -355,13 +363,18 @@ type BlueprintValidator func(*BridgeConfig) error
 
 // HTTPConfig configures the optional HTTP admin and monitor servers.
 // AdminAPIKey is mandatory when the HTTP block is present; the server
-// refuses to start without it. MonitorAPIKey is optional; when empty
-// the admin key is used for authenticated monitor endpoints. CORS is
-// disabled by default and wildcard '*' is rejected.
+// refuses to start without it (checked via IsZero). MonitorAPIKey is
+// optional; when empty the admin key is used for authenticated monitor
+// endpoints. Both keys are shared.Secret value objects: they decode
+// from a plain YAML/JSON scalar via UnmarshalText and REDACT on every
+// generic marshal surface ("[REDACTED]"); the authoritative config
+// serializer reveals them explicitly at the save boundary (so config-as-
+// code round-trips), and the admin config-read endpoint also redacts.
+// CORS is disabled by default and wildcard '*' is rejected.
 type HTTPConfig struct {
-	AdminAddr     string `yaml:"admin_addr,omitempty" json:"admin_addr,omitempty"`
-	MonitorAddr   string `yaml:"monitor_addr,omitempty" json:"monitor_addr,omitempty"`
-	AdminAPIKey   string `yaml:"admin_api_key,omitempty" json:"admin_api_key,omitempty"`
-	MonitorAPIKey string `yaml:"monitor_api_key,omitempty" json:"monitor_api_key,omitempty"`
-	CORSOrigins   string `yaml:"cors_origins,omitempty" json:"cors_origins,omitempty"`
+	AdminAddr     string        `yaml:"admin_addr,omitempty" json:"admin_addr,omitempty"`
+	MonitorAddr   string        `yaml:"monitor_addr,omitempty" json:"monitor_addr,omitempty"`
+	AdminAPIKey   shared.Secret `yaml:"admin_api_key,omitempty" json:"admin_api_key,omitempty"`
+	MonitorAPIKey shared.Secret `yaml:"monitor_api_key,omitempty" json:"monitor_api_key,omitempty"`
+	CORSOrigins   string        `yaml:"cors_origins,omitempty" json:"cors_origins,omitempty"`
 }

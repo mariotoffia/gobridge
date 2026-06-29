@@ -153,7 +153,7 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 	if err != nil {
 		return MapError(err)
 	}
-	r.metrics.Timer(shared.MetricAMQP091ConsumeLatency, r.clock().Since(consumeStart),
+	r.metrics.Timer(MetricAMQP091ConsumeLatency, r.clock().Since(consumeStart),
 		shared.Tag{Key: shared.TagKeyEntity, Value: r.cfg.QueueName})
 
 	r.startedOnce.Do(func() { close(r.started) })
@@ -195,7 +195,7 @@ func (r *Receiver) handleDelivery(ctx context.Context, d *Delivery, emit func(co
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelTrace, "amqp091: message received",
 			"queue", r.cfg.QueueName,
-			"payload_len", len(d.Envelope().Payload),
+			"payload_len", len(d.Envelope().Payload()),
 		)
 	}
 

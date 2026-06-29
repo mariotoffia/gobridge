@@ -120,11 +120,11 @@ func TestDirectHold_RetryUnsupported_FallsToDLQ(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{
-		ID:        "msg-retry-unsup",
-		Payload:   []byte("data"),
-		ExpiresAt: time.Now().Add(time.Hour),
-	})
+	del := NewFakeDelivery(func() *messaging.Envelope {
+		e := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-retry-unsup", Payload: []byte("data")})
+		_ = e.SetExpiry(time.Now().Add(time.Hour))
+		return e
+	}())
 	del.RetryFnErr = shared.ErrNotSupported
 
 	_ = receiver.Emit(ctx, del)
@@ -177,11 +177,11 @@ func TestDirectHold_RetryUnsupported_DLQAlsoFails_ReturnsError(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{
-		ID:        "msg-both-fail",
-		Payload:   []byte("data"),
-		ExpiresAt: time.Now().Add(time.Hour),
-	})
+	del := NewFakeDelivery(func() *messaging.Envelope {
+		e := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-both-fail", Payload: []byte("data")})
+		_ = e.SetExpiry(time.Now().Add(time.Hour))
+		return e
+	}())
 	del.RetryFnErr = shared.ErrNotSupported
 
 	_ = receiver.Emit(ctx, del)
@@ -229,11 +229,11 @@ func TestHandleProcessorError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{
-		ID:        "msg-proc-retry-unsup",
-		Payload:   []byte("data"),
-		ExpiresAt: time.Now().Add(time.Hour),
-	})
+	del := NewFakeDelivery(func() *messaging.Envelope {
+		e := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-proc-retry-unsup", Payload: []byte("data")})
+		_ = e.SetExpiry(time.Now().Add(time.Hour))
+		return e
+	}())
 	del.RetryFnErr = shared.ErrNotSupported
 
 	_ = receiver.Emit(ctx, del)
@@ -272,11 +272,11 @@ func TestSharedOutbox_RetryUnsupported_FallsToDLQ(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{
-		ID:        "msg-outbox-retry-unsup",
-		Payload:   []byte("data"),
-		ExpiresAt: time.Now().Add(time.Hour),
-	})
+	del := NewFakeDelivery(func() *messaging.Envelope {
+		e := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-outbox-retry-unsup", Payload: []byte("data")})
+		_ = e.SetExpiry(time.Now().Add(time.Hour))
+		return e
+	}())
 	del.RetryFnErr = shared.ErrNotSupported
 
 	_ = receiver.Emit(ctx, del)
@@ -325,11 +325,11 @@ func TestHandleExpired_RetryUnsupported_FallsToDLQ(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{
-		ID:        "msg-expired-retry-unsup",
-		Payload:   []byte("data"),
-		ExpiresAt: time.Now().Add(-time.Hour),
-	})
+	del := NewFakeDelivery(func() *messaging.Envelope {
+		e := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-expired-retry-unsup", Payload: []byte("data")})
+		_ = e.SetExpiry(time.Now().Add(-time.Hour))
+		return e
+	}())
 	del.RetryFnErr = shared.ErrNotSupported
 
 	_ = receiver.Emit(ctx, del)
@@ -369,11 +369,11 @@ func TestHandleResolveError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{
-		ID:        "msg-resolve-retry-unsup",
-		Payload:   []byte("data"),
-		ExpiresAt: time.Now().Add(time.Hour),
-	})
+	del := NewFakeDelivery(func() *messaging.Envelope {
+		e := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-resolve-retry-unsup", Payload: []byte("data")})
+		_ = e.SetExpiry(time.Now().Add(time.Hour))
+		return e
+	}())
 	del.RetryFnErr = shared.ErrNotSupported
 
 	_ = receiver.Emit(ctx, del)
@@ -412,11 +412,11 @@ func TestDirectHold_RetrySupported_NoFallback(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{
-		ID:        "msg-retry-supported",
-		Payload:   []byte("data"),
-		ExpiresAt: time.Now().Add(time.Hour),
-	})
+	del := NewFakeDelivery(func() *messaging.Envelope {
+		e := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-retry-supported", Payload: []byte("data")})
+		_ = e.SetExpiry(time.Now().Add(time.Hour))
+		return e
+	}())
 	// RetryFnErr defaults to nil — retry succeeds
 
 	_ = receiver.Emit(ctx, del)

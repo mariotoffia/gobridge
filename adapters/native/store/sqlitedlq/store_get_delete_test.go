@@ -29,10 +29,10 @@ func newMemDB(t *testing.T) *sqlitedlq.Store {
 
 func writeEntry(t *testing.T, s *sqlitedlq.Store, id, route, cat string, failedAt time.Time) {
 	t.Helper()
-	if err := s.Write(context.Background(), routing.DLQEntry{
+	if err := s.Write(context.Background(), routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID: id, RouteID: route, Category: cat, FailedAt: failedAt,
 		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-" + id, Subject: "test"}),
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("write %s: %v", id, err)
 	}
 }
@@ -43,7 +43,7 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 	s := newMemDB(t)
 	ctx := context.Background()
 
-	entry := routing.DLQEntry{
+	entry := routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID: "sg-1", RouteID: "route-g", Category: "timeout",
 		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "env-sg-1",
@@ -53,7 +53,7 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 		}),
 		FailedAt: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC),
 		Attempts: 2,
-	}
+	})
 	if err := s.Write(ctx, entry); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -62,14 +62,15 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.ID != "sg-1" {
-		t.Errorf("ID: got %q, want %q", got.ID, "sg-1")
+	if got.ID() != "sg-1" {
+		t.Errorf("ID: got %q, want %q", got.ID(), "sg-1")
 	}
-	if got.Envelope.ID != "env-sg-1" {
-		t.Errorf("Envelope.ID: got %q, want %q", got.Envelope.ID, "env-sg-1")
+	genv := got.Snapshot()
+	if genv.ID() != "env-sg-1" {
+		t.Errorf("Envelope.ID: got %q, want %q", genv.ID(), "env-sg-1")
 	}
-	if string(got.Envelope.Payload) != `{"k":"v"}` {
-		t.Errorf("Payload: got %q", got.Envelope.Payload)
+	if string(genv.Payload()) != `{"k":"v"}` {
+		t.Errorf("Payload: got %q", genv.Payload())
 	}
 }
 
@@ -101,7 +102,7 @@ func TestDeleteByFilter_ByRouteID(t *testing.T) {
 	}
 
 	remaining, _ := s.List(ctx, routing.DLQFilter{})
-	if len(remaining) != 1 || remaining[0].ID != "sdf-r3" {
+	if len(remaining) != 1 || remaining[0].ID() != "sdf-r3" {
 		t.Fatalf("unexpected remaining: %v", remaining)
 	}
 }

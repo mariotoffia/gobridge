@@ -14,6 +14,7 @@ import (
 	ssmrepo "github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm"
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -155,7 +156,7 @@ func resolveInputs(
 			continue
 		}
 		current, _ := recv.Config.(httptransport.Config)
-		if current.APIKey != "" {
+		if !current.APIKey.IsZero() {
 			continue
 		}
 		ref, ok := bootstrapCfg.HTTPReceiverAPIKeyParams[recv.ID]
@@ -166,7 +167,7 @@ func resolveInputs(
 		if err != nil {
 			return nil, err
 		}
-		current.APIKey = value
+		current.APIKey = shared.NewSecret(value)
 		recv.Config = current
 	}
 
@@ -176,7 +177,7 @@ func resolveInputs(
 			continue
 		}
 		current, _ := sender.Config.(httptransport.Config)
-		if current.APIKey != "" {
+		if !current.APIKey.IsZero() {
 			continue
 		}
 		ref, ok := bootstrapCfg.HTTPSenderAPIKeyParams[sender.ID]
@@ -187,7 +188,7 @@ func resolveInputs(
 		if err != nil {
 			return nil, err
 		}
-		current.APIKey = value
+		current.APIKey = shared.NewSecret(value)
 		sender.Config = current
 	}
 

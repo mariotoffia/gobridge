@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // TestBuildTLSConfig_PEMPrefersOverFile verifies the dispatch rule in
@@ -23,7 +25,7 @@ func TestBuildTLSConfig_PEMPrefersOverFile(t *testing.T) {
 	cfg := &TLSConfig{
 		Enable:     true,
 		CACertFile: "/does/not/exist.pem", // Would error if file path was used.
-		CACertPEM:  caPEM,
+		CACertPEM:  shared.NewSecret(caPEM),
 	}
 
 	tlsCfg, err := BuildTLSConfig(cfg)
@@ -36,7 +38,7 @@ func TestBuildTLSConfig_PEMPrefersOverFile(t *testing.T) {
 // almost always indicates a bug in the credential source; failing
 // loudly is safer than silently dropping to file-based material.
 func TestBuildTLSConfig_PartialPEMClientRejected(t *testing.T) {
-	cfg := &TLSConfig{Enable: true, CertPEM: "only cert, no key"}
+	cfg := &TLSConfig{Enable: true, CertPEM: shared.NewSecret("only cert, no key")}
 	_, err := BuildTLSConfig(cfg)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "CertPEM and KeyPEM")
@@ -47,7 +49,7 @@ func TestBuildTLSConfig_PartialPEMClientRejected(t *testing.T) {
 // Use ECDSA to keep the generated material tiny.
 func TestBuildTLSConfig_ValidPEMClientPair(t *testing.T) {
 	certPEM, keyPEM := mustGenerateClientPEMPair(t)
-	cfg := &TLSConfig{Enable: true, CertPEM: certPEM, KeyPEM: keyPEM}
+	cfg := &TLSConfig{Enable: true, CertPEM: shared.NewSecret(certPEM), KeyPEM: shared.NewSecret(keyPEM)}
 
 	tlsCfg, err := BuildTLSConfig(cfg)
 	require.NoError(t, err)

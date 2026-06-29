@@ -78,6 +78,28 @@ func TestToRoutePolicy_BackoffDurations(t *testing.T) {
 	}
 }
 
+// TestToRoutePolicy_BackoffJitter validates that BackoffDef.Jitter maps
+// onto BackoffPolicy.JitterFactor (finding #27 config round-trip).
+func TestToRoutePolicy_BackoffJitter(t *testing.T) {
+	rd := ports.RouteDef{
+		Policy: ports.PolicyDef{
+			Backoff: ports.BackoffDef{
+				InitialInterval: "500ms",
+				Multiplier:      2.0,
+				Jitter:          0.3,
+			},
+		},
+	}
+
+	p, err := toRoutePolicyE(rd)
+	if err != nil {
+		t.Fatalf("toRoutePolicyE: %v", err)
+	}
+	if p.Backoff.JitterFactor != 0.3 {
+		t.Fatalf("Backoff.JitterFactor: got %v, want 0.3", p.Backoff.JitterFactor)
+	}
+}
+
 // TestToSessionConfig_FromRouteSessionDef validates that RouteSessionDef
 // fields are mapped to the session.Config struct.
 func TestToSessionConfig_FromRouteSessionDef(t *testing.T) {

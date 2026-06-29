@@ -83,7 +83,6 @@ func TestIntegration_OutboxDrainer_FullLifecycle(t *testing.T) {
 		Sender:         sender,
 		RouteID:        "route-od1",
 		PartitionKey:   persistence.OutboxPartitionKey("sess-od1", ""),
-		OwnerID:        "drainer-od1",
 		Policy:         routing.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 3},
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
@@ -145,7 +144,7 @@ func TestIntegration_OutboxDrainer_StaleFencingToken(t *testing.T) {
 	tok1 := persistence.LeaseToken{Version: 1, Owner: "owner-A"}
 	tok2 := persistence.LeaseToken{Version: 2, Owner: "owner-B"}
 
-	claimed, err := store.Claim(ctx, pk, "owner-A", tok1, 10)
+	claimed, err := store.Claim(ctx, pk, tok1, 10)
 	if err != nil {
 		t.Fatalf("claim with tok1: %v", err)
 	}
@@ -153,12 +152,12 @@ func TestIntegration_OutboxDrainer_StaleFencingToken(t *testing.T) {
 		t.Fatalf("expected 1 claimed, got %d", len(claimed))
 	}
 
-	_, err = store.Claim(ctx, pk, "owner-B", tok2, 10)
+	_, err = store.Claim(ctx, pk, tok2, 10)
 	if err != nil && !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("reclaim with tok2: unexpected error: %v", err)
 	}
 
-	err = store.Complete(ctx, []string{rec.ID}, tok1)
+	err = store.Complete(ctx, []string{rec.ID()}, tok1)
 	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken on complete with old token, got %v", err)
 	}
@@ -207,7 +206,6 @@ func TestIntegration_OutboxDrainer_ExpiredRecordRoutesDLQ(t *testing.T) {
 		DLQ:            dlqRouter,
 		RouteID:        "route-od3",
 		PartitionKey:   persistence.OutboxPartitionKey("sess-od3", ""),
-		OwnerID:        "drainer-od3",
 		Policy:         routing.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 3, OnExpired: routing.ExpiredDLQ},
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
@@ -266,7 +264,7 @@ func TestIntegration_OutboxDrainer_PoisonMessageRoutesDLQ(t *testing.T) {
 	// Claim and release multiple times to drive up ReplayCount beyond max (2).
 	for i := 1; i <= 3; i++ {
 		tok := persistence.LeaseToken{Version: uint64(i), Owner: "pumper"}
-		_, err := store.Claim(ctx, pk, "pumper", tok, 10)
+		_, err := store.Claim(ctx, pk, tok, 10)
 		if err != nil {
 			t.Fatalf("claim cycle %d: %v", i, err)
 		}
@@ -283,7 +281,6 @@ func TestIntegration_OutboxDrainer_PoisonMessageRoutesDLQ(t *testing.T) {
 		DLQ:            dlqRouter,
 		RouteID:        "route-od4",
 		PartitionKey:   pk,
-		OwnerID:        "drainer-od4",
 		Policy:         routing.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 2},
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
@@ -358,13 +355,12 @@ func TestIntegration_OutboxDrainer_ConcurrentDrainers(t *testing.T) {
 	tokA := persistence.LeaseToken{Version: 1, Owner: "drainer-A"}
 	tokB := persistence.LeaseToken{Version: 2, Owner: "drainer-B"}
 
-	makeDrainer := func(sender *collectingSender, tok persistence.LeaseToken, owner string) *outbox.Drainer {
+	makeDrainer := func(sender *collectingSender, tok persistence.LeaseToken) *outbox.Drainer {
 		return outbox.New(outbox.Config{
 			OutboxStore:    store,
 			Sender:         sender,
 			RouteID:        "route-od5",
 			PartitionKey:   pk,
-			OwnerID:        owner,
 			Policy:         routing.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 5},
 			Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 			DrainBatchSize: 5,
@@ -372,8 +368,8 @@ func TestIntegration_OutboxDrainer_ConcurrentDrainers(t *testing.T) {
 		})
 	}
 
-	drainerA := makeDrainer(senderA, tokA, "drainer-A")
-	drainerB := makeDrainer(senderB, tokB, "drainer-B")
+	drainerA := makeDrainer(senderA, tokA)
+	drainerB := makeDrainer(senderB, tokB)
 
 	drainCtx, drainCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer drainCancel()
@@ -432,7 +428,6 @@ func TestIntegration_OutboxDrainer_AdaptiveBatchSize(t *testing.T) {
 		Sender:            sender,
 		RouteID:           "route-od6",
 		PartitionKey:      pk,
-		OwnerID:           "drainer-od6",
 		Policy:            routing.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 5},
 		Strategy:          persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:    batchSize,

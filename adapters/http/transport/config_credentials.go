@@ -31,8 +31,8 @@ func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 		c.CredentialsURIRef = ""
 		return nil
 	}
-	if c.APIKey == "" && set.Password != nil && set.Password.Password != "" {
-		c.APIKey = set.Password.Password
+	if c.APIKey.IsZero() && set.Password() != nil && !set.Password().Password().IsZero() {
+		c.APIKey = set.Password().Password()
 	}
 	c.CredentialsURIRef = ""
 	return nil

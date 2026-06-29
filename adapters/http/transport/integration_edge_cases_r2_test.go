@@ -15,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/http/transport"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/shared"
 
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -107,7 +108,7 @@ func TestEdgeR2_SSEAuthRequired(t *testing.T) {
 	factory := transport.NewFactory()
 	_, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID:     "sse-auth-r2",
-		Config: transport.Config{Mode: "sse", APIKey: "sse-secret"},
+		Config: transport.Config{Mode: "sse", APIKey: shared.NewSecret("sse-secret")},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)

@@ -75,19 +75,20 @@ func TestIntegration_DLQRouter_RouteStoresEntry(t *testing.T) {
 	}
 
 	e := entries[0]
-	if e.RouteID != "route-dr1" {
-		t.Fatalf("RouteID: got %q, want %q", e.RouteID, "route-dr1")
+	if e.RouteID() != "route-dr1" {
+		t.Fatalf("RouteID: got %q, want %q", e.RouteID(), "route-dr1")
 	}
-	if e.Envelope.ID != "env-dr1" {
-		t.Fatalf("Envelope.ID: got %q, want %q", e.Envelope.ID, "env-dr1")
+	gotEnv := e.Snapshot()
+	if gotEnv.ID() != "env-dr1" {
+		t.Fatalf("Envelope.ID(): got %q, want %q", gotEnv.ID(), "env-dr1")
 	}
-	if string(e.Envelope.Payload) != `{"dlq":"entry"}` {
-		t.Fatalf("Payload: got %q", string(e.Envelope.Payload))
+	if string(gotEnv.Payload()) != `{"dlq":"entry"}` {
+		t.Fatalf("Payload: got %q", string(gotEnv.Payload()))
 	}
-	if e.Attempts != 3 {
-		t.Fatalf("Attempts: got %d, want %d", e.Attempts, 3)
+	if e.Attempts() != 3 {
+		t.Fatalf("Attempts: got %d, want %d", e.Attempts(), 3)
 	}
-	if e.FailedAt.IsZero() {
+	if e.FailedAt().IsZero() {
 		t.Fatal("FailedAt should not be zero")
 	}
 }
@@ -190,7 +191,7 @@ func TestIntegration_DLQRouter_ErrorClassification(t *testing.T) {
 
 	categories := map[string]bool{}
 	for _, e := range entries {
-		categories[e.Category] = true
+		categories[e.Category()] = true
 	}
 	if !categories[string(shared.ErrorPermanent)] {
 		t.Fatal("missing permanent category entry")

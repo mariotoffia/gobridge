@@ -146,7 +146,7 @@ func TestSender_Send_EmptyAddressUsesConfiguredEntity(t *testing.T) {
 	}
 
 	err = sender.Send(context.Background(), ports.OutboundMessage{
-		Envelope: &messaging.Envelope{ID: "e1", Payload: []byte("p")},
+		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Payload: []byte("p")}),
 	})
 	if err != nil {
 		t.Fatalf("Send: %v", err)
@@ -192,7 +192,7 @@ func TestSender_Send_MismatchErrorMessageContainsBothAddresses(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = sender.Send(context.Background(), ports.OutboundMessage{
-		Envelope: &messaging.Envelope{ID: "e1", Payload: []byte("p")},
+		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Payload: []byte("p")}),
 		Address:  "other-queue",
 	})
 	if err == nil {
@@ -227,14 +227,14 @@ func TestSendBatch_FailsFastOnAddressMismatch(t *testing.T) {
 	}
 
 	msgs := []ports.OutboundMessage{
-		{Envelope: &messaging.Envelope{ID: "ok-1", Payload: []byte("a")}, Address: "configured-queue"},
-		{Envelope: &messaging.Envelope{ID: "bad", Payload: []byte("b")}, Address: "other-queue"},
-		{Envelope: &messaging.Envelope{ID: "ok-2", Payload: []byte("c")}},
+		{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "ok-1", Payload: []byte("a")}), Address: "configured-queue"},
+		{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "bad", Payload: []byte("b")}), Address: "other-queue"},
+		{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "ok-2", Payload: []byte("c")})},
 	}
 
-	sent, err := sender.SendBatch(context.Background(), msgs)
-	if sent != 0 {
-		t.Fatalf("sent = %d, want 0 (fail-fast)", sent)
+	results, err := sender.SendBatch(context.Background(), msgs)
+	if results != nil {
+		t.Fatalf("results = %v, want nil (fail-fast, no dispatch)", results)
 	}
 	if err == nil {
 		t.Fatal("SendBatch must return an error when any entry mismatches")
@@ -258,13 +258,13 @@ func TestSendBatch_FailsFastOnNilEnvelope(t *testing.T) {
 	}
 
 	msgs := []ports.OutboundMessage{
-		{Envelope: &messaging.Envelope{ID: "ok", Payload: []byte("a")}},
+		{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "ok", Payload: []byte("a")})},
 		{Envelope: nil},
 	}
 
-	sent, err := sender.SendBatch(context.Background(), msgs)
-	if sent != 0 {
-		t.Fatalf("sent = %d, want 0", sent)
+	results, err := sender.SendBatch(context.Background(), msgs)
+	if results != nil {
+		t.Fatalf("results = %v, want nil (fail-fast)", results)
 	}
 	if err == nil {
 		t.Fatal("SendBatch must return an error for nil envelope")
@@ -292,12 +292,12 @@ func TestSendBatch_FailsFastOnMixedViolations(t *testing.T) {
 
 	msgs := []ports.OutboundMessage{
 		{Envelope: nil},
-		{Envelope: &messaging.Envelope{ID: "bad", Payload: []byte("a")}, Address: "other-queue"},
+		{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "bad", Payload: []byte("a")}), Address: "other-queue"},
 	}
 
-	sent, err := sender.SendBatch(context.Background(), msgs)
-	if sent != 0 {
-		t.Fatalf("sent = %d, want 0", sent)
+	results, err := sender.SendBatch(context.Background(), msgs)
+	if results != nil {
+		t.Fatalf("results = %v, want nil (fail-fast)", results)
 	}
 	if err == nil {
 		t.Fatal("SendBatch must return an error for mixed violations")
@@ -334,8 +334,8 @@ func TestSendBatch_AcceptsEmptyAndMatchingAddress(t *testing.T) {
 	}
 
 	msgs := []ports.OutboundMessage{
-		{Envelope: &messaging.Envelope{ID: "e1", Payload: []byte("a")}},
-		{Envelope: &messaging.Envelope{ID: "e2", Payload: []byte("b")}, Address: "configured-queue"},
+		{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Payload: []byte("a")})},
+		{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e2", Payload: []byte("b")}), Address: "configured-queue"},
 	}
 
 	_, _ = sender.SendBatch(context.Background(), msgs)

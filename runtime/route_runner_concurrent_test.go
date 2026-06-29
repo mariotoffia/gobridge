@@ -90,7 +90,7 @@ func TestRouteRunner_ConcurrentDelivery(t *testing.T) {
 		emitWg.Add(1)
 		go func(n int) {
 			defer emitWg.Done()
-			env := &messaging.Envelope{ID: "conc-msg-" + string(rune('a'+n)), Payload: []byte("x")}
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "conc-msg-" + string(rune('a'+n)), Payload: []byte("x")})
 			del := NewFakeDelivery(env)
 			_ = receiver.Emit(ctx, del)
 		}(i)
@@ -165,7 +165,7 @@ func TestRouteRunner_BackpressureOnSemFull(t *testing.T) {
 		emitWg.Add(1)
 		go func(n int) {
 			defer emitWg.Done()
-			env := &messaging.Envelope{ID: "bp-" + string(rune('a'+n)), Payload: []byte("x")}
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "bp-" + string(rune('a'+n)), Payload: []byte("x")})
 			del := NewFakeDelivery(env)
 			_ = receiver.Emit(ctx, del)
 		}(i)
@@ -220,7 +220,7 @@ func TestRouteRunner_GracefulShutdownWaitsInFlight(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{ID: "shutdown-msg", Payload: []byte("data")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "shutdown-msg", Payload: []byte("data")})
 	del := NewFakeDelivery(env)
 
 	go func() {
@@ -309,12 +309,12 @@ func TestGlobalSemaphore_LimitsCrossRoute(t *testing.T) {
 		emitWg.Add(2)
 		go func(n int) {
 			defer emitWg.Done()
-			env := &messaging.Envelope{ID: "g1-" + string(rune('a'+n)), Payload: []byte("x")}
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "g1-" + string(rune('a'+n)), Payload: []byte("x")})
 			_ = receiver1.Emit(ctx, NewFakeDelivery(env))
 		}(i)
 		go func(n int) {
 			defer emitWg.Done()
-			env := &messaging.Envelope{ID: "g2-" + string(rune('a'+n)), Payload: []byte("x")}
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "g2-" + string(rune('a'+n)), Payload: []byte("x")})
 			_ = receiver2.Emit(ctx, NewFakeDelivery(env))
 		}(i)
 	}
@@ -357,7 +357,7 @@ func TestGlobalSemaphore_ZeroDisablesGlobal(t *testing.T) {
 		emitWg.Add(1)
 		go func(n int) {
 			defer emitWg.Done()
-			env := &messaging.Envelope{ID: "ng-" + string(rune('a'+n)), Payload: []byte("x")}
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "ng-" + string(rune('a'+n)), Payload: []byte("x")})
 			_ = receiver.Emit(ctx, NewFakeDelivery(env))
 		}(i)
 	}

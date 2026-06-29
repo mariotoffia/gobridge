@@ -100,7 +100,7 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		reconnected: make(chan struct{}, 1),
 		liveCreds: amqpCredentials{
 			Username: opts.Username,
-			Password: opts.Password,
+			Password: opts.Password.Reveal(),
 		},
 	}
 }
@@ -220,7 +220,7 @@ func (s *Session) Start(ctx context.Context) error {
 
 	safeBroker := s.safeBrokerURL()
 	elapsed := s.clock().Since(connectStart)
-	s.metrics.Timer(shared.MetricAMQP091ConnectLatency, elapsed,
+	s.metrics.Timer(MetricAMQP091ConnectLatency, elapsed,
 		shared.Tag{Key: shared.TagKeySessionID, Value: safeBroker})
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "amqp091: session connected",
@@ -305,7 +305,7 @@ func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan conne
 	}
 
 	elapsed := s.clock().Since(reconcileStart)
-	s.metrics.Timer(shared.MetricAMQP091ReconcileLatency, elapsed,
+	s.metrics.Timer(MetricAMQP091ReconcileLatency, elapsed,
 		shared.Tag{Key: shared.TagKeySessionID, Value: s.safeBrokerURL()})
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "amqp091: reconcile done",
@@ -560,7 +560,7 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 					"event_type", t,
 				)
 			}
-			s.metrics.Counter(shared.MetricAMQP091EventDropped, 1)
+			s.metrics.Counter(MetricAMQP091EventDropped, 1)
 		}
 	}
 
@@ -568,7 +568,7 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 		select {
 		case sub <- ev:
 		default:
-			s.metrics.Counter(shared.MetricAMQP091EventDropped, 1)
+			s.metrics.Counter(MetricAMQP091EventDropped, 1)
 		}
 	}
 }
@@ -654,7 +654,7 @@ func (s *Session) doReconnect(ctx context.Context) {
 				"delay", delay,
 			)
 		}
-		s.metrics.Counter(shared.MetricAMQP091Reconnects, 1,
+		s.metrics.Counter(MetricAMQP091Reconnects, 1,
 			shared.Tag{Key: shared.TagKeySessionID, Value: safeBroker})
 
 		jitter := time.Duration(float64(delay) * 0.25 * (2*rand.Float64() - 1))

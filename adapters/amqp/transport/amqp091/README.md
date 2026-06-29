@@ -210,11 +210,11 @@ func main() {
     })
 
     // Publish a message.
-    _ = sender.Send(ctx, &domain.Envelope{
+    _ = sender.Send(ctx, domain.MustEnvelope(domain.EnvelopeInput{
         ID:      "msg-1",
         Subject: "events",
         Payload: []byte(`{"event":"created"}`),
-    })
+    }))
 
     // Create a receiver and consume.
     receiver := amqp091.NewReceiver(amqp091.ReceiverConfig{
@@ -226,7 +226,7 @@ func main() {
 
     _ = receiver.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
         env := del.Envelope()
-        logger.Info("received", "id", env.ID, "payload", string(env.Payload))
+        logger.Info("received", "id", env.ID(), "payload", string(env.Payload()))
         return del.Ack(ctx)
     })
 }

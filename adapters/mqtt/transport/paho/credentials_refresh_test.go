@@ -10,6 +10,16 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
+func pwCred(u, p string) *connectivity.PasswordCredential {
+	c := connectivity.NewPasswordCredential(u, p)
+	return &c
+}
+
+func tlsMat(cert, key string, ca []string, insecure bool) *connectivity.TLSMaterial {
+	m := connectivity.NewTLSMaterial(cert, key, ca, insecure)
+	return &m
+}
+
 // TestApplyCredentials_BeforeStart_UpdatesLiveCreds verifies that
 // rotating credentials on a not-yet-started session stores them so the
 // first CONNECT picks them up via ConnectPacketBuilder.
@@ -18,7 +28,7 @@ func TestApplyCredentials_BeforeStart_UpdatesLiveCreds(t *testing.T) {
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "creds-before-start",
 		Username:   "u-old",
-		Password:   "p-old",
+		Password:   shared.NewSecret("p-old"),
 	}, connectivity.SessionEphemeral, nil)
 	defer func() { _ = s.Close(context.Background()) }()
 
@@ -28,9 +38,7 @@ func TestApplyCredentials_BeforeStart_UpdatesLiveCreds(t *testing.T) {
 	s.liveCreds = mqttCredentials{Username: "u-old", Password: "p-old"}
 	s.mu.Unlock()
 
-	err := s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: "u-new", Password: "p-new"},
-	})
+	err := s.ApplyCredentials(t.Context(), connectivity.NewCredentialSet(pwCred("u-new", "p-new"), nil))
 	require.NoError(t, err)
 
 	s.mu.Lock()
@@ -39,7 +47,7 @@ func TestApplyCredentials_BeforeStart_UpdatesLiveCreds(t *testing.T) {
 	require.Equal(t, "u-new", got.Username)
 	require.Equal(t, "p-new", got.Password)
 	require.Equal(t, "u-new", s.opts.Username, "opts.Username must also be updated for future re-starts")
-	require.Equal(t, "p-new", s.opts.Password)
+	require.Equal(t, "p-new", s.opts.Password.Reveal())
 }
 
 // TestApplyCredentials_NilSet_Rejected ensures the boundary check
@@ -67,9 +75,7 @@ func TestApplyCredentials_ClosedSession_Rejected(t *testing.T) {
 	}, connectivity.SessionEphemeral, nil)
 	_ = s.Close(context.Background())
 
-	err := s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
-	})
+	err := s.ApplyCredentials(t.Context(), connectivity.NewCredentialSet(pwCred("u", "p"), nil))
 	require.Error(t, err)
 	be, ok := shared.AsBridgeError(err)
 	require.True(t, ok)
@@ -84,7 +90,7 @@ func TestApplyCredentials_Dedup(t *testing.T) {
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "creds-dedup",
 		Username:   "u",
-		Password:   "p",
+		Password:   shared.NewSecret("p"),
 	}, connectivity.SessionEphemeral, nil)
 	defer func() { _ = s.Close(context.Background()) }()
 
@@ -94,9 +100,7 @@ func TestApplyCredentials_Dedup(t *testing.T) {
 	// on the no-change-then-return-nil path to execute.
 	s.mu.Unlock()
 
-	err := s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
-	})
+	err := s.ApplyCredentials(t.Context(), connectivity.NewCredentialSet(pwCred("u", "p"), nil))
 	require.NoError(t, err)
 }
 
@@ -129,20 +133,14 @@ func TestApplyCredentials_TLSMaterial_BeforeStart_StashesOnOpts(t *testing.T) {
 	}, connectivity.SessionEphemeral, nil)
 	defer func() { _ = s.Close(context.Background()) }()
 
-	err := s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
-		TLS: &connectivity.TLSMaterial{
-			CertPEM: "--- CERT ---",
-			KeyPEM:  "--- KEY ---",
-			CAPEMs:  []string{"--- CA ---"},
-		},
-	})
+	err := s.ApplyCredentials(t.Context(), connectivity.NewCredentialSet(nil, tlsMat("--- CERT ---", "--- KEY ---", []string{"--- CA ---"}, false)))
 	require.NoError(t, err)
 
 	require.NotNil(t, s.opts.TLS)
 	require.True(t, s.opts.TLS.Enable)
-	require.Equal(t, "--- CERT ---", s.opts.TLS.CertPEM)
-	require.Equal(t, "--- KEY ---", s.opts.TLS.KeyPEM)
-	require.Equal(t, "--- CA ---", s.opts.TLS.CACertPEM)
+	require.Equal(t, "--- CERT ---", s.opts.TLS.CertPEM.Reveal())
+	require.Equal(t, "--- KEY ---", s.opts.TLS.KeyPEM.Reveal())
+	require.Equal(t, "--- CA ---", s.opts.TLS.CACertPEM.Reveal())
 }
 
 // TestApplyCredentials_TLSMaterial_Dedup verifies that an incoming
@@ -155,20 +153,14 @@ func TestApplyCredentials_TLSMaterial_Dedup(t *testing.T) {
 		ClientID:   "creds-tls-dedup",
 		TLS: &TLSConfig{
 			Enable:    true,
-			CertPEM:   "--- CERT ---",
-			KeyPEM:    "--- KEY ---",
-			CACertPEM: "--- CA ---",
+			CertPEM:   shared.NewSecret("--- CERT ---"),
+			KeyPEM:    shared.NewSecret("--- KEY ---"),
+			CACertPEM: shared.NewSecret("--- CA ---"),
 		},
 	}, connectivity.SessionEphemeral, nil)
 	defer func() { _ = s.Close(context.Background()) }()
 
-	err := s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
-		TLS: &connectivity.TLSMaterial{
-			CertPEM: "--- CERT ---",
-			KeyPEM:  "--- KEY ---",
-			CAPEMs:  []string{"--- CA ---"},
-		},
-	})
+	err := s.ApplyCredentials(t.Context(), connectivity.NewCredentialSet(nil, tlsMat("--- CERT ---", "--- KEY ---", []string{"--- CA ---"}, false)))
 	require.NoError(t, err)
 }
 
@@ -183,41 +175,31 @@ func TestApplyTLSMaterial_ChangeDetection(t *testing.T) {
 	})
 	t.Run("first-time enable", func(t *testing.T) {
 		var tls *TLSConfig
-		require.True(t, applyTLSMaterial(&tls, &connectivity.TLSMaterial{
-			CertPEM: "c", KeyPEM: "k",
-		}))
+		require.True(t, applyTLSMaterial(&tls, tlsMat("c", "k", nil, false)))
 		require.NotNil(t, tls)
 		require.True(t, tls.Enable)
 	})
 	t.Run("cert rotation", func(t *testing.T) {
-		tls := &TLSConfig{Enable: true, CertPEM: "old", KeyPEM: "old"}
-		changed := applyTLSMaterial(&tls, &connectivity.TLSMaterial{
-			CertPEM: "new", KeyPEM: "new",
-		})
+		tls := &TLSConfig{Enable: true, CertPEM: shared.NewSecret("old"), KeyPEM: shared.NewSecret("old")}
+		changed := applyTLSMaterial(&tls, tlsMat("new", "new", nil, false))
 		require.True(t, changed)
-		require.Equal(t, "new", tls.CertPEM)
+		require.Equal(t, "new", tls.CertPEM.Reveal())
 	})
 	t.Run("CA-only rotation", func(t *testing.T) {
-		tls := &TLSConfig{Enable: true, CACertPEM: "old-ca"}
-		changed := applyTLSMaterial(&tls, &connectivity.TLSMaterial{
-			CAPEMs: []string{"new-ca"},
-		})
+		tls := &TLSConfig{Enable: true, CACertPEM: shared.NewSecret("old-ca")}
+		changed := applyTLSMaterial(&tls, tlsMat("", "", []string{"new-ca"}, false))
 		require.True(t, changed)
-		require.Equal(t, "new-ca", tls.CACertPEM)
+		require.Equal(t, "new-ca", tls.CACertPEM.Reveal())
 	})
 	t.Run("multi-CA joined", func(t *testing.T) {
 		var tls *TLSConfig
-		require.True(t, applyTLSMaterial(&tls, &connectivity.TLSMaterial{
-			CAPEMs: []string{"ca1", "ca2"},
-		}))
-		require.Equal(t, "ca1\nca2", tls.CACertPEM)
+		require.True(t, applyTLSMaterial(&tls, tlsMat("", "", []string{"ca1", "ca2"}, false)))
+		require.Equal(t, "ca1\nca2", tls.CACertPEM.Reveal())
 	})
 	t.Run("dedup no-op", func(t *testing.T) {
 		tls := &TLSConfig{
-			Enable: true, CertPEM: "c", KeyPEM: "k", CACertPEM: "ca",
+			Enable: true, CertPEM: shared.NewSecret("c"), KeyPEM: shared.NewSecret("k"), CACertPEM: shared.NewSecret("ca"),
 		}
-		require.False(t, applyTLSMaterial(&tls, &connectivity.TLSMaterial{
-			CertPEM: "c", KeyPEM: "k", CAPEMs: []string{"ca"},
-		}))
+		require.False(t, applyTLSMaterial(&tls, tlsMat("c", "k", []string{"ca"}, false)))
 	})
 }

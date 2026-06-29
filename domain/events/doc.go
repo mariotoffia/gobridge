@@ -1,14 +1,22 @@
-// Package events defines the first-wave domain events emitted by the
-// GoBridge bounded contexts: persistence (outbox lifecycle, lease
-// fencing), routing (DLQ ingress and redrive), connectivity
-// (credential rotation), and the configuration aggregate (blueprint
-// commit).
+// Package events defines the observability events GoBridge emits about
+// its bounded contexts: persistence (outbox lifecycle, lease fencing),
+// routing (DLQ ingress and redrive), connectivity (credential
+// rotation), and configuration (blueprint commit).
 //
-// Domain events in this package are immutable past-tense facts. Each
-// event carries a stable EventID, a namespaced EventType, the wall
-// time at which the fact occurred, the AggregateID of the producing
-// aggregate, and a SchemaVersion that follows semantic versioning so
-// downstream consumers can evolve independently of producers.
+// These are application/runtime FACTS, not aggregate-raised domain
+// events. Domain aggregates (OutboxRecord, the lease, DLQ entries, the
+// blueprint) do NOT record or return events on their transitions;
+// instead the application and runtime services that drive those
+// transitions construct an Event via the public constructors in this
+// package (for example NewOutboxRecordClaimed) once a transition has
+// succeeded, and publish it through ports.EventPublisher on a
+// best-effort basis. The events are therefore immutable past-tense
+// facts emitted beside the work, not a side effect of the aggregate.
+//
+// Each event carries a stable EventID, a namespaced EventType, the wall
+// time at which the fact occurred, the AggregateID of the aggregate the
+// fact concerns, and a SchemaVersion that follows semantic versioning
+// so downstream consumers can evolve independently of producers.
 //
 // Layering. This package is part of the innermost (Layer 1) ring of
 // the architecture and depends on the standard library only. It does

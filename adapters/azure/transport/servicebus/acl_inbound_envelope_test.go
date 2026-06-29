@@ -25,8 +25,8 @@ func TestASBReceivedToEnvelope_PreservesPopulatedMessageID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("receivedToEnvelope: %v", err)
 	}
-	if env.ID != "asb-msg-42" {
-		t.Errorf("ID = %q, want %q", env.ID, "asb-msg-42")
+	if env.ID() != "asb-msg-42" {
+		t.Errorf("ID = %q, want %q", env.ID(), "asb-msg-42")
 	}
 }
 
@@ -41,13 +41,13 @@ func TestASBReceivedToEnvelope_EmptyMessageIDDoesNotCollapse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iter %d: %v", i, err)
 		}
-		if env.ID == "" || env.ID == "test-envelope" {
-			t.Fatalf("regression: env.ID = %q", env.ID)
+		if env.ID() == "" || env.ID() == "test-envelope" {
+			t.Fatalf("regression: env.ID() = %q", env.ID())
 		}
-		if _, dup := seen[env.ID]; dup {
-			t.Fatalf("duplicate generated ID at iter %d: %q", i, env.ID)
+		if _, dup := seen[env.ID()]; dup {
+			t.Fatalf("duplicate generated ID at iter %d: %q", i, env.ID())
 		}
-		seen[env.ID] = struct{}{}
+		seen[env.ID()] = struct{}{}
 	}
 }
 
@@ -65,8 +65,8 @@ func TestASBReceivedToEnvelope_CreatedAtFromClock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("receivedToEnvelope: %v", err)
 	}
-	if !env.CreatedAt.Equal(fixed) {
-		t.Errorf("CreatedAt = %v, want %v", env.CreatedAt, fixed)
+	if !env.CreatedAt().Equal(fixed) {
+		t.Errorf("CreatedAt = %v, want %v", env.CreatedAt(), fixed)
 	}
 }
 

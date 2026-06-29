@@ -364,7 +364,7 @@ func (s *e2eDLQStore) Get(_ context.Context, id string) (routing.DLQEntry, error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, e := range s.entries {
-		if e.ID == id {
+		if e.ID() == id {
 			return e, nil
 		}
 	}

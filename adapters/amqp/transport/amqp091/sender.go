@@ -94,8 +94,8 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		s.logger.Log(ctx, logging.LevelTrace, "amqp091: publishing",
 			"exchange", exchange,
 			"routing_key", routingKey,
-			"envelope_id", env.ID,
-			"payload_len", len(env.Payload),
+			"envelope_id", env.ID(),
+			"payload_len", len(env.Payload()),
 		)
 	}
 
@@ -117,7 +117,7 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	if perr != nil {
 		s.resetChannelLocked()
 		s.mu.Unlock()
-		s.metrics.Timer(shared.MetricAMQP091PublishLatency, s.clock().Since(start), sessionTag)
+		s.metrics.Timer(MetricAMQP091PublishLatency, s.clock().Since(start), sessionTag)
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(ctx, logging.LevelDebug, "amqp091: publish failed",
 				"exchange", exchange, "routing_key", routingKey, "error", perr)
@@ -127,7 +127,7 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	s.mu.Unlock()
 
 	elapsed := s.clock().Since(start)
-	s.metrics.Timer(shared.MetricAMQP091PublishLatency, elapsed, sessionTag)
+	s.metrics.Timer(MetricAMQP091PublishLatency, elapsed, sessionTag)
 
 	if res.Returned != nil {
 		if logging.DebugEnabled(s.logger) {
@@ -147,12 +147,12 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		s.logger.Log(ctx, logging.LevelTrace, "amqp091: published",
 			"exchange", exchange,
 			"routing_key", routingKey,
-			"envelope_id", env.ID,
+			"envelope_id", env.ID(),
 			"duration", elapsed,
 		)
 		s.logger.Log(ctx, logging.LevelTrace, "amqp091: publish confirmed",
 			"delivery_tag", res.ConfirmedTag,
-			"envelope_id", env.ID,
+			"envelope_id", env.ID(),
 		)
 	}
 
@@ -173,17 +173,17 @@ func mapPublishError(err error) error {
 	return MapError(err)
 }
 
-// SendBatch publishes multiple envelopes sequentially with publisher
-// confirms. Returns the number of successfully published messages.
-func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (int, error) {
-	sent := 0
-	for _, m := range msgs {
-		if err := s.Send(ctx, m); err != nil {
-			return sent, err
-		}
-		sent++
+// SendBatch publishes each envelope sequentially with publisher
+// confirms, recording the per-message outcome. The whole batch is
+// dispatched — a failed Send does not abort the remaining messages.
+// The returned slice is index-aligned with msgs and the error is
+// always nil; see ports.BatchSender for the result contract.
+func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([]ports.BatchResult, error) {
+	results := make([]ports.BatchResult, len(msgs))
+	for i, m := range msgs {
+		results[i] = ports.BatchResult{Index: i, Err: s.Send(ctx, m)}
 	}
-	return sent, nil
+	return results, nil
 }
 
 // ensureChannelLocked opens a channel if none is cached. Caller must hold s.mu.

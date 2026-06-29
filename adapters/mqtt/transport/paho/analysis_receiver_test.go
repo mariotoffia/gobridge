@@ -104,6 +104,76 @@ func TestAnaRecv_EmitError_PropagatedAndCancelsRun(t *testing.T) {
 	}
 }
 
+// TestAnaRecv_EmitError_DeliveryNotSettled is the MQTT conformance test for
+// the ports.Receiver emit-error contract. MQTT settlement is a documented
+// no-op (Delivery.Ack returns nil; Retry/Extend return ErrNotSupported —
+// see delivery.go), because PUBACK/PUBREC are sent by the paho client before
+// the inbound handler runs and there is no application-layer settlement
+// handle. So the conformance guarantee for MQTT is: the emit error is
+// propagated out of Run (cancelling the run), and the delivery handed to
+// emit exposes only the documented no-op settlement (there is no broker
+// settle/ack/abandon operation to suppress).
+func TestAnaRecv_EmitError_DeliveryNotSettled(t *testing.T) {
+	sess := NewSession(SessionOptions{
+		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
+		ClientID:   "ana-recv-emit-err-nosettle",
+	}, connectivity.SessionEphemeral, nil)
+
+	r := NewReceiver("rx-emit-err-nosettle", sess)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	emitErr := errors.New("pipeline rejected delivery")
+	var (
+		seen ports.Delivery
+		mu   sync.Mutex
+	)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Run(ctx, func(_ context.Context, del ports.Delivery) error {
+			mu.Lock()
+			seen = del
+			mu.Unlock()
+			return emitErr
+		})
+	}()
+
+	select {
+	case <-r.Started():
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver did not start")
+	}
+	sess.Router().Route(newTestPacketPublish("test/emit-err-nosettle", []byte("p")))
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, emitErr) {
+			t.Fatalf("Run returned %v, want %v (emit error must propagate and cancel Run)", err, emitErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after emit error")
+	}
+
+	mu.Lock()
+	del := seen
+	mu.Unlock()
+	if del == nil {
+		t.Fatal("emit was never handed a delivery")
+	}
+
+	// MQTT settlement is a documented no-op: there is no broker-side
+	// settle/ack/abandon to (wrongly) invoke on emit error. Assert the
+	// no-op contract holds for the delivery the receiver built.
+	if err := del.Ack(context.Background()); err != nil {
+		t.Fatalf("MQTT Delivery.Ack must be a no-op returning nil, got %v", err)
+	}
+	if err := del.Retry(context.Background(), time.Second, emitErr); !errors.Is(err, shared.ErrNotSupported) {
+		t.Fatalf("MQTT Delivery.Retry must return ErrNotSupported (no broker redelivery primitive), got %v", err)
+	}
+}
+
 // TestAnaRecv_HandlerUnregisteredAfterRunReturns verifies the deferred
 // Unregister actually removes the handler so it cannot fire after Run
 // returns.
@@ -194,15 +264,15 @@ func TestAnaRecv_MessagesArriveAsDeliveries(t *testing.T) {
 	if v, _ := messaging.GetHeaderString(envSeen.Headers(), HeaderMQTTTopic); v != "test/happy" {
 		t.Errorf("headers[%q] = %q, want test/happy", HeaderMQTTTopic, v)
 	}
-	if string(envSeen.Payload) != "payload" {
-		t.Errorf("payload = %q, want payload", envSeen.Payload)
+	if string(envSeen.Payload()) != "payload" {
+		t.Errorf("payload = %q, want payload", envSeen.Payload())
 	}
 }
 
 // TestAnaRecv_DeliveryAck_IsNoop verifies that Delivery.Ack returns nil
 // (MQTT acks are handled by paho internally, no caller action needed).
 func TestAnaRecv_DeliveryAck_IsNoop(t *testing.T) {
-	d := NewDelivery(&messaging.Envelope{ID: "x"})
+	d := NewDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "x"}))
 	if err := d.Ack(context.Background()); err != nil {
 		t.Fatalf("Ack returned %v, want nil", err)
 	}
@@ -211,7 +281,7 @@ func TestAnaRecv_DeliveryAck_IsNoop(t *testing.T) {
 // TestAnaRecv_DeliveryRetry_ReturnsErrNotSupported verifies the
 // non-supported semantics for Retry.
 func TestAnaRecv_DeliveryRetry_ReturnsErrNotSupported(t *testing.T) {
-	d := NewDelivery(&messaging.Envelope{ID: "x"})
+	d := NewDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "x"}))
 	err := d.Retry(context.Background(), time.Second, errors.New("x"))
 	if err == nil || !errors.Is(err, shared.ErrNotSupported) {
 		t.Fatalf("Retry → %v, want ErrNotSupported", err)
@@ -221,7 +291,7 @@ func TestAnaRecv_DeliveryRetry_ReturnsErrNotSupported(t *testing.T) {
 // TestAnaRecv_DeliveryExtend_ReturnsErrNotSupported verifies the
 // non-supported semantics for Extend.
 func TestAnaRecv_DeliveryExtend_ReturnsErrNotSupported(t *testing.T) {
-	d := NewDelivery(&messaging.Envelope{ID: "x"})
+	d := NewDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "x"}))
 	err := d.Extend(context.Background(), time.Now())
 	if err == nil || !errors.Is(err, shared.ErrNotSupported) {
 		t.Fatalf("Extend → %v, want ErrNotSupported", err)
@@ -313,7 +383,7 @@ func TestAnaRecv_HandlerSeesIndependentEnvelope(t *testing.T) {
 	go func() {
 		_ = r.Run(ctx, func(_ context.Context, del ports.Delivery) error {
 			mu.Lock()
-			ids = append(ids, del.Envelope().ID)
+			ids = append(ids, del.Envelope().ID())
 			mu.Unlock()
 			return nil
 		})

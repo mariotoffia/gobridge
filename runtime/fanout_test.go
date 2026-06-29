@@ -76,10 +76,10 @@ func TestFanOut_SingleRouteMultipleSessions(t *testing.T) {
 	})
 
 	// Send a message that fans out to both sessions.
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "fanout-msg-1",
 		Payload: []byte("multi-factory-order"),
-	}
+	})
 	del := NewFakeDelivery(env)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit: %v", err)
@@ -173,7 +173,7 @@ func TestFanOut_PartialSessionAvailability(t *testing.T) {
 		return sessionA.IsStarted() && sessionB.IsStarted()
 	})
 
-	env := &messaging.Envelope{ID: "partial-msg-1", Payload: []byte("data")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "partial-msg-1", Payload: []byte("data")})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 

@@ -269,7 +269,7 @@ func TestUC9_MQTT_QoS2_Stress(t *testing.T) {
 	// Verify no duplicate payloads.
 	seen := make(map[string]int, len(msgs))
 	for _, m := range msgs {
-		seen[string(m.Payload)]++
+		seen[string(m.Payload())]++
 	}
 	dupes := 0
 	for _, count := range seen {

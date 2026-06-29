@@ -123,9 +123,9 @@ func TestUC97_AMQP091_MultiConsumer_CompetingConsumers(t *testing.T) {
 	allIDs := make(map[string]int)
 	for i, c := range collectors {
 		for _, m := range c.getMessages() {
-			allIDs[m.ID]++
-			if allIDs[m.ID] > 1 {
-				t.Logf("UC97: duplicate message ID=%s (seen in collector %d)", m.ID, i)
+			allIDs[m.ID()]++
+			if allIDs[m.ID()] > 1 {
+				t.Logf("UC97: duplicate message ID=%s (seen in collector %d)", m.ID(), i)
 			}
 		}
 	}

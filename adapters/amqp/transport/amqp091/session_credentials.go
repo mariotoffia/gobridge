@@ -37,21 +37,21 @@ func (s *Session) ApplyCredentials(ctx context.Context, set *connectivity.Creden
 	}
 
 	var credsChanged bool
-	if set.Password != nil {
-		credsChanged = s.liveCreds.Username != set.Password.Username ||
-			s.liveCreds.Password != set.Password.Password
+	if set.Password() != nil {
+		credsChanged = s.liveCreds.Username != set.Password().Username() ||
+			s.liveCreds.Password != set.Password().Password().Reveal()
 		if credsChanged {
 			s.liveCreds = amqpCredentials{
-				Username: set.Password.Username,
-				Password: set.Password.Password,
+				Username: set.Password().Username(),
+				Password: set.Password().Password().Reveal(),
 			}
-			s.opts.Username = set.Password.Username
-			s.opts.Password = set.Password.Password
+			s.opts.Username = set.Password().Username()
+			s.opts.Password = set.Password().Password()
 		}
 	}
 
-	tlsNewlyEnabled := set.TLS != nil && (s.opts.TLS == nil || !s.opts.TLS.Enable)
-	tlsChanged := applyAMQPTLSMaterial(&s.opts.TLS, set.TLS)
+	tlsNewlyEnabled := set.TLS() != nil && (s.opts.TLS == nil || !s.opts.TLS.Enable)
+	tlsChanged := applyAMQPTLSMaterial(&s.opts.TLS, set.TLS())
 
 	if tlsNewlyEnabled && tlsChanged {
 		// Rebuild the dial closure so it actually goes through the TLS
@@ -95,27 +95,27 @@ func applyAMQPTLSMaterial(opts **TLSConfig, mat *connectivity.TLSMaterial) bool 
 		return false
 	}
 	newCA := ""
-	if len(mat.CAPEMs) > 0 {
-		newCA = joinAMQPPEMs(mat.CAPEMs)
+	if len(mat.CAPEMs()) > 0 {
+		newCA = joinAMQPPEMs(mat.CAPEMs())
 	}
 	if *opts == nil {
-		if mat.CertPEM == "" && mat.KeyPEM == "" && newCA == "" && !mat.InsecureSkipVerify {
+		if mat.CertPEM() == "" && mat.KeyPEM().Reveal() == "" && newCA == "" && !mat.InsecureSkipVerify() {
 			return false
 		}
 		*opts = &TLSConfig{Enable: true}
 	}
 	cur := *opts
-	if cur.CertPEM == mat.CertPEM &&
-		cur.KeyPEM == mat.KeyPEM &&
-		cur.CACertPEM == newCA &&
-		cur.InsecureSkipVerify == mat.InsecureSkipVerify &&
+	if cur.CertPEM.Reveal() == mat.CertPEM() &&
+		cur.KeyPEM.Equal(mat.KeyPEM()) &&
+		cur.CACertPEM.Reveal() == newCA &&
+		cur.InsecureSkipVerify == mat.InsecureSkipVerify() &&
 		cur.Enable {
 		return false
 	}
-	cur.CertPEM = mat.CertPEM
-	cur.KeyPEM = mat.KeyPEM
-	cur.CACertPEM = newCA
-	cur.InsecureSkipVerify = mat.InsecureSkipVerify
+	cur.CertPEM = shared.NewSecret(mat.CertPEM())
+	cur.KeyPEM = mat.KeyPEM()
+	cur.CACertPEM = shared.NewSecret(newCA)
+	cur.InsecureSkipVerify = mat.InsecureSkipVerify()
 	cur.Enable = true
 	return true
 }

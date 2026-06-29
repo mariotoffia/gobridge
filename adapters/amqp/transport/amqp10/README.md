@@ -233,7 +233,7 @@ func main() {
     // Run receiver loop
     err = recv.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
         env := del.Envelope()
-        slog.Info("received", "id", env.ID, "subject", env.Subject)
+        slog.Info("received", "id", env.ID(), "subject", env.Subject)
 
         // Forward to another queue
         if err := sender.Send(ctx, env); err != nil {

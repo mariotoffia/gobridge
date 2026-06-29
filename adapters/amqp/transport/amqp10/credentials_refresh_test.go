@@ -16,13 +16,11 @@ func TestApplyCredentials_BeforeStart_UpdatesLiveCreds(t *testing.T) {
 	s := NewSession(SessionOptions{
 		Address:  "amqp://broker.example:5672/",
 		Username: "u-old",
-		Password: "p-old",
+		Password: shared.NewSecret("p-old"),
 	}, connectivity.SessionEphemeral, nil)
 	defer func() { _ = s.Close(t.Context()) }()
 
-	err := s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: "u-new", Password: "p-new"},
-	})
+	err := s.ApplyCredentials(t.Context(), connectivity.NewCredentialSet(pwCred("u-new", "p-new"), nil))
 	require.NoError(t, err)
 
 	s.mu.Lock()
@@ -31,7 +29,7 @@ func TestApplyCredentials_BeforeStart_UpdatesLiveCreds(t *testing.T) {
 	require.Equal(t, "u-new", got.Username)
 	require.Equal(t, "p-new", got.Password)
 	require.Equal(t, "u-new", s.opts.Username)
-	require.Equal(t, "p-new", s.opts.Password)
+	require.Equal(t, "p-new", s.opts.Password.Reveal())
 }
 
 // TestApplyCredentials_NilSet_Rejected pins the boundary check.
@@ -54,17 +52,11 @@ func TestApplyCredentials_TLSMaterial_StashesOnOpts(t *testing.T) {
 	s := NewSession(SessionOptions{
 		Address:  "amqp://broker.example:5672/",
 		Username: "u",
-		Password: "p",
+		Password: shared.NewSecret("p"),
 	}, connectivity.SessionEphemeral, nil)
 	defer func() { _ = s.Close(t.Context()) }()
 
-	require.NoError(t, s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
-		TLS: &connectivity.TLSMaterial{
-			CertPEM: "--- CERT ---",
-			KeyPEM:  "--- KEY ---",
-			CAPEMs:  []string{"--- CA ---"},
-		},
-	}))
+	require.NoError(t, s.ApplyCredentials(t.Context(), connectivity.NewCredentialSet(nil, tlsMat("--- CERT ---", "--- KEY ---", []string{"--- CA ---"}, false))))
 	s.mu.Lock()
 	got := s.liveCreds
 	optsTLS := s.opts.TLS
@@ -72,9 +64,9 @@ func TestApplyCredentials_TLSMaterial_StashesOnOpts(t *testing.T) {
 	require.Equal(t, "u", got.Username)
 	require.NotNil(t, optsTLS)
 	require.True(t, optsTLS.Enable)
-	require.Equal(t, "--- CERT ---", optsTLS.CertPEM)
-	require.Equal(t, "--- KEY ---", optsTLS.KeyPEM)
-	require.Equal(t, "--- CA ---", optsTLS.CACertPEM)
+	require.Equal(t, "--- CERT ---", optsTLS.CertPEM.Reveal())
+	require.Equal(t, "--- KEY ---", optsTLS.KeyPEM.Reveal())
+	require.Equal(t, "--- CA ---", optsTLS.CACertPEM.Reveal())
 }
 
 // TestApplyAMQP10TLSMaterial_ChangeDetection covers the pure helper.
@@ -86,19 +78,15 @@ func TestApplyAMQP10TLSMaterial_ChangeDetection(t *testing.T) {
 	})
 	t.Run("first-time enable", func(t *testing.T) {
 		var tls *TLSConfig
-		require.True(t, applyAMQP10TLSMaterial(&tls, &connectivity.TLSMaterial{
-			CertPEM: "c", KeyPEM: "k",
-		}))
+		require.True(t, applyAMQP10TLSMaterial(&tls, tlsMat("c", "k", nil, false)))
 		require.NotNil(t, tls)
 		require.True(t, tls.Enable)
 	})
 	t.Run("dedup no-op", func(t *testing.T) {
 		tls := &TLSConfig{
-			Enable: true, CertPEM: "c", KeyPEM: "k", CACertPEM: "ca",
+			Enable: true, CertPEM: shared.NewSecret("c"), KeyPEM: shared.NewSecret("k"), CACertPEM: shared.NewSecret("ca"),
 		}
-		require.False(t, applyAMQP10TLSMaterial(&tls, &connectivity.TLSMaterial{
-			CertPEM: "c", KeyPEM: "k", CAPEMs: []string{"ca"},
-		}))
+		require.False(t, applyAMQP10TLSMaterial(&tls, tlsMat("c", "k", []string{"ca"}, false)))
 	})
 }
 
@@ -109,11 +97,19 @@ func TestApplyCredentials_ClosedSession_Rejected(t *testing.T) {
 		connectivity.SessionEphemeral, nil)
 	require.NoError(t, s.Close(t.Context()))
 
-	err := s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
-	})
+	err := s.ApplyCredentials(t.Context(), connectivity.NewCredentialSet(pwCred("u", "p"), nil))
 	require.Error(t, err)
 	be, ok := shared.AsBridgeError(err)
 	require.True(t, ok)
 	require.Equal(t, shared.ErrCodeUnavailable, be.Code)
+}
+
+func pwCred(u, p string) *connectivity.PasswordCredential {
+	c := connectivity.NewPasswordCredential(u, p)
+	return &c
+}
+
+func tlsMat(cert, key string, ca []string, insecure bool) *connectivity.TLSMaterial {
+	m := connectivity.NewTLSMaterial(cert, key, ca, insecure)
+	return &m
 }

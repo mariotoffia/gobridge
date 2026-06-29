@@ -84,7 +84,6 @@ func TestOutboxDrainer_SendTimeout(t *testing.T) {
 		RouteID:      "route-1",
 		PartitionKey: pk,
 		LeaseID:      "sess-1",
-		OwnerID:      token.Owner,
 		Policy: routing.RoutePolicy{
 			SendTimeout: 100 * time.Millisecond,
 		}.WithDefaults(),
@@ -102,7 +101,7 @@ func TestOutboxDrainer_SendTimeout(t *testing.T) {
 		EnvelopeID: "env-timeout",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   messaging.Envelope{ID: "env-timeout", Payload: []byte("data")},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-timeout", Payload: []byte("data")}),
 		Status:     persistence.OutboxPending,
 	})
 	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
@@ -154,7 +153,7 @@ func TestRouteRunner_SendTimeout(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-send-timeout"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-send-timeout"}))
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "delivery retried after send timeout", func() bool {
 		return del.IsRetried()
@@ -206,7 +205,7 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 
 	ctxSender := &ContextAwareSender{
 		sendFn: func(ctx context.Context, env *messaging.Envelope) error {
-			if env.ID == "env-slow" {
+			if env.ID() == "env-slow" {
 				<-ctx.Done()
 				slowSendCancelled.Add(1)
 				return ctx.Err()
@@ -244,7 +243,6 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             "sess-1",
-		OwnerID:             token.Owner,
 		Policy:              routing.RoutePolicy{}.WithDefaults(),
 		Strategy:            persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainMaxConcurrency: 2,
@@ -262,13 +260,13 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 		persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID: "rec-first", RouteID: "route-1", EnvelopeID: "env-first",
 			BindingID: "bind-1", SessionID: "sess-1",
-			Envelope: messaging.Envelope{ID: "env-first", Payload: []byte("data")},
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-first", Payload: []byte("data")}),
 			Status:   persistence.OutboxPending,
 		}),
 		persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID: "rec-slow", RouteID: "route-1", EnvelopeID: "env-slow",
 			BindingID: "bind-1", SessionID: "sess-1",
-			Envelope: messaging.Envelope{ID: "env-slow", Payload: []byte("data")},
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-slow", Payload: []byte("data")}),
 			Status:   persistence.OutboxPending,
 		})}
 	for _, r := range records {
@@ -328,7 +326,6 @@ func TestOutboxDrainer_StaleFencingToken_PropagatedToRunLoop(t *testing.T) {
 		RouteID:      "route-1",
 		PartitionKey: pk,
 		LeaseID:      "sess-1",
-		OwnerID:      token.Owner,
 		Policy:       routing.RoutePolicy{}.WithDefaults(),
 		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
 		TokenFn: func() (persistence.LeaseToken, bool) {
@@ -344,7 +341,7 @@ func TestOutboxDrainer_StaleFencingToken_PropagatedToRunLoop(t *testing.T) {
 	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-stale", RouteID: "route-1", EnvelopeID: "env-stale",
 		BindingID: "bind-1", SessionID: "sess-1",
-		Envelope: messaging.Envelope{ID: "env-stale", Payload: []byte("data")},
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-stale", Payload: []byte("data")}),
 		Status:   persistence.OutboxPending,
 	})
 	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})

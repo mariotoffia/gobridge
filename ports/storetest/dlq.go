@@ -21,7 +21,7 @@ var (
 )
 
 func makeDLQEntry(id, routeID, category string, failedAt time.Time) routing.DLQEntry {
-	return routing.DLQEntry{
+	return routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID:            id,
 		RouteID:       routeID,
 		BindingID:     "bind-" + id,
@@ -40,13 +40,13 @@ func makeDLQEntry(id, routeID, category string, failedAt time.Time) routing.DLQE
 			Payload: []byte(`{"key":"value"}`),
 			Headers: map[string]any{"trace": "tid-" + id},
 		}),
-	}
+	})
 }
 
 func dlqEntryIDs(entries []routing.DLQEntry) map[string]bool {
 	m := make(map[string]bool, len(entries))
 	for _, e := range entries {
-		m[e.ID] = true
+		m[e.ID()] = true
 	}
 	return m
 }
@@ -63,6 +63,7 @@ func RunDLQStoreTests(t *testing.T, store ports.DLQStore) {
 	t.Run("ListRespectsLimit", func(t *testing.T) { dlqListRespectsLimit(t, store) })
 	t.Run("WriteIdempotent", func(t *testing.T) { dlqWriteIdempotent(t, store) })
 	t.Run("GetExisting", func(t *testing.T) { dlqGetExisting(t, store) })
+	t.Run("EnvelopeIsolation", func(t *testing.T) { dlqEnvelopeIsolation(t, store) })
 	t.Run("GetMissing", func(t *testing.T) { dlqGetMissing(t, store) })
 	t.Run("DeleteByIDs", func(t *testing.T) { dlqDeleteByIDs(t, store) })
 	t.Run("DeleteMissing", func(t *testing.T) { dlqDeleteMissing(t, store) })
@@ -108,7 +109,7 @@ func dlqWriteAndList(t *testing.T, store ports.DLQStore) {
 
 	var found *routing.DLQEntry
 	for i := range results {
-		if results[i].ID == "wal-1" {
+		if results[i].ID() == "wal-1" {
 			found = &results[i]
 			break
 		}
@@ -117,209 +118,52 @@ func dlqWriteAndList(t *testing.T, store ports.DLQStore) {
 		t.Fatal("entry wal-1 not found in results")
 	}
 
-	if found.RouteID != "route-wal" {
-		t.Fatalf("RouteID: got %q, want %q", found.RouteID, "route-wal")
+	if found.RouteID() != "route-wal" {
+		t.Fatalf("RouteID: got %q, want %q", found.RouteID(), "route-wal")
 	}
-	if found.Category != "timeout" {
-		t.Fatalf("Category: got %q, want %q", found.Category, "timeout")
+	if found.Category() != "timeout" {
+		t.Fatalf("Category: got %q, want %q", found.Category(), "timeout")
 	}
-	if found.Reason != "test failure" {
-		t.Fatalf("Reason: got %q, want %q", found.Reason, "test failure")
+	if found.Reason() != "test failure" {
+		t.Fatalf("Reason: got %q, want %q", found.Reason(), "test failure")
 	}
-	if found.ErrorCode != "TEST_ERROR" {
-		t.Fatalf("ErrorCode: got %q, want %q", found.ErrorCode, "TEST_ERROR")
+	if found.ErrorCode() != "TEST_ERROR" {
+		t.Fatalf("ErrorCode: got %q, want %q", found.ErrorCode(), "TEST_ERROR")
 	}
-	if found.LastError != "something went wrong" {
-		t.Fatalf("LastError: got %q, want %q", found.LastError, "something went wrong")
+	if found.LastError() != "something went wrong" {
+		t.Fatalf("LastError: got %q, want %q", found.LastError(), "something went wrong")
 	}
-	if found.BindingID != "bind-wal-1" {
-		t.Fatalf("BindingID: got %q, want %q", found.BindingID, "bind-wal-1")
+	if found.BindingID() != "bind-wal-1" {
+		t.Fatalf("BindingID: got %q, want %q", found.BindingID(), "bind-wal-1")
 	}
-	if found.SessionID != "sess-wal-1" {
-		t.Fatalf("SessionID: got %q, want %q", found.SessionID, "sess-wal-1")
+	if found.SessionID() != "sess-wal-1" {
+		t.Fatalf("SessionID: got %q, want %q", found.SessionID(), "sess-wal-1")
 	}
-	if found.SourceID != "src-wal-1" {
-		t.Fatalf("SourceID: got %q, want %q", found.SourceID, "src-wal-1")
+	if found.SourceID() != "src-wal-1" {
+		t.Fatalf("SourceID: got %q, want %q", found.SourceID(), "src-wal-1")
 	}
-	if found.CorrelationID != "corr-wal-1" {
-		t.Fatalf("CorrelationID: got %q, want %q", found.CorrelationID, "corr-wal-1")
+	if found.CorrelationID() != "corr-wal-1" {
+		t.Fatalf("CorrelationID: got %q, want %q", found.CorrelationID(), "corr-wal-1")
 	}
-	if !found.FailedAt.Equal(dlqT1) {
-		t.Fatalf("FailedAt: got %v, want %v", found.FailedAt, dlqT1)
+	if !found.FailedAt().Equal(dlqT1) {
+		t.Fatalf("FailedAt: got %v, want %v", found.FailedAt(), dlqT1)
 	}
-	if found.Attempts != 1 {
-		t.Fatalf("Attempts: got %d, want %d", found.Attempts, 1)
+	if found.Attempts() != 1 {
+		t.Fatalf("Attempts: got %d, want %d", found.Attempts(), 1)
 	}
-	if found.Envelope.ID != "env-wal-1" {
-		t.Fatalf("Envelope.ID: got %q, want %q", found.Envelope.ID, "env-wal-1")
+	env := found.Snapshot()
+	if env.ID() != "env-wal-1" {
+		t.Fatalf("Envelope.ID: got %q, want %q", env.ID(), "env-wal-1")
 	}
-	if found.Envelope.Subject() != "test/subject" {
-		t.Fatalf("Envelope.Subject: got %q, want %q", found.Envelope.Subject(), "test/subject")
+	if env.Subject() != "test/subject" {
+		t.Fatalf("Envelope.Subject: got %q, want %q", env.Subject(), "test/subject")
 	}
-	if string(found.Envelope.Payload) != `{"key":"value"}` {
-		t.Fatalf("Envelope.Payload: got %q, want %q", found.Envelope.Payload, `{"key":"value"}`)
+	if string(env.Payload()) != `{"key":"value"}` {
+		t.Fatalf("Envelope.Payload: got %q, want %q", env.Payload(), `{"key":"value"}`)
 	}
-	trace, ok := found.Envelope.Headers()["trace"]
+	trace, ok := env.Headers()["trace"]
 	if !ok || trace != "tid-wal-1" {
 		t.Fatalf("Envelope.Headers[trace]: got %v, want %q", trace, "tid-wal-1")
-	}
-}
-
-func dlqListFilterByRouteID(t *testing.T, store ports.DLQStore) {
-	ctx := context.Background()
-
-	if err := store.Write(ctx, makeDLQEntry("lfr-1", "route-alpha", "timeout", dlqT1)); err != nil {
-		t.Fatalf("write lfr-1: %v", err)
-	}
-	if err := store.Write(ctx, makeDLQEntry("lfr-2", "route-alpha", "timeout", dlqT2)); err != nil {
-		t.Fatalf("write lfr-2: %v", err)
-	}
-	if err := store.Write(ctx, makeDLQEntry("lfr-3", "route-beta", "timeout", dlqT3)); err != nil {
-		t.Fatalf("write lfr-3: %v", err)
-	}
-
-	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-alpha"})
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(results))
-	}
-
-	ids := dlqEntryIDs(results)
-	if !ids["lfr-1"] {
-		t.Fatal("missing entry lfr-1")
-	}
-	if !ids["lfr-2"] {
-		t.Fatal("missing entry lfr-2")
-	}
-	if ids["lfr-3"] {
-		t.Fatal("lfr-3 should not appear in route-alpha results")
-	}
-}
-
-func dlqListFilterByCategory(t *testing.T, store ports.DLQStore) {
-	ctx := context.Background()
-
-	if err := store.Write(ctx, makeDLQEntry("lfc-1", "route-lfc", "timeout", dlqT1)); err != nil {
-		t.Fatalf("write lfc-1: %v", err)
-	}
-	if err := store.Write(ctx, makeDLQEntry("lfc-2", "route-lfc", "timeout", dlqT2)); err != nil {
-		t.Fatalf("write lfc-2: %v", err)
-	}
-	if err := store.Write(ctx, makeDLQEntry("lfc-3", "route-lfc", "rejected", dlqT3)); err != nil {
-		t.Fatalf("write lfc-3: %v", err)
-	}
-
-	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-lfc", Category: "timeout"})
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(results))
-	}
-
-	ids := dlqEntryIDs(results)
-	if !ids["lfc-1"] {
-		t.Fatal("missing entry lfc-1")
-	}
-	if !ids["lfc-2"] {
-		t.Fatal("missing entry lfc-2")
-	}
-	if ids["lfc-3"] {
-		t.Fatal("lfc-3 should not appear in timeout-filtered results")
-	}
-}
-
-func dlqListFilterBySince(t *testing.T, store ports.DLQStore) {
-	ctx := context.Background()
-
-	if err := store.Write(ctx, makeDLQEntry("lfs-1", "route-lfs", "timeout", dlqT1)); err != nil {
-		t.Fatalf("write lfs-1: %v", err)
-	}
-	if err := store.Write(ctx, makeDLQEntry("lfs-2", "route-lfs", "timeout", dlqT2)); err != nil {
-		t.Fatalf("write lfs-2: %v", err)
-	}
-	if err := store.Write(ctx, makeDLQEntry("lfs-3", "route-lfs", "timeout", dlqT3)); err != nil {
-		t.Fatalf("write lfs-3: %v", err)
-	}
-
-	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-lfs", Since: dlqT2})
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(results))
-	}
-
-	ids := dlqEntryIDs(results)
-	if !ids["lfs-2"] {
-		t.Fatal("missing entry lfs-2")
-	}
-	if !ids["lfs-3"] {
-		t.Fatal("missing entry lfs-3")
-	}
-	if ids["lfs-1"] {
-		t.Fatal("lfs-1 should not appear (before Since)")
-	}
-
-	for _, e := range results {
-		if e.FailedAt.Before(dlqT2) {
-			t.Fatalf("entry %s has FailedAt %v which is before Since %v", e.ID, e.FailedAt, dlqT2)
-		}
-	}
-}
-
-func dlqListFilterByBefore(t *testing.T, store ports.DLQStore) {
-	ctx := context.Background()
-
-	if err := store.Write(ctx, makeDLQEntry("lfb-1", "route-lfb", "timeout", dlqT1)); err != nil {
-		t.Fatalf("write lfb-1: %v", err)
-	}
-	if err := store.Write(ctx, makeDLQEntry("lfb-2", "route-lfb", "timeout", dlqT2)); err != nil {
-		t.Fatalf("write lfb-2: %v", err)
-	}
-	if err := store.Write(ctx, makeDLQEntry("lfb-3", "route-lfb", "timeout", dlqT3)); err != nil {
-		t.Fatalf("write lfb-3: %v", err)
-	}
-
-	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-lfb", Before: dlqT2})
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(results))
-	}
-
-	ids := dlqEntryIDs(results)
-	if !ids["lfb-1"] {
-		t.Fatal("missing entry lfb-1")
-	}
-	if ids["lfb-2"] {
-		t.Fatal("lfb-2 should not appear (not before Before)")
-	}
-	if ids["lfb-3"] {
-		t.Fatal("lfb-3 should not appear (not before Before)")
-	}
-}
-
-func dlqListRespectsLimit(t *testing.T, store ports.DLQStore) {
-	ctx := context.Background()
-
-	times := []time.Time{dlqT1, dlqT2, dlqT3, dlqT4, dlqT5}
-	for i := 0; i < 5; i++ {
-		e := makeDLQEntry("lrl-"+itoa(i+1), "route-lrl", "timeout", times[i])
-		if err := store.Write(ctx, e); err != nil {
-			t.Fatalf("write lrl-%d: %v", i+1, err)
-		}
-	}
-
-	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-lrl", Limit: 2})
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(results))
 	}
 }
 
@@ -375,8 +219,8 @@ func dlqPurgeRemovesOld(t *testing.T, store ports.DLQStore) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 surviving entry, got %d", len(results))
 	}
-	if results[0].ID != "pro-3" {
-		t.Fatalf("surviving entry: got %q, want %q", results[0].ID, "pro-3")
+	if results[0].ID() != "pro-3" {
+		t.Fatalf("surviving entry: got %q, want %q", results[0].ID(), "pro-3")
 	}
 }
 
@@ -418,7 +262,7 @@ func dlqFullLifecycle(t *testing.T, store ports.DLQStore) {
 	}
 	for _, e := range entries {
 		if err := store.Write(ctx, e); err != nil {
-			t.Fatalf("write %s: %v", e.ID, err)
+			t.Fatalf("write %s: %v", e.ID(), err)
 		}
 	}
 
@@ -435,8 +279,8 @@ func dlqFullLifecycle(t *testing.T, store ports.DLQStore) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.ID != "flc-1" {
-		t.Fatalf("get ID: got %q, want %q", got.ID, "flc-1")
+	if got.ID() != "flc-1" {
+		t.Fatalf("get ID: got %q, want %q", got.ID(), "flc-1")
 	}
 
 	// Delete specific entry
@@ -471,5 +315,82 @@ func dlqFullLifecycle(t *testing.T, store ports.DLQStore) {
 	}
 	if !ids["flc-4"] {
 		t.Fatal("missing entry flc-4")
+	}
+}
+
+// dlqEnvelopeIsolation proves the DLQStore clone boundary (finding #9):
+// the persisted envelope is independent of both the caller's input
+// reference and any returned snapshot, so no caller-side mutation can
+// corrupt stored state.
+//
+// The entry is built with RehydrateDLQEntry, the non-cloning constructor,
+// so its envelope deliberately aliases the caller-held envelope's headers
+// map — exactly the hand-off a storage adapter must defend against at its
+// Write boundary.
+func dlqEnvelopeIsolation(t *testing.T, store ports.DLQStore) {
+	ctx := context.Background()
+	const wantTrace = "trace-iso"
+
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
+		ID:      "env-iso",
+		Subject: "iso/subject",
+		Payload: []byte(`{"k":"v"}`),
+		Headers: map[string]any{"trace": wantTrace},
+	})
+	entry := routing.RehydrateDLQEntry(routing.DLQEntrySpec{
+		ID:       "iso-1",
+		RouteID:  "route-iso",
+		Envelope: *env,
+		FailedAt: dlqT1,
+	})
+	if err := store.Write(ctx, entry); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Mutate the caller-held envelope after Write. A store that cloned at
+	// its Write boundary is immune; one that retained the reference leaks.
+	env.SetHeader("trace", "tampered-in")
+	env.SetHeader("added", "late")
+
+	got, err := store.Get(ctx, "iso-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	gotEnv := got.Snapshot()
+	if v, _ := gotEnv.Header("trace"); v != wantTrace {
+		t.Fatalf("stored header mutated via caller reference: got %v, want %q", v, wantTrace)
+	}
+	if _, ok := gotEnv.Header("added"); ok {
+		t.Fatal("late-added caller header leaked into stored entry")
+	}
+
+	// Mutating a Get result's snapshot must not change a subsequent read:
+	// the store must hand out envelopes independent of its stored state.
+	gotEnv.SetHeader("trace", "tampered-out")
+	again, err := store.Get(ctx, "iso-1")
+	if err != nil {
+		t.Fatalf("get again: %v", err)
+	}
+	if v, _ := again.Snapshot().Header("trace"); v != wantTrace {
+		t.Fatalf("Get snapshot mutation leaked into store: got %v, want %q", v, wantTrace)
+	}
+
+	// List must likewise return entries independent of stored state.
+	list, err := store.List(ctx, routing.DLQFilter{RouteID: "route-iso"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var found bool
+	for i := range list {
+		if list[i].ID() != "iso-1" {
+			continue
+		}
+		found = true
+		if v, _ := list[i].Snapshot().Header("trace"); v != wantTrace {
+			t.Fatalf("List entry header not isolated: got %v, want %q", v, wantTrace)
+		}
+	}
+	if !found {
+		t.Fatal("entry iso-1 not returned by List")
 	}
 }

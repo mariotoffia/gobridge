@@ -24,9 +24,8 @@ func TestApplyCredentials_Sender_SwapsClient(t *testing.T) {
 	s.client = nil
 	s.initMu.Unlock()
 
-	err = s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: "AKIA_NEW", Password: "SECRET_NEW"},
-	})
+	pw := connectivity.NewPasswordCredential("AKIA_NEW", "SECRET_NEW")
+	err = s.ApplyCredentials(t.Context(), connectivity.NewCredentialSet(&pw, nil))
 	require.NoError(t, err)
 
 	s.initMu.Lock()
@@ -43,9 +42,8 @@ func TestApplyCredentials_Receiver_SwapsClient(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	err = r.ApplyCredentials(t.Context(), &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: "AKIA_NEW", Password: "SECRET_NEW"},
-	})
+	pw := connectivity.NewPasswordCredential("AKIA_NEW", "SECRET_NEW")
+	err = r.ApplyCredentials(t.Context(), connectivity.NewCredentialSet(&pw, nil))
 	require.NoError(t, err)
 
 	r.initMu.Lock()
@@ -65,5 +63,5 @@ func TestApplyCredentials_Sender_NilSet_NoOp(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, s.ApplyCredentials(t.Context(), nil))
-	require.NoError(t, s.ApplyCredentials(t.Context(), &connectivity.CredentialSet{}))
+	require.NoError(t, s.ApplyCredentials(t.Context(), connectivity.NewCredentialSet(nil, nil)))
 }

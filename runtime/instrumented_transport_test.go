@@ -16,7 +16,7 @@ import (
 
 func TestInstrumentedDelivery_Ack_EmitsGenericMetric(t *testing.T) {
 	rec := &ports.RecordingExporter{}
-	inner := NewFakeDelivery(&messaging.Envelope{ID: "test"})
+	inner := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "test"}))
 
 	wrapped := goruntime.NewInstrumentedReceiver(
 		&singleDeliveryReceiver{del: inner},
@@ -36,9 +36,9 @@ func TestInstrumentedDelivery_Ack_EmitsGenericMetric(t *testing.T) {
 	entries := rec.Entries()
 
 	for _, e := range entries {
-		if e.Name == shared.MetricSQSDeleteLatency {
+		if e.Name == "SQSDeleteLatency" {
 			t.Fatalf("instrumented delivery emitted SQS-specific metric %q for non-SQS transport; "+
-				"expected a generic metric name like MetricAckLatency", shared.MetricSQSDeleteLatency)
+				"expected a generic metric name like MetricAckLatency", "SQSDeleteLatency")
 		}
 	}
 
@@ -56,7 +56,7 @@ func TestInstrumentedDelivery_Ack_EmitsGenericMetric(t *testing.T) {
 
 func TestInstrumentedDelivery_Extend_EmitsGenericMetric(t *testing.T) {
 	rec := &ports.RecordingExporter{}
-	inner := NewFakeDelivery(&messaging.Envelope{ID: "test"})
+	inner := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "test"}))
 
 	wrapped := goruntime.NewInstrumentedReceiver(
 		&singleDeliveryReceiver{del: inner},
@@ -75,10 +75,10 @@ func TestInstrumentedDelivery_Extend_EmitsGenericMetric(t *testing.T) {
 	})
 
 	for _, e := range rec.Entries() {
-		if e.Name == shared.MetricSQSVisibilityExtensions {
+		if e.Name == "SQSVisibilityExtensions" {
 			t.Fatalf("instrumented delivery emitted SQS-specific metric %q for non-SQS transport; "+
 				"expected a generic metric name like MetricVisibilityExtensions",
-				shared.MetricSQSVisibilityExtensions)
+				"SQSVisibilityExtensions")
 		}
 	}
 }
@@ -86,7 +86,7 @@ func TestInstrumentedDelivery_Extend_EmitsGenericMetric(t *testing.T) {
 func TestInstrumentedDelivery_AckLatencyUsesInjectedClock(t *testing.T) {
 	clk := clocktest.NewAt(time.Unix(100, 0))
 	rec := &ports.RecordingExporter{}
-	inner := &advancingDelivery{Delivery: NewFakeDelivery(&messaging.Envelope{ID: "test"}), clk: clk, advance: 40 * time.Millisecond}
+	inner := &advancingDelivery{Delivery: NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "test"})), clk: clk, advance: 40 * time.Millisecond}
 
 	wrapped := goruntime.NewInstrumentedReceiver(
 		&singleDeliveryReceiver{del: inner},
@@ -153,7 +153,7 @@ func metricNames(entries []ports.MetricEntry) []string {
 // it did not validate the positive emission contract.
 func TestInstrumentedDelivery_Extend_Success(t *testing.T) {
 	rec := &ports.RecordingExporter{}
-	inner := NewFakeDelivery(&messaging.Envelope{ID: "test"})
+	inner := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "test"}))
 
 	wrapped := goruntime.NewInstrumentedReceiver(
 		&singleDeliveryReceiver{del: inner},
@@ -211,7 +211,7 @@ func TestInstrumentedDelivery_Extend_Success(t *testing.T) {
 func TestInstrumentedDelivery_Extend_ErrorSuppressesCounter(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	wantErr := errors.New("broker rejected extend")
-	inner := NewFakeDelivery(&messaging.Envelope{ID: "test"})
+	inner := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "test"}))
 	inner.ExtendErr = wantErr
 
 	wrapped := goruntime.NewInstrumentedReceiver(

@@ -135,8 +135,8 @@ func TestIntegration_Edge_EmptyPayload(t *testing.T) {
 		got := edge091SendRecv(t, e, messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID: "empty-nil", Subject: e.queue,
 		}), 15*time.Second)
-		if len(got.Payload) != 0 {
-			t.Errorf("expected empty payload, got %d bytes", len(got.Payload))
+		if len(got.Payload()) != 0 {
+			t.Errorf("expected empty payload, got %d bytes", len(got.Payload()))
 		}
 	})
 
@@ -144,8 +144,8 @@ func TestIntegration_Edge_EmptyPayload(t *testing.T) {
 		got := edge091SendRecv(t, e, messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID: "empty-zero", Subject: e.queue, Payload: []byte{},
 		}), 15*time.Second)
-		if len(got.Payload) != 0 {
-			t.Errorf("expected empty payload, got %d bytes", len(got.Payload))
+		if len(got.Payload()) != 0 {
+			t.Errorf("expected empty payload, got %d bytes", len(got.Payload()))
 		}
 	})
 
@@ -170,7 +170,7 @@ func TestIntegration_Edge_LargePayload(t *testing.T) {
 		ID: "large-msg", Subject: e.queue, Payload: payload,
 	}), 30*time.Second)
 
-	gotHash := sha256.Sum256(got.Payload)
+	gotHash := sha256.Sum256(got.Payload())
 	if sentHash != gotHash {
 		t.Fatalf("payload hash mismatch: sent %x, got %x", sentHash, gotHash)
 	}

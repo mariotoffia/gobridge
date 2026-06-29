@@ -43,9 +43,9 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *connectivity.Cred
 		return shared.ErrInvalidPayload.WithMessage("nil credential set")
 	}
 	var user, pass string
-	if creds.Password != nil {
-		user = creds.Password.Username
-		pass = creds.Password.Password
+	if creds.Password() != nil {
+		user = creds.Password().Username()
+		pass = creds.Password().Password().Reveal()
 	}
 
 	s.mu.Lock()
@@ -53,7 +53,7 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *connectivity.Cred
 		s.mu.Unlock()
 		return shared.ErrUnavailable.WithMessage("session is closed")
 	}
-	credsChanged := creds.Password != nil &&
+	credsChanged := creds.Password() != nil &&
 		(s.liveCreds.Username != user || s.liveCreds.Password != pass)
 	if credsChanged {
 		s.liveCreds = mqttCredentials{Username: user, Password: pass}
@@ -67,10 +67,10 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *connectivity.Cred
 		// mirrors the user's configuration without reaching into the
 		// CM config.
 		s.opts.Username = user
-		s.opts.Password = pass
+		s.opts.Password = shared.NewSecret(pass)
 	}
 
-	tlsChanged := applyTLSMaterial(&s.opts.TLS, creds.TLS)
+	tlsChanged := applyTLSMaterial(&s.opts.TLS, creds.TLS())
 
 	if tlsChanged && cm != nil {
 		if logging.DebugEnabled(s.logger) {
@@ -133,32 +133,32 @@ func applyTLSMaterial(opts **TLSConfig, mat *connectivity.TLSMaterial) bool {
 		return false
 	}
 	newCA := ""
-	if len(mat.CAPEMs) > 0 {
+	if len(mat.CAPEMs()) > 0 {
 		// Concatenate multiple CA PEMs into the single CACertPEM field.
 		// AppendCertsFromPEM handles a bundle natively, so this is a
 		// faithful translation even with more than one CA.
-		newCA = joinPEMs(mat.CAPEMs)
+		newCA = joinPEMs(mat.CAPEMs())
 	}
 	if *opts == nil {
 		// Rotation is enabling TLS on a session that had none. The
 		// push side is the authoritative source now, so we trust the
 		// incoming material to match broker expectations.
-		if mat.CertPEM == "" && mat.KeyPEM == "" && newCA == "" && !mat.InsecureSkipVerify {
+		if mat.CertPEM() == "" && mat.KeyPEM().IsZero() && newCA == "" && !mat.InsecureSkipVerify() {
 			return false
 		}
 		*opts = &TLSConfig{Enable: true}
 	}
 	cur := *opts
-	if cur.CertPEM == mat.CertPEM &&
-		cur.KeyPEM == mat.KeyPEM &&
-		cur.CACertPEM == newCA &&
-		cur.InsecureSkipVerify == mat.InsecureSkipVerify {
+	if cur.CertPEM.Reveal() == mat.CertPEM() &&
+		cur.KeyPEM.Equal(mat.KeyPEM()) &&
+		cur.CACertPEM.Reveal() == newCA &&
+		cur.InsecureSkipVerify == mat.InsecureSkipVerify() {
 		return false
 	}
-	cur.CertPEM = mat.CertPEM
-	cur.KeyPEM = mat.KeyPEM
-	cur.CACertPEM = newCA
-	cur.InsecureSkipVerify = mat.InsecureSkipVerify
+	cur.CertPEM = shared.NewSecret(mat.CertPEM())
+	cur.KeyPEM = mat.KeyPEM()
+	cur.CACertPEM = shared.NewSecret(newCA)
+	cur.InsecureSkipVerify = mat.InsecureSkipVerify()
 	cur.Enable = true
 	return true
 }

@@ -3,6 +3,8 @@ package transport
 import (
 	"fmt"
 	"time"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // Kind is the registry discriminator for the HTTP transport.
@@ -19,7 +21,7 @@ type Config struct {
 	Path string `yaml:"path,omitempty" json:"path,omitempty" mapstructure:"path"`
 	// APIKey, when non-empty, requires inbound requests to present
 	// the matching key in the Authorization or X-API-Key header.
-	APIKey string `yaml:"api_key,omitempty" json:"api_key,omitempty" mapstructure:"api_key"`
+	APIKey shared.Secret `yaml:"api_key,omitempty" json:"api_key,omitempty" mapstructure:"api_key"`
 	// MaxBodySize is the receiver's request-body cap in bytes.
 	// Zero falls through to the 1 MiB default.
 	MaxBodySize int64 `yaml:"max_body_size,omitempty" json:"max_body_size,omitempty" mapstructure:"max_body_size"`

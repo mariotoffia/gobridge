@@ -19,26 +19,30 @@ func scanDLQEntries(rows *sql.Rows) ([]routing.DLQEntry, error) {
 	result := make([]routing.DLQEntry, 0)
 	for rows.Next() {
 		var (
-			e          routing.DLQEntry
+			spec       routing.DLQEntrySpec
 			envJSON    string
 			failedAtMs int64
 		)
 		err := rows.Scan(
-			&e.ID, &e.RouteID, &e.BindingID, &e.SessionID, &e.SourceID,
-			&e.CorrelationID, &e.Reason, &e.Category, &e.ErrorCode, &e.LastError,
-			&envJSON, &failedAtMs, &e.Attempts,
+			&spec.ID, &spec.RouteID, &spec.BindingID, &spec.SessionID, &spec.SourceID,
+			&spec.CorrelationID, &spec.Reason, &spec.Category, &spec.ErrorCode, &spec.LastError,
+			&envJSON, &failedAtMs, &spec.Attempts,
 		)
 		if err != nil {
 			return nil, wrapErr(err, "sqlitedlq: scan entry")
 		}
 
-		e.FailedAt = time.UnixMilli(failedAtMs)
+		spec.FailedAt = time.UnixMilli(failedAtMs)
 
-		if err := json.Unmarshal([]byte(envJSON), &e.Envelope); err != nil {
+		if err := json.Unmarshal([]byte(envJSON), &spec.Envelope); err != nil {
 			return nil, fmt.Errorf("sqlitedlq: unmarshal envelope: %w", err)
 		}
 
-		result = append(result, e)
+		// RehydrateDLQEntry (not NewDLQEntry): the envelope was freshly
+		// decoded from the row and is already owned, so the entry takes it
+		// without a redundant clone. Each scanned entry therefore has an
+		// envelope independent of stored bytes (finding #9 read boundary).
+		result = append(result, routing.RehydrateDLQEntry(spec))
 	}
 
 	if err := rows.Err(); err != nil {

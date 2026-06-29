@@ -16,7 +16,7 @@ import (
 // Verifies routing with a nil DLQ store is a no-op and returns no error.
 func TestRouter_NilStore(t *testing.T) {
 	r := dlq.New(nil)
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 
 	err := r.Route(context.Background(), env, "route-1", "", "", "", "", shared.ErrNotFound, 1)
 	if err != nil {
@@ -43,17 +43,17 @@ func TestRouter_WritesEntry(t *testing.T) {
 	}
 
 	entry := store.Entries[0]
-	if entry.RouteID != "route-1" {
-		t.Fatalf("expected route 'route-1', got %q", entry.RouteID)
+	if entry.RouteID() != "route-1" {
+		t.Fatalf("expected route 'route-1', got %q", entry.RouteID())
 	}
-	if entry.CorrelationID != "corr-abc" {
-		t.Fatalf("expected correlation ID 'corr-abc', got %q", entry.CorrelationID)
+	if entry.CorrelationID() != "corr-abc" {
+		t.Fatalf("expected correlation ID 'corr-abc', got %q", entry.CorrelationID())
 	}
-	if entry.Category != string(shared.ErrorPermanent) {
-		t.Fatalf("expected category 'permanent', got %q", entry.Category)
+	if entry.Category() != string(shared.ErrorPermanent) {
+		t.Fatalf("expected category 'permanent', got %q", entry.Category())
 	}
-	if entry.Attempts != 3 {
-		t.Fatalf("expected attempts 3, got %d", entry.Attempts)
+	if entry.Attempts() != 3 {
+		t.Fatalf("expected Attempts 3, got %d", entry.Attempts())
 	}
 }
 
@@ -62,14 +62,14 @@ func TestRouter_UnknownError(t *testing.T) {
 	store := NewFakeStore()
 	r := dlq.New(store)
 
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	_ = r.Route(context.Background(), env, "r", "", "", "", "", context.DeadlineExceeded, 0)
 
 	if store.Count() != 1 {
 		t.Fatalf("expected 1 entry, got %d", store.Count())
 	}
-	if store.Entries[0].Category != "unknown" {
-		t.Fatalf("expected category 'unknown', got %q", store.Entries[0].Category)
+	if store.Entries[0].Category() != "unknown" {
+		t.Fatalf("expected category 'unknown', got %q", store.Entries[0].Category())
 	}
 }
 
@@ -100,7 +100,7 @@ func TestRouter_HasStore_False(t *testing.T) {
 func TestRouter_Route_RedactsErrorDetails(t *testing.T) {
 	store := NewFakeStore()
 	r := dlq.New(store)
-	env := &messaging.Envelope{ID: "msg-redact"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-redact"})
 
 	rawErr := shared.ErrConnectionLost.Wrap(
 		fmt.Errorf("connection to db-prod.internal:5432 refused"),
@@ -116,14 +116,14 @@ func TestRouter_Route_RedactsErrorDetails(t *testing.T) {
 
 	entry := store.Entries[0]
 	const sensitiveSubstring = "db-prod.internal:5432"
-	if strings.Contains(entry.Reason, sensitiveSubstring) {
-		t.Fatalf("Reason should NOT contain sensitive details %q, got %q", sensitiveSubstring, entry.Reason)
+	if strings.Contains(entry.Reason(), sensitiveSubstring) {
+		t.Fatalf("Reason should NOT contain sensitive details %q, got %q", sensitiveSubstring, entry.Reason())
 	}
-	if strings.Contains(entry.LastError, sensitiveSubstring) {
-		t.Fatalf("LastError should NOT contain sensitive details %q, got %q", sensitiveSubstring, entry.LastError)
+	if strings.Contains(entry.LastError(), sensitiveSubstring) {
+		t.Fatalf("LastError should NOT contain sensitive details %q, got %q", sensitiveSubstring, entry.LastError())
 	}
-	if entry.Reason != "connection lost" {
-		t.Fatalf("Reason should be the BridgeError message, got %q", entry.Reason)
+	if entry.Reason() != "connection lost" {
+		t.Fatalf("Reason should be the BridgeError message, got %q", entry.Reason())
 	}
 }
 
@@ -132,7 +132,7 @@ func TestRouter_Route_StoreWriteError_Propagated(t *testing.T) {
 	store := NewFakeStore()
 	store.WriteErr = fmt.Errorf("disk full")
 	r := dlq.New(store)
-	env := &messaging.Envelope{ID: "msg-fail"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-fail"})
 
 	err := r.Route(context.Background(), env, "r", "", "", "", "", shared.ErrNotFound, 1)
 	if err == nil {
@@ -170,44 +170,44 @@ func TestRouter_Route_AllFieldsPopulated(t *testing.T) {
 	}
 
 	entry := store.Entries[0]
-	if entry.ID == "" {
+	if entry.ID() == "" {
 		t.Fatal("entry ID should be generated and non-empty")
 	}
-	if entry.Envelope.ID != "msg-all" {
-		t.Fatalf("expected envelope ID 'msg-all', got %q", entry.Envelope.ID)
+	if env := entry.Snapshot(); env.ID() != "msg-all" {
+		t.Fatalf("expected envelope ID 'msg-all', got %q", env.ID())
 	}
-	if entry.RouteID != "route-all" {
-		t.Fatalf("expected RouteID 'route-all', got %q", entry.RouteID)
+	if entry.RouteID() != "route-all" {
+		t.Fatalf("expected RouteID 'route-all', got %q", entry.RouteID())
 	}
-	if entry.BindingID != "bind-all" {
-		t.Fatalf("expected BindingID 'bind-all', got %q", entry.BindingID)
+	if entry.BindingID() != "bind-all" {
+		t.Fatalf("expected BindingID 'bind-all', got %q", entry.BindingID())
 	}
-	if entry.SessionID != "sess-all" {
-		t.Fatalf("expected SessionID 'sess-all', got %q", entry.SessionID)
+	if entry.SessionID() != "sess-all" {
+		t.Fatalf("expected SessionID 'sess-all', got %q", entry.SessionID())
 	}
-	if entry.SourceID != "src-all" {
-		t.Fatalf("expected SourceID 'src-all', got %q", entry.SourceID)
+	if entry.SourceID() != "src-all" {
+		t.Fatalf("expected SourceID 'src-all', got %q", entry.SourceID())
 	}
-	if entry.CorrelationID != "corr-xyz" {
-		t.Fatalf("expected CorrelationID 'corr-xyz', got %q", entry.CorrelationID)
+	if entry.CorrelationID() != "corr-xyz" {
+		t.Fatalf("expected CorrelationID 'corr-xyz', got %q", entry.CorrelationID())
 	}
-	if entry.Reason == "" {
+	if entry.Reason() == "" {
 		t.Fatal("Reason should not be empty")
 	}
-	if entry.Category != string(shared.ErrorTransient) {
-		t.Fatalf("expected category %q, got %q", shared.ErrorTransient, entry.Category)
+	if entry.Category() != string(shared.ErrorTransient) {
+		t.Fatalf("expected category %q, got %q", shared.ErrorTransient, entry.Category())
 	}
-	if entry.ErrorCode != string(shared.ErrCodeThrottled) {
-		t.Fatalf("expected error code %q, got %q", shared.ErrCodeThrottled, entry.ErrorCode)
+	if entry.ErrorCode() != string(shared.ErrCodeThrottled) {
+		t.Fatalf("expected error code %q, got %q", shared.ErrCodeThrottled, entry.ErrorCode())
 	}
-	if entry.LastError == "" {
+	if entry.LastError() == "" {
 		t.Fatal("LastError should not be empty")
 	}
-	if !entry.FailedAt.Equal(failedAt) {
-		t.Fatalf("expected FailedAt from injected clock %s, got %s", failedAt, entry.FailedAt)
+	if !entry.FailedAt().Equal(failedAt) {
+		t.Fatalf("expected FailedAt from injected clock %s, got %s", failedAt, entry.FailedAt())
 	}
-	if entry.Attempts != 7 {
-		t.Fatalf("expected Attempts 7, got %d", entry.Attempts)
+	if entry.Attempts() != 7 {
+		t.Fatalf("expected Attempts 7, got %d", entry.Attempts())
 	}
 }
 
@@ -216,7 +216,7 @@ func TestRouter_Route_NoCorrelationID(t *testing.T) {
 	store := NewFakeStore()
 	r := dlq.New(store)
 
-	env := &messaging.Envelope{ID: "msg-nocorr"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-nocorr"})
 
 	err := r.Route(context.Background(), env, "route-nocorr", "", "", "", "", shared.ErrNotFound, 1)
 	if err != nil {
@@ -225,8 +225,8 @@ func TestRouter_Route_NoCorrelationID(t *testing.T) {
 	if store.Count() != 1 {
 		t.Fatalf("expected 1 entry, got %d", store.Count())
 	}
-	if store.Entries[0].CorrelationID != "" {
-		t.Fatalf("expected empty CorrelationID, got %q", store.Entries[0].CorrelationID)
+	if store.Entries[0].CorrelationID() != "" {
+		t.Fatalf("expected empty CorrelationID, got %q", store.Entries[0].CorrelationID())
 	}
 }
 
@@ -236,7 +236,7 @@ func TestRouter_Route_NoCorrelationID(t *testing.T) {
 func TestRouter_ClassifyError_BridgeError(t *testing.T) {
 	store := NewFakeStore()
 	r := dlq.New(store)
-	env := &messaging.Envelope{ID: "msg-bridge"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-bridge"})
 
 	testCases := []struct {
 		name         string
@@ -281,11 +281,11 @@ func TestRouter_ClassifyError_BridgeError(t *testing.T) {
 				t.Fatalf("expected 1 entry, got %d", store.Count())
 			}
 			entry := store.Entries[0]
-			if entry.Category != tc.wantCategory {
-				t.Fatalf("expected category %q, got %q", tc.wantCategory, entry.Category)
+			if entry.Category() != tc.wantCategory {
+				t.Fatalf("expected category %q, got %q", tc.wantCategory, entry.Category())
 			}
-			if entry.ErrorCode != tc.wantCode {
-				t.Fatalf("expected error code %q, got %q", tc.wantCode, entry.ErrorCode)
+			if entry.ErrorCode() != tc.wantCode {
+				t.Fatalf("expected error code %q, got %q", tc.wantCode, entry.ErrorCode())
 			}
 		})
 	}

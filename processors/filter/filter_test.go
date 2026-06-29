@@ -19,7 +19,8 @@ func nextErr(sentinel error) func(context.Context, *messaging.Envelope) error {
 func envelope(subject string, headers map[string]any, payload any) *messaging.Envelope {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: subject, Headers: headers})
 	if payload != nil {
-		env.Payload, _ = json.Marshal(payload)
+		b, _ := json.Marshal(payload)
+		env.SetPayload(b)
 	}
 	return env
 }

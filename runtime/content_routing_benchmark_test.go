@@ -51,7 +51,7 @@ func BenchmarkConditionEval_Regex_Precompiled(b *testing.B) {
 
 func BenchmarkConditionEval_JSONPath_Shallow(b *testing.B) {
 	eval, _ := newConditionEval(MatchCondition{Field: "$.status", Operator: OpEquals, Value: Val("active")})
-	env := &messaging.Envelope{Payload: []byte(`{"status":"active","count":42}`)}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte(`{"status":"active","count":42}`)})
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -63,7 +63,7 @@ func BenchmarkConditionEval_JSONPath_Shallow(b *testing.B) {
 
 func BenchmarkConditionEval_JSONPath_Deep(b *testing.B) {
 	eval, _ := newConditionEval(MatchCondition{Field: "$.order.item.status", Operator: OpEquals, Value: Val("shipped")})
-	env := &messaging.Envelope{Payload: []byte(`{"order":{"item":{"status":"shipped","qty":3}}}`)}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte(`{"order":{"item":{"status":"shipped","qty":3}}}`)})
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -146,9 +146,9 @@ func BenchmarkEvalContext_CachedVsUncached(b *testing.B) {
 	eval2, _ := newConditionEval(MatchCondition{Field: "$.order.status", Operator: OpEquals, Value: Val("active")})
 	eval3, _ := newConditionEval(MatchCondition{Field: "$.order.priority", Operator: OpGreaterThan, Value: Val(float64(5))})
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Payload: []byte(`{"order":{"id":"42","status":"active","priority":8}}`),
-	}
+	})
 
 	b.Run("cached_3_evals", func(b *testing.B) {
 		b.ReportAllocs()

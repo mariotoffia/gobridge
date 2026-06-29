@@ -26,7 +26,7 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
 
-	entry := routing.DLQEntry{
+	entry := routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID:      "g-1",
 		RouteID: "route-g",
 		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
@@ -38,7 +38,7 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 		FailedAt: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC),
 		Category: "timeout",
 		Attempts: 3,
-	}
+	})
 	if err := s.Write(ctx, entry); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -47,17 +47,18 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.ID != "g-1" {
-		t.Errorf("ID: got %q, want %q", got.ID, "g-1")
+	if got.ID() != "g-1" {
+		t.Errorf("ID: got %q, want %q", got.ID(), "g-1")
 	}
-	if got.Envelope.ID != "env-g-1" {
-		t.Errorf("Envelope.ID: got %q, want %q", got.Envelope.ID, "env-g-1")
+	env := got.Snapshot()
+	if env.ID() != "env-g-1" {
+		t.Errorf("Envelope.ID: got %q, want %q", env.ID(), "env-g-1")
 	}
-	if string(got.Envelope.Payload) != `{"data":"value"}` {
-		t.Errorf("Envelope.Payload: got %q", got.Envelope.Payload)
+	if string(env.Payload()) != `{"data":"value"}` {
+		t.Errorf("Envelope.Payload(): got %q", env.Payload())
 	}
-	if got.Envelope.Headers()["h"] != "v" {
-		t.Errorf("Envelope.Headers[h]: got %v", got.Envelope.Headers()["h"])
+	if env.Headers()["h"] != "v" {
+		t.Errorf("Envelope.Headers[h]: got %v", env.Headers()["h"])
 	}
 }
 
@@ -93,8 +94,8 @@ func TestDeleteByFilter_ByRouteID(t *testing.T) {
 	if len(remaining) != 1 {
 		t.Fatalf("expected 1 remaining, got %d", len(remaining))
 	}
-	if remaining[0].ID != "df-r3" {
-		t.Fatalf("remaining: got %q, want df-r3", remaining[0].ID)
+	if remaining[0].ID() != "df-r3" {
+		t.Fatalf("remaining: got %q, want df-r3", remaining[0].ID())
 	}
 }
 
@@ -209,10 +210,10 @@ func TestDeleteByFilter_BySinceAndBefore(t *testing.T) {
 
 func write(t *testing.T, s *memorydlq.Store, id, route, cat string, failedAt time.Time) {
 	t.Helper()
-	if err := s.Write(context.Background(), routing.DLQEntry{
+	if err := s.Write(context.Background(), routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID: id, RouteID: route, Category: cat, FailedAt: failedAt,
 		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-" + id, Subject: "test"}),
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("write %s: %v", id, err)
 	}
 }

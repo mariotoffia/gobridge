@@ -135,8 +135,10 @@ func (rt *Runtime) Inject(ctx context.Context, routeID string, env *messaging.En
 	}
 
 	env = env.Clone()
-	if env.ID == "" {
-		env.ID = generateID()
+	if env.ID() == "" {
+		if err := env.AssignID(generateID()); err != nil {
+			return err
+		}
 	}
 
 	return entry.runner.HandleDelivery(ctx, &syntheticDelivery{env: env})

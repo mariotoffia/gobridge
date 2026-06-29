@@ -14,7 +14,7 @@ import (
 )
 
 func TestInject_SyntheticDeliveryRetry_ReturnsErrNotSupported(t *testing.T) {
-	d := &syntheticDelivery{env: &messaging.Envelope{ID: "e1"}}
+	d := &syntheticDelivery{env: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1"})}
 	secretReason := errors.New("original transport reason must not be returned")
 	err := d.Retry(context.Background(), time.Second, secretReason)
 	require.Error(t, err)

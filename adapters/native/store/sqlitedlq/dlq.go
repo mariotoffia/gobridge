@@ -43,7 +43,7 @@ func (s *Store) Close() error {
 func (s *Store) Write(ctx context.Context, entry routing.DLQEntry) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: write",
-			"route_id", entry.RouteID, "entry_id", entry.ID)
+			"route_id", entry.RouteID(), "entry_id", entry.ID())
 	}
 	return s.sess.write(ctx, entry)
 }

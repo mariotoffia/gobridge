@@ -66,7 +66,7 @@ func dedupKey(envelopeID, bindingID string) string {
 }
 
 func partitionKey(r *persistence.OutboxRecord) string {
-	return persistence.OutboxPartitionKey(r.SessionID, r.BindingID)
+	return persistence.OutboxPartitionKey(r.SessionID(), r.BindingID())
 }
 
 func cloneAggregate(r *persistence.OutboxRecord) *persistence.OutboxRecord {
@@ -82,32 +82,34 @@ func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord
 	defer s.mu.Unlock()
 
 	for _, rec := range records {
-		dk := dedupKey(rec.EnvelopeID, rec.BindingID)
+		dk := dedupKey(rec.EnvelopeID(), rec.BindingID())
 		if s.dedup[dk] {
 			return shared.ErrDuplicateRecord.
 				WithMessage("duplicate outbox record").
-				With("envelopeID", rec.EnvelopeID).
-				With("bindingID", rec.BindingID)
+				With("envelopeID", rec.EnvelopeID()).
+				With("bindingID", rec.BindingID())
 		}
 	}
 
 	now := s.clk.Now()
 	for _, rec := range records {
-		// Defensive snapshot+rehydrate so the caller can't mutate stored state.
-		stored := cloneAggregate(rec)
-		if stored.CreatedAt.IsZero() {
-			stored.CreatedAt = now
+		// Stamp a default CreatedAt on the persistence DTO (the aggregate is
+		// immutable) and rehydrate, so the caller cannot mutate stored state.
+		snap := rec.PersistenceSnapshot()
+		if snap.CreatedAt.IsZero() {
+			snap.CreatedAt = now
 		}
-		s.records[stored.ID] = stored
-		s.dedup[dedupKey(stored.EnvelopeID, stored.BindingID)] = true
+		stored := persistence.RehydrateFromSnapshot(snap)
+		s.records[stored.ID()] = stored
+		s.dedup[dedupKey(stored.EnvelopeID(), stored.BindingID())] = true
 	}
 	return nil
 }
 
-func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
+func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: claim",
-			"partition_key", pk, "owner_id", ownerID, "limit", limit)
+			"partition_key", pk, "owner_id", token.Owner, "limit", limit)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -130,8 +132,14 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token pers
 		}
 	}
 
+	// Sort by persisted created_at, then by envelopeID as a stable
+	// tiebreaker so equal-millisecond timestamps are deterministic.
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].CreatedAt.Before(candidates[j].CreatedAt)
+		ci, cj := candidates[i].CreatedAt(), candidates[j].CreatedAt()
+		if ci.Equal(cj) {
+			return candidates[i].EnvelopeID() < candidates[j].EnvelopeID()
+		}
+		return ci.Before(cj)
 	})
 
 	if limit > 0 && len(candidates) > limit {
@@ -141,7 +149,7 @@ func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token pers
 	now := s.clk.Now()
 	result := make([]*persistence.OutboxRecord, 0, len(candidates))
 	for _, r := range candidates {
-		if claimErr := r.Claim(now, ownerID, token.Version); claimErr != nil {
+		if claimErr := r.Claim(now, token.Owner, token.Version); claimErr != nil {
 			// Should be unreachable given the IsClaimable filter; skip
 			// any concurrent transition rather than failing the batch.
 			continue
@@ -165,11 +173,16 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 		if !ok {
 			continue
 		}
-		if r.ClaimVersion() != token.Version {
+		if r.Status() != persistence.OutboxClaimed ||
+			r.ClaimedBy() != token.Owner ||
+			r.ClaimVersion() != token.Version {
 			return shared.ErrStaleFencingToken.
-				WithMessage("claim version mismatch on complete").
+				WithMessage("completion fence mismatch: record must be claimed by token owner at token version").
 				With("recordID", id).
+				With("status", string(r.Status())).
+				With("storedOwner", r.ClaimedBy()).
 				With("storedClaimVersion", r.ClaimVersion()).
+				With("givenOwner", token.Owner).
 				With("givenVersion", token.Version)
 		}
 		if completeErr := r.Complete(s.clk.Now()); completeErr != nil {
@@ -186,10 +199,10 @@ func (s *Store) Expire(_ context.Context, before time.Time) (int, error) {
 	count := 0
 	now := s.clk.Now()
 	for _, r := range s.records {
-		if r.ExpiresAt.IsZero() || !r.ExpiresAt.Before(before) {
+		if r.Status() != persistence.OutboxPending {
 			continue
 		}
-		if r.Status() != persistence.OutboxPending && r.Status() != persistence.OutboxClaimed {
+		if r.ExpiresAt().IsZero() || !r.ExpiresAt().Before(before) {
 			continue
 		}
 		if expireErr := r.Expire(now); expireErr == nil {
@@ -216,7 +229,7 @@ func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]*pers
 	}
 
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].CreatedAt.Before(result[j].CreatedAt)
+		return result[i].CreatedAt().Before(result[j].CreatedAt())
 	})
 
 	if limit > 0 && len(result) > limit {

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -121,7 +122,7 @@ func (m *configTxnManager) Begin(ttl time.Duration) (*ConfigTransaction, error) 
 // overlay on top of the current effective config plus all previous patches,
 // validates the result, and returns the merged preview along with any
 // validation warnings. Returns an error if the merged config is invalid.
-func (m *configTxnManager) Patch(txnID string, overlay *ports.BridgeConfig) (*ports.BridgeConfig, []string, error) {
+func (m *configTxnManager) Patch(ctx context.Context, txnID string, overlay *ports.BridgeConfig) (*ports.BridgeConfig, []string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -133,7 +134,7 @@ func (m *configTxnManager) Patch(txnID string, overlay *ports.BridgeConfig) (*po
 	m.active.PatchCount++
 	m.active.merged = nil // invalidate cache
 
-	merged, err := m.computeMerged()
+	merged, err := m.computeMerged(ctx)
 	if err != nil {
 		// Remove the bad patch so the transaction remains usable.
 		m.active.patches = m.active.patches[:len(m.active.patches)-1]
@@ -141,7 +142,7 @@ func (m *configTxnManager) Patch(txnID string, overlay *ports.BridgeConfig) (*po
 		return nil, nil, err
 	}
 
-	warnings, valErr := m.store.Validate(merged)
+	warnings, valErr := m.store.Validate(ctx, merged)
 	if valErr != nil {
 		// Remove the bad patch.
 		m.active.patches = m.active.patches[:len(m.active.patches)-1]
@@ -155,7 +156,7 @@ func (m *configTxnManager) Patch(txnID string, overlay *ports.BridgeConfig) (*po
 
 // Preview returns the current merged state of the transaction without
 // adding a new patch.
-func (m *configTxnManager) Preview(txnID string) (*ports.BridgeConfig, error) {
+func (m *configTxnManager) Preview(ctx context.Context, txnID string) (*ports.BridgeConfig, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -167,7 +168,7 @@ func (m *configTxnManager) Preview(txnID string) (*ports.BridgeConfig, error) {
 		return m.active.merged, nil
 	}
 
-	merged, err := m.computeMerged()
+	merged, err := m.computeMerged(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +187,7 @@ func (m *configTxnManager) Preview(txnID string) (*ports.BridgeConfig, error) {
 // Note: on network filesystems (NFS/EFS) the check-read and write are
 // not perfectly atomic. For truly concurrent config management, use the
 // DynamoDB-backed config profile instead.
-func (m *configTxnManager) Commit(txnID string) (int, error) {
+func (m *configTxnManager) Commit(ctx context.Context, txnID string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -194,17 +195,17 @@ func (m *configTxnManager) Commit(txnID string) (int, error) {
 		return 0, err
 	}
 
-	merged, err := m.computeMerged()
+	merged, err := m.computeMerged(ctx)
 	if err != nil {
 		return 0, err
 	}
 
-	if _, valErr := m.store.Validate(merged); valErr != nil {
+	if _, valErr := m.store.Validate(ctx, merged); valErr != nil {
 		return 0, valErr
 	}
 
 	// CAS: read current on-disk version and compare with our base.
-	diskVersion, err := m.readDiskVersion()
+	diskVersion, err := m.readDiskVersion(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("config commit: read disk version: %w", err)
 	}
@@ -216,7 +217,7 @@ func (m *configTxnManager) Commit(txnID string) (int, error) {
 	newVersion := diskVersion + 1
 	merged.Version = newVersion
 
-	if err := m.store.Save(merged); err != nil {
+	if err := m.store.Save(ctx, merged); err != nil {
 		return 0, fmt.Errorf("config write failed: %w", err)
 	}
 
@@ -229,8 +230,8 @@ func (m *configTxnManager) Commit(txnID string) (int, error) {
 // reports the underlying source does not yet exist (errors.Is the
 // stdlib fs.ErrNotExist sentinel); the txn API signals "first-write"
 // semantics via baseVersion=0.
-func (m *configTxnManager) readDiskVersion() (int, error) {
-	diskCfg, err := m.store.Load()
+func (m *configTxnManager) readDiskVersion(ctx context.Context) (int, error) {
+	diskCfg, err := m.store.Load(ctx)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return 0, nil
@@ -296,7 +297,7 @@ func (m *configTxnManager) checkTxn(txnID string) error {
 
 // computeMerged builds the merged config from the current effective config
 // plus all accumulated patches. Must be called with mu held.
-func (m *configTxnManager) computeMerged() (*ports.BridgeConfig, error) {
+func (m *configTxnManager) computeMerged(ctx context.Context) (*ports.BridgeConfig, error) {
 	base := m.configProvider()
 	if base == nil {
 		return nil, fmt.Errorf("no current config available")
@@ -304,7 +305,7 @@ func (m *configTxnManager) computeMerged() (*ports.BridgeConfig, error) {
 
 	result := base
 	for i, patch := range m.active.patches {
-		merged, err := m.store.Merge(result, patch)
+		merged, err := m.store.Merge(ctx, result, patch)
 		if err != nil {
 			return nil, fmt.Errorf("merge patch %d: %w", i, err)
 		}

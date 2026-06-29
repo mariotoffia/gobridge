@@ -32,7 +32,7 @@ func rebuildSQSClient(ctx context.Context, region, endpoint, profile string, cre
 		opts = append(opts, awsconfig.WithSharedConfigProfile(profile))
 	}
 	if creds != nil {
-		provider := credentials.NewStaticCredentialsProvider(creds.Username, creds.Password, "")
+		provider := credentials.NewStaticCredentialsProvider(creds.Username(), creds.Password().Reveal(), "")
 		opts = append(opts, awsconfig.WithCredentialsProvider(provider))
 	}
 
@@ -56,10 +56,10 @@ func rebuildSQSClient(ctx context.Context, region, endpoint, profile string, cre
 // the SDK's default trust store. Leaf-cert pinning would be configured
 // on the awshttp client and is out of scope here.
 func (s *Sender) ApplyCredentials(ctx context.Context, set *connectivity.CredentialSet) error {
-	if set == nil || set.Password == nil {
+	if set == nil || set.Password() == nil {
 		return nil
 	}
-	client, err := rebuildSQSClient(ctx, s.cfg.Region, s.cfg.Endpoint, s.cfg.Profile, set.Password)
+	client, err := rebuildSQSClient(ctx, s.cfg.Region, s.cfg.Endpoint, s.cfg.Profile, set.Password())
 	if err != nil {
 		return err
 	}
@@ -73,10 +73,10 @@ func (s *Sender) ApplyCredentials(ctx context.Context, set *connectivity.Credent
 // ApplyCredentials rotates the Receiver's AWS credentials. Same
 // contract as Sender.ApplyCredentials.
 func (r *Receiver) ApplyCredentials(ctx context.Context, set *connectivity.CredentialSet) error {
-	if set == nil || set.Password == nil {
+	if set == nil || set.Password() == nil {
 		return nil
 	}
-	client, err := rebuildSQSClient(ctx, r.cfg.Region, r.cfg.Endpoint, r.cfg.Profile, set.Password)
+	client, err := rebuildSQSClient(ctx, r.cfg.Region, r.cfg.Endpoint, r.cfg.Profile, set.Password())
 	if err != nil {
 		return err
 	}

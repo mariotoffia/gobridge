@@ -25,10 +25,10 @@ func TestNewSender_Defaults(t *testing.T) {
 func TestSender_Send_NoSession(t *testing.T) {
 	s := NewSender(SenderConfig{})
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "e1",
 		Payload: []byte("hello"),
-	}
+	})
 	err := s.Send(context.Background(), ports.OutboundMessage{Envelope: env, Address: "rk"})
 	if err == nil {
 		t.Fatal("expected error for nil session")
@@ -52,10 +52,10 @@ func TestSender_Send_NoConnection(t *testing.T) {
 	defer func() { _ = sess.Close(context.Background()) }()
 	s := NewSender(SenderConfig{Session: sess})
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "e2",
 		Payload: []byte("hello"),
-	}
+	})
 	err := s.Send(context.Background(), ports.OutboundMessage{Envelope: env, Address: "rk"})
 	if err == nil {
 		t.Fatal("expected error for disconnected session")
@@ -66,26 +66,29 @@ func TestSender_Send_NoConnection(t *testing.T) {
 	}
 }
 
-// verifies SendBatch returns 0 sent when first message fails.
+// verifies SendBatch reports per-message send errors (and 0 successes) when sends fail, with no whole-batch error.
 func TestSender_SendBatch_FirstFails(t *testing.T) {
 	s := NewSender(SenderConfig{})
 
 	envs := []*messaging.Envelope{
-		{ID: "e1", Payload: []byte("a")},
-		{ID: "e2", Payload: []byte("b")},
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Payload: []byte("a")}),
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e2", Payload: []byte("b")}),
 	}
-	sent, err := s.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, err := s.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e, Address: "rk"}
 		}
 		return _msgs
 	}())
-	if err == nil {
-		t.Fatal("expected error")
+	if err != nil {
+		t.Fatalf("SendBatch must not return a whole-batch error, got %v", err)
 	}
-	if sent != 0 {
+	if sent := batchSent(results); sent != 0 {
 		t.Errorf("sent = %d, want 0", sent)
+	}
+	if results[0].Err == nil {
+		t.Fatal("expected the first message to carry its send error")
 	}
 }
 
@@ -93,11 +96,11 @@ func TestSender_SendBatch_FirstFails(t *testing.T) {
 func TestSender_SendBatch_Empty(t *testing.T) {
 	s := NewSender(SenderConfig{})
 
-	sent, err := s.SendBatch(context.Background(), []ports.OutboundMessage(nil))
+	results, err := s.SendBatch(context.Background(), []ports.OutboundMessage(nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if sent != 0 {
+	if sent := batchSent(results); sent != 0 {
 		t.Errorf("sent = %d, want 0", sent)
 	}
 }
@@ -165,4 +168,15 @@ func TestSender_Send_NilEnvelope(t *testing.T) {
 	if !errors.Is(be, shared.ErrInvalidPayload) {
 		t.Errorf("expected ErrInvalidPayload, got code %s", be.Code)
 	}
+}
+
+// batchSent counts the successful (nil-Err) entries in a SendBatch result.
+func batchSent(results []ports.BatchResult) int {
+	n := 0
+	for _, r := range results {
+		if r.Err == nil {
+			n++
+		}
+	}
+	return n
 }

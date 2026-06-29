@@ -10,12 +10,10 @@ import (
 )
 
 func TestCredentialsToConnection_ConnectionString(t *testing.T) {
-	existing := ConnectionConfig{ConnectionString: "Endpoint=sb://old/;..."}
-	out, changed := credentialsToConnection(existing, &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Password: "Endpoint=sb://new/;..."},
-	})
+	existing := ConnectionConfig{ConnectionString: shared.NewSecret("Endpoint=sb://old/;...")}
+	out, changed := credentialsToConnection(existing, connectivity.NewCredentialSet(pwCred("", "Endpoint=sb://new/;..."), nil))
 	require.True(t, changed)
-	require.Equal(t, "Endpoint=sb://new/;...", out.ConnectionString)
+	require.Equal(t, "Endpoint=sb://new/;...", out.ConnectionString.Reveal())
 	require.Empty(t, out.ClientID)
 }
 
@@ -25,18 +23,16 @@ func TestCredentialsToConnection_AADClientSecret(t *testing.T) {
 		TenantID:  "tenant-1",
 		ClientID:  "old-client",
 	}
-	out, changed := credentialsToConnection(existing, &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: "new-client", Password: "new-secret"},
-	})
+	out, changed := credentialsToConnection(existing, connectivity.NewCredentialSet(pwCred("new-client", "new-secret"), nil))
 	require.True(t, changed)
 	require.Equal(t, "new-client", out.ClientID)
-	require.Equal(t, "new-secret", out.ClientSecret)
+	require.Equal(t, "new-secret", out.ClientSecret.Reveal())
 	require.Equal(t, "tenant-1", out.TenantID, "tenant preserved")
 	require.Empty(t, out.ConnectionString)
 }
 
 func TestCredentialsToConnection_NilSet_NoChange(t *testing.T) {
-	existing := ConnectionConfig{ConnectionString: "endpoint"}
+	existing := ConnectionConfig{ConnectionString: shared.NewSecret("endpoint")}
 	_, changed := credentialsToConnection(existing, nil)
 	require.False(t, changed)
 }
@@ -46,7 +42,7 @@ func TestCredentialsToConnection_NilSet_NoChange(t *testing.T) {
 func TestApplyCredentials_Sender_NilSet_Rejected(t *testing.T) {
 	s, err := NewSender(SenderConfig{
 		QueueName:  "q",
-		Connection: ConnectionConfig{ConnectionString: "Endpoint=sb://x/;SharedAccessKeyName=a;SharedAccessKey=b"},
+		Connection: ConnectionConfig{ConnectionString: shared.NewSecret("Endpoint=sb://x/;SharedAccessKeyName=a;SharedAccessKey=b")},
 	})
 	require.NoError(t, err)
 
@@ -62,7 +58,7 @@ func TestApplyCredentials_Sender_NilSet_Rejected(t *testing.T) {
 func TestApplyCredentials_Receiver_NilSet_Rejected(t *testing.T) {
 	r, err := NewReceiver(ReceiverConfig{
 		QueueName:  "q",
-		Connection: ConnectionConfig{ConnectionString: "Endpoint=sb://x/;SharedAccessKeyName=a;SharedAccessKey=b"},
+		Connection: ConnectionConfig{ConnectionString: shared.NewSecret("Endpoint=sb://x/;SharedAccessKeyName=a;SharedAccessKey=b")},
 	}, nil)
 	require.NoError(t, err)
 
@@ -77,12 +73,12 @@ func TestApplyCredentials_Receiver_NilSet_Rejected(t *testing.T) {
 // credential set is a no-op — avoids rebuilding the client for
 // rotation events that don't actually change material.
 func TestApplyCredentials_NoChange_ReturnsNil(t *testing.T) {
-	conn := ConnectionConfig{ConnectionString: "Endpoint=sb://x/;SharedAccessKeyName=a;SharedAccessKey=b"}
+	conn := ConnectionConfig{ConnectionString: shared.NewSecret("Endpoint=sb://x/;SharedAccessKeyName=a;SharedAccessKey=b")}
 	s, err := NewSender(SenderConfig{QueueName: "q", Connection: conn})
 	require.NoError(t, err)
 
 	require.NoError(t, s.ApplyCredentials(t.Context(),
-		&connectivity.CredentialSet{Password: &connectivity.PasswordCredential{Password: conn.ConnectionString}}))
+		connectivity.NewCredentialSet(pwCred("", conn.ConnectionString.Reveal()), nil)))
 }
 
 // TestCredentialsToConnection_TLSMaterial_ChangesPEMFields verifies
@@ -90,18 +86,12 @@ func TestApplyCredentials_NoChange_ReturnsNil(t *testing.T) {
 // returned ConnectionConfig and clears TLSConfig so buildClientOptions
 // rebuilds tls.Config from the new PEM material.
 func TestCredentialsToConnection_TLSMaterial_ChangesPEMFields(t *testing.T) {
-	existing := ConnectionConfig{ConnectionString: "Endpoint=sb://x/;..."}
-	out, changed := credentialsToConnection(existing, &connectivity.CredentialSet{
-		TLS: &connectivity.TLSMaterial{
-			CertPEM: "--- CERT ---",
-			KeyPEM:  "--- KEY ---",
-			CAPEMs:  []string{"--- CA ---"},
-		},
-	})
+	existing := ConnectionConfig{ConnectionString: shared.NewSecret("Endpoint=sb://x/;...")}
+	out, changed := credentialsToConnection(existing, connectivity.NewCredentialSet(nil, tlsMat("--- CERT ---", "--- KEY ---", []string{"--- CA ---"}, false)))
 	require.True(t, changed)
-	require.Equal(t, "--- CERT ---", out.ClientCertPEM)
-	require.Equal(t, "--- KEY ---", out.ClientKeyPEM)
-	require.Equal(t, "--- CA ---", out.CaPEM)
+	require.Equal(t, "--- CERT ---", out.ClientCertPEM.Reveal())
+	require.Equal(t, "--- KEY ---", out.ClientKeyPEM.Reveal())
+	require.Equal(t, "--- CA ---", out.CaPEM.Reveal())
 	require.Nil(t, out.TLSConfig, "TLSConfig must be cleared so PEMs drive the rebuild")
 	// Existing password material is preserved.
 	require.Equal(t, existing.ConnectionString, out.ConnectionString)
@@ -112,29 +102,21 @@ func TestCredentialsToConnection_TLSMaterial_ChangesPEMFields(t *testing.T) {
 // CredentialRefresher doesn't force a client rebuild on every tick.
 func TestCredentialsToConnection_TLSMaterial_Dedup(t *testing.T) {
 	existing := ConnectionConfig{
-		ConnectionString: "Endpoint=sb://x/;...",
-		CaPEM:            "--- CA ---",
-		ClientCertPEM:    "--- CERT ---",
-		ClientKeyPEM:     "--- KEY ---",
+		ConnectionString: shared.NewSecret("Endpoint=sb://x/;..."),
+		CaPEM:            shared.NewSecret("--- CA ---"),
+		ClientCertPEM:    shared.NewSecret("--- CERT ---"),
+		ClientKeyPEM:     shared.NewSecret("--- KEY ---"),
 	}
-	_, changed := credentialsToConnection(existing, &connectivity.CredentialSet{
-		TLS: &connectivity.TLSMaterial{
-			CertPEM: "--- CERT ---",
-			KeyPEM:  "--- KEY ---",
-			CAPEMs:  []string{"--- CA ---"},
-		},
-	})
+	_, changed := credentialsToConnection(existing, connectivity.NewCredentialSet(nil, tlsMat("--- CERT ---", "--- KEY ---", []string{"--- CA ---"}, false)))
 	require.False(t, changed)
 }
 
 // TestCredentialsToConnection_MultiCA_Joined documents how multiple
 // CA PEMs are folded into a single CaPEM bundle.
 func TestCredentialsToConnection_MultiCA_Joined(t *testing.T) {
-	out, changed := credentialsToConnection(ConnectionConfig{}, &connectivity.CredentialSet{
-		TLS: &connectivity.TLSMaterial{CAPEMs: []string{"ca1", "ca2"}},
-	})
+	out, changed := credentialsToConnection(ConnectionConfig{}, connectivity.NewCredentialSet(nil, tlsMat("", "", []string{"ca1", "ca2"}, false)))
 	require.True(t, changed)
-	require.Equal(t, "ca1\nca2", out.CaPEM)
+	require.Equal(t, "ca1\nca2", out.CaPEM.Reveal())
 }
 
 // TestBuildTLSConfig_ClientCertPEM_PartialRejected pins the both-or-
@@ -143,4 +125,14 @@ func TestBuildTLSConfig_ClientCertPEM_PartialRejected(t *testing.T) {
 	_, err := buildTLSConfig("", "--- CERT ---", "", false)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "ClientCertPEM and ClientKeyPEM")
+}
+
+func pwCred(u, p string) *connectivity.PasswordCredential {
+	c := connectivity.NewPasswordCredential(u, p)
+	return &c
+}
+
+func tlsMat(cert, key string, ca []string, insecure bool) *connectivity.TLSMaterial {
+	m := connectivity.NewTLSMaterial(cert, key, ca, insecure)
+	return &m
 }

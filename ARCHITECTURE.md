@@ -84,7 +84,7 @@ closer to the center. The rules below are enforced by `make lint`
 
 | Layer | May Import |
 |---|---|
-| `domain/` | Standard library only (no gobridge, no vendor) |
+| `domain/` | Standard library, no vendor, and no outer-layer project packages — only the documented domain context-map edges (`persistence`→`messaging`/`shared`, `routing`→`messaging`/`shared`, `connectivity`→`shared`; see DDD.md §2) |
 | `ports/` | `domain` |
 | `config/` | `domain` (every bounded context), `ports` — **stdlib-only**: the inner ring carries no vendor concession (W-9 / L-2) |
 | `config/parser/` | `config`, `domain` (every bounded context), `ports`, `gopkg.in/yaml.v3`, `github.com/go-viper/mapstructure/v2` — the only Layer-2 location allowed to ship those vendor deps |
@@ -251,14 +251,18 @@ Every plugin attachment point on the blueprint (transport sessions,
 receivers, senders, subscriptions, bindings, and stores) carries a
 typed `ports.PluginConfig` rather than an opaque `map[string]any`.
 Adapters export a concrete `Config` struct that implements
-`Kind() string` and `Validate() error`, and self-register a decoder on
-`*ports.Registry` from an `init()` in their `register.go`. The
+`Kind() string` and `Validate() error`, and register a decoder on a
+`*ports.Registry` the composition root owns, via an exported
+`Register(reg *ports.Registry) error` in their `register.go` (no
+process-wide singleton, no `init()`). The
 `config/parser` package performs a two-stage decode (frame →
 registry-dispatched typed config); `config/parser/blueprint_marshal.go`
 round-trips the typed `Config` back into the canonical `options:`
 wire form. The `cfgshape` analyzer (`scripts/cfgshape/analyzer.go`)
 enforces the shape across `ports/`, `domain/`, and `adapters/**` in
 `make lint`.
+
+The blueprint and plugin `Config` structs in `ports/` carry yaml/json struct tags but `ports` has **no** yaml/json runtime dependency — they are schema-tagged DTOs by design (the inner ring stays *dependency*-neutral, not *tag*-free). All wire-format coupling lives in `config/parser`.
 
 See `docs/typed-plugin-config.adoc` for the contract, the registry
 API, the per-step checklist for adding a new plugin, and the
@@ -319,13 +323,20 @@ type Sender interface {
     Send(ctx context.Context, msg OutboundMessage) error
 }
 
+type BatchResult struct {
+    Index int   // index into the input slice
+    Err   error // nil on success
+}
+
 type BatchSender interface {
     Sender
-    SendBatch(ctx context.Context, msgs []OutboundMessage) (int, error)
+    SendBatch(ctx context.Context, msgs []OutboundMessage) ([]BatchResult, error)
 }
 ```
 
 `OutboundMessage.Address` is the resolved per-message destination (publish topic, routing key, queue URL, ...). `Envelope.Subject` is the logical event subject and is never overwritten with the destination — see [§ Subject vs. Address](#subject-vs-address).
+
+`SendBatch` returns one `BatchResult` per input message (index-aligned) once the batch is dispatched; callers count successes as the nil-`Err` results. A non-nil top-level error is reserved for whole-batch failures — client/connection setup, or fail-fast pre-validation that rejects the entire batch before any dispatch — in which case it returns `(nil, err)` and nothing was sent.
 
 ### Session
 
@@ -651,11 +662,11 @@ Durable outbox for reliable egress. All mutations that accept a `LeaseToken` mus
 
 ```go
 type OutboxStore interface {
-    Persist(ctx context.Context, records []persistence.OutboxRecord) error
-    Claim(ctx context.Context, partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error)
+    Persist(ctx context.Context, records []*persistence.OutboxRecord) error
+    Claim(ctx context.Context, partitionKey string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error)
     Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error
     Expire(ctx context.Context, before time.Time) (int, error)
-    QueryPending(ctx context.Context, partitionKey string, limit int) ([]persistence.OutboxRecord, error)
+    QueryPending(ctx context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error)
 }
 ```
 

@@ -21,7 +21,7 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 
 | Term | Meaning |
 |---|---|
-| **Envelope** | The canonical message moving through the bridge. `ID`, `Subject`, `Payload`, `Headers`, `CreatedAt`, `ExpiresAt`. Aggregate root of the messaging context. |
+| **Envelope** | The canonical message moving through the bridge. Carries `Subject`, `Headers`, and the immutable fields `ID`, `Payload`, `CreatedAt`, `ExpiresAt` — accessed via read-only accessors (`ID()`, `Payload()`, `CreatedAt()`, `ExpiresAt()`); constructed via `NewEnvelope`/`MustEnvelope`. Machine-enforced aggregate root of the messaging context. |
 | **Subject** | Logical event subject of an envelope. Free-form string set by the producer (or by an ingress mapping). The runtime never overwrites it with a transport destination. Distinct from `Address`. |
 | **Address** | Transport destination chosen at egress time for one envelope: a publish topic, AMQP routing key, queue URL, etc. Lives on `DestinationBinding.Address`, `DispatchPlan.Address`, `OutboxRecord.Address`, and `ports.OutboundMessage.Address`. Never written into `Envelope.Subject`. |
 | **OutboundMessage** | The unit `Sender.Send`/`BatchSender.SendBatch` consume: `{Envelope *domain.Envelope, Address string}`. Carries the logical envelope and the resolved transport destination side-by-side. |
@@ -47,7 +47,7 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **DrainStrategy** | Policy returning the next wait between drain cycles. Implementations: `FixedPoll`, `AdaptiveBackoff`. |
 | **AdaptiveBackoff** | Drain policy that resets to `MinInterval` when records were found, else exponentially backs off up to `MaxInterval` (with ±25 % jitter). |
 | **Lease** | Cluster ownership grant. The current owner alone may claim/complete outbox records and forward routes. |
-| **LeaseInfo** | Authoritative lease state: `LeaseID`, `Owner`, `Version`, `ExpiresAt`, `Endpoints`. |
+| **LeaseInfo** | Read-only snapshot of lease state (`LeaseStore` owns the invariants): `LeaseID`, `Owner`, `Version`, `ExpiresAt`, `Endpoints`. |
 | **LeaseToken** | Fencing token `{Owner, Version}` returned with the lease. Carried on every guarded write so stale owners are rejected. |
 | **Fencing token / Fencing** | The mechanism that uses `LeaseToken.Version` (monotonic) to reject writes from a previous owner after a lease transfer. |
 | **Stale fencing token** | A write attempted with an older `Version` than the current lease. Rejected with `shared.ErrCodeStaleFencingToken`. |
@@ -89,7 +89,7 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **PublisherPlan** | Desired publisher: `Topic`, `QoS`, transport-typed `Config`. |
 | **Reconcile** | The act of bringing a session's actual subscriptions/publishers in line with its `SessionPlan`. |
 | **Credential** | Authentication material. One of: `password`, `tls`. |
-| **CredentialSet** | Composite credential container — may carry both a `PasswordCredential` and `TLSMaterial`. Aggregate root. |
+| **CredentialSet** | Composite credential container — may carry both a `PasswordCredential` and `TLSMaterial`; accessed via nil-safe accessors `Password()` and `TLS()`; constructed via `NewCredentialSet(password, tls)`. Machine-enforced aggregate root. |
 | **PasswordCredential** | `Username` + `Password`. Redacts in `String`/`GoString`. |
 | **TLSMaterial** | `CertPEM`, `KeyPEM`, `CAPEMs`, `InsecureSkipVerify`. Redacts in `String`/`GoString`. |
 | **Push credential / Pull credential** | Two delivery modes for credential rotation: push stores emit on change; pull stores are polled. `CredentialSet.Equal` is the canonical change check. |
@@ -102,9 +102,20 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **Timer / Ticker** | Domain-owned interfaces wrapping `time.Timer` / `time.Ticker`. Faked in tests via `domain/clock/clocktest`. |
 | **System clock** | The default `Clock` backed by the stdlib `time` package. |
 
+## Events (`domain/events`)
+
+Layer-1 cross-context **facts** package. The values here are emitted by application/runtime services — **not** raised by aggregates — and published best-effort through `ports.EventPublisher`. See [DDD.md §1](DDD.md#1-bounded-contexts-at-a-glance) and `domain/events/doc.go`.
+
+| Term | Meaning |
+|---|---|
+| **Event** | An immutable past-tense fact about a bounded-context transition. Carries a stable `EventID`, a namespaced `EventType`, the wall time the fact occurred, the concerned `AggregateID`, and a semver `SchemaVersion`; payload fields are primitives only, so consumers deserialise without importing a producer context. |
+| **EventType** | Canonical `<bounded-context>.<aggregate>.<verb-past>` string (e.g. `persistence.outbox.claimed`). Returned by `Event.EventType()`; compare against the exported `SchemaXxx` constants, never a call-site literal. |
+| **Emitted fact (not aggregate-raised)** | Aggregates (`OutboxRecord`, the lease, `DLQEntry`, the blueprint) do **not** record or return events on their transitions. The driving application/runtime service constructs the event via a public constructor (e.g. `NewOutboxRecordClaimed`) once the transition has succeeded, then publishes it. |
+| **EventPublisher** | The Layer-2 egress port (`ports.EventPublisher`) carrying events to a sink (audit log, message bus, durable outbox). Non-blocking, best-effort: may drop under backpressure and MUST count drops; `NoopEventPublisher` is the null sink. |
+
 ## Blueprint / Configuration (`ports/blueprint*.go` + `config/`)
 
-Layer-2 *supporting subdomain*: the parsed-but-not-yet-built shape of a bridge. Format-neutral types live in `ports/`; the YAML/JSON parser, validator, merger and on-disk store live in `config/`. See [DDD.md §3.7](DDD.md#37-blueprint--configuration--supporting-layer-2).
+Layer-2 *supporting subdomain*: the parsed-but-not-yet-built shape of a bridge. The `ports/` types are schema-tagged DTOs (yaml/json struct tags, but no yaml/json runtime dependency); the YAML/JSON parser, validator, merger and on-disk store live in `config/`. See [DDD.md §3.7](DDD.md#37-blueprint--configuration--supporting-layer-2).
 
 | Term | Meaning |
 |---|---|

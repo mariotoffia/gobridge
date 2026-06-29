@@ -60,6 +60,12 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 	if r.Policy.Backoff.Multiplier != 0 {
 		p.Backoff.Multiplier = r.Policy.Backoff.Multiplier
 	}
+	if r.Policy.Backoff.Jitter != 0 {
+		if r.Policy.Backoff.Jitter < 0 || r.Policy.Backoff.Jitter > 1 {
+			return p, fmt.Errorf("invalid backoff jitter %v: must be in [0,1]", r.Policy.Backoff.Jitter)
+		}
+		p.Backoff.JitterFactor = r.Policy.Backoff.Jitter
+	}
 	return p, nil
 }
 

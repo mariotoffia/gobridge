@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"gopkg.in/yaml.v3"
 )
@@ -152,11 +153,12 @@ func ScanForPlaintextSecrets(cfg *ports.BridgeConfig) error {
 
 	var violations []error
 
-	// Top-level HTTP keys are direct strings — not behind a
-	// PluginConfig — so they need explicit handling.
+	// Top-level HTTP keys are shared.Secret value objects; Reveal the
+	// underlying value so the scanner can verify it is a credential URI
+	// rather than an inline plaintext literal.
 	if cfg.HTTP != nil {
-		violations = appendIfPlaintext(violations, "http.admin_api_key", cfg.HTTP.AdminAPIKey)
-		violations = appendIfPlaintext(violations, "http.monitor_api_key", cfg.HTTP.MonitorAPIKey)
+		violations = appendIfPlaintext(violations, "http.admin_api_key", cfg.HTTP.AdminAPIKey.Reveal())
+		violations = appendIfPlaintext(violations, "http.monitor_api_key", cfg.HTTP.MonitorAPIKey.Reveal())
 	}
 
 	for i := range cfg.Sessions {
@@ -217,7 +219,12 @@ func scanPluginPayload(into []error, path string, cfg ports.PluginConfig, raw po
 
 func decodeForScan(cfg ports.PluginConfig, raw ports.RawConfig) (any, bool) {
 	if cfg != nil {
-		data, err := yaml.Marshal(cfg)
+		// Reveal shared.Secret values so the scanner inspects the REAL value:
+		// a credential URI (pms://…) must be recognised as compliant, and a
+		// genuine inline plaintext must still be flagged. Without revealing,
+		// every secret would marshal to "[REDACTED]" and the scanner would
+		// false-positive on compliant credential-URI configs.
+		data, err := yaml.Marshal(shared.RevealSecrets(cfg))
 		if err == nil {
 			var out any
 			if uerr := yaml.Unmarshal(data, &out); uerr == nil {

@@ -99,7 +99,7 @@ func TestInjectEnvelope_CreatedAtFromClock(t *testing.T) {
 	require.Eventually(t, func() bool { return sender.sentCount() >= 1 },
 		2*time.Second, 10*time.Millisecond)
 	sender.mu.Lock()
-	got := sender.sent[0].CreatedAt
+	got := sender.sent[0].CreatedAt()
 	sender.mu.Unlock()
 	assert.Equal(t, fixed, got, "CreatedAt must come from the injected clock")
 }

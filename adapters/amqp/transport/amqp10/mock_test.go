@@ -3,9 +3,13 @@ package amqp10
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	"github.com/Azure/go-amqp"
+
+	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // mockConn implements amqpConn for unit tests.
@@ -90,4 +94,28 @@ func mockDialFunc(conn amqpConn, err error) dialFunc {
 	return func(_ context.Context, _ SessionOptions, _ amqp10Credentials) (amqpConn, error) {
 		return conn, err
 	}
+}
+
+// fakeLink implements linkReceiver for unit tests, yielding a queued
+// sequence of deliveries (and a final blocking receive once drained) so
+// the receive loop can be driven without a live broker.
+type fakeLink struct {
+	deliveries []*Delivery
+	idx        int
+	closeCalls int
+}
+
+func (f *fakeLink) Receive(ctx context.Context, _ *slog.Logger, _ ports.MetricsExporter, _ clock.Clock) (*Delivery, error) {
+	if f.idx < len(f.deliveries) {
+		d := f.deliveries[f.idx]
+		f.idx++
+		return d, nil
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (f *fakeLink) Close(_ context.Context) error {
+	f.closeCalls++
+	return nil
 }

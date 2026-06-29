@@ -23,7 +23,7 @@ func envelope(tenantID string, payloadSize int) *messaging.Envelope {
 		env.SetHeader(messaging.HeaderTenantID, tenantID)
 	}
 	if payloadSize > 0 {
-		env.Payload = make([]byte, payloadSize)
+		env.SetPayload(make([]byte, payloadSize))
 	}
 	return env
 }

@@ -6,6 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -90,15 +91,21 @@ type codec interface {
 	unmarshal([]byte, any) error
 }
 
+// Both codecs reveal shared.Secret values on marshal: these codecs are used
+// ONLY by the authoritative config persistence path (DynamoDB Save, file
+// WriteFile, CDK synthesis), so the durable artifact must carry the REAL secret
+// (HTTP admin keys, plugin-config passwords/API keys) rather than "[REDACTED]".
+// revealSecrets carries the reveal intent on a per-value copy, so concurrent
+// default (redacting) json.Marshal/yaml.Marshal calls elsewhere are unaffected.
 type jsonCodec struct{}
 
-func (jsonCodec) marshal(v any) ([]byte, error)   { return json.Marshal(v) }      //nolint:wrapcheck // wrapped by caller
-func (jsonCodec) unmarshal(b []byte, v any) error { return json.Unmarshal(b, v) } //nolint:wrapcheck // wrapped by caller
+func (jsonCodec) marshal(v any) ([]byte, error)   { return json.Marshal(shared.RevealSecrets(v)) } //nolint:wrapcheck // wrapped by caller
+func (jsonCodec) unmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }                  //nolint:wrapcheck // wrapped by caller
 
 type yamlCodec struct{}
 
-func (yamlCodec) marshal(v any) ([]byte, error)   { return yaml.Marshal(v) }      //nolint:wrapcheck // wrapped by caller
-func (yamlCodec) unmarshal(b []byte, v any) error { return yaml.Unmarshal(b, v) } //nolint:wrapcheck // wrapped by caller
+func (yamlCodec) marshal(v any) ([]byte, error)   { return yaml.Marshal(shared.RevealSecrets(v)) } //nolint:wrapcheck // wrapped by caller
+func (yamlCodec) unmarshal(b []byte, v any) error { return yaml.Unmarshal(b, v) }                  //nolint:wrapcheck // wrapped by caller
 
 // bridgeConfigToWireMap performs the round-trip: marshal cfg with
 // reflection (dropping all Config fields), unmarshal back into a

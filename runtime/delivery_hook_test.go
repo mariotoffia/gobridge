@@ -108,7 +108,7 @@ func TestDeliveryHook_DirectHold_Success(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-1", Payload: []byte("hello")})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1", Payload: []byte("hello")}))
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestDeliveryHook_DirectHold_PermanentFailure_DLQ(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-perm", Payload: []byte("fail")})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-perm", Payload: []byte("fail")}))
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestDeliveryHook_DirectHold_NoHook_NoopSafe(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-noop", Payload: []byte("safe")})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-noop", Payload: []byte("safe")}))
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestDeliveryHook_DirectHold_TransientRetry_NoSettled(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-transient", Payload: []byte("retry")})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-transient", Payload: []byte("retry")}))
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestDeliveryHook_DirectHold_MaxAttemptFromPolicy(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-max", Payload: []byte("max")})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-max", Payload: []byte("max")}))
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -357,7 +357,7 @@ func TestDeliveryHook_DirectHold_Drop_NoDLQ_RetryUnsupported(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-drop", Payload: []byte("drop")})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-drop", Payload: []byte("drop")}))
 	del.RetryFnErr = shared.ErrNotSupported
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
@@ -390,11 +390,9 @@ func TestDeliveryHook_DirectHold_ExpiredMessage_NoEgressHook(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{
-		ID:        "msg-expired",
-		Payload:   []byte("old"),
-		ExpiresAt: time.Now().Add(-1 * time.Hour),
-	})
+	expiredEnv := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-expired", Payload: []byte("old"), CreatedAt: time.Now().Add(-2 * time.Hour)})
+	_ = expiredEnv.SetExpiry(time.Now().Add(-1 * time.Hour))
+	del := NewFakeDelivery(expiredEnv)
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -435,7 +433,7 @@ func TestDeliveryHook_DirectHold_SettledCarriesBindingID(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-bind", Payload: []byte("bind")})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-bind", Payload: []byte("bind")}))
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -466,10 +464,10 @@ func TestDeliveryHook_DirectHold_ConcurrentDeliveries(t *testing.T) {
 
 	const n = 10
 	for i := range n {
-		del := NewFakeDelivery(&messaging.Envelope{
+		del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "concurrent-" + string(rune('0'+i)),
 			Payload: []byte("data"),
-		})
+		}))
 		if err := receiver.Emit(ctx, del); err != nil {
 			t.Fatalf("emit %d: %v", i, err)
 		}

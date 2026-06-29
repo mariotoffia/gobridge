@@ -106,11 +106,11 @@ func TestUC96_CrossProtocol_RabbitMQ_Artemis(t *testing.T) {
 
 	rmqPayloads := make(map[string]bool, len(rmqMsgs))
 	for _, m := range rmqMsgs {
-		rmqPayloads[string(m.Payload)] = true
+		rmqPayloads[string(m.Payload())] = true
 	}
 	artPayloads := make(map[string]bool, len(artMsgs))
 	for _, m := range artMsgs {
-		artPayloads[string(m.Payload)] = true
+		artPayloads[string(m.Payload())] = true
 	}
 
 	// Both protocols should have the same set of sequential payloads.

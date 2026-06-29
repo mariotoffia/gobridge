@@ -16,6 +16,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -76,8 +77,8 @@ func sampleBridgeConfig() *ports.BridgeConfig {
 			},
 		},
 		HTTP: &ports.HTTPConfig{
-			AdminAPIKey:   "super-secret-admin-key-1234",
-			MonitorAPIKey: "super-secret-monitor-key-5678",
+			AdminAPIKey:   shared.NewSecret("super-secret-admin-key-1234"),
+			MonitorAPIKey: shared.NewSecret("super-secret-monitor-key-5678"),
 		},
 	}
 }
@@ -127,9 +128,29 @@ func TestHandleConfigGet_RedactsSensitiveFields(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 
 	body := rec.Body.String()
+	// The raw API key bytes must never appear in a config-read response.
 	assert.NotContains(t, body, "super-secret-admin-key")
 	assert.NotContains(t, body, "super-secret-monitor-key")
-	assert.Contains(t, body, `"***"`)
+	// HTTPConfig.AdminAPIKey/MonitorAPIKey are shared.Secret. Secret
+	// PRESERVES its value on marshal (config-as-code round-trips), so the
+	// read handler (handleConfigGet -> redactSecret) explicitly swaps each
+	// key for the "[REDACTED]" marker before serialising; that explicit
+	// scrub is what surfaces here.
+	assert.Contains(t, body, `"[REDACTED]"`)
+
+	// Field-level proof: the parsed HTTP block carries the redaction
+	// marker for both keys rather than the underlying secret value.
+	var payload struct {
+		Config struct {
+			HTTP struct {
+				AdminAPIKey   string `json:"admin_api_key"`
+				MonitorAPIKey string `json:"monitor_api_key"`
+			} `json:"http"`
+		} `json:"config"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
+	assert.Equal(t, "[REDACTED]", payload.Config.HTTP.AdminAPIKey)
+	assert.Equal(t, "[REDACTED]", payload.Config.HTTP.MonitorAPIKey)
 }
 
 // --- POST /config/transactions ---

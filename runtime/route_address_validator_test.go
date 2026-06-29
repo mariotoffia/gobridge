@@ -73,9 +73,9 @@ func TestRouteRunner_AddressValidator_Reject_RoutesDLQ(t *testing.T) {
 		entry := dlqStore.Entries[0]
 		// AP-005 maps validator failure to ErrInvalidTopic; the DLQ
 		// entry's ErrorCode must therefore advertise that.
-		if entry.ErrorCode != string(shared.ErrInvalidTopic.Code) {
+		if entry.ErrorCode() != string(shared.ErrInvalidTopic.Code) {
 			t.Fatalf("expected DLQ ErrorCode %q, got %q",
-				shared.ErrInvalidTopic.Code, entry.ErrorCode)
+				shared.ErrInvalidTopic.Code, entry.ErrorCode())
 		}
 	}
 }

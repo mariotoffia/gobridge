@@ -38,8 +38,8 @@ func TestReceiver_ConvertMessage_MissingID(t *testing.T) {
 		t.Fatalf("messageToEnvelope: %v", err)
 	}
 
-	if env.ID == "" {
-		t.Fatal("Envelope.ID should be auto-generated when message has no MessageID (BUG-4)")
+	if env.ID() == "" {
+		t.Fatal("Envelope.ID() should be auto-generated when message has no MessageID (BUG-4)")
 	}
 }
 
@@ -65,8 +65,8 @@ func TestReceiver_ConvertMessage_WithID(t *testing.T) {
 		t.Fatalf("messageToEnvelope: %v", err)
 	}
 
-	if env.ID != "msg-123" {
-		t.Fatalf("Envelope.ID = %q, want %q", env.ID, "msg-123")
+	if env.ID() != "msg-123" {
+		t.Fatalf("Envelope.ID() = %q, want %q", env.ID(), "msg-123")
 	}
 }
 
@@ -89,8 +89,8 @@ func TestReceiver_ConvertMessage_ValueBodyExtraction(t *testing.T) {
 		t.Fatalf("messageToEnvelope: %v", err)
 	}
 
-	if string(env.Payload) != "value-body" {
-		t.Fatalf("Payload = %q, want %q", env.Payload, "value-body")
+	if string(env.Payload()) != "value-body" {
+		t.Fatalf("Payload = %q, want %q", env.Payload(), "value-body")
 	}
 }
 
@@ -114,8 +114,8 @@ func TestReceiver_ConvertMessage_ValueBodyNonBytes(t *testing.T) {
 		t.Fatalf("messageToEnvelope: %v", err)
 	}
 
-	if env.Payload != nil {
-		t.Fatalf("Payload = %v, want nil for non-[]byte Value", env.Payload)
+	if env.Payload() != nil {
+		t.Fatalf("Payload = %v, want nil for non-[]byte Value", env.Payload())
 	}
 }
 

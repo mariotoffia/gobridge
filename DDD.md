@@ -1,6 +1,6 @@
 # GoBridge — Domain Model (DDD)
 
-The GoBridge domain layer (`domain/`, Clean Architecture Layer 1) is split into six bounded contexts. Each context owns its primitives, invariants, and ubiquitous-language terms; cross-context coupling is allow-listed in `.go-arch-lint.yml` and re-checked at file scope by `.golangci.yml` `depguard`.
+The GoBridge domain layer (`domain/`, Clean Architecture Layer 1) is split into six bounded contexts plus a cross-context `events` facts package. Each context owns its primitives, invariants, and ubiquitous-language terms; cross-context coupling is allow-listed in `.go-arch-lint.yml` and re-checked at file scope by `.golangci.yml` `depguard`.
 
 For term definitions see [UBIQUITOUS.md](UBIQUITOUS.md).
 
@@ -15,15 +15,16 @@ For term definitions see [UBIQUITOUS.md](UBIQUITOUS.md).
 | Persistence | `domain/persistence` | **Core** | `OutboxRecord` state machine (reliable egress), `LeaseInfo`+`LeaseToken` (cluster fencing), `DrainStrategy` polling policy. |
 | Routing | `domain/routing` | **Core** | `RoutePolicy`, `DestinationBinding`, `DispatchPlan`, `DLQEntry` — route decisions and dead-letter records. |
 | Connectivity | `domain/connectivity` | Supporting | `CredentialSet` (Password + TLS), `SessionPlan` (desired Subscriptions/Publishers). |
+| Events | `domain/events` | Generic | Past-tense observability **facts** about the persistence, routing, connectivity, and configuration contexts (outbox lifecycle, lease fencing, DLQ ingress/redrive, credential rotation, blueprint commit). Constructed by application/runtime services via public constructors (e.g. `NewOutboxRecordClaimed`) **after** a transition succeeds and published through `ports.EventPublisher` — **not** raised by aggregates. Carry primitive payload fields only, so consumers deserialise without importing a producer context. |
 | Clock | `domain/clock` | Generic | Time abstraction (`Clock`, `Timer`, `Ticker`). Stdlib-only, no `Sleep` by design — every wait must be cancellable. |
 
-All six contexts are stdlib-only at runtime (the `_no_external_deps_` sentinel in `.go-arch-lint.yml`).
+All seven `domain/` packages are stdlib-only at runtime (the `_no_external_deps_` sentinel in `.go-arch-lint.yml`). `domain/events` is the one package that owns no aggregate — it carries facts the application/runtime emit about the other contexts (see `domain/events/doc.go`).
 
-In addition to the six Layer-1 contexts above, GoBridge has a **Blueprint / Configuration** *supporting* subdomain that lives at Layer 2 (in `ports/blueprint*.go` plus the `config/` parser/store) and represents the parsed-but-not-yet-built shape of a bridge:
+In addition to the seven Layer-1 `domain/` packages above, GoBridge has a **Blueprint / Configuration** *supporting* subdomain that lives at Layer 2 (in `ports/blueprint*.go` plus the `config/` parser/store) and represents the parsed-but-not-yet-built shape of a bridge:
 
 | Context | Package | Subdomain | Purpose |
 |---|---|---|---|
-| Blueprint / Configuration | `ports` (types) + `config` (parser/store) | Supporting (Layer 2) | The declarative bridge shape: `BridgeConfig`, `BridgeSettings`, `SessionDef`, `BindingDef`, `RouteDef`, `BlueprintValidationError`, `ConfigStore`. Consumed by `bridge.Builder` and the admin `httpapi`. Format-neutral types live in `ports/` (no yaml/json runtime dep); the YAML/JSON parser, validator, merger and on-disk manager live in `config/`. |
+| Blueprint / Configuration | `ports` (types) + `config` (parser/store) | Supporting (Layer 2) | The declarative bridge shape: `BridgeConfig`, `BridgeSettings`, `SessionDef`, `BindingDef`, `RouteDef`, `BlueprintValidationError`, `ConfigStore`. Consumed by `bridge.Builder` and the admin `httpapi`. The `ports/` blueprint types are **schema-tagged DTOs** — they carry yaml/json struct *tags* but the `ports` package has no yaml/json runtime *dependency*; the YAML/JSON parser, validator, merger and on-disk manager live in `config/`. |
 
 The Blueprint context is a **Customer/Supplier** consumer of the Routing, Connectivity, and Persistence cores — it *describes* their runtime composition without owning their invariants. See §5 for the context-map edges.
 
@@ -54,16 +55,7 @@ flowchart TB
     clock -->|stdlib only| stdlib
 ```
 
-**Rules enforced by `.go-arch-lint.yml` (deps block):**
-
-- `shared`, `messaging`, `clock` — no domain dependencies (stdlib only).
-- `persistence` — `shared` + `messaging` only.
-- `routing` — `shared` + `messaging` only.
-- `connectivity` — `shared` only.
-- No domain context may import another domain context outside this list.
-- `.golangci.yml` adds six per-context `depguard` rules so violations surface at file scope before `go-arch-lint` runs.
-
-**Pragmatic deviation (FIX-004 phase 5):** `persistence → messaging` is permitted because `OutboxRecord.Envelope` is a `messaging.Envelope` value — an outbox record IS a persisted envelope. Banning the edge would force an opaque payload-bytes + headers map and an Envelope reconstruction on every read.
+The allowed-import edges above are the domain-context rules. Their machine-readable definitions and per-file `depguard` enforcement are documented in [LINT.md](LINT.md); the layer-level rules table lives in [ARCHITECTURE.md §2](ARCHITECTURE.md#2-hexagonal-architecture-layers). `persistence → messaging` is the one cross-context edge — `OutboxRecord.Envelope` is a `messaging.Envelope` value, so an outbox record IS a persisted envelope.
 
 ---
 
@@ -172,7 +164,7 @@ classDiagram
                        ↘ expired
     }
     class LeaseInfo {
-        <<aggregate root>>
+        <<read-only snapshot / value object>>
         +LeaseID, Owner: string
         +Version: uint64
         +ExpiresAt: time.Time
@@ -197,14 +189,14 @@ classDiagram
     DrainStrategy <|.. FixedPoll
     DrainStrategy <|.. AdaptiveBackoff
     OutboxRecord --> OutboxStatus
-    LeaseInfo --> LeaseToken : produces
+    LeaseInfo ..> LeaseToken : returned alongside
 ```
 
 **Invariants:**
 
 - `OutboxRecord.Status` follows the state machine `pending → claimed → completed | expired`. Only the lease holder identified by `LeaseToken{Owner, Version}` may claim; `ClaimVersion` enforces fencing on optimistic update.
 - `OutboxPartitionKey(sessionID, bindingID)` is the canonical key — `SESSION#<id>` if session is set, else `BINDING#<id>`.
-- `LeaseInfo.Version` is monotonic. Stale-token writes return `shared.ErrCodeStaleFencingToken`.
+- `LeaseInfo` is a read-only snapshot DTO with no behavior; `LeaseStore` owns the lease lifecycle and fencing invariants, enforcing them via conditional (compare-and-set) writes keyed on `LeaseToken.Version`. `LeaseStore` keeps `Version` monotonic and returns `shared.ErrCodeStaleFencingToken` on stale-token writes.
 - `DrainStrategy.NextInterval` is the **only** way the drainer learns its next wait. `FixedPoll` returns a constant ±25 % jitter; `AdaptiveBackoff` resets to `MinInterval` when records were found, else multiplies up to `MaxInterval`. `AdaptiveBackoff` is single-goroutine.
 
 ### 3.4 `domain/routing` — Core (route decisions + DLQ)
@@ -367,7 +359,7 @@ classDiagram
 
 ### 3.7 Blueprint / Configuration — Supporting (Layer 2)
 
-Lives in `ports/blueprint*.go` (format-neutral types) and `config/`
+Lives in `ports/blueprint*.go` (schema-tagged DTOs — yaml/json struct tags, no yaml/json runtime dep) and `config/`
 (YAML/JSON parser, validator, merger, on-disk store). Not a Layer-1
 domain context — it is the *application-layer* description of what a
 bridge looks like before `bridge.Builder` materialises it into running
@@ -445,7 +437,7 @@ classDiagram
 **Invariants:**
 
 - `BridgeConfig` is the aggregate root of the blueprint. `bridge.Builder` consumes it whole; partial / mutated copies are not valid inputs.
-- The blueprint **is format-neutral** — `ports/` carries no yaml/json runtime dep. The `config/` package owns parsing, defaulting, merging and on-disk transactions; `httpapi` interacts with it only through the `ConfigStore` port.
+- The blueprint is **dependency-neutral, not tag-free** — the `ports/` blueprint structs carry yaml/json struct *tags* (they are schema-tagged DTOs by design), but the `ports` package itself has no yaml/json/mapstructure runtime *dependency*, so the inner ring stays dependency-neutral. The `config/` package owns parsing, defaulting, merging and on-disk transactions; `httpapi` interacts with it only through the `ConfigStore` port.
 - `BlueprintValidationError` separates hard `Errors` (block startup / commit) from advisory `Warnings` (surface in admin UI but allow). The admin layer consumes both without depending on the parser package.
 - Plugin-specific configuration (transport options, store driver options, processor params) is carried as typed `ports.PluginConfig` values inside `SessionDef.Config`, `BindingDef.Config`, `StoreConfig.Config`, etc. — never as `map[string]any`. See [PLUGIN.md §Typed Plugin Config](PLUGIN.md#typed-plugin-config) and `cfgshape` enforcement.
 - `BridgeConfig.Version` is an optimistic-concurrency counter; `ConfigStore.Save` must perform a check-and-set against the version the transaction was started with (so concurrent operators on a shared file/DB cannot silently overwrite).
@@ -454,81 +446,7 @@ classDiagram
 
 ## 4. Outer-ring consumers (who depends on the domain)
 
-The application/use-case ring (Layer 2) and adapters (Layer 3) depend **inward** on every relevant domain context. The diagram shows direction of dependency (A → B = A imports B).
-
-```mermaid
-flowchart TB
-    subgraph L4 [Layer 4 - Composition root]
-        direction LR
-        cmd
-        deployment
-    end
-    subgraph L3 [Layer 3 - Interface Adapters]
-        direction TB
-        httpapi
-        processors
-        adapters_transport["adapter_transport_*<br/>mqtt · sqs · asb<br/>amqp091 · amqp10 · http"]
-        adapters_store["adapter_store_*<br/>memory · sqlite · dynamodb"]
-        adapters_config["adapter_config_*"]
-        adapters_creds["adapter_credentials_*"]
-        adapters_obs["adapter_metrics_*<br/>adapter_tracing_*"]
-        adapters_cluster["adapter_cluster_*"]
-        httpapi ~~~ adapters_transport
-        adapters_transport ~~~ adapters_config
-        adapters_config ~~~ adapters_obs
-        processors ~~~ adapters_store
-        adapters_store ~~~ adapters_creds
-        adapters_creds ~~~ adapters_cluster
-    end
-    subgraph L2 [Layer 2 - Application + Ports + Shared kernel]
-        direction TB
-        ports
-        config
-        runtime
-        bridge
-        validate
-        circuitbreaker
-        logging
-        observability
-        ports ~~~ runtime
-        runtime ~~~ validate
-        validate ~~~ logging
-        config ~~~ bridge
-        bridge ~~~ circuitbreaker
-        circuitbreaker ~~~ observability
-    end
-    subgraph L1 [Layer 1 - Domain]
-        direction TB
-        shared
-        messaging
-        persistence
-        routing
-        connectivity
-        clock
-        shared ~~~ persistence
-        persistence ~~~ connectivity
-        messaging ~~~ routing
-        routing ~~~ clock
-    end
-
-    L4 --> L3
-    L4 --> L2
-    L3 --> L2
-    L3 --> L1
-    L2 --> L1
-
-    persistence --> shared
-    persistence --> messaging
-    routing --> shared
-    routing --> messaging
-    connectivity --> shared
-```
-
-Key allow-listed inward edges from outer rings (excerpt from `.go-arch-lint.yml`):
-
-- `ports`, `config`, `runtime`, `validate`, `bridge`, `circuitbreaker` — may depend on **all** domain contexts (`shared`, `messaging`, `persistence`, `routing`, `connectivity`, `clock`).
-- `config` is the only inner-ring component allowed external vendors (`yaml.v3`, `mapstructure`) — the domain is format-neutral.
-- Each transport / store adapter category is split per technology so a flaw in one adapter cannot leak into another via shared types.
+Layer-by-layer dependencies (composition root → adapters → application → ports → domain), the full per-component allowed-imports table, and the allow-listed inward edges from outer rings live in [ARCHITECTURE.md §2 Hexagonal Architecture Layers](ARCHITECTURE.md#2-hexagonal-architecture-layers). They are part of the runtime layering, not the domain model — kept out of this file so DDD.md stays bounded-context-shaped.
 
 ---
 

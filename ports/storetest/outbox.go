@@ -60,6 +60,12 @@ func RunOutboxStoreTests(t *testing.T, store ports.OutboxStore) {
 	t.Run("FullLifecycle", func(t *testing.T) { testFullLifecycle(t, store) })
 	t.Run("IdempotentPersist", func(t *testing.T) { testIdempotentPersist(t, store) })
 	t.Run("CompleteAfterTokenChange", func(t *testing.T) { outboxCompleteAfterTokenChange(t, store) })
+	t.Run("ClaimSetsOwnerFromToken", func(t *testing.T) { testClaimSetsOwnerFromToken(t, store) })
+	t.Run("CompleteRejectsSameVersionDifferentOwner", func(t *testing.T) { testCompleteRejectsSameVersionDifferentOwner(t, store) })
+	t.Run("ExpireSkipsClaimed", func(t *testing.T) { testExpireSkipsClaimed(t, store) })
+	t.Run("ClaimRejectsStaleVersionOnPending", func(t *testing.T) { testClaimRejectsStaleVersionOnPending(t, store) })
+	t.Run("ClaimReturnsSameKeyRecordsInCreatedOrder", func(t *testing.T) { testClaimReturnsSameKeyRecordsInCreatedOrder(t, store) })
+	t.Run("ClaimTieBreaksByEnvelopeIDOnEqualCreatedAt", func(t *testing.T) { testClaimTieBreaksByEnvelopeIDOnEqualCreatedAt(t, store) })
 }
 
 func testPersistAndQueryPending(t *testing.T, store ports.OutboxStore) {
@@ -76,17 +82,18 @@ func testPersistAndQueryPending(t *testing.T, store ports.OutboxStore) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(results))
 	}
-	if results[0].ID != "pq-1" {
-		t.Fatalf("id: got %q, want %q", results[0].ID, "pq-1")
+	if results[0].ID() != "pq-1" {
+		t.Fatalf("id: got %q, want %q", results[0].ID(), "pq-1")
 	}
 	if results[0].Status() != persistence.OutboxPending {
 		t.Fatalf("status: got %q, want %q", results[0].Status(), persistence.OutboxPending)
 	}
-	if results[0].Envelope.ID != "env-pq-1" {
-		t.Fatalf("envelope.ID: got %q, want %q", results[0].Envelope.ID, "env-pq-1")
+	env := results[0].Snapshot()
+	if env.ID() != "env-pq-1" {
+		t.Fatalf("envelope.ID: got %q, want %q", env.ID(), "env-pq-1")
 	}
-	if string(results[0].Envelope.Payload) != `{"data":"value"}` {
-		t.Fatalf("payload mismatch: %q", results[0].Envelope.Payload)
+	if string(env.Payload()) != `{"data":"value"}` {
+		t.Fatalf("payload mismatch: %q", env.Payload())
 	}
 }
 
@@ -132,7 +139,7 @@ func testClaimTransitionsStatus(t *testing.T, store ports.OutboxStore) {
 	}
 
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-A"}
-	claimed, err := store.Claim(ctx, "SESSION#sess-cl", "owner-A", token, 10)
+	claimed, err := store.Claim(ctx, "SESSION#sess-cl", token, 10)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -166,7 +173,7 @@ func testClaimRespectsLimit(t *testing.T, store ports.OutboxStore) {
 	}
 
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-A"}
-	claimed, err := store.Claim(ctx, "SESSION#sess-clim", "owner-A", token, 3)
+	claimed, err := store.Claim(ctx, "SESSION#sess-clim", token, 3)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -183,13 +190,13 @@ func testClaimReclaimsStale(t *testing.T, store ports.OutboxStore) {
 	}
 
 	oldToken := persistence.LeaseToken{Version: 1, Owner: "owner-old"}
-	claimed, err := store.Claim(ctx, "SESSION#sess-recl", "owner-old", oldToken, 10)
+	claimed, err := store.Claim(ctx, "SESSION#sess-recl", oldToken, 10)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("first claim: err=%v, len=%d", err, len(claimed))
 	}
 
 	newToken := persistence.LeaseToken{Version: 2, Owner: "owner-new"}
-	reclaimed, err := store.Claim(ctx, "SESSION#sess-recl", "owner-new", newToken, 10)
+	reclaimed, err := store.Claim(ctx, "SESSION#sess-recl", newToken, 10)
 	if err != nil {
 		t.Fatalf("reclaim: %v", err)
 	}
@@ -215,7 +222,7 @@ func testCompleteWithValidToken(t *testing.T, store ports.OutboxStore) {
 	}
 
 	token := persistence.LeaseToken{Version: 5, Owner: "owner-A"}
-	claimed, err := store.Claim(ctx, "SESSION#sess-comp", "owner-A", token, 10)
+	claimed, err := store.Claim(ctx, "SESSION#sess-comp", token, 10)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("claim: err=%v, len=%d", err, len(claimed))
 	}
@@ -241,7 +248,7 @@ func testCompleteWithWrongToken(t *testing.T, store ports.OutboxStore) {
 	}
 
 	token := persistence.LeaseToken{Version: 3, Owner: "owner-A"}
-	if _, err := store.Claim(ctx, "SESSION#sess-compw", "owner-A", token, 10); err != nil {
+	if _, err := store.Claim(ctx, "SESSION#sess-compw", token, 10); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 
@@ -286,7 +293,7 @@ func testExpireSkipsCompleted(t *testing.T, store ports.OutboxStore) {
 	}
 
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-A"}
-	if _, err := store.Claim(ctx, "SESSION#sess-expsk", "owner-A", token, 10); err != nil {
+	if _, err := store.Claim(ctx, "SESSION#sess-expsk", token, 10); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	if err := store.Complete(ctx, []string{"expsk-1"}, token); err != nil {
@@ -312,7 +319,7 @@ func testQueryPendingOnlyPending(t *testing.T, store ports.OutboxStore) {
 	}
 
 	token := persistence.LeaseToken{Version: 1, Owner: "owner-A"}
-	if _, err := store.Claim(ctx, "SESSION#sess-qpo", "owner-A", token, 1); err != nil {
+	if _, err := store.Claim(ctx, "SESSION#sess-qpo", token, 1); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 
@@ -341,7 +348,7 @@ func testQueryPendingRespectsPartitionKey(t *testing.T, store ports.OutboxStore)
 	if err != nil {
 		t.Fatalf("query A: %v", err)
 	}
-	if len(a) != 1 || a[0].ID != "qppk-1" {
+	if len(a) != 1 || a[0].ID() != "qppk-1" {
 		t.Fatalf("expected qppk-1 for session A, got %v", a)
 	}
 
@@ -349,7 +356,7 @@ func testQueryPendingRespectsPartitionKey(t *testing.T, store ports.OutboxStore)
 	if err != nil {
 		t.Fatalf("query B: %v", err)
 	}
-	if len(b) != 1 || b[0].ID != "qppk-2" {
+	if len(b) != 1 || b[0].ID() != "qppk-2" {
 		t.Fatalf("expected qppk-2 for session B, got %v", b)
 	}
 }
@@ -367,7 +374,7 @@ func testFullLifecycle(t *testing.T, store ports.OutboxStore) {
 	}
 
 	token := persistence.LeaseToken{Version: 10, Owner: "owner-A"}
-	claimed, err := store.Claim(ctx, "SESSION#sess-lc", "owner-A", token, 10)
+	claimed, err := store.Claim(ctx, "SESSION#sess-lc", token, 10)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -427,7 +434,7 @@ func outboxCompleteAfterTokenChange(t *testing.T, store ports.OutboxStore) {
 		t.Fatalf("persist: %v", err)
 	}
 
-	claimed, claimErr := store.Claim(ctx, pk, "owner-A", tok1, 10)
+	claimed, claimErr := store.Claim(ctx, pk, tok1, 10)
 	if claimErr != nil {
 		t.Fatalf("claim: %v", claimErr)
 	}
@@ -435,7 +442,7 @@ func outboxCompleteAfterTokenChange(t *testing.T, store ports.OutboxStore) {
 		t.Fatal("expected at least 1 claimed record")
 	}
 
-	_, claim2Err := store.Claim(ctx, pk, "owner-B", tok2, 10)
+	_, claim2Err := store.Claim(ctx, pk, tok2, 10)
 	if claim2Err != nil && !errors.Is(claim2Err, shared.ErrStaleFencingToken) {
 		t.Fatalf("unexpected error on reclaim with higher token: %v", claim2Err)
 	}

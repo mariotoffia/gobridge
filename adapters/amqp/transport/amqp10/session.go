@@ -92,7 +92,7 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		reconnectCh: make(chan struct{}, 1),
 		liveCreds: amqp10Credentials{
 			Username: opts.Username,
-			Password: opts.Password,
+			Password: opts.Password.Reveal(),
 		},
 	}
 }
@@ -188,7 +188,7 @@ func (s *Session) Start(ctx context.Context) error {
 	}
 
 	elapsed := s.clock().Since(connectStart)
-	s.metrics.Timer(shared.MetricAMQP10ConnectLatency, elapsed,
+	s.metrics.Timer(MetricAMQP10ConnectLatency, elapsed,
 		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ContainerID})
 
 	if logging.DebugEnabled(s.logger) {
@@ -284,7 +284,7 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	s.pushEvent(ports.SessionReconciled, nil)
 
 	elapsed := s.clock().Since(reconcileStart)
-	s.metrics.Timer(shared.MetricAMQP10ReconcileLatency, elapsed,
+	s.metrics.Timer(MetricAMQP10ReconcileLatency, elapsed,
 		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ContainerID})
 
 	return nil
@@ -451,7 +451,7 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 					"event_type", t,
 				)
 			}
-			s.metrics.Counter(shared.MetricAMQP10EventDropped, 1)
+			s.metrics.Counter(MetricAMQP10EventDropped, 1)
 		}
 	}
 
@@ -459,7 +459,7 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 		select {
 		case sub <- ev:
 		default:
-			s.metrics.Counter(shared.MetricAMQP10EventDropped, 1)
+			s.metrics.Counter(MetricAMQP10EventDropped, 1)
 		}
 	}
 }
@@ -553,7 +553,7 @@ func (s *Session) handleReconnect(ctx context.Context) {
 		connectCancel()
 
 		if err == nil {
-			s.metrics.Counter(shared.MetricAMQP10Reconnects, 1,
+			s.metrics.Counter(MetricAMQP10Reconnects, 1,
 				shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ContainerID})
 			if logging.DebugEnabled(s.logger) {
 				s.logger.Log(context.Background(), logging.LevelDebug, "amqp10: reconnected",

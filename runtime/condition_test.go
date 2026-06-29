@@ -49,7 +49,7 @@ func TestConditionEval_HeaderDotField_MissingKey(t *testing.T) {
 
 func TestConditionEval_HeaderDotField_NilHeaders(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "header.x", Operator: OpEquals, Value: Val("x")})
-	env := &messaging.Envelope{}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{})
 	ok, _ := eval.evaluate(env, newEvalContext())
 	if ok {
 		t.Fatal("expected no match for nil headers")
@@ -58,7 +58,7 @@ func TestConditionEval_HeaderDotField_NilHeaders(t *testing.T) {
 
 func TestConditionEval_JSONPath_Nested(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "$.order.status", Operator: OpEquals, Value: Val("confirmed")})
-	env := &messaging.Envelope{Payload: []byte(`{"order":{"status":"confirmed"}}`)}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte(`{"order":{"status":"confirmed"}}`)})
 	ok, err := eval.evaluate(env, newEvalContext())
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
@@ -70,7 +70,7 @@ func TestConditionEval_JSONPath_Nested(t *testing.T) {
 
 func TestConditionEval_JSONPath_Deep(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "$.a.b.c.d", Operator: OpEquals, Value: Val("deep")})
-	env := &messaging.Envelope{Payload: []byte(`{"a":{"b":{"c":{"d":"deep"}}}}`)}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte(`{"a":{"b":{"c":{"d":"deep"}}}}`)})
 	ok, _ := eval.evaluate(env, newEvalContext())
 	if !ok {
 		t.Fatal("expected match on deep path")
@@ -79,7 +79,7 @@ func TestConditionEval_JSONPath_Deep(t *testing.T) {
 
 func TestConditionEval_JSONPath_MissingPath(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "$.order.missing", Operator: OpEquals, Value: Val("x")})
-	env := &messaging.Envelope{Payload: []byte(`{"order":{"status":"ok"}}`)}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte(`{"order":{"status":"ok"}}`)})
 	ok, _ := eval.evaluate(env, newEvalContext())
 	if ok {
 		t.Fatal("expected no match for missing path")
@@ -88,7 +88,7 @@ func TestConditionEval_JSONPath_MissingPath(t *testing.T) {
 
 func TestConditionEval_JSONPath_EmptyPayload(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "$.x", Operator: OpEquals, Value: Val("y")})
-	env := &messaging.Envelope{}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{})
 	ok, _ := eval.evaluate(env, newEvalContext())
 	if ok {
 		t.Fatal("expected no match for empty payload")
@@ -97,7 +97,7 @@ func TestConditionEval_JSONPath_EmptyPayload(t *testing.T) {
 
 func TestConditionEval_JSONPath_InvalidJSON(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "$.x", Operator: OpEquals, Value: Val("y")})
-	env := &messaging.Envelope{Payload: []byte(`{broken}`)}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte(`{broken}`)})
 	ok, _ := eval.evaluate(env, newEvalContext())
 	if ok {
 		t.Fatal("expected no match for invalid JSON")
@@ -115,7 +115,7 @@ func TestConditionEval_BareField_FallsBackToHeader(t *testing.T) {
 
 func TestConditionEval_BareField_NilHeaders(t *testing.T) {
 	eval, _ := newConditionEval(MatchCondition{Field: "tenant", Operator: OpEquals, Value: Val("acme")})
-	env := &messaging.Envelope{}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{})
 	ok, _ := eval.evaluate(env, newEvalContext())
 	if ok {
 		t.Fatal("expected no match for nil headers")
@@ -175,7 +175,7 @@ func TestConditionEval_AllOperators(t *testing.T) {
 
 		// numeric coercion
 		{"numeric_string", MatchCondition{"header.count", OpGreaterThan, Val(float64(5))}, messaging.MustEnvelope(messaging.EnvelopeInput{Headers: map[string]any{"count": "10"}}), true, false},
-		{"numeric_json_number", MatchCondition{"$.priority", OpGreaterThan, Val(float64(5))}, &messaging.Envelope{Payload: []byte(`{"priority":10}`)}, true, false},
+		{"numeric_json_number", MatchCondition{"$.priority", OpGreaterThan, Val(float64(5))}, messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte(`{"priority":10}`)}), true, false},
 		{"numeric_non_numeric_err", MatchCondition{"header.x", OpGreaterThan, Val(float64(5))}, messaging.MustEnvelope(messaging.EnvelopeInput{Headers: map[string]any{"x": "abc"}}), false, true},
 	}
 

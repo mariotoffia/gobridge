@@ -50,7 +50,7 @@ func TestBugRES008_CBSender_CircuitOpen_EmitsMetric(t *testing.T) {
 		t.Fatal("expected error from open circuit, got nil")
 	}
 
-	entries := rec.FindEntries(shared.MetricMQTTPublishFailures)
+	entries := rec.FindEntries(MetricMQTTPublishFailures)
 	if len(entries) == 0 {
 		t.Fatal("expected MetricMQTTPublishFailures counter when circuit is open, got none")
 	}
@@ -101,7 +101,7 @@ func TestBugRES008_CBSender_CircuitClosed_NoExtraMetric(t *testing.T) {
 	_ = cbs.Send(context.Background(), ports.OutboundMessage{Envelope: env})
 
 	// There should be no circuit_open failure metrics.
-	entries := rec.FindEntries(shared.MetricMQTTPublishFailures)
+	entries := rec.FindEntries(MetricMQTTPublishFailures)
 	for _, e := range entries {
 		for _, tag := range e.Tags {
 			if tag.Key == "reason" && tag.Value == "circuit_open" {

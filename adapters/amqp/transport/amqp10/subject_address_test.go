@@ -208,12 +208,12 @@ func TestSender_SendBatch_AddressValidation(t *testing.T) {
 		link := &recordingSenderLink{}
 		s := newSenderWithLink(t, "queue/configured", link)
 
-		sent, err := s.SendBatch(context.Background(), []ports.OutboundMessage{
-			{Envelope: &messaging.Envelope{ID: "a"}, Address: "queue/wrong"},
-			{Envelope: &messaging.Envelope{ID: "b"}},
+		results, err := s.SendBatch(context.Background(), []ports.OutboundMessage{
+			{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "a"}), Address: "queue/wrong"},
+			{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "b"})},
 		})
-		if sent != 0 {
-			t.Fatalf("sent = %d, want 0", sent)
+		if results != nil {
+			t.Fatalf("results = %v, want nil (fail-fast)", results)
 		}
 		var be *shared.BridgeError
 		if !errors.As(err, &be) || !errors.Is(be, shared.ErrInvalidTopic) {
@@ -228,14 +228,14 @@ func TestSender_SendBatch_AddressValidation(t *testing.T) {
 		link := &recordingSenderLink{}
 		s := newSenderWithLink(t, "queue/configured", link)
 
-		sent, err := s.SendBatch(context.Background(), []ports.OutboundMessage{
+		results, err := s.SendBatch(context.Background(), []ports.OutboundMessage{
 			{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "a", Subject: "s.a"}), Address: "queue/configured"},
 			{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "b", Subject: "s.b"})}, // empty Address is allowed
 		})
 		if err != nil {
 			t.Fatalf("SendBatch() error = %v", err)
 		}
-		if sent != 2 {
+		if sent := batchSent(results); sent != 2 {
 			t.Fatalf("sent = %d, want 2", sent)
 		}
 		got := link.sentCopy()
@@ -256,11 +256,11 @@ func TestSender_SendBatch_NilEnvelopeFailsFast(t *testing.T) {
 	link := &recordingSenderLink{}
 	s := newSenderWithLink(t, "queue/configured", link)
 
-	sent, err := s.SendBatch(context.Background(), []ports.OutboundMessage{
+	results, err := s.SendBatch(context.Background(), []ports.OutboundMessage{
 		{Envelope: nil},
 	})
-	if sent != 0 {
-		t.Fatalf("sent = %d, want 0", sent)
+	if results != nil {
+		t.Fatalf("results = %v, want nil (fail-fast)", results)
 	}
 	var be *shared.BridgeError
 	if !errors.As(err, &be) || !errors.Is(be, shared.ErrInvalidPayload) {

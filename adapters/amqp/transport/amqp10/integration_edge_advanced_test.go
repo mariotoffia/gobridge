@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 )
@@ -30,7 +31,7 @@ func TestIntegration_Edge_SessionHealthTransitions(t *testing.T) {
 	user, pass := artemislocal.Credentials()
 
 	sess := NewSession(SessionOptions{
-		Address: ep, Username: user, Password: pass,
+		Address: ep, Username: user, Password: shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 	}, connectivity.SessionEphemeral, logger)
 
@@ -185,7 +186,7 @@ func TestIntegration_Edge_SendBatchPartialVerify(t *testing.T) {
 		wantIDs[id] = true
 	}
 
-	sent, err := sender.SendBatch(ctx, func() []ports.OutboundMessage {
+	results, err := sender.SendBatch(ctx, func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -195,7 +196,7 @@ func TestIntegration_Edge_SendBatchPartialVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
-	if sent != msgCount {
+	if sent := batchSent(results); sent != msgCount {
 		t.Fatalf("sent %d, want %d", sent, msgCount)
 	}
 
@@ -209,7 +210,7 @@ func TestIntegration_Edge_SendBatchPartialVerify(t *testing.T) {
 
 	ids := make(map[string]bool)
 	_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
-		ids[del.Envelope().ID] = true
+		ids[del.Envelope().ID()] = true
 		_ = del.Ack(recvCtx)
 		if len(ids) >= msgCount {
 			recvCancel()
@@ -292,21 +293,21 @@ func TestIntegration_Edge_EnvelopeFieldsRoundTrip(t *testing.T) {
 
 	got := edgeSendRecv(t, sess, addr, env, 20*time.Second)
 
-	if got.ID != "full-fields" {
-		t.Errorf("ID = %q, want %q", got.ID, "full-fields")
+	if got.ID() != "full-fields" {
+		t.Errorf("ID = %q, want %q", got.ID(), "full-fields")
 	}
 	if got.Subject() != "integration.edge" {
 		t.Errorf("Subject = %q, want %q", got.Subject(), "integration.edge")
 	}
-	if string(got.Payload) != `{"complete":"envelope"}` {
-		t.Errorf("Payload = %q", got.Payload)
+	if string(got.Payload()) != `{"complete":"envelope"}` {
+		t.Errorf("Payload = %q", got.Payload())
 	}
-	if got.ExpiresAt.IsZero() {
+	if got.ExpiresAt().IsZero() {
 		t.Error("ExpiresAt should not be zero")
 	}
-	drift := got.ExpiresAt.Sub(expiresAt)
+	drift := got.ExpiresAt().Sub(expiresAt)
 	if drift < -2*time.Second || drift > 2*time.Second {
-		t.Errorf("ExpiresAt drift = %v (sent %v, got %v)", drift, expiresAt, got.ExpiresAt)
+		t.Errorf("ExpiresAt drift = %v (sent %v, got %v)", drift, expiresAt, got.ExpiresAt())
 	}
 	if got.Headers()["custom-key"] != "custom-value" {
 		t.Errorf("custom-key header = %v", got.Headers()["custom-key"])

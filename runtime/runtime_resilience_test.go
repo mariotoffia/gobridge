@@ -111,7 +111,7 @@ func TestF3_DrainOnShutdown(t *testing.T) {
 		EnvelopeID: "env-f3",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   messaging.Envelope{ID: "env-f3", Payload: []byte("shutdown-drain")},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-f3", Payload: []byte("shutdown-drain")}),
 		Status:     persistence.OutboxPending,
 	})
 	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
@@ -249,7 +249,6 @@ func TestF5_DrainBatchSkipsTOCTOUCheck(t *testing.T) {
 		RouteID:      "route-1",
 		PartitionKey: persistence.OutboxPartitionKey("sess-1", ""),
 		LeaseID:      "sess-1",
-		OwnerID:      token.Owner,
 		Policy:       routing.RoutePolicy{}.WithDefaults(),
 		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
 		TokenFn:      func() (persistence.LeaseToken, bool) { return token, true },
@@ -259,7 +258,7 @@ func TestF5_DrainBatchSkipsTOCTOUCheck(t *testing.T) {
 	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-f5", RouteID: "route-1", EnvelopeID: "env-f5",
 		BindingID: "bind-1", SessionID: "sess-1",
-		Envelope: messaging.Envelope{ID: "env-f5", Payload: []byte("data")},
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-f5", Payload: []byte("data")}),
 		Status:   persistence.OutboxPending,
 	})
 	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{rec})
@@ -334,7 +333,7 @@ func TestF6_StaleFencingTokenDoesNotKillRuntime(t *testing.T) {
 		t.Error("runtime should remain running after scoped stale fencing token error")
 	}
 
-	env := &messaging.Envelope{ID: "f6-msg", Payload: []byte("test-f6")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "f6-msg", Payload: []byte("test-f6")})
 	del := NewFakeDelivery(env)
 	_ = receiverB.Emit(ctx, del)
 

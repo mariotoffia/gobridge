@@ -14,24 +14,28 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 // Config holds HTTP server configuration.
 type Config struct {
-	AdminAddr     string `json:"admin_addr"`
-	MonitorAddr   string `json:"monitor_addr"`
-	AdminAPIKey   string `json:"-"`
-	MonitorAPIKey string `json:"-"`
-	CORSOrigins   string `json:"cors_origins"`
+	AdminAddr     string        `json:"admin_addr"`
+	MonitorAddr   string        `json:"monitor_addr"`
+	AdminAPIKey   shared.Secret `json:"-"`
+	MonitorAPIKey shared.Secret `json:"-"`
+	CORSOrigins   string        `json:"cors_origins"`
 
-	// AdminAPIKeyProvider returns the current admin API key. When nil, the
-	// static AdminAPIKey value is used.
+	// AdminAPIKeyProvider returns the current admin API key as a raw
+	// string (e.g. fetched from a secret manager on rotation). When nil,
+	// the static AdminAPIKey is used. The server wraps whatever this
+	// returns in a redacting shared.Secret before any comparison.
 	AdminAPIKeyProvider func() string `json:"-"`
 
-	// MonitorAPIKeyProvider returns the current monitor API key. When nil,
-	// the static MonitorAPIKey value is used.
+	// MonitorAPIKeyProvider returns the current monitor API key as a raw
+	// string. When nil, the static MonitorAPIKey is used. The server
+	// wraps the returned value in a redacting shared.Secret before use.
 	MonitorAPIKeyProvider func() string `json:"-"`
 
 	// RuntimeProvider returns the current runtime backing the admin/monitor
@@ -69,8 +73,8 @@ func DefaultConfig() Config {
 type Server struct {
 	rt                 ports.Runtime
 	rtProvider         func() ports.Runtime
-	adminKeyProvider   func() string
-	monitorKeyProvider func() string
+	adminKeyProvider   func() shared.Secret
+	monitorKeyProvider func() shared.Secret
 	cfg                Config
 	logger             *slog.Logger
 	audit              ports.AuditLogger
@@ -148,14 +152,14 @@ func New(rt ports.Runtime, cfg Config, opts ...Option) *Server {
 		s.rtProvider = func() ports.Runtime { return rt }
 	}
 	if cfg.AdminAPIKeyProvider != nil {
-		s.adminKeyProvider = cfg.AdminAPIKeyProvider
+		s.adminKeyProvider = func() shared.Secret { return shared.NewSecret(cfg.AdminAPIKeyProvider()) }
 	} else {
-		s.adminKeyProvider = func() string { return cfg.AdminAPIKey }
+		s.adminKeyProvider = func() shared.Secret { return cfg.AdminAPIKey }
 	}
 	if cfg.MonitorAPIKeyProvider != nil {
-		s.monitorKeyProvider = cfg.MonitorAPIKeyProvider
+		s.monitorKeyProvider = func() shared.Secret { return shared.NewSecret(cfg.MonitorAPIKeyProvider()) }
 	} else {
-		s.monitorKeyProvider = func() string { return cfg.MonitorAPIKey }
+		s.monitorKeyProvider = func() shared.Secret { return cfg.MonitorAPIKey }
 	}
 	if s.cfg.AdminOperationTimeout <= 0 {
 		s.cfg.AdminOperationTimeout = 30 * time.Second
@@ -175,10 +179,10 @@ func (s *Server) currentRuntime() ports.Runtime { //nolint:ireturn // intentiona
 	return s.rt
 }
 
-func (s *Server) currentAdminAPIKey() string {
+func (s *Server) currentAdminAPIKey() shared.Secret {
 	if s.adminKeyProvider != nil {
 		key := s.adminKeyProvider()
-		if key == "" && s.logger != nil {
+		if key.IsZero() && s.logger != nil {
 			s.logger.Warn("admin API key provider returned empty key; all admin requests will be rejected")
 		}
 		return key
@@ -186,7 +190,7 @@ func (s *Server) currentAdminAPIKey() string {
 	return s.cfg.AdminAPIKey
 }
 
-func (s *Server) currentMonitorAPIKey() string {
+func (s *Server) currentMonitorAPIKey() shared.Secret {
 	if s.monitorKeyProvider != nil {
 		return s.monitorKeyProvider()
 	}
@@ -300,14 +304,14 @@ const minAPIKeyLen = 16
 
 func (s *Server) validateConfig() error {
 	adminKey := s.currentAdminAPIKey()
-	if adminKey == "" {
+	if adminKey.IsZero() {
 		return fmt.Errorf("httpapi: admin API key is required; set AdminAPIKey in Config")
 	}
-	if len(adminKey) < minAPIKeyLen {
+	if len(adminKey.Reveal()) < minAPIKeyLen {
 		return fmt.Errorf("httpapi: admin API key must be at least %d characters", minAPIKeyLen)
 	}
 	monitorKey := s.currentMonitorAPIKey()
-	if monitorKey != "" && len(monitorKey) < minAPIKeyLen {
+	if !monitorKey.IsZero() && len(monitorKey.Reveal()) < minAPIKeyLen {
 		return fmt.Errorf("httpapi: monitor API key must be at least %d characters when set", minAPIKeyLen)
 	}
 	if s.cfg.CORSOrigins == "*" {
@@ -420,7 +424,7 @@ func (s *Server) requireMonitorAuth(next http.HandlerFunc) http.HandlerFunc {
 		// superset of monitor access).
 		ok := false
 		monitorKey := s.currentMonitorAPIKey()
-		if monitorKey != "" {
+		if !monitorKey.IsZero() {
 			ok = s.checkAPIKey(r, monitorKey)
 		}
 		if !ok {
@@ -435,11 +439,11 @@ func (s *Server) requireMonitorAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Server) checkAPIKey(r *http.Request, expected string) bool {
-	if expected == "" {
+func (s *Server) checkAPIKey(r *http.Request, expected shared.Secret) bool {
+	if expected.IsZero() {
 		return false
 	}
-	expHash := sha256.Sum256([]byte(expected))
+	expHash := sha256.Sum256([]byte(expected.Reveal()))
 	if k := r.Header.Get("X-API-Key"); k != "" {
 		kHash := sha256.Sum256([]byte(k))
 		if subtle.ConstantTimeCompare(kHash[:], expHash[:]) == 1 {

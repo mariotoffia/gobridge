@@ -100,10 +100,10 @@ func TestCrossInstance_SQSConsumerAndMQTTOwnerAreDifferent(t *testing.T) {
 	})
 
 	// Instance A receives a message from SQS.
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "cross-msg-1",
 		Payload: []byte("work-order"),
-	}
+	})
 	del := NewFakeDelivery(env)
 	if err := receiverA.Emit(ctx, del); err != nil {
 		t.Fatalf("Emit on A: %v", err)
@@ -132,8 +132,8 @@ func TestCrossInstance_SQSConsumerAndMQTTOwnerAreDifferent(t *testing.T) {
 	if len(outboundB) == 0 || outboundB[0].Address != "factory/a/orders/42" {
 		t.Errorf("expected OutboundMessage.Address factory/a/orders/42, got %+v", outboundB)
 	}
-	if sent[0].ID != "cross-msg-1" {
-		t.Errorf("expected envelope ID cross-msg-1, got %q", sent[0].ID)
+	if sent[0].ID() != "cross-msg-1" {
+		t.Errorf("expected envelope ID cross-msg-1, got %q", sent[0].ID())
 	}
 }
 

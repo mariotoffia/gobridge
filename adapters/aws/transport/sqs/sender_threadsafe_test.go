@@ -29,11 +29,11 @@ func TestSenderEnsureClientConcurrentS14(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:        "id-1",
 		Payload:   []byte("payload"),
 		CreatedAt: time.Now(),
-	}
+	})
 
 	const goroutines = 10
 	var wg sync.WaitGroup

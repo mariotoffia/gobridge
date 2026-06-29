@@ -33,6 +33,12 @@ type Delivery struct {
 }
 
 // NewDelivery wraps an amqp091.Delivery as a ports.Delivery.
+//
+// The amqp.Delivery parameter is the SDK boundary input this ACL
+// constructor exists to wrap; it is injected by the ACL receiver and
+// stored behind unexported fields.
+//
+//aclcheck:allow-export
 func NewDelivery(env *messaging.Envelope, raw amqp.Delivery, logger *slog.Logger, metrics ports.MetricsExporter, clk clock.Clock) *Delivery {
 	if metrics == nil {
 		metrics = &ports.NoopExporter{}
@@ -74,7 +80,7 @@ func (d *Delivery) Ack(ctx context.Context) error {
 	}
 	ackStart := d.clk.Now()
 	err := d.raw.Ack(false)
-	d.metrics.Timer(shared.MetricAMQP091AckLatency, d.clk.Since(ackStart),
+	d.metrics.Timer(MetricAMQP091AckLatency, d.clk.Since(ackStart),
 		shared.Tag{Key: shared.TagKeyEntity, Value: d.raw.RoutingKey})
 
 	if err != nil {
