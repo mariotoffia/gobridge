@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS outbox (
     UNIQUE(envelope_id, binding_id)
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_partition_status ON outbox(partition_key, status);
+CREATE TABLE IF NOT EXISTS outbox_partition_fence (
+    partition_key TEXT PRIMARY KEY,
+    max_version   INTEGER NOT NULL DEFAULT 0
+);
 `
 
 // outboxColumns is the canonical column list used for SELECTs that
@@ -47,12 +51,27 @@ const (
 		 session_id, address, envelope_json, headers_json, status, created_at, expires_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
 
-	// selectMaxClaimVersionSQL reports the highest claim_version ever
-	// stamped on the partition, so Claim can reject a stale (older) token
-	// version monotonically, matching the version-monotonic fence the
-	// memory backend enforces and ports.OutboxStore documents.
+	// selectMaxClaimVersionSQL reports the highest claim_version ever stamped
+	// on a persisted row in the partition. It is only the legacy-row component
+	// of the fence: rows predating outbox_partition_fence have no fence entry,
+	// so their stamped claim_version is still honoured. The durable fence
+	// (selectFenceVersionSQL) is the authoritative high-water-mark.
 	selectMaxClaimVersionSQL = `SELECT COALESCE(MAX(claim_version), 0)
 		 FROM outbox WHERE partition_key = ?`
+
+	// selectFenceVersionSQL reads the durable per-partition fencing
+	// high-water-mark: the highest token.Version observed on ANY Claim,
+	// including a no-op Claim that returned no rows. This is what makes the
+	// SQLite fence match the memory backend's latestVersion semantics.
+	selectFenceVersionSQL = `SELECT COALESCE(MAX(max_version), 0)
+		 FROM outbox_partition_fence WHERE partition_key = ?`
+
+	// upsertFenceVersionSQL advances the durable high-water-mark on every
+	// Claim. MAX(...) keeps it monotonic so an out-of-order older token can
+	// never lower the fence.
+	upsertFenceVersionSQL = `INSERT INTO outbox_partition_fence (partition_key, max_version)
+		 VALUES (?, ?)
+		 ON CONFLICT(partition_key) DO UPDATE SET max_version = MAX(max_version, excluded.max_version)`
 
 	selectClaimableIDsSQL = `SELECT id FROM outbox
 		 WHERE partition_key = ? AND (status = 'pending' OR (status = 'claimed' AND claim_version < ?))

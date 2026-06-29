@@ -263,10 +263,11 @@ vendors:
   # for inner-ring `json.RawMessage` denial and by code review for the
   # broader `encoding/json` ban. The blueprint marshallers that
   # historically lived in ports/ have been relocated to config/ to keep
-  # the inner ring format-neutral.
+  # the inner ring dependency-neutral, not tag-free (schema-tagged DTOs
+  # by design, M-11).
 
   # SANCTIONED EXCEPTION (M-10): domain/messaging owns the stable
-  # on-disk Envelope JSON schema (envelope.go MarshalJSON/UnmarshalJSON)
+  # on-disk Envelope JSON schema (envelope_json.go MarshalJSON/UnmarshalJSON)
   # and is the SINGLE SOURCE OF TRUTH for the durable wire format that
   # sqlitedlq, dynamodbdlq, sqliteoutbox, dynamodboutbox, … serialise to
   # persistent storage. Pushing that schema out into each store adapter
@@ -276,7 +277,7 @@ vendors:
   # architectural choice. The `encoding/json` import this requires in
   # domain/messaging is therefore an accepted, documented exception to
   # the inner-ring no-json intent above -- not an oversight. See
-  # envelope.go and LINT.md (§Architecture exception).
+  # envelope_json.go and LINT.md (§Architecture exception).
 
   # Adapter SDKs.
   fsnotify: { in: github.com/fsnotify/fsnotify }

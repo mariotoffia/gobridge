@@ -135,6 +135,47 @@ func testClaimRejectsStaleVersionOnPending(t *testing.T, store ports.OutboxStore
 	}
 }
 
+// testClaimRejectsStaleVersionAfterNoopHigherClaim proves the per-partition
+// fencing high-water-mark is durable and advances on EVERY claim, including a
+// no-op claim that returns zero records. A claim at v5 against an empty
+// partition observes no rows yet must still raise the partition's fence to 5;
+// a later stale (v1) claim against a freshly-arrived pending row must then be
+// rejected (get zero records). Without a durable high-water-mark, a backend
+// that derives the fence from persisted rows alone forgets the no-op v5 and
+// lets the stale v1 token win the new work.
+func testClaimRejectsStaleVersionAfterNoopHigherClaim(t *testing.T, store ports.OutboxStore) {
+	ctx := context.Background()
+	pk := "SESSION#sess-noopfence"
+
+	// (a) Claim an EMPTY partition at v5. No records exist yet, so this is a
+	// no-op claim: zero records, no error. It must still advance the fence.
+	v5 := persistence.LeaseToken{Version: 5, Owner: "owner-v5"}
+	claimed, err := store.Claim(ctx, pk, v5, 10)
+	if err != nil {
+		t.Fatalf("no-op claim at v5: %v", err)
+	}
+	if len(claimed) != 0 {
+		t.Fatalf("expected 0 records from no-op claim on empty partition, got %d", len(claimed))
+	}
+
+	// (b) A fresh pending record now arrives in the same partition.
+	r := makeRecord(t, "noopfence-1", "env-noopfence-1", "bind-noopfence-1", "sess-noopfence", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	// (c) A claim with a STALE token (v1) must not win the new row: the
+	// partition's fence already moved to 5 on the no-op claim.
+	v1 := persistence.LeaseToken{Version: 1, Owner: "owner-v1"}
+	stale, err := store.Claim(ctx, pk, v1, 10)
+	if err != nil && !errors.Is(err, shared.ErrStaleFencingToken) {
+		t.Fatalf("stale claim: unexpected error %v", err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("expected 0 records claimed by stale (v1) token after no-op v5 claim, got %d", len(stale))
+	}
+}
+
 // testClaimReturnsSameKeyRecordsInCreatedOrder proves Claim returns records
 // sharing one ordering key (messaging.HeaderOrderingKey) in created_at order, so
 // the drainer can deliver per-key in-order. Records are persisted out of order

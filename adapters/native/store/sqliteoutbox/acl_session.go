@@ -134,19 +134,34 @@ func (s *sqlSession) claim(ctx context.Context, pk string, token persistence.Lea
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck
 
-	// Version-monotonic fence: reject a token whose version is older than
-	// the highest version the partition has already observed, so a preempted
-	// owner cannot win a freshly pending row (matches the memory backend and
-	// the ports.OutboxStore contract).
-	var maxVersion uint64
-	if err := tx.QueryRowContext(ctx, selectMaxClaimVersionSQL, pk).Scan(&maxVersion); err != nil {
+	// Durable version-monotonic fence. The observed high-water-mark is the max
+	// of (a) the durable outbox_partition_fence entry, advanced on EVERY claim
+	// incl no-ops, and (b) the highest claim_version on a persisted row, kept
+	// for backward-compat with legacy rows that predate the fence table. A
+	// token older than this is a preempted owner and cannot win a freshly
+	// pending row (matches the memory backend's latestVersion and the
+	// ports.OutboxStore contract). The fence upsert below commits in this same
+	// tx even when zero rows are claimed, so a no-op higher claim is not
+	// forgotten.
+	var rowMax, fenceMax uint64
+	if err := tx.QueryRowContext(ctx, selectMaxClaimVersionSQL, pk).Scan(&rowMax); err != nil {
 		return nil, wrapErr(err, "sqliteoutbox: query max claim version", "partitionKey", pk)
 	}
-	if token.Version < maxVersion {
+	if err := tx.QueryRowContext(ctx, selectFenceVersionSQL, pk).Scan(&fenceMax); err != nil {
+		return nil, wrapErr(err, "sqliteoutbox: query fence version", "partitionKey", pk)
+	}
+	observed := rowMax
+	if fenceMax > observed {
+		observed = fenceMax
+	}
+	if token.Version < observed {
 		return nil, shared.ErrStaleFencingToken.
 			WithMessage("claim rejected: token version is stale").
 			With("givenVersion", token.Version).
-			With("latestVersion", maxVersion)
+			With("latestVersion", observed)
+	}
+	if _, err := tx.ExecContext(ctx, upsertFenceVersionSQL, pk, token.Version); err != nil {
+		return nil, wrapErr(err, "sqliteoutbox: upsert fence version", "partitionKey", pk)
 	}
 
 	rows, err := tx.QueryContext(ctx, selectClaimableIDsSQL, pk, token.Version, limit)
@@ -169,6 +184,11 @@ func (s *sqlSession) claim(ctx context.Context, pk string, token persistence.Lea
 	}
 
 	if len(ids) == 0 {
+		// No rows claimed, but the fence upsert above must still commit so a
+		// no-op higher-version claim durably advances the high-water-mark.
+		if err := tx.Commit(); err != nil {
+			return nil, wrapErr(err, "sqliteoutbox: commit no-op claim fence", "partitionKey", pk)
+		}
 		return nil, nil
 	}
 

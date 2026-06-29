@@ -64,6 +64,7 @@ func RunOutboxStoreTests(t *testing.T, store ports.OutboxStore) {
 	t.Run("CompleteRejectsSameVersionDifferentOwner", func(t *testing.T) { testCompleteRejectsSameVersionDifferentOwner(t, store) })
 	t.Run("ExpireSkipsClaimed", func(t *testing.T) { testExpireSkipsClaimed(t, store) })
 	t.Run("ClaimRejectsStaleVersionOnPending", func(t *testing.T) { testClaimRejectsStaleVersionOnPending(t, store) })
+	t.Run("ClaimRejectsStaleVersionAfterNoopHigherClaim", func(t *testing.T) { testClaimRejectsStaleVersionAfterNoopHigherClaim(t, store) })
 	t.Run("ClaimReturnsSameKeyRecordsInCreatedOrder", func(t *testing.T) { testClaimReturnsSameKeyRecordsInCreatedOrder(t, store) })
 	t.Run("ClaimTieBreaksByEnvelopeIDOnEqualCreatedAt", func(t *testing.T) { testClaimTieBreaksByEnvelopeIDOnEqualCreatedAt(t, store) })
 }

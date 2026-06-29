@@ -7,7 +7,8 @@
 // particular configuration format. The yaml/json struct tags are
 // kept on the types because adapters that read from disk parse them
 // in-place — but the ports package itself has no yaml/json runtime
-// dependency, so the inner ring stays format-neutral.
+// dependency, so the inner ring stays dependency-neutral, not
+// tag-free (schema-tagged DTOs by design, M-11).
 //
 // The config sub-package (in `config/`) implements the YAML/JSON
 // parser, validator, merger, and on-disk manager that produce

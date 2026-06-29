@@ -24,7 +24,8 @@ import (
 //
 // The functions below project Config back into the canonical `options`
 // key alongside the inner ring fields. They live in `config/` (not in
-// `ports/`) because the inner ring is format-neutral: ports has no
+// `ports/`) because the inner ring is dependency-neutral, not tag-free
+// (M-11): ports has no
 // runtime dependency on yaml.v3 or encoding/json. Adapters that need to
 // emit a wire-format BridgeConfig (file store, DynamoDB store, admin
 // tooling) call these helpers explicitly via the config shared kernel.

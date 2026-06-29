@@ -8,6 +8,11 @@ import "strings"
 const HeaderPrefix = "x-bridge."
 
 // Well-known header constants.
+//
+// Every reserved Header* constant added here MUST be classified into
+// exactly one of IsInternalOnlyHeader / IsBridgeToBridgeHeader below.
+// TestHeaderClassificationExhaustive parses this block and fails if a
+// constant is left unclassified — update the predicate, not a test list.
 const (
 	HeaderCorrelationID   = "x-bridge.correlation-id"
 	HeaderCausationID     = "x-bridge.causation-id"

@@ -40,6 +40,13 @@ type LeaseStore interface {
 //     On a successful claim the store sets claimed_by from token.Owner; there
 //     is no separate owner parameter, so token.Owner is the single source of
 //     claim authority.
+//   - Claim maintains a DURABLE per-partition fencing high-water-mark: the
+//     highest token.Version observed on ANY Claim, including a Claim that
+//     returns no records (a no-op claim against an empty or fully-claimed
+//     partition still advances it). A Claim whose token.Version is strictly
+//     below this high-water-mark MUST be rejected with shared.ErrStaleFencingToken
+//     so a preempted owner cannot win freshly-arrived pending work that lands
+//     after a higher-version owner has taken over the partition.
 //   - Completion fencing is owner+version+status. Complete may transition a
 //     record only when it is currently claimed, claimed_by == token.Owner, and
 //     claim_version == token.Version. On any mismatch the store MUST return

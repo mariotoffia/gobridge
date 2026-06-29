@@ -7,6 +7,8 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+var _ ports.Loader = (*Source)(nil)
+
 // Source implements ports.Loader by reading a configuration file from disk.
 type Source struct {
 	path     string
