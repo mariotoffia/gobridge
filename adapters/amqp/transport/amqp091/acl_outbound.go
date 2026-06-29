@@ -93,10 +93,10 @@ func envelopeToPublishing(env *messaging.Envelope, cfg SenderConfig, clk clock.C
 		clk = clock.System
 	}
 	pub := headersToPublishing(env.Headers())
-	pub.Body = env.Payload
+	pub.Body = env.Payload()
 
-	if env.ID != "" && pub.MessageId == "" {
-		pub.MessageId = env.ID
+	if env.ID() != "" && pub.MessageId == "" {
+		pub.MessageId = env.ID()
 	}
 
 	switch {

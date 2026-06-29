@@ -22,7 +22,7 @@ func TestDLQStoreConformance(t *testing.T) {
 }
 
 func makeEntry(id, routeID, category string, failedAt time.Time) routing.DLQEntry {
-	return routing.DLQEntry{
+	return routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID:       id,
 		RouteID:  routeID,
 		Category: category,
@@ -40,7 +40,7 @@ func makeEntry(id, routeID, category string, failedAt time.Time) routing.DLQEntr
 		ErrorCode:     "TEST_ERROR",
 		LastError:     "something went wrong",
 		Attempts:      3,
-	}
+	})
 }
 
 // Verifies Write persists an entry and List returns matching fields.
@@ -64,23 +64,23 @@ func TestWriteAndList(t *testing.T) {
 	}
 
 	got := entries[0]
-	if got.ID != "e1" {
-		t.Errorf("ID: got %q, want %q", got.ID, "e1")
+	if got.ID() != "e1" {
+		t.Errorf("ID: got %q, want %q", got.ID(), "e1")
 	}
-	if got.RouteID != "route-A" {
-		t.Errorf("RouteID: got %q, want %q", got.RouteID, "route-A")
+	if got.RouteID() != "route-A" {
+		t.Errorf("RouteID: got %q, want %q", got.RouteID(), "route-A")
 	}
-	if got.Category != "timeout" {
-		t.Errorf("Category: got %q, want %q", got.Category, "timeout")
+	if got.Category() != "timeout" {
+		t.Errorf("Category: got %q, want %q", got.Category(), "timeout")
 	}
-	if !got.FailedAt.Equal(now) {
-		t.Errorf("FailedAt: got %v, want %v", got.FailedAt, now)
+	if !got.FailedAt().Equal(now) {
+		t.Errorf("FailedAt: got %v, want %v", got.FailedAt(), now)
 	}
-	if got.Envelope.ID != "env-e1" {
-		t.Errorf("Envelope.ID: got %q, want %q", got.Envelope.ID, "env-e1")
+	if got.Snapshot().ID() != "env-e1" {
+		t.Errorf("Envelope.ID: got %q, want %q", got.Snapshot().ID(), "env-e1")
 	}
-	if got.Attempts != 3 {
-		t.Errorf("Attempts: got %d, want %d", got.Attempts, 3)
+	if got.Attempts() != 3 {
+		t.Errorf("Attempts: got %d, want %d", got.Attempts(), 3)
 	}
 }
 
@@ -102,8 +102,8 @@ func TestListFilterByRouteID(t *testing.T) {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
 	}
 	for _, e := range entries {
-		if e.RouteID != "route-A" {
-			t.Errorf("unexpected RouteID %q in filtered result", e.RouteID)
+		if e.RouteID() != "route-A" {
+			t.Errorf("unexpected RouteID %q in filtered result", e.RouteID())
 		}
 	}
 }
@@ -125,8 +125,8 @@ func TestListFilterByCategory(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
 	}
-	if entries[0].ID != "e2" {
-		t.Errorf("expected entry e2, got %q", entries[0].ID)
+	if entries[0].ID() != "e2" {
+		t.Errorf("expected entry e2, got %q", entries[0].ID())
 	}
 }
 
@@ -152,8 +152,8 @@ func TestListFilterBySince(t *testing.T) {
 		t.Fatalf("expected 2 entries (at or after midpoint), got %d", len(entries))
 	}
 	for _, e := range entries {
-		if e.FailedAt.Before(t2) {
-			t.Errorf("entry %q has FailedAt %v, which is before Since %v", e.ID, e.FailedAt, t2)
+		if e.FailedAt().Before(t2) {
+			t.Errorf("entry %q has FailedAt %v, which is before Since %v", e.ID(), e.FailedAt(), t2)
 		}
 	}
 }
@@ -179,8 +179,8 @@ func TestListFilterByBefore(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry (strictly before midpoint), got %d", len(entries))
 	}
-	if entries[0].ID != "e1" {
-		t.Errorf("expected entry e1, got %q", entries[0].ID)
+	if entries[0].ID() != "e1" {
+		t.Errorf("expected entry e1, got %q", entries[0].ID())
 	}
 }
 
@@ -220,14 +220,14 @@ func TestListSortedByFailedAtDescending(t *testing.T) {
 	if len(entries) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(entries))
 	}
-	if entries[0].ID != "e-new" {
-		t.Errorf("first entry: got %q, want %q", entries[0].ID, "e-new")
+	if entries[0].ID() != "e-new" {
+		t.Errorf("first entry: got %q, want %q", entries[0].ID(), "e-new")
 	}
-	if entries[1].ID != "e-mid" {
-		t.Errorf("second entry: got %q, want %q", entries[1].ID, "e-mid")
+	if entries[1].ID() != "e-mid" {
+		t.Errorf("second entry: got %q, want %q", entries[1].ID(), "e-mid")
 	}
-	if entries[2].ID != "e-old" {
-		t.Errorf("third entry: got %q, want %q", entries[2].ID, "e-old")
+	if entries[2].ID() != "e-old" {
+		t.Errorf("third entry: got %q, want %q", entries[2].ID(), "e-old")
 	}
 }
 
@@ -340,8 +340,8 @@ func TestPurgeRemovesOld(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 remaining entry, got %d", len(entries))
 	}
-	if entries[0].ID != "e-new" {
-		t.Errorf("remaining entry: got %q, want %q", entries[0].ID, "e-new")
+	if entries[0].ID() != "e-new" {
+		t.Errorf("remaining entry: got %q, want %q", entries[0].ID(), "e-new")
 	}
 }
 
@@ -432,8 +432,8 @@ func TestFullLifecycle(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 remaining entry, got %d", len(entries))
 	}
-	if entries[0].ID != "e4" {
-		t.Errorf("remaining entry: got %q, want %q", entries[0].ID, "e4")
+	if entries[0].ID() != "e4" {
+		t.Errorf("remaining entry: got %q, want %q", entries[0].ID(), "e4")
 	}
 }
 

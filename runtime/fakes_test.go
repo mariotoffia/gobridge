@@ -397,7 +397,7 @@ type FakeOutboxStore struct {
 	PersistErr    error
 	PersistFn     func([]*persistence.OutboxRecord) error
 	ClaimErr      error
-	ClaimFn       func(partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error)
+	ClaimFn       func(partitionKey string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error)
 	CompleteErr   error
 	CompleteFn    func([]string, persistence.LeaseToken) error
 	CompleteCtxFn func(context.Context, []string, persistence.LeaseToken) error
@@ -421,24 +421,24 @@ func (s *FakeOutboxStore) Persist(_ context.Context, records []*persistence.Outb
 	}
 
 	for _, rec := range records {
-		dedupKey := rec.EnvelopeID + ":" + rec.BindingID
+		dedupKey := rec.EnvelopeID() + ":" + rec.BindingID()
 		for _, existing := range s.records {
-			existingKey := existing.EnvelopeID + ":" + existing.BindingID
+			existingKey := existing.EnvelopeID() + ":" + existing.BindingID()
 			if existingKey == dedupKey {
 				return shared.ErrDuplicateRecord
 			}
 		}
-		s.records[rec.ID] = persistence.RehydrateFromSnapshot(rec.PersistenceSnapshot())
+		s.records[rec.ID()] = persistence.RehydrateFromSnapshot(rec.PersistenceSnapshot())
 	}
 	return nil
 }
 
-func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
+func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.ClaimFn != nil {
-		return s.ClaimFn(partitionKey, ownerID, token, limit)
+		return s.ClaimFn(partitionKey, token, limit)
 	}
 	if s.ClaimErr != nil {
 		return nil, s.ClaimErr
@@ -455,7 +455,7 @@ func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string,
 		if len(claimed) >= limit {
 			break
 		}
-		recPK := persistence.OutboxPartitionKey(rec.SessionID, rec.BindingID)
+		recPK := persistence.OutboxPartitionKey(rec.SessionID(), rec.BindingID())
 		if recPK != partitionKey {
 			continue
 		}
@@ -475,9 +475,9 @@ func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey, ownerID string,
 			snap.ClaimedAt = time.Time{}
 			snap.ClaimVersion = 0
 			rec = persistence.RehydrateFromSnapshot(snap)
-			s.records[rec.ID] = rec
+			s.records[rec.ID()] = rec
 		}
-		if claimErr := rec.Claim(time.Now(), ownerID, token.Version); claimErr != nil {
+		if claimErr := rec.Claim(time.Now(), token.Owner, token.Version); claimErr != nil {
 			continue
 		}
 		claimed = append(claimed, persistence.RehydrateFromSnapshot(rec.PersistenceSnapshot()))
@@ -522,7 +522,7 @@ func (s *FakeOutboxStore) Expire(_ context.Context, before time.Time) (int, erro
 
 	count := 0
 	for _, rec := range s.records {
-		if rec.Status() == persistence.OutboxPending && !rec.ExpiresAt.IsZero() && rec.ExpiresAt.Before(before) {
+		if rec.Status() == persistence.OutboxPending && !rec.ExpiresAt().IsZero() && rec.ExpiresAt().Before(before) {
 			if expErr := rec.Expire(time.Now()); expErr == nil {
 				count++
 			}
@@ -546,7 +546,7 @@ func (s *FakeOutboxStore) QueryPending(_ context.Context, partitionKey string, l
 		if len(result) >= limit {
 			break
 		}
-		recPK := persistence.OutboxPartitionKey(rec.SessionID, rec.BindingID)
+		recPK := persistence.OutboxPartitionKey(rec.SessionID(), rec.BindingID())
 		if recPK != partitionKey {
 			continue
 		}
@@ -617,10 +617,10 @@ func (s *FakeDLQStore) List(_ context.Context, filter routing.DLQFilter) ([]rout
 
 	var result []routing.DLQEntry
 	for _, e := range s.Entries {
-		if filter.RouteID != "" && e.RouteID != filter.RouteID {
+		if filter.RouteID != "" && e.RouteID() != filter.RouteID {
 			continue
 		}
-		if filter.Category != "" && e.Category != filter.Category {
+		if filter.Category != "" && e.Category() != filter.Category {
 			continue
 		}
 		result = append(result, e)
@@ -635,7 +635,7 @@ func (s *FakeDLQStore) Get(_ context.Context, id string) (routing.DLQEntry, erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, e := range s.Entries {
-		if e.ID == id {
+		if e.ID() == id {
 			return e, nil
 		}
 	}
@@ -652,7 +652,7 @@ func (s *FakeDLQStore) Delete(_ context.Context, ids []string) (int, error) {
 	var remaining []routing.DLQEntry
 	var count int
 	for _, e := range s.Entries {
-		if _, ok := idSet[e.ID]; ok {
+		if _, ok := idSet[e.ID()]; ok {
 			count++
 		} else {
 			remaining = append(remaining, e)

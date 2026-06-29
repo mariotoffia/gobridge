@@ -81,8 +81,8 @@ func TestSessionOptionsFromMap(t *testing.T) {
 	if opts.Username != "admin" {
 		t.Errorf("Username = %q", opts.Username)
 	}
-	if opts.Password != "secret" {
-		t.Errorf("Password = %q", opts.Password)
+	if opts.Password.Reveal() != "secret" {
+		t.Errorf("Password = %q", opts.Password.Reveal())
 	}
 	if opts.Vhost != "/prod" {
 		t.Errorf("Vhost = %q", opts.Vhost)

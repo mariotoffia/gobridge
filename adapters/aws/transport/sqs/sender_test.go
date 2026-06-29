@@ -105,10 +105,10 @@ func TestSender_Send_FIFO_DefaultGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "env-fifo-default",
 		Payload: []byte("msg"),
-	}
+	})
 
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -164,7 +164,7 @@ func TestSender_Send_WithDelay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{ID: "env-delay", Payload: []byte("delayed")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-delay", Payload: []byte("delayed")})
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestSender_Send_Error(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{ID: "env-err", Payload: []byte("fail")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-err", Payload: []byte("fail")})
 	sendErr := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env})
 	if sendErr == nil {
 		t.Fatal("expected error")
@@ -223,13 +223,13 @@ func TestSender_SendBatch_Basic(t *testing.T) {
 
 	envs := make([]*messaging.Envelope, 3)
 	for i := range envs {
-		envs[i] = &messaging.Envelope{
+		envs[i] = messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "batch-" + string(rune('0'+i)),
 			Payload: []byte("msg"),
-		}
+		})
 	}
 
-	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -239,12 +239,12 @@ func TestSender_SendBatch_Basic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
-	if sent != 3 {
+	if sent := batchSent(results); sent != 3 {
 		t.Fatalf("expected 3 sent, got %d", sent)
 	}
 }
 
-// Verifies partial batch failures return an error while reporting successful entry count.
+// Verifies a partial batch failure surfaces per-entry errors (no whole-batch error) while other entries succeed.
 func TestSender_SendBatch_PartialFailure(t *testing.T) {
 	mock := &mockSQSClient{
 		SendMessageBatchFn: func(_ context.Context, in *awssqs.SendMessageBatchInput, _ ...func(*awssqs.Options)) (*awssqs.SendMessageBatchOutput, error) {
@@ -268,22 +268,25 @@ func TestSender_SendBatch_PartialFailure(t *testing.T) {
 	}
 
 	envs := []*messaging.Envelope{
-		{ID: "ok", Payload: []byte("ok")},
-		{ID: "fail", Payload: []byte("fail")},
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "ok", Payload: []byte("ok")}),
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "fail", Payload: []byte("fail")}),
 	}
 
-	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
 		}
 		return _msgs
 	}())
-	if sendErr == nil {
-		t.Fatal("expected error on partial failure")
+	if sendErr != nil {
+		t.Fatalf("partial failure must not yield a whole-batch error, got %v", sendErr)
 	}
-	if sent != 1 {
+	if sent := batchSent(results); sent != 1 {
 		t.Fatalf("expected 1 successful, got %d", sent)
+	}
+	if results[1].Err == nil {
+		t.Fatal("expected the failed entry (index 1) to carry an error")
 	}
 }
 
@@ -312,10 +315,10 @@ func TestSender_SendBatch_LargeBatch(t *testing.T) {
 
 	envs := make([]*messaging.Envelope, 12)
 	for i := range envs {
-		envs[i] = &messaging.Envelope{ID: "lg", Payload: []byte("x")}
+		envs[i] = messaging.MustEnvelope(messaging.EnvelopeInput{ID: "lg", Payload: []byte("x")})
 	}
 
-	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -325,7 +328,7 @@ func TestSender_SendBatch_LargeBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
-	if sent != 12 {
+	if sent := batchSent(results); sent != 12 {
 		t.Fatalf("expected 12 sent, got %d", sent)
 	}
 	if batchCalls != 3 {
@@ -393,20 +396,23 @@ func TestSender_SendBatch_PartialFailure_ContinuesRemaining(t *testing.T) {
 	}
 	envs := make([]*messaging.Envelope, 4)
 	for i := range envs {
-		envs[i] = &messaging.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("msg")}
+		envs[i] = messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("env-%d", i), Payload: []byte("msg")})
 	}
-	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
 		}
 		return _msgs
 	}())
-	if sendErr == nil {
-		t.Fatal("expected combined error from partial failure")
+	if sendErr != nil {
+		t.Fatalf("partial failure must not yield a whole-batch error, got %v", sendErr)
 	}
-	if sent != 3 {
+	if sent := batchSent(results); sent != 3 {
 		t.Fatalf("expected 3 sent (1+2), got %d", sent)
+	}
+	if results[1].Err == nil {
+		t.Fatal("expected the failed first-batch entry (index 1) to carry an error")
 	}
 	if callNum != 2 {
 		t.Fatalf("expected 2 batch API calls, got %d", callNum)
@@ -435,26 +441,26 @@ func TestSender_SendBatch_APIError_ContinuesRemaining(t *testing.T) {
 	}
 	envs := make([]*messaging.Envelope, 6)
 	for i := range envs {
-		envs[i] = &messaging.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("x")}
+		envs[i] = messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("env-%d", i), Payload: []byte("x")})
 	}
-	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
 		}
 		return _msgs
 	}())
-	if sendErr == nil {
-		t.Fatal("expected error from first batch failure")
+	if sendErr != nil {
+		t.Fatalf("chunk API failure must not yield a whole-batch error, got %v", sendErr)
 	}
-	if sent != 3 {
+	if sent := batchSent(results); sent != 3 {
 		t.Fatalf("expected 3 sent from second batch, got %d", sent)
 	}
 	if callNum != 2 {
 		t.Fatalf("expected 2 batch API calls, got %d", callNum)
 	}
-	if !shared.IsRecoverableError(sendErr) {
-		t.Fatal("ServiceUnavailable should be recoverable")
+	if results[0].Err == nil || !shared.IsRecoverableError(results[0].Err) {
+		t.Fatalf("ServiceUnavailable should surface as a recoverable per-entry error, got %v", results[0].Err)
 	}
 }
 
@@ -482,9 +488,9 @@ func TestSender_SendBatch_PerBatchTimeout(t *testing.T) {
 	}
 	envs := make([]*messaging.Envelope, 4)
 	for i := range envs {
-		envs[i] = &messaging.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("x")}
+		envs[i] = messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("env-%d", i), Payload: []byte("x")})
 	}
-	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -494,7 +500,7 @@ func TestSender_SendBatch_PerBatchTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
-	if sent != 4 {
+	if sent := batchSent(results); sent != 4 {
 		t.Fatalf("expected 4 sent, got %d", sent)
 	}
 	if len(deadlines) != 2 {
@@ -524,8 +530,8 @@ func TestGenerateDeduplicationID_Deterministic(t *testing.T) {
 
 // Verifies generateDeduplicationID changes when the payload differs.
 func TestGenerateDeduplicationID_DiffersOnPayload(t *testing.T) {
-	env1 := &messaging.Envelope{ID: "msg-1", Payload: []byte("a")}
-	env2 := &messaging.Envelope{ID: "msg-1", Payload: []byte("b")}
+	env1 := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1", Payload: []byte("a")})
+	env2 := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1", Payload: []byte("b")})
 
 	if generateDeduplicationID(env1) == generateDeduplicationID(env2) {
 		t.Fatal("different payloads should produce different dedup IDs")

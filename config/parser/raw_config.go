@@ -66,6 +66,16 @@ func (r *rawMapConfig) Decode(target any) error {
 			floatToIntegerOrDurationHook,
 			mapstructure.StringToTimeDurationHookFunc(),
 			mapstructure.StringToSliceHookFunc(","),
+			// Decodes a scalar string into any value-object that
+			// implements encoding.TextUnmarshaler — notably
+			// shared.Secret on plugin-config secret fields (mqtt
+			// session.password, servicebus connection_string /
+			// client_secret, http api_key). mapstructure does not
+			// honour TextUnmarshaler natively, so without this hook a
+			// `password: <scalar>` fails with "expected a map or
+			// struct, got string". Placed last so the numeric/duration/
+			// slice hooks keep precedence.
+			mapstructure.TextUnmarshallerHookFunc(),
 		),
 	})
 	if err != nil {

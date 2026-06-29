@@ -280,8 +280,8 @@ func TestAnaHdr_GenerateEnvelopeID_UniqueAcrossManyCalls(t *testing.T) {
 func TestAnaHdr_EnvelopeFromPublish_PreservesPayload(t *testing.T) {
 	pub := &pahov5.Publish{Topic: "t", Payload: []byte("data")}
 	env := EnvelopeFromPublish(pub, nil)
-	if string(env.Payload) != "data" {
-		t.Fatalf("payload = %q, want %q", env.Payload, "data")
+	if string(env.Payload()) != "data" {
+		t.Fatalf("payload = %q, want %q", env.Payload(), "data")
 	}
 }
 
@@ -317,14 +317,19 @@ func TestAnaHdr_EnvelopeFromPublish_AcceptsEmptyUserPropertyValue(t *testing.T) 
 }
 
 // TestAnaHdr_PublishFromEnvelope_EmptyEnvelope_NoProperties verifies
-// the publish has nil Properties when no header-derived data exists.
+// the publish has no unexpected user properties when there is no subject/headers.
+// MustEnvelope auto-assigns a non-empty ID, so mqtt.message-id is expected.
 func TestAnaHdr_PublishFromEnvelope_EmptyEnvelope_NoProperties(t *testing.T) {
 	// Note: env.Subject() is intentionally empty so PublishFromEnvelope
 	// does NOT emit a HeaderGobridgeSubject user property.
-	env := &messaging.Envelope{Payload: []byte{}}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte{}})
 	pub := PublishFromEnvelope(env, "t", SenderOptions{QoS: 0}, nil)
 	if pub.Properties != nil {
-		t.Errorf("expected nil Properties for empty envelope, got %+v", pub.Properties)
+		for _, u := range pub.Properties.User {
+			if u.Key != "mqtt.message-id" {
+				t.Errorf("unexpected user property: %s=%s", u.Key, u.Value)
+			}
+		}
 	}
 }
 
@@ -371,10 +376,10 @@ func TestAnaHdr_EnvelopeFromPublish_MessageExpiryZeroValue_NoExpiresAt(t *testin
 	env := EnvelopeFromPublish(pub, nil)
 	// An expiry of 0 seconds means "expired immediately"; the header
 	// translation just adds 0 → ExpiresAt is set but equals CreatedAt.
-	if env.ExpiresAt.IsZero() {
+	if env.ExpiresAt().IsZero() {
 		t.Fatal("ExpiresAt must be set when MessageExpiry pointer is non-nil")
 	}
-	if env.ExpiresAt.Before(env.CreatedAt) {
-		t.Fatalf("ExpiresAt %v should not predate CreatedAt %v", env.ExpiresAt, env.CreatedAt)
+	if env.ExpiresAt().Before(env.CreatedAt()) {
+		t.Fatalf("ExpiresAt %v should not predate CreatedAt %v", env.ExpiresAt(), env.CreatedAt())
 	}
 }

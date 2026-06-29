@@ -49,9 +49,9 @@ func TestDeliveryHook_SharedOutbox_Success(t *testing.T) {
 		cfg.Hook = hook
 	})
 
-	env := messaging.Envelope{ID: "outbox-msg-1", Payload: []byte("payload")}
+	env := *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "outbox-msg-1", Payload: []byte("payload")})
 	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
-		ID: "rec-1", RouteID: "route-1", EnvelopeID: env.ID,
+		ID: "rec-1", RouteID: "route-1", EnvelopeID: env.ID(),
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: env, Status: persistence.OutboxPending, CreatedAt: time.Now(),
 	})})
@@ -99,9 +99,9 @@ func TestDeliveryHook_SharedOutbox_Poison(t *testing.T) {
 		cfg.Policy.MaxReplayAttempts = 1
 	})
 
-	env := messaging.Envelope{ID: "poison-msg", Payload: []byte("payload")}
+	env := *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "poison-msg", Payload: []byte("payload")})
 	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
-		ID: "rec-poison", RouteID: "route-1", EnvelopeID: env.ID,
+		ID: "rec-poison", RouteID: "route-1", EnvelopeID: env.ID(),
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: env, ReplayCount: 5,
 		Status: persistence.OutboxPending, CreatedAt: time.Now(),
@@ -140,12 +140,11 @@ func TestDeliveryHook_SharedOutbox_Expired(t *testing.T) {
 		cfg.Hook = hook
 	})
 
-	env := messaging.Envelope{
-		ID: "expired-msg", Payload: []byte("old"),
-		ExpiresAt: time.Now().Add(-1 * time.Hour),
-	}
+	expEnv := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "expired-msg", Payload: []byte("old"), CreatedAt: time.Now().Add(-2 * time.Hour)})
+	_ = expEnv.SetExpiry(time.Now().Add(-1 * time.Hour))
+	env := *expEnv
 	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
-		ID: "rec-expired", RouteID: "route-1", EnvelopeID: env.ID,
+		ID: "rec-expired", RouteID: "route-1", EnvelopeID: env.ID(),
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: env, Status: persistence.OutboxPending, CreatedAt: time.Now(),
 	})})
@@ -186,9 +185,9 @@ func TestDeliveryHook_SharedOutbox_PermanentSendError(t *testing.T) {
 	})
 	sender.SendErr = permErr
 
-	env := messaging.Envelope{ID: "perm-msg", Payload: []byte("fail")}
+	env := *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "perm-msg", Payload: []byte("fail")})
 	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
-		ID: "rec-perm", RouteID: "route-1", EnvelopeID: env.ID,
+		ID: "rec-perm", RouteID: "route-1", EnvelopeID: env.ID(),
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: env, Status: persistence.OutboxPending, CreatedAt: time.Now(),
 	})})
@@ -224,9 +223,9 @@ func TestDeliveryHook_SharedOutbox_TransientNoSettled(t *testing.T) {
 	})
 	sender.SendErr = transientErr
 
-	env := messaging.Envelope{ID: "transient-msg", Payload: []byte("retry")}
+	env := *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "transient-msg", Payload: []byte("retry")})
 	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
-		ID: "rec-transient", RouteID: "route-1", EnvelopeID: env.ID,
+		ID: "rec-transient", RouteID: "route-1", EnvelopeID: env.ID(),
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: env, Status: persistence.OutboxPending, CreatedAt: time.Now(),
 	})})
@@ -263,9 +262,9 @@ func TestDeliveryHook_SharedOutbox_AttemptIsReplayCountPlusOne(t *testing.T) {
 		cfg.Hook = hook
 	})
 
-	env := messaging.Envelope{ID: "replay-msg", Payload: []byte("replay")}
+	env := *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "replay-msg", Payload: []byte("replay")})
 	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
-		ID: "rec-replay", RouteID: "route-1", EnvelopeID: env.ID,
+		ID: "rec-replay", RouteID: "route-1", EnvelopeID: env.ID(),
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: env, ReplayCount: 3,
 		Status: persistence.OutboxPending, CreatedAt: time.Now(),
@@ -301,13 +300,13 @@ func TestDeliveryHook_SharedOutbox_MultipleBatchRecords(t *testing.T) {
 	})
 
 	for i := range 3 {
-		env := messaging.Envelope{
+		env := *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "batch-" + string(rune('A'+i)),
 			Payload: []byte("data"),
-		}
+		})
 		_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 			ID: "rec-batch-" + string(rune('A'+i)), RouteID: "route-1",
-			EnvelopeID: env.ID, BindingID: "bind-1", SessionID: "sess-1",
+			EnvelopeID: env.ID(), BindingID: "bind-1", SessionID: "sess-1",
 			Envelope: env, Status: persistence.OutboxPending, CreatedAt: time.Now(),
 		})})
 	}
@@ -365,7 +364,7 @@ func TestDeliveryHook_Builder_RegisterPropagates(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "prop-msg", Payload: []byte("test")})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "prop-msg", Payload: []byte("test")}))
 	if err := receiver.Emit(ctx, del); err != nil {
 		t.Fatalf("emit: %v", err)
 	}

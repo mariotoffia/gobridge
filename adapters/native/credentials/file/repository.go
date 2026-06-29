@@ -28,10 +28,74 @@ const (
 )
 
 type storedCredentials struct {
-	Credentials *connectivity.CredentialSet `json:"credentials"`
-	Version     int64                       `json:"version"`
-	CreatedAt   time.Time                   `json:"createdAt"`
-	UpdatedAt   time.Time                   `json:"updatedAt"`
+	Credentials *credentialSetDTO `json:"credentials"`
+	Version     int64             `json:"version"`
+	CreatedAt   time.Time         `json:"createdAt"`
+	UpdatedAt   time.Time         `json:"updatedAt"`
+}
+
+// credentialSetDTO mirrors connectivity.CredentialSet on the wire. The domain
+// value objects expose only accessors, so persistence goes through these DTOs
+// rather than marshalling the domain types directly. JSON keys are kept
+// identical to the historical default-marshalled layout for backward
+// compatibility with existing credential files.
+type credentialSetDTO struct {
+	Password *passwordDTO `json:"Password"`
+	TLS      *tlsDTO      `json:"TLS"`
+}
+
+type passwordDTO struct {
+	Username string `json:"Username"`
+	Password string `json:"Password"`
+}
+
+type tlsDTO struct {
+	CertPEM            string   `json:"CertPEM"`
+	KeyPEM             string   `json:"KeyPEM"`
+	CAPEMs             []string `json:"CAPEMs"`
+	InsecureSkipVerify bool     `json:"InsecureSkipVerify"`
+}
+
+// toDTO converts a domain CredentialSet to its persistable form, revealing
+// the wrapped secrets exactly at this storage boundary.
+func toDTO(cs *connectivity.CredentialSet) *credentialSetDTO {
+	if cs == nil {
+		return nil
+	}
+	dto := &credentialSetDTO{}
+	if cs.Password() != nil {
+		dto.Password = &passwordDTO{
+			Username: cs.Password().Username(),
+			Password: cs.Password().Password().Reveal(),
+		}
+	}
+	if cs.TLS() != nil {
+		dto.TLS = &tlsDTO{
+			CertPEM:            cs.TLS().CertPEM(),
+			KeyPEM:             cs.TLS().KeyPEM().Reveal(),
+			CAPEMs:             cs.TLS().CAPEMs(),
+			InsecureSkipVerify: cs.TLS().InsecureSkipVerify(),
+		}
+	}
+	return dto
+}
+
+// toDomain reconstructs the immutable domain CredentialSet from the DTO.
+func (dto *credentialSetDTO) toDomain() *connectivity.CredentialSet {
+	if dto == nil {
+		return nil
+	}
+	var pw *connectivity.PasswordCredential
+	if dto.Password != nil {
+		p := connectivity.NewPasswordCredential(dto.Password.Username, dto.Password.Password)
+		pw = &p
+	}
+	var tls *connectivity.TLSMaterial
+	if dto.TLS != nil {
+		t := connectivity.NewTLSMaterial(dto.TLS.CertPEM, dto.TLS.KeyPEM, dto.TLS.CAPEMs, dto.TLS.InsecureSkipVerify)
+		tls = &t
+	}
+	return connectivity.NewCredentialSet(pw, tls)
 }
 
 type Repository struct {
@@ -98,7 +162,7 @@ func (r *Repository) Get(ctx context.Context, uri string) (*connectivity.Credent
 		return nil, fmt.Errorf("failed to parse credentials file: %w", err)
 	}
 
-	return stored.Credentials, nil
+	return stored.Credentials.toDomain(), nil
 }
 
 func (r *Repository) Create(ctx context.Context, uri string, creds *connectivity.CredentialSet) error {
@@ -121,7 +185,7 @@ func (r *Repository) Create(ctx context.Context, uri string, creds *connectivity
 
 	now := r.clk.Now()
 	stored := storedCredentials{
-		Credentials: creds,
+		Credentials: toDTO(creds),
 		Version:     1,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -156,7 +220,7 @@ func (r *Repository) Update(ctx context.Context, uri string, creds *connectivity
 		return shared.ErrVersionMismatch
 	}
 
-	stored.Credentials = creds
+	stored.Credentials = toDTO(creds)
 	stored.Version++
 	stored.UpdatedAt = r.clk.Now()
 

@@ -56,22 +56,22 @@ func (s *sqlSession) close() error {
 // write inserts a single DLQ entry. Duplicates surface as
 // shared.ErrDuplicateRecord.
 func (s *sqlSession) write(ctx context.Context, entry routing.DLQEntry) error {
-	envJSON, err := json.Marshal(entry.Envelope)
+	envJSON, err := json.Marshal(entry.Snapshot())
 	if err != nil {
 		return fmt.Errorf("sqlitedlq: marshal envelope: %w", err)
 	}
 
 	_, err = s.db.ExecContext(ctx, insertDLQSQL,
-		entry.ID, entry.RouteID, entry.BindingID, entry.SessionID, entry.SourceID,
-		entry.CorrelationID, entry.Reason, entry.Category, entry.ErrorCode, entry.LastError,
-		string(envJSON), entry.FailedAt.UnixMilli(), entry.Attempts,
+		entry.ID(), entry.RouteID(), entry.BindingID(), entry.SessionID(), entry.SourceID(),
+		entry.CorrelationID(), entry.Reason(), entry.Category(), entry.ErrorCode(), entry.LastError(),
+		string(envJSON), entry.FailedAt().UnixMilli(), entry.Attempts(),
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
-			return shared.ErrDuplicateRecord.With("entryID", entry.ID)
+			return shared.ErrDuplicateRecord.With("entryID", entry.ID())
 		}
 		return wrapErr(err, "sqlitedlq: write",
-			"entryID", entry.ID, "routeID", entry.RouteID)
+			"entryID", entry.ID(), "routeID", entry.RouteID())
 	}
 	return nil
 }

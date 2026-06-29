@@ -16,6 +16,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // sendOne builds the SDK SendMessageInput, issues SendMessage and emits
@@ -34,20 +35,28 @@ func (s *Sender) sendOne(ctx context.Context, env *messaging.Envelope) error {
 		return MapError(err)
 	}
 
-	s.metrics.Timer(shared.MetricSQSSendLatency, s.clock().Since(start),
-		shared.Tag{Key: shared.TagKeyQueueURL, Value: s.queueURL})
+	s.metrics.Timer(MetricSQSSendLatency, s.clock().Since(start),
+		shared.Tag{Key: TagKeyQueueURL, Value: s.queueURL})
 
 	return nil
 }
 
 // sendBatchChunk sends one chunk of envelopes (≤ BatchSize) in a single
-// SDK SendMessageBatch call. It returns the count of successful sends
-// and any per-entry / call-level errors. The chunk-level timeout is
+// SDK SendMessageBatch call. It returns one ports.BatchResult per input
+// envelope, keyed by the envelope's index WITHIN the chunk: nil Err for
+// entries the broker accepted (SQS Successful), the classified error for
+// entries it rejected (SQS Failed), and the call error on every entry
+// when the whole SendMessageBatch call fails. The chunk-level timeout is
 // owned here so sender.go does not need the SDK or the input types.
 func (s *Sender) sendBatchChunk(
 	ctx context.Context,
 	batch []*messaging.Envelope,
-) (int, []error) {
+) []ports.BatchResult {
+	results := make([]ports.BatchResult, len(batch))
+	for j := range batch {
+		results[j].Index = j
+	}
+
 	entries := make([]sqstypes.SendMessageBatchRequestEntry, 0, len(batch))
 	for j, env := range batch {
 		entries = append(entries, s.buildBatchEntry(j, env))
@@ -63,45 +72,50 @@ func (s *Sender) sendBatchChunk(
 	cancel()
 
 	if err != nil {
-		return 0, []error{MapError(err)}
+		e := MapError(err)
+		for j := range results {
+			results[j].Err = e
+		}
+		return results
 	}
 
-	s.metrics.Timer(shared.MetricSQSSendBatchLatency, s.clock().Since(start),
-		shared.Tag{Key: shared.TagKeyQueueURL, Value: s.queueURL})
-
-	sent := len(result.Successful)
+	s.metrics.Timer(MetricSQSSendBatchLatency, s.clock().Since(start),
+		shared.Tag{Key: TagKeyQueueURL, Value: s.queueURL})
 
 	if len(result.Failed) == 0 {
-		return sent, nil
+		return results
 	}
 
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "sqs: batch partial failure",
 			"queue_url", s.queueURL,
-			"sent", sent,
+			"sent", len(result.Successful),
 			"failed", len(result.Failed),
 		)
 	}
 
-	errs := make([]error, 0, len(result.Failed))
 	for _, f := range result.Failed {
+		idx, convErr := strconv.Atoi(derefStr(f.Id))
+		if convErr != nil || idx < 0 || idx >= len(results) {
+			continue
+		}
 		base := shared.ErrUnavailable
 		if f.SenderFault {
 			base = shared.ErrInvalidPayload
 		}
-		errs = append(errs, base.
+		results[idx].Err = base.
 			Wrap(fmt.Errorf("sqs batch entry %s failed: %s",
 				derefStr(f.Id), derefStr(f.Message))).
 			With("code", derefStr(f.Code)).
-			With("sender_fault", f.SenderFault))
+			With("sender_fault", f.SenderFault)
 	}
-	return sent, errs
+	return results
 }
 
 func (s *Sender) buildSendInput(env *messaging.Envelope) *awssqs.SendMessageInput {
 	input := &awssqs.SendMessageInput{
 		QueueUrl:    aws.String(s.queueURL),
-		MessageBody: aws.String(string(env.Payload)),
+		MessageBody: aws.String(string(env.Payload())),
 	}
 
 	if s.cfg.DelaySeconds > 0 {
@@ -130,7 +144,7 @@ func (s *Sender) buildSendInput(env *messaging.Envelope) *awssqs.SendMessageInpu
 func (s *Sender) buildBatchEntry(idx int, env *messaging.Envelope) sqstypes.SendMessageBatchRequestEntry {
 	entry := sqstypes.SendMessageBatchRequestEntry{
 		Id:          aws.String(strconv.Itoa(idx)),
-		MessageBody: aws.String(string(env.Payload)),
+		MessageBody: aws.String(string(env.Payload())),
 	}
 
 	if s.cfg.DelaySeconds > 0 {
@@ -276,12 +290,12 @@ func extractFIFOFields(headers map[string]any) (groupID, dedupID string) {
 // required for T08.
 func generateDeduplicationID(env *messaging.Envelope) string {
 	h := md5.New()
-	h.Write(env.Payload)
+	h.Write(env.Payload())
 	h.Write([]byte(env.Subject()))
-	if env.ID != "" {
-		h.Write([]byte(env.ID))
+	if env.ID() != "" {
+		h.Write([]byte(env.ID()))
 	} else {
-		h.Write([]byte(env.CreatedAt.String()))
+		h.Write([]byte(env.CreatedAt().String()))
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

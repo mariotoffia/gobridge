@@ -34,7 +34,7 @@ func TestRouteRunner_EmitsE2ELatency(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{ID: "msg-1", Payload: []byte("data"), ExpiresAt: time.Now().Add(time.Hour)}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1", Payload: []byte("data"), ExpiresAt: time.Now().Add(time.Hour)})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -78,7 +78,7 @@ func TestRouteRunner_EmitsDLQEntries(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{ID: "msg-dlq", Payload: []byte("data"), ExpiresAt: time.Now().Add(time.Hour)}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-dlq", Payload: []byte("data"), ExpiresAt: time.Now().Add(time.Hour)})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -104,7 +104,7 @@ func TestOutboxDrainer_EmitsDrainLatency(t *testing.T) {
 	records := []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "r1", RouteID: "route-drain", EnvelopeID: "e1", BindingID: "b1",
 		SessionID: "sess-1", Status: persistence.OutboxPending,
-		Envelope: messaging.Envelope{ID: "e1", Payload: []byte("data")},
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Payload: []byte("data")}),
 	})}
 	_ = outbox.Persist(context.Background(), records)
 
@@ -115,7 +115,6 @@ func TestOutboxDrainer_EmitsDrainLatency(t *testing.T) {
 		RouteID:        "route-drain",
 		PartitionKey:   persistence.OutboxPartitionKey("sess-1", "b1"),
 		LeaseID:        "sess-1",
-		OwnerID:        "owner-1",
 		Policy:         routing.RoutePolicy{}.WithDefaults(),
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
@@ -150,11 +149,11 @@ func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 	records := []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "r-exp", RouteID: "route-exp", EnvelopeID: "e-exp", BindingID: "b1",
 		SessionID: "s1", Status: persistence.OutboxPending,
-		Envelope: messaging.Envelope{
-			ID:        "e-exp",
-			Payload:   []byte("data"),
-			ExpiresAt: time.Now().Add(-time.Hour),
-		},
+		Envelope: func() messaging.Envelope {
+			e := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e-exp", Payload: []byte("data")})
+			_ = e.SetExpiry(time.Now().Add(-time.Hour))
+			return *e
+		}(),
 		ExpiresAt: time.Now().Add(-time.Hour),
 	})}
 	_ = outbox.Persist(context.Background(), records)
@@ -166,7 +165,6 @@ func TestOutboxDrainer_EmitsExpiredBeforeSend(t *testing.T) {
 		RouteID:        "route-exp",
 		PartitionKey:   persistence.OutboxPartitionKey("s1", "b1"),
 		LeaseID:        "s1",
-		OwnerID:        "owner-1",
 		Policy:         routing.RoutePolicy{OnExpired: routing.ExpiredDLQ}.WithDefaults(),
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,

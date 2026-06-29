@@ -327,7 +327,7 @@ func TestSession_Reconcile_NotStarted(t *testing.T) {
 func TestSession_BrokerURL(t *testing.T) {
 	s := testSession(func(o *SessionOptions) {
 		o.Username = "admin"
-		o.Password = "s3cret"
+		o.Password = shared.NewSecret("s3cret")
 	})
 
 	got := s.brokerURL()
@@ -341,7 +341,7 @@ func TestSession_BrokerURL(t *testing.T) {
 func TestSession_SafeBrokerURL(t *testing.T) {
 	s := testSession(func(o *SessionOptions) {
 		o.Username = "admin"
-		o.Password = "s3cret"
+		o.Password = shared.NewSecret("s3cret")
 	})
 
 	got := s.safeBrokerURL()

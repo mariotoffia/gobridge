@@ -218,7 +218,7 @@ func mergedUniqueAMQPCount(collectors ...*amqpCollector) int {
 	seen := make(map[string]struct{})
 	for _, c := range collectors {
 		for _, m := range c.getMessages() {
-			seen[m.ID] = struct{}{}
+			seen[m.ID()] = struct{}{}
 		}
 	}
 	return len(seen)

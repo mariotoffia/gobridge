@@ -260,3 +260,117 @@ func TestSetHeader_ReturnValueRequired(t *testing.T) {
 		t.Fatal("expected both values to be present")
 	}
 }
+
+// TestHeaderClassification asserts every reserved header constant is in
+// exactly one classification bucket (INTERNAL-ONLY xor BRIDGE-TO-BRIDGE
+// PROPAGATED) — exhaustive and disjoint.
+func TestHeaderClassification(t *testing.T) {
+	internalOnly := []string{
+		messaging.HeaderRouteID,
+		messaging.HeaderRouteOverride,
+		messaging.HeaderSourceID,
+		messaging.HeaderContentType,
+	}
+	propagated := []string{
+		messaging.HeaderCorrelationID,
+		messaging.HeaderCausationID,
+		messaging.HeaderIdempotencyKey,
+		messaging.HeaderDeduplicationID,
+		messaging.HeaderOrderingKey,
+		messaging.HeaderTenantID,
+		messaging.HeaderForwardedFrom,
+		messaging.HeaderForwardedHop,
+		messaging.HeaderTraceParent,
+		messaging.HeaderTraceState,
+	}
+	for _, k := range internalOnly {
+		t.Run("internal/"+k, func(t *testing.T) {
+			if !messaging.IsInternalOnlyHeader(k) {
+				t.Fatalf("IsInternalOnlyHeader(%q) = false, want true", k)
+			}
+			if messaging.IsBridgeToBridgeHeader(k) {
+				t.Fatalf("IsBridgeToBridgeHeader(%q) = true, want false (disjoint)", k)
+			}
+		})
+	}
+	for _, k := range propagated {
+		t.Run("propagated/"+k, func(t *testing.T) {
+			if !messaging.IsBridgeToBridgeHeader(k) {
+				t.Fatalf("IsBridgeToBridgeHeader(%q) = false, want true", k)
+			}
+			if messaging.IsInternalOnlyHeader(k) {
+				t.Fatalf("IsInternalOnlyHeader(%q) = true, want false (disjoint)", k)
+			}
+		})
+	}
+}
+
+// TestHeaderClassification_NonReserved confirms an application key is
+// neither INTERNAL-ONLY nor BRIDGE-TO-BRIDGE PROPAGATED.
+func TestHeaderClassification_NonReserved(t *testing.T) {
+	for _, k := range []string{"my-header", "tenant", "gobridge.subject", ""} {
+		if messaging.IsInternalOnlyHeader(k) {
+			t.Fatalf("IsInternalOnlyHeader(%q) = true, want false", k)
+		}
+		if messaging.IsBridgeToBridgeHeader(k) {
+			t.Fatalf("IsBridgeToBridgeHeader(%q) = true, want false", k)
+		}
+	}
+}
+
+// TestHeaderClassification_CaseInsensitive confirms the predicates fold
+// case, consistent with IsReservedHeader.
+func TestHeaderClassification_CaseInsensitive(t *testing.T) {
+	if !messaging.IsInternalOnlyHeader("X-Bridge.Route-ID") {
+		t.Fatal("IsInternalOnlyHeader must be case-insensitive")
+	}
+	if !messaging.IsBridgeToBridgeHeader("X-BRIDGE.IDEMPOTENCY-KEY") {
+		t.Fatal("IsBridgeToBridgeHeader must be case-insensitive")
+	}
+	if !messaging.IsBridgeToBridgeHeader("TraceParent") {
+		t.Fatal("IsBridgeToBridgeHeader must fold traceparent")
+	}
+}
+
+// TestStripInternalOnlyHeaders removes INTERNAL-ONLY reserved headers
+// while preserving BRIDGE-TO-BRIDGE PROPAGATED and application headers,
+// and does not mutate its input.
+func TestStripInternalOnlyHeaders(t *testing.T) {
+	in := map[string]any{
+		messaging.HeaderRouteID:        "rt",       // internal-only -> dropped
+		messaging.HeaderSourceID:       "src",      // internal-only -> dropped
+		messaging.HeaderContentType:    "app/json", // internal-only -> dropped
+		messaging.HeaderRouteOverride:  "ovr",      // internal-only -> dropped
+		messaging.HeaderCorrelationID:  "corr",     // propagated -> kept
+		messaging.HeaderIdempotencyKey: "idem",     // propagated -> kept
+		messaging.HeaderTraceParent:    "tp",       // propagated -> kept
+		"app-key":                      "kept",     // application -> kept
+	}
+	out := messaging.StripInternalOnlyHeaders(in)
+	for _, k := range []string{
+		messaging.HeaderRouteID, messaging.HeaderSourceID,
+		messaging.HeaderContentType, messaging.HeaderRouteOverride,
+	} {
+		if _, ok := out[k]; ok {
+			t.Fatalf("internal-only header %q must be stripped", k)
+		}
+	}
+	for _, k := range []string{
+		messaging.HeaderCorrelationID, messaging.HeaderIdempotencyKey,
+		messaging.HeaderTraceParent, "app-key",
+	} {
+		if _, ok := out[k]; !ok {
+			t.Fatalf("header %q must be preserved", k)
+		}
+	}
+	if _, ok := in[messaging.HeaderRouteID]; !ok {
+		t.Fatal("StripInternalOnlyHeaders must not mutate its input")
+	}
+}
+
+// TestStripInternalOnlyHeaders_Nil returns nil for nil input.
+func TestStripInternalOnlyHeaders_Nil(t *testing.T) {
+	if messaging.StripInternalOnlyHeaders(nil) != nil {
+		t.Fatal("StripInternalOnlyHeaders(nil) must be nil")
+	}
+}

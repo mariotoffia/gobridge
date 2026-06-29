@@ -241,8 +241,8 @@ func TestIntegration_SQS_HeaderRoundTrip(t *testing.T) {
 	if received == nil {
 		t.Fatal("no envelope received")
 	}
-	if string(received.Payload) != `{"header":"roundtrip"}` {
-		t.Fatalf("payload mismatch: got %q", string(received.Payload))
+	if string(received.Payload()) != `{"header":"roundtrip"}` {
+		t.Fatalf("payload mismatch: got %q", string(received.Payload()))
 	}
 
 	checkHeader := func(key, want string) {

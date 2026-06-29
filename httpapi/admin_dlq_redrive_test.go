@@ -86,16 +86,16 @@ func redriveReq(body string) *http.Request {
 func TestHandleDLQRedrive_AllSuccess(t *testing.T) {
 	mux, dlq, sender := redriveSetup(t)
 	seedDLQ(t, dlq,
-		routing.DLQEntry{
+		routing.NewDLQEntry(routing.DLQEntrySpec{
 			ID: "e1", RouteID: "test-route",
 			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s1", Payload: []byte("p1")}),
 			FailedAt: time.Now(),
-		},
-		routing.DLQEntry{
+		}),
+		routing.NewDLQEntry(routing.DLQEntrySpec{
 			ID: "e2", RouteID: "test-route",
 			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s2", Payload: []byte("p2")}),
 			FailedAt: time.Now(),
-		},
+		}),
 	)
 
 	rec := httptest.NewRecorder()
@@ -120,11 +120,11 @@ func TestHandleDLQRedrive_AllSuccess(t *testing.T) {
 // some IDs don't exist in the DLQ store.
 func TestHandleDLQRedrive_EntryNotFound(t *testing.T) {
 	mux, dlq, _ := redriveSetup(t)
-	seedDLQ(t, dlq, routing.DLQEntry{
+	seedDLQ(t, dlq, routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID: "e1", RouteID: "test-route",
 		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s1"}),
 		FailedAt: time.Now(),
-	})
+	}))
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, redriveReq(`{"ids":["e1","missing-id"]}`))
@@ -146,11 +146,11 @@ func TestHandleDLQRedrive_EntryNotFound(t *testing.T) {
 // route_id does not exist get a "route not found" error.
 func TestHandleDLQRedrive_RouteNotFound(t *testing.T) {
 	mux, dlq, _ := redriveSetup(t)
-	seedDLQ(t, dlq, routing.DLQEntry{
+	seedDLQ(t, dlq, routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID: "e1", RouteID: "nonexistent-route",
 		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s1"}),
 		FailedAt: time.Now(),
-	})
+	}))
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, redriveReq(`{"ids":["e1"]}`))
@@ -170,11 +170,11 @@ func TestHandleDLQRedrive_RouteNotFound(t *testing.T) {
 // the request are deduplicated — the message is injected only once.
 func TestHandleDLQRedrive_DuplicateIDs(t *testing.T) {
 	mux, dlq, sender := redriveSetup(t)
-	seedDLQ(t, dlq, routing.DLQEntry{
+	seedDLQ(t, dlq, routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID: "e1", RouteID: "test-route",
 		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s1"}),
 		FailedAt: time.Now(),
-	})
+	}))
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, redriveReq(`{"ids":["e1","e1","e1"]}`))

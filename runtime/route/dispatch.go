@@ -100,7 +100,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		if logging.TraceEnabled(r.logger) {
 			r.logger.Log(ctx, logging.LevelTrace, "direct hold ack",
 				"route", r.routeID,
-				"envelope_id", env.ID,
+				"envelope_id", env.ID(),
 			)
 		}
 		r.hook.OnSettled(ctx, ports.DeliveryOutcome{
@@ -124,7 +124,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 			if logging.DebugEnabled(r.logger) {
 				r.logger.Log(ctx, logging.LevelDebug, "max replay attempts exceeded in direct_hold",
 					"route", r.routeID,
-					"envelope_id", env.ID,
+					"envelope_id", env.ID(),
 					"receive_count", rc,
 					"max_replay_attempts", r.policy.MaxReplayAttempts,
 				)
@@ -159,7 +159,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	if logging.DebugEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelDebug, "routed to DLQ",
 			"route", r.routeID,
-			"envelope_id", env.ID,
+			"envelope_id", env.ID(),
 			"binding_id", plan.BindingID,
 			"error", sendErr,
 		)
@@ -302,7 +302,7 @@ func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, e
 			shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
 		if r.logger != nil {
 			r.logger.Warn("message dropped: retry unsupported and no DLQ configured",
-				"route", r.routeID, "envelope_id", env.ID)
+				"route", r.routeID, "envelope_id", env.ID())
 		}
 		r.hook.OnSettled(ctx, ports.DeliveryOutcome{
 			Direction:   ports.DirectionEgress,

@@ -16,6 +16,7 @@ import (
 	amqp10adapter "github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
@@ -86,7 +87,7 @@ func setupArtemisSession(
 	sess := amqp10adapter.NewSession(amqp10adapter.SessionOptions{
 		Address:        ep,
 		Username:       user,
-		Password:       pass,
+		Password:       shared.NewSecret(pass),
 		ConnectTimeout: 30 * time.Second,
 		IdleTimeout:    2 * time.Minute,
 	}, mode, testLogger(t))
@@ -215,7 +216,7 @@ func countUniqueAMQP(c *amqpCollector) int {
 	msgs := c.getMessages()
 	seen := make(map[string]struct{}, len(msgs))
 	for _, m := range msgs {
-		seen[m.ID] = struct{}{}
+		seen[m.ID()] = struct{}{}
 	}
 	return len(seen)
 }

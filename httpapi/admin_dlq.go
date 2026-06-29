@@ -40,19 +40,19 @@ type dlqEntryDetailView struct {
 
 func toDLQEntryView(e routing.DLQEntry) dlqEntryView {
 	return dlqEntryView{
-		ID:            e.ID,
-		RouteID:       e.RouteID,
-		BindingID:     e.BindingID,
-		SessionID:     e.SessionID,
-		SourceID:      e.SourceID,
-		CorrelationID: e.CorrelationID,
-		Subject:       e.Envelope.Subject(),
-		Reason:        e.Reason,
-		Category:      e.Category,
-		ErrorCode:     e.ErrorCode,
-		LastError:     e.LastError,
-		FailedAt:      e.FailedAt,
-		Attempts:      e.Attempts,
+		ID:            e.ID(),
+		RouteID:       e.RouteID(),
+		BindingID:     e.BindingID(),
+		SessionID:     e.SessionID(),
+		SourceID:      e.SourceID(),
+		CorrelationID: e.CorrelationID(),
+		Subject:       e.Snapshot().Subject(),
+		Reason:        e.Reason(),
+		Category:      e.Category(),
+		ErrorCode:     e.ErrorCode(),
+		LastError:     e.LastError(),
+		FailedAt:      e.FailedAt(),
+		Attempts:      e.Attempts(),
 	}
 }
 
@@ -67,7 +67,7 @@ func toDLQEntryViews(entries []routing.DLQEntry) []dlqEntryView {
 func toDLQEntryDetailView(e routing.DLQEntry) dlqEntryDetailView {
 	return dlqEntryDetailView{
 		dlqEntryView: toDLQEntryView(e),
-		Payload:      base64.StdEncoding.EncodeToString(e.Envelope.Payload),
+		Payload:      base64.StdEncoding.EncodeToString(e.Snapshot().Payload()),
 	}
 }
 
@@ -84,7 +84,7 @@ func (s *Server) handleDLQ(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
 		return
 	}
-	store := rt.DLQStore()
+	store := rt.DLQReader()
 	if store == nil {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
@@ -106,7 +106,7 @@ func (s *Server) handleDLQMessages(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
 		return
 	}
-	store := rt.DLQStore()
+	store := rt.DLQReader()
 	if store == nil {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
@@ -192,7 +192,7 @@ func (s *Server) handleDLQMessageByID(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
 		return
 	}
-	store := rt.DLQStore()
+	store := rt.DLQReader()
 	if store == nil {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
@@ -218,8 +218,8 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
 		return
 	}
-	store := rt.DLQStore()
-	if store == nil {
+	reader := rt.DLQReader()
+	if reader == nil {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
 	}
@@ -256,7 +256,7 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		seen[id] = struct{}{}
-		entry, err := store.Get(r.Context(), id)
+		entry, err := reader.Get(r.Context(), id)
 		if err != nil {
 			redriveErrors = append(redriveErrors, redriveError{
 				ID: id, Error: "entry not found",
@@ -264,7 +264,7 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		if err := rt.Inject(r.Context(), entry.RouteID, &entry.Envelope); err != nil {
+		if err := rt.Inject(r.Context(), entry.RouteID(), entry.Snapshot()); err != nil {
 			msg := "inject failed"
 			if errors.Is(err, shared.ErrNotFound) {
 				msg = "route not found"
@@ -281,7 +281,7 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 	// Delete successfully redriven entries
 	var deleteErr string
 	if len(successIDs) > 0 {
-		if _, err := store.Delete(r.Context(), successIDs); err != nil {
+		if _, err := rt.DLQAdmin().Delete(r.Context(), successIDs); err != nil {
 			deleteErr = "failed to delete redriven entries"
 			s.emitAudit(r, "dlq.redrive", "dlq", "", "partial_failure", map[string]any{
 				"redriven": len(successIDs),
@@ -318,7 +318,7 @@ func (s *Server) handleDLQDeleteByIDs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
 		return
 	}
-	store := rt.DLQStore()
+	store := rt.DLQAdmin()
 	if store == nil {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
@@ -365,7 +365,7 @@ func (s *Server) handleDLQDeleteByFilter(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
 		return
 	}
-	store := rt.DLQStore()
+	store := rt.DLQAdmin()
 	if store == nil {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
@@ -440,7 +440,7 @@ func (s *Server) handleDLQPurge(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
 		return
 	}
-	store := rt.DLQStore()
+	store := rt.DLQAdmin()
 	if store == nil {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return

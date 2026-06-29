@@ -21,7 +21,7 @@ func validSpec() persistence.OutboxSpec {
 		EnvelopeID: "env-1",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   messaging.Envelope{ID: "env-1", Payload: []byte("p")},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-1", Payload: []byte("p")}),
 		CreatedAt:  time.Unix(1_700_000_000, 0),
 	}
 }
@@ -296,7 +296,7 @@ func TestOutboxRecord_SnapshotRoundTrip(t *testing.T) {
 		BindingID:    "bind-rt",
 		SessionID:    "sess-rt",
 		Address:      "tcp://x",
-		Envelope:     messaging.Envelope{ID: "env-rt", Payload: []byte("p")},
+		Envelope:     *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-rt", Payload: []byte("p")}),
 		Status:       persistence.OutboxClaimed,
 		ClaimedBy:    "owner-x",
 		ClaimedAt:    now,
@@ -316,10 +316,10 @@ func TestOutboxRecord_SnapshotRoundTrip(t *testing.T) {
 		clone.ClaimVersion() != original.ClaimVersion() ||
 		clone.ReplayCount() != original.ReplayCount() ||
 		!clone.CompletedAt().Equal(original.CompletedAt()) ||
-		clone.ID != original.ID ||
-		clone.RouteID != original.RouteID ||
-		clone.EnvelopeID != original.EnvelopeID ||
-		clone.Envelope.ID != original.Envelope.ID {
+		clone.ID() != original.ID() ||
+		clone.RouteID() != original.RouteID() ||
+		clone.EnvelopeID() != original.EnvelopeID() ||
+		clone.Snapshot().ID() != original.Snapshot().ID() {
 		t.Fatalf("snapshot round-trip lost state\norig=%+v\nclone=%+v", original.PersistenceSnapshot(), snap)
 	}
 }

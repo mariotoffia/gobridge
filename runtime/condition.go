@@ -315,7 +315,7 @@ func (e *conditionEval) extractField(env *messaging.Envelope, ctx *evalContext) 
 		return val, ok, nil
 
 	case strings.HasPrefix(field, "$."):
-		return ctx.extractPayloadPath(env.Payload, field)
+		return ctx.extractPayloadPath(env.Payload(), field)
 
 	default:
 		val, ok := env.Headers().Get(field)

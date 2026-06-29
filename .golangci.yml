@@ -84,6 +84,10 @@ linters:
 
         # 3. Runtime accessors.
         - github.com/mariotoffia/gobridge/ports.RouteLocator
+        # DLQ read/admin split returned by RuntimeQuery.DLQReader and
+        # RuntimeCommand.DLQAdmin (the DLQStore seam split for finding #16).
+        - github.com/mariotoffia/gobridge/ports.DLQReader
+        - github.com/mariotoffia/gobridge/ports.DLQAdmin
 
         # 4. Domain / port polymorphic seams.
         - github.com/mariotoffia/gobridge/domain/persistence.DrainStrategy
@@ -455,22 +459,6 @@ linters:
       #   helper init() blocks — outside the rule's scope.
       - linters: [gochecknoglobals]
         path: "^domain/clock/clock\\.go$"
-      # FIX-003: ports/plugin_config.go declares `var DefaultRegistry`,
-      # the process-wide plugin-decoder registry adapters self-register
-      # into from init(). Documented architectural exemption — same
-      # pattern as domain/clock/clock.go's `var System`.
-      - linters: [gochecknoglobals]
-        path: "^ports/plugin_config\\.go$"
-      # FIX-003: adapter `register.go` files self-register their typed
-      # PluginConfig decoder with ports.DefaultRegistry from init() so
-      # blank-importing the adapter is sufficient to make its kind
-      # available to the two-stage config parser. Same pattern as the
-      # database/sql driver registry. Restricted to register.go in
-      # adapters/ and processors/ so the exemption can't drift.
-      - linters: [gochecknoinits]
-        path: "^adapters/.*register\\.go$"
-      - linters: [gochecknoinits]
-        path: "^processors/.*register\\.go$"
       # - validate/blueprint_graph.go declares two lookup maps used by
       #   the resolver/route validator (moved here from
       #   config/validate_resolver.go by L-3). Go has no const map

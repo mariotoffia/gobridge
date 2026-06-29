@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/httpapi"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -22,7 +23,7 @@ func TestHandleReady_LegacyShape_BackwardsCompat(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("legacy"))
 	require.NoError(t, rt.Start(context.Background()))
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
-	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: "key-0123456789abcdef"})
+	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: shared.NewSecret("key-0123456789abcdef")})
 
 	rec := httptest.NewRecorder()
 	s.MonitorMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/monitor/ready", nil))
@@ -43,7 +44,7 @@ func TestHandleReady_WithLevel_ReturnsStructuredResponse(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("structured"))
 	require.NoError(t, rt.Start(context.Background()))
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
-	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: "key-0123456789abcdef"})
+	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: shared.NewSecret("key-0123456789abcdef")})
 
 	rec := httptest.NewRecorder()
 	s.MonitorMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/monitor/ready?level=running", nil))
@@ -62,7 +63,7 @@ func TestHandleReady_WithLevel_ReturnsStructuredResponse(t *testing.T) {
 func TestHandleReady_LevelTooHigh_Returns503Structured(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("too-high"))
 	// Don't Start — runtime is below LevelRunning.
-	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: "key-0123456789abcdef"})
+	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: shared.NewSecret("key-0123456789abcdef")})
 
 	rec := httptest.NewRecorder()
 	s.MonitorMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/monitor/ready?level=full", nil))
@@ -79,7 +80,7 @@ func TestHandleReady_LevelTooHigh_Returns503Structured(t *testing.T) {
 // level= value yields HTTP 400 Bad Request.
 func TestHandleReady_InvalidLevel_Returns400(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("bad-level"))
-	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: "key-0123456789abcdef"})
+	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: shared.NewSecret("key-0123456789abcdef")})
 
 	rec := httptest.NewRecorder()
 	s.MonitorMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/monitor/ready?level=banana", nil))

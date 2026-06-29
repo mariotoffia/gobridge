@@ -107,8 +107,8 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "amqp10: sending",
 			"address", redactURL(s.cfg.Address),
-			"envelope_id", env.ID,
-			"payload_len", len(env.Payload),
+			"envelope_id", env.ID(),
+			"payload_len", len(env.Payload()),
 		)
 	}
 
@@ -132,13 +132,13 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	}
 
 	elapsed := s.clock().Since(start)
-	s.metrics.Timer(shared.MetricAMQP10SendLatency, elapsed,
+	s.metrics.Timer(MetricAMQP10SendLatency, elapsed,
 		shared.Tag{Key: shared.TagKeyEntity, Value: s.cfg.Address})
 
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "amqp10: send complete",
 			"address", redactURL(s.cfg.Address),
-			"envelope_id", env.ID,
+			"envelope_id", env.ID(),
 			"duration", elapsed,
 		)
 	}
@@ -174,38 +174,34 @@ func (s *Sender) handleSendFailure(ctx context.Context, failed senderLinkAPI, fa
 	}
 }
 
-// SendBatch sends multiple envelopes individually over the AMQP 1.0 link.
-// Each entry is validated up-front (non-nil envelope, address either
-// empty or equal to s.cfg.Address); any violation fails the batch with
-// 0 sent and the corresponding shared.* error before any link work
-// occurs.
-func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (int, error) {
+// SendBatch sends each envelope individually over the AMQP 1.0 link.
+// The whole batch is pre-validated up front (non-nil envelope, address
+// either empty or equal to s.cfg.Address); any violation — or a link
+// setup failure — rejects the entire batch with (nil, err) before any
+// message is dispatched. Once dispatched, the returned slice is
+// index-aligned with msgs and each entry carries that message's
+// outcome (nil Err on success); see ports.BatchSender for the contract.
+func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([]ports.BatchResult, error) {
 	for _, m := range msgs {
 		if m.Envelope == nil {
-			return 0, shared.ErrInvalidPayload.WithMessage("amqp10: nil envelope")
+			return nil, shared.ErrInvalidPayload.WithMessage("amqp10: nil envelope")
 		}
 		if m.Address != "" && m.Address != s.cfg.Address {
-			return 0, shared.ErrInvalidTopic.WithMessage(fmt.Sprintf(
+			return nil, shared.ErrInvalidTopic.WithMessage(fmt.Sprintf(
 				"amqp10: address %q does not match configured sender link address %q",
 				m.Address, s.cfg.Address))
 		}
 	}
 
 	if err := s.ensureLink(ctx); err != nil {
-		return 0, err
+		return nil, err
 	}
 
-	var sent int
-	for _, m := range msgs {
-		if ctx.Err() != nil {
-			return sent, ctx.Err()
-		}
-		if err := s.Send(ctx, m); err != nil {
-			return sent, err
-		}
-		sent++
+	results := make([]ports.BatchResult, len(msgs))
+	for i, m := range msgs {
+		results[i] = ports.BatchResult{Index: i, Err: s.Send(ctx, m)}
 	}
-	return sent, nil
+	return results, nil
 }
 
 func (s *Sender) ensureLink(ctx context.Context) error {

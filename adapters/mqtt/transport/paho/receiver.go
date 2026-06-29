@@ -86,7 +86,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 			r.logger.Log(runCtx, logging.LevelTrace, "mqtt: message received",
 				"receiver_id", r.id,
 				"topic", transportTopic,
-				"payload_len", len(env.Payload),
+				"payload_len", len(env.Payload()),
 			)
 		}
 

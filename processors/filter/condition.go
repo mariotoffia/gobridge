@@ -69,7 +69,7 @@ func (e *conditionEvaluator) extractField(env *messaging.Envelope) (any, bool, e
 		val, ok := env.Headers()[key]
 		return val, ok, nil
 	case strings.HasPrefix(field, "$."):
-		return e.extractFromPayload(env.Payload, field)
+		return e.extractFromPayload(env.Payload(), field)
 	default:
 		if env.Headers() == nil {
 			return nil, false, nil

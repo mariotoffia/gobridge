@@ -66,21 +66,24 @@ func isPrintableASCII(s string) bool {
 //  1. mqtt.message-id user property (set by PublishFromEnvelope)
 //  2. x-bridge.correlation-id from CorrelationData
 //  3. Deterministic derivation from topic + payload hash
+//
+// The *pahov5.Publish parameter is the SDK boundary input this ACL
+// helper exists to translate; its only callers are ACL files
+// (acl_router.go), so the SDK type does not cross into port-side code.
+//
+//aclcheck:allow-export
 func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelope {
 	if clk == nil {
 		clk = clock.System
 	}
 	now := clk.Now()
 
-	env := &messaging.Envelope{
-		Payload:   pub.Payload,
-		CreatedAt: now,
-	}
-
 	headers := map[string]any{
 		HeaderMQTTTopic: pub.Topic,
 	}
 	var mqttMsgID string
+	var subject string
+	var expiresAt time.Time
 
 	if pub.Properties != nil {
 		if pub.Properties.CorrelationData != nil {
@@ -102,13 +105,13 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 			}
 		}
 		if pub.Properties.MessageExpiry != nil {
-			env.ExpiresAt = now.Add(time.Duration(*pub.Properties.MessageExpiry) * time.Second)
+			expiresAt = now.Add(time.Duration(*pub.Properties.MessageExpiry) * time.Second)
 		}
 
 		for _, u := range pub.Properties.User {
 			if u.Key == HeaderGobridgeSubject {
 				if len(u.Value) <= maxHeaderValueLen && isPrintableASCII(u.Value) {
-					env.SetSubject(u.Value)
+					subject = u.Value
 				}
 				continue
 			}
@@ -137,14 +140,28 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 		}
 	}
 
+	// Determine ID before construction — MustEnvelope requires a non-empty ID.
+	var id string
 	switch {
 	case mqttMsgID != "":
-		env.ID = mqttMsgID
+		id = mqttMsgID
 	case headers[messaging.HeaderCorrelationID] != nil:
-		env.ID, _ = headers[messaging.HeaderCorrelationID].(string)
+		id, _ = headers[messaging.HeaderCorrelationID].(string)
 	}
-	if env.ID == "" {
-		env.ID = generateEnvelopeID()
+	if id == "" {
+		id = generateEnvelopeID()
+	}
+
+	// id is always non-empty (generate fallback above); now is non-zero.
+	// NewEnvelope cannot fail here; the panic guards an impossible branch.
+	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
+		ID:        id,
+		Subject:   subject,
+		Payload:   pub.Payload,
+		CreatedAt: now,
+	}, now)
+	if err != nil {
+		panic("paho: EnvelopeFromPublish: impossible construction error: " + err.Error())
 	}
 
 	// Headers carry adapter-stamped reserved keys (correlation ID,
@@ -153,6 +170,12 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 	// the trusted whole-map setter so those are not stripped; user
 	// properties are filtered through IsReservedHeader above.
 	env.StampHeaders(headers)
+
+	if !expiresAt.IsZero() {
+		// expiresAt = now + positive duration, so Before(createdAt) is
+		// unreachable here; ignore the error to satisfy errcheck.
+		_ = env.SetExpiry(expiresAt)
+	}
 
 	return env
 }
@@ -164,6 +187,12 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 // subject, NOT the transport address, and is round-tripped via the
 // HeaderGobridgeSubject user property. The Envelope.ID is included as a
 // HeaderMessageID user property so EnvelopeFromPublish can recover it.
+//
+// The returned *pahov5.Publish is the SDK boundary output this ACL helper
+// exists to produce; it is consumed by the pahoConn ACL seam
+// (acl_client.go PublishEnvelope) and by the legacy Sender path.
+//
+//aclcheck:allow-export
 func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptions, clk clock.Clock) *pahov5.Publish {
 	if clk == nil {
 		clk = clock.System
@@ -173,15 +202,15 @@ func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptio
 		Topic:   topic,
 		QoS:     opts.QoS,
 		Retain:  opts.Retain,
-		Payload: env.Payload,
+		Payload: env.Payload(),
 	}
 
 	props := &pahov5.PublishProperties{}
 	hasProps := false
 
-	if env.ID != "" {
+	if env.ID() != "" {
 		props.User = append(props.User, pahov5.UserProperty{
-			Key: HeaderMessageID, Value: env.ID,
+			Key: HeaderMessageID, Value: env.ID(),
 		})
 		hasProps = true
 	}

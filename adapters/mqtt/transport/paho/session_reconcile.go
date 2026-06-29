@@ -125,7 +125,7 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 	}
 
 	elapsed := s.clock().Since(reconcileStart)
-	s.metrics.Timer(shared.MetricMQTTReconcileLatency, elapsed,
+	s.metrics.Timer(MetricMQTTReconcileLatency, elapsed,
 		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "mqtt: reconcile done",

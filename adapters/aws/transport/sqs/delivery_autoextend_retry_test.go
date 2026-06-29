@@ -31,7 +31,7 @@ func TestAutoExtendRetriesTransientThenSucceedsS15(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	env := &messaging.Envelope{ID: "e1", Payload: []byte("x"), CreatedAt: time.Now()}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Payload: []byte("x"), CreatedAt: time.Now()})
 	fake := clocktest.New()
 	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-1", 2, true, nil, nil, nil, fake)
 	defer func() { d.stopAutoExtend(); d.cleanupContext() }()
@@ -77,7 +77,7 @@ func TestAutoExtendInterleavedFailSuccessS15(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	env := &messaging.Envelope{ID: "e3", Payload: []byte("z"), CreatedAt: time.Now()}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e3", Payload: []byte("z"), CreatedAt: time.Now()})
 	fake := clocktest.New()
 	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-3", 2, true, nil, nil, nil, fake)
 	defer func() { d.stopAutoExtend(); d.cleanupContext() }()
@@ -111,7 +111,7 @@ func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	env := &messaging.Envelope{ID: "e2", Payload: []byte("y"), CreatedAt: time.Now()}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e2", Payload: []byte("y"), CreatedAt: time.Now()})
 	fake := clocktest.New()
 	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-2", 2, true, nil, nil, nil, fake)
 	defer func() { d.stopAutoExtend(); d.cleanupContext() }()

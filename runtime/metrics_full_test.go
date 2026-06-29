@@ -52,7 +52,7 @@ func TestMetrics_FullPipeline_DirectHold(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{ID: "full-msg-1", Payload: []byte("payload"), ExpiresAt: time.Now().Add(time.Hour)}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "full-msg-1", Payload: []byte("payload"), ExpiresAt: time.Now().Add(time.Hour)})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -122,7 +122,7 @@ func TestMetrics_FullPipeline_SharedOutbox(t *testing.T) {
 		return sess.IsStarted()
 	})
 
-	env := &messaging.Envelope{ID: "outbox-msg-1", Payload: []byte("payload"), ExpiresAt: time.Now().Add(time.Hour)}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "outbox-msg-1", Payload: []byte("payload"), ExpiresAt: time.Now().Add(time.Hour)})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -174,14 +174,10 @@ func TestMetrics_AllMetricNamesDocumented(t *testing.T) {
 		shared.MetricOutboxCompletions,
 		shared.MetricOutboxExpiredBeforeSend,
 		shared.MetricOutboxReplayCount,
-		shared.MetricSQSReceiveLatency,
-		shared.MetricSQSDeleteLatency,
-		shared.MetricSQSVisibilityExtensions,
 		shared.MetricAckLatency,
 		shared.MetricVisibilityExtensions,
 		shared.MetricDeliveryE2ELatency,
 		shared.MetricDLQEntries,
-		shared.MetricMQTTPublishLatency,
 		shared.MetricMQTTReconnects,
 	}
 	for _, name := range all {
@@ -189,8 +185,8 @@ func TestMetrics_AllMetricNamesDocumented(t *testing.T) {
 			t.Error("metric name constant is empty")
 		}
 	}
-	if len(all) != 21 {
-		t.Errorf("expected 21 metric name constants, got %d", len(all))
+	if len(all) != 17 {
+		t.Errorf("expected 17 metric name constants, got %d", len(all))
 	}
 }
 

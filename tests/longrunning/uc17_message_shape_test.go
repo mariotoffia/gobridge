@@ -207,7 +207,7 @@ func TestUC18_TinyPayloads_HighThroughput(t *testing.T) {
 	seen := make(map[int]bool, msgCount)
 	for _, m := range msgs {
 		var body struct{ Seq int }
-		if json.Unmarshal(m.Payload, &body) == nil {
+		if json.Unmarshal(m.Payload(), &body) == nil {
 			seen[body.Seq] = true
 		}
 	}

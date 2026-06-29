@@ -120,7 +120,7 @@ func TestRuntime_DirectHoldEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	_ = rt.Start(ctx)
 
-	env := &messaging.Envelope{ID: "e2e-msg", Payload: []byte("hello")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e2e-msg", Payload: []byte("hello")})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "e2e send and ack", func() bool {
@@ -183,8 +183,8 @@ func TestRuntime_Inject_HappyPath(t *testing.T) {
 		t.Fatalf("expected 1 sent message from injection, got %d", sender.SentCount())
 	}
 	sent := sender.GetSent()[0]
-	if string(sent.Payload) != `{"injected":true}` {
-		t.Fatalf("unexpected payload: %s", sent.Payload)
+	if string(sent.Payload()) != `{"injected":true}` {
+		t.Fatalf("unexpected payload: %s", sent.Payload())
 	}
 }
 
@@ -205,7 +205,7 @@ func TestRuntime_Inject_UnknownRoute(t *testing.T) {
 
 	<-receiver.Ready()
 
-	err := rt.Inject(context.Background(), "nonexistent", &messaging.Envelope{ID: "x"})
+	err := rt.Inject(context.Background(), "nonexistent", messaging.MustEnvelope(messaging.EnvelopeInput{ID: "x"}))
 	if err == nil {
 		t.Fatal("expected error for unknown route")
 	}
@@ -215,7 +215,7 @@ func TestRuntime_Inject_UnknownRoute(t *testing.T) {
 func TestRuntime_Inject_NotRunning(t *testing.T) {
 	rt := goruntime.New(goruntime.WithInstanceID("inject-stopped"))
 
-	err := rt.Inject(context.Background(), "any-route", &messaging.Envelope{ID: "x"})
+	err := rt.Inject(context.Background(), "any-route", messaging.MustEnvelope(messaging.EnvelopeInput{ID: "x"}))
 	if err == nil {
 		t.Fatal("expected error when runtime is not running")
 	}
@@ -241,7 +241,8 @@ func TestRuntime_Inject_AssignsIDWhenEmpty(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{Payload: []byte("no-id")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte("no-id")})
+	originalID := env.ID()
 	if err := rt.Inject(context.Background(), "id-route", env); err != nil {
 		t.Fatalf("Inject failed: %v", err)
 	}
@@ -253,10 +254,10 @@ func TestRuntime_Inject_AssignsIDWhenEmpty(t *testing.T) {
 	if sender.SentCount() != 1 {
 		t.Fatalf("expected 1 sent, got %d", sender.SentCount())
 	}
-	if sender.GetSent()[0].ID == "" {
-		t.Fatal("injected envelope should have an auto-assigned ID")
+	if sender.GetSent()[0].ID() == "" {
+		t.Fatal("injected envelope should have an ID")
 	}
-	if env.ID != "" {
+	if env.ID() != originalID {
 		t.Fatal("original envelope should not be mutated (clone)")
 	}
 }
@@ -344,7 +345,7 @@ func TestRuntime_SharedOutboxEndToEnd(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{ID: "outbox-msg", Payload: []byte("outbox-data")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "outbox-msg", Payload: []byte("outbox-data")})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "outbox persist and source ack", func() bool {

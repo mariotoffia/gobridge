@@ -124,7 +124,7 @@ func TestRouteRunner_IdleChanged_NoFireWhenNotAtZero(t *testing.T) {
 	r1 := make(chan struct{})
 	r2 := make(chan struct{})
 	sender := NewConcurrentSender(func(env *messaging.Envelope) error {
-		switch env.ID {
+		switch env.ID() {
 		case "m1":
 			<-r1
 		case "m2":

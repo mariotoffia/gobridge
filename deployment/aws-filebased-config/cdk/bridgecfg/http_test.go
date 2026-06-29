@@ -29,11 +29,11 @@ func TestWithHTTPAdminAPI_PopulatesHTTPSection(t *testing.T) {
 	if cfg.HTTP.MonitorAddr != ":9090" {
 		t.Errorf("MonitorAddr = %q, want :9090", cfg.HTTP.MonitorAddr)
 	}
-	if cfg.HTTP.AdminAPIKey != "pms://bridge/admin-key" {
-		t.Errorf("AdminAPIKey = %q, want pms://bridge/admin-key", cfg.HTTP.AdminAPIKey)
+	if cfg.HTTP.AdminAPIKey.Reveal() != "pms://bridge/admin-key" {
+		t.Errorf("AdminAPIKey = %q, want pms://bridge/admin-key", cfg.HTTP.AdminAPIKey.Reveal())
 	}
-	if cfg.HTTP.MonitorAPIKey != "pms://bridge/monitor-key" {
-		t.Errorf("MonitorAPIKey = %q, want pms://bridge/monitor-key", cfg.HTTP.MonitorAPIKey)
+	if cfg.HTTP.MonitorAPIKey.Reveal() != "pms://bridge/monitor-key" {
+		t.Errorf("MonitorAPIKey = %q, want pms://bridge/monitor-key", cfg.HTTP.MonitorAPIKey.Reveal())
 	}
 	if cfg.HTTP.CORSOrigins != "https://app.example.com" {
 		t.Errorf("CORSOrigins = %q, want https://app.example.com", cfg.HTTP.CORSOrigins)
@@ -74,7 +74,7 @@ func TestWithHTTPAdminAPI_LastCallWins(t *testing.T) {
 	if cfg.HTTP.AdminAddr != ":7070" {
 		t.Errorf("AdminAddr = %q, want :7070 (second call wins)", cfg.HTTP.AdminAddr)
 	}
-	if cfg.HTTP.AdminAPIKey != "pms://second" {
-		t.Errorf("AdminAPIKey = %q, want pms://second", cfg.HTTP.AdminAPIKey)
+	if cfg.HTTP.AdminAPIKey.Reveal() != "pms://second" {
+		t.Errorf("AdminAPIKey = %q, want pms://second", cfg.HTTP.AdminAPIKey.Reveal())
 	}
 }

@@ -110,7 +110,7 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 		)
 	}
 
-	records, err := d.outboxStore.Claim(ctx, d.partitionKey, d.ownerID, token, d.currentBatchSize)
+	records, err := d.outboxStore.Claim(ctx, d.partitionKey, token, d.currentBatchSize)
 	if err != nil {
 		return 0, err
 	}
@@ -168,15 +168,19 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 	// send with an invalid token (preventing duplicate deliveries).
 	batchCtx, batchCancel := context.WithCancel(workCtx)
 
+	// Group claimed records by ordering key, preserving claim (persisted)
+	// order. Records sharing a non-empty ordering key collapse into one
+	// group delivered sequentially by a single goroutine; keyless records
+	// form singleton groups that retain full concurrency up to
+	// maxConcurrency. One semaphore slot is taken per GROUP.
+	groups := groupByOrderingKey(records)
+
 loop:
-	for i := range records {
+	for gi := range groups {
 		if ctx.Err() != nil || batchCtx.Err() != nil {
 			break
 		}
-		rec := records[i]
-		if rec.ReplayCount() > 1 {
-			d.metrics.Counter(shared.MetricOutboxReplayCount, 1, routeTag)
-		}
+		group := groups[gi]
 		select {
 		case sem <- struct{}{}:
 		case <-ctx.Done():
@@ -186,23 +190,38 @@ loop:
 		}
 		wg.Go(func() {
 			defer func() { <-sem }()
+			var current string
 			defer func() {
 				if r := recover(); r != nil {
 					d.log(batchCtx, slog.LevelError, "panic in drain goroutine",
-						"record_id", rec.ID, "panic", r)
+						"record_id", current, "panic", r)
 					d.metrics.Counter(shared.MetricOutboxRecordFailures, 1, routeTag)
 				}
 			}()
-			if err := d.processRecord(batchCtx, rec, token); err != nil {
-				if errors.Is(err, shared.ErrStaleFencingToken) {
-					staleDetected.Store(true)
-					batchCancel()
-				} else {
-					d.metrics.Counter(shared.MetricOutboxRecordFailures, 1, routeTag)
+			// Process this group's records sequentially in persisted order.
+			// On the first error (stale or transient) stop the group so a
+			// later same-key record can never overtake an earlier one that
+			// has not yet succeeded; the unsent remainder is re-claimed and
+			// retried in order on a subsequent cycle.
+			for _, rec := range group {
+				if ctx.Err() != nil || batchCtx.Err() != nil {
+					return
 				}
-				d.log(batchCtx, slog.LevelWarn, "record processing failed",
-					"record_id", rec.ID, "error", err)
-			} else {
+				current = rec.ID()
+				if rec.ReplayCount() > 1 {
+					d.metrics.Counter(shared.MetricOutboxReplayCount, 1, routeTag)
+				}
+				if err := d.processRecord(batchCtx, rec, token); err != nil {
+					if errors.Is(err, shared.ErrStaleFencingToken) {
+						staleDetected.Store(true)
+						batchCancel()
+					} else {
+						d.metrics.Counter(shared.MetricOutboxRecordFailures, 1, routeTag)
+					}
+					d.log(batchCtx, slog.LevelWarn, "record processing failed",
+						"record_id", rec.ID(), "error", err)
+					return
+				}
 				atomic.AddInt64(&successCount, 1)
 			}
 		})
@@ -222,7 +241,7 @@ loop:
 			d.logger.Log(ctx, logging.LevelTrace, "stale fencing token detected",
 				"partition_key", d.partitionKey,
 				"token_version", token.Version,
-				"owner", d.ownerID,
+				"owner", token.Owner,
 			)
 		}
 		return int(atomic.LoadInt64(&successCount)), shared.ErrStaleFencingToken
@@ -237,6 +256,35 @@ loop:
 	}
 
 	return int(atomic.LoadInt64(&successCount)), nil
+}
+
+// orderingGroup is an ordered run of claimed outbox records delivered as
+// a unit. Records sharing a non-empty ordering key occupy one group
+// (sequential, in persisted order); keyless records each occupy a
+// singleton group (full concurrency).
+type orderingGroup []*persistence.OutboxRecord
+
+// groupByOrderingKey partitions records into ordering groups, preserving
+// claimed (persisted) order both across groups (first-seen key claims
+// the slot) and within each group. Records without a non-empty ordering
+// key become singleton groups so they keep full per-record concurrency.
+func groupByOrderingKey(records []*persistence.OutboxRecord) []orderingGroup {
+	groups := make([]orderingGroup, 0, len(records))
+	indexByKey := make(map[string]int)
+	for _, rec := range records {
+		key, ok := rec.OrderingKey()
+		if !ok {
+			groups = append(groups, orderingGroup{rec})
+			continue
+		}
+		if gi, seen := indexByKey[key]; seen {
+			groups[gi] = append(groups[gi], rec)
+			continue
+		}
+		indexByKey[key] = len(groups)
+		groups = append(groups, orderingGroup{rec})
+	}
+	return groups
 }
 
 // adaptBatchSize adjusts currentBatchSize based on throughput.

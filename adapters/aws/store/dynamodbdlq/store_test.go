@@ -30,7 +30,7 @@ func TestMain(m *testing.M) {
 }
 
 func makeEntry(id, routeID, category string, failedAt time.Time) routing.DLQEntry {
-	return routing.DLQEntry{
+	return routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID: id,
 		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "env-" + id,
@@ -49,7 +49,7 @@ func makeEntry(id, routeID, category string, failedAt time.Time) routing.DLQEntr
 		LastError:     "something went wrong",
 		FailedAt:      failedAt,
 		Attempts:      3,
-	}
+	})
 }
 
 func newStore(t *testing.T, prefix string) *dynamodbdlq.Store {
@@ -85,57 +85,58 @@ func TestWriteAndList(t *testing.T) {
 	}
 
 	got := entries[0]
-	if got.ID != "wal-1" {
-		t.Errorf("ID: got %q, want %q", got.ID, "wal-1")
+	if got.ID() != "wal-1" {
+		t.Errorf("ID: got %q, want %q", got.ID(), "wal-1")
 	}
-	if got.RouteID != "route-A" {
-		t.Errorf("RouteID: got %q, want %q", got.RouteID, "route-A")
+	if got.RouteID() != "route-A" {
+		t.Errorf("RouteID: got %q, want %q", got.RouteID(), "route-A")
 	}
-	if got.Category != "timeout" {
-		t.Errorf("Category: got %q, want %q", got.Category, "timeout")
+	if got.Category() != "timeout" {
+		t.Errorf("Category: got %q, want %q", got.Category(), "timeout")
 	}
-	if !got.FailedAt.Equal(failedAt) {
-		t.Errorf("FailedAt: got %v, want %v", got.FailedAt, failedAt)
+	if !got.FailedAt().Equal(failedAt) {
+		t.Errorf("FailedAt: got %v, want %v", got.FailedAt(), failedAt)
 	}
-	if got.BindingID != "bind-wal-1" {
-		t.Errorf("BindingID: got %q, want %q", got.BindingID, "bind-wal-1")
+	if got.BindingID() != "bind-wal-1" {
+		t.Errorf("BindingID: got %q, want %q", got.BindingID(), "bind-wal-1")
 	}
-	if got.SessionID != "sess-wal-1" {
-		t.Errorf("SessionID: got %q, want %q", got.SessionID, "sess-wal-1")
+	if got.SessionID() != "sess-wal-1" {
+		t.Errorf("SessionID: got %q, want %q", got.SessionID(), "sess-wal-1")
 	}
-	if got.SourceID != "src-wal-1" {
-		t.Errorf("SourceID: got %q, want %q", got.SourceID, "src-wal-1")
+	if got.SourceID() != "src-wal-1" {
+		t.Errorf("SourceID: got %q, want %q", got.SourceID(), "src-wal-1")
 	}
-	if got.CorrelationID != "corr-wal-1" {
-		t.Errorf("CorrelationID: got %q, want %q", got.CorrelationID, "corr-wal-1")
+	if got.CorrelationID() != "corr-wal-1" {
+		t.Errorf("CorrelationID: got %q, want %q", got.CorrelationID(), "corr-wal-1")
 	}
-	if got.Reason != "test failure" {
-		t.Errorf("Reason: got %q, want %q", got.Reason, "test failure")
+	if got.Reason() != "test failure" {
+		t.Errorf("Reason: got %q, want %q", got.Reason(), "test failure")
 	}
-	if got.ErrorCode != "TEST_ERROR" {
-		t.Errorf("ErrorCode: got %q, want %q", got.ErrorCode, "TEST_ERROR")
+	if got.ErrorCode() != "TEST_ERROR" {
+		t.Errorf("ErrorCode: got %q, want %q", got.ErrorCode(), "TEST_ERROR")
 	}
-	if got.LastError != "something went wrong" {
-		t.Errorf("LastError: got %q, want %q", got.LastError, "something went wrong")
+	if got.LastError() != "something went wrong" {
+		t.Errorf("LastError: got %q, want %q", got.LastError(), "something went wrong")
 	}
-	if got.Attempts != 3 {
-		t.Errorf("Attempts: got %d, want %d", got.Attempts, 3)
+	if got.Attempts() != 3 {
+		t.Errorf("Attempts: got %d, want %d", got.Attempts(), 3)
 	}
 
-	if got.Envelope.ID != "env-wal-1" {
-		t.Errorf("Envelope.ID: got %q, want %q", got.Envelope.ID, "env-wal-1")
+	genv := got.Snapshot()
+	if genv.ID() != "env-wal-1" {
+		t.Errorf("Envelope.ID: got %q, want %q", genv.ID(), "env-wal-1")
 	}
-	if got.Envelope.Subject() != "test/subject" {
-		t.Errorf("Envelope.Subject: got %q, want %q", got.Envelope.Subject(), "test/subject")
+	if genv.Subject() != "test/subject" {
+		t.Errorf("Envelope.Subject: got %q, want %q", genv.Subject(), "test/subject")
 	}
-	if !bytes.Equal(got.Envelope.Payload, []byte(`{"key":"value"}`)) {
-		t.Errorf("Envelope.Payload: got %q, want %q", got.Envelope.Payload, `{"key":"value"}`)
+	if !bytes.Equal(genv.Payload(), []byte(`{"key":"value"}`)) {
+		t.Errorf("Envelope.Payload(): got %q, want %q", genv.Payload(), `{"key":"value"}`)
 	}
-	if len(got.Envelope.Headers()) != 1 {
-		t.Fatalf("Envelope.Headers length: got %d, want 1", len(got.Envelope.Headers()))
+	if len(genv.Headers()) != 1 {
+		t.Fatalf("Envelope.Headers length: got %d, want 1", len(genv.Headers()))
 	}
-	if got.Envelope.Headers()["h1"] != "v1" {
-		t.Errorf("Envelope.Headers[h1]: got %v, want %q", got.Envelope.Headers()["h1"], "v1")
+	if genv.Headers()["h1"] != "v1" {
+		t.Errorf("Envelope.Headers[h1]: got %v, want %q", genv.Headers()["h1"], "v1")
 	}
 }
 
@@ -151,7 +152,7 @@ func TestListFilterByRouteID(t *testing.T) {
 		makeEntry("fr-3", "route-A", "timeout", base.Add(2*time.Minute)),
 	} {
 		if err := store.Write(ctx, e); err != nil {
-			t.Fatalf("write %q: %v", e.ID, err)
+			t.Fatalf("write %q: %v", e.ID(), err)
 		}
 	}
 
@@ -163,8 +164,8 @@ func TestListFilterByRouteID(t *testing.T) {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
 	}
 	for _, e := range entries {
-		if e.RouteID != "route-A" {
-			t.Errorf("unexpected RouteID %q in filtered result", e.RouteID)
+		if e.RouteID() != "route-A" {
+			t.Errorf("unexpected RouteID %q in filtered result", e.RouteID())
 		}
 	}
 }
@@ -181,7 +182,7 @@ func TestListFilterByCategory(t *testing.T) {
 		makeEntry("fc-3", "route-A", "timeout", base.Add(2*time.Minute)),
 	} {
 		if err := store.Write(ctx, e); err != nil {
-			t.Fatalf("write %q: %v", e.ID, err)
+			t.Fatalf("write %q: %v", e.ID(), err)
 		}
 	}
 
@@ -192,8 +193,8 @@ func TestListFilterByCategory(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
 	}
-	if entries[0].ID != "fc-2" {
-		t.Errorf("expected entry fc-2, got %q", entries[0].ID)
+	if entries[0].ID() != "fc-2" {
+		t.Errorf("expected entry fc-2, got %q", entries[0].ID())
 	}
 }
 
@@ -212,7 +213,7 @@ func TestListFilterBySince(t *testing.T) {
 		makeEntry("fs-3", "route-A", "timeout", t3),
 	} {
 		if err := store.Write(ctx, e); err != nil {
-			t.Fatalf("write %q: %v", e.ID, err)
+			t.Fatalf("write %q: %v", e.ID(), err)
 		}
 	}
 
@@ -224,8 +225,8 @@ func TestListFilterBySince(t *testing.T) {
 		t.Fatalf("expected 2 entries (at or after t2), got %d", len(entries))
 	}
 	for _, e := range entries {
-		if e.FailedAt.Before(t2) {
-			t.Errorf("entry %q has FailedAt %v, before Since %v", e.ID, e.FailedAt, t2)
+		if e.FailedAt().Before(t2) {
+			t.Errorf("entry %q has FailedAt %v, before Since %v", e.ID(), e.FailedAt(), t2)
 		}
 	}
 }
@@ -245,7 +246,7 @@ func TestListFilterByBefore(t *testing.T) {
 		makeEntry("fb-3", "route-A", "timeout", t3),
 	} {
 		if err := store.Write(ctx, e); err != nil {
-			t.Fatalf("write %q: %v", e.ID, err)
+			t.Fatalf("write %q: %v", e.ID(), err)
 		}
 	}
 
@@ -256,8 +257,8 @@ func TestListFilterByBefore(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry (strictly before t2), got %d", len(entries))
 	}
-	if entries[0].ID != "fb-1" {
-		t.Errorf("expected entry fb-1, got %q", entries[0].ID)
+	if entries[0].ID() != "fb-1" {
+		t.Errorf("expected entry fb-1, got %q", entries[0].ID())
 	}
 }
 
@@ -273,7 +274,7 @@ func TestListRespectsLimit(t *testing.T) {
 			base.Add(time.Duration(i)*time.Minute),
 		)
 		if err := store.Write(ctx, e); err != nil {
-			t.Fatalf("write %q: %v", e.ID, err)
+			t.Fatalf("write %q: %v", e.ID(), err)
 		}
 	}
 
@@ -316,7 +317,7 @@ func TestDeleteRemovesEntries(t *testing.T) {
 		makeEntry("del-3", "route-A", "timeout", base.Add(2*time.Minute)),
 	} {
 		if err := store.Write(ctx, e); err != nil {
-			t.Fatalf("write %q: %v", e.ID, err)
+			t.Fatalf("write %q: %v", e.ID(), err)
 		}
 	}
 
@@ -335,8 +336,8 @@ func TestDeleteRemovesEntries(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry after delete, got %d", len(entries))
 	}
-	if entries[0].ID != "del-3" {
-		t.Errorf("remaining entry: got %q, want %q", entries[0].ID, "del-3")
+	if entries[0].ID() != "del-3" {
+		t.Errorf("remaining entry: got %q, want %q", entries[0].ID(), "del-3")
 	}
 }
 
@@ -369,7 +370,7 @@ func TestPurgeRemovesOld(t *testing.T) {
 		makeEntry("po-new", "route-A", "timeout", recent),
 	} {
 		if err := store.Write(ctx, e); err != nil {
-			t.Fatalf("write %q: %v", e.ID, err)
+			t.Fatalf("write %q: %v", e.ID(), err)
 		}
 	}
 
@@ -389,8 +390,8 @@ func TestPurgeRemovesOld(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 remaining entry, got %d", len(entries))
 	}
-	if entries[0].ID != "po-new" {
-		t.Errorf("remaining entry: got %q, want %q", entries[0].ID, "po-new")
+	if entries[0].ID() != "po-new" {
+		t.Errorf("remaining entry: got %q, want %q", entries[0].ID(), "po-new")
 	}
 }
 
@@ -409,7 +410,7 @@ func TestPurgeSkipsRecent(t *testing.T) {
 		makeEntry("ps-3", "route-A", "timeout", future),
 	} {
 		if err := store.Write(ctx, e); err != nil {
-			t.Fatalf("write %q: %v", e.ID, err)
+			t.Fatalf("write %q: %v", e.ID(), err)
 		}
 	}
 
@@ -448,7 +449,7 @@ func TestFullLifecycle(t *testing.T) {
 		makeEntry("lc-4", "route-B", "auth", t4),
 	} {
 		if err := store.Write(ctx, e); err != nil {
-			t.Fatalf("write %q: %v", e.ID, err)
+			t.Fatalf("write %q: %v", e.ID(), err)
 		}
 	}
 
@@ -489,7 +490,7 @@ func TestFullLifecycle(t *testing.T) {
 
 	ids := map[string]bool{}
 	for _, e := range entries {
-		ids[e.ID] = true
+		ids[e.ID()] = true
 	}
 	if !ids["lc-3"] {
 		t.Error("expected lc-3 to remain")
@@ -529,7 +530,7 @@ func TestListBothRouteAndCategory(t *testing.T) {
 		makeEntry("rc-4", "route-B", "schema", base.Add(3*time.Minute)),
 	} {
 		if err := store.Write(ctx, e); err != nil {
-			t.Fatalf("write %q: %v", e.ID, err)
+			t.Fatalf("write %q: %v", e.ID(), err)
 		}
 	}
 
@@ -543,7 +544,7 @@ func TestListBothRouteAndCategory(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
 	}
-	if entries[0].ID != "rc-1" {
-		t.Errorf("expected entry rc-1, got %q", entries[0].ID)
+	if entries[0].ID() != "rc-1" {
+		t.Errorf("expected entry rc-1, got %q", entries[0].ID())
 	}
 }

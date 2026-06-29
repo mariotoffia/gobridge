@@ -97,8 +97,8 @@ func TestE2E_F1_Failover_SingleInstance_CrashBeforeDrain(t *testing.T) {
 	if len(msgs) == 0 {
 		t.Fatal("F1: expected at least 1 message")
 	}
-	if string(msgs[0].Payload) != `{"f1":"crash"}` {
-		t.Errorf("F1: payload = %q, want %q", string(msgs[0].Payload), `{"f1":"crash"}`)
+	if string(msgs[0].Payload()) != `{"f1":"crash"}` {
+		t.Errorf("F1: payload = %q, want %q", string(msgs[0].Payload()), `{"f1":"crash"}`)
 	}
 }
 
@@ -123,7 +123,7 @@ func TestE2E_F2_Failover_TwoInstances_LeaseTransfer(t *testing.T) {
 		t.Fatalf("Start A: %v", err)
 	}
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
-	env := &messaging.Envelope{ID: uniqueID("f2-msg"), Payload: []byte("transfer")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: uniqueID("f2-msg"), Payload: []byte("transfer")})
 	del := newFakeDelivery(env)
 	_ = rxA.Emit(ctxA, del)
 	e2eWaitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
@@ -144,8 +144,8 @@ func TestE2E_F2_Failover_TwoInstances_LeaseTransfer(t *testing.T) {
 	}
 	e2eWaitFor(t, 5*time.Second, "B started", func() bool { return sessB.isStarted() })
 	e2eWaitFor(t, 20*time.Second, "B drained", func() bool { return sB.sentCount() >= 1 })
-	if sB.getSent()[0].ID != env.ID {
-		t.Errorf("got %q, want %q", sB.getSent()[0].ID, env.ID)
+	if sB.getSent()[0].ID() != env.ID() {
+		t.Errorf("got %q, want %q", sB.getSent()[0].ID(), env.ID())
 	}
 	_ = rtB.Stop(context.Background())
 }
@@ -172,7 +172,7 @@ func TestE2E_F3_Failover_ThreeInstances_CascadingFailure(t *testing.T) {
 	}
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
 	for i := 0; i < 3; i++ {
-		del := newFakeDelivery(&messaging.Envelope{ID: fmt.Sprintf("f3-%d", i), Payload: []byte("cascade")})
+		del := newFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("f3-%d", i), Payload: []byte("cascade")}))
 		_ = rxA.Emit(ctxA, del)
 		e2eWaitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
 	}
@@ -215,10 +215,10 @@ func TestE2E_F3_Failover_ThreeInstances_CascadingFailure(t *testing.T) {
 	// Verify all 3 unique envelope IDs were delivered across B+C.
 	seen := make(map[string]bool)
 	for _, env := range sB.inner.getSent() {
-		seen[env.ID] = true
+		seen[env.ID()] = true
 	}
 	for _, env := range sC.getSent() {
-		seen[env.ID] = true
+		seen[env.ID()] = true
 	}
 	if len(seen) != 3 {
 		t.Errorf("unique delivered=%d, want 3; seen=%v", len(seen), seen)
@@ -238,13 +238,13 @@ func TestE2E_F4_Failover_ThreeInstances_StaleFencingToken(t *testing.T) {
 	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "f4-rec-1", RouteID: "f4-route", EnvelopeID: "f4-env",
 		BindingID: "b1", SessionID: leaseID, Address: "t/f4",
-		Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "f4-env", Payload: []byte("fencing")},
+		Status: persistence.OutboxPending, Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "f4-env", Payload: []byte("fencing")}),
 	})
 	if err := outboxStore.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 	pk := persistence.OutboxPartitionKey(leaseID, "b1")
-	claimed, err := outboxStore.Claim(ctx, pk, "owner-A", tokenA, 10)
+	claimed, err := outboxStore.Claim(ctx, pk, tokenA, 10)
 	if err != nil {
 		t.Fatalf("A claim: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestE2E_F4_Failover_ThreeInstances_StaleFencingToken(t *testing.T) {
 	// B must reclaim first (updating claim_version to B's token), so that
 	// A's stale Complete is rejected by the claim_version mismatch.
 	time.Sleep(600 * time.Millisecond) // ESSENTIAL: wait for stale claim threshold so B can reclaim
-	reclaimed, err := outboxStore.Claim(ctx, pk, "owner-B", tokenB, 10)
+	reclaimed, err := outboxStore.Claim(ctx, pk, tokenB, 10)
 	if err != nil {
 		t.Fatalf("B reclaim: %v", err)
 	}
@@ -270,11 +270,11 @@ func TestE2E_F4_Failover_ThreeInstances_StaleFencingToken(t *testing.T) {
 		t.Fatalf("reclaimed=%d, want 1", len(reclaimed))
 	}
 	// Now A's stale token should be rejected because claim_version changed.
-	if err := outboxStore.Complete(ctx, []string{reclaimed[0].ID}, tokenA); err == nil {
+	if err := outboxStore.Complete(ctx, []string{reclaimed[0].ID()}, tokenA); err == nil {
 		t.Fatal("expected stale token error on Complete with A's token after B reclaimed")
 	}
 	// B completes successfully with its own token.
-	if err := outboxStore.Complete(ctx, []string{reclaimed[0].ID}, tokenB); err != nil {
+	if err := outboxStore.Complete(ctx, []string{reclaimed[0].ID()}, tokenB); err != nil {
 		t.Fatalf("B complete: %v", err)
 	}
 }
@@ -309,7 +309,7 @@ func TestE2E_F5_Failover_ConnectAfterLease(t *testing.T) {
 		t.Fatal("session started before lease acquired")
 	}
 	e2eWaitFor(t, 10*time.Second, "session after lease expiry", func() bool { return sess.isStarted() })
-	env := &messaging.Envelope{ID: uniqueID("f5-msg"), Payload: []byte("deferred")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: uniqueID("f5-msg"), Payload: []byte("deferred")})
 	del := newFakeDelivery(env)
 	_ = rx.Emit(ctx, del)
 	e2eWaitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
@@ -490,7 +490,7 @@ func TestE2E_F9_Failover_MultiMessage_ThreeInstances(t *testing.T) {
 	}
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
 	for i := 0; i < 5; i++ {
-		del := newFakeDelivery(&messaging.Envelope{ID: fmt.Sprintf("f9-%d", i), Payload: []byte("multi")})
+		del := newFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("f9-%d", i), Payload: []byte("multi")}))
 		_ = rxA.Emit(ctxA, del)
 		e2eWaitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
 	}
@@ -537,7 +537,7 @@ func TestE2E_F10_Failover_GracefulStepDown(t *testing.T) {
 		t.Fatalf("Start A: %v", err)
 	}
 	e2eWaitFor(t, 5*time.Second, "A started", func() bool { return sessA.isStarted() })
-	del := newFakeDelivery(&messaging.Envelope{ID: uniqueID("f10-msg"), Payload: []byte("step-down")})
+	del := newFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: uniqueID("f10-msg"), Payload: []byte("step-down")}))
 	_ = rxA.Emit(ctxA, del)
 	e2eWaitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
 	e2eWaitFor(t, 10*time.Second, "A drained", func() bool { return sA.sentCount() >= 1 })
@@ -559,7 +559,7 @@ func TestE2E_F10_Failover_GracefulStepDown(t *testing.T) {
 		t.Fatalf("Start B: %v", err)
 	}
 	e2eWaitFor(t, 5*time.Second, "B started", func() bool { return sessB.isStarted() })
-	del2 := newFakeDelivery(&messaging.Envelope{ID: uniqueID("f10-msg2"), Payload: []byte("new-owner")})
+	del2 := newFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: uniqueID("f10-msg2"), Payload: []byte("new-owner")}))
 	_ = rxB.Emit(ctxB, del2)
 	e2eWaitFor(t, 3*time.Second, "B acked", func() bool { return del2.isAcked() })
 	e2eWaitFor(t, 10*time.Second, "B drained", func() bool { return sB.sentCount() >= 1 })

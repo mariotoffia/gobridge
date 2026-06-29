@@ -69,11 +69,11 @@ func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord
 }
 
 // Claim atomically claims up to limit pending records under partition pk.
-func (s *Store) Claim(ctx context.Context, pk string, ownerID string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
+func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: claim", "partition_key", pk, "limit", limit)
 	}
-	return s.sess.claim(ctx, pk, ownerID, token, limit)
+	return s.sess.claim(ctx, pk, token, limit)
 }
 
 // Complete marks the supplied records as completed at the current clock time.
@@ -84,8 +84,8 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 	return s.sess.complete(ctx, recordIDs, token, s.clk.Now())
 }
 
-// Expire marks all pending/claimed records whose expires_at is older
-// than before as expired.
+// Expire marks pending records whose expires_at is older than before
+// as expired. Claimed records are never expired here.
 func (s *Store) Expire(ctx context.Context, before time.Time) (int, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: expire")
@@ -106,8 +106,8 @@ func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]*pers
 // Lives in the port-side file because it operates purely on domain
 // types — no SQL, no SDK.
 func partitionKey(r *persistence.OutboxRecord) string {
-	if r.SessionID != "" {
-		return "SESSION#" + r.SessionID
+	if r.SessionID() != "" {
+		return "SESSION#" + r.SessionID()
 	}
-	return "BINDING#" + r.BindingID
+	return "BINDING#" + r.BindingID()
 }

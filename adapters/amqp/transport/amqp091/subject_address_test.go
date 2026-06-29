@@ -104,10 +104,10 @@ func TestEnvelopeToPublishing_EmitsGobridgeSubjectHeader(t *testing.T) {
 // verifies envelopeToPublishing does NOT emit gobridge.subject when
 // env.Subject() is empty and no peer-bridge round-trip header was supplied.
 func TestEnvelopeToPublishing_OmitsSubjectWhenEmpty(t *testing.T) {
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "env-no-subj",
 		Payload: []byte("body"),
-	}
+	})
 
 	pub := envelopeToPublishing(env, SenderConfig{}, nil)
 

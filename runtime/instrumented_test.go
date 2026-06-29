@@ -84,7 +84,7 @@ func TestInstrumentedOutboxStore_PersistRecordsLatency(t *testing.T) {
 
 	records := []*persistence.OutboxRecord{persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1",
-		Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"},
+		Status: persistence.OutboxPending, Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-1"}),
 	})}
 
 	err := store.Persist(context.Background(), records)
@@ -109,18 +109,18 @@ func TestInstrumentedOutboxStore_CompleteDelegates(t *testing.T) {
 
 	records := []*persistence.OutboxRecord{
 		persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", SessionID: "s1",
-			Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"}})}
+			Status: persistence.OutboxPending, Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-1"})})}
 	_ = store.Persist(context.Background(), records)
 
 	token := persistence.LeaseToken{Version: 1, Owner: "me"}
-	claimed, _ := store.Claim(context.Background(), persistence.OutboxPartitionKey("s1", "b1"), "me", token, 10)
+	claimed, _ := store.Claim(context.Background(), persistence.OutboxPartitionKey("s1", "b1"), token, 10)
 	if len(claimed) == 0 {
 		t.Fatal("expected to claim at least 1 record")
 	}
 
 	ids := make([]string, len(claimed))
 	for i, c := range claimed {
-		ids[i] = c.ID
+		ids[i] = c.ID()
 	}
 
 	err := store.Complete(context.Background(), ids, token)
@@ -152,7 +152,7 @@ func TestInstrumentedOutboxStore_QueryPendingRecordsDepth(t *testing.T) {
 			BindingID:  "b1",
 			SessionID:  "s1",
 			Status:     persistence.OutboxPending,
-			Envelope:   messaging.Envelope{ID: "env-" + string(rune('0'+i))},
+			Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-" + string(rune('0'+i))}),
 		})}
 		_ = store.Persist(context.Background(), records)
 	}
@@ -176,15 +176,15 @@ func TestInstrumentedSender_RecordsSendLatency(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeSender()
 	sender := runtime.NewInstrumentedSender(inner, rec,
-		shared.MetricMQTTPublishLatency, shared.TagKeySessionID, "sess-1", clock.System)
+		"MQTTPublishLatency", shared.TagKeySessionID, "sess-1", clock.System)
 
-	env := &messaging.Envelope{ID: "msg-1", Payload: []byte("test")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1", Payload: []byte("test")})
 	err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	timers := rec.FindEntries(shared.MetricMQTTPublishLatency)
+	timers := rec.FindEntries("MQTTPublishLatency")
 	if len(timers) != 1 {
 		t.Fatalf("expected 1 publish timer, got %d", len(timers))
 	}
@@ -198,12 +198,12 @@ func TestInstrumentedReceiver_RecordsReceiveLatency(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeReceiver()
 	receiver := runtime.NewInstrumentedReceiver(inner, rec,
-		shared.MetricSQSReceiveLatency, shared.TagKeyQueueURL, "https://sqs/q1", clock.System)
+		"SQSReceiveLatency", "queue_url", "https://sqs/q1", clock.System)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		env := &messaging.Envelope{ID: "msg-1", Payload: []byte("data")}
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1", Payload: []byte("data")})
 		del := NewFakeDelivery(env)
 		_ = inner.Emit(ctx, del)
 		cancel()
@@ -213,7 +213,7 @@ func TestInstrumentedReceiver_RecordsReceiveLatency(t *testing.T) {
 		return nil
 	})
 
-	timers := rec.FindEntries(shared.MetricSQSReceiveLatency)
+	timers := rec.FindEntries("SQSReceiveLatency")
 	if len(timers) != 1 {
 		t.Fatalf("expected 1 receive timer, got %d", len(timers))
 	}
@@ -227,7 +227,7 @@ func TestInstrumentedOutboxStore_ExpireDelegates(t *testing.T) {
 
 	records := []*persistence.OutboxRecord{
 		persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", SessionID: "s1",
-			Status: persistence.OutboxPending, Envelope: messaging.Envelope{ID: "env-1"}})}
+			Status: persistence.OutboxPending, Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-1"})})}
 	_ = store.Persist(context.Background(), records)
 	rec.Reset()
 
@@ -243,12 +243,12 @@ func TestInstrumentedDelivery_ExtendCountsVisibilityExtension(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeReceiver()
 	receiver := runtime.NewInstrumentedReceiver(inner, rec,
-		shared.MetricSQSReceiveLatency, shared.TagKeyQueueURL, "https://sqs/q1", clock.System)
+		"SQSReceiveLatency", "queue_url", "https://sqs/q1", clock.System)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		env := &messaging.Envelope{ID: "msg-1", Payload: []byte("data")}
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1", Payload: []byte("data")})
 		del := NewFakeDelivery(env)
 		_ = inner.Emit(ctx, del)
 		cancel()
@@ -316,7 +316,7 @@ func TestInstrumentedOutboxStore_PersistLatencyUsesInjectedClock(t *testing.T) {
 	store := runtime.NewInstrumentedOutboxStore(inner, rec, clk)
 
 	err := store.Persist(context.Background(), []*persistence.OutboxRecord{persistence.MustOutboxRecord(persistence.OutboxSpec{
-		ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", Envelope: messaging.Envelope{ID: "env-1"},
+		ID: "r1", RouteID: "route-1", EnvelopeID: "env-1", BindingID: "b1", Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-1"}),
 	})})
 	if err != nil {
 		t.Fatal(err)
@@ -340,14 +340,14 @@ func TestInstrumentedSender_SendLatencyUsesInjectedClock(t *testing.T) {
 		return nil
 	}
 	sender := runtime.NewInstrumentedSender(inner, rec,
-		shared.MetricMQTTPublishLatency, shared.TagKeySessionID, "sess-1", clk)
+		"MQTTPublishLatency", shared.TagKeySessionID, "sess-1", clk)
 
-	err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: &messaging.Envelope{ID: "msg-1"}})
+	err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	timers := rec.FindEntries(shared.MetricMQTTPublishLatency)
+	timers := rec.FindEntries("MQTTPublishLatency")
 	if len(timers) != 1 {
 		t.Fatalf("expected 1 send timer, got %d", len(timers))
 	}
@@ -361,11 +361,11 @@ func TestInstrumentedReceiver_RunLatencyUsesInjectedClock(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeReceiver()
 	receiver := runtime.NewInstrumentedReceiver(inner, rec,
-		shared.MetricSQSReceiveLatency, shared.TagKeyQueueURL, "https://sqs/q1", clk)
+		"SQSReceiveLatency", "queue_url", "https://sqs/q1", clk)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		_ = inner.Emit(ctx, NewFakeDelivery(&messaging.Envelope{ID: "msg-1"}))
+		_ = inner.Emit(ctx, NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})))
 		cancel()
 	}()
 
@@ -374,7 +374,7 @@ func TestInstrumentedReceiver_RunLatencyUsesInjectedClock(t *testing.T) {
 		return nil
 	})
 
-	timers := rec.FindEntries(shared.MetricSQSReceiveLatency)
+	timers := rec.FindEntries("SQSReceiveLatency")
 	if len(timers) != 1 {
 		t.Fatalf("expected 1 receive timer, got %d", len(timers))
 	}

@@ -175,10 +175,10 @@ func TestConfigAPI_Redaction_GetConfig_HidesAPIKeys(t *testing.T) {
 	cfg := body["config"].(map[string]any)
 	httpCfg := cfg["http"].(map[string]any)
 
-	if httpCfg["admin_api_key"] != "***" {
+	if httpCfg["admin_api_key"] != "[REDACTED]" {
 		t.Errorf("admin_api_key not redacted: got %v", httpCfg["admin_api_key"])
 	}
-	if httpCfg["monitor_api_key"] != "***" {
+	if httpCfg["monitor_api_key"] != "[REDACTED]" {
 		t.Errorf("monitor_api_key not redacted: got %v", httpCfg["monitor_api_key"])
 	}
 
@@ -205,7 +205,7 @@ func TestConfigAPI_Redaction_PatchPreview_HidesAPIKeys(t *testing.T) {
 
 	preview := body["preview"].(map[string]any)
 	httpCfg := preview["http"].(map[string]any)
-	if httpCfg["admin_api_key"] != "***" {
+	if httpCfg["admin_api_key"] != "[REDACTED]" {
 		t.Errorf("admin_api_key not redacted in preview: got %v", httpCfg["admin_api_key"])
 	}
 }

@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -78,6 +80,36 @@ func TestMarshalYAML_RoundTrip(t *testing.T) {
 	assert.Len(t, parsed.Routes, 1)
 	assert.Equal(t, "sqs-to-mqtt", parsed.Routes[0].ID)
 	assert.Equal(t, 100, parsed.Routes[0].Policy.MaxInFlight)
+}
+
+// TestMarshalYAML_RevealsSecretOnSave_RedactsByDefault proves the G1 split:
+// the authoritative config serializer (the persistence save boundary) writes
+// the REAL secret via the explicit Reveal path so a load→save→reload cycle
+// preserves it, while a plain json.Marshal of the same config redacts.
+func TestMarshalYAML_RevealsSecretOnSave_RedactsByDefault(t *testing.T) {
+	const apiKey = "admin-key-shhh-12345"
+	cfg := testConfig()
+	cfg.HTTP = &ports.HTTPConfig{
+		AdminAddr:   ":8080",
+		AdminAPIKey: shared.NewSecret(apiKey),
+	}
+
+	// Save path reveals: the serialized YAML carries the real value.
+	data, err := MarshalYAML(cfg)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), apiKey, "save boundary must persist the real secret")
+
+	// Reload: the persisted scalar decodes back into a usable Secret.
+	parsed, err := Parse(strings.NewReader(string(data)), FormatYAML, passthroughRegistry("mqtt", "sqs"))
+	require.NoError(t, err)
+	require.NotNil(t, parsed.HTTP)
+	assert.Equal(t, apiKey, parsed.HTTP.AdminAPIKey.Reveal(), "round-trip must preserve the secret")
+
+	// Defense in depth: a plain json.Marshal (admin read / stray log) redacts.
+	out, err := json.Marshal(parsed)
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), apiKey, "plain json.Marshal must not leak the secret")
+	assert.Contains(t, string(out), "[REDACTED]")
 }
 
 func TestMarshalYAML_OmitsEmptyFields(t *testing.T) {

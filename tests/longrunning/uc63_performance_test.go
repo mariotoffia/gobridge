@@ -280,7 +280,7 @@ func TestUC66_MultiTenantIsolation(t *testing.T) {
 		counts := make(map[int]int)
 		for _, m := range msgs {
 			var sm seqMsg
-			if json.Unmarshal(m.Payload, &sm) == nil {
+			if json.Unmarshal(m.Payload(), &sm) == nil {
 				counts[sm.Seq%tenants]++
 			}
 		}

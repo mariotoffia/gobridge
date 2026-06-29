@@ -140,8 +140,8 @@ func TestIntegration_Cluster_ForwardToBridge(t *testing.T) {
 	if envs[0].Subject() != "orders.created" {
 		t.Fatalf("subject: got %q, want orders.created", envs[0].Subject())
 	}
-	if string(envs[0].Payload) != `{"order":"123"}` {
-		t.Fatalf("payload mismatch: %s", envs[0].Payload)
+	if string(envs[0].Payload()) != `{"order":"123"}` {
+		t.Fatalf("payload mismatch: %s", envs[0].Payload())
 	}
 
 	cancel()
@@ -515,15 +515,15 @@ func TestIntegration_Cluster_ForwardPreservesEnvelope(t *testing.T) {
 		t.Fatalf("expected exactly 1 envelope, got %d", len(envs))
 	}
 	got := envs[0]
-	if got.ID != "env-rich-001" {
-		t.Fatalf("ID: got %q, want env-rich-001", got.ID)
+	if got.ID() != "env-rich-001" {
+		t.Fatalf("ID: got %q, want env-rich-001", got.ID())
 	}
 	if got.Subject() != "billing.invoice.created" {
 		t.Fatalf("subject: got %q, want billing.invoice.created", got.Subject())
 	}
 	wantPayload := `{"invoice":{"id":"inv-42","items":[{"sku":"A","qty":2}]}}`
-	if string(got.Payload) != wantPayload {
-		t.Fatalf("payload:\n got %s\nwant %s", got.Payload, wantPayload)
+	if string(got.Payload()) != wantPayload {
+		t.Fatalf("payload:\n got %s\nwant %s", got.Payload(), wantPayload)
 	}
 	if got.Headers()["x-tenant"] != "acme" {
 		t.Fatalf("x-tenant: got %v, want acme", got.Headers()["x-tenant"])
@@ -627,8 +627,8 @@ func TestIntegration_Cluster_ForwardDivergentReceiverID(t *testing.T) {
 	if envs[0].Subject() != "orders.created" {
 		t.Fatalf("subject: got %q, want orders.created", envs[0].Subject())
 	}
-	if string(envs[0].Payload) != `{"order":"divergent-1"}` {
-		t.Fatalf("payload mismatch: %s", envs[0].Payload)
+	if string(envs[0].Payload()) != `{"order":"divergent-1"}` {
+		t.Fatalf("payload mismatch: %s", envs[0].Payload())
 	}
 
 	cancel()

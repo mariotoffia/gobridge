@@ -63,6 +63,14 @@ type BackoffPolicy struct {
 	InitialInterval time.Duration
 	MaxInterval     time.Duration
 	Multiplier      float64
+	// JitterFactor is the fraction in [0,1] of the computed backoff delay
+	// that is randomized to de-correlate retries across competing senders
+	// (thundering-herd avoidance). 0 disables jitter and reproduces the
+	// deterministic exponential delay; 1 randomizes the full interval.
+	// Equal-jitter is applied by route.RetryDelay:
+	// delay = d*(1-JitterFactor) + rand[0, d*JitterFactor), clamped to
+	// [0, MaxInterval].
+	JitterFactor float64
 }
 
 // ExpiredAction determines what happens to expired messages.
@@ -118,6 +126,9 @@ func NewDefaultBackoffPolicy() BackoffPolicy {
 		InitialInterval: 1 * time.Second,
 		MaxInterval:     30 * time.Second,
 		Multiplier:      2.0,
+		// 20% equal-jitter de-correlates retries across competing senders
+		// without materially changing the backoff envelope.
+		JitterFactor: 0.2,
 	}
 }
 

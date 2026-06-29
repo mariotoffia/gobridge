@@ -167,7 +167,7 @@ func TestOutboxDrainer_FinalDrainCompletesPendingRecords(t *testing.T) {
 		RouteID:   "r1",
 		SessionID: "s1",
 		Status:    persistence.OutboxPending,
-		Envelope:  messaging.Envelope{ID: "env-1", Payload: []byte("hello")},
+		Envelope:  *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-1", Payload: []byte("hello")}),
 	})})
 
 	var sent atomic.Int32
@@ -185,7 +185,6 @@ func TestOutboxDrainer_FinalDrainCompletesPendingRecords(t *testing.T) {
 		RouteID:      "r1",
 		PartitionKey: "SESSION#s1",
 		LeaseID:      "s1",
-		OwnerID:      "me",
 		Policy:       routing.RoutePolicy{}.WithDefaults(),
 		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainTimeout: 5 * time.Second,

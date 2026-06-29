@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -19,12 +18,15 @@ import (
 // ---------------------------------------------------------------------------
 // BUG-2: SendBatch continues on partial failure
 //
-// These tests verify that SendBatch collects errors and continues
-// processing remaining batches instead of returning on first failure.
+// These tests verify that SendBatch keeps dispatching remaining chunks
+// after a partial or chunk-level failure. Under the ports.BatchSender
+// result contract the per-message outcome is reported in the returned
+// []ports.BatchResult (nil Err = sent); the top-level error stays nil
+// once dispatch begins.
 // ---------------------------------------------------------------------------
 
 // Verifies all batches succeed when the API reports no failures.
-// Total sent count must equal the number of input envelopes.
+// Every result entry is nil-Err so the success count equals the input.
 func TestSendBatch_AllBatchesSucceed(t *testing.T) {
 	batchCalls := 0
 	mock := &mockSQSClient{
@@ -47,7 +49,7 @@ func TestSendBatch_AllBatchesSucceed(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(13)
-	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -57,7 +59,10 @@ func TestSendBatch_AllBatchesSucceed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if sent != 13 {
+	if len(results) != 13 {
+		t.Fatalf("expected 13 results, got %d", len(results))
+	}
+	if sent := batchSent(results); sent != 13 {
 		t.Fatalf("expected 13 sent, got %d", sent)
 	}
 	if batchCalls != 3 {
@@ -66,8 +71,8 @@ func TestSendBatch_AllBatchesSucceed(t *testing.T) {
 }
 
 // Verifies that a partial failure in the first batch does not prevent
-// subsequent batches from executing. The sent count must include
-// successes from all batches.
+// subsequent batches from executing. The success count must include
+// successes from all batches, and the failed index carries its error.
 func TestSendBatch_FirstBatchPartialFailure_RemainingExecute(t *testing.T) {
 	callNum := 0
 	mock := &mockSQSClient{
@@ -103,19 +108,22 @@ func TestSendBatch_FirstBatchPartialFailure_RemainingExecute(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(9) // 3 batches of 3
-	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
 		}
 		return _msgs
 	}())
-	if sendErr == nil {
-		t.Fatal("expected error from partial failure in first batch")
+	if sendErr != nil {
+		t.Fatalf("partial failure must not yield a whole-batch error, got %v", sendErr)
 	}
-	// 2 from first batch + 3 + 3 from remaining = 8
-	if sent != 8 {
+	// 2 from first batch + 3 + 3 from remaining = 8.
+	if sent := batchSent(results); sent != 8 {
 		t.Fatalf("expected 8 sent, got %d", sent)
+	}
+	if results[2].Err == nil {
+		t.Fatal("expected the failed first-batch entry (index 2) to carry an error")
 	}
 	if callNum != 3 {
 		t.Fatalf("expected 3 batch API calls, got %d", callNum)
@@ -123,7 +131,8 @@ func TestSendBatch_FirstBatchPartialFailure_RemainingExecute(t *testing.T) {
 }
 
 // Verifies that a full API error on a middle batch does not prevent
-// batches before and after from executing.
+// batches before and after from executing. The failed chunk's entries
+// each carry the recoverable error.
 func TestSendBatch_MiddleBatchAPIError_OtherBatchesExecute(t *testing.T) {
 	callNum := 0
 	mock := &mockSQSClient{
@@ -149,30 +158,31 @@ func TestSendBatch_MiddleBatchAPIError_OtherBatchesExecute(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(9) // 3 batches of 3
-	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
 		}
 		return _msgs
 	}())
-	if sendErr == nil {
-		t.Fatal("expected error from middle batch API failure")
+	if sendErr != nil {
+		t.Fatalf("chunk API failure must not yield a whole-batch error, got %v", sendErr)
 	}
-	// Batch 1: 3 ok, Batch 2: API error (0), Batch 3: 3 ok = 6
-	if sent != 6 {
+	// Batch 1: 3 ok, Batch 2: API error (0), Batch 3: 3 ok = 6.
+	if sent := batchSent(results); sent != 6 {
 		t.Fatalf("expected 6 sent, got %d", sent)
 	}
 	if callNum != 3 {
 		t.Fatalf("expected all 3 batch calls to execute, got %d", callNum)
 	}
-	if !shared.IsRecoverableError(sendErr) {
-		t.Fatal("ServiceUnavailable should be recoverable")
+	// Middle chunk is input indices 3,4,5; each carries the recoverable error.
+	if results[3].Err == nil || !shared.IsRecoverableError(results[3].Err) {
+		t.Fatalf("ServiceUnavailable should surface as a recoverable per-entry error, got %v", results[3].Err)
 	}
 }
 
-// Verifies that when all batches fail the error contains all failures
-// and the sent count is zero.
+// Verifies that when all batches fail every result carries its error and
+// the success count is zero, while all chunks are still attempted.
 func TestSendBatch_AllBatchesFail_CombinedError(t *testing.T) {
 	callNum := 0
 	mock := &mockSQSClient{
@@ -191,28 +201,29 @@ func TestSendBatch_AllBatchesFail_CombinedError(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(6) // 3 batches of 2
-	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
 		}
 		return _msgs
 	}())
-	if sendErr == nil {
-		t.Fatal("expected combined error when all batches fail")
+	if sendErr != nil {
+		t.Fatalf("dispatched batch must not yield a whole-batch error, got %v", sendErr)
 	}
-	if sent != 0 {
+	if sent := batchSent(results); sent != 0 {
 		t.Fatalf("expected 0 sent when all batches fail, got %d", sent)
 	}
 	if callNum != 3 {
 		t.Fatalf("expected 3 batch calls even if all fail, got %d", callNum)
 	}
-	// Verify combined error contains messages from all failures.
-	errMsg := sendErr.Error()
-	for i := 1; i <= 3; i++ {
-		needle := fmt.Sprintf("batch-%d", i)
-		if !strings.Contains(errMsg, needle) {
-			t.Fatalf("combined error should contain %q, got: %s", needle, errMsg)
+	// Every entry across every chunk surfaces its (recoverable) failure.
+	for i, r := range results {
+		if r.Err == nil {
+			t.Fatalf("expected result %d to carry an error", i)
+		}
+		if !shared.IsRecoverableError(r.Err) {
+			t.Fatalf("ServiceUnavailable should be recoverable, result %d = %v", i, r.Err)
 		}
 	}
 }
@@ -267,26 +278,33 @@ func TestSendBatch_MixedPartialAndAPIErrors(t *testing.T) {
 	}
 
 	envs := makeEnvelopes(8) // 4 batches of 2
-	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
 		}
 		return _msgs
 	}())
-	if sendErr == nil {
-		t.Fatal("expected combined error from partial + API failures")
+	if sendErr != nil {
+		t.Fatalf("partial + API failures must not yield a whole-batch error, got %v", sendErr)
 	}
-	// Batch 1: 2 ok, Batch 2: 1 ok, Batch 3: 0 (API err), Batch 4: 2 ok = 5
-	if sent != 5 {
+	// Batch 1: 2 ok, Batch 2: 1 ok, Batch 3: 0 (API err), Batch 4: 2 ok = 5.
+	if sent := batchSent(results); sent != 5 {
 		t.Fatalf("expected 5 sent, got %d", sent)
+	}
+	// Failed input indices: 3 (partial), 4 and 5 (API error chunk).
+	for _, idx := range []int{3, 4, 5} {
+		if results[idx].Err == nil {
+			t.Fatalf("expected result %d to carry an error", idx)
+		}
 	}
 	if callNum != 4 {
 		t.Fatalf("expected 4 batch calls, got %d", callNum)
 	}
 }
 
-// Verifies a single-envelope batch with failure is handled correctly.
+// Verifies a single-envelope batch with failure is handled correctly:
+// the lone result carries the error and the success count is zero.
 func TestSendBatch_SingleEnvelopeFailure(t *testing.T) {
 	mock := &mockSQSClient{
 		SendMessageBatchFn: func(_ context.Context, _ *awssqs.SendMessageBatchInput, _ ...func(*awssqs.Options)) (*awssqs.SendMessageBatchOutput, error) {
@@ -305,23 +323,26 @@ func TestSendBatch_SingleEnvelopeFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	envs := []*messaging.Envelope{{ID: "solo", Payload: []byte("x")}}
-	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	envs := []*messaging.Envelope{messaging.MustEnvelope(messaging.EnvelopeInput{ID: "solo", Payload: []byte("x")})}
+	results, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
 		}
 		return _msgs
 	}())
-	if sendErr == nil {
-		t.Fatal("expected error for single-envelope failure")
+	if sendErr != nil {
+		t.Fatalf("dispatched batch must not yield a whole-batch error, got %v", sendErr)
 	}
-	if sent != 0 {
+	if len(results) != 1 || results[0].Err == nil {
+		t.Fatalf("expected the single result to carry an error, got %+v", results)
+	}
+	if sent := batchSent(results); sent != 0 {
 		t.Fatalf("expected 0 sent, got %d", sent)
 	}
 }
 
-// Verifies empty input returns no error and zero sent.
+// Verifies empty input returns no error, no successes, and no API calls.
 func TestSendBatch_EmptyInput(t *testing.T) {
 	batchCalls := 0
 	mock := &mockSQSClient{
@@ -338,11 +359,11 @@ func TestSendBatch_EmptyInput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sent, err := sender.SendBatch(context.Background(), []ports.OutboundMessage(nil))
+	results, err := sender.SendBatch(context.Background(), []ports.OutboundMessage(nil))
 	if err != nil {
 		t.Fatalf("unexpected error for empty input: %v", err)
 	}
-	if sent != 0 {
+	if sent := batchSent(results); sent != 0 {
 		t.Fatalf("expected 0 sent for empty input, got %d", sent)
 	}
 	if batchCalls != 0 {
@@ -350,11 +371,11 @@ func TestSendBatch_EmptyInput(t *testing.T) {
 	}
 
 	// Also test with empty slice (non-nil).
-	sent, err = sender.SendBatch(context.Background(), []ports.OutboundMessage{})
+	results, err = sender.SendBatch(context.Background(), []ports.OutboundMessage{})
 	if err != nil {
 		t.Fatalf("unexpected error for empty slice: %v", err)
 	}
-	if sent != 0 {
+	if sent := batchSent(results); sent != 0 {
 		t.Fatalf("expected 0 sent for empty slice, got %d", sent)
 	}
 }
@@ -366,10 +387,22 @@ func TestSendBatch_EmptyInput(t *testing.T) {
 func makeEnvelopes(n int) []*messaging.Envelope {
 	envs := make([]*messaging.Envelope, n)
 	for i := range envs {
-		envs[i] = &messaging.Envelope{
+		envs[i] = messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("env-%d", i),
 			Payload: []byte(fmt.Sprintf("payload-%d", i)),
-		}
+		})
 	}
 	return envs
+}
+
+// batchSent counts the successful (nil-Err) entries in a SendBatch
+// result, i.e. the number of messages the transport accepted.
+func batchSent(results []ports.BatchResult) int {
+	n := 0
+	for _, r := range results {
+		if r.Err == nil {
+			n++
+		}
+	}
+	return n
 }

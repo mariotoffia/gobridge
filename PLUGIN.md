@@ -2,12 +2,14 @@
 
 This guide explains how to extend gobridge with custom transport adapters, store backends, credential repositories, observability exporters, and message processors.
 
-All extension points follow the hexagonal architecture: implement a port interface from `ports/`, expose a typed `ports.PluginConfig`, self-register a decoder on `*ports.Registry`, register the factory with the `bridge.Builder`, and gobridge handles the rest. The architectural framing for this contract lives in [DDD.md](DDD.md), [UBIQUITOUS.md](UBIQUITOUS.md), and [`docs/typed-plugin-config.adoc`](docs/typed-plugin-config.adoc).
+All extension points follow the hexagonal architecture: implement a port interface from `ports/`, expose a typed `ports.PluginConfig`, register a decoder on a `*ports.Registry` via an exported `Register(reg *ports.Registry) error`, register the factory with the `bridge.Builder`, and gobridge handles the rest. The architectural framing for this contract lives in [DDD.md](DDD.md), [UBIQUITOUS.md](UBIQUITOUS.md), and [`docs/typed-plugin-config.adoc`](docs/typed-plugin-config.adoc).
 
 > **Note on options decoding.** Adapters expose a
-> typed `Config` struct (`ports.PluginConfig`) and register a decoder
-> on `*ports.Registry` from `register.go`; the runtime never
-> hands `map[string]any` to plugin code. See
+> typed `Config` struct (`ports.PluginConfig`) and ship an exported
+> `Register(reg *ports.Registry) error` in `register.go` that the
+> composition root calls explicitly — there is no `init()` side effect
+> and no process-wide registry. The runtime never hands
+> `map[string]any` to plugin code. See
 > [Typed Plugin Config](#typed-plugin-config).
 
 
@@ -45,9 +47,14 @@ type Sender interface {
     Send(ctx context.Context, msg OutboundMessage) error
 }
 
+type BatchResult struct {
+    Index int   // index into the input slice
+    Err   error // nil on success
+}
+
 type BatchSender interface {
     Sender
-    SendBatch(ctx context.Context, msgs []OutboundMessage) (int, error)
+    SendBatch(ctx context.Context, msgs []OutboundMessage) ([]BatchResult, error)
 }
 
 type Session interface {
@@ -139,15 +146,14 @@ adapters/mycloud/transport/myqueue/
 
 3. **Header mapping**: Map transport-native message properties to `messaging.Envelope.Headers` and vice versa. Strip `x-bridge.*` reserved headers at ingress.
 
-4. **Typed config**: Export a concrete `Config` struct that satisfies
-   `ports.PluginConfig` (`Kind() string`, `Validate() error`) and
-   register a decoder on `*ports.Registry` from a `register.go`
-   `init()` (see [Typed Plugin Config](#typed-plugin-config) below).
-   The adapter receives its already-decoded typed config via
-   `Spec.Config`; it does **not** decode `map[string]any`. Plugin-
-   specific shapes MUST NOT be added to the core `config` package —
-   keeping the core `config` package generic is what lets new plugins
-   ship without forking gobridge.
+4. **Typed config**: Export a concrete `Config` struct satisfying
+   `ports.PluginConfig` and register its decoder via an exported
+   `Register(reg *ports.Registry) error` in `register.go` (the
+   composition root calls it explicitly; no `init()`, no process-wide
+   registry). The adapter receives its already-decoded typed config via
+   `Spec.Config` — it never decodes `map[string]any`, and plugin shapes
+   never enter the core `config` package. See
+   [Typed Plugin Config](#typed-plugin-config) below.
 
 5. **Capabilities**: Return appropriate `ports.Capability` values:
    - `CapStatefulSession` -- transport uses sessions (e.g. MQTT)
@@ -192,11 +198,11 @@ type LeaseStore interface {
 }
 
 type OutboxStore interface {
-    Persist(ctx context.Context, records []persistence.OutboxRecord) error
-    Claim(ctx context.Context, partitionKey, ownerID string, token persistence.LeaseToken, limit int) ([]persistence.OutboxRecord, error)
+    Persist(ctx context.Context, records []*persistence.OutboxRecord) error
+    Claim(ctx context.Context, partitionKey string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error)
     Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error
     Expire(ctx context.Context, before time.Time) (int, error)
-    QueryPending(ctx context.Context, partitionKey string, limit int) ([]persistence.OutboxRecord, error)
+    QueryPending(ctx context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error)
 }
 
 type DLQStore interface {
@@ -472,12 +478,9 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 3. **doc.go**: Every package needs a `doc.go` explaining its purpose.
 4. **Compile-time checks**: `var _ ports.X = (*T)(nil)` for all implemented interfaces.
 5. **Error mapping**: Transport adapters must have an `errors.go` mapping SDK errors to `shared.BridgeError`.
-6. **Typed config**: Export a concrete `Config` struct that satisfies
-   `ports.PluginConfig` (`Kind() string`, `Validate() error`) and
-   register a decoder on `*ports.Registry` from `register.go`
-   `init()`. Typed plugin shapes live inside the plugin package and
-   are reached by the runtime via `Spec.Config` — never inside core
-   `config` or as `map[string]any`. See
+6. **Typed config**: Export a `ports.PluginConfig` and register its
+   decoder via an exported `Register(reg *ports.Registry) error` in
+   `register.go` (composition root calls it; no `init()`). See
    [Typed Plugin Config](#typed-plugin-config).
 7. **Hexagonal direction**: Adapters depend on `ports`, `domain`, and
    their own SDK only. Adapters MUST NOT import `bridge`, `config`,
@@ -514,7 +517,7 @@ sequenceDiagram
     participant YAML as bridge.yaml
     participant Parser as config.ParseFile
     participant Reg as ports.Registry
-    participant Dec as Adapter decoder<br/>(register.go init)
+    participant Dec as Adapter decoder<br/>(register.go Register)
     participant Cfg as Typed *Config
     participant Builder as bridge.Builder
     participant Fact as Adapter Factory<br/>(NewSender / NewReceiver)
@@ -566,16 +569,26 @@ Both methods are mandatory and both must do real work — an empty
 
 ### Registering the decoder
 
-Each adapter ships a `register.go` containing an `init()` that
-attaches a decoder to `*ports.Registry`:
+Each adapter ships a `register.go` exposing an exported
+`Register(reg *ports.Registry) error` that attaches its decoder(s) to
+the registry it is handed. There is **no process-wide singleton** and
+**no `init()` side effect**: the composition root builds a
+`*ports.Registry` with `ports.NewRegistry()` and calls each adapter's
+`Register` explicitly.
 
 ```go
 // adapters/mqtt/transport/paho/register.go
 package paho
 
-import "github.com/mariotoffia/gobridge/ports"
+import (
+    "errors"
 
-func init() {
+    "github.com/mariotoffia/gobridge/ports"
+)
+
+// Register installs this adapter's PluginConfig decoder under the
+// short ("mqtt") and fully-qualified ("mqtt.paho") discriminators.
+func Register(reg *ports.Registry) error {
     dec := func(raw ports.RawConfig) (ports.PluginConfig, error) {
         var c Config
         if raw != nil {
@@ -588,21 +601,29 @@ func init() {
         }
         return &c, nil
     }
-    reg.Register("mqtt", dec)
-    reg.Register("mqtt.paho", dec)
+    return errors.Join(
+        reg.Register("mqtt", dec),
+        reg.Register("mqtt.paho", dec),
+    )
 }
 ```
 
 Rules:
 
-- One `register.go` file per adapter. Importing the adapter is what
-  registers the decoder (the user does this implicitly via
-  `builder.RegisterTransport` or `builder.RegisterStoreFactory`).
+- One `register.go` file per adapter, exposing a single exported
+  `Register(reg *ports.Registry) error`. The composition root wires it
+  explicitly (typically via `builder.RegisterTransport` /
+  `builder.RegisterStoreFactory`); registration is never an import
+  side effect.
 - A decoder must call `Validate()` and surface the error; the bridge
   treats parse-time errors as fatal.
-- `reg.Register(kind, dec)` panics on duplicate
-  registration of the same `kind`. Use a separate `kind` per
-  adapter or per dialect (e.g. `mqtt` and `mqtt.paho`).
+- `reg.Register(kind, dec)` does **not** panic. It returns
+  `ports.ErrDuplicateKind` (a typed `*shared.BridgeError`, recoverable
+  via `errors.Is`) when `kind` is already registered, and
+  `ports.ErrNilDecoder` when `dec` is nil. Use a separate `kind` per
+  adapter or per dialect (e.g. `mqtt` and `mqtt.paho`), and join
+  multiple registrations with `errors.Join` so the composition root
+  sees every failure at once.
 
 ### Reading the typed config inside the factory
 

@@ -222,14 +222,14 @@ func (r *benchmarkReport) logReport(t *testing.T, exporter *ports.RecordingExpor
 
 	// Stage latency breakdown.
 	stages := []string{
-		shared.MetricSQSPollLatency,
-		shared.MetricSQSReceiveLatency,
-		shared.MetricMQTTPublishLatency,
+		"SQSPollLatency",
+		"SQSReceiveLatency",
+		"MQTTPublishLatency",
 		shared.MetricOutboxPersistLatency,
 		shared.MetricOutboxDrainLatency,
 		shared.MetricDeliveryE2ELatency,
 		shared.MetricAckLatency,
-		shared.MetricSQSDeleteLatency,
+		"SQSDeleteLatency",
 	}
 
 	type latRow struct {

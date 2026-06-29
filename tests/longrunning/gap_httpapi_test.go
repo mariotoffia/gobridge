@@ -18,6 +18,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/httpapi"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -132,8 +133,8 @@ func TestGAP_HTTPFullSuite(t *testing.T) {
 	srv := httpapi.New(rt, httpapi.Config{
 		AdminAddr:     ":0",
 		MonitorAddr:   ":0",
-		AdminAPIKey:   gapAdminKey,
-		MonitorAPIKey: gapMonitorKey,
+		AdminAPIKey:   shared.NewSecret(gapAdminKey),
+		MonitorAPIKey: shared.NewSecret(gapMonitorKey),
 	}, httpapi.WithServerLogger(testLogger(t)))
 	require.NoError(t, srv.Start(ctx))
 	defer func() { _ = srv.Stop(context.Background()) }()
@@ -234,8 +235,8 @@ func TestGAP_HTTPBridgeStartStop(t *testing.T) {
 	srv := httpapi.New(rt, httpapi.Config{
 		AdminAddr:     ":0",
 		MonitorAddr:   ":0",
-		AdminAPIKey:   gapAdminKey,
-		MonitorAPIKey: gapMonitorKey,
+		AdminAPIKey:   shared.NewSecret(gapAdminKey),
+		MonitorAPIKey: shared.NewSecret(gapMonitorKey),
 	}, httpapi.WithServerLogger(testLogger(t)))
 	require.NoError(t, srv.Start(ctx))
 	defer func() { _ = srv.Stop(context.Background()) }()
@@ -327,8 +328,8 @@ func TestGAP_HTTPDLQManagement(t *testing.T) {
 	srv := httpapi.New(rt, httpapi.Config{
 		AdminAddr:     ":0",
 		MonitorAddr:   ":0",
-		AdminAPIKey:   gapAdminKey,
-		MonitorAPIKey: gapMonitorKey,
+		AdminAPIKey:   shared.NewSecret(gapAdminKey),
+		MonitorAPIKey: shared.NewSecret(gapMonitorKey),
 	}, httpapi.WithServerLogger(testLogger(t)))
 	require.NoError(t, srv.Start(ctx))
 	defer func() { _ = srv.Stop(context.Background()) }()

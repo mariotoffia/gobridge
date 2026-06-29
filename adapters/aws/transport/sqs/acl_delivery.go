@@ -144,8 +144,8 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 	if err != nil {
 		return MapError(err)
 	}
-	d.metrics.Timer(shared.MetricSQSDeleteLatency, d.clk.Since(start),
-		shared.Tag{Key: shared.TagKeyQueueURL, Value: d.queueURL})
+	d.metrics.Timer(MetricSQSDeleteLatency, d.clk.Since(start),
+		shared.Tag{Key: TagKeyQueueURL, Value: d.queueURL})
 	return nil
 }
 
@@ -222,8 +222,8 @@ func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
 		return MapError(err)
 	}
 
-	d.metrics.Counter(shared.MetricSQSVisibilityExtensions, 1,
-		shared.Tag{Key: shared.TagKeyQueueURL, Value: d.queueURL})
+	d.metrics.Counter(MetricSQSVisibilityExtensions, 1,
+		shared.Tag{Key: TagKeyQueueURL, Value: d.queueURL})
 	d.visibilityTimeout.Store(timeout)
 	return nil
 }
@@ -349,8 +349,8 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 				ticker.Reset(newInterval)
 				interval = newInterval
 			}
-			d.metrics.Counter(shared.MetricSQSAutoExtends, 1,
-				shared.Tag{Key: shared.TagKeyQueueURL, Value: d.queueURL})
+			d.metrics.Counter(MetricSQSAutoExtends, 1,
+				shared.Tag{Key: TagKeyQueueURL, Value: d.queueURL})
 			if logging.TraceEnabled(d.logger) {
 				d.logger.Log(ctx, logging.LevelTrace, "sqs: auto-extended",
 					"queue_url", d.queueURL,

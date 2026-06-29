@@ -67,7 +67,7 @@ excludeFiles:
 #       domain_persistence   -- outbox, lease, dlq value types
 #       domain_routing       -- route policy, slot allocation
 #       domain_connectivity  -- credentials, health
-#       domain_events        -- first-wave domain events (past-tense facts)
+#       domain_events        -- application/runtime-emitted facts
 #       domain_clock         -- time abstraction (stdlib-only)
 #
 #   Layer 2 -- Application Business Rules / Use Cases (Clean) /
@@ -265,6 +265,19 @@ vendors:
   # historically lived in ports/ have been relocated to config/ to keep
   # the inner ring format-neutral.
 
+  # SANCTIONED EXCEPTION (M-10): domain/messaging owns the stable
+  # on-disk Envelope JSON schema (envelope.go MarshalJSON/UnmarshalJSON)
+  # and is the SINGLE SOURCE OF TRUTH for the durable wire format that
+  # sqlitedlq, dynamodbdlq, sqliteoutbox, dynamodboutbox, … serialise to
+  # persistent storage. Pushing that schema out into each store adapter
+  # was considered and rejected: it would scatter one contract across N
+  # backends and invite silent schema drift across releases. Keeping a
+  # single domain-owned marshaller is the deliberate, approved
+  # architectural choice. The `encoding/json` import this requires in
+  # domain/messaging is therefore an accepted, documented exception to
+  # the inner-ring no-json intent above -- not an oversight. See
+  # envelope.go and LINT.md (§Architecture exception).
+
   # Adapter SDKs.
   fsnotify: { in: github.com/fsnotify/fsnotify }
   paho: { in: ["github.com/eclipse/paho.golang/**"] }
@@ -327,12 +340,16 @@ deps:
     mayDependOn:
       - domain_shared
     canUse: [_no_external_deps_]
-  # domain_events publishes past-tense facts emitted by aggregates in
-  # the persistence, routing, connectivity, and configuration
-  # bounded contexts. The events themselves carry primitive payload
-  # fields only -- they MUST NOT depend on other domain bounded
-  # contexts so consumers can deserialise them without dragging a
-  # producer's dependency graph along.
+  # domain_events holds past-tense FACTS about the persistence, routing,
+  # connectivity, and configuration bounded contexts. They are emitted
+  # by the application/runtime services that drive those transitions --
+  # NOT raised by the aggregates themselves (OutboxRecord.Claim/Complete
+  # /Expire record nothing); a service constructs the Event via a public
+  # constructor once a transition has succeeded and publishes it through
+  # ports.EventPublisher. The events carry primitive payload fields only
+  # -- they MUST NOT depend on other domain bounded contexts so consumers
+  # can deserialise them without dragging a producer's dependency graph
+  # along.
   domain_events:
     canUse: [_no_external_deps_]
   # NOTE on domain_persistence (FIX-004 Phase 5):
@@ -351,8 +368,11 @@ deps:
   # Ports define the contracts adapters implement. They reference domain
   # value objects only; they MUST NOT know about config, runtime,
   # bridge, or any adapter. Per FIX-003 Phase 5 the inner ring is
-  # format-neutral: ports does NOT carry yaml/json/mapstructure runtime
-  # dependencies. Wire-format marshalling lives in config/.
+  # dependency-neutral: ports does NOT carry yaml/json/mapstructure
+  # runtime dependencies; wire-format marshalling lives in config/. The
+  # blueprint structs in ports/ DO carry yaml/json struct TAGS, however
+  # (schema-tagged DTOs by design, M-11) -- "format-neutral" here means
+  # dependency-neutral, not tag-free.
   ports:
     mayDependOn:
       - domain_clock
@@ -675,10 +695,21 @@ deps:
 
   # ---- Layer 3: Driven adapters -- message transport ----
   #
-  # Each transport adapter depends only on ports + domain (with logging
-  # for diagnostics). It MUST NOT depend on bridge, config, runtime, or
-  # any other transport. Vendor SDKs are listed explicitly so swapping
-  # SDKs is a reviewable policy change.
+  # Each transport adapter depends only on ports + the domain contexts
+  # it actually imports (with logging for diagnostics). It MUST NOT
+  # depend on bridge, config, runtime, or any other transport. Vendor
+  # SDKs are listed explicitly so swapping SDKs is a reviewable policy
+  # change.
+  #
+  # mayDependOn is narrowed to ACTUAL usage (M-23). A sender/receiver
+  # moves messaging.Envelope values, reads connectivity.CredentialSet
+  # for auth, classifies failures via domain/shared errors, and stamps
+  # timestamps from domain/clock -- so messaging + connectivity + shared
+  # + clock is the transport context set. The persistence, routing, and
+  # events contexts were REMOVED: no broker transport persists outbox
+  # records, makes route decisions, or emits domain events, and granting
+  # those edges only invites accidental coupling. Re-adding any of them
+  # is an explicit architecture-policy change, not a convenience.
   #
   # A transport may opt into the `circuitbreaker` cross-cutting utility
   # only when its implementation actually uses it; absent that, the
@@ -688,55 +719,69 @@ deps:
   # consumes the ports.CircuitBreaker contract only — the implementation
   # is supplied by the composition root.
   adapter_transport_mqtt_paho:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_clock, domain_connectivity, domain_messaging, domain_shared, logging, ports]
     canUse: [paho]
 
   adapter_transport_sqs:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_clock, domain_connectivity, domain_messaging, domain_shared, logging, ports]
     canUse: [aws]
 
   adapter_transport_servicebus:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_clock, domain_connectivity, domain_messaging, domain_shared, logging, ports]
     canUse: [asb]
 
   adapter_transport_amqp091:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_clock, domain_connectivity, domain_messaging, domain_shared, logging, ports]
     canUse: [amqp091]
 
   adapter_transport_amqp10:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_clock, domain_connectivity, domain_messaging, domain_shared, logging, ports]
     canUse: [amqp10]
 
-  # HTTP transport is stdlib-only.
+  # HTTP transport is stdlib-only. It additionally keeps domain/persistence:
+  # the bridge-to-bridge forwarder (forwarder.go) takes a
+  # persistence.PeerInfo target, so persistence stays in its set where
+  # the broker transports drop it.
   adapter_transport_http:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_clock, domain_connectivity, domain_messaging, domain_persistence, domain_shared, logging, ports]
 
   # ---- Layer 3: Driven adapters -- store implementations ----
   #
   # Store impls are leaves of the adapter graph: they implement a port
   # and depend on nothing else. They MUST NOT import their aggregator;
   # the aggregator imports them, never the reverse.
-
+  #
+  # mayDependOn is narrowed to ACTUAL usage (M-23). Each store carries
+  # only the aggregate it backs plus the shared error / clock contexts
+  # it touches -- not the full domain spread:
+  #   * lease + outbox stores -> domain/persistence (+ clock, shared)
+  #   * dlq stores            -> domain/routing     (+ shared)
+  # messaging is reached transitively through the persistence aggregate
+  # (OutboxRecord embeds messaging.Envelope) and is not imported
+  # directly. ports is listed only where the store references a ports
+  # symbol directly (e.g. memorydlq's compile-time ports.DLQStore
+  # assertion); the others satisfy their port structurally. dynamodboutbox
+  # additionally reads routing.DefaultMaxReplayAttempts.
   adapter_store_native_memorylease:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_clock, domain_persistence, domain_shared, logging]
   adapter_store_native_memoryoutbox:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_clock, domain_persistence, domain_shared, logging]
   adapter_store_native_memorydlq:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_routing, domain_shared, logging, ports]
   adapter_store_native_sqliteoutbox:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_clock, domain_persistence, domain_shared, logging]
     canUse: [sqlite]
   adapter_store_native_sqlitedlq:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_routing, domain_shared, logging]
     canUse: [sqlite]
   adapter_store_aws_dynamodblease:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_clock, domain_persistence, domain_shared, logging]
     canUse: [aws]
   adapter_store_aws_dynamodboutbox:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_clock, domain_persistence, domain_routing, domain_shared, logging]
     canUse: [aws]
   adapter_store_aws_dynamodbdlq:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_routing, domain_shared, logging]
     canUse: [aws]
 
   # ---- Layer 3: Store factory aggregators ----
@@ -747,15 +792,10 @@ deps:
   # ports.StoreFactory port to the application by composing several
   # leaf implementations.
   adapter_store_native_factory:
+    # Narrowed to ACTUAL usage (M-23): the factory composes the five
+    # native store impls and exposes them through ports.StoreFactory; it
+    # imports no domain context directly (the leaves carry those).
     mayDependOn:
-      - domain_clock
-      - domain_shared
-      - domain_messaging
-      - domain_persistence
-      - domain_routing
-      - domain_connectivity
-      - domain_events
-      - logging
       - ports
       - adapter_store_native_memorylease
       - adapter_store_native_memoryoutbox
@@ -764,15 +804,10 @@ deps:
       - adapter_store_native_sqlitedlq
 
   adapter_store_aws_factory:
+    # Narrowed to ACTUAL usage (M-23): composes the three DynamoDB store
+    # impls behind ports.StoreFactory; the acl factory touches the AWS
+    # SDK but no domain context directly.
     mayDependOn:
-      - domain_clock
-      - domain_shared
-      - domain_messaging
-      - domain_persistence
-      - domain_routing
-      - domain_connectivity
-      - domain_events
-      - logging
       - ports
       - adapter_store_aws_dynamodblease
       - adapter_store_aws_dynamodboutbox
@@ -782,49 +817,63 @@ deps:
   # ---- Layer 3: Config-source adapters ----
   #
   # The single adapter category permitted to import the `config` and
-  # `config_parser` shared-kernel packages. Their job is to produce
-  # *ports.BridgeConfig from an external source (file, DynamoDB, …)
-  # using ParseFile / Parse / MarshalYAML / MarshalBridgeConfigJSON
-  # from `config_parser` and the structural Validate / DefaultMerge
-  # helpers from `config`. They depend on ports for the data shape
-  # (BridgeConfig + Loader/Watcher/Reloader contracts).
-  #
-  # The native file adapter is parser-only today (Format / ParseFile);
-  # the DynamoDB loader is also parser-only (Parse +
-  # MarshalBridgeConfigJSON). Both list `config` in addition so they
-  # remain free to invoke Validate / DefaultMerge without a separate
-  # rule edit.
+  # `config_parser` shared-kernel packages: producing *ports.BridgeConfig
+  # from an external source (file, DynamoDB, …) IS their reason to
+  # exist. Both config packages stay in their set as the category
+  # privilege (mirrored in ARCHITECTURE.md §2) even where only one is
+  # imported today, so a later Validate / DefaultMerge call needs no
+  # rule edit. The DOMAIN context spread, by contrast, is narrowed to
+  # actual usage (M-23): the file loader only stamps clock timestamps,
+  # the DynamoDB loader adds domain/shared errors, and neither touches
+  # messaging / persistence / routing / connectivity / events.
   adapter_config_native_file:
-    mayDependOn: [config, config_parser, domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [config, config_parser, domain_clock, ports]
     canUse: [fsnotify]
   adapter_config_aws_dynamodb:
-    mayDependOn: [config, config_parser, domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [config, config_parser, domain_clock, domain_shared, ports]
     canUse: [aws]
 
   # ---- Layer 3: Credential adapters ----
+  #
+  # Narrowed to ACTUAL usage (M-23): credential adapters resolve
+  # connectivity.CredentialSet values and classify failures via
+  # domain/shared; the file adapter also stamps clock timestamps. No
+  # messaging / persistence / routing / events edge.
   adapter_credentials_native_file:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_clock, domain_connectivity, domain_shared, ports]
   adapter_credentials_aws_ssm:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_connectivity, domain_shared, ports]
     canUse: [aws]
 
   # ---- Layer 3: Observability adapters ----
+  #
+  # Narrowed to ACTUAL usage (M-23): exporters read the metric / tag
+  # taxonomy from domain/shared and implement the ports exporter
+  # contract; only the CloudWatch adapter stamps clock timestamps. No
+  # messaging / persistence / routing / connectivity / events edge.
   adapter_metrics_cloudwatch:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_clock, domain_shared, ports]
     canUse: [aws]
   adapter_metrics_otel:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, ports]
     canUse: [otel]
   adapter_tracing_otel:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    mayDependOn: [domain_shared, ports]
     canUse: [otel]
 
   # ---- Layer 3: Cluster resolver adapters ----
+  #
+  # Narrowed to ACTUAL usage (M-23). Both endpoint resolvers are
+  # stdlib-only: the native resolver probes local interfaces (net) and
+  # the ECS resolver queries the task-metadata endpoint over net/http --
+  # neither imports ANY gobridge package or vendor SDK. The prior broad
+  # domain spread, the `ports` edge, and the AWS `canUse` on the ECS
+  # resolver were all entirely unused; they satisfy their endpoint
+  # resolver port structurally at the composition root.
   adapter_cluster_native:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
+    canUse: [_no_external_deps_]
   adapter_cluster_aws:
-    mayDependOn: [domain_shared, domain_messaging, domain_persistence, domain_routing, domain_connectivity, domain_events, domain_clock, logging, ports]
-    canUse: [aws]
+    canUse: [_no_external_deps_]
 
   # ---- Layer 4: Composition root ----
   #

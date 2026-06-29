@@ -322,7 +322,7 @@ func TestGAP_TransformProcessor_JSONPathMapping(t *testing.T) {
 	verified := 0
 	for _, msg := range msgs {
 		var payload map[string]any
-		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		if err := json.Unmarshal(msg.Payload(), &payload); err != nil {
 			t.Logf("GAP-TF: failed to parse payload: %v", err)
 			continue
 		}

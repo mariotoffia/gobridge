@@ -10,7 +10,6 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -80,18 +79,24 @@ func receivedToEnvelope(msg *azservicebus.ReceivedMessage, clk clock.Clock) (*me
 	if id == "" {
 		id = generateEnvelopeID()
 	}
+	// A received broker absolute-expiry is stamped at construction (permissive):
+	// a message that expired in transit is accepted as an already-expired
+	// envelope and dropped downstream by the TTL/IsExpired logic rather than
+	// failing ingress.
+	var expiresAt time.Time
+	if msg.ExpiresAt != nil {
+		expiresAt = *msg.ExpiresAt
+	}
 	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
 		ID:        id,
 		Subject:   subject,
 		Payload:   msg.Body,
 		Headers:   messageToHeaders(msg),
 		CreatedAt: clk.Now(),
+		ExpiresAt: expiresAt,
 	}, clk.Now())
 	if err != nil {
 		return nil, wrapEnvelopeErr(err)
-	}
-	if msg.ExpiresAt != nil {
-		env.ExpiresAt = *msg.ExpiresAt
 	}
 	return env, nil
 }
@@ -189,7 +194,7 @@ func (d *asbDelivery) Ack(ctx context.Context) error {
 
 	// MetricASBCompleteLatency is emitted here because the InstrumentedDelivery
 	// wrapper uses the generic MetricAckLatency; this gives ASB-specific detail.
-	d.metrics.Timer(shared.MetricASBCompleteLatency, d.clk.Since(start))
+	d.metrics.Timer(MetricASBCompleteLatency, d.clk.Since(start))
 
 	return nil
 }
@@ -220,7 +225,7 @@ func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 		if err != nil {
 			return MapError(err)
 		}
-		d.metrics.Timer(shared.MetricASBScheduleLatency, d.clk.Since(schedStart))
+		d.metrics.Timer(MetricASBScheduleLatency, d.clk.Since(schedStart))
 
 		if err := d.client.CompleteMessage(ctx, d.msg, nil); err != nil {
 			if cancelErr := d.scheduler.CancelScheduledMessages(ctx, seqNums, nil); cancelErr != nil && d.logger != nil {
@@ -312,7 +317,7 @@ func (d *asbDelivery) autoExtendLoop(ctx context.Context, interval time.Duration
 				continue
 			}
 			consecutiveFailures = 0
-			d.metrics.Counter(shared.MetricASBLockRenewals, 1)
+			d.metrics.Counter(MetricASBLockRenewals, 1)
 			if logging.TraceEnabled(d.logger) {
 				d.logger.Log(ctx, logging.LevelTrace, "servicebus: lock renewed",
 					"message_id", d.msg.MessageID,
@@ -345,7 +350,7 @@ func (r *Receiver) receiveAndConvert(ctx context.Context) ([]ports.Delivery, err
 			// redelivered tightly, then drop. We deliberately do not
 			// fail the poll: a single poison message must not stall
 			// the receive loop.
-			r.metrics.Counter(shared.MetricASBMalformedMessages, 1)
+			r.metrics.Counter(MetricASBMalformedMessages, 1)
 			if r.logger != nil {
 				r.logger.Warn("servicebus: dropping malformed delivery",
 					"entity", r.entityName(),

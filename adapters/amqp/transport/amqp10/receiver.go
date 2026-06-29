@@ -27,7 +27,7 @@ type Receiver struct {
 	startedOnce sync.Once
 
 	mu       sync.Mutex
-	link     *receiverLink
+	link     linkReceiver
 	linkConn amqpConn
 }
 
@@ -193,15 +193,15 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 			continue
 		}
 
-		r.metrics.Timer(shared.MetricAMQP10ReceiveLatency, r.clock().Since(start),
+		r.metrics.Timer(MetricAMQP10ReceiveLatency, r.clock().Since(start),
 			shared.Tag{Key: shared.TagKeyEntity, Value: r.cfg.Address})
 		backoff.reset()
 
 		if logging.TraceEnabled(r.logger) {
 			r.logger.Log(ctx, logging.LevelTrace, "amqp10: received message",
 				"address", redactURL(r.cfg.Address),
-				"message_id", del.Envelope().ID,
-				"body_len", len(del.Envelope().Payload),
+				"message_id", del.Envelope().ID(),
+				"body_len", len(del.Envelope().Payload()),
 			)
 		}
 

@@ -145,7 +145,7 @@ func TestSSESender_Send_MismatchErrorMessageContainsBothAddresses(t *testing.T) 
 	sender, _ := newSSESenderForTest(t, "sse-cfg")
 
 	err := sender.Send(context.Background(), ports.OutboundMessage{
-		Envelope: &messaging.Envelope{ID: "e1", Payload: []byte(`{}`)},
+		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Payload: []byte(`{}`)}),
 		Address:  "other-route",
 	})
 	if err == nil {

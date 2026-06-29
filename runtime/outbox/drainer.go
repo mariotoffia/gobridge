@@ -24,7 +24,6 @@ type Drainer struct {
 	routeID        string
 	partitionKey   string
 	leaseID        string
-	ownerID        string
 	policy         routing.RoutePolicy
 	strategy       persistence.DrainStrategy
 	batchSize      int
@@ -79,7 +78,6 @@ type Config struct {
 	RouteID             string
 	PartitionKey        string
 	LeaseID             string
-	OwnerID             string
 	Policy              routing.RoutePolicy
 	Strategy            persistence.DrainStrategy
 	DrainBatchSize      int
@@ -200,7 +198,6 @@ func New(cfg Config) *Drainer {
 		routeID:               cfg.RouteID,
 		partitionKey:          cfg.PartitionKey,
 		leaseID:               leaseID,
-		ownerID:               cfg.OwnerID,
 		policy:                cfg.Policy,
 		strategy:              cfg.Strategy,
 		batchSize:             cfg.DrainBatchSize,

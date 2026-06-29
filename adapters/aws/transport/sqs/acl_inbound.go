@@ -49,12 +49,12 @@ func (r *Receiver) pollAndConvert(
 	}
 
 	elapsed := r.clock().Since(pollStart)
-	r.metrics.Timer(shared.MetricSQSPollLatency, elapsed,
-		shared.Tag{Key: shared.TagKeyQueueURL, Value: queueURL})
+	r.metrics.Timer(MetricSQSPollLatency, elapsed,
+		shared.Tag{Key: TagKeyQueueURL, Value: queueURL})
 	if len(output.Messages) > 0 {
 		perMsg := elapsed / time.Duration(len(output.Messages))
-		r.metrics.Timer(shared.MetricSQSReceiveLatency, perMsg,
-			shared.Tag{Key: shared.TagKeyQueueURL, Value: queueURL})
+		r.metrics.Timer(MetricSQSReceiveLatency, perMsg,
+			shared.Tag{Key: TagKeyQueueURL, Value: queueURL})
 	}
 
 	if logging.TraceEnabled(r.logger) {
@@ -73,8 +73,8 @@ func (r *Receiver) pollAndConvert(
 			// expiration without us issuing a Delete (which would
 			// suppress the redrive policy). Emitting the malformed
 			// metric makes the drop visible in dashboards.
-			r.metrics.Counter(shared.MetricSQSMalformedMessages, 1,
-				shared.Tag{Key: shared.TagKeyQueueURL, Value: queueURL})
+			r.metrics.Counter(MetricSQSMalformedMessages, 1,
+				shared.Tag{Key: TagKeyQueueURL, Value: queueURL})
 			if r.logger != nil {
 				r.logger.Warn("sqs: dropping malformed message",
 					"queue_url", queueURL,

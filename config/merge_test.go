@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -125,23 +126,23 @@ func TestDefaultMerge_RoutesByID(t *testing.T) {
 func TestDefaultMerge_HTTP_OverlayReplacesWhole(t *testing.T) {
 	base := &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "b1"},
-		HTTP:   &ports.HTTPConfig{AdminAddr: ":8080", AdminAPIKey: "key1"},
+		HTTP:   &ports.HTTPConfig{AdminAddr: ":8080", AdminAPIKey: shared.NewSecret("key1")},
 	}
 	overlay := &ports.BridgeConfig{
-		HTTP: &ports.HTTPConfig{AdminAddr: ":9090", AdminAPIKey: "key2"},
+		HTTP: &ports.HTTPConfig{AdminAddr: ":9090", AdminAPIKey: shared.NewSecret("key2")},
 	}
 
 	merged, err := DefaultMerge(base, overlay)
 	require.NoError(t, err)
 
 	assert.Equal(t, ":9090", merged.HTTP.AdminAddr)
-	assert.Equal(t, "key2", merged.HTTP.AdminAPIKey)
+	assert.Equal(t, "key2", merged.HTTP.AdminAPIKey.Reveal())
 }
 
 func TestDefaultMerge_HTTP_NilOverlayPreservesBase(t *testing.T) {
 	base := &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "b1"},
-		HTTP:   &ports.HTTPConfig{AdminAddr: ":8080", AdminAPIKey: "key1"},
+		HTTP:   &ports.HTTPConfig{AdminAddr: ":8080", AdminAPIKey: shared.NewSecret("key1")},
 	}
 	overlay := &ports.BridgeConfig{}
 
@@ -150,6 +151,38 @@ func TestDefaultMerge_HTTP_NilOverlayPreservesBase(t *testing.T) {
 
 	require.NotNil(t, merged.HTTP)
 	assert.Equal(t, ":8080", merged.HTTP.AdminAddr)
+}
+
+func TestDefaultMerge_HTTP_RedactedKeyPreservesStoredSecret(t *testing.T) {
+	// A client reads the config via the admin GET (which redacts API keys to
+	// "[REDACTED]") and PATCHes the HTTP block back to change a non-secret
+	// field. The redacted markers must NOT overwrite the real stored keys.
+	base := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1"},
+		HTTP: &ports.HTTPConfig{
+			AdminAddr:     ":8080",
+			AdminAPIKey:   shared.NewSecret("real-admin-key"),
+			MonitorAPIKey: shared.NewSecret("real-monitor-key"),
+		},
+	}
+	overlay := &ports.BridgeConfig{
+		HTTP: &ports.HTTPConfig{
+			AdminAddr:     ":9090",
+			AdminAPIKey:   shared.RedactedSecret(),             // echoed back from GET
+			MonitorAPIKey: shared.NewSecret("new-monitor-key"), // genuinely rotated
+		},
+	}
+
+	merged, err := DefaultMerge(base, overlay)
+	require.NoError(t, err)
+
+	assert.Equal(t, ":9090", merged.HTTP.AdminAddr, "non-secret field still merges")
+	assert.Equal(t, "real-admin-key", merged.HTTP.AdminAPIKey.Reveal(),
+		"redaction marker must not overwrite the stored admin key")
+	assert.Equal(t, "new-monitor-key", merged.HTTP.MonitorAPIKey.Reveal(),
+		"a genuinely new key must still win")
+	assert.False(t, merged.HTTP.AdminAPIKey.IsRedacted(),
+		"merged config must never carry the redaction marker as a real value")
 }
 
 func TestDefaultMerge_ConfigWatch(t *testing.T) {

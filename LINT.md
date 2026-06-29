@@ -21,9 +21,9 @@ Stages execute in order. The first blocking failure stops the build; advisory st
 | 2 | Format | `gofmt -l` | yes | Files not run through `gofmt`. Auto-fix: `make lint-fix`. |
 | 3 | Vet | `go vet` per workspace module | yes | Stdlib correctness issues (printf, shadow, unreachable, …). |
 | 4 | Lint | `golangci-lint run` per workspace module | yes | Full ruleset from `.golangci.yml` (`depguard`, `forbidigo`, `wrapcheck`, `interfacebloat`, `gochecknoglobals`, `gochecknoinits`, …). |
-| 5 | Aggregate | `aggcheck` on `domain/` | yes | Aggregate-shaped types not in `*_aggregate.go` or missing `Validate()`. |
-| 6 | ACL | `aclcheck` per adapter module | yes | Vendor SDK imports outside `acl_*.go` or `acl/`. |
-| 7 | Config shape | `cfgshape` per workspace module | yes | Plugin config decoded as `map[string]any` instead of typed `ports.PluginConfig`. |
+| 5 | Aggregate | `aggcheck` on `domain/` | yes | Aggregate-shaped types not in `*_aggregate.go` or missing `Validate()`. Pure value objects / read-only snapshots (e.g. `shared.Secret`, `LeaseInfo`) carry a `// value-object` marker to opt out of the heuristic track; aggregate roots carry `// aggregate-root` to opt into the strict no-exported-mutable-state / guarded-transition checks. |
+| 6 | ACL | `aclcheck` per adapter module | yes | Vendor SDK imports outside `acl_*.go` or `acl/`, **and** export-confinement: SDK-originated types must not appear in exported signatures (type-origin check, not just import location). |
+| 7 | Config shape | `cfgshape` per workspace module | yes | Plugin config decoded as `map[string]any` instead of typed `ports.PluginConfig`. Enforces the non-empty-`Validate()`-body rule only; the Validate test-reference check is intentionally **not** enforced. |
 | 8 | Registry coverage | `registrychk` | yes | AWS-deployable kind missing CDK `With<Kind>*` builder or grants helper. |
 | 9 | Registry symmetry | `pluginsym` | yes | Decoder ↔ wired factory mismatch in `cmd/gobridge/main.go`. |
 | 10 | Module graph | `go mod graph` → `reports/arch-graph.txt` | no | Workspace module-level edges. Diff across PRs for new vendor deps. |
@@ -87,7 +87,7 @@ Locate the offending file:line in the named report. Apply the fix.
 | `forbidigo os.Getenv` | `reports/golangci.log` | Add a config DTO; read env at the composition root only. |
 | `gochecknoglobals` / `gochecknoinits` in `domain/` | `reports/golangci.log` | Remove the global or init; pass the value through. |
 | `wrapcheck` | `reports/golangci.log` | Wrap with `%w` or a domain error wrapper. |
-| `aclcheck` | `reports/aclcheck.log` | Move the SDK-touching code into an `acl_*.go` file. |
+| `aclcheck` | `reports/aclcheck.log` | Move the SDK-touching code into an `acl_*.go` file. Also fires on export-confinement: an SDK-originated type in an exported signature — return/accept a domain type instead. |
 | `aggcheck` | `reports/aggcheck.log` | Move the type into `*_aggregate.go` and add `Validate() error`. |
 | `cfgshape` | `reports/cfgshape.log` | Define a typed `ports.PluginConfig`, register the decoder in `register.go`, type-assert at the adapter boundary. |
 | `registrychk` | `reports/registrychk.log` | Add the `With<Kind>*` builder under `deployment/aws-filebased-config/cdk/bridgecfg/` and `cdk/constructs/internal/grants/<kind>.go`. |
@@ -104,6 +104,12 @@ make lint-fix   # gofmt -w on every tracked Go file
 ```
 
 Only auto-fix. Every other failure requires a code change driven by the table above.
+
+## Sanctioned architecture exceptions
+
+A few inward-ring rules carry deliberate, reviewed exceptions. They are recorded here and inline at the source so a reviewer never mistakes one for drift.
+
+- **`domain/messaging` owns the Envelope JSON schema (M-10).** `domain/messaging/envelope.go` imports `encoding/json` and defines the stable on-disk `MarshalJSON` / `UnmarshalJSON` for `Envelope`. This is the single source of truth for the durable wire format every store adapter (`sqlitedlq`, `dynamodbdlq`, `sqliteoutbox`, `dynamodboutbox`, …) serialises through. Keeping one domain-owned marshaller is intentional: scattering the schema across adapters would invite silent cross-backend drift. The `encoding/json` edge is therefore an accepted exception to the otherwise stdlib-only inner ring, mirrored by a comment in `.go-arch-lint.yml` next to the inner-ring no-json note. go-arch-lint cannot deny stdlib imports, so there is nothing to suppress — this entry is the audit trail.
 
 ## Authoritative sources
 

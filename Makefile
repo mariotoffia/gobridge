@@ -140,6 +140,12 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 		(cd "$$dir" && go vet ./... 2>&1) | tee -a $(PWD)/reports/go-vet.log; \
 	done'
 	@echo "=== golangci-lint ==="
+	@bash -c 'major=$$(golangci-lint version 2>/dev/null | sed -nE "s/.*version v?([0-9]+).*/\1/p" | head -1); \
+	if [ "$$major" != "2" ]; then \
+		echo "ERROR: .golangci.yml is schema v2 but installed golangci-lint is not v2 (found: $$(golangci-lint version 2>&1 | head -1))."; \
+		echo "Run: make install"; \
+		exit 1; \
+	fi'
 	@bash -c 'set -eo pipefail; mkdir -p "$(GOBRIDGE_GO_CACHE)"; export GOCACHE="$(GOBRIDGE_GO_CACHE)"; : > reports/golangci.log; \
 	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
@@ -260,14 +266,14 @@ clean: ## Clean build cache and test cache
 
 install: ## Install all development and CI tools
 	@echo "Installing development tools..."
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 	go install golang.org/x/vuln/cmd/govulncheck@latest
 	go install github.com/icholy/gomajor@latest
 	go install github.com/psampaz/go-mod-outdated@latest
 	go install github.com/loov/goda@latest
-	go install github.com/fe3dback/go-arch-lint@latest
-	go install github.com/mibk/dupl@latest
-	go install github.com/jgautheron/goconst/cmd/goconst@latest
+	go install github.com/fe3dback/go-arch-lint@v1.15.0
+	go install github.com/mibk/dupl@v1.1.0
+	go install github.com/jgautheron/goconst/cmd/goconst@v1.10.2
 
 check: build lint test ## Run full CI check (no Docker, integration skipped) — lint covers arch-check + analyzers; test runs timing audits
 

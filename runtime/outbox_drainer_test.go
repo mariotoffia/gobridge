@@ -34,7 +34,6 @@ func makeDrainer(t *testing.T, token persistence.LeaseToken, opts ...func(*outbo
 		RouteID:        "route-1",
 		PartitionKey:   pk,
 		LeaseID:        "sess-1",
-		OwnerID:        token.Owner,
 		Policy:         routing.RoutePolicy{}.WithDefaults(),
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 100,
@@ -61,7 +60,7 @@ func TestOutboxDrainer_HappyPath(t *testing.T) {
 		EnvelopeID: "env-1",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   messaging.Envelope{ID: "env-1", Payload: []byte("data")},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-1", Payload: []byte("data")}),
 		Status:     persistence.OutboxPending,
 	})
 	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
@@ -90,8 +89,12 @@ func TestOutboxDrainer_ExpiredRecord(t *testing.T) {
 		EnvelopeID: "env-exp",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   messaging.Envelope{ID: "env-exp", ExpiresAt: time.Now().Add(-time.Second)},
-		Status:     persistence.OutboxPending,
+		Envelope: func() messaging.Envelope {
+			e := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-exp"})
+			_ = e.SetExpiry(time.Now().Add(-time.Second))
+			return *e
+		}(),
+		Status: persistence.OutboxPending,
 	})
 	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 
@@ -121,7 +124,7 @@ func TestOutboxDrainer_PoisonMessage(t *testing.T) {
 		EnvelopeID:  "env-poison",
 		BindingID:   "bind-1",
 		SessionID:   "sess-1",
-		Envelope:    messaging.Envelope{ID: "env-poison", Payload: []byte("bad")},
+		Envelope:    *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-poison", Payload: []byte("bad")}),
 		Status:      persistence.OutboxPending,
 		ReplayCount: 3,
 	})
@@ -153,7 +156,7 @@ func TestOutboxDrainer_StaleFencingToken(t *testing.T) {
 		EnvelopeID: "env-stale",
 		BindingID:  "bind-1",
 		SessionID:  "sess-1",
-		Envelope:   messaging.Envelope{ID: "env-stale"},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-stale"}),
 		Status:     persistence.OutboxPending,
 	})
 	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
@@ -179,7 +182,6 @@ func TestOutboxDrainer_NoLease(t *testing.T) {
 		DLQ:          dlq.New(dlqStore),
 		RouteID:      "route-1",
 		PartitionKey: persistence.OutboxPartitionKey("sess-1", ""),
-		OwnerID:      "bridge-1",
 		Policy:       routing.RoutePolicy{}.WithDefaults(),
 		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
 		TokenFn: func() (persistence.LeaseToken, bool) {
@@ -192,7 +194,7 @@ func TestOutboxDrainer_NoLease(t *testing.T) {
 	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-nolease", RouteID: "route-1", EnvelopeID: "env-nolease",
 		BindingID: "bind-1", SessionID: "sess-1",
-		Envelope: messaging.Envelope{ID: "env-nolease"}, Status: persistence.OutboxPending,
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-nolease"}), Status: persistence.OutboxPending,
 	})
 	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 
@@ -243,11 +245,11 @@ func TestOutboxDrainer_AppliesAddress(t *testing.T) {
 	if len(recs) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(recs))
 	}
-	if recs[0].Envelope.Subject() != "original-subject" {
-		t.Fatalf("persisted record envelope subject mutated: got %q", recs[0].Envelope.Subject())
+	if recs[0].Snapshot().Subject() != "original-subject" {
+		t.Fatalf("persisted record envelope subject mutated: got %q", recs[0].Snapshot().Subject())
 	}
-	if recs[0].Address != "factory/a/orders/42" {
-		t.Fatalf("persisted record address = %q, want factory/a/orders/42", recs[0].Address)
+	if recs[0].Address() != "factory/a/orders/42" {
+		t.Fatalf("persisted record address = %q, want factory/a/orders/42", recs[0].Address())
 	}
 }
 
@@ -291,7 +293,7 @@ func TestOutboxDrainer_PermanentSendError(t *testing.T) {
 	rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
 		ID: "rec-perm", RouteID: "route-1", EnvelopeID: "env-perm",
 		BindingID: "bind-1", SessionID: "sess-1",
-		Envelope: messaging.Envelope{ID: "env-perm"}, Status: persistence.OutboxPending,
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-perm"}), Status: persistence.OutboxPending,
 	})
 	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 
@@ -361,7 +363,7 @@ func TestOutboxDrainer_CancelDuringBatch_ReturnsPromptly(t *testing.T) {
 				EnvelopeID: fmt.Sprintf("env-%d", i),
 				BindingID:  "bind-1",
 				SessionID:  "sess-1",
-				Envelope:   messaging.Envelope{ID: fmt.Sprintf("env-%d", i), Payload: []byte("data")},
+				Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("env-%d", i), Payload: []byte("data")}),
 				Status:     persistence.OutboxPending,
 			})
 			_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
@@ -428,7 +430,7 @@ func TestOutboxDrainer_CancelBeforeBatch_ExitsPromptly(t *testing.T) {
 			EnvelopeID: fmt.Sprintf("env-pre-%d", i),
 			BindingID:  "bind-1",
 			SessionID:  "sess-1",
-			Envelope:   messaging.Envelope{ID: fmt.Sprintf("env-pre-%d", i), Payload: []byte("x")},
+			Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("env-pre-%d", i), Payload: []byte("x")}),
 			Status:     persistence.OutboxPending,
 		})
 		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
@@ -487,7 +489,7 @@ func TestOutboxDrainer_ConcurrentBatch_SemaphoreConsistency(t *testing.T) {
 				EnvelopeID: fmt.Sprintf("env-c-%d", i),
 				BindingID:  "bind-1",
 				SessionID:  "sess-1",
-				Envelope:   messaging.Envelope{ID: fmt.Sprintf("env-c-%d", i), Payload: []byte("data")},
+				Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("env-c-%d", i), Payload: []byte("data")}),
 				Status:     persistence.OutboxPending,
 			})
 			_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})

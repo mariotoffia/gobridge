@@ -1,6 +1,7 @@
 package ports
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -53,18 +54,19 @@ func (e *BlueprintValidationError) Warnf(format string, args ...any) {
 // any other source (DynamoDB, Vault, etc.).
 type ConfigStore interface {
 	// Load returns the current parsed blueprint from the underlying
-	// store (e.g. on-disk YAML).
-	Load() (*BridgeConfig, error)
+	// store (e.g. on-disk YAML). ctx is honoured for cancellation.
+	Load(ctx context.Context) (*BridgeConfig, error)
 
-	// Save persists the blueprint to the underlying store.
-	Save(cfg *BridgeConfig) error
+	// Save persists the blueprint to the underlying store. ctx is
+	// honoured for cancellation.
+	Save(ctx context.Context, cfg *BridgeConfig) error
 
 	// Validate performs structural validation. Returns the warnings
 	// the validator captured even when err is nil so the admin layer
 	// can surface advisory issues to the operator.
-	Validate(cfg *BridgeConfig) (warnings []string, err error)
+	Validate(ctx context.Context, cfg *BridgeConfig) (warnings []string, err error)
 
 	// Merge combines an overlay blueprint on top of a base, returning
 	// a new value (the inputs are not mutated).
-	Merge(base, overlay *BridgeConfig) (*BridgeConfig, error)
+	Merge(ctx context.Context, base, overlay *BridgeConfig) (*BridgeConfig, error)
 }

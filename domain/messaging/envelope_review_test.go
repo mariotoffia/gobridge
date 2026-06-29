@@ -147,19 +147,21 @@ func TestEnvelope_Clone_LargePayload(t *testing.T) {
 		payload[i] = byte(i % 256)
 	}
 
-	original := &messaging.Envelope{
+	original := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "large",
 		Payload: payload,
-	}
+	})
 
 	clone := original.Clone()
 
-	if len(clone.Payload) != len(original.Payload) {
-		t.Fatalf("payload length mismatch: got %d, want %d", len(clone.Payload), len(original.Payload))
+	if len(clone.Payload()) != len(original.Payload()) {
+		t.Fatalf("payload length mismatch: got %d, want %d", len(clone.Payload()), len(original.Payload()))
 	}
 
-	clone.Payload[0] = 0xFF
-	if original.Payload[0] == 0xFF {
+	cloneP := clone.Payload()
+	cloneP[0] = 0xFF
+	clone.SetPayload(cloneP)
+	if original.Payload()[0] == 0xFF {
 		t.Fatal("large payload was not deep-copied")
 	}
 }

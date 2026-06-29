@@ -78,11 +78,11 @@ func TestReceiver_RunEmitsDeliveries(t *testing.T) {
 	}
 
 	env := deliveries[0].Envelope()
-	if env.ID != "msg-001" {
-		t.Fatalf("expected ID msg-001, got %s", env.ID)
+	if env.ID() != "msg-001" {
+		t.Fatalf("expected ID msg-001, got %s", env.ID())
 	}
-	if string(env.Payload) != `{"key":"value"}` {
-		t.Fatalf("unexpected payload: %s", string(env.Payload))
+	if string(env.Payload()) != `{"key":"value"}` {
+		t.Fatalf("unexpected payload: %s", string(env.Payload()))
 	}
 	if env.Headers()["custom"] != "val" {
 		t.Fatal("custom header not mapped")
@@ -202,8 +202,8 @@ func TestReceiver_RunSNSUnwrap(t *testing.T) {
 	if env.Subject() != "Test Subject" {
 		t.Fatalf("expected subject from SNS, got %q", env.Subject())
 	}
-	if string(env.Payload) != `{"inner":"data"}` {
-		t.Fatalf("expected unwrapped SNS message body, got %q", string(env.Payload))
+	if string(env.Payload()) != `{"inner":"data"}` {
+		t.Fatalf("expected unwrapped SNS message body, got %q", string(env.Payload()))
 	}
 	if env.Headers()["sns.topic_arn"] != "arn:aws:sns:us-west-1:123:my-topic" {
 		t.Fatal("SNS topic ARN should be in headers")
@@ -300,6 +300,52 @@ func TestReceiver_RunStopsOnEmitError(t *testing.T) {
 
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel error, got %v", err)
+	}
+}
+
+// Conformance (ports.Receiver emit-error contract): when emit returns an
+// error the delivery is NOT settled — the SQS message is neither deleted
+// (acked) nor visibility-changed — so it returns to the queue for
+// redelivery after the visibility timeout expires.
+func TestReceiver_EmitError_DeliveryNotDeleted(t *testing.T) {
+	mock := &mockSQSClient{
+		ReceiveMessageFn: func(_ context.Context, _ *awssqs.ReceiveMessageInput, _ ...func(*awssqs.Options)) (*awssqs.ReceiveMessageOutput, error) {
+			return &awssqs.ReceiveMessageOutput{
+				Messages: []sqstypes.Message{
+					{
+						MessageId:     aws.String("msg-emit-err"),
+						ReceiptHandle: aws.String("rh-emit-err"),
+						Body:          aws.String("body"),
+					},
+				},
+			}, nil
+		},
+	}
+
+	noAutoExtend := false
+	recv, err := NewReceiver(ReceiverConfig{
+		QueueURL:          "https://q",
+		VisibilityTimeout: 30,
+		AutoExtend:        &noAutoExtend,
+		Client:            mock,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sentinel := errors.New("pipeline rejected delivery")
+	runErr := recv.Run(context.Background(), func(_ context.Context, _ ports.Delivery) error {
+		return sentinel
+	})
+
+	if !errors.Is(runErr, sentinel) {
+		t.Fatalf("Run should surface the emit error, got %v", runErr)
+	}
+	if len(mock.DeleteCalls) != 0 {
+		t.Fatalf("delivery must not be deleted/acked on emit error, got %d delete calls", len(mock.DeleteCalls))
+	}
+	if len(mock.ChangeVisibilityCalls) != 0 {
+		t.Fatalf("delivery must not be settled via visibility change on emit error, got %d calls", len(mock.ChangeVisibilityCalls))
 	}
 }
 

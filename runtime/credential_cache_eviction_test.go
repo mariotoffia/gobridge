@@ -46,9 +46,7 @@ func (s *stubEvictionRepo) Get(_ context.Context, _ string) (*connectivity.Crede
 // newEvictionResolver creates a CredentialResolver with a stub repo and
 // the given cache TTL, ready for eviction tests.
 func newEvictionResolver(ttl time.Duration) *CredentialResolver {
-	creds := &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
-	}
+	creds := connectivity.NewCredentialSet(pwCred("u", "p"), nil)
 	repo := &stubEvictionRepo{scheme: "file", namespace: "", creds: creds}
 	r := NewCredentialResolver(WithCredentialCacheTTL(ttl))
 	r.Register(repo)

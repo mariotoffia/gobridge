@@ -71,51 +71,51 @@ func (s *sqlSession) persist(ctx context.Context, records []*persistence.OutboxR
 	defer func() { _ = stmt.Close() }()
 
 	for _, r := range records {
-		envJSON, err := json.Marshal(r.Envelope)
+		envJSON, err := json.Marshal(r.Snapshot())
 		if err != nil {
 			return fmt.Errorf("sqliteoutbox: marshal envelope: %w", err)
 		}
 
 		var headersJSON []byte
-		if r.DispatchHeaders != nil {
-			headersJSON, err = json.Marshal(r.DispatchHeaders)
+		if dh := r.DispatchHeaders(); dh != nil {
+			headersJSON, err = json.Marshal(dh)
 			if err != nil {
 				return fmt.Errorf("sqliteoutbox: marshal headers: %w", err)
 			}
 		}
 
-		createdAt := r.CreatedAt
+		createdAt := r.CreatedAt()
 		if createdAt.IsZero() {
 			createdAt = clk.Now()
 		}
 
 		var expiresAtMs int64
-		if !r.ExpiresAt.IsZero() {
-			expiresAtMs = r.ExpiresAt.UnixMilli()
+		if expiresAt := r.ExpiresAt(); !expiresAt.IsZero() {
+			expiresAtMs = expiresAt.UnixMilli()
 		}
 
 		res, err := stmt.ExecContext(ctx,
-			r.ID, partitionKey(r), r.RouteID, r.EnvelopeID, r.BindingID,
-			r.SessionID, r.Address, string(envJSON), nullableString(headersJSON),
+			r.ID(), partitionKey(r), r.RouteID(), r.EnvelopeID(), r.BindingID(),
+			r.SessionID(), r.Address(), string(envJSON), nullableString(headersJSON),
 			createdAt.UnixMilli(), expiresAtMs,
 		)
 		if err != nil {
 			if isUniqueViolation(err) {
 				return shared.ErrDuplicateRecord.
 					WithMessage("duplicate outbox record").
-					With("envelopeID", r.EnvelopeID).
-					With("bindingID", r.BindingID)
+					With("envelopeID", r.EnvelopeID()).
+					With("bindingID", r.BindingID())
 			}
 			return wrapErr(err, "sqliteoutbox: insert",
-				"envelopeID", r.EnvelopeID, "bindingID", r.BindingID)
+				"envelopeID", r.EnvelopeID(), "bindingID", r.BindingID())
 		}
 
 		n, _ := res.RowsAffected()
 		if n == 0 {
 			return shared.ErrDuplicateRecord.
 				WithMessage("duplicate outbox record").
-				With("envelopeID", r.EnvelopeID).
-				With("bindingID", r.BindingID)
+				With("envelopeID", r.EnvelopeID()).
+				With("bindingID", r.BindingID())
 		}
 	}
 
@@ -127,12 +127,27 @@ func (s *sqlSession) persist(ctx context.Context, records []*persistence.OutboxR
 
 // claim selects up to limit claimable IDs and atomically flips them to
 // claimed under the supplied owner+version, then hydrates the rows.
-func (s *sqlSession) claim(ctx context.Context, pk string, ownerID string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
+func (s *sqlSession) claim(ctx context.Context, pk string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, wrapErr(err, "sqliteoutbox: begin tx claim", "partitionKey", pk)
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck
+
+	// Version-monotonic fence: reject a token whose version is older than
+	// the highest version the partition has already observed, so a preempted
+	// owner cannot win a freshly pending row (matches the memory backend and
+	// the ports.OutboxStore contract).
+	var maxVersion uint64
+	if err := tx.QueryRowContext(ctx, selectMaxClaimVersionSQL, pk).Scan(&maxVersion); err != nil {
+		return nil, wrapErr(err, "sqliteoutbox: query max claim version", "partitionKey", pk)
+	}
+	if token.Version < maxVersion {
+		return nil, shared.ErrStaleFencingToken.
+			WithMessage("claim rejected: token version is stale").
+			With("givenVersion", token.Version).
+			With("latestVersion", maxVersion)
+	}
 
 	rows, err := tx.QueryContext(ctx, selectClaimableIDsSQL, pk, token.Version, limit)
 	if err != nil {
@@ -158,19 +173,19 @@ func (s *sqlSession) claim(ctx context.Context, pk string, ownerID string, token
 	}
 
 	args := make([]any, 0, len(ids)+2)
-	args = append(args, ownerID, token.Version)
+	args = append(args, token.Owner, token.Version)
 	for _, id := range ids {
 		args = append(args, id)
 	}
 
 	if _, err := tx.ExecContext(ctx, updateClaimSQL(len(ids)), args...); err != nil {
 		return nil, wrapErr(err, "sqliteoutbox: update claim",
-			"partitionKey", pk, "ownerID", ownerID, "recordCount", len(ids))
+			"partitionKey", pk, "ownerID", token.Owner, "recordCount", len(ids))
 	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, wrapErr(err, "sqliteoutbox: commit claim",
-			"partitionKey", pk, "ownerID", ownerID)
+			"partitionKey", pk, "ownerID", token.Owner)
 	}
 
 	return s.fetchByIDs(ctx, ids)
@@ -192,20 +207,21 @@ func (s *sqlSession) fetchByIDs(ctx context.Context, ids []string) ([]*persisten
 	return scanOutboxRecords(rows)
 }
 
-// complete marks records as completed iff their claim_version still
-// matches token.Version. If fewer rows were updated than requested
-// the claim has been preempted and ErrStaleFencingToken is returned.
+// complete marks records as completed iff they are still claimed by
+// token.Owner at token.Version. If fewer rows were updated than
+// requested the claim has been preempted and ErrStaleFencingToken is
+// returned.
 func (s *sqlSession) complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken, now time.Time) error {
 	if len(recordIDs) == 0 {
 		return nil
 	}
 
-	args := make([]any, 0, len(recordIDs)+2)
+	args := make([]any, 0, len(recordIDs)+3)
 	args = append(args, now.UnixMilli())
 	for _, id := range recordIDs {
 		args = append(args, id)
 	}
-	args = append(args, token.Version)
+	args = append(args, token.Owner, token.Version)
 
 	res, err := s.db.ExecContext(ctx, updateCompleteSQL(len(recordIDs)), args...)
 	if err != nil {
@@ -221,8 +237,8 @@ func (s *sqlSession) complete(ctx context.Context, recordIDs []string, token per
 	return nil
 }
 
-// expire flips pending/claimed records past their expires_at deadline
-// to expired. Returns the number of rows affected.
+// expire flips pending records past their expires_at deadline to
+// expired. Claimed records are left untouched. Returns rows affected.
 func (s *sqlSession) expire(ctx context.Context, before time.Time) (int, error) {
 	res, err := s.db.ExecContext(ctx, expireOutboxSQL, before.UnixMilli())
 	if err != nil {

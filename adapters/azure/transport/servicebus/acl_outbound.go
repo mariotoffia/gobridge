@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/logging"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // headersToMessage maps envelope headers back to a fresh
@@ -109,14 +110,14 @@ func envelopeToMessage(env *messaging.Envelope, defaultSessionID string, clk clo
 		clk = clock.System
 	}
 	msg := &azservicebus.Message{
-		Body: env.Payload,
+		Body: env.Payload(),
 	}
 
 	if s := env.Subject(); s != "" {
 		msg.Subject = &s
 	}
-	if env.ID != "" {
-		msg.MessageID = &env.ID
+	if id := env.ID(); id != "" {
+		msg.MessageID = &id
 	}
 	if env.HasExpiry() {
 		if ttl := env.RemainingTTL(clk); ttl > 0 {
@@ -219,8 +220,13 @@ func sendOne(ctx context.Context, client asbSenderAPI, env *messaging.Envelope, 
 // sendChunk packages chunk into one or more SDK MessageBatch values,
 // flushing as needed when AddMessage reports the batch is full
 // (azservicebus.ErrMessageTooLarge). Oversized messages that don't fit
-// in any batch are sent individually via SendMessage. Returns the
-// number of messages successfully accepted by the broker.
+// in any batch are sent individually via SendMessage. It returns one
+// ports.BatchResult per input envelope, keyed by the envelope's index
+// WITHIN the chunk: nil Err for messages the broker accepted, and a
+// classified error for those whose flush (SendMessageBatch) or
+// individual SendMessage failed. Service Bus does not expose per-message
+// results inside a batch, so a flush failure marks every message that
+// was buffered in that flush.
 //
 // All SDK-typed plumbing (MessageBatch, ErrMessageTooLarge) stays
 // inside this helper so the Sender stays SDK-free.
@@ -232,26 +238,54 @@ func sendChunk(
 	clk clock.Clock,
 	logger *slog.Logger,
 	entity string,
-) (int, error) {
-	var sent int
+) []ports.BatchResult {
+	results := make([]ports.BatchResult, len(chunk))
+	for j := range chunk {
+		results[j].Index = j
+	}
 
 	msgBatch, err := client.NewMessageBatch(ctx, nil)
 	if err != nil {
-		return sent, MapError(err)
+		e := MapError(err)
+		for j := range results {
+			results[j].Err = e
+		}
+		return results
 	}
 	if msgBatch == nil {
-		return sent, MapError(fmt.Errorf("servicebus sender: NewMessageBatch returned nil batch"))
+		e := MapError(fmt.Errorf("servicebus sender: NewMessageBatch returned nil batch"))
+		for j := range results {
+			results[j].Err = e
+		}
+		return results
 	}
 
-	for _, env := range chunk {
+	pending := make([]int, 0, len(chunk))
+	flush := func() {
+		if msgBatch == nil || msgBatch.NumMessages() == 0 {
+			pending = pending[:0]
+			return
+		}
+		if ferr := client.SendMessageBatch(ctx, msgBatch, nil); ferr != nil {
+			e := MapError(ferr)
+			for _, p := range pending {
+				results[p].Err = e
+			}
+		}
+		pending = pending[:0]
+	}
+
+	for j, env := range chunk {
 		sbMsg := envelopeToMessage(env, defaultSessionID, clk)
 
 		addErr := msgBatch.AddMessage(sbMsg, nil)
 		if addErr == nil {
+			pending = append(pending, j)
 			continue
 		}
 		if !errors.Is(addErr, azservicebus.ErrMessageTooLarge) {
-			return sent, MapError(addErr)
+			results[j].Err = MapError(addErr)
+			continue
 		}
 
 		if logging.DebugEnabled(logger) {
@@ -259,31 +293,23 @@ func sendChunk(
 				"entity", entity)
 		}
 
-		if msgBatch.NumMessages() > 0 {
-			if err := client.SendMessageBatch(ctx, msgBatch, nil); err != nil {
-				return sent, MapError(err)
-			}
-			sent += int(msgBatch.NumMessages())
-		}
+		flush()
 
-		if err := sendOne(ctx, client, env, defaultSessionID, clk); err != nil {
-			return sent, err
+		if oerr := sendOne(ctx, client, env, defaultSessionID, clk); oerr != nil {
+			results[j].Err = oerr
 		}
-		sent++
 
 		// Start a fresh batch for remaining messages in this chunk.
 		msgBatch, err = client.NewMessageBatch(ctx, nil)
 		if err != nil {
-			return sent, MapError(err)
+			e := MapError(err)
+			for k := j + 1; k < len(chunk); k++ {
+				results[k].Err = e
+			}
+			return results
 		}
 	}
 
-	if msgBatch != nil && msgBatch.NumMessages() > 0 {
-		if err := client.SendMessageBatch(ctx, msgBatch, nil); err != nil {
-			return sent, MapError(err)
-		}
-		sent += int(msgBatch.NumMessages())
-	}
-
-	return sent, nil
+	flush()
+	return results
 }

@@ -278,11 +278,11 @@ Reject invalid payloads permanently (no retry):
 
 ```go
 func (p *ValidateProcessor) Process(ctx context.Context, env *domain.Envelope, next ports.ProcessorFunc) error {
-    if len(env.Payload) == 0 {
+    if len(env.Payload()) == 0 {
         return domain.ErrInvalidPayload.With("reason", "empty payload")
     }
-    if len(env.Payload) > p.maxSize {
-        return domain.ErrPayloadTooLarge.With("size", strconv.Itoa(len(env.Payload)))
+    if len(env.Payload()) > p.maxSize {
+        return domain.ErrPayloadTooLarge.With("size", strconv.Itoa(len(env.Payload())))
     }
     return next(ctx, env)
 }

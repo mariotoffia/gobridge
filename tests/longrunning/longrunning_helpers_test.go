@@ -504,7 +504,7 @@ func countUnique(c *mqttCollector) int {
 	msgs := c.getMessages()
 	seen := make(map[string]struct{}, len(msgs))
 	for _, m := range msgs {
-		seen[m.ID] = struct{}{}
+		seen[m.ID()] = struct{}{}
 	}
 	return len(seen)
 }
@@ -537,7 +537,7 @@ func sendProbe(
 
 	lrWaitFor(t, timeout, "probe arrival: "+probeID, func() bool {
 		for _, m := range collector.getMessages() {
-			if strings.Contains(string(m.Payload), probeID) {
+			if strings.Contains(string(m.Payload()), probeID) {
 				return true
 			}
 		}

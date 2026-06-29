@@ -29,7 +29,7 @@ func TestAutoExtendRetriesTransientThenSucceeds(t *testing.T) {
 		},
 	}
 
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
 	fake := clocktest.New()
 	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, fake)
@@ -62,7 +62,7 @@ func TestAutoExtendStopsAfterMaxConsecutiveFailures(t *testing.T) {
 		},
 	}
 
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
 	fake := clocktest.New()
 	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, fake)
@@ -105,7 +105,7 @@ func TestAutoExtendInterleavedFailSuccessASB(t *testing.T) {
 		},
 	}
 
-	env := &messaging.Envelope{ID: "msg-1"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
 	fake := clocktest.New()
 	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, fake)

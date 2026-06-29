@@ -35,7 +35,7 @@ func TestWithCredentialStore_BackwardCompat(t *testing.T) {
 	t.Parallel()
 
 	cs := &fakeCredentialStore{creds: map[string]*connectivity.CredentialSet{
-		"file://creds/a": {Password: &connectivity.PasswordCredential{Username: "u", Password: "p"}},
+		"file://creds/a": connectivity.NewCredentialSet(pwCred("u", "p"), nil),
 	}}
 
 	cfg := &ports.BridgeConfig{}
@@ -83,7 +83,7 @@ func TestWithPolledCredentialStore_WrapsPullStore(t *testing.T) {
 
 	pull := &fakeCredentialStore{
 		creds: map[string]*connectivity.CredentialSet{
-			"file://x": {Password: &connectivity.PasswordCredential{Username: "u"}},
+			"file://x": connectivity.NewCredentialSet(pwCred("u", ""), nil),
 		},
 	}
 
@@ -172,13 +172,19 @@ func TestCredentialRefresher_RoutesRotationToSession(t *testing.T) {
 
 	r.Watch(t.Context(), "file://creds", sess)
 
-	want := &connectivity.CredentialSet{Password: &connectivity.PasswordCredential{Username: "u2", Password: "p2"}}
+	want := connectivity.NewCredentialSet(pwCred("u2", "p2"), nil)
 	push.out <- want
 
 	select {
 	case got := <-sess.applied:
-		require.Equal(t, "u2", got.Password.Username)
+		require.Equal(t, "u2", got.Password().Username())
 	case <-time.After(2 * time.Second):
 		t.Fatal("rotation not delivered to session")
 	}
+}
+
+// pwCred builds a pointer to an immutable PasswordCredential for tests.
+func pwCred(username, password string) *connectivity.PasswordCredential {
+	c := connectivity.NewPasswordCredential(username, password)
+	return &c
 }

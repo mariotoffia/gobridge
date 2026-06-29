@@ -94,7 +94,7 @@ func TestUC12_RollingRestart_NoMessageLoss(t *testing.T) {
 	require.GreaterOrEqual(t, len(msgs), msgCount)
 	uniq := make(map[string]bool, len(msgs))
 	for _, m := range msgs {
-		uniq[string(m.Payload)] = true
+		uniq[string(m.Payload())] = true
 	}
 	assert.GreaterOrEqual(t, len(uniq), msgCount)
 	assert.Equal(t, 0, dlq.count(), "DLQ should be empty")
@@ -166,7 +166,7 @@ func TestUC13_SplitBrain_Recovery(t *testing.T) {
 	msgs := collector.getMessages()
 	uniq := make(map[string]bool, len(msgs))
 	for _, m := range msgs {
-		uniq[string(m.Payload)] = true
+		uniq[string(m.Payload())] = true
 	}
 	require.GreaterOrEqual(t, len(uniq), msgCount)
 	assert.Equal(t, 0, dlq.count(), "DLQ should be empty")

@@ -45,7 +45,7 @@ func persistRecords(outbox *FakeOutboxStore, count int, prefix string) {
 			EnvelopeID: "env-" + id,
 			BindingID:  "bind-1",
 			SessionID:  "sess-1",
-			Envelope:   messaging.Envelope{ID: "env-" + id, Payload: []byte("data")},
+			Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-" + id, Payload: []byte("data")}),
 			Status:     persistence.OutboxPending,
 		})
 		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})

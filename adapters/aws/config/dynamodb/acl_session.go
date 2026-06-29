@@ -67,6 +67,12 @@ func newSession(client *dynamodb.Client, tableName string) *session {
 }
 
 // NewLoader creates a DynamoDB-backed ports.Reloader.
+//
+// The *dynamodb.Client parameter is the SDK boundary input this ACL
+// constructor exists to wrap; it is injected by the composition root and
+// stored behind unexported fields.
+//
+//aclcheck:allow-export
 func NewLoader(client *dynamodb.Client, opts ...Option) *Loader {
 	l := &Loader{
 		session:            newSession(client, defaultTableName),
@@ -84,6 +90,12 @@ func NewLoader(client *dynamodb.Client, opts ...Option) *Loader {
 
 // WithStreamsClient configures the DynamoDB Streams client used by
 // ModeStreams. If not set, Watch falls back to ModePoll with a warning.
+//
+// The *dynamodbstreams.Client parameter is the SDK boundary input this
+// ACL option exists to wrap; it is injected by the composition root and
+// stored behind unexported fields.
+//
+//aclcheck:allow-export
 func WithStreamsClient(c *dynamodbstreams.Client) Option {
 	return func(l *Loader) {
 		if c != nil {

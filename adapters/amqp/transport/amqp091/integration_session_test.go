@@ -293,15 +293,15 @@ func TestIntegration_SessionReconcile_MultipleQueues(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		select {
 		case d := <-directCh:
-			if d.Envelope().ID != "direct-1" {
-				t.Errorf("direct message ID = %q, want %q", d.Envelope().ID, "direct-1")
+			if d.Envelope().ID() != "direct-1" {
+				t.Errorf("direct message ID = %q, want %q", d.Envelope().ID(), "direct-1")
 			}
 			if err := d.Ack(ctx); err != nil {
 				t.Errorf("ack direct: %v", err)
 			}
 		case d := <-fanoutCh:
-			if d.Envelope().ID != "fanout-1" {
-				t.Errorf("fanout message ID = %q, want %q", d.Envelope().ID, "fanout-1")
+			if d.Envelope().ID() != "fanout-1" {
+				t.Errorf("fanout message ID = %q, want %q", d.Envelope().ID(), "fanout-1")
 			}
 			if err := d.Ack(ctx); err != nil {
 				t.Errorf("ack fanout: %v", err)
@@ -414,7 +414,7 @@ func TestIntegration_SessionCloseAndRestart(t *testing.T) {
 	for got < 2 {
 		select {
 		case env := <-received:
-			ids[env.ID] = true
+			ids[env.ID()] = true
 			got++
 		case <-recvCtx.Done():
 			t.Fatalf("timed out: received %d/2 messages", got)

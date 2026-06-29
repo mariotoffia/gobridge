@@ -55,7 +55,7 @@ func TestEdge_StaleFencingTokenRejected(t *testing.T) {
 	})
 
 	// A persists a message.
-	env := &messaging.Envelope{ID: "fenced-msg-1", Payload: []byte("data")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "fenced-msg-1", Payload: []byte("data")})
 	del := NewFakeDelivery(env)
 	_ = receiverA.Emit(ctxA, del)
 	waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
@@ -129,7 +129,7 @@ func TestEdge_StaleFencingTokenRejected(t *testing.T) {
 		BindingID:  "b1",
 		SessionID:  sessionID,
 		Status:     persistence.OutboxPending,
-		Envelope:   messaging.Envelope{ID: "stale-test-env", Payload: []byte("x")},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "stale-test-env", Payload: []byte("x")}),
 	})
 	_ = outbox.Persist(context.Background(), []*persistence.OutboxRecord{rec})
 
@@ -182,7 +182,7 @@ func TestEdge_IdempotentPersist(t *testing.T) {
 	})
 
 	// First delivery.
-	env1 := &messaging.Envelope{ID: "idemp-msg", Payload: []byte("data")}
+	env1 := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "idemp-msg", Payload: []byte("data")})
 	del1 := NewFakeDelivery(env1)
 	_ = receiver.Emit(ctx, del1)
 	waitFor(t, time.Second, "first acked", func() bool { return del1.IsAcked() })
@@ -190,7 +190,7 @@ func TestEdge_IdempotentPersist(t *testing.T) {
 	initialCount := outbox.RecordCount()
 
 	// Simulate redelivery of the same envelope ID.
-	env2 := &messaging.Envelope{ID: "idemp-msg", Payload: []byte("data")}
+	env2 := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "idemp-msg", Payload: []byte("data")})
 	del2 := NewFakeDelivery(env2)
 	_ = receiver.Emit(ctx, del2)
 
@@ -249,11 +249,9 @@ func TestEdge_ExpiredOutboxEntry(t *testing.T) {
 	})
 
 	// Send a message that is already expired.
-	env := &messaging.Envelope{
-		ID:        "expired-msg",
-		Payload:   []byte("stale"),
-		ExpiresAt: time.Now().Add(-1 * time.Hour),
-	}
+	expEnv := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "expired-msg", Payload: []byte("stale"), CreatedAt: time.Now().Add(-2 * time.Hour)})
+	_ = expEnv.SetExpiry(time.Now().Add(-1 * time.Hour))
+	env := expEnv
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -307,11 +305,9 @@ func TestEdge_ExpiredOutboxEntryDuringDrain(t *testing.T) {
 	// Send a message that will expire in 100ms — it will be persisted
 	// to the outbox, but by the time the drainer picks it up it should
 	// have expired.
-	env := &messaging.Envelope{
-		ID:        "short-lived-msg",
-		Payload:   []byte("fleeting"),
-		ExpiresAt: time.Now().Add(100 * time.Millisecond),
-	}
+	shortLivedEnv := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "short-lived-msg", Payload: []byte("fleeting")})
+	_ = shortLivedEnv.SetExpiry(time.Now().Add(100 * time.Millisecond))
+	env := shortLivedEnv
 
 	// Block the sender so the drainer can't send before expiry.
 	sender.SetSendErr(shared.NewBridgeError("BLOCKED", shared.ErrorTransient, "blocked"))
@@ -370,7 +366,7 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 		return sess.IsStarted()
 	})
 
-	env := &messaging.Envelope{ID: "poison-msg", Payload: []byte("toxic")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "poison-msg", Payload: []byte("toxic")})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
@@ -381,7 +377,7 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 	entries := dlq.GetEntries()
 	found := false
 	for _, e := range entries {
-		if e.Category == "PoisonMessage" || e.ErrorCode == "POISON_MESSAGE" {
+		if e.Category() == "PoisonMessage" || e.ErrorCode() == "POISON_MESSAGE" {
 			found = true
 			break
 		}
@@ -430,7 +426,7 @@ func TestEdge_CrashBeforeOutboxPersist(t *testing.T) {
 		return sess.IsStarted()
 	})
 
-	env := &messaging.Envelope{ID: "crash-pre-msg", Payload: []byte("data")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "crash-pre-msg", Payload: []byte("data")})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -478,13 +474,13 @@ func TestEdge_CrashAfterPersistBeforeAck(t *testing.T) {
 	})
 
 	// First delivery: persists, acked.
-	env1 := &messaging.Envelope{ID: "crash-mid-msg", Payload: []byte("data")}
+	env1 := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "crash-mid-msg", Payload: []byte("data")})
 	del1 := NewFakeDelivery(env1)
 	_ = receiver.Emit(ctx, del1)
 	waitFor(t, time.Second, "first acked", func() bool { return del1.IsAcked() })
 
 	// Simulate: source redelivers the same message (ack was lost).
-	env2 := &messaging.Envelope{ID: "crash-mid-msg", Payload: []byte("data")}
+	env2 := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "crash-mid-msg", Payload: []byte("data")})
 	del2 := NewFakeDelivery(env2)
 	_ = receiver.Emit(ctx, del2)
 
@@ -536,7 +532,7 @@ func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 		return sessionA.IsStarted()
 	})
 
-	env := &messaging.Envelope{ID: "crash-ack-msg", Payload: []byte("important")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "crash-ack-msg", Payload: []byte("important")})
 	del := NewFakeDelivery(env)
 	_ = receiverA.Emit(ctxA, del)
 	waitFor(t, time.Second, "acked by A", func() bool { return del.IsAcked() })
@@ -585,8 +581,8 @@ func TestEdge_CrashAfterAckBeforeSend(t *testing.T) {
 	} else {
 		sentMsg = senderB.GetSent()[0]
 	}
-	if sentMsg.ID != "crash-ack-msg" {
-		t.Errorf("expected crash-ack-msg, got %q", sentMsg.ID)
+	if sentMsg.ID() != "crash-ack-msg" {
+		t.Errorf("expected crash-ack-msg, got %q", sentMsg.ID())
 	}
 
 	_ = rtB.Stop(context.Background())
@@ -628,7 +624,7 @@ func TestEdge_PermanentSendErrorGoesToDLQ(t *testing.T) {
 		return sess.IsStarted()
 	})
 
-	env := &messaging.Envelope{ID: "perm-msg", Payload: []byte("bad")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "perm-msg", Payload: []byte("bad")})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
@@ -637,8 +633,8 @@ func TestEdge_PermanentSendErrorGoesToDLQ(t *testing.T) {
 	waitFor(t, 5*time.Second, "DLQ entry", func() bool { return dlq.Count() >= 1 })
 
 	entries := dlq.GetEntries()
-	if entries[0].ErrorCode != "INVALID_PAYLOAD" {
-		t.Errorf("expected INVALID_PAYLOAD, got %q", entries[0].ErrorCode)
+	if entries[0].ErrorCode() != "INVALID_PAYLOAD" {
+		t.Errorf("expected INVALID_PAYLOAD, got %q", entries[0].ErrorCode())
 	}
 }
 
@@ -692,7 +688,7 @@ func TestEdge_CrashAfterSendBeforeCompletion(t *testing.T) {
 		return sessionA.IsStarted()
 	})
 
-	env := &messaging.Envelope{ID: "crash-complete-msg", Payload: []byte("data")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "crash-complete-msg", Payload: []byte("data")})
 	del := NewFakeDelivery(env)
 	_ = receiverA.Emit(ctxA, del)
 	waitFor(t, time.Second, "acked by A", func() bool { return del.IsAcked() })
@@ -802,7 +798,7 @@ func TestEdge_FanOutPartialPersist(t *testing.T) {
 	// Make Persist fail atomically — the whole batch is rejected.
 	outbox.PersistErr = shared.NewBridgeError("STORE_DOWN", shared.ErrorTransient, "unavailable")
 
-	env := &messaging.Envelope{ID: "fanout-partial-msg", Payload: []byte("data")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "fanout-partial-msg", Payload: []byte("data")})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 

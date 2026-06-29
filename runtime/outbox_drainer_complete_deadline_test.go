@@ -38,7 +38,7 @@ func TestOutboxDrainer_CompleteSurvivesNearBatchDeadline(t *testing.T) {
 		EnvelopeID: "env-complete-deadline",
 		BindingID:  "bind-1",
 		SessionID:  "sess-complete-deadline",
-		Envelope:   messaging.Envelope{ID: "env-complete-deadline", Payload: []byte("payload")},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-complete-deadline", Payload: []byte("payload")}),
 		Status:     persistence.OutboxPending,
 	})
 	if err := outbox.Persist(context.Background(), []*persistence.OutboxRecord{rec}); err != nil {
@@ -69,7 +69,6 @@ func TestOutboxDrainer_CompleteSurvivesNearBatchDeadline(t *testing.T) {
 		RouteID:               "route-1",
 		PartitionKey:          pk,
 		LeaseID:               "sess-complete-deadline",
-		OwnerID:               token.Owner,
 		Policy:                policy,
 		Strategy:              persistence.NewFixedPoll(10 * time.Millisecond),
 		DrainBatchSize:        1,
@@ -133,7 +132,7 @@ func TestOutboxDrainer_CompleteRespectsRuntimeShutdown(t *testing.T) {
 		EnvelopeID: "env-complete-shutdown",
 		BindingID:  "bind-1",
 		SessionID:  "sess-complete-shutdown",
-		Envelope:   messaging.Envelope{ID: "env-complete-shutdown", Payload: []byte("payload")},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-complete-shutdown", Payload: []byte("payload")}),
 		Status:     persistence.OutboxPending,
 	})
 	if err := outbox.Persist(context.Background(), []*persistence.OutboxRecord{rec}); err != nil {
@@ -169,7 +168,6 @@ func TestOutboxDrainer_CompleteRespectsRuntimeShutdown(t *testing.T) {
 		RouteID:             "route-1",
 		PartitionKey:        pk,
 		LeaseID:             "sess-complete-shutdown",
-		OwnerID:             token.Owner,
 		Policy:              policy,
 		Strategy:            persistence.NewFixedPoll(10 * time.Millisecond),
 		DrainBatchSize:      1,

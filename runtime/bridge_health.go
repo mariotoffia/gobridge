@@ -37,10 +37,28 @@ func (rt *Runtime) ComponentErrors() map[string]error {
 	return maps.Clone(rt.componentErrors)
 }
 
-// DLQStore returns the DLQ store if configured, or nil.
-func (rt *Runtime) DLQStore() ports.DLQStore {
+// DLQReader returns the DLQ read port if a DLQ store is configured, or
+// nil. It satisfies the read-side ports.RuntimeQuery driving port.
+func (rt *Runtime) DLQReader() ports.DLQReader {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	if rt.dlqStore == nil {
+		return nil
+	}
+	return rt.dlqStore
+}
+
+// DLQAdmin returns the DLQ admin (write/destructive) port if a DLQ
+// store is configured, or nil. It satisfies the write-side
+// ports.RuntimeCommand driving port. The runtime holds a single
+// DLQStore that satisfies both halves; the read/admin split is a
+// port-boundary contract, not two physical stores.
+func (rt *Runtime) DLQAdmin() ports.DLQAdmin {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.dlqStore == nil {
+		return nil
+	}
 	return rt.dlqStore
 }
 

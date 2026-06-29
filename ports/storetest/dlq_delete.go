@@ -23,20 +23,21 @@ func dlqGetExisting(t *testing.T, store ports.DLQStore) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.ID != "ge-1" {
-		t.Fatalf("ID: got %q, want %q", got.ID, "ge-1")
+	if got.ID() != "ge-1" {
+		t.Fatalf("ID: got %q, want %q", got.ID(), "ge-1")
 	}
-	if got.RouteID != "route-ge" {
-		t.Fatalf("RouteID: got %q, want %q", got.RouteID, "route-ge")
+	if got.RouteID() != "route-ge" {
+		t.Fatalf("RouteID: got %q, want %q", got.RouteID(), "route-ge")
 	}
-	if got.Category != "timeout" {
-		t.Fatalf("Category: got %q, want %q", got.Category, "timeout")
+	if got.Category() != "timeout" {
+		t.Fatalf("Category: got %q, want %q", got.Category(), "timeout")
 	}
-	if got.Envelope.ID != "env-ge-1" {
-		t.Fatalf("Envelope.ID: got %q, want %q", got.Envelope.ID, "env-ge-1")
+	env := got.Snapshot()
+	if env.ID() != "env-ge-1" {
+		t.Fatalf("Envelope.ID: got %q, want %q", env.ID(), "env-ge-1")
 	}
-	if string(got.Envelope.Payload) != `{"key":"value"}` {
-		t.Fatalf("Envelope.Payload: got %q, want %q", got.Envelope.Payload, `{"key":"value"}`)
+	if string(env.Payload()) != `{"key":"value"}` {
+		t.Fatalf("Envelope.Payload: got %q, want %q", env.Payload(), `{"key":"value"}`)
 	}
 }
 
@@ -77,8 +78,8 @@ func dlqDeleteByIDs(t *testing.T, store ports.DLQStore) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 remaining, got %d", len(results))
 	}
-	if results[0].ID != "del-3" {
-		t.Fatalf("remaining: got %q, want %q", results[0].ID, "del-3")
+	if results[0].ID() != "del-3" {
+		t.Fatalf("remaining: got %q, want %q", results[0].ID(), "del-3")
 	}
 }
 
@@ -141,8 +142,8 @@ func dlqDeleteByFilterRoute(t *testing.T, store ports.DLQStore) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 remaining, got %d", len(results))
 	}
-	if results[0].ID != "dfr-3" {
-		t.Fatalf("remaining: got %q, want %q", results[0].ID, "dfr-3")
+	if results[0].ID() != "dfr-3" {
+		t.Fatalf("remaining: got %q, want %q", results[0].ID(), "dfr-3")
 	}
 }
 
@@ -174,8 +175,8 @@ func dlqDeleteByFilterCategory(t *testing.T, store ports.DLQStore) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 remaining, got %d", len(results))
 	}
-	if results[0].ID != "dfc-2" {
-		t.Fatalf("remaining: got %q, want %q", results[0].ID, "dfc-2")
+	if results[0].ID() != "dfc-2" {
+		t.Fatalf("remaining: got %q, want %q", results[0].ID(), "dfc-2")
 	}
 }
 

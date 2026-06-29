@@ -42,21 +42,46 @@ func NewStore(opts ...Option) *Store {
 	return s
 }
 
+// cloneEntry returns a DLQEntry whose envelope is fully independent of e
+// (and therefore of any stored state). e.Snapshot() deep-clones the
+// envelope; RehydrateDLQEntry then takes ownership without a redundant
+// second clone. This is the in-memory store's defensive boundary
+// (finding #9): neither a caller's input reference nor a returned entry
+// can alias the envelope map held in s.entries.
+func cloneEntry(e routing.DLQEntry) routing.DLQEntry {
+	return routing.RehydrateDLQEntry(routing.DLQEntrySpec{
+		ID:            e.ID(),
+		Envelope:      *e.Snapshot(),
+		RouteID:       e.RouteID(),
+		BindingID:     e.BindingID(),
+		Address:       e.Address(),
+		SessionID:     e.SessionID(),
+		SourceID:      e.SourceID(),
+		CorrelationID: e.CorrelationID(),
+		Reason:        e.Reason(),
+		Category:      e.Category(),
+		ErrorCode:     e.ErrorCode(),
+		LastError:     e.LastError(),
+		FailedAt:      e.FailedAt(),
+		Attempts:      e.Attempts(),
+	})
+}
+
 func (s *Store) Write(ctx context.Context, entry routing.DLQEntry) error {
 	if logging.TraceEnabled(s.logger) {
-		s.logger.Log(ctx, logging.LevelTrace, "memorydlq: store", "entryID", entry.ID)
+		s.logger.Log(ctx, logging.LevelTrace, "memorydlq: store", "entryID", entry.ID())
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.entries[entry.ID]; ok {
+	if _, ok := s.entries[entry.ID()]; ok {
 		return shared.ErrDuplicateRecord.
 			WithMessage("dlq entry already exists").
-			With("entryID", entry.ID)
+			With("entryID", entry.ID())
 	}
 
-	s.entries[entry.ID] = entry
+	s.entries[entry.ID()] = cloneEntry(entry)
 	return nil
 }
 
@@ -75,7 +100,7 @@ func (s *Store) Get(ctx context.Context, id string) (routing.DLQEntry, error) {
 			With("entryID", id)
 	}
 
-	return e, nil
+	return cloneEntry(e), nil
 }
 
 func (s *Store) List(ctx context.Context, filter routing.DLQFilter) ([]routing.DLQEntry, error) {
@@ -90,12 +115,12 @@ func (s *Store) List(ctx context.Context, filter routing.DLQFilter) ([]routing.D
 	var result []routing.DLQEntry
 	for _, e := range s.entries {
 		if matchesFilter(e, filter) {
-			result = append(result, e)
+			result = append(result, cloneEntry(e))
 		}
 	}
 
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].FailedAt.After(result[j].FailedAt)
+		return result[i].FailedAt().After(result[j].FailedAt())
 	})
 
 	if filter.Limit > 0 && len(result) > filter.Limit {
@@ -144,13 +169,13 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter routing.DLQFilter) (i
 
 	if filter.Limit > 0 && len(matched) > filter.Limit {
 		sort.Slice(matched, func(i, j int) bool {
-			return matched[i].FailedAt.After(matched[j].FailedAt)
+			return matched[i].FailedAt().After(matched[j].FailedAt())
 		})
 		matched = matched[:filter.Limit]
 	}
 
 	for _, e := range matched {
-		delete(s.entries, e.ID)
+		delete(s.entries, e.ID())
 	}
 
 	return len(matched), nil
@@ -166,7 +191,7 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
 
 	var count int
 	for id, e := range s.entries {
-		if e.FailedAt.Before(before) {
+		if e.FailedAt().Before(before) {
 			delete(s.entries, id)
 			count++
 		}
@@ -176,16 +201,16 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
 }
 
 func matchesFilter(e routing.DLQEntry, filter routing.DLQFilter) bool {
-	if filter.RouteID != "" && e.RouteID != filter.RouteID {
+	if filter.RouteID != "" && e.RouteID() != filter.RouteID {
 		return false
 	}
-	if filter.Category != "" && e.Category != filter.Category {
+	if filter.Category != "" && e.Category() != filter.Category {
 		return false
 	}
-	if !filter.Since.IsZero() && e.FailedAt.Before(filter.Since) {
+	if !filter.Since.IsZero() && e.FailedAt().Before(filter.Since) {
 		return false
 	}
-	if !filter.Before.IsZero() && !e.FailedAt.Before(filter.Before) {
+	if !filter.Before.IsZero() && !e.FailedAt().Before(filter.Before) {
 		return false
 	}
 	return true

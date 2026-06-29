@@ -186,8 +186,8 @@ func TestSessionOptionsFromMap(t *testing.T) {
 				if opts.Username != "user1" {
 					t.Fatalf("Username = %q", opts.Username)
 				}
-				if opts.Password != "pass1" {
-					t.Fatalf("Password = %q", opts.Password)
+				if opts.Password.Reveal() != "pass1" {
+					t.Fatalf("Password = %q", opts.Password.Reveal())
 				}
 				if opts.ContainerID != "my-container" {
 					t.Fatalf("ContainerID = %q", opts.ContainerID)

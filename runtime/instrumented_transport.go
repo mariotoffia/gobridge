@@ -24,8 +24,8 @@ type InstrumentedSender struct {
 var _ ports.Sender = (*InstrumentedSender)(nil)
 
 // NewInstrumentedSender decorates inner with send-latency metrics.
-// metricName is the timer metric emitted on each Send (e.g.
-// shared.MetricMQTTPublishLatency or shared.MetricSQSDeleteLatency).
+// metricName is the timer metric emitted on each Send (e.g. the transport
+// adapter's own "MQTTPublishLatency" or "SQSDeleteLatency" constant).
 // tagKey and tagValue are the dimension added to each emission
 // (e.g. "session_id"/"my-session" or "queue_url"/"...").
 func NewInstrumentedSender(

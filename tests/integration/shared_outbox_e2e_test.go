@@ -339,10 +339,10 @@ func TestE2E_DynamoDB_SharedOutboxFlow(t *testing.T) {
 	const msgCount = 5
 	dels := make([]*fakeDelivery, msgCount)
 	for i := 0; i < msgCount; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      t.Name() + "-msg-" + string(rune('A'+i)),
 			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
-		}
+		})
 		del := newFakeDelivery(env)
 		dels[i] = del
 		_ = receiverA.Emit(ctx, del)
@@ -363,7 +363,7 @@ func TestE2E_DynamoDB_SharedOutboxFlow(t *testing.T) {
 	sentMsgs := senderB.getSent()
 	rxPayloads := make(map[string]bool, len(sentMsgs))
 	for _, env := range sentMsgs {
-		rxPayloads[string(env.Payload)] = true
+		rxPayloads[string(env.Payload())] = true
 	}
 	for i := 0; i < msgCount; i++ {
 		want := fmt.Sprintf(`{"seq":%d}`, i)
@@ -431,7 +431,7 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 	})
 
 	// Persist messages via A.
-	env := &messaging.Envelope{ID: t.Name() + "-transfer-msg", Payload: []byte("transfer")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: t.Name() + "-transfer-msg", Payload: []byte("transfer")})
 	del := newFakeDelivery(env)
 	_ = receiverA.Emit(ctxA, del)
 	waitFor(t, 3*time.Second, "acked by A", func() bool { return del.isAcked() })
@@ -485,8 +485,8 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 	})
 
 	sent := senderB.getSent()
-	if sent[0].ID != t.Name()+"-transfer-msg" {
-		t.Errorf("expected transfer-msg, got %q", sent[0].ID)
+	if sent[0].ID() != t.Name()+"-transfer-msg" {
+		t.Errorf("expected transfer-msg, got %q", sent[0].ID())
 	}
 
 	_ = rtB.Stop(context.Background())
@@ -543,7 +543,7 @@ func TestE2E_MemoryLease_DynamoOutbox(t *testing.T) {
 		return session.isStarted()
 	})
 
-	env := &messaging.Envelope{ID: t.Name() + "-mixed-msg", Payload: []byte("mixed")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: t.Name() + "-mixed-msg", Payload: []byte("mixed")})
 	del := newFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -622,7 +622,7 @@ func TestE2E_DynamoDB_CrashRecovery(t *testing.T) {
 	})
 
 	// Persist messages via A.
-	env := &messaging.Envelope{ID: t.Name() + "-crash-msg", Payload: []byte("orphaned")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: t.Name() + "-crash-msg", Payload: []byte("orphaned")})
 	del := newFakeDelivery(env)
 	_ = receiverA.Emit(ctxA, del)
 	waitFor(t, 3*time.Second, "acked by A", func() bool { return del.isAcked() })
@@ -676,8 +676,8 @@ func TestE2E_DynamoDB_CrashRecovery(t *testing.T) {
 	})
 
 	sent := senderB.getSent()
-	if sent[0].ID != t.Name()+"-crash-msg" {
-		t.Errorf("expected crash-msg, got %q", sent[0].ID)
+	if sent[0].ID() != t.Name()+"-crash-msg" {
+		t.Errorf("expected crash-msg, got %q", sent[0].ID())
 	}
 
 	_ = rtB.Stop(context.Background())
@@ -724,14 +724,14 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 		SessionID:  leaseID,
 		Address:    "topic/fencing",
 		Status:     persistence.OutboxPending,
-		Envelope:   messaging.Envelope{ID: "fencing-env-1", Payload: []byte("data")},
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "fencing-env-1", Payload: []byte("data")}),
 	})
 	if err := outboxStore.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
 	pk := persistence.OutboxPartitionKey(leaseID, "bind-1")
-	claimed, err := outboxStore.Claim(ctx, pk, "owner-A", tokenA, 10)
+	claimed, err := outboxStore.Claim(ctx, pk, tokenA, 10)
 	if err != nil {
 		t.Fatalf("claim with A: %v", err)
 	}
@@ -750,7 +750,7 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 
 	// B reclaims the stale-claimed record (updating claim_version to B's).
 	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for stale claim threshold
-	reclaimedB, err := outboxStore.Claim(ctx, pk, "owner-B", tokenB, 10)
+	reclaimedB, err := outboxStore.Claim(ctx, pk, tokenB, 10)
 	if err != nil {
 		t.Fatalf("reclaim with B: %v", err)
 	}
@@ -760,7 +760,7 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 
 	// Now A's stale token should be rejected on Complete because the
 	// record's claim_version was updated when B reclaimed it.
-	err = outboxStore.Complete(ctx, []string{reclaimedB[0].ID}, tokenA)
+	err = outboxStore.Complete(ctx, []string{reclaimedB[0].ID()}, tokenA)
 	if err == nil {
 		t.Fatal("expected stale fencing token error on Complete with A's token after B reclaimed")
 	}
@@ -769,7 +769,7 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 	}
 
 	// B completes successfully with its own token.
-	err = outboxStore.Complete(ctx, []string{reclaimedB[0].ID}, tokenB)
+	err = outboxStore.Complete(ctx, []string{reclaimedB[0].ID()}, tokenB)
 	if err != nil {
 		t.Fatalf("complete with B: %v", err)
 	}
@@ -848,7 +848,7 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 		return session.isStarted()
 	})
 
-	env := &messaging.Envelope{ID: t.Name() + "-poison-msg", Payload: []byte("toxic")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: t.Name() + "-poison-msg", Payload: []byte("toxic")})
 	del := newFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
@@ -933,7 +933,7 @@ func TestE2E_DynamoDB_FanOutAtomicity(t *testing.T) {
 	})
 
 	// Send a message that fans out to both sessions.
-	env := &messaging.Envelope{ID: t.Name() + "-fanout-msg", Payload: []byte("multi")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: t.Name() + "-fanout-msg", Payload: []byte("multi")})
 	del := newFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -954,7 +954,7 @@ func TestE2E_DynamoDB_FanOutAtomicity(t *testing.T) {
 	}
 
 	// Verify idempotent persist: re-emit the same envelope should not create duplicates.
-	env2 := &messaging.Envelope{ID: t.Name() + "-fanout-msg", Payload: []byte("multi")}
+	env2 := messaging.MustEnvelope(messaging.EnvelopeInput{ID: t.Name() + "-fanout-msg", Payload: []byte("multi")})
 	del2 := newFakeDelivery(env2)
 	_ = receiver.Emit(ctx, del2)
 	waitFor(t, 3*time.Second, "redelivery acked", func() bool { return del2.isAcked() })

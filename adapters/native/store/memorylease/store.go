@@ -60,6 +60,23 @@ func NewStore(opts ...Option) *Store {
 	return s
 }
 
+// cloneEndpoints returns an independent copy of the endpoints map so that
+// neither the store's internal lease state nor a returned LeaseInfo can
+// alias a caller-supplied or caller-held map (finding #29: LeaseInfo is a
+// read-only snapshot DTO; the LeaseStore owns the lease invariants and
+// defensively copies endpoints at every boundary). Returns nil for a nil
+// input to preserve the "no endpoints" signal.
+func cloneEndpoints(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	cp := make(map[string]string, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
+}
+
 func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memorylease: acquire",
@@ -81,7 +98,7 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 		owner:     ownerID,
 		version:   ver,
 		expiresAt: now.Add(ttl),
-		endpoints: endpoints,
+		endpoints: cloneEndpoints(endpoints),
 	}
 
 	return persistence.LeaseToken{Version: ver, Owner: ownerID}, nil
@@ -120,7 +137,7 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token persistence.Lea
 
 	e.expiresAt = now.Add(ttl)
 	if endpoints != nil {
-		e.endpoints = endpoints
+		e.endpoints = cloneEndpoints(endpoints)
 	}
 	return token, nil
 }
@@ -168,6 +185,6 @@ func (s *Store) Current(_ context.Context, leaseID string) (persistence.LeaseInf
 		Owner:     e.owner,
 		Version:   e.version,
 		ExpiresAt: e.expiresAt,
-		Endpoints: e.endpoints,
+		Endpoints: cloneEndpoints(e.endpoints),
 	}, nil
 }

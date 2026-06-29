@@ -181,7 +181,7 @@ func TestUC4_Bidirectional_SQS_MQTT(t *testing.T) {
 	// Collector-south (direction A sink) must NOT contain "dirB-" payloads.
 	southMsgs := collectorSouth.getMessages()
 	for _, msg := range southMsgs {
-		payload := string(msg.Payload)
+		payload := string(msg.Payload())
 		require.False(t, strings.HasPrefix(payload, "dirB-"),
 			"collector-south received direction-B message: %q", payload)
 	}

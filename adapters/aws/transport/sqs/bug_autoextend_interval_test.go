@@ -52,7 +52,7 @@ func TestBugM6_AutoExtend_TickerResetsAfterVisibilityChange(t *testing.T) {
 	}
 
 	rec := &ports.RecordingExporter{}
-	env := &messaging.Envelope{ID: "msg-m6"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-m6"})
 	fake := clocktest.New()
 
 	d := newDelivery(
@@ -127,7 +127,7 @@ func TestBugM6_AutoExtend_SameTimeout_NoReset(t *testing.T) {
 		},
 	}
 
-	env := &messaging.Envelope{ID: "msg-m6b"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-m6b"})
 	fake := clocktest.New()
 	d := newDelivery(
 		context.Background(), env, mock, "q", "rh", 2, true, nil, nil, nil, fake,

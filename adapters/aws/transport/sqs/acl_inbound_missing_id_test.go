@@ -15,7 +15,7 @@ import (
 )
 
 // TestSQSMissingID_PopulatedPreserved confirms that a present
-// MessageId travels straight through to env.ID — the fallback only
+// MessageId travels straight through to env.ID() — the fallback only
 // fires for empty IDs.
 func TestSQSMissingID_PopulatedPreserved(t *testing.T) {
 	r := receiverForTest(t, false)
@@ -28,8 +28,8 @@ func TestSQSMissingID_PopulatedPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("convertMessage: %v", err)
 	}
-	if env.ID != "preserved-99" {
-		t.Errorf("ID = %q, want %q", env.ID, "preserved-99")
+	if env.ID() != "preserved-99" {
+		t.Errorf("ID = %q, want %q", env.ID(), "preserved-99")
 	}
 }
 
@@ -50,13 +50,13 @@ func TestSQSMissingID_EmptyTriggersFallbackUnique(t *testing.T) {
 		if err != nil {
 			t.Fatalf("convertMessage[%d]: %v", i, err)
 		}
-		if env.ID == "" || env.ID == "test-envelope" {
-			t.Errorf("envelope ID regression: got %q", env.ID)
+		if env.ID() == "" || env.ID() == "test-envelope" {
+			t.Errorf("envelope ID regression: got %q", env.ID())
 		}
-		if _, dup := seen[env.ID]; dup {
-			t.Errorf("duplicate generated ID at iteration %d: %q", i, env.ID)
+		if _, dup := seen[env.ID()]; dup {
+			t.Errorf("duplicate generated ID at iteration %d: %q", i, env.ID())
 		}
-		seen[env.ID] = struct{}{}
+		seen[env.ID()] = struct{}{}
 	}
 }
 
@@ -124,7 +124,7 @@ func TestSQSPollAndConvert_DropsMalformedMessage(t *testing.T) {
 		t.Fatalf("results len = %d, want 1", len(results))
 	}
 	for _, e := range rec.Entries() {
-		if e.Name == shared.MetricSQSMalformedMessages {
+		if e.Name == MetricSQSMalformedMessages {
 			t.Errorf("unexpected malformed counter emitted: %+v", e)
 		}
 	}

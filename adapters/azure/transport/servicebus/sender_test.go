@@ -224,9 +224,9 @@ func TestSender_Send_DefaultSessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Payload: []byte("no-session-header"),
-	}
+	})
 
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -288,7 +288,7 @@ func TestSender_Send_Error(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{Payload: []byte("fail")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte("fail")})
 	sendErr := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env})
 	if sendErr == nil {
 		t.Fatal("expected error from Send")
@@ -340,9 +340,9 @@ func TestSender_Send_EmptyID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Payload: []byte("no-id"),
-	}
+	})
 
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -352,8 +352,9 @@ func TestSender_Send_EmptyID(t *testing.T) {
 	if msg == nil {
 		t.Fatal("expected SendMessage to be called")
 	}
-	if msg.MessageID != nil && *msg.MessageID != "" {
-		t.Errorf("MessageID should be nil or empty for envelope with no ID, got %q", *msg.MessageID)
+	// MustEnvelope auto-assigns a non-empty ID; the sender MUST propagate it as MessageID.
+	if msg.MessageID == nil || *msg.MessageID == "" {
+		t.Errorf("MessageID should be set for envelope with auto-assigned ID, got nil/empty")
 	}
 }
 
@@ -368,10 +369,10 @@ func TestSender_Send_NilHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "nil-hdr",
 		Payload: []byte("body"),
-	}
+	})
 
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -397,24 +398,24 @@ func TestSender_SendBatch_EmptySlice(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sent, err := sender.SendBatch(context.Background(), []ports.OutboundMessage(nil))
+	results, err := sender.SendBatch(context.Background(), []ports.OutboundMessage(nil))
 	if err != nil {
 		t.Fatalf("SendBatch(nil): %v", err)
 	}
-	if sent != 0 {
+	if sent := batchSent(results); sent != 0 {
 		t.Errorf("sent = %d, want 0", sent)
 	}
 
-	sent, err = sender.SendBatch(context.Background(), []ports.OutboundMessage{})
+	results, err = sender.SendBatch(context.Background(), []ports.OutboundMessage{})
 	if err != nil {
 		t.Fatalf("SendBatch(empty): %v", err)
 	}
-	if sent != 0 {
+	if sent := batchSent(results); sent != 0 {
 		t.Errorf("sent = %d, want 0", sent)
 	}
 }
 
-// verifies SendBatch propagates NewMessageBatch errors and reports zero sent.
+// verifies SendBatch surfaces a NewMessageBatch failure as a per-message error (no whole-batch error) and reports zero sent.
 func TestSender_SendBatch_NewBatchError(t *testing.T) {
 	batchErr := fmt.Errorf("cannot create batch")
 	mock := &mockSenderAPI{
@@ -431,26 +432,29 @@ func TestSender_SendBatch_NewBatchError(t *testing.T) {
 	}
 
 	envs := []*messaging.Envelope{
-		{ID: "b1", Payload: []byte("msg1")},
-		{ID: "b2", Payload: []byte("msg2")},
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "b1", Payload: []byte("msg1")}),
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "b2", Payload: []byte("msg2")}),
 	}
 
-	sent, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
 		}
 		return _msgs
 	}())
-	if sendErr == nil {
-		t.Fatal("expected error from SendBatch")
+	if sendErr != nil {
+		t.Fatalf("NewMessageBatch failure is per-message, not a whole-batch error, got %v", sendErr)
 	}
-	if sent != 0 {
+	if sent := batchSent(results); sent != 0 {
 		t.Errorf("sent = %d, want 0 on NewMessageBatch failure", sent)
+	}
+	if len(results) != 2 || results[0].Err == nil {
+		t.Fatalf("expected each entry to carry the NewMessageBatch error, got %+v", results)
 	}
 }
 
-// verifies SendBatch propagates SendMessageBatch failures.
+// verifies SendBatch surfaces a batch-construction failure as a per-message error.
 func TestSender_SendBatch_SendBatchError(t *testing.T) {
 	mock := &mockSenderAPI{
 		newMessageBatchFn: func(context.Context, *azservicebus.MessageBatchOptions) (*azservicebus.MessageBatch, error) {
@@ -473,18 +477,21 @@ func TestSender_SendBatch_SendBatchError(t *testing.T) {
 	}
 
 	envs := []*messaging.Envelope{
-		{ID: "b1", Payload: []byte("msg1")},
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "b1", Payload: []byte("msg1")}),
 	}
 
-	_, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, sendErr := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
 		}
 		return _msgs
 	}())
-	if sendErr == nil {
-		t.Fatal("expected error from SendBatch when SendMessageBatch fails")
+	if sendErr != nil {
+		t.Fatalf("batch dispatch failure is per-message, not a whole-batch error, got %v", sendErr)
+	}
+	if len(results) != 1 || results[0].Err == nil {
+		t.Fatalf("expected the entry to carry the batch failure, got %+v", results)
 	}
 }
 
@@ -551,7 +558,7 @@ func TestSender_Send_ContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	env := &messaging.Envelope{Payload: []byte("canceled")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte("canceled")})
 	sendErr := sender.Send(ctx, ports.OutboundMessage{Envelope: env})
 	if sendErr == nil {
 		t.Fatal("expected error on canceled context")
@@ -570,12 +577,12 @@ func TestSender_Send_Timestamps(t *testing.T) {
 	}
 
 	now := time.Now()
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:        "ts-msg",
 		Payload:   []byte("with-timestamps"),
 		CreatedAt: now,
 		ExpiresAt: now.Add(5 * time.Minute),
-	}
+	})
 
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -602,10 +609,10 @@ func TestSender_Send_MultipleMessages(t *testing.T) {
 	}
 
 	for i := 0; i < 5; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("msg-%d", i),
 			Payload: []byte(fmt.Sprintf("payload-%d", i)),
-		}
+		})
 		if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 			t.Fatalf("Send[%d]: %v", i, err)
 		}
@@ -635,4 +642,15 @@ func assertAppProp(t *testing.T, msg *azservicebus.Message, key, want string) {
 	if fmt.Sprint(got) != want {
 		t.Errorf("ApplicationProperties[%q] = %v, want %q", key, got, want)
 	}
+}
+
+// batchSent counts the successful (nil-Err) entries in a SendBatch result.
+func batchSent(results []ports.BatchResult) int {
+	n := 0
+	for _, r := range results {
+		if r.Err == nil {
+			n++
+		}
+	}
+	return n
 }

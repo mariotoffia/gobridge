@@ -97,14 +97,14 @@ func (r *RouteRunner) buildOutboxRecords(env *messaging.Envelope, plans []routin
 		rec, err := persistence.NewOutboxRecord(persistence.OutboxSpec{
 			ID:              generateID(),
 			RouteID:         r.routeID,
-			EnvelopeID:      env.ID,
+			EnvelopeID:      env.ID(),
 			BindingID:       plan.BindingID,
 			SessionID:       sessionID,
 			Address:         plan.Address,
 			Envelope:        *env,
 			DispatchHeaders: plan.Headers,
 			CreatedAt:       now,
-			ExpiresAt:       env.ExpiresAt,
+			ExpiresAt:       env.ExpiresAt(),
 		})
 		if err != nil {
 			return nil, err

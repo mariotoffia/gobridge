@@ -830,8 +830,8 @@ Catalog of all test functions in the gobridge repository.
 | TestLeaseInfo_Fields | validates LeaseInfo field assignment | unit | domain | pass |
 | TestCredentialKind_Constants | validates credential kind constants are distinct | unit | domain | pass |
 | TestCredentialSet_ZeroValue | validates zero-value CredentialSet has nil fields | unit | domain | pass |
-| TestPasswordCredential_Fields | validates PasswordCredential field assignment | unit | domain | pass |
-| TestTLSMaterial_Fields | validates TLSMaterial field assignment | unit | domain | pass |
+| TestPasswordCredential_Accessors | validates PasswordCredential constructor and accessors | unit | domain | pass |
+| TestTLSMaterial_Accessors | validates TLSMaterial constructor and accessors | unit | domain | pass |
 | TestMetricNamespace_NonEmpty | validates MetricNamespace is non-empty | unit | domain | pass |
 | TestMetricConstants_NonEmpty | validates all Metric constants are non-empty and unique | unit | domain | pass |
 | TestTagKeyConstants_NonEmpty | validates all TagKey constants are non-empty and unique | unit | domain | pass |

@@ -209,11 +209,11 @@ func TestSharedOutbox_DrainPreservesLogicalSubject(t *testing.T) {
 	if len(recs) != 1 {
 		t.Fatalf("expected exactly 1 outbox record, got %d", len(recs))
 	}
-	if got := recs[0].Envelope.Subject(); got != "evt.user.created" {
+	if got := recs[0].Snapshot().Subject(); got != "evt.user.created" {
 		t.Errorf("outbox record Envelope.Subject = %q, want %q (logical subject must be preserved)",
 			got, "evt.user.created")
 	}
-	if got := recs[0].Address; got != "topics/users/created" {
+	if got := recs[0].Address(); got != "topics/users/created" {
 		t.Errorf("outbox record Address = %q, want %q", got, "topics/users/created")
 	}
 
@@ -286,7 +286,7 @@ func TestSharedOutbox_ProcessorChainRuns(t *testing.T) {
 		return sess.IsStarted()
 	})
 
-	env := &messaging.Envelope{ID: "msg-proc-1", Payload: []byte("data")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-proc-1", Payload: []byte("data")})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -337,7 +337,7 @@ func TestSharedOutbox_CorrelationIDInjected(t *testing.T) {
 		return sess.IsStarted()
 	})
 
-	env := &messaging.Envelope{ID: "msg-corr-1", Payload: []byte("x")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-corr-1", Payload: []byte("x")})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 
@@ -437,7 +437,7 @@ func NewTrackingSender(tag string) *TrackingSender {
 func (s *TrackingSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	env := msg.Envelope
 	s.mu.Lock()
-	s.SentIDs = append(s.SentIDs, env.ID)
+	s.SentIDs = append(s.SentIDs, env.ID())
 	s.mu.Unlock()
 	return s.FakeSender.Send(ctx, msg)
 }
@@ -462,10 +462,10 @@ func emitMessages(t *testing.T, ctx context.Context, receiver *FakeReceiver, pre
 	t.Helper()
 	dels := make([]*FakeDelivery, n)
 	for i := 0; i < n; i++ {
-		env := &messaging.Envelope{
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("%s-%d", prefix, i),
 			Payload: []byte(fmt.Sprintf("payload-%d", i)),
-		}
+		})
 		del := NewFakeDelivery(env)
 		dels[i] = del
 		if err := receiver.Emit(ctx, del); err != nil {

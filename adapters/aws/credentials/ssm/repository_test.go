@@ -93,10 +93,10 @@ func TestParseCredentials_JSONUsernamePassword(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			creds, err := parseCredentials(tt.input)
 			require.NoError(t, err)
-			require.NotNil(t, creds.Password)
-			assert.Equal(t, tt.username, creds.Password.Username)
-			assert.Equal(t, tt.password, creds.Password.Password)
-			assert.Nil(t, creds.TLS)
+			require.NotNil(t, creds.Password())
+			assert.Equal(t, tt.username, creds.Password().Username())
+			assert.Equal(t, tt.password, creds.Password().Password().Reveal())
+			assert.Nil(t, creds.TLS())
 		})
 	}
 }
@@ -105,18 +105,18 @@ func TestParseCredentials_JSONUsernamePassword(t *testing.T) {
 func TestParseCredentials_SimpleFormat(t *testing.T) {
 	creds, err := parseCredentials("myuser:mypassword")
 	require.NoError(t, err)
-	require.NotNil(t, creds.Password)
-	assert.Equal(t, "myuser", creds.Password.Username)
-	assert.Equal(t, "mypassword", creds.Password.Password)
+	require.NotNil(t, creds.Password())
+	assert.Equal(t, "myuser", creds.Password().Username())
+	assert.Equal(t, "mypassword", creds.Password().Password().Reveal())
 }
 
 // Verifies simple format keeps colons in the password portion after the first separator.
 func TestParseCredentials_SimpleFormat_PasswordWithColon(t *testing.T) {
 	creds, err := parseCredentials("admin:pass:word:123")
 	require.NoError(t, err)
-	require.NotNil(t, creds.Password)
-	assert.Equal(t, "admin", creds.Password.Username)
-	assert.Equal(t, "pass:word:123", creds.Password.Password)
+	require.NotNil(t, creds.Password())
+	assert.Equal(t, "admin", creds.Password().Username())
+	assert.Equal(t, "pass:word:123", creds.Password().Password().Reveal())
 }
 
 // Verifies JSON TLS material parses into CertPEM, KeyPEM, CA PEMs, and insecure flag.
@@ -130,12 +130,12 @@ func TestParseCredentials_TLS(t *testing.T) {
 
 	creds, err := parseCredentials(input)
 	require.NoError(t, err)
-	require.NotNil(t, creds.TLS)
-	assert.Nil(t, creds.Password)
-	assert.NotEmpty(t, creds.TLS.CertPEM)
-	assert.NotEmpty(t, creds.TLS.KeyPEM)
-	assert.Len(t, creds.TLS.CAPEMs, 1)
-	assert.False(t, creds.TLS.InsecureSkipVerify)
+	require.NotNil(t, creds.TLS())
+	assert.Nil(t, creds.Password())
+	assert.NotEmpty(t, creds.TLS().CertPEM())
+	assert.NotEmpty(t, creds.TLS().KeyPEM().Reveal())
+	assert.Len(t, creds.TLS().CAPEMs(), 1)
+	assert.False(t, creds.TLS().InsecureSkipVerify())
 }
 
 // Verifies TLS JSON sets InsecureSkipVerify when insecure is true.
@@ -143,8 +143,8 @@ func TestParseCredentials_TLS_InsecureSkipVerify(t *testing.T) {
 	input := `{"certPem":"cert","keyPem":"key","insecure":true}`
 	creds, err := parseCredentials(input)
 	require.NoError(t, err)
-	require.NotNil(t, creds.TLS)
-	assert.True(t, creds.TLS.InsecureSkipVerify)
+	require.NotNil(t, creds.TLS())
+	assert.True(t, creds.TLS().InsecureSkipVerify())
 }
 
 // Verifies a single ca string field is accepted as one CA PEM entry.
@@ -152,8 +152,8 @@ func TestParseCredentials_TLS_SingleCAPem(t *testing.T) {
 	input := `{"certPem":"cert","keyPem":"key","ca":"single-ca"}`
 	creds, err := parseCredentials(input)
 	require.NoError(t, err)
-	require.NotNil(t, creds.TLS)
-	assert.Equal(t, []string{"single-ca"}, creds.TLS.CAPEMs)
+	require.NotNil(t, creds.TLS())
+	assert.Equal(t, []string{"single-ca"}, creds.TLS().CAPEMs())
 }
 
 // Verifies non-JSON, non-colon input returns an error from parseCredentials.
@@ -186,39 +186,30 @@ func TestParseCredentials_MissingUsername(t *testing.T) {
 
 // Verifies serializeCredentialSet and parseCredentials round-trip password credentials.
 func TestSerializeAndParseRoundTrip_Password(t *testing.T) {
-	original := &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
-	}
+	original := connectivity.NewCredentialSet(pwCred("u", "p"), nil)
 	s, err := serializeCredentialSet(original)
 	require.NoError(t, err)
 
 	parsed, err := parseCredentials(s)
 	require.NoError(t, err)
-	require.NotNil(t, parsed.Password)
-	assert.Equal(t, "u", parsed.Password.Username)
-	assert.Equal(t, "p", parsed.Password.Password)
+	require.NotNil(t, parsed.Password())
+	assert.Equal(t, "u", parsed.Password().Username())
+	assert.Equal(t, "p", parsed.Password().Password().Reveal())
 }
 
 // Verifies serializeCredentialSet and parseCredentials round-trip TLS material.
 func TestSerializeAndParseRoundTrip_TLS(t *testing.T) {
-	original := &connectivity.CredentialSet{
-		TLS: &connectivity.TLSMaterial{
-			CertPEM:            "cert-data",
-			KeyPEM:             "key-data",
-			CAPEMs:             []string{"ca1", "ca2"},
-			InsecureSkipVerify: true,
-		},
-	}
+	original := connectivity.NewCredentialSet(nil, tlsMat("cert-data", "key-data", []string{"ca1", "ca2"}, true))
 	s, err := serializeCredentialSet(original)
 	require.NoError(t, err)
 
 	parsed, err := parseCredentials(s)
 	require.NoError(t, err)
-	require.NotNil(t, parsed.TLS)
-	assert.Equal(t, "cert-data", parsed.TLS.CertPEM)
-	assert.Equal(t, "key-data", parsed.TLS.KeyPEM)
-	assert.Equal(t, []string{"ca1", "ca2"}, parsed.TLS.CAPEMs)
-	assert.True(t, parsed.TLS.InsecureSkipVerify)
+	require.NotNil(t, parsed.TLS())
+	assert.Equal(t, "cert-data", parsed.TLS().CertPEM())
+	assert.Equal(t, "key-data", parsed.TLS().KeyPEM().Reveal())
+	assert.Equal(t, []string{"ca1", "ca2"}, parsed.TLS().CAPEMs())
+	assert.True(t, parsed.TLS().InsecureSkipVerify())
 }
 
 // ---------------------------------------------------------------------------
@@ -319,9 +310,9 @@ func TestRepository_Get(t *testing.T) {
 	r := New(WithClient(mock))
 	creds, err := r.Get(context.Background(), "pms://prod/db/creds")
 	require.NoError(t, err)
-	require.NotNil(t, creds.Password)
-	assert.Equal(t, "admin", creds.Password.Username)
-	assert.Equal(t, "s3cret", creds.Password.Password)
+	require.NotNil(t, creds.Password())
+	assert.Equal(t, "admin", creds.Password().Username())
+	assert.Equal(t, "s3cret", creds.Password().Password().Reveal())
 }
 
 // Verifies Get maps ParameterNotFound to ErrNotFound.
@@ -365,9 +356,7 @@ func TestRepository_Create(t *testing.T) {
 	}
 
 	r := New(WithClient(mock))
-	creds := &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
-	}
+	creds := connectivity.NewCredentialSet(pwCred("u", "p"), nil)
 	err := r.Create(context.Background(), "pms://ns/path", creds)
 	require.NoError(t, err)
 	assert.Equal(t, "/ns/path", *capturedInput.Name)
@@ -384,9 +373,7 @@ func TestRepository_Create_AlreadyExists(t *testing.T) {
 	}
 
 	r := New(WithClient(mock))
-	err := r.Create(context.Background(), "pms://ns/path", &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
-	})
+	err := r.Create(context.Background(), "pms://ns/path", connectivity.NewCredentialSet(pwCred("u", "p"), nil))
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, shared.ErrAlreadyExists))
 }
@@ -402,9 +389,7 @@ func TestRepository_Update(t *testing.T) {
 	}
 
 	r := New(WithClient(mock))
-	creds := &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: "u2", Password: "p2"},
-	}
+	creds := connectivity.NewCredentialSet(pwCred("u2", "p2"), nil)
 	err := r.Update(context.Background(), "pms://ns/path", creds, 0)
 	require.NoError(t, err)
 	assert.True(t, *capturedInput.Overwrite)
@@ -422,9 +407,7 @@ func TestRepository_Update_VersionMismatch(t *testing.T) {
 	}
 
 	r := New(WithClient(mock))
-	err := r.Update(context.Background(), "pms://ns/path", &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
-	}, 3)
+	err := r.Update(context.Background(), "pms://ns/path", connectivity.NewCredentialSet(pwCred("u", "p"), nil), 3)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, shared.ErrVersionMismatch))
 }
@@ -575,8 +558,20 @@ func TestRepository_Get_InvalidURI(t *testing.T) {
 // Verifies Create rejects invalid URIs before calling SSM.
 func TestRepository_Create_InvalidURI(t *testing.T) {
 	r := New(WithClient(&mockSSM{}))
-	err := r.Create(context.Background(), "bad://uri", &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: "u", Password: "p"},
-	})
+	err := r.Create(context.Background(), "bad://uri", connectivity.NewCredentialSet(pwCred("u", "p"), nil))
 	assert.Error(t, err)
+}
+
+// pwCred builds a *connectivity.PasswordCredential from the immutable value
+// constructor for use in test credential sets.
+func pwCred(username, password string) *connectivity.PasswordCredential {
+	c := connectivity.NewPasswordCredential(username, password)
+	return &c
+}
+
+// tlsMat builds a *connectivity.TLSMaterial from the immutable value
+// constructor for use in test credential sets.
+func tlsMat(certPEM, keyPEM string, caPEMs []string, insecure bool) *connectivity.TLSMaterial {
+	m := connectivity.NewTLSMaterial(certPEM, keyPEM, caPEMs, insecure)
+	return &m
 }

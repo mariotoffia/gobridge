@@ -231,7 +231,10 @@ func TestCheckSymmetry_BothDirectionsAtOnce(t *testing.T) {
 }
 
 func TestBuildRegisteredKinds_LiveAdapters(t *testing.T) {
-	got, err := buildRegisteredKinds()
+	// The live composition root is cmd/gobridge/main.go relative to the
+	// repo root, two levels up from this module directory.
+	mainPath := filepath.Join("..", "..", "cmd", "gobridge", "main.go")
+	got, err := buildRegisteredKinds(mainPath)
 	if err != nil {
 		t.Fatalf("buildRegisteredKinds: %v", err)
 	}
@@ -246,6 +249,62 @@ func TestBuildRegisteredKinds_LiveAdapters(t *testing.T) {
 		if !found {
 			t.Errorf("expected registered kind %q in %v", want, got)
 		}
+	}
+}
+
+func TestParseRegisteredAdapterPaths(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	writeFile(t, path, `package main
+
+import (
+	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
+	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
+	"github.com/mariotoffia/gobridge/ports"
+)
+
+func main() {
+	reg := ports.NewRegistry()
+	_ = paho.Register(reg)
+	_ = nativestore.Register(reg)
+	// Must be ignored: receiver is the local registry, not an adapter.
+	_ = reg.Register("inline", nil)
+}
+`)
+	got, err := parseRegisteredAdapterPaths(path)
+	if err != nil {
+		t.Fatalf("parseRegisteredAdapterPaths: %v", err)
+	}
+	want := []string{
+		"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho",
+		"github.com/mariotoffia/gobridge/adapters/native/store",
+	}
+	if !equal(got, want) {
+		t.Errorf("parseRegisteredAdapterPaths = %v, want %v", got, want)
+	}
+}
+
+func TestBuildRegisteredKinds_Drift(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	writeFile(t, path, `package main
+
+import (
+	unknown "github.com/mariotoffia/gobridge/adapters/zzz/unknown"
+	"github.com/mariotoffia/gobridge/ports"
+)
+
+func main() {
+	reg := ports.NewRegistry()
+	_ = unknown.Register(reg)
+}
+`)
+	_, err := buildRegisteredKinds(path)
+	if err == nil {
+		t.Fatalf("expected drift error for unbound adapter, got nil")
+	}
+	if !strings.Contains(err.Error(), "no binding") {
+		t.Errorf("expected drift error mentioning 'no binding', got %v", err)
 	}
 }
 

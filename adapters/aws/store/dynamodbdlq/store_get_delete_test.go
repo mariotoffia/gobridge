@@ -35,10 +35,10 @@ func newTestStore(t *testing.T, prefix string) *dynamodbdlq.Store {
 
 func writeTestEntry(t *testing.T, store *dynamodbdlq.Store, id, route, cat string, failedAt time.Time) {
 	t.Helper()
-	if err := store.Write(context.Background(), routing.DLQEntry{
+	if err := store.Write(context.Background(), routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID: id, RouteID: route, Category: cat, FailedAt: failedAt,
 		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-" + id, Subject: "test"}),
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("write %s: %v", id, err)
 	}
 }
@@ -52,7 +52,7 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 	store := newTestStore(t, "dlq-get")
 	ctx := context.Background()
 
-	entry := routing.DLQEntry{
+	entry := routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID: "dg-1", RouteID: "route-g", Category: "timeout",
 		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      "env-dg-1",
@@ -62,7 +62,7 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 		}),
 		FailedAt: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC),
 		Attempts: 2,
-	}
+	})
 	if err := store.Write(ctx, entry); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -71,14 +71,15 @@ func TestGet_Existing_ReturnsFullEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.ID != "dg-1" {
-		t.Errorf("ID: got %q, want %q", got.ID, "dg-1")
+	if got.ID() != "dg-1" {
+		t.Errorf("ID: got %q, want %q", got.ID(), "dg-1")
 	}
-	if got.Envelope.ID != "env-dg-1" {
-		t.Errorf("Envelope.ID: got %q, want %q", got.Envelope.ID, "env-dg-1")
+	genv := got.Snapshot()
+	if genv.ID() != "env-dg-1" {
+		t.Errorf("Envelope.ID: got %q, want %q", genv.ID(), "env-dg-1")
 	}
-	if string(got.Envelope.Payload) != `{"k":"v"}` {
-		t.Errorf("Payload: got %q", got.Envelope.Payload)
+	if string(genv.Payload()) != `{"k":"v"}` {
+		t.Errorf("Payload: got %q", genv.Payload())
 	}
 }
 
@@ -120,8 +121,8 @@ func TestDeleteByFilter_ByRouteID(t *testing.T) {
 	if len(remaining) != 1 {
 		t.Fatalf("expected 1 remaining, got %d", len(remaining))
 	}
-	if remaining[0].ID != "dbf-r3" {
-		t.Errorf("remaining: got %q, want dbf-r3", remaining[0].ID)
+	if remaining[0].ID() != "dbf-r3" {
+		t.Errorf("remaining: got %q, want dbf-r3", remaining[0].ID())
 	}
 }
 
@@ -217,7 +218,7 @@ func TestListByRouteIndex_SinceAndBefore(t *testing.T) {
 		makeEntry("kce-4", "route-kce-reg", "timeout", t4),
 	} {
 		if err := store.Write(ctx, e); err != nil {
-			t.Fatalf("write %q: %v", e.ID, err)
+			t.Fatalf("write %q: %v", e.ID(), err)
 		}
 	}
 
@@ -236,7 +237,7 @@ func TestListByRouteIndex_SinceAndBefore(t *testing.T) {
 
 	ids := map[string]bool{}
 	for _, e := range entries {
-		ids[e.ID] = true
+		ids[e.ID()] = true
 	}
 	if !ids["kce-2"] {
 		t.Error("expected kce-2 in results")
@@ -273,7 +274,7 @@ func TestListByCategoryIndex_SinceAndBefore(t *testing.T) {
 		makeEntry("cat-4", "route-W", "timeout", t4),
 	} {
 		if err := store.Write(ctx, e); err != nil {
-			t.Fatalf("write %q: %v", e.ID, err)
+			t.Fatalf("write %q: %v", e.ID(), err)
 		}
 	}
 
@@ -293,7 +294,7 @@ func TestListByCategoryIndex_SinceAndBefore(t *testing.T) {
 
 	ids := map[string]bool{}
 	for _, e := range entries {
-		ids[e.ID] = true
+		ids[e.ID()] = true
 	}
 	if !ids["cat-2"] {
 		t.Error("expected cat-2 in results")

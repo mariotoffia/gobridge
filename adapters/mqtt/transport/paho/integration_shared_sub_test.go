@@ -248,8 +248,8 @@ func TestIntegration_SharedSubscription_PayloadIntegrity(t *testing.T) {
 	msg := received[0]
 	mu.Unlock()
 
-	if string(msg.Payload) != "integrity-check" {
-		t.Errorf("payload = %q, want %q", msg.Payload, "integrity-check")
+	if string(msg.Payload()) != "integrity-check" {
+		t.Errorf("payload = %q, want %q", msg.Payload(), "integrity-check")
 	}
 	if v, _ := messaging.GetHeaderString(msg.Headers(), messaging.HeaderCorrelationID); v != "corr-shared" {
 		t.Errorf("correlation = %q, want %q", v, "corr-shared")

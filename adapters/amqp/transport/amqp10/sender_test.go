@@ -72,11 +72,11 @@ func TestSender_SendBatch_NoSession(t *testing.T) {
 	}
 
 	envs := []*messaging.Envelope{
-		{ID: "b-1", Payload: []byte("one")},
-		{ID: "b-2", Payload: []byte("two")},
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "b-1", Payload: []byte("one")}),
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "b-2", Payload: []byte("two")}),
 	}
 
-	sent, err := s.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, err := s.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -86,8 +86,8 @@ func TestSender_SendBatch_NoSession(t *testing.T) {
 	if err == nil {
 		t.Fatal("SendBatch() should fail when session is not connected")
 	}
-	if sent != 0 {
-		t.Fatalf("sent = %d, want 0", sent)
+	if results != nil {
+		t.Fatalf("results = %v, want nil (whole-batch failure)", results)
 	}
 }
 
@@ -141,10 +141,10 @@ func TestSender_BuildMessage_NoExpiry(t *testing.T) {
 		t.Fatalf("NewSender() error = %v", err)
 	}
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "no-expiry",
 		Payload: []byte("data"),
-	}
+	})
 
 	msg := envelopeToMessage(env)
 
@@ -178,7 +178,7 @@ func TestSender_SendBatch_ContextCancel(t *testing.T) {
 	cancel()
 
 	envs := []*messaging.Envelope{
-		{ID: "c-1", Payload: []byte("one")},
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "c-1", Payload: []byte("one")}),
 	}
 
 	_, sendErr := s.SendBatch(ctx, func() []ports.OutboundMessage {
@@ -219,4 +219,15 @@ func TestSender_CustomMetrics(t *testing.T) {
 	if s.metrics != rec {
 		t.Fatal("metrics should use the provided RecordingExporter")
 	}
+}
+
+// batchSent counts the successful (nil-Err) entries in a SendBatch result.
+func batchSent(results []ports.BatchResult) int {
+	n := 0
+	for _, r := range results {
+		if r.Err == nil {
+			n++
+		}
+	}
+	return n
 }

@@ -60,12 +60,7 @@ func TestCredentialResolver_ConcurrentResolve(t *testing.T) {
 	repo := &fakeCredRepo{
 		scheme:    "test",
 		namespace: "",
-		creds: &connectivity.CredentialSet{
-			Password: &connectivity.PasswordCredential{
-				Username: "user",
-				Password: "pass",
-			},
-		},
+		creds:     connectivity.NewCredentialSet(pwCred("user", "pass"), nil),
 	}
 
 	resolver := runtime.NewCredentialResolver(runtime.WithCredentialCacheTTL(5 * time.Second))
@@ -104,12 +99,7 @@ func TestCredentialResolver_CacheExpiry(t *testing.T) {
 	repo := &fakeCredRepo{
 		scheme:    "test",
 		namespace: "",
-		creds: &connectivity.CredentialSet{
-			Password: &connectivity.PasswordCredential{
-				Username: "user",
-				Password: "secret",
-			},
-		},
+		creds:     connectivity.NewCredentialSet(pwCred("user", "secret"), nil),
 	}
 
 	resolver := runtime.NewCredentialResolver(runtime.WithCredentialCacheTTL(50 * time.Millisecond))
@@ -151,12 +141,7 @@ func TestCredentialResolver_CacheDisabled(t *testing.T) {
 	repo := &fakeCredRepo{
 		scheme:    "test",
 		namespace: "",
-		creds: &connectivity.CredentialSet{
-			Password: &connectivity.PasswordCredential{
-				Username: "user",
-				Password: "pass",
-			},
-		},
+		creds:     connectivity.NewCredentialSet(pwCred("user", "pass"), nil),
 	}
 
 	resolver := runtime.NewCredentialResolver(runtime.WithCredentialCacheDisabled())
@@ -174,4 +159,10 @@ func TestCredentialResolver_CacheDisabled(t *testing.T) {
 	if repo.CallCount() != 5 {
 		t.Fatalf("expected 5 backend calls with cache disabled, got %d", repo.CallCount())
 	}
+}
+
+// pwCred builds a pointer to an immutable PasswordCredential for tests.
+func pwCred(username, password string) *connectivity.PasswordCredential {
+	c := connectivity.NewPasswordCredential(username, password)
+	return &c
 }

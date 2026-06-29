@@ -103,7 +103,7 @@ func DefaultAlarms(namespace, snsTopicARN string) []AlarmDefinition {
 		},
 		{
 			Name:        "GoBridge-SQSVisibilityExtensions-Warning",
-			MetricName:  shared.MetricSQSVisibilityExtensions,
+			MetricName:  "SQSVisibilityExtensions",
 			Namespace:   namespace,
 			Threshold:   100,
 			Period:      300,

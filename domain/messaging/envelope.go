@@ -1,7 +1,6 @@
 package messaging
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -19,6 +18,8 @@ import (
 var (
 	ErrInvalidEnvelopeID    = errors.New("messaging: envelope ID must not be empty")
 	ErrEnvelopeClockMissing = errors.New("messaging: clock is required when CreatedAt is zero")
+	ErrExpiryBeforeCreated  = errors.New("messaging: expiry must not precede CreatedAt")
+	ErrEnvelopeIDImmutable  = errors.New("messaging: envelope ID is already assigned")
 )
 
 // Envelope is the normalized message moving through the bridge.
@@ -39,27 +40,53 @@ var (
 // path. Callers MUST treat the returned Headers as read-only — use
 // the mutator methods (or HeadersSnapshot for an isolated copy) when
 // modification is required.
+//
+// aggregate-root
 type Envelope struct {
-	ID        string
+	id        string
 	subject   string
-	Payload   []byte
+	payload   []byte
 	headers   Headers
-	CreatedAt time.Time
-	ExpiresAt time.Time
+	createdAt time.Time
+	expiresAt time.Time
 }
 
 // EnvelopeInput is the construction shape accepted by NewEnvelope. An
 // input struct (rather than functional options) was chosen because the
-// existing callers all build envelopes by listing the same five fields
+// existing callers all build envelopes by listing the same core fields
 // in field-literal form; a struct keeps that readability while routing
 // through the validating constructor.
+//
+// IdempotencyKey, DeduplicationID and OrderingKey are the FIRST-CLASS,
+// trusted path by which an external producer supplies the reserved
+// idempotency / dedup / ordering keys WITHOUT being able to spoof the
+// rest of the bridge namespace: NewEnvelope strips any x-bridge.* keys
+// a caller smuggles in via Headers, then stamps these explicit fields
+// into their reserved headers on the trusted side of that strip. All
+// three are BRIDGE-TO-BRIDGE PROPAGATED (see the reserved-header
+// classification in the package doc). Leave a field empty to stamp
+// nothing.
 type EnvelopeInput struct {
-	ID        string
-	Subject   string
-	Payload   []byte
-	Headers   map[string]any
-	CreatedAt time.Time
-	ExpiresAt time.Time
+	ID              string
+	Subject         string
+	Payload         []byte
+	Headers         map[string]any
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+	IdempotencyKey  string
+	DeduplicationID string
+	OrderingKey     string
+}
+
+// clonePayload returns nil for empty input, else an independent copy so a
+// caller's slice cannot alias aggregate state.
+func clonePayload(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	cp := make([]byte, len(b))
+	copy(cp, b)
+	return cp
 }
 
 // NewEnvelope constructs and validates an Envelope.
@@ -69,6 +96,12 @@ type EnvelopeInput struct {
 //     bridge metadata namespace (x-bridge.*) cannot be supplied by the
 //     caller; it is owned by the runtime and stamped later in the
 //     pipeline.
+//   - IdempotencyKey, DeduplicationID and OrderingKey, when non-empty,
+//     are stamped into their reserved headers (HeaderIdempotencyKey,
+//     HeaderDeduplicationID, HeaderOrderingKey) AFTER the strip above —
+//     the controlled, anti-spoof-safe path for an external producer to
+//     supply these keys. Caller-supplied x-bridge.* in Headers is still
+//     stripped and can never reach them.
 //   - CreatedAt, when zero, is replaced with the supplied now value;
 //     a non-zero caller value is preserved (rehydration / replay paths).
 //     A zero now combined with a zero CreatedAt returns
@@ -87,14 +120,51 @@ func NewEnvelope(in EnvelopeInput, now time.Time) (*Envelope, error) {
 		}
 		created = now
 	}
-	return &Envelope{
-		ID:        in.ID,
+	e := &Envelope{
+		id:        in.ID,
 		subject:   in.Subject,
-		Payload:   in.Payload,
+		payload:   clonePayload(in.Payload),
 		headers:   NewHeadersFromMap(in.Headers),
-		CreatedAt: created,
-		ExpiresAt: in.ExpiresAt,
-	}, nil
+		createdAt: created,
+		expiresAt: in.ExpiresAt,
+	}
+	// First-class external idempotency / dedup / ordering keys are
+	// stamped AFTER NewHeadersFromMap has stripped any caller-supplied
+	// x-bridge.* keys, so an untrusted Headers map can never spoof bridge
+	// metadata yet an external producer still has an explicit, controlled
+	// path into the reserved namespace. SetHeader is the trusted per-key
+	// setter (no strip) and lazily initialises the header map.
+	if in.IdempotencyKey != "" {
+		e.SetHeader(HeaderIdempotencyKey, in.IdempotencyKey)
+	}
+	if in.DeduplicationID != "" {
+		e.SetHeader(HeaderDeduplicationID, in.DeduplicationID)
+	}
+	if in.OrderingKey != "" {
+		e.SetHeader(HeaderOrderingKey, in.OrderingKey)
+	}
+	return e, nil
+}
+
+// ID returns the immutable envelope identity.
+func (e *Envelope) ID() string { return e.id }
+
+// CreatedAt returns the creation timestamp.
+func (e *Envelope) CreatedAt() time.Time { return e.createdAt }
+
+// ExpiresAt returns the absolute expiry (zero = no expiry).
+func (e *Envelope) ExpiresAt() time.Time { return e.expiresAt }
+
+// Payload returns a defensive copy of the message body — the byte slice is
+// reference-typed and the aggregate must not hand out an aliasable view of
+// its own state. Returns nil for an empty payload.
+func (e *Envelope) Payload() []byte {
+	if len(e.payload) == 0 {
+		return nil
+	}
+	cp := make([]byte, len(e.payload))
+	copy(cp, e.payload)
+	return cp
 }
 
 // Subject returns the logical message subject.
@@ -103,7 +173,43 @@ func (e *Envelope) Subject() string { return e.subject }
 // SetSubject replaces the logical subject. Subject mutation is allowed
 // because it is the documented processor extension point (see
 // processor_chain — processors may rewrite the routing subject).
+//
+//aggcheck:allow-unguarded
 func (e *Envelope) SetSubject(s string) { e.subject = s }
+
+// SetExpiry stamps an absolute expiry from an adapter ingress path (broker
+// TTL / message-expiry properties) onto an already-constructed envelope.
+// Returns ErrExpiryBeforeCreated when t precedes CreatedAt so a malformed
+// broker timestamp cannot produce an envelope that is born expired. A zero t
+// clears the expiry.
+func (e *Envelope) SetExpiry(t time.Time) error {
+	if !t.IsZero() && t.Before(e.createdAt) {
+		return ErrExpiryBeforeCreated
+	}
+	e.expiresAt = t
+	return nil
+}
+
+// AssignID assigns the envelope identity when it has none. Identity is
+// immutable once set: AssignID returns ErrEnvelopeIDImmutable if the envelope
+// already carries an ID, and ErrInvalidEnvelopeID if id is empty.
+func (e *Envelope) AssignID(id string) error {
+	if id == "" {
+		return ErrInvalidEnvelopeID
+	}
+	if e.id != "" {
+		return ErrEnvelopeIDImmutable
+	}
+	e.id = id
+	return nil
+}
+
+// SetPayload replaces the message body. This is the documented processor
+// extension point (transform processors rewrite the payload). The input is
+// defensively copied so the caller's slice cannot alias aggregate state.
+//
+//aggcheck:allow-unguarded
+func (e *Envelope) SetPayload(b []byte) { e.payload = clonePayload(b) }
 
 // Headers returns the live typed Headers value. Callers MUST treat it
 // as read-only; use SetHeader / DeleteHeader / ReplaceHeaders to
@@ -121,6 +227,8 @@ func (e *Envelope) Header(key string) (any, bool) { return e.headers.Get(key) }
 
 // SetHeader assigns key=value, initialising the underlying Headers
 // lazily when nil.
+//
+//aggcheck:allow-unguarded
 func (e *Envelope) SetHeader(key string, value any) {
 	if e.headers == nil {
 		e.headers = NewHeaders()
@@ -129,6 +237,8 @@ func (e *Envelope) SetHeader(key string, value any) {
 }
 
 // DeleteHeader removes key from the underlying Headers. No-op when nil.
+//
+//aggcheck:allow-unguarded
 func (e *Envelope) DeleteHeader(key string) { e.headers.Delete(key) }
 
 // ReplaceHeaders swaps the entire header map. Reserved-prefix headers
@@ -140,6 +250,8 @@ func (e *Envelope) DeleteHeader(key string) { e.headers.Delete(key) }
 // spoofed bridge metadata. Trusted runtime stamping that legitimately
 // needs to write the reserved namespace MUST use SetHeader (per-key)
 // or StampHeaders (whole-map, no strip).
+//
+//aggcheck:allow-unguarded
 func (e *Envelope) ReplaceHeaders(h map[string]any) {
 	e.headers = NewHeadersFromMap(h)
 }
@@ -151,6 +263,8 @@ func (e *Envelope) ReplaceHeaders(h map[string]any) {
 // the input is constructed from internal sources, no reserved-prefix
 // strip is applied. External / adapter-ingress code MUST go through
 // ReplaceHeaders.
+//
+//aggcheck:allow-unguarded
 func (e *Envelope) StampHeaders(h map[string]any) { e.headers = headersFromTrustedMap(h) }
 
 // HeadersSnapshot returns a deep copy of the headers map. Use when the
@@ -160,12 +274,12 @@ func (e *Envelope) HeadersSnapshot() map[string]any { return e.headers.Snapshot(
 
 // HasExpiry returns true if the envelope has a non-zero expiry timestamp.
 func (e *Envelope) HasExpiry() bool {
-	return !e.ExpiresAt.IsZero()
+	return !e.expiresAt.IsZero()
 }
 
 // IsExpired returns true if the envelope has expired according to clk.
 func (e *Envelope) IsExpired(clk interface{ Now() time.Time }) bool {
-	return e.HasExpiry() && clk.Now().After(e.ExpiresAt)
+	return e.HasExpiry() && clk.Now().After(e.expiresAt)
 }
 
 // RemainingTTL returns the time remaining before expiry according to clk.
@@ -175,10 +289,10 @@ func (e *Envelope) RemainingTTL(clk interface{ Now() time.Time }) time.Duration 
 		return 0
 	}
 	now := clk.Now()
-	if !e.ExpiresAt.After(now) {
+	if !e.expiresAt.After(now) {
 		return 0
 	}
-	return e.ExpiresAt.Sub(now)
+	return e.expiresAt.Sub(now)
 }
 
 // Clone returns a deep copy of the envelope, including a recursively
@@ -186,124 +300,11 @@ func (e *Envelope) RemainingTTL(clk interface{ Now() time.Time }) time.Duration 
 // shared between original and clone.
 func (e *Envelope) Clone() *Envelope {
 	c := *e
-	if e.Payload != nil {
-		c.Payload = make([]byte, len(e.Payload))
-		copy(c.Payload, e.Payload)
-	}
+	c.payload = clonePayload(e.payload)
 	if e.headers != nil {
 		c.headers = Headers(deepCopyHeaders(e.headers))
 	}
 	return &c
-}
-
-func deepCopyHeaders(m map[string]any) map[string]any {
-	cp := make(map[string]any, len(m))
-	for k, v := range m {
-		cp[k] = deepCopyValue(v)
-	}
-	return cp
-}
-
-func deepCopyValue(v any) any {
-	switch val := v.(type) {
-	case map[string]any:
-		return deepCopyHeaders(val)
-	case map[string]string:
-		cp := make(map[string]string, len(val))
-		for k, v := range val {
-			cp[k] = v
-		}
-		return cp
-	case []any:
-		s := make([]any, len(val))
-		for i, elem := range val {
-			s[i] = deepCopyValue(elem)
-		}
-		return s
-	case []string:
-		s := make([]string, len(val))
-		copy(s, val)
-		return s
-	case []byte:
-		if val == nil {
-			return val
-		}
-		s := make([]byte, len(val))
-		copy(s, val)
-		return s
-	case []int:
-		s := make([]int, len(val))
-		copy(s, val)
-		return s
-	case []int64:
-		s := make([]int64, len(val))
-		copy(s, val)
-		return s
-	case []float64:
-		s := make([]float64, len(val))
-		copy(s, val)
-		return s
-	case []float32:
-		s := make([]float32, len(val))
-		copy(s, val)
-		return s
-	default:
-		return v
-	}
-}
-
-// envelopeJSON is the on-the-wire shape used by MarshalJSON /
-// UnmarshalJSON. The schema must remain stable across releases because
-// adapters (sqlitedlq, dynamodbdlq, etc.) serialise Envelope payloads
-// to durable storage. Keys mirror the historical exported field names
-// to keep persisted records readable across the un-export change.
-type envelopeJSON struct {
-	ID        string         `json:"ID,omitempty"`
-	Subject   string         `json:"Subject,omitempty"`
-	Payload   []byte         `json:"Payload,omitempty"`
-	Headers   map[string]any `json:"Headers,omitempty"`
-	CreatedAt time.Time      `json:"CreatedAt,omitempty"`
-	ExpiresAt time.Time      `json:"ExpiresAt,omitempty"`
-}
-
-// MarshalJSON serialises the envelope using the stable historical
-// JSON schema (capitalised field names matching the pre-un-export
-// struct). This is what storage adapters wrote before this change;
-// keeping the keys identical preserves on-disk compatibility.
-func (e Envelope) MarshalJSON() ([]byte, error) {
-	b, err := json.Marshal(envelopeJSON{
-		ID:        e.ID,
-		Subject:   e.subject,
-		Payload:   e.Payload,
-		Headers:   e.headers,
-		CreatedAt: e.CreatedAt,
-		ExpiresAt: e.ExpiresAt,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("messaging: marshal envelope: %w", err)
-	}
-	return b, nil
-}
-
-// UnmarshalJSON populates the envelope from the stable JSON schema.
-// Note: this is a rehydration path, not a fresh construction — it
-// deliberately bypasses NewEnvelope's reserved-header strip so that
-// previously-stamped reserved headers (correlation id, route id, …)
-// survive a save/load cycle.
-func (e *Envelope) UnmarshalJSON(data []byte) error {
-	var dto envelopeJSON
-	if err := json.Unmarshal(data, &dto); err != nil {
-		return fmt.Errorf("messaging: unmarshal envelope: %w", err)
-	}
-	e.ID = dto.ID
-	e.subject = dto.Subject
-	e.Payload = dto.Payload
-	// Rehydration path: bypass reserved-header strip so previously-
-	// stamped bridge metadata survives a save/load round-trip.
-	e.headers = headersFromTrustedMap(dto.Headers)
-	e.CreatedAt = dto.CreatedAt
-	e.ExpiresAt = dto.ExpiresAt
-	return nil
 }
 
 // MustEnvelope is a TEST-ONLY construction helper that panics on

@@ -55,7 +55,7 @@ func TestIntegration_SQS_SendBatch_25Messages(t *testing.T) {
 		})
 	}
 
-	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -65,7 +65,7 @@ func TestIntegration_SQS_SendBatch_25Messages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
-	if sent != 25 {
+	if sent := batchSent(results); sent != 25 {
 		t.Fatalf("expected 25 sent, got %d", sent)
 	}
 
@@ -109,13 +109,13 @@ func TestIntegration_SQS_SendBatch_VerifyBatchBoundaries(t *testing.T) {
 	envs := make([]*messaging.Envelope, 25)
 	for i := range envs {
 		batchIdx := i / 10
-		envs[i] = &messaging.Envelope{
+		envs[i] = messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      fmt.Sprintf("boundary-%d", i),
 			Payload: []byte(fmt.Sprintf("batch%d-msg%d", batchIdx, i)),
-		}
+		})
 	}
 
-	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -125,7 +125,7 @@ func TestIntegration_SQS_SendBatch_VerifyBatchBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
-	if sent != 25 {
+	if sent := batchSent(results); sent != 25 {
 		t.Fatalf("expected 25 sent, got %d", sent)
 	}
 
@@ -181,7 +181,7 @@ func TestIntegration_SQS_SendBatch_LargeWithHeaders(t *testing.T) {
 		})
 	}
 
-	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -191,7 +191,7 @@ func TestIntegration_SQS_SendBatch_LargeWithHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
-	if sent != total {
+	if sent := batchSent(results); sent != total {
 		t.Fatalf("expected %d sent, got %d", total, sent)
 	}
 
@@ -282,4 +282,15 @@ func pollSQSRaw(
 type sqsRawMessage struct {
 	Body              string
 	MessageAttributes map[string]sqstypes.MessageAttributeValue
+}
+
+// batchSent counts the successful (nil-Err) entries in a SendBatch result.
+func batchSent(results []ports.BatchResult) int {
+	n := 0
+	for _, r := range results {
+		if r.Err == nil {
+			n++
+		}
+	}
+	return n
 }

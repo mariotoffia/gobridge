@@ -56,12 +56,12 @@ func (p *Processor) Name() string {
 
 // Process transforms the message payload according to the configured mappings.
 func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
-	if len(env.Payload) == 0 {
+	if len(env.Payload()) == 0 {
 		return next(ctx, env)
 	}
 
 	// Parse the payload
-	data, err := oj.Parse(env.Payload)
+	data, err := oj.Parse(env.Payload())
 	if err != nil {
 		// Not valid JSON - pass through
 		return next(ctx, env)
@@ -98,7 +98,7 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 		return fmt.Errorf("failed to serialize transformed payload: %w", err)
 	}
 
-	env.Payload = newPayload
+	env.SetPayload(newPayload)
 	return next(ctx, env)
 }
 

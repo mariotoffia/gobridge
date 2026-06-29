@@ -48,7 +48,7 @@ func TestRouteRunner_DirectHold_HappyPath(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{ID: "msg-1", Payload: []byte("hello")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1", Payload: []byte("hello")})
 	del := NewFakeDelivery(env)
 
 	if err := receiver.Emit(ctx, del); err != nil {
@@ -79,7 +79,7 @@ func TestRouteRunner_DirectHold_TransientSendError(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-2"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-2"}))
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "delivery retried on transient send error", del.IsRetried)
 
@@ -101,7 +101,7 @@ func TestRouteRunner_DirectHold_PermanentSendError(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-3"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-3"}))
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "DLQ write and delivery ack", func() bool {
 		return dlqStore.Count() == 1 && del.IsAcked()
@@ -124,10 +124,11 @@ func TestRouteRunner_ExpiredMessage(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{
-		ID:        "msg-expired",
-		ExpiresAt: time.Now().Add(-time.Second),
-	}
+	env := func() *messaging.Envelope {
+		e := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-expired"})
+		_ = e.SetExpiry(time.Now().Add(-time.Second))
+		return e
+	}()
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "expired message DLQ and ack", func() bool {
@@ -193,7 +194,7 @@ func TestRouteRunner_ProcessorError_Permanent(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-bad"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-bad"}))
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "DLQ and ack after permanent processor error", func() bool {
 		return dlqStore.Count() == 1 && del.IsAcked()
@@ -220,7 +221,7 @@ func TestRouteRunner_ProcessorError_Transient(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-retry"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-retry"}))
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "transient processor error retry", del.IsRetried)
 
@@ -244,7 +245,7 @@ func TestRouteRunner_ProcessorError_MessageFiltered_Drop(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-filtered"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-filtered"}))
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "filtered message acked", del.IsAcked)
 
@@ -277,7 +278,7 @@ func TestRouteRunner_ProcessorError_MessageFiltered_DLQ(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-filtered-dlq"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-filtered-dlq"}))
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "filtered message DLQ and ack", func() bool {
 		return dlqStore.Count() == 1 && del.IsAcked()
@@ -309,7 +310,7 @@ func TestRouteRunner_Tracer_SpanLifecycle(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{ID: "msg-traced", Payload: []byte("hello")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-traced", Payload: []byte("hello")})
 	del := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "delivery acked and span ended", func() bool {
@@ -454,7 +455,7 @@ func TestRouteRunner_Tracer_ErrorRecording(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-err"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-err"}))
 	del.AckErr = fmt.Errorf("ack transport failure")
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "delivery ack attempted and span ended", func() bool {
@@ -490,7 +491,7 @@ func TestRouteRunner_Tracer_ProcessorErrorRecording(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-proc-err"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-proc-err"}))
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "delivery acked and span ended after processor error", func() bool {
 		s := tracer.LastSpan()
@@ -522,7 +523,7 @@ func TestRouteRunner_Tracer_FilteredNoError(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-filtered-trace"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-filtered-trace"}))
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "filtered delivery acked and span ended", func() bool {
 		s := tracer.LastSpan()
@@ -558,7 +559,7 @@ func TestRouteRunner_SharedOutbox_HappyPath(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-outbox"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-outbox"}))
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "outbox persist and source ack", func() bool {
 		return outbox.RecordCount() == 1 && del.IsAcked()
@@ -590,7 +591,7 @@ func TestRouteRunner_SharedOutbox_DuplicatePersist(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	env := &messaging.Envelope{ID: "msg-dup"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-dup"})
 	del1 := NewFakeDelivery(env)
 	_ = receiver.Emit(ctx, del1)
 	waitFor(t, time.Second, "first delivery acked", del1.IsAcked)
@@ -665,7 +666,7 @@ func TestRouteRunner_DirectHold_ResolverError_Rejected(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-reject"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-reject"}))
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "DLQ and ack on rejected resolve", func() bool {
 		return del.IsAcked() && dlqStore.Count() == 1 && sender.SentCount() == 0
@@ -696,7 +697,7 @@ func TestRouteRunner_DirectHold_ResolverError_Transient(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-retry-resolve"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-retry-resolve"}))
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "retry on transient resolver error", del.IsRetried)
 
@@ -775,7 +776,7 @@ func TestRouteRunner_SharedOutbox_FanOut(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-fanout"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-fanout"}))
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "fan-out outbox and ack", func() bool {
 		return outbox.RecordCount() == 2 && del.IsAcked()
@@ -803,7 +804,7 @@ func TestRouteRunner_SharedOutbox_ResolverError_Rejected(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del := NewFakeDelivery(&messaging.Envelope{ID: "msg-outbox-reject"})
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-outbox-reject"}))
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, time.Second, "DLQ and ack on outbox rejected resolve", func() bool {
 		return dlqStore.Count() == 1 && del.IsAcked()
@@ -828,7 +829,7 @@ func TestRouteRunner_Backpressure(t *testing.T) {
 	blocked := make(chan struct{})
 	released := make(chan struct{})
 	sender.SendFn = func(env *messaging.Envelope) error {
-		if env.ID == "msg-block" {
+		if env.ID() == "msg-block" {
 			close(blocked)
 			<-released
 		}
@@ -840,12 +841,12 @@ func TestRouteRunner_Backpressure(t *testing.T) {
 
 	go func() { _ = runner.Run(ctx) }()
 
-	del1 := NewFakeDelivery(&messaging.Envelope{ID: "msg-block"})
+	del1 := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-block"}))
 	go func() { _ = receiver.Emit(ctx, del1) }()
 
 	<-blocked
 
-	del2 := NewFakeDelivery(&messaging.Envelope{ID: "msg-queued"})
+	del2 := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-queued"}))
 	emitDone := make(chan struct{})
 	go func() {
 		_ = receiver.Emit(ctx, del2)

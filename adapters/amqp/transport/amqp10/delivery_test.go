@@ -33,8 +33,8 @@ func TestDelivery_Envelope(t *testing.T) {
 	if env == nil {
 		t.Fatal("Envelope() returned nil")
 	}
-	if env.ID != "env-1" {
-		t.Fatalf("Envelope().ID = %q, want %q", env.ID, "env-1")
+	if env.ID() != "env-1" {
+		t.Fatalf("Envelope().ID() = %q, want %q", env.ID(), "env-1")
 	}
 	if env.Subject() != "test/topic" {
 		t.Fatalf("Envelope().Subject = %q, want %q", env.Subject(), "test/topic")
@@ -169,7 +169,7 @@ func TestDelivery_AckThenRetry(t *testing.T) {
 }
 
 func TestDelivery_NilMetrics(t *testing.T) {
-	env := &messaging.Envelope{ID: "nil-metrics"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "nil-metrics"})
 	msg := &amqp.Message{}
 	s := newMockSettler()
 

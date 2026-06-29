@@ -25,31 +25,29 @@ var (
 )
 
 func passwordCreds(username, password string) *connectivity.CredentialSet {
-	return &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: username, Password: password},
-	}
+	pw := connectivity.NewPasswordCredential(username, password)
+	return connectivity.NewCredentialSet(&pw, nil)
 }
 
 func tlsCreds() *connectivity.CredentialSet {
-	return &connectivity.CredentialSet{
-		TLS: &connectivity.TLSMaterial{
-			CertPEM: "-----BEGIN CERTIFICATE-----\ntest-cert\n-----END CERTIFICATE-----",
-			KeyPEM:  "-----BEGIN PRIVATE KEY-----\ntest-key\n-----END PRIVATE KEY-----",
-			CAPEMs:  []string{"-----BEGIN CERTIFICATE-----\nca1\n-----END CERTIFICATE-----"},
-		},
-	}
+	tls := connectivity.NewTLSMaterial(
+		"-----BEGIN CERTIFICATE-----\ntest-cert\n-----END CERTIFICATE-----",
+		"-----BEGIN PRIVATE KEY-----\ntest-key\n-----END PRIVATE KEY-----",
+		[]string{"-----BEGIN CERTIFICATE-----\nca1\n-----END CERTIFICATE-----"},
+		false,
+	)
+	return connectivity.NewCredentialSet(nil, &tls)
 }
 
 func combinedCreds() *connectivity.CredentialSet {
-	return &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{Username: "admin", Password: "s3cret"},
-		TLS: &connectivity.TLSMaterial{
-			CertPEM:            "-----BEGIN CERTIFICATE-----\ncert\n-----END CERTIFICATE-----",
-			KeyPEM:             "-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----",
-			CAPEMs:             []string{"-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----"},
-			InsecureSkipVerify: true,
-		},
-	}
+	pw := connectivity.NewPasswordCredential("admin", "s3cret")
+	tls := connectivity.NewTLSMaterial(
+		"-----BEGIN CERTIFICATE-----\ncert\n-----END CERTIFICATE-----",
+		"-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----",
+		[]string{"-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----"},
+		true,
+	)
+	return connectivity.NewCredentialSet(&pw, &tls)
 }
 
 // --- Constructor tests ---
@@ -280,7 +278,7 @@ func TestCreate_NestedDirectoryCreation(t *testing.T) {
 
 	got, err := repo.Get(ctx, uri)
 	require.NoError(t, err)
-	assert.Equal(t, "u", got.Password.Username)
+	assert.Equal(t, "u", got.Password().Username())
 }
 
 // --- Get ---
@@ -296,9 +294,9 @@ func TestGet_Success(t *testing.T) {
 
 	got, err := repo.Get(ctx, uri)
 	require.NoError(t, err)
-	require.NotNil(t, got.Password)
-	assert.Equal(t, "alice", got.Password.Username)
-	assert.Equal(t, "wonderland", got.Password.Password)
+	require.NotNil(t, got.Password())
+	assert.Equal(t, "alice", got.Password().Username())
+	assert.Equal(t, "wonderland", got.Password().Password().Reveal())
 }
 
 // Verifies Get returns ErrNotFound when the credential file is absent.
@@ -341,8 +339,8 @@ func TestUpdate_Success(t *testing.T) {
 
 	got, err := repo.Get(ctx, uri)
 	require.NoError(t, err)
-	assert.Equal(t, "v2user", got.Password.Username)
-	assert.Equal(t, "v2pass", got.Password.Password)
+	assert.Equal(t, "v2user", got.Password().Username())
+	assert.Equal(t, "v2pass", got.Password().Password().Reveal())
 }
 
 // Verifies Update bumps the persisted version in the on-disk JSON.
@@ -405,7 +403,7 @@ func TestUpdate_NoVersionCheck(t *testing.T) {
 
 	got, err := repo.Get(ctx, uri)
 	require.NoError(t, err)
-	assert.Equal(t, "u2", got.Password.Username)
+	assert.Equal(t, "u2", got.Password().Username())
 }
 
 // --- Delete ---
@@ -617,8 +615,8 @@ func TestConcurrent_Reads(t *testing.T) {
 			defer wg.Done()
 			got, err := repo.Get(ctx, uri)
 			assert.NoError(t, err)
-			if got != nil && got.Password != nil {
-				assert.Equal(t, "reader", got.Password.Username)
+			if got != nil && got.Password() != nil {
+				assert.Equal(t, "reader", got.Password().Username())
 			}
 		}()
 	}
@@ -653,7 +651,7 @@ func TestConcurrent_Writes(t *testing.T) {
 
 	got, err := repo.Get(ctx, uri)
 	require.NoError(t, err)
-	assert.Equal(t, "writer", got.Password.Username)
+	assert.Equal(t, "writer", got.Password().Username())
 }
 
 // --- TLS material round-trip ---
@@ -670,13 +668,13 @@ func TestTLSMaterial_RoundTrip(t *testing.T) {
 
 	got, err := repo.Get(ctx, uri)
 	require.NoError(t, err)
-	require.NotNil(t, got.TLS)
-	assert.Nil(t, got.Password)
+	require.NotNil(t, got.TLS())
+	assert.Nil(t, got.Password())
 
-	assert.Equal(t, want.TLS.CertPEM, got.TLS.CertPEM)
-	assert.Equal(t, want.TLS.KeyPEM, got.TLS.KeyPEM)
-	assert.Equal(t, want.TLS.CAPEMs, got.TLS.CAPEMs)
-	assert.Equal(t, want.TLS.InsecureSkipVerify, got.TLS.InsecureSkipVerify)
+	assert.Equal(t, want.TLS().CertPEM(), got.TLS().CertPEM())
+	assert.Equal(t, want.TLS().KeyPEM().Reveal(), got.TLS().KeyPEM().Reveal())
+	assert.Equal(t, want.TLS().CAPEMs(), got.TLS().CAPEMs())
+	assert.Equal(t, want.TLS().InsecureSkipVerify(), got.TLS().InsecureSkipVerify())
 }
 
 // --- Combined credential round-trip ---
@@ -694,13 +692,13 @@ func TestCombinedCredentials_RoundTrip(t *testing.T) {
 	got, err := repo.Get(ctx, uri)
 	require.NoError(t, err)
 
-	require.NotNil(t, got.Password)
-	assert.Equal(t, want.Password.Username, got.Password.Username)
-	assert.Equal(t, want.Password.Password, got.Password.Password)
+	require.NotNil(t, got.Password())
+	assert.Equal(t, want.Password().Username(), got.Password().Username())
+	assert.Equal(t, want.Password().Password().Reveal(), got.Password().Password().Reveal())
 
-	require.NotNil(t, got.TLS)
-	assert.Equal(t, want.TLS.CertPEM, got.TLS.CertPEM)
-	assert.Equal(t, want.TLS.KeyPEM, got.TLS.KeyPEM)
-	assert.Equal(t, want.TLS.CAPEMs, got.TLS.CAPEMs)
-	assert.Equal(t, want.TLS.InsecureSkipVerify, got.TLS.InsecureSkipVerify)
+	require.NotNil(t, got.TLS())
+	assert.Equal(t, want.TLS().CertPEM(), got.TLS().CertPEM())
+	assert.Equal(t, want.TLS().KeyPEM().Reveal(), got.TLS().KeyPEM().Reveal())
+	assert.Equal(t, want.TLS().CAPEMs(), got.TLS().CAPEMs())
+	assert.Equal(t, want.TLS().InsecureSkipVerify(), got.TLS().InsecureSkipVerify())
 }

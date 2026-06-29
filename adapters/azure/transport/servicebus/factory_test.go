@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -45,7 +46,7 @@ func TestFactory_NewReceiver(t *testing.T) {
 		ID: "recv-1",
 		Config: Config{
 			Receiver:   ReceiverParams{QueueName: "test-queue"},
-			Connection: ConnectionConfig{ConnectionString: "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=fake"},
+			Connection: ConnectionConfig{ConnectionString: shared.NewSecret("Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=fake")},
 		},
 	}
 
@@ -66,7 +67,7 @@ func TestFactory_NewSender(t *testing.T) {
 		ID: "send-1",
 		Config: Config{
 			Sender:     SenderParams{QueueName: "test-queue"},
-			Connection: ConnectionConfig{ConnectionString: "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=fake"},
+			Connection: ConnectionConfig{ConnectionString: shared.NewSecret("Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=fake")},
 		},
 	}
 
@@ -87,7 +88,7 @@ func TestFactory_NewReceiver_TopicSubscription(t *testing.T) {
 		ID: "recv-topic",
 		Config: Config{
 			Receiver:   ReceiverParams{TopicName: "test-topic", SubscriptionName: "test-sub"},
-			Connection: ConnectionConfig{ConnectionString: "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=fake"},
+			Connection: ConnectionConfig{ConnectionString: shared.NewSecret("Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=fake")},
 		},
 	}
 
@@ -108,7 +109,7 @@ func TestFactory_NewSender_Topic(t *testing.T) {
 		ID: "send-topic",
 		Config: Config{
 			Sender:     SenderParams{TopicName: "test-topic"},
-			Connection: ConnectionConfig{ConnectionString: "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=fake"},
+			Connection: ConnectionConfig{ConnectionString: shared.NewSecret("Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=fake")},
 		},
 	}
 
@@ -129,7 +130,7 @@ func TestReceiverFactory_NewReceiver(t *testing.T) {
 		ID: "recv-direct",
 		Config: Config{
 			Receiver:   ReceiverParams{QueueName: "direct-queue"},
-			Connection: ConnectionConfig{ConnectionString: "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=fake"},
+			Connection: ConnectionConfig{ConnectionString: shared.NewSecret("Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=fake")},
 		},
 	}
 
@@ -150,7 +151,7 @@ func TestSenderFactory_NewSender(t *testing.T) {
 		ID: "send-direct",
 		Config: Config{
 			Sender:     SenderParams{QueueName: "direct-queue"},
-			Connection: ConnectionConfig{ConnectionString: "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=fake"},
+			Connection: ConnectionConfig{ConnectionString: shared.NewSecret("Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=fake")},
 		},
 	}
 

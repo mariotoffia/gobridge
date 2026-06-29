@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -21,7 +22,7 @@ func TestSenderEnsureClientConcurrentS14(t *testing.T) {
 		Client:    mock,
 		QueueName: "test-queue",
 		Connection: ConnectionConfig{
-			ConnectionString: "not-used-when-client-injected",
+			ConnectionString: shared.NewSecret("not-used-when-client-injected"),
 		},
 	})
 	if err != nil {
@@ -31,11 +32,11 @@ func TestSenderEnsureClientConcurrentS14(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	env := &messaging.Envelope{
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:        "id-1",
 		Payload:   []byte("payload"),
 		CreatedAt: time.Now(),
-	}
+	})
 
 	const goroutines = 10
 	var wg sync.WaitGroup

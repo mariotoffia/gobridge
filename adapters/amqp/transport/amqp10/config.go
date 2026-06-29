@@ -24,7 +24,7 @@ type SessionOptions struct {
 	IdleTimeout         time.Duration
 	MaxFrameSize        uint32
 	Username            string
-	Password            string
+	Password            shared.Secret
 	TLS                 *TLSConfig
 	ContainerID         string
 
@@ -60,10 +60,13 @@ type TLSConfig struct {
 
 	// CACertPEM, CertPEM, KeyPEM carry in-memory PEM material used
 	// when credentials are rotated via ApplyCredentials. Non-empty
-	// fields override the corresponding *File fields.
-	CACertPEM string
-	CertPEM   string
-	KeyPEM    string
+	// fields override the corresponding *File fields. They are
+	// shared.Secret so the (sensitive) private-key material — and, for
+	// uniformity, the cert/CA bundles — redact on JSON/YAML/log marshal;
+	// the config-save path reveals explicitly (see shared.RevealSecrets).
+	CACertPEM shared.Secret
+	CertPEM   shared.Secret
+	KeyPEM    shared.Secret
 
 	InsecureSkipVerify bool
 }
@@ -162,9 +165,9 @@ func BuildTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 	}
 
 	switch {
-	case cfg.CACertPEM != "":
+	case !cfg.CACertPEM.IsZero():
 		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM([]byte(cfg.CACertPEM)) {
+		if !pool.AppendCertsFromPEM([]byte(cfg.CACertPEM.Reveal())) {
 			return nil, fmt.Errorf("failed to parse CA cert PEM material")
 		}
 		tlsCfg.RootCAs = pool
@@ -181,13 +184,13 @@ func BuildTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 	}
 
 	switch {
-	case cfg.CertPEM != "" && cfg.KeyPEM != "":
-		cert, err := tls.X509KeyPair([]byte(cfg.CertPEM), []byte(cfg.KeyPEM))
+	case !cfg.CertPEM.IsZero() && !cfg.KeyPEM.IsZero():
+		cert, err := tls.X509KeyPair([]byte(cfg.CertPEM.Reveal()), []byte(cfg.KeyPEM.Reveal()))
 		if err != nil {
 			return nil, fmt.Errorf("parse client certificate PEM: %w", err)
 		}
 		tlsCfg.Certificates = []tls.Certificate{cert}
-	case cfg.CertPEM != "" || cfg.KeyPEM != "":
+	case !cfg.CertPEM.IsZero() || !cfg.KeyPEM.IsZero():
 		return nil, fmt.Errorf("client certificate PEM requires both CertPEM and KeyPEM")
 	case cfg.CertFile != "" && cfg.KeyFile != "":
 		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
@@ -303,7 +306,7 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 		opts.Username = v
 	}
 	if v, ok := optString(m, "password"); ok {
-		opts.Password = v
+		opts.Password = shared.NewSecret(v)
 	}
 	if v, ok := optString(m, "container_id"); ok {
 		opts.ContainerID = v

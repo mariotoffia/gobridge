@@ -26,7 +26,7 @@ func TestJSONTransform_SimpleMapping(t *testing.T) {
 	}
 	inputBytes, _ := json.Marshal(input)
 
-	env := &messaging.Envelope{Payload: inputBytes}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: inputBytes})
 
 	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		return nil
@@ -36,7 +36,7 @@ func TestJSONTransform_SimpleMapping(t *testing.T) {
 	}
 
 	var output map[string]any
-	if err := json.Unmarshal(env.Payload, &output); err != nil {
+	if err := json.Unmarshal(env.Payload(), &output); err != nil {
 		t.Fatalf("failed to parse output: %v", err)
 	}
 
@@ -77,7 +77,7 @@ func TestJSONTransform_NestedExtraction(t *testing.T) {
 	}
 	inputBytes, _ := json.Marshal(input)
 
-	env := &messaging.Envelope{Payload: inputBytes}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: inputBytes})
 
 	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		return nil
@@ -87,7 +87,7 @@ func TestJSONTransform_NestedExtraction(t *testing.T) {
 	}
 
 	var output map[string]any
-	if err := json.Unmarshal(env.Payload, &output); err != nil {
+	if err := json.Unmarshal(env.Payload(), &output); err != nil {
 		t.Fatalf("failed to parse output: %v", err)
 	}
 
@@ -123,7 +123,7 @@ func TestJSONTransform_NestedTarget(t *testing.T) {
 	}
 	inputBytes, _ := json.Marshal(input)
 
-	env := &messaging.Envelope{Payload: inputBytes}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: inputBytes})
 
 	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		return nil
@@ -133,7 +133,7 @@ func TestJSONTransform_NestedTarget(t *testing.T) {
 	}
 
 	var output map[string]any
-	if err := json.Unmarshal(env.Payload, &output); err != nil {
+	if err := json.Unmarshal(env.Payload(), &output); err != nil {
 		t.Fatalf("failed to parse output: %v", err)
 	}
 
@@ -174,7 +174,7 @@ func TestJSONTransform_TypeTransformation(t *testing.T) {
 	}
 	inputBytes, _ := json.Marshal(input)
 
-	env := &messaging.Envelope{Payload: inputBytes}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: inputBytes})
 
 	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		return nil
@@ -184,7 +184,7 @@ func TestJSONTransform_TypeTransformation(t *testing.T) {
 	}
 
 	var output map[string]any
-	if err := json.Unmarshal(env.Payload, &output); err != nil {
+	if err := json.Unmarshal(env.Payload(), &output); err != nil {
 		t.Fatalf("failed to parse output: %v", err)
 	}
 
@@ -225,7 +225,7 @@ func TestJSONTransform_DefaultValue(t *testing.T) {
 	}
 	inputBytes, _ := json.Marshal(input)
 
-	env := &messaging.Envelope{Payload: inputBytes}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: inputBytes})
 
 	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		return nil
@@ -235,7 +235,7 @@ func TestJSONTransform_DefaultValue(t *testing.T) {
 	}
 
 	var output map[string]any
-	if err := json.Unmarshal(env.Payload, &output); err != nil {
+	if err := json.Unmarshal(env.Payload(), &output); err != nil {
 		t.Fatalf("failed to parse output: %v", err)
 	}
 
@@ -263,7 +263,7 @@ func TestJSONTransform_RequiredField(t *testing.T) {
 	}
 	inputBytes, _ := json.Marshal(input)
 
-	env := &messaging.Envelope{Payload: inputBytes}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: inputBytes})
 
 	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		return nil
@@ -293,7 +293,7 @@ func TestJSONTransform_Base64Encoding(t *testing.T) {
 	}
 	inputBytes, _ := json.Marshal(input)
 
-	env := &messaging.Envelope{Payload: inputBytes}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: inputBytes})
 
 	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		return nil
@@ -303,7 +303,7 @@ func TestJSONTransform_Base64Encoding(t *testing.T) {
 	}
 
 	var output map[string]any
-	if err := json.Unmarshal(env.Payload, &output); err != nil {
+	if err := json.Unmarshal(env.Payload(), &output); err != nil {
 		t.Fatalf("failed to parse output: %v", err)
 	}
 
@@ -336,7 +336,7 @@ func TestJSONTransform_ArrayAccess(t *testing.T) {
 	}
 	inputBytes, _ := json.Marshal(input)
 
-	env := &messaging.Envelope{Payload: inputBytes}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: inputBytes})
 
 	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {
 		return nil
@@ -346,7 +346,7 @@ func TestJSONTransform_ArrayAccess(t *testing.T) {
 	}
 
 	var output map[string]any
-	if err := json.Unmarshal(env.Payload, &output); err != nil {
+	if err := json.Unmarshal(env.Payload(), &output); err != nil {
 		t.Fatalf("failed to parse output: %v", err)
 	}
 
@@ -369,7 +369,7 @@ func TestJSONTransform_EmptyPayload(t *testing.T) {
 		t.Fatalf("failed to create transform: %v", err)
 	}
 
-	env := &messaging.Envelope{Payload: nil}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: nil})
 
 	nextCalled := false
 	err = transform.Process(context.Background(), env, func(ctx context.Context, e *messaging.Envelope) error {

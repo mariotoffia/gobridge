@@ -12,32 +12,34 @@ import (
 )
 
 func unmarshalEntry(item map[string]ddbtypes.AttributeValue) (routing.DLQEntry, error) {
-	var e routing.DLQEntry
+	var spec routing.DLQEntrySpec
 
 	pk := strAttr(item, attrPK)
 	if len(pk) > 4 {
-		e.ID = pk[4:] // strip "DLQ#" prefix
+		spec.ID = pk[4:] // strip "DLQ#" prefix
 	}
 
-	e.RouteID = strAttr(item, attrRouteID)
-	e.BindingID = strAttr(item, attrBindingID)
-	e.SessionID = strAttr(item, attrSessionID)
-	e.SourceID = strAttr(item, attrSourceID)
-	e.CorrelationID = strAttr(item, attrCorrelationID)
-	e.Reason = strAttr(item, attrReason)
-	e.Category = strAttr(item, attrCategory)
-	e.ErrorCode = strAttr(item, attrErrorCode)
-	e.LastError = strAttr(item, attrLastError)
-	e.FailedAt = timeFromMillis(numAttrI64(item, attrFailedAt))
-	e.Attempts = int(numAttrI64(item, attrAttempts))
+	spec.RouteID = strAttr(item, attrRouteID)
+	spec.BindingID = strAttr(item, attrBindingID)
+	spec.SessionID = strAttr(item, attrSessionID)
+	spec.SourceID = strAttr(item, attrSourceID)
+	spec.CorrelationID = strAttr(item, attrCorrelationID)
+	spec.Reason = strAttr(item, attrReason)
+	spec.Category = strAttr(item, attrCategory)
+	spec.ErrorCode = strAttr(item, attrErrorCode)
+	spec.LastError = strAttr(item, attrLastError)
+	spec.FailedAt = timeFromMillis(numAttrI64(item, attrFailedAt))
+	spec.Attempts = int(numAttrI64(item, attrAttempts))
 
 	if envJSON := strAttr(item, attrEnvelopeJSON); envJSON != "" {
-		if err := json.Unmarshal([]byte(envJSON), &e.Envelope); err != nil {
-			return e, fmt.Errorf("dynamodbdlq: unmarshal envelope: %w", err)
+		if err := json.Unmarshal([]byte(envJSON), &spec.Envelope); err != nil {
+			return routing.DLQEntry{}, fmt.Errorf("dynamodbdlq: unmarshal envelope: %w", err)
 		}
 	}
 
-	return e, nil
+	// RehydrateDLQEntry: the envelope was freshly decoded and is already
+	// owned, so the entry takes it without a redundant clone (finding #9).
+	return routing.RehydrateDLQEntry(spec), nil
 }
 
 func strAttr(item map[string]ddbtypes.AttributeValue, key string) string {

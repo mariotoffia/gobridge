@@ -179,20 +179,11 @@ func cloneCredentialSet(c *connectivity.CredentialSet) *connectivity.CredentialS
 	if c == nil {
 		return nil
 	}
-	cp := *c
-	if c.Password != nil {
-		p := *c.Password
-		cp.Password = &p
-	}
-	if c.TLS != nil {
-		t := *c.TLS
-		if c.TLS.CAPEMs != nil {
-			t.CAPEMs = make([]string, len(c.TLS.CAPEMs))
-			copy(t.CAPEMs, c.TLS.CAPEMs)
-		}
-		cp.TLS = &t
-	}
-	return &cp
+	// PasswordCredential and TLSMaterial are immutable value objects, so the
+	// cached pointers can be shared safely. A fresh CredentialSet wrapper is
+	// still returned so the caller holds an independent container that cannot
+	// corrupt the cached entry.
+	return connectivity.NewCredentialSet(c.Password(), c.TLS())
 }
 
 const maxCredentialCacheEntries = 1000

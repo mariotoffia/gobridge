@@ -10,7 +10,14 @@ type LeaseToken struct {
 	Owner   string
 }
 
-// LeaseInfo describes the current state of a lease.
+// LeaseInfo is a READ-ONLY SNAPSHOT of a lease's state as returned by
+// LeaseStore.Current / Acquire / Renew. It is a plain DTO and carries no
+// behavior: the LeaseStore — not LeaseInfo — owns the lease lifecycle and
+// fencing invariants, enforcing them through conditional (compare-and-set)
+// writes keyed on LeaseToken.Version. Mutating a returned LeaseInfo has no
+// effect on stored state; in particular the Endpoints map is defensively
+// copied at every LeaseStore boundary, so a returned LeaseInfo.Endpoints
+// can never alias the store's internal state.
 type LeaseInfo struct {
 	LeaseID   string
 	Owner     string

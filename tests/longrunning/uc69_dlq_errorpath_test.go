@@ -107,7 +107,7 @@ func TestUC69_DLQReplayIntegration(t *testing.T) {
 	})
 
 	for _, e := range entries {
-		env := e.Envelope.Clone()
+		env := e.Snapshot()
 		_ = rt2.Inject(ctx, "uc69-route2", env)
 	}
 
@@ -259,8 +259,8 @@ func TestUC71_PoisonMessageAttemptCount(t *testing.T) {
 	require.GreaterOrEqual(t, len(entries), msgCount)
 
 	for i, e := range entries {
-		assert.GreaterOrEqual(t, e.Attempts, 1,
-			"entry %d: Attempts should be >= 1, got %d", i, e.Attempts)
+		assert.GreaterOrEqual(t, e.Attempts(), 1,
+			"entry %d: Attempts should be >= 1, got %d", i, e.Attempts())
 	}
 }
 
@@ -326,17 +326,17 @@ func TestUC72_DLQEntryFieldIntegrity(t *testing.T) {
 	require.GreaterOrEqual(t, len(entries), msgCount)
 
 	for i, e := range entries {
-		assert.NotEmpty(t, e.ID,
+		assert.NotEmpty(t, e.ID(),
 			"entry %d: ID must not be empty", i)
-		assert.NotEmpty(t, e.RouteID,
+		assert.NotEmpty(t, e.RouteID(),
 			"entry %d: RouteID must not be empty", i)
-		assert.NotEmpty(t, e.Category,
+		assert.NotEmpty(t, e.Category(),
 			"entry %d: Category must not be empty", i)
-		assert.NotEmpty(t, e.Reason,
+		assert.NotEmpty(t, e.Reason(),
 			"entry %d: Reason must not be empty", i)
-		assert.False(t, e.FailedAt.IsZero(),
+		assert.False(t, e.FailedAt().IsZero(),
 			"entry %d: FailedAt must not be zero", i)
-		assert.NotEmpty(t, e.Envelope.ID,
+		assert.NotEmpty(t, e.Snapshot().ID(),
 			"entry %d: Envelope.ID must not be empty", i)
 	}
 }

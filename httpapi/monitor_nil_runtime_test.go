@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -18,7 +19,7 @@ func nilRuntimeMonitorServer() (*Server, *http.ServeMux) {
 	cfg := Config{
 		AdminAddr:   ":0",
 		MonitorAddr: ":0",
-		AdminAPIKey: "test-admin-key-1234567890",
+		AdminAPIKey: shared.NewSecret("test-admin-key-1234567890"),
 		RuntimeProvider: func() ports.Runtime {
 			return nil
 		},

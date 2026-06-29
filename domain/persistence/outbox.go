@@ -45,23 +45,30 @@ type OutboxSpec struct {
 }
 
 // OutboxRecord is the aggregate root for a durable outbox entry on the
-// reliable-egress path. Identity attributes are exported and immutable
-// once the aggregate is constructed; lifecycle state is private and
-// transitioned only through the aggregate's state-machine methods
-// (Claim, Complete, Expire). The persistence boundary uses Snapshot /
-// RehydrateFromSnapshot so storage adapters never mutate state directly.
+// reliable-egress path. All aggregate state is private: identity
+// attributes are immutable after construction and exposed only through
+// read-only value accessors (ID, RouteID, EnvelopeID, BindingID,
+// SessionID, Address, CreatedAt, ExpiresAt, DispatchHeaders as a deep
+// copy, and the embedded envelope via Snapshot); lifecycle state is
+// transitioned solely through the aggregate's state-machine methods
+// (Claim, Complete, Expire). Storage adapters cross the persistence
+// boundary via PersistenceSnapshot / RehydrateFromSnapshot and never
+// touch fields directly, so caller-side mutation can never corrupt
+// persisted or rehydrated state.
+//
+// aggregate-root
 type OutboxRecord struct {
-	// Identity (immutable after construction).
-	ID              string
-	RouteID         string
-	EnvelopeID      string
-	BindingID       string
-	SessionID       string
-	Address         string
-	Envelope        messaging.Envelope
-	DispatchHeaders map[string]any
-	CreatedAt       time.Time
-	ExpiresAt       time.Time
+	// Identity (immutable after construction; read via accessors).
+	id              string
+	routeID         string
+	envelopeID      string
+	bindingID       string
+	sessionID       string
+	address         string
+	envelope        messaging.Envelope
+	dispatchHeaders map[string]any
+	createdAt       time.Time
+	expiresAt       time.Time
 
 	// Lifecycle state (mutated only through aggregate methods).
 	status       OutboxStatus
@@ -82,7 +89,7 @@ func NewOutboxRecord(spec OutboxSpec) (*OutboxRecord, *shared.BridgeError) {
 	}
 	envelopeID := spec.EnvelopeID
 	if envelopeID == "" {
-		envelopeID = spec.Envelope.ID
+		envelopeID = spec.Envelope.ID()
 	}
 	if envelopeID == "" {
 		return nil, shared.ErrInvalidOutboxRecord.WithMessage("outbox record envelope ID is required")
@@ -92,16 +99,16 @@ func NewOutboxRecord(spec OutboxSpec) (*OutboxRecord, *shared.BridgeError) {
 			WithMessage("outbox record requires session ID or binding ID for partition key")
 	}
 	return &OutboxRecord{
-		ID:              spec.ID,
-		RouteID:         spec.RouteID,
-		EnvelopeID:      envelopeID,
-		BindingID:       spec.BindingID,
-		SessionID:       spec.SessionID,
-		Address:         spec.Address,
-		Envelope:        *spec.Envelope.Clone(),
-		DispatchHeaders: spec.DispatchHeaders,
-		CreatedAt:       spec.CreatedAt,
-		ExpiresAt:       spec.ExpiresAt,
+		id:              spec.ID,
+		routeID:         spec.RouteID,
+		envelopeID:      envelopeID,
+		bindingID:       spec.BindingID,
+		sessionID:       spec.SessionID,
+		address:         spec.Address,
+		envelope:        *spec.Envelope.Clone(),
+		dispatchHeaders: messaging.Headers(spec.DispatchHeaders).Snapshot(),
+		createdAt:       spec.CreatedAt,
+		expiresAt:       spec.ExpiresAt,
 		status:          OutboxPending,
 	}, nil
 }
@@ -127,6 +134,52 @@ func (r *OutboxRecord) ReplayCount() int { return r.replayCount }
 // CompletedAt returns the completion timestamp; zero if not completed.
 func (r *OutboxRecord) CompletedAt() time.Time { return r.completedAt }
 
+// ID returns the record's immutable identity.
+func (r *OutboxRecord) ID() string { return r.id }
+
+// RouteID returns the ID of the route that produced this record.
+func (r *OutboxRecord) RouteID() string { return r.routeID }
+
+// EnvelopeID returns the ID of the embedded envelope.
+func (r *OutboxRecord) EnvelopeID() string { return r.envelopeID }
+
+// BindingID returns the destination binding ID for this record.
+func (r *OutboxRecord) BindingID() string { return r.bindingID }
+
+// SessionID returns the session ID component of the partition key.
+func (r *OutboxRecord) SessionID() string { return r.sessionID }
+
+// Address returns the transport destination address resolved at egress.
+func (r *OutboxRecord) Address() string { return r.address }
+
+// CreatedAt returns the time the record was created.
+func (r *OutboxRecord) CreatedAt() time.Time { return r.createdAt }
+
+// ExpiresAt returns the record's expiry time; zero when it never expires.
+func (r *OutboxRecord) ExpiresAt() time.Time { return r.expiresAt }
+
+// DispatchHeaders returns a deep copy of the per-message dispatch headers
+// merged onto the outbound envelope at send time. The copy isolates the
+// aggregate's internal map: mutating the result cannot corrupt the record.
+// Returns nil when no dispatch headers were supplied.
+func (r *OutboxRecord) DispatchHeaders() map[string]any {
+	return messaging.Headers(r.dispatchHeaders).Snapshot()
+}
+
+// OrderingKey returns the per-message ordering key (the
+// messaging.HeaderOrderingKey header carried by the embedded envelope)
+// and whether a non-empty key is present. Unlike Snapshot it does NOT
+// clone the envelope: it is a read-only peek used by the outbox drainer
+// to group records for per-key in-order delivery on the hot path. The
+// returned flag is false when the header is absent, non-string, or empty.
+func (r *OutboxRecord) OrderingKey() (string, bool) {
+	key, ok := r.envelope.Headers().GetString(messaging.HeaderOrderingKey)
+	if !ok || key == "" {
+		return "", false
+	}
+	return key, true
+}
+
 // IsClaimable reports whether the record may be claimed by a holder of
 // fencing-token version currentTokenVersion. A record is claimable when
 // it is Pending, or when it is Claimed by a strictly older fencing
@@ -151,7 +204,7 @@ func (r *OutboxRecord) Claim(now time.Time, claimedBy string, tokenVersion uint6
 	if !r.IsClaimable(tokenVersion) {
 		return shared.ErrOutboxNotClaimable.
 			WithMessage("outbox record is not claimable in its current state").
-			With("recordID", r.ID).
+			With("recordID", r.id).
 			With("status", string(r.status)).
 			With("currentClaimVersion", r.claimVersion).
 			With("givenTokenVersion", tokenVersion)
@@ -171,7 +224,7 @@ func (r *OutboxRecord) Complete(now time.Time) *shared.BridgeError {
 	if r.status != OutboxClaimed {
 		return shared.ErrOutboxNotInClaimedState.
 			WithMessage("outbox record must be in claimed state to complete").
-			With("recordID", r.ID).
+			With("recordID", r.id).
 			With("status", string(r.status))
 	}
 	r.status = OutboxCompleted
@@ -190,7 +243,7 @@ func (r *OutboxRecord) Expire(_ time.Time) *shared.BridgeError {
 	default:
 		return shared.ErrOutboxAlreadyTerminal.
 			WithMessage("outbox record is already in a terminal state").
-			With("recordID", r.ID).
+			With("recordID", r.id).
 			With("status", string(r.status))
 	}
 }
@@ -225,7 +278,7 @@ type OutboxSnapshot struct {
 // the DDD R5 aggregate-boundary rule: callers receive an isolated
 // messaging.Envelope rather than a shared reference.
 func (r *OutboxRecord) Snapshot() *messaging.Envelope {
-	return r.Envelope.Clone()
+	return r.envelope.Clone()
 }
 
 // PersistenceSnapshot returns a value copy of the aggregate's full state for
@@ -235,21 +288,21 @@ func (r *OutboxRecord) Snapshot() *messaging.Envelope {
 // aggregate's internal state.
 func (r *OutboxRecord) PersistenceSnapshot() OutboxSnapshot {
 	return OutboxSnapshot{
-		ID:              r.ID,
-		RouteID:         r.RouteID,
-		EnvelopeID:      r.EnvelopeID,
-		BindingID:       r.BindingID,
-		SessionID:       r.SessionID,
-		Address:         r.Address,
-		Envelope:        *r.Envelope.Clone(),
-		DispatchHeaders: r.DispatchHeaders,
+		ID:              r.id,
+		RouteID:         r.routeID,
+		EnvelopeID:      r.envelopeID,
+		BindingID:       r.bindingID,
+		SessionID:       r.sessionID,
+		Address:         r.address,
+		Envelope:        *r.envelope.Clone(),
+		DispatchHeaders: messaging.Headers(r.dispatchHeaders).Snapshot(),
 		Status:          r.status,
 		ClaimedBy:       r.claimedBy,
 		ClaimedAt:       r.claimedAt,
 		ClaimVersion:    r.claimVersion,
 		ReplayCount:     r.replayCount,
-		CreatedAt:       r.CreatedAt,
-		ExpiresAt:       r.ExpiresAt,
+		CreatedAt:       r.createdAt,
+		ExpiresAt:       r.expiresAt,
 		CompletedAt:     r.completedAt,
 	}
 }
@@ -266,16 +319,16 @@ func RehydrateFromSnapshot(s OutboxSnapshot) *OutboxRecord {
 		status = OutboxPending
 	}
 	return &OutboxRecord{
-		ID:              s.ID,
-		RouteID:         s.RouteID,
-		EnvelopeID:      s.EnvelopeID,
-		BindingID:       s.BindingID,
-		SessionID:       s.SessionID,
-		Address:         s.Address,
-		Envelope:        *s.Envelope.Clone(),
-		DispatchHeaders: s.DispatchHeaders,
-		CreatedAt:       s.CreatedAt,
-		ExpiresAt:       s.ExpiresAt,
+		id:              s.ID,
+		routeID:         s.RouteID,
+		envelopeID:      s.EnvelopeID,
+		bindingID:       s.BindingID,
+		sessionID:       s.SessionID,
+		address:         s.Address,
+		envelope:        *s.Envelope.Clone(),
+		dispatchHeaders: messaging.Headers(s.DispatchHeaders).Snapshot(),
+		createdAt:       s.CreatedAt,
+		expiresAt:       s.ExpiresAt,
 		status:          status,
 		claimedBy:       s.ClaimedBy,
 		claimedAt:       s.ClaimedAt,

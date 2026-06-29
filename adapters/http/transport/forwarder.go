@@ -147,13 +147,13 @@ func (f *HTTPForwarder) Forward(
 	}
 
 	ir := ingressRequest{
-		ID:      env.ID,
+		ID:      env.ID(),
 		Subject: env.Subject(),
-		Payload: env.Payload,
+		Payload: env.Payload(),
 		Headers: env.Headers(),
 	}
-	if !env.ExpiresAt.IsZero() {
-		ir.ExpiresAt = env.ExpiresAt.Format(time.RFC3339)
+	if !env.ExpiresAt().IsZero() {
+		ir.ExpiresAt = env.ExpiresAt().Format(time.RFC3339)
 	}
 	body, err := json.Marshal(ir)
 	if err != nil {

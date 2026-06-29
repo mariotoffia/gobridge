@@ -157,7 +157,7 @@ func TestEdgeR3_ValidExpiresAtAccepted(t *testing.T) {
 	select {
 	case d := <-deliveryCh:
 		env := d.Envelope()
-		if env.ExpiresAt.IsZero() {
+		if env.ExpiresAt().IsZero() {
 			t.Fatal("expected non-zero ExpiresAt")
 		}
 		_ = d.Ack(context.Background())

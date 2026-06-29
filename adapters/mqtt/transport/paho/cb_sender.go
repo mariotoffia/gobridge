@@ -59,7 +59,7 @@ func NewCircuitBreakerSender(inner *Sender, breaker ports.CircuitBreaker) *Circu
 // breaker-side) by session.
 func (s *CircuitBreakerSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	if err := s.breaker.BeforeRequest(); err != nil {
-		s.metrics.Counter(shared.MetricMQTTPublishFailures, 1,
+		s.metrics.Counter(MetricMQTTPublishFailures, 1,
 			shared.Tag{Key: "reason", Value: "circuit_open"},
 			shared.Tag{Key: shared.TagKeySessionID, Value: s.sessionID},
 		)

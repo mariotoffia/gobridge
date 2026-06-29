@@ -73,7 +73,7 @@ func TestRes_CBSender_CircuitOpen_TagsSessionID(t *testing.T) {
 		t.Fatal("expected error from open circuit")
 	}
 
-	entries := rec.FindEntries(shared.MetricMQTTPublishFailures)
+	entries := rec.FindEntries(MetricMQTTPublishFailures)
 	if len(entries) == 0 {
 		t.Fatal("expected at least one publish-failure metric")
 	}
@@ -141,7 +141,7 @@ func TestRes_CBSender_CircuitOpen_NoSession_TagPresent(t *testing.T) {
 
 	_ = cbs.Send(context.Background(), ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e2", Subject: "t/2"})})
 
-	entries := rec.FindEntries(shared.MetricMQTTPublishFailures)
+	entries := rec.FindEntries(MetricMQTTPublishFailures)
 	if len(entries) == 0 {
 		t.Fatal("expected publish-failure metric")
 	}

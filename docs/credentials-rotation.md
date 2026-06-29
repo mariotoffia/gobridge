@@ -179,8 +179,8 @@ type CredentialAware interface {
 }
 ```
 
-**One method, both scopes.** The transport inspects `creds.Password`
-and `creds.TLS` internally and dispatches the appropriate rebuild.
+**One method, both scopes.** The transport inspects `creds.Password()`
+and `creds.TLS()` internally and dispatches the appropriate rebuild.
 Transports opt in by implementing this interface on whichever of
 `Session`, `Receiver`, or `Sender` holds the credentials. The
 refresher discovers participation via a type assertion:
@@ -198,8 +198,8 @@ if !ok {
 
 What each transport does with each capability today:
 
-| Transport | `set.Password` | `set.TLS` server trust (CA) | `set.TLS` client cert |
-|-----------|----------------|------------------------------|------------------------|
+| Transport | `set.Password()` | `set.TLS()` server trust (CA) | `set.TLS()` client cert |
+|-----------|------------------|-------------------------------|------------------------|
 | **MQTT paho** | mutate `liveCreds`; autopaho `Disconnect()`; reconnect picks up new creds via `ConnectPacketBuilder` | `applyTLSMaterial` updates `opts.TLS.CACertPEM`; triggers `Session.Reload()` (full CM rebuild) | same path as CA; `Reload()` rebuilds |
 | **AMQP 0-9-1** | mutate `liveCreds`; `conn.Close()` -> reconnect loop | `applyAMQPTLSMaterial` updates `opts.TLS.CACertPEM`; `conn.Close()`; also rebuilds `s.dial` closure when TLS is newly enabled | same path |
 | **AMQP 1.0** | mutate `liveCreds`; `conn.Close()` -> monitor-loop reconnect | `applyAMQP10TLSMaterial`; `connect()` re-reads `opts.TLS` each dial, so mutation + close is enough | same path |

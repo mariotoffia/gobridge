@@ -58,14 +58,14 @@ func TestTag_SetsHeaderAndPayloadTID(t *testing.T) {
 		t.Fatalf("ExtractTID from header: got %q, want %q", got, tid)
 	}
 
-	payloadTID := extractPayloadTID(env.Payload)
+	payloadTID := extractPayloadTID(env.Payload())
 	if payloadTID != tid {
 		t.Fatalf("payload _tid=%q, want %q", payloadTID, tid)
 	}
 }
 
 func TestTag_EmptyPayload(t *testing.T) {
-	env := &messaging.Envelope{Payload: nil}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{})
 	tid, _ := Tag(env)
 	if tid == "" {
 		t.Fatal("Tag returned empty TID for nil payload")
@@ -77,22 +77,20 @@ func TestTag_EmptyPayload(t *testing.T) {
 }
 
 func TestTag_NonJSONPayload(t *testing.T) {
-	env := &messaging.Envelope{Payload: []byte("plain text")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte("plain text")})
 	tid, _ := Tag(env)
 	got := ExtractTID(env)
 	if got != tid {
 		t.Fatalf("ExtractTID: got %q, want %q (non-JSON)", got, tid)
 	}
 	// Payload should be unchanged since it's not a JSON object.
-	if string(env.Payload) != "plain text" {
-		t.Fatalf("payload changed: %q", env.Payload)
+	if string(env.Payload()) != "plain text" {
+		t.Fatalf("payload changed: %q", env.Payload())
 	}
 }
 
 func TestExtractTID_HeaderFallback(t *testing.T) {
-	env := &messaging.Envelope{
-		Payload: []byte(`{"_tid":"from-payload","key":"value"}`),
-	}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte(`{"_tid":"from-payload","key":"value"}`)})
 	got := ExtractTID(env)
 	if got != "from-payload" {
 		t.Fatalf("ExtractTID payload fallback: got %q, want %q", got, "from-payload")
@@ -100,7 +98,7 @@ func TestExtractTID_HeaderFallback(t *testing.T) {
 }
 
 func TestExtractTID_Empty(t *testing.T) {
-	env := &messaging.Envelope{Payload: []byte("not json")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte("not json")})
 	got := ExtractTID(env)
 	if got != "" {
 		t.Fatalf("ExtractTID should be empty for no-header+no-json, got %q", got)

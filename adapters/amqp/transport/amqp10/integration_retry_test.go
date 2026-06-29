@@ -24,7 +24,7 @@ func TestIntegration_RetryRelease(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address:        ep,
 		Username:       user,
-		Password:       pass,
+		Password:       shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 	}, connectivity.SessionEphemeral, slog.Default())
 
@@ -105,7 +105,7 @@ func TestIntegration_RetryModify(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address:        ep,
 		Username:       user,
-		Password:       pass,
+		Password:       shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 	}, connectivity.SessionEphemeral, slog.Default())
 
@@ -187,7 +187,7 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address:        ep,
 		Username:       user,
-		Password:       pass,
+		Password:       shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 	}, connectivity.SessionEphemeral, slog.Default())
 

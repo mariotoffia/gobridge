@@ -10,6 +10,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -35,18 +36,18 @@ func TestReceiver_ConvertMessage(t *testing.T) {
 		t.Fatalf("deliveryToEnvelope: %v", err)
 	}
 
-	if env.ID != "msg-500" {
-		t.Errorf("ID = %q, want %q", env.ID, "msg-500")
+	if env.ID() != "msg-500" {
+		t.Errorf("ID = %q, want %q", env.ID(), "msg-500")
 	}
 	if env.Subject() != "order.created" {
 		t.Errorf("Subject = %q, want %q (must come only from gobridge.subject)",
 			env.Subject(), "order.created")
 	}
-	if string(env.Payload) != `{"item":"widget"}` {
-		t.Errorf("Payload = %q", env.Payload)
+	if string(env.Payload()) != `{"item":"widget"}` {
+		t.Errorf("Payload = %q", env.Payload())
 	}
-	if env.CreatedAt != now {
-		t.Errorf("CreatedAt = %v, want %v", env.CreatedAt, now)
+	if env.CreatedAt() != now {
+		t.Errorf("CreatedAt = %v, want %v", env.CreatedAt(), now)
 	}
 	if env.Headers() == nil {
 		t.Fatal("Headers is nil")
@@ -76,11 +77,11 @@ func TestReceiver_ConvertMessage_GeneratesID(t *testing.T) {
 		t.Fatalf("deliveryToEnvelope: %v", err)
 	}
 
-	if env.ID == "" {
+	if env.ID() == "" {
 		t.Error("expected auto-generated ID")
 	}
-	if len(env.ID) != 32 {
-		t.Errorf("generated ID length = %d, want 32 hex chars", len(env.ID))
+	if len(env.ID()) != 32 {
+		t.Errorf("generated ID length = %d, want 32 hex chars", len(env.ID()))
 	}
 }
 
@@ -97,7 +98,7 @@ func TestReceiver_ConvertMessage_ZeroTimestamp(t *testing.T) {
 		t.Fatalf("deliveryToEnvelope: %v", err)
 	}
 
-	if env.CreatedAt.Before(before) {
+	if env.CreatedAt().Before(before) {
 		t.Error("CreatedAt should be >= time.Now() at call time")
 	}
 }
@@ -189,5 +190,40 @@ func TestGenerateEnvelopeID_Unique(t *testing.T) {
 	b := generateEnvelopeID()
 	if a == b {
 		t.Fatalf("expected unique IDs, got %q twice", a)
+	}
+}
+
+// Conformance (ports.Receiver emit-error contract): when emit returns an
+// error, handleDelivery surfaces it wrapped as an emitError (so Run can
+// tell it apart from a transport fault) and the delivery is NOT settled —
+// neither Acked nor Nacked/Rejected — so the broker requeues it once the
+// consumer is cancelled.
+func TestReceiver_EmitError_DeliveryNotAcked(t *testing.T) {
+	acker := newMockAcknowledger()
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "emit-err-091"})
+	raw := amqp.Delivery{
+		Acknowledger: acker,
+		DeliveryTag:  1,
+	}
+	d := NewDelivery(env, raw, slog.Default(), &ports.NoopExporter{}, nil)
+
+	r := NewReceiver(ReceiverConfig{QueueName: "q"})
+
+	sentinel := errors.New("pipeline rejected delivery")
+	err := r.handleDelivery(context.Background(), d, func(context.Context, ports.Delivery) error {
+		return sentinel
+	})
+
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("handleDelivery should surface the emit error, got %v", err)
+	}
+	if !r.isEmitError(err) {
+		t.Fatal("emit failure must be classified as an emit error so Run does not treat it as a transport fault")
+	}
+	if acker.AckCalls != 0 {
+		t.Fatalf("delivery must not be acked on emit error, got %d ack calls", acker.AckCalls)
+	}
+	if acker.NackCalls != 0 || acker.RejectCalls != 0 {
+		t.Fatalf("delivery must not be settled on emit error (nack=%d reject=%d)", acker.NackCalls, acker.RejectCalls)
 	}
 }

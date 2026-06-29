@@ -137,8 +137,8 @@ func TestIntegration_SQS_Receiver_QueueNameResolution(t *testing.T) {
 	}
 
 	env := received[0].Envelope()
-	if string(env.Payload) != `{"resolved":"by-name"}` {
-		t.Fatalf("payload mismatch: got %q", string(env.Payload))
+	if string(env.Payload()) != `{"resolved":"by-name"}` {
+		t.Fatalf("payload mismatch: got %q", string(env.Payload()))
 	}
 }
 
@@ -222,8 +222,8 @@ func TestIntegration_SQS_SenderReceiver_FullRoundTrip(t *testing.T) {
 		t.Fatal("no envelope received")
 	}
 
-	if string(got.Payload) != `{"order_id":"12345","amount":99.95}` {
-		t.Fatalf("payload mismatch: got %q", string(got.Payload))
+	if string(got.Payload()) != `{"order_id":"12345","amount":99.95}` {
+		t.Fatalf("payload mismatch: got %q", string(got.Payload()))
 	}
 
 	if got.Subject() != "orders.created" {
@@ -313,7 +313,7 @@ func TestIntegration_SQS_Sender_BatchThenReceive(t *testing.T) {
 		})
 	}
 
-	sent, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+	results, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
 		_msgs := make([]ports.OutboundMessage, len(envs))
 		for _i, _e := range envs {
 			_msgs[_i] = ports.OutboundMessage{Envelope: _e}
@@ -323,7 +323,7 @@ func TestIntegration_SQS_Sender_BatchThenReceive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendBatch: %v", err)
 	}
-	if sent != total {
+	if sent := batchSent(results); sent != total {
 		t.Fatalf("expected %d sent, got %d", total, sent)
 	}
 
@@ -347,7 +347,7 @@ func TestIntegration_SQS_Sender_BatchThenReceive(t *testing.T) {
 	received := make(map[string]bool, total)
 	err = receiver.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
 		env := del.Envelope()
-		received[string(env.Payload)] = true
+		received[string(env.Payload())] = true
 		_ = del.Ack(ctx)
 		if len(received) >= total {
 			cancel()

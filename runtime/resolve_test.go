@@ -187,7 +187,7 @@ func TestBindingResolver_MatchAll_FanOut(t *testing.T) {
 	}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchAll())
 
-	env := &messaging.Envelope{ID: "msg-fanout"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-fanout"})
 
 	plans, err := resolver.Resolve(context.Background(), env)
 	if err != nil {
@@ -220,7 +220,7 @@ func TestBindingResolver_MatchByID(t *testing.T) {
 	}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchByID("bind-b"))
 
-	env := &messaging.Envelope{ID: "msg-id"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-id"})
 
 	plans, err := resolver.Resolve(context.Background(), env)
 	if err != nil {
@@ -244,7 +244,7 @@ func TestBindingResolver_MatchByID_NotFound(t *testing.T) {
 	}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchByID("nonexistent"))
 
-	_, err := resolver.Resolve(context.Background(), &messaging.Envelope{ID: "msg"})
+	_, err := resolver.Resolve(context.Background(), messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg"}))
 	if err == nil {
 		t.Fatal("expected error for non-existent binding ID")
 	}
@@ -295,7 +295,7 @@ func TestBindingResolver_HeadersAsDispatchHeaders(t *testing.T) {
 	}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchAll())
 
-	env := &messaging.Envelope{ID: "msg-opts"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-opts"})
 
 	plans, err := resolver.Resolve(context.Background(), env)
 	if err != nil {
@@ -320,7 +320,7 @@ func TestBindingResolver_HeadersNotShared(t *testing.T) {
 	}
 	resolver := runtime.NewBindingResolver(bindings, runtime.MatchAll())
 
-	plans, _ := resolver.Resolve(context.Background(), &messaging.Envelope{ID: "msg"})
+	plans, _ := resolver.Resolve(context.Background(), messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg"}))
 	plans[0].Headers["qos"] = 2
 
 	if opts["qos"] != 1 {
@@ -340,7 +340,7 @@ func TestStaticResolver_ReturnsSamePlans(t *testing.T) {
 	}
 	resolver := runtime.NewStaticResolver(plans...)
 
-	got, err := resolver.Resolve(context.Background(), &messaging.Envelope{ID: "any"})
+	got, err := resolver.Resolve(context.Background(), messaging.MustEnvelope(messaging.EnvelopeInput{ID: "any"}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -356,8 +356,8 @@ func TestStaticResolver_ReturnsSamePlans(t *testing.T) {
 func TestStaticResolver_IndependentOfEnvelope(t *testing.T) {
 	resolver := runtime.NewStaticResolver(routing.DispatchPlan{BindingID: "b", Address: "t"})
 
-	p1, _ := resolver.Resolve(context.Background(), &messaging.Envelope{ID: "msg-1"})
-	p2, _ := resolver.Resolve(context.Background(), &messaging.Envelope{ID: "msg-2"})
+	p1, _ := resolver.Resolve(context.Background(), messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"}))
+	p2, _ := resolver.Resolve(context.Background(), messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-2"}))
 
 	if p1[0].BindingID != p2[0].BindingID {
 		t.Fatal("static resolver should return same plans regardless of envelope")

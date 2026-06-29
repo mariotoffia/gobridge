@@ -138,7 +138,7 @@ func TestUC6_BurstBackpressure(t *testing.T) {
 	// -- Verification: MQTT collector messages are non-poison ----------------
 	msgs := collector.getMessages()
 	for idx, msg := range msgs {
-		require.True(t, len(msg.Payload) > 0,
+		require.True(t, len(msg.Payload()) > 0,
 			"MQTT message %d has empty payload", idx)
 		// Normal messages must NOT have the poison header set to "true".
 		v, _ := messaging.GetHeaderString(msg.Headers(), "poison")
@@ -149,10 +149,10 @@ func TestUC6_BurstBackpressure(t *testing.T) {
 	// -- Verification: DLQ entries are poison messages ----------------------
 	dlqEntries := dlqStore.getEntries()
 	for idx, entry := range dlqEntries {
-		require.True(t, len(entry.Envelope.Payload) > 0,
+		require.True(t, len(entry.Snapshot().Payload()) > 0,
 			"DLQ entry %d has empty payload", idx)
 		// Verify the error classification is not empty.
-		require.NotEmpty(t, entry.Category,
+		require.NotEmpty(t, entry.Category(),
 			"DLQ entry %d should have an error category", idx)
 	}
 

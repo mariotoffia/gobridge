@@ -125,8 +125,8 @@ func TestIntegration_ReceiverClose_ReceiveThenShutdown(t *testing.T) {
 	}
 
 	got := received[0].Envelope()
-	if string(got.Payload) != "close-test-payload" {
-		t.Errorf("payload = %q, want %q", got.Payload, "close-test-payload")
+	if string(got.Payload()) != "close-test-payload" {
+		t.Errorf("payload = %q, want %q", got.Payload(), "close-test-payload")
 	}
-	t.Logf("received message %s and shut down cleanly", got.ID)
+	t.Logf("received message %s and shut down cleanly", got.ID())
 }

@@ -138,7 +138,7 @@ func TestIntegration_ContentRouting_SubjectPrefix_DirectHold(t *testing.T) {
 	_ = receiver.Emit(ctx, del)
 	waitFor(t, 2*time.Second, "eu acked", del.IsAcked)
 
-	if len(senderEU.GetSent()) != 1 || senderEU.GetSent()[0].ID != "eu-1" {
+	if len(senderEU.GetSent()) != 1 || senderEU.GetSent()[0].ID() != "eu-1" {
 		t.Fatal("EU sender should have received eu-1")
 	}
 	if len(senderUS.GetSent()) != 0 {

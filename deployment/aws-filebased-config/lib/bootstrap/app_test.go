@@ -145,14 +145,14 @@ func TestResolveInputs_InjectsHTTPSecretsWithoutMutatingLogicalConfig(t *testing
 	assert.Equal(t, "monitor-secret-key-123", inputs.MonitorAPIKey)
 	rxCfg, ok := inputs.RuntimeConfig.Receivers[0].Config.(httptransport.Config)
 	require.True(t, ok)
-	assert.Equal(t, "receiver-secret", rxCfg.APIKey)
+	assert.Equal(t, "receiver-secret", rxCfg.APIKey.Reveal())
 	txCfg, ok := inputs.RuntimeConfig.Senders[0].Config.(httptransport.Config)
 	require.True(t, ok)
-	assert.Equal(t, "sender-secret", txCfg.APIKey)
+	assert.Equal(t, "sender-secret", txCfg.APIKey.Reveal())
 	logicalRx, _ := logical.Receivers[0].Config.(httptransport.Config)
-	assert.Equal(t, "", logicalRx.APIKey, "logical config must not be mutated")
+	assert.Equal(t, "", logicalRx.APIKey.Reveal(), "logical config must not be mutated")
 	logicalTx, _ := logical.Senders[0].Config.(httptransport.Config)
-	assert.Equal(t, "", logicalTx.APIKey, "logical config must not be mutated")
+	assert.Equal(t, "", logicalTx.APIKey.Reveal(), "logical config must not be mutated")
 }
 
 func TestResolveInputs_ErrorOnMissingAdminKey(t *testing.T) {

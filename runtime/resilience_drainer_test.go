@@ -45,7 +45,7 @@ import (
 // ───────────────────────────────────────────────
 func TestDrainer_StaleFencingToken_UsesMinBackoff(t *testing.T) {
 	outbox := NewFakeOutboxStore()
-	outbox.ClaimFn = func(_, _ string, _ persistence.LeaseToken, _ int) ([]*persistence.OutboxRecord, error) {
+	outbox.ClaimFn = func(_ string, _ persistence.LeaseToken, _ int) ([]*persistence.OutboxRecord, error) {
 		return nil, shared.ErrStaleFencingToken
 	}
 
@@ -57,7 +57,6 @@ func TestDrainer_StaleFencingToken_UsesMinBackoff(t *testing.T) {
 		Sender:       NewFakeSender(),
 		RouteID:      "route-1",
 		PartitionKey: "SESSION#s1",
-		OwnerID:      "test",
 		Policy:       routing.RoutePolicy{}.WithDefaults(),
 		Strategy:     persistence.NewFixedPoll(100 * time.Millisecond),
 		TokenFn: func() (persistence.LeaseToken, bool) {

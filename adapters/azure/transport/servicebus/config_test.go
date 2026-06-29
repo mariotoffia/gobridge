@@ -3,6 +3,8 @@ package servicebus
 import (
 	"testing"
 	"time"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // validates ReceiverConfig.validate for queue, topic, subscription, and connection rules.
@@ -16,7 +18,7 @@ func TestReceiverConfig_Validate(t *testing.T) {
 			name: "valid queue config",
 			cfg: ReceiverConfig{
 				QueueName:  "my-queue",
-				Connection: ConnectionConfig{ConnectionString: "Endpoint=sb://x"},
+				Connection: ConnectionConfig{ConnectionString: shared.NewSecret("Endpoint=sb://x")},
 			},
 		},
 		{
@@ -29,14 +31,14 @@ func TestReceiverConfig_Validate(t *testing.T) {
 		},
 		{
 			name:    "missing queue and topic",
-			cfg:     ReceiverConfig{Connection: ConnectionConfig{ConnectionString: "x"}},
+			cfg:     ReceiverConfig{Connection: ConnectionConfig{ConnectionString: shared.NewSecret("x")}},
 			wantErr: true,
 		},
 		{
 			name: "topic without subscription",
 			cfg: ReceiverConfig{
 				TopicName:  "my-topic",
-				Connection: ConnectionConfig{ConnectionString: "x"},
+				Connection: ConnectionConfig{ConnectionString: shared.NewSecret("x")},
 			},
 			wantErr: true,
 		},
@@ -113,7 +115,7 @@ func TestSenderConfig_Validate(t *testing.T) {
 			name: "valid queue",
 			cfg: SenderConfig{
 				QueueName:  "q",
-				Connection: ConnectionConfig{ConnectionString: "x"},
+				Connection: ConnectionConfig{ConnectionString: shared.NewSecret("x")},
 			},
 		},
 		{
@@ -125,7 +127,7 @@ func TestSenderConfig_Validate(t *testing.T) {
 		},
 		{
 			name:    "missing queue and topic",
-			cfg:     SenderConfig{Connection: ConnectionConfig{ConnectionString: "x"}},
+			cfg:     SenderConfig{Connection: ConnectionConfig{ConnectionString: shared.NewSecret("x")}},
 			wantErr: true,
 		},
 		{
@@ -200,15 +202,15 @@ func TestReceiverConfigFromOptions(t *testing.T) {
 	if cfg.AutoExtend == nil || !*cfg.AutoExtend {
 		t.Error("AutoExtend should be true")
 	}
-	assertEqual(t, "ConnectionString", cfg.Connection.ConnectionString, "Endpoint=sb://test")
+	assertEqual(t, "ConnectionString", cfg.Connection.ConnectionString.Reveal(), "Endpoint=sb://test")
 	assertEqual(t, "Namespace", cfg.Connection.Namespace, "myns")
 	if !cfg.Connection.UseManagedIdentity {
 		t.Error("UseManagedIdentity should be true")
 	}
 	assertEqual(t, "TenantID", cfg.Connection.TenantID, "tid")
 	assertEqual(t, "ClientID", cfg.Connection.ClientID, "cid")
-	assertEqual(t, "ClientSecret", cfg.Connection.ClientSecret, "csec")
-	assertEqual(t, "CaPEM", cfg.Connection.CaPEM, "PEMDATA")
+	assertEqual(t, "ClientSecret", cfg.Connection.ClientSecret.Reveal(), "csec")
+	assertEqual(t, "CaPEM", cfg.Connection.CaPEM.Reveal(), "PEMDATA")
 	if !cfg.Connection.InsecureSkipVerify {
 		t.Error("InsecureSkipVerify should be true")
 	}
@@ -235,7 +237,7 @@ func TestSenderConfigFromOptions(t *testing.T) {
 	if cfg.Timeout != 5*time.Second {
 		t.Errorf("Timeout = %v, want 5s", cfg.Timeout)
 	}
-	assertEqual(t, "ConnectionString", cfg.Connection.ConnectionString, "Endpoint=sb://send")
+	assertEqual(t, "ConnectionString", cfg.Connection.ConnectionString.Reveal(), "Endpoint=sb://send")
 	assertEqual(t, "Namespace", cfg.Connection.Namespace, "sendns")
 }
 

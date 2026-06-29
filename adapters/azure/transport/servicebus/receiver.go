@@ -217,7 +217,7 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			continue
 		}
 
-		r.metrics.Timer(shared.MetricASBReceiveLatency, r.clock().Since(pollStart),
+		r.metrics.Timer(MetricASBReceiveLatency, r.clock().Since(pollStart),
 			shared.Tag{Key: shared.TagKeyEntity, Value: r.entityName()})
 		backoff.reset()
 

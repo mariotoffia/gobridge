@@ -41,7 +41,7 @@ func TestDirectHold_EmptyPlans_DoesNotPanic(t *testing.T) {
 
 	<-receiver.Ready()
 
-	env := &messaging.Envelope{ID: "test-empty-plans", Payload: []byte("data")}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "test-empty-plans", Payload: []byte("data")})
 	del := NewFakeDelivery(env)
 
 	err := receiver.Emit(ctx, del)

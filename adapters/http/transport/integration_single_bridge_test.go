@@ -148,8 +148,8 @@ func TestIntegration_HTTPPost_RuntimePipeline_FakeSender(t *testing.T) {
 	if env.Subject() != "order.created" {
 		t.Fatalf("subject: got %q, want order.created", env.Subject())
 	}
-	if !strings.Contains(string(env.Payload), `"id":"42"`) {
-		t.Fatalf("payload mismatch: %s", env.Payload)
+	if !strings.Contains(string(env.Payload()), `"id":"42"`) {
+		t.Fatalf("payload mismatch: %s", env.Payload())
 	}
 	if _, ok := env.Headers()[messaging.HeaderRouteID]; !ok {
 		t.Fatal("missing x-bridge.route-id header")
@@ -322,7 +322,7 @@ func TestIntegration_HTTPPost_APIKeyAuth(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			factory := transport.NewFactory()
 			recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{
-				ID: "auth-" + tc.name, Config: transport.Config{APIKey: "secret-123"},
+				ID: "auth-" + tc.name, Config: transport.Config{APIKey: shared.NewSecret("secret-123")},
 			}, nil)
 			if err != nil {
 				t.Fatalf("NewReceiver: %v", err)

@@ -85,12 +85,8 @@ func parseUsernamePasswordJSON(raw map[string]any) (*connectivity.CredentialSet,
 		return nil, fmt.Errorf("ssm: missing username field")
 	}
 
-	return &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{
-			Username: username,
-			Password: password,
-		},
-	}, nil
+	pw := connectivity.NewPasswordCredential(username, password)
+	return connectivity.NewCredentialSet(&pw, nil), nil
 }
 
 func parseTLSJSON(raw map[string]any) (*connectivity.CredentialSet, error) {
@@ -115,14 +111,8 @@ func parseTLSJSON(raw map[string]any) (*connectivity.CredentialSet, error) {
 		caPEMs = []string{ca}
 	}
 
-	return &connectivity.CredentialSet{
-		TLS: &connectivity.TLSMaterial{
-			CertPEM:            certPEM,
-			KeyPEM:             keyPEM,
-			CAPEMs:             caPEMs,
-			InsecureSkipVerify: insecure,
-		},
-	}, nil
+	tls := connectivity.NewTLSMaterial(certPEM, keyPEM, caPEMs, insecure)
+	return connectivity.NewCredentialSet(nil, &tls), nil
 }
 
 func parseSimpleCredentials(value string) (*connectivity.CredentialSet, error) {
@@ -131,34 +121,30 @@ func parseSimpleCredentials(value string) (*connectivity.CredentialSet, error) {
 		return nil, fmt.Errorf("ssm: invalid simple credentials format, expected username:password")
 	}
 
-	return &connectivity.CredentialSet{
-		Password: &connectivity.PasswordCredential{
-			Username: parts[0],
-			Password: parts[1],
-		},
-	}, nil
+	pw := connectivity.NewPasswordCredential(parts[0], parts[1])
+	return connectivity.NewCredentialSet(&pw, nil), nil
 }
 
 // serializeCredentialSet converts a CredentialSet to JSON for storage.
 func serializeCredentialSet(creds *connectivity.CredentialSet) (string, error) {
 	m := make(map[string]any)
 
-	if creds.Password != nil {
+	if creds.Password() != nil {
 		m["type"] = "password"
-		m["username"] = creds.Password.Username
-		m["password"] = creds.Password.Password
+		m["username"] = creds.Password().Username()
+		m["password"] = creds.Password().Password().Reveal()
 	}
 
-	if creds.TLS != nil {
-		if creds.Password == nil {
+	if creds.TLS() != nil {
+		if creds.Password() == nil {
 			m["type"] = "tls"
 		}
-		m["certPem"] = creds.TLS.CertPEM
-		m["keyPem"] = creds.TLS.KeyPEM
-		if len(creds.TLS.CAPEMs) > 0 {
-			m["caPem"] = creds.TLS.CAPEMs
+		m["certPem"] = creds.TLS().CertPEM()
+		m["keyPem"] = creds.TLS().KeyPEM().Reveal()
+		if caPEMs := creds.TLS().CAPEMs(); len(caPEMs) > 0 {
+			m["caPem"] = caPEMs
 		}
-		if creds.TLS.InsecureSkipVerify {
+		if creds.TLS().InsecureSkipVerify() {
 			m["insecure"] = true
 		}
 	}

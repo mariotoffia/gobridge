@@ -11,28 +11,25 @@ import (
 // ═══════════════════════════════════════════════════════════════════
 // Credential Redaction Tests
 //
-// Validates that credential structs do not leak sensitive values
+// Validates that credential value objects do not leak sensitive values
 // when formatted with fmt verbs (%v, %+v, %s, %q, %#v).
 //
-// Issue SEC-001: PasswordCredential and TLSMaterial lack redacting
-// String()/GoString() methods. Go's default formatting exposes
-// all exported fields including passwords and private keys.
+// Issue SEC-001: PasswordCredential and TLSMaterial must redact through
+// String()/GoString(); their secret fields are private and wrapped in
+// shared.Secret so Go's default formatting cannot expose them.
 // ═══════════════════════════════════════════════════════════════════
 
 // TestPasswordCredential_String_Redacted validates that String() returns
 // a redacted representation that does not contain the actual password.
 func TestPasswordCredential_String_Redacted(t *testing.T) {
-	pc := connectivity.PasswordCredential{
-		Username: "admin",
-		Password: "super-secret-password-123",
-	}
+	pc := connectivity.NewPasswordCredential("admin", "super-secret-password-123")
 
 	s := fmt.Sprintf("%v", pc)
 
 	if strings.Contains(s, "super-secret-password-123") {
 		t.Fatalf("password leaked in %%v formatting: %s", s)
 	}
-	if strings.Contains(s, pc.Password) {
+	if strings.Contains(s, pc.Password().Reveal()) {
 		t.Fatalf("password value appeared in formatted output: %s", s)
 	}
 }
@@ -40,10 +37,7 @@ func TestPasswordCredential_String_Redacted(t *testing.T) {
 // TestPasswordCredential_GoString_Redacted validates that GoString()
 // does not contain the actual password value.
 func TestPasswordCredential_GoString_Redacted(t *testing.T) {
-	pc := connectivity.PasswordCredential{
-		Username: "admin",
-		Password: "super-secret-password-123",
-	}
+	pc := connectivity.NewPasswordCredential("admin", "super-secret-password-123")
 
 	s := fmt.Sprintf("%#v", pc)
 
@@ -55,11 +49,12 @@ func TestPasswordCredential_GoString_Redacted(t *testing.T) {
 // TestTLSMaterial_String_Redacted validates that String() does not
 // expose certificate or key PEM material.
 func TestTLSMaterial_String_Redacted(t *testing.T) {
-	tls := connectivity.TLSMaterial{
-		CertPEM: "-----BEGIN CERTIFICATE-----\nMIIBxTCCAW...",
-		KeyPEM:  "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADA...",
-		CAPEMs:  []string{"-----BEGIN CERTIFICATE-----\nCA-CERT..."},
-	}
+	tls := connectivity.NewTLSMaterial(
+		"-----BEGIN CERTIFICATE-----\nMIIBxTCCAW...",
+		"-----BEGIN PRIVATE KEY-----\nMIIEvgIBADA...",
+		[]string{"-----BEGIN CERTIFICATE-----\nCA-CERT..."},
+		false,
+	)
 
 	s := fmt.Sprintf("%v", tls)
 
@@ -74,10 +69,12 @@ func TestTLSMaterial_String_Redacted(t *testing.T) {
 // TestTLSMaterial_GoString_Redacted validates that GoString() does not
 // expose PEM material.
 func TestTLSMaterial_GoString_Redacted(t *testing.T) {
-	tls := connectivity.TLSMaterial{
-		CertPEM: "-----BEGIN CERTIFICATE-----\ndata...",
-		KeyPEM:  "-----BEGIN PRIVATE KEY-----\ndata...",
-	}
+	tls := connectivity.NewTLSMaterial(
+		"-----BEGIN CERTIFICATE-----\ndata...",
+		"-----BEGIN PRIVATE KEY-----\ndata...",
+		nil,
+		false,
+	)
 
 	s := fmt.Sprintf("%#v", tls)
 

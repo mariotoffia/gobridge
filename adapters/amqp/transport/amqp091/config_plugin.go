@@ -110,16 +110,16 @@ func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 		c.CredentialsURIRef = ""
 		return nil
 	}
-	if set.Password != nil {
+	if set.Password() != nil {
 		if c.Session.Username == "" {
-			c.Session.Username = set.Password.Username
+			c.Session.Username = set.Password().Username()
 		}
-		if c.Session.Password == "" {
-			c.Session.Password = set.Password.Password
+		if c.Session.Password.IsZero() {
+			c.Session.Password = set.Password().Password()
 		}
 	}
-	if set.TLS != nil {
-		applyAMQPTLSMaterial(&c.Session.TLS, set.TLS)
+	if set.TLS() != nil {
+		applyAMQPTLSMaterial(&c.Session.TLS, set.TLS())
 	}
 	c.CredentialsURIRef = ""
 	return nil

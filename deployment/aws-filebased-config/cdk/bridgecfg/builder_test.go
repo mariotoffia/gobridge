@@ -90,8 +90,15 @@ func TestBuilder_Canonical_RoundTrip(t *testing.T) {
 	if parsed.HTTP.AdminAddr != ":8080" {
 		t.Errorf("HTTP.AdminAddr = %q, want :8080", parsed.HTTP.AdminAddr)
 	}
-	if parsed.HTTP.AdminAPIKey != "pms://bridge/admin-key" {
-		t.Errorf("HTTP.AdminAPIKey = %q, want pms://bridge/admin-key", parsed.HTTP.AdminAPIKey)
+	// HTTP.AdminAPIKey is a shared.Secret carrying a credential URI
+	// reference (pms://…). The canonical config is the AUTHORITATIVE
+	// deployment artifact, so the reference MUST survive the marshal→
+	// parse round-trip — shared.Secret preserves its value on marshal
+	// (redacting it here would silently break the deployed bridge, which
+	// resolves the reference at runtime). Display redaction happens at the
+	// admin read endpoint, not in this serialized field.
+	if got := parsed.HTTP.AdminAPIKey.Reveal(); got != "pms://bridge/admin-key" {
+		t.Errorf("HTTP.AdminAPIKey after round-trip = %q, want pms://bridge/admin-key", got)
 	}
 
 	// Receiver.

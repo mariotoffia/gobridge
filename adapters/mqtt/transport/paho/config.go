@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // SessionOptions holds MQTT connection and session configuration.
@@ -22,7 +23,7 @@ type SessionOptions struct {
 	CleanStart            bool
 	SessionExpiryInterval uint32
 	Username              string
-	Password              string
+	Password              shared.Secret
 	TLS                   *TLSConfig
 	// ReceiveMaximum sets the MQTT v5 Receive Maximum property in the
 	// CONNECT packet. This limits the number of QoS 1/2 messages the
@@ -67,10 +68,13 @@ type TLSConfig struct {
 
 	// CACertPEM, CertPEM, KeyPEM carry in-memory PEM material, typically
 	// populated by credential rotation. When any of these is non-empty
-	// it takes precedence over the corresponding *File field.
-	CACertPEM string
-	CertPEM   string
-	KeyPEM    string
+	// it takes precedence over the corresponding *File field. They are
+	// shared.Secret so the (sensitive) private-key material — and, for
+	// uniformity, the cert/CA bundles — redact on JSON/YAML/log marshal;
+	// the config-save path reveals explicitly (see shared.RevealSecrets).
+	CACertPEM shared.Secret
+	CertPEM   shared.Secret
+	KeyPEM    shared.Secret
 
 	InsecureSkipVerify bool
 }
@@ -185,7 +189,7 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 		opts.Username = v
 	}
 	if v, ok := m["password"].(string); ok {
-		opts.Password = v
+		opts.Password = shared.NewSecret(v)
 	}
 	if v, ok := m["tls"].(*TLSConfig); ok {
 		opts.TLS = v
@@ -280,9 +284,9 @@ func BuildTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 	}
 
 	switch {
-	case cfg.CACertPEM != "":
+	case !cfg.CACertPEM.IsZero():
 		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM([]byte(cfg.CACertPEM)) {
+		if !pool.AppendCertsFromPEM([]byte(cfg.CACertPEM.Reveal())) {
 			return nil, fmt.Errorf("failed to parse CA cert PEM material")
 		}
 		tlsCfg.RootCAs = pool
@@ -299,13 +303,13 @@ func BuildTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 	}
 
 	switch {
-	case cfg.CertPEM != "" && cfg.KeyPEM != "":
-		cert, err := tls.X509KeyPair([]byte(cfg.CertPEM), []byte(cfg.KeyPEM))
+	case !cfg.CertPEM.IsZero() && !cfg.KeyPEM.IsZero():
+		cert, err := tls.X509KeyPair([]byte(cfg.CertPEM.Reveal()), []byte(cfg.KeyPEM.Reveal()))
 		if err != nil {
 			return nil, fmt.Errorf("parse client certificate PEM: %w", err)
 		}
 		tlsCfg.Certificates = []tls.Certificate{cert}
-	case cfg.CertPEM != "" || cfg.KeyPEM != "":
+	case !cfg.CertPEM.IsZero() || !cfg.KeyPEM.IsZero():
 		return nil, fmt.Errorf("client certificate PEM requires both CertPEM and KeyPEM")
 	case cfg.CertFile != "" && cfg.KeyFile != "":
 		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)

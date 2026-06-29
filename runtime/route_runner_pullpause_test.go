@@ -100,10 +100,7 @@ func TestRouteRunner_PullPause_EmitBlocksWhenSaturated(t *testing.T) {
 	// until both senders are actually parked on the gate — this
 	// guarantees the 2 semaphore slots are held by in-flight work.
 	for i := range maxInFlight {
-		del := NewFakeDelivery(&messaging.Envelope{
-			ID:      fmt.Sprintf("pp-fill-%d", i),
-			Payload: []byte("fill"),
-		})
+		del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("pp-fill-%d", i), Payload: []byte("fill")}))
 		require.NoError(t, receiver.Emit(ctx, del), "fill Emit should not error")
 	}
 	waitFor(t, 2*time.Second, "both senders parked on gate", func() bool {
@@ -114,10 +111,7 @@ func TestRouteRunner_PullPause_EmitBlocksWhenSaturated(t *testing.T) {
 	// acquireSlots because the per-route semaphore is saturated. The
 	// delivery goroutine for msg #3 will not be spawned until a slot
 	// is released.
-	blocker := NewFakeDelivery(&messaging.Envelope{
-		ID:      "pp-blocker",
-		Payload: []byte("blocks"),
-	})
+	blocker := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "pp-blocker", Payload: []byte("blocks")}))
 	emitReturned := make(chan error, 1)
 	emitStart := time.Now()
 	go func() {
@@ -204,7 +198,7 @@ func TestRouteRunner_PullPause_ThroughputResumesAfterSlowSender(t *testing.T) {
 			}
 		}
 		// Only the first two ("slow-*") messages gate — fast ones run freely.
-		if !releaseSlow.Load() && len(env.ID) > 5 && env.ID[:5] == "slow-" {
+		if !releaseSlow.Load() && len(env.ID()) > 5 && env.ID()[:5] == "slow-" {
 			<-gate
 		}
 		return nil
@@ -234,10 +228,7 @@ func TestRouteRunner_PullPause_ThroughputResumesAfterSlowSender(t *testing.T) {
 
 	// Prime 2 slow sends that fill the semaphore.
 	for i := range maxInFlight {
-		del := NewFakeDelivery(&messaging.Envelope{
-			ID:      fmt.Sprintf("slow-%d", i),
-			Payload: []byte("slow"),
-		})
+		del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("slow-%d", i), Payload: []byte("slow")}))
 		require.NoError(t, receiver.Emit(ctx, del))
 	}
 	// Wait for both slow senders to park on the gate before queuing fast ones.
@@ -253,10 +244,7 @@ func TestRouteRunner_PullPause_ThroughputResumesAfterSlowSender(t *testing.T) {
 	for i := range fastCount {
 		go func(n int) {
 			defer fastWg.Done()
-			del := NewFakeDelivery(&messaging.Envelope{
-				ID:      fmt.Sprintf("fast-%d", n),
-				Payload: []byte("fast"),
-			})
+			del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("fast-%d", n), Payload: []byte("fast")}))
 			_ = receiver.Emit(ctx, del)
 		}(i)
 	}

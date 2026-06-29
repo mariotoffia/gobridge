@@ -29,7 +29,7 @@ func TestDelivery091_AckFails_ThenRetry_ReportsError(t *testing.T) {
 		return errors.New("channel closed during ack")
 	}
 
-	env := &messaging.Envelope{ID: "bug2-091"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "bug2-091"})
 	raw := amqp.Delivery{
 		Acknowledger: acker,
 		DeliveryTag:  1,
@@ -54,7 +54,7 @@ func TestDelivery091_RetryFails_ThenAck_ReportsError(t *testing.T) {
 		return errors.New("channel closed during nack")
 	}
 
-	env := &messaging.Envelope{ID: "bug2-091-rev"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "bug2-091-rev"})
 	raw := amqp.Delivery{
 		Acknowledger: acker,
 		DeliveryTag:  2,
@@ -75,7 +75,7 @@ func TestDelivery091_RetryFails_ThenAck_ReportsError(t *testing.T) {
 // TestDelivery091_ConcurrentSettlement validates concurrent safety.
 func TestDelivery091_ConcurrentSettlement(t *testing.T) {
 	acker := newMockAcknowledger()
-	env := &messaging.Envelope{ID: "concurrent-091"}
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "concurrent-091"})
 	raw := amqp.Delivery{
 		Acknowledger: acker,
 		DeliveryTag:  3,

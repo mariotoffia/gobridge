@@ -234,6 +234,94 @@ func WithHTTPAdminAPI() {}
 	}
 }
 
+func TestParseRegisteredAdapterPaths(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "source.go")
+	writeFile(t, path, `package source
+
+import (
+	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
+	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
+	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
+	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
+	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
+	"github.com/mariotoffia/gobridge/ports"
+)
+
+var reg = func() *ports.Registry {
+	reg := ports.NewRegistry()
+	_ = paho.Register(reg)
+	_ = sqsadapter.Register(reg)
+	_ = httptransport.Register(reg)
+	_ = nativestore.Register(reg)
+	_ = awsstore.Register(reg)
+	// Ignored: receiver is the local registry, not an adapter package.
+	_ = reg.Register("inline", nil)
+	return reg
+}()
+`)
+	got, err := parseRegisteredAdapterPaths(path)
+	if err != nil {
+		t.Fatalf("parseRegisteredAdapterPaths: %v", err)
+	}
+	want := []string{
+		"github.com/mariotoffia/gobridge/adapters/aws/store",
+		"github.com/mariotoffia/gobridge/adapters/aws/transport/sqs",
+		"github.com/mariotoffia/gobridge/adapters/http/transport",
+		"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho",
+		"github.com/mariotoffia/gobridge/adapters/native/store",
+	}
+	if !equal(got, want) {
+		t.Errorf("parseRegisteredAdapterPaths = %v, want %v", got, want)
+	}
+}
+
+func TestBuildRegisteredKinds_Live(t *testing.T) {
+	// The live CDK composition root, relative to this module dir.
+	src := filepath.Join("..", "..", "deployment", "aws-filebased-config",
+		"cdk", "internal", "source", "source.go")
+	got, err := buildRegisteredKinds(src)
+	if err != nil {
+		t.Fatalf("buildRegisteredKinds: %v", err)
+	}
+	for _, want := range []string{"http", "dynamodb", "sqs", "aws.sqs", "mqtt", "memory", "sqlite"} {
+		found := false
+		for _, k := range got {
+			if k == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected registered kind %q in %v", want, got)
+		}
+	}
+}
+
+func TestBuildRegisteredKinds_Drift(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "source.go")
+	writeFile(t, path, `package source
+
+import (
+	unknown "github.com/mariotoffia/gobridge/adapters/zzz/unknown"
+	"github.com/mariotoffia/gobridge/ports"
+)
+
+var _ = func() error {
+	reg := ports.NewRegistry()
+	return unknown.Register(reg)
+}()
+`)
+	_, err := buildRegisteredKinds(path)
+	if err == nil {
+		t.Fatalf("expected drift error for unbound adapter, got nil")
+	}
+	if !strings.Contains(err.Error(), "no binding") {
+		t.Errorf("expected drift error mentioning 'no binding', got %v", err)
+	}
+}
+
 // writeFile is a small test helper that fails the test on any
 // filesystem error so the test bodies stay focused on assertions.
 func writeFile(t *testing.T, path, content string) {

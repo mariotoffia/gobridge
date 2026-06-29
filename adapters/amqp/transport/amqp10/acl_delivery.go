@@ -44,6 +44,12 @@ type Delivery struct {
 }
 
 // NewDelivery wraps an AMQP 1.0 message as a ports.Delivery.
+//
+// The *amqp.Message parameter is the SDK boundary input this ACL
+// constructor exists to wrap; it is injected by the ACL receiver and
+// stored behind unexported fields.
+//
+//aclcheck:allow-export
 func NewDelivery(
 	env *messaging.Envelope,
 	msg *amqp.Message,
@@ -89,13 +95,13 @@ func (d *Delivery) Ack(ctx context.Context) error {
 
 	if logging.TraceEnabled(d.logger) {
 		d.logger.Log(ctx, logging.LevelTrace, "amqp10: accepting message",
-			"envelope_id", d.env.ID,
+			"envelope_id", d.env.ID(),
 		)
 	}
 
 	start := d.clk.Now()
 	err := d.settle.AcceptMessage(ctx, d.msg)
-	d.metrics.Timer(shared.MetricAMQP10AcceptLatency, d.clk.Since(start))
+	d.metrics.Timer(MetricAMQP10AcceptLatency, d.clk.Since(start))
 
 	if err != nil {
 		return MapError(err)
@@ -130,7 +136,7 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) erro
 	if after > 0 {
 		if logging.TraceEnabled(d.logger) {
 			d.logger.Log(ctx, logging.LevelTrace, "amqp10: modifying message for retry",
-				"envelope_id", d.env.ID,
+				"envelope_id", d.env.ID(),
 				"delay", after,
 			)
 		}
@@ -141,7 +147,7 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) erro
 	} else {
 		if logging.TraceEnabled(d.logger) {
 			d.logger.Log(ctx, logging.LevelTrace, "amqp10: releasing message",
-				"envelope_id", d.env.ID,
+				"envelope_id", d.env.ID(),
 			)
 		}
 		err = d.settle.ReleaseMessage(ctx, d.msg)

@@ -30,16 +30,11 @@ func TestMetricConstants_NonEmpty(t *testing.T) {
 		shared.MetricOutboxExpiredBeforeSend,
 		shared.MetricOutboxReplayCount,
 		shared.MetricOutboxRecordFailures,
-		shared.MetricSQSReceiveLatency,
-		shared.MetricSQSDeleteLatency,
-		shared.MetricSQSVisibilityExtensions,
-		shared.MetricSQSMalformedMessages,
 		shared.MetricAckLatency,
 		shared.MetricVisibilityExtensions,
 		shared.MetricDeliveryE2ELatency,
 		shared.MetricDLQEntries,
 		shared.MetricDeliveryPanics,
-		shared.MetricMQTTPublishLatency,
 		shared.MetricMQTTReconnects,
 		shared.MetricReconcileFailures,
 	}
@@ -63,7 +58,6 @@ func TestTagKeyConstants_NonEmpty(t *testing.T) {
 		shared.TagKeyRouteID,
 		shared.TagKeySessionID,
 		shared.TagKeyPartition,
-		shared.TagKeyQueueURL,
 		shared.TagKeyCategory,
 	}
 

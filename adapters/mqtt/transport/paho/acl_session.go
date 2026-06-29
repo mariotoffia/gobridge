@@ -22,6 +22,8 @@ import (
 // only way to reach the live CM. Tests that swap in a stub assign
 // Session.cm directly with a pahoConnection (typically a *pahoConn
 // wrapping a sentinel autopaho.ConnectionManager).
+//
+//aclcheck:allow-export
 func (s *Session) ConnectionManager() *autopaho.ConnectionManager {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -195,7 +197,7 @@ func (s *Session) Start(ctx context.Context) error {
 	// them up via the ConnectPacketBuilder. ApplyCredentials can later
 	// mutate this record without touching the cfg struct.
 	s.mu.Lock()
-	s.liveCreds = mqttCredentials{Username: s.opts.Username, Password: s.opts.Password}
+	s.liveCreds = mqttCredentials{Username: s.opts.Username, Password: s.opts.Password.Reveal()}
 	s.mu.Unlock()
 
 	switch s.mode {
@@ -314,7 +316,7 @@ func (s *Session) Start(ctx context.Context) error {
 	s.mu.Unlock()
 
 	elapsed := s.clock().Since(connectStart)
-	s.metrics.Timer(shared.MetricMQTTConnectLatency, elapsed,
+	s.metrics.Timer(MetricMQTTConnectLatency, elapsed,
 		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "mqtt: session connected",

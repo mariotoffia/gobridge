@@ -95,8 +95,8 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "servicebus: sending",
 			"entity", s.entityName(),
-			"envelope_id", env.ID,
-			"payload_len", len(env.Payload),
+			"envelope_id", env.ID(),
+			"payload_len", len(env.Payload()),
 		)
 	}
 
@@ -112,25 +112,33 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		return err
 	}
 
-	s.metrics.Timer(shared.MetricASBSendLatency, s.clock().Since(start),
+	s.metrics.Timer(MetricASBSendLatency, s.clock().Since(start),
 		shared.Tag{Key: shared.TagKeyEntity, Value: s.entityName()})
 
 	return nil
 }
 
-// SendBatch sends multiple envelopes in batches of up to cfg.BatchSize.
-// ASB batches are size-limited; when a message overflows the batch, the
-// current batch is flushed and the oversized message is sent individually.
-// Returns the number of successfully sent messages.
+// SendBatch sends each envelope in chunks of up to cfg.BatchSize. ASB
+// batches are size-limited; when a message overflows the batch, the
+// current batch is flushed and the oversized message is sent
+// individually.
 //
-// The entire slice is pre-validated before any SDK dispatch: a nil
-// envelope yields shared.ErrInvalidPayload and a non-empty address
-// that does not match the configured entity yields
-// shared.ErrInvalidTopic. Either failure aborts the whole batch with
-// (0, joined-errs) — fail-fast, no chunk is dispatched.
-func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (int, error) {
+// The whole slice is pre-validated before any SDK dispatch: a nil
+// envelope yields shared.ErrInvalidPayload and a non-empty address that
+// does not match the configured entity yields shared.ErrInvalidTopic;
+// either rejects the entire batch with (nil, joined-errs) — fail-fast,
+// no chunk is dispatched. A client setup failure likewise returns
+// (nil, err).
+//
+// Once dispatched, SendBatch returns (results, nil): one BatchResult per
+// input message, index-aligned with msgs. Service Bus does not report
+// per-message results inside a batch, so each result carries nil Err
+// when its flush/send succeeded or the classified error otherwise.
+// Chunks continue independently after a chunk-level failure. See
+// ports.BatchSender for the contract.
+func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([]ports.BatchResult, error) {
 	if err := s.ensureClient(ctx); err != nil {
-		return 0, err
+		return nil, err
 	}
 	entity := s.entityName()
 
@@ -148,7 +156,7 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (i
 		}
 	}
 	if len(preErrs) > 0 {
-		return 0, errors.Join(preErrs...)
+		return nil, errors.Join(preErrs...)
 	}
 
 	envs := make([]*messaging.Envelope, len(msgs))
@@ -159,7 +167,7 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (i
 	sendCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
 
-	var sent int
+	results := make([]ports.BatchResult, len(envs))
 
 	for i := 0; i < len(envs); i += s.cfg.BatchSize {
 		end := i + s.cfg.BatchSize
@@ -176,17 +184,14 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) (i
 		}
 
 		start := s.clock().Now()
-		chunkSent, err := sendChunk(sendCtx, s.client, chunk, s.cfg.DefaultSessionID, s.clock(), s.logger, entity)
-		sent += chunkSent
-		if err != nil {
-			return sent, err
+		for _, cr := range sendChunk(sendCtx, s.client, chunk, s.cfg.DefaultSessionID, s.clock(), s.logger, entity) {
+			results[i+cr.Index] = ports.BatchResult{Index: i + cr.Index, Err: cr.Err}
 		}
-
-		s.metrics.Timer(shared.MetricASBSendBatchLatency, s.clock().Since(start),
+		s.metrics.Timer(MetricASBSendBatchLatency, s.clock().Since(start),
 			shared.Tag{Key: shared.TagKeyEntity, Value: entity})
 	}
 
-	return sent, nil
+	return results, nil
 }
 
 // Close tears down the Service Bus sender and the underlying AMQP connection.

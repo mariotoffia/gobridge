@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/config/parser"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // sqsLikeConfig mirrors the shape of a typical adapter Config struct:
@@ -223,4 +224,45 @@ func TestRawConfig_DecodeRejectsFractionalAndBareFloatDuration(t *testing.T) {
 			tc.check(t, got)
 		})
 	}
+}
+
+// secretLikeConfig mirrors a plugin-config carrying a redaction-safe
+// secret field plus a nested connection sub-config. It exercises the
+// mapstructure TextUnmarshaller hook that lets a scalar string decode
+// into a shared.Secret — mapstructure does not honour
+// encoding.TextUnmarshaler natively.
+type secretLikeConfig struct {
+	Host       string        `json:"host,omitempty"`
+	APIKey     shared.Secret `json:"apiKey,omitempty"`
+	Connection secretConnSub `json:"connection,omitempty"`
+}
+
+type secretConnSub struct {
+	ConnectionString shared.Secret `json:"connectionString,omitempty"`
+}
+
+// Verifies a scalar string decodes into shared.Secret fields — both
+// direct and nested — through the production mapstructure path. This is
+// the regression behind "expected a map or struct, got string" when
+// plugin-config secret fields moved from string to shared.Secret.
+func TestRawConfig_Decode_SecretField(t *testing.T) {
+	raw := parser.NewRawConfig(map[string]any{
+		"host":   "broker:1883",
+		"apiKey": "s3cr3t-key",
+		"connection": map[string]any{
+			"connectionString": "Endpoint=sb://x",
+		},
+	})
+
+	var got secretLikeConfig
+	require.NoError(t, raw.Decode(&got))
+
+	assert.Equal(t, "broker:1883", got.Host)
+	assert.Equal(t, "s3cr3t-key", got.APIKey.Reveal())
+	assert.Equal(t, "Endpoint=sb://x", got.Connection.ConnectionString.Reveal())
+
+	// An absent secret stays zero — no spurious decode error.
+	var empty secretLikeConfig
+	require.NoError(t, parser.NewRawConfig(map[string]any{"host": "h"}).Decode(&empty))
+	assert.True(t, empty.APIKey.IsZero())
 }

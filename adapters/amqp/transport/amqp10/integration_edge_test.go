@@ -48,7 +48,7 @@ func edgeSession(t *testing.T, logger *slog.Logger) *Session {
 	sess := NewSession(SessionOptions{
 		Address:        ep,
 		Username:       user,
-		Password:       pass,
+		Password:       shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 		IdleTimeout:    1 * time.Minute,
 	}, connectivity.SessionEphemeral, logger)
@@ -114,8 +114,8 @@ func TestIntegration_Edge_EmptyPayload(t *testing.T) {
 		got := edgeSendRecv(t, sess, addr, messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID: "empty-nil", Subject: "test",
 		}), 15*time.Second)
-		if len(got.Payload) != 0 {
-			t.Errorf("expected empty payload, got %d bytes", len(got.Payload))
+		if len(got.Payload()) != 0 {
+			t.Errorf("expected empty payload, got %d bytes", len(got.Payload()))
 		}
 	})
 
@@ -123,8 +123,8 @@ func TestIntegration_Edge_EmptyPayload(t *testing.T) {
 		got := edgeSendRecv(t, sess, addr, messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID: "empty-zero", Subject: "test", Payload: []byte{},
 		}), 15*time.Second)
-		if len(got.Payload) != 0 {
-			t.Errorf("expected empty payload, got %d bytes", len(got.Payload))
+		if len(got.Payload()) != 0 {
+			t.Errorf("expected empty payload, got %d bytes", len(got.Payload()))
 		}
 	})
 
@@ -150,7 +150,7 @@ func TestIntegration_Edge_LargePayload(t *testing.T) {
 		ID: "large-msg", Subject: "test", Payload: payload,
 	}), 30*time.Second)
 
-	gotHash := sha256.Sum256(got.Payload)
+	gotHash := sha256.Sum256(got.Payload())
 	if sentHash != gotHash {
 		t.Fatalf("payload hash mismatch: sent %x, got %x", sentHash, gotHash)
 	}
@@ -370,7 +370,7 @@ func TestIntegration_Edge_SendAfterSessionClose(t *testing.T) {
 	addr := artemislocal.UniqueAddress("edge-closed-send")
 
 	sess := NewSession(SessionOptions{
-		Address: ep, Username: user, Password: pass,
+		Address: ep, Username: user, Password: shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 	}, connectivity.SessionEphemeral, logger)
 
@@ -404,7 +404,7 @@ func TestIntegration_Edge_ReceiverOnClosedSession(t *testing.T) {
 	addr := artemislocal.UniqueAddress("edge-closed-recv")
 
 	sess := NewSession(SessionOptions{
-		Address: ep, Username: user, Password: pass,
+		Address: ep, Username: user, Password: shared.NewSecret(pass),
 		ConnectTimeout: 15 * time.Second,
 	}, connectivity.SessionEphemeral, logger)
 
@@ -436,7 +436,7 @@ func TestIntegration_Edge_WrongCredentials(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		Address:        ep,
 		Username:       "wrong-user",
-		Password:       "wrong-pass",
+		Password:       shared.NewSecret("wrong-pass"),
 		ConnectTimeout: 10 * time.Second,
 	}, connectivity.SessionEphemeral, slog.Default())
 

@@ -142,7 +142,7 @@ func ParseReadinessLevel(s string) (ReadinessLevel, bool) {
 // The interface is intentionally narrow: it exposes only what driving
 // adapters need to render status, health, readiness probes, and route
 // inventories. Mutating operations live on RuntimeCommand.
-type RuntimeQuery interface { //nolint:interfacebloat // RuntimeQuery is a deliberately wide read-side facade that mirrors the bridge runtime's read surface (status, health, readiness, route inventory, DLQ accessor). Splitting it into smaller interfaces would force every driving adapter (HTTP monitor, future CLI, future gRPC) to depend on multiple ports for a single status page, defeating the purpose of having a coherent driving-port contract.
+type RuntimeQuery interface { //nolint:interfacebloat // RuntimeQuery is a deliberately wide read-side facade that mirrors the bridge runtime's read surface (status, health, readiness, route inventory, DLQ read accessor). Splitting it into smaller interfaces would force every driving adapter (HTTP monitor, future CLI, future gRPC) to depend on multiple ports for a single status page, defeating the purpose of having a coherent driving-port contract.
 	// InstanceID returns the bridge instance identifier.
 	InstanceID() string
 	// IsRunning reports whether the runtime is currently running and
@@ -166,9 +166,11 @@ type RuntimeQuery interface { //nolint:interfacebloat // RuntimeQuery is a delib
 	// currently achieved. Computed from a single DeepHealth snapshot
 	// so the result is internally consistent.
 	ReadinessLevel(ctx context.Context) ReadinessLevel
-	// DLQStore returns the configured DLQ store, or nil when no DLQ
-	// is wired (standalone / non-DLQ deployments).
-	DLQStore() DLQStore
+	// DLQReader returns the configured DLQ read port, or nil when no
+	// DLQ is wired (standalone / non-DLQ deployments). The read port
+	// exposes only Get/List; the destructive dead-letter operations
+	// live on the write-side RuntimeCommand.DLQAdmin.
+	DLQReader() DLQReader
 }
 
 // RuntimeCommand is the write-side driving port for the bridge runtime.
@@ -189,6 +191,10 @@ type RuntimeCommand interface {
 	// delivery pipeline. Returns shared.ErrNotFound when the route
 	// does not exist.
 	Inject(ctx context.Context, routeID string, env *messaging.Envelope) error
+	// DLQAdmin returns the configured DLQ admin port, or nil when no
+	// DLQ is wired. It carries the destructive dead-letter operations
+	// (write, delete, delete-by-filter, purge) kept off the read port.
+	DLQAdmin() DLQAdmin
 }
 
 // Runtime aggregates the read- and write-side runtime ports for

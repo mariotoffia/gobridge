@@ -206,7 +206,7 @@ Custom `MatchFunc` implementations can inspect any part of the envelope:
 customMatch := func(env *domain.Envelope, b domain.DestinationBinding) bool {
     // Parse payload and make routing decisions
     var event map[string]any
-    json.Unmarshal(env.Payload, &event)
+    json.Unmarshal(env.Payload(), &event)
     priority, _ := event["priority"].(string)
     if priority == "high" && b.ID == "high-priority-binding" {
         return true

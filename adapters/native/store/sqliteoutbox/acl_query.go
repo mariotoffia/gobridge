@@ -47,19 +47,26 @@ const (
 		 session_id, address, envelope_json, headers_json, status, created_at, expires_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
 
+	// selectMaxClaimVersionSQL reports the highest claim_version ever
+	// stamped on the partition, so Claim can reject a stale (older) token
+	// version monotonically, matching the version-monotonic fence the
+	// memory backend enforces and ports.OutboxStore documents.
+	selectMaxClaimVersionSQL = `SELECT COALESCE(MAX(claim_version), 0)
+		 FROM outbox WHERE partition_key = ?`
+
 	selectClaimableIDsSQL = `SELECT id FROM outbox
 		 WHERE partition_key = ? AND (status = 'pending' OR (status = 'claimed' AND claim_version < ?))
-		 ORDER BY created_at
+		 ORDER BY created_at, envelope_id
 		 LIMIT ?`
 
 	selectPendingByPartitionSQL = `SELECT ` + outboxColumns + `
 		 FROM outbox
 		 WHERE partition_key = ? AND status = 'pending'
-		 ORDER BY created_at
+		 ORDER BY created_at, envelope_id
 		 LIMIT ?`
 
 	expireOutboxSQL = `UPDATE outbox SET status = 'expired'
-		 WHERE expires_at > 0 AND expires_at < ? AND status IN ('pending', 'claimed')`
+		 WHERE expires_at > 0 AND expires_at < ? AND status = 'pending'`
 )
 
 // updateClaimSQL builds the UPDATE statement that flips n records
@@ -76,17 +83,18 @@ func updateClaimSQL(n int) string {
 // selectByIDsSQL builds the SELECT that hydrates n records by ID.
 func selectByIDsSQL(n int) string {
 	return fmt.Sprintf(
-		`SELECT %s FROM outbox WHERE id IN (%s) ORDER BY created_at`,
+		`SELECT %s FROM outbox WHERE id IN (%s) ORDER BY created_at, envelope_id`,
 		outboxColumns, placeholders(n),
 	)
 }
 
 // updateCompleteSQL builds the UPDATE statement that marks n records
-// completed iff their claim_version still matches the supplied token.
+// completed iff they are still claimed by the token owner at the
+// supplied claim_version (owner+version+status fence).
 func updateCompleteSQL(n int) string {
 	return fmt.Sprintf(
 		`UPDATE outbox SET status = 'completed', completed_at = ?
-			 WHERE id IN (%s) AND claim_version = ?`,
+			 WHERE id IN (%s) AND status = 'claimed' AND claimed_by = ? AND claim_version = ?`,
 		placeholders(n),
 	)
 }

@@ -90,8 +90,8 @@ func TestIdempotentPersistAfterRedelivery(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("expected exactly 1 record (no duplicate), got %d", len(pending))
 	}
-	if string(pending[0].Envelope.Payload) != "first" {
-		t.Fatalf("original record should be preserved, got payload %q", pending[0].Envelope.Payload)
+	if string(pending[0].Snapshot().Payload()) != "first" {
+		t.Fatalf("original record should be preserved, got payload %q", pending[0].Snapshot().Payload())
 	}
 }
 
@@ -201,7 +201,7 @@ func TestConcurrentClaimSafety(t *testing.T) {
 			defer wg.Done()
 			token := persistence.LeaseToken{Version: uint64(idx + 1), Owner: fmt.Sprintf("owner-%d", idx)}
 			results[idx], errs[idx] = store.Claim(ctx,
-				"SESSION#sess-conc", fmt.Sprintf("owner-%d", idx), token, 10)
+				"SESSION#sess-conc", token, 10)
 		}(i)
 	}
 	wg.Wait()
@@ -235,7 +235,7 @@ func TestReplayCountIncrementsOnReclaim(t *testing.T) {
 	}
 
 	token1 := persistence.LeaseToken{Version: 1, Owner: "owner-1"}
-	claimed1, err := store.Claim(ctx, "SESSION#sess-replay", "owner-1", token1, 10)
+	claimed1, err := store.Claim(ctx, "SESSION#sess-replay", token1, 10)
 	if err != nil || len(claimed1) != 1 {
 		t.Fatalf("first claim: err=%v, len=%d", err, len(claimed1))
 	}
@@ -246,7 +246,7 @@ func TestReplayCountIncrementsOnReclaim(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	token2 := persistence.LeaseToken{Version: 2, Owner: "owner-2"}
-	claimed2, err := store.Claim(ctx, "SESSION#sess-replay", "owner-2", token2, 10)
+	claimed2, err := store.Claim(ctx, "SESSION#sess-replay", token2, 10)
 	if err != nil || len(claimed2) != 1 {
 		t.Fatalf("reclaim: err=%v, len=%d", err, len(claimed2))
 	}
@@ -271,7 +271,7 @@ func TestCompleteWithStaleTokenRejected(t *testing.T) {
 	}
 
 	token := persistence.LeaseToken{Version: 5, Owner: "owner-A"}
-	if _, err := store.Claim(ctx, "SESSION#sess-stale", "owner-A", token, 10); err != nil {
+	if _, err := store.Claim(ctx, "SESSION#sess-stale", token, 10); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 
@@ -340,8 +340,8 @@ func TestDispatchHeadersRoundTrip(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("expected 1, got %d", len(pending))
 	}
-	if v, ok := pending[0].DispatchHeaders["x-custom"]; !ok || v != "value" {
-		t.Fatalf("dispatch header x-custom: %v", pending[0].DispatchHeaders)
+	if v, ok := pending[0].DispatchHeaders()["x-custom"]; !ok || v != "value" {
+		t.Fatalf("dispatch header x-custom: %v", pending[0].DispatchHeaders())
 	}
 }
 
@@ -376,13 +376,14 @@ func TestEnvelopePayloadRoundTrip(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("expected 1, got %d", len(pending))
 	}
-	if string(pending[0].Envelope.Payload) != string(payload) {
-		t.Fatalf("payload mismatch: got %q", pending[0].Envelope.Payload)
+	env := pending[0].Snapshot()
+	if string(env.Payload()) != string(payload) {
+		t.Fatalf("payload mismatch: got %q", env.Payload())
 	}
-	if pending[0].Envelope.Subject() != "temperature" {
-		t.Fatalf("subject: got %q", pending[0].Envelope.Subject())
+	if env.Subject() != "temperature" {
+		t.Fatalf("subject: got %q", env.Subject())
 	}
-	ct, _ := messaging.GetHeaderString(pending[0].Envelope.Headers(), messaging.HeaderContentType)
+	ct, _ := messaging.GetHeaderString(env.Headers(), messaging.HeaderContentType)
 	if ct != "application/json" {
 		t.Fatalf("content-type header: got %q", ct)
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
 	cfgparser "github.com/mariotoffia/gobridge/config/parser"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/httpapi"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -58,8 +59,8 @@ func newConfigAPITestServer(t *testing.T, baseCfg *ports.BridgeConfig) configAPI
 	apiCfg := httpapi.Config{
 		AdminAddr:       ":0",
 		MonitorAddr:     ":0",
-		AdminAPIKey:     testAdminAPIKey,
-		MonitorAPIKey:   testMonitorAPIKey,
+		AdminAPIKey:     shared.NewSecret(testAdminAPIKey),
+		MonitorAPIKey:   shared.NewSecret(testMonitorAPIKey),
 		RuntimeProvider: func() ports.Runtime { return rt },
 		ConfigStore:     &cfgparser.FileStore{Path: cfgPath, Registry: newTestRegistry()},
 		ConfigProvider:  func() *ports.BridgeConfig { return currentCfg },
@@ -144,8 +145,8 @@ func newConfigAPITestServerWithPipeline(t *testing.T, baseCfg *ports.BridgeConfi
 	apiCfg := httpapi.Config{
 		AdminAddr:     ":0",
 		MonitorAddr:   ":0",
-		AdminAPIKey:   testAdminAPIKey,
-		MonitorAPIKey: testMonitorAPIKey,
+		AdminAPIKey:   shared.NewSecret(testAdminAPIKey),
+		MonitorAPIKey: shared.NewSecret(testMonitorAPIKey),
 		RuntimeProvider: func() ports.Runtime {
 			rt := sup.Runtime()
 			if rt == nil {
@@ -383,8 +384,8 @@ func baseConfigForAPIWithHTTP() *ports.BridgeConfig {
 	cfg.HTTP = &ports.HTTPConfig{
 		AdminAddr:     ":8080",
 		MonitorAddr:   ":8081",
-		AdminAPIKey:   "real-secret-admin-key-1234",
-		MonitorAPIKey: "real-secret-monitor-key-5678",
+		AdminAPIKey:   shared.NewSecret("real-secret-admin-key-1234"),
+		MonitorAPIKey: shared.NewSecret("real-secret-monitor-key-5678"),
 	}
 	return cfg
 }

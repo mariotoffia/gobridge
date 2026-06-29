@@ -45,7 +45,7 @@ func (f *fakePullStore) Resolve(_ context.Context, _ string) (*connectivity.Cred
 }
 
 func pwd(user, pass string) *connectivity.CredentialSet {
-	return &connectivity.CredentialSet{Password: &connectivity.PasswordCredential{Username: user, Password: pass}}
+	return connectivity.NewCredentialSet(pwCred(user, pass), nil)
 }
 
 // TestPollBasedWrapper_EmitsOnChange verifies that the wrapper publishes
@@ -78,7 +78,7 @@ func TestPollBasedWrapper_EmitsOnChange(t *testing.T) {
 	// tick required.
 	select {
 	case got := <-ch:
-		require.Equal(t, "u1", got.Password.Username)
+		require.Equal(t, "u1", got.Password().Username())
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for initial emission")
 	}
@@ -92,7 +92,7 @@ func TestPollBasedWrapper_EmitsOnChange(t *testing.T) {
 	fake.Advance(time.Second)
 	select {
 	case got := <-ch:
-		t.Fatalf("unexpected emission on duplicate: %+v", got.Password)
+		t.Fatalf("unexpected emission on duplicate: %+v", got.Password())
 	case <-time.After(100 * time.Millisecond):
 	}
 
@@ -101,7 +101,7 @@ func TestPollBasedWrapper_EmitsOnChange(t *testing.T) {
 	fake.Advance(time.Second)
 	select {
 	case got := <-ch:
-		require.Equal(t, "u2", got.Password.Username)
+		require.Equal(t, "u2", got.Password().Username())
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for changed emission")
 	}
@@ -111,7 +111,7 @@ func TestPollBasedWrapper_EmitsOnChange(t *testing.T) {
 	fake.Advance(time.Second)
 	select {
 	case got := <-ch:
-		t.Fatalf("unexpected emission: %+v", got.Password)
+		t.Fatalf("unexpected emission: %+v", got.Password())
 	case <-time.After(100 * time.Millisecond):
 	}
 
@@ -120,7 +120,7 @@ func TestPollBasedWrapper_EmitsOnChange(t *testing.T) {
 	fake.Advance(time.Second)
 	select {
 	case got := <-ch:
-		require.Equal(t, "u3", got.Password.Username)
+		require.Equal(t, "u3", got.Password().Username())
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for final emission")
 	}
@@ -218,4 +218,10 @@ func TestPollBasedWrapper_JitterSeedUsesInjectedClock(t *testing.T) {
 	wantRNG := rand.New(rand.NewSource(seedTime.UnixNano()))
 	want := time.Second + time.Duration(wantRNG.Int63n(int64(200*time.Millisecond))) - 100*time.Millisecond
 	require.Equal(t, want, w.nextDelay())
+}
+
+// pwCred builds a pointer to an immutable PasswordCredential for tests.
+func pwCred(username, password string) *connectivity.PasswordCredential {
+	c := connectivity.NewPasswordCredential(username, password)
+	return &c
 }

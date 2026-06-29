@@ -70,11 +70,11 @@ func TestReceiver_RunEmitsDeliveries(t *testing.T) {
 	}
 
 	env := deliveries[0].Envelope()
-	if env.ID != "msg-001" {
-		t.Fatalf("expected ID msg-001, got %s", env.ID)
+	if env.ID() != "msg-001" {
+		t.Fatalf("expected ID msg-001, got %s", env.ID())
 	}
-	if string(env.Payload) != `{"key":"value"}` {
-		t.Fatalf("unexpected payload: %s", string(env.Payload))
+	if string(env.Payload()) != `{"key":"value"}` {
+		t.Fatalf("unexpected payload: %s", string(env.Payload()))
 	}
 	if env.Subject() != "" {
 		t.Fatalf("expected empty Subject (no fallback to queue name), got %s", env.Subject())
@@ -209,6 +209,48 @@ func TestReceiver_RunStopsOnEmitError(t *testing.T) {
 
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel error, got %v", err)
+	}
+}
+
+// Conformance (ports.Receiver emit-error contract): when emit returns an
+// error the delivery is NOT settled — the Service Bus message is neither
+// Completed (acked) nor Abandoned (retried) — so the lock simply expires
+// and the broker redelivers. Settlement is left to the processing
+// pipeline via the Delivery handle. Run surfaces the emit error.
+func TestReceiver_EmitError_DeliveryNotSettled(t *testing.T) {
+	mock := &mockASBClient{
+		ReceiveMessagesFn: func(_ context.Context, _ int, _ *azservicebus.ReceiveMessagesOptions) ([]*azservicebus.ReceivedMessage, error) {
+			return []*azservicebus.ReceivedMessage{
+				{
+					MessageID: "msg-emit-err",
+					Body:      []byte("body"),
+				},
+			}, nil
+		},
+	}
+
+	recv, err := NewReceiver(ReceiverConfig{
+		QueueName:  "test-queue",
+		AutoExtend: boolPtr(false),
+		Client:     mock,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sentinel := errors.New("pipeline rejected delivery")
+	runErr := recv.Run(context.Background(), func(_ context.Context, _ ports.Delivery) error {
+		return sentinel
+	})
+
+	if !errors.Is(runErr, sentinel) {
+		t.Fatalf("Run should surface the emit error, got %v", runErr)
+	}
+	if len(mock.CompleteCalls) != 0 {
+		t.Fatalf("delivery must not be completed/acked on emit error, got %d complete calls", len(mock.CompleteCalls))
+	}
+	if len(mock.AbandonCalls) != 0 {
+		t.Fatalf("delivery must not be abandoned/settled on emit error, got %d abandon calls", len(mock.AbandonCalls))
 	}
 }
 

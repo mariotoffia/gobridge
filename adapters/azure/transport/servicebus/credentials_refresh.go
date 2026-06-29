@@ -32,36 +32,36 @@ func credentialsToConnection(existing ConnectionConfig, set *connectivity.Creden
 	out := existing
 	changed := false
 
-	if set.Password != nil {
-		if set.Password.Username == "" {
+	if set.Password() != nil {
+		if set.Password().Username() == "" {
 			// Opaque connection string path.
-			if out.ConnectionString != set.Password.Password {
-				out.ConnectionString = set.Password.Password
+			if !out.ConnectionString.Equal(set.Password().Password()) {
+				out.ConnectionString = set.Password().Password()
 				out.ClientID = ""
-				out.ClientSecret = ""
+				out.ClientSecret = shared.Secret{}
 				changed = true
 			}
 		} else {
-			if out.ClientID != set.Password.Username ||
-				out.ClientSecret != set.Password.Password {
-				out.ClientID = set.Password.Username
-				out.ClientSecret = set.Password.Password
-				out.ConnectionString = ""
+			if out.ClientID != set.Password().Username() ||
+				!out.ClientSecret.Equal(set.Password().Password()) {
+				out.ClientID = set.Password().Username()
+				out.ClientSecret = set.Password().Password()
+				out.ConnectionString = shared.Secret{}
 				changed = true
 			}
 		}
 	}
 
-	if set.TLS != nil {
-		newCA := joinASBPEMs(set.TLS.CAPEMs)
-		if out.CaPEM != newCA ||
-			out.ClientCertPEM != set.TLS.CertPEM ||
-			out.ClientKeyPEM != set.TLS.KeyPEM ||
-			out.InsecureSkipVerify != set.TLS.InsecureSkipVerify {
-			out.CaPEM = newCA
-			out.ClientCertPEM = set.TLS.CertPEM
-			out.ClientKeyPEM = set.TLS.KeyPEM
-			out.InsecureSkipVerify = set.TLS.InsecureSkipVerify
+	if set.TLS() != nil {
+		newCA := joinASBPEMs(set.TLS().CAPEMs())
+		if out.CaPEM.Reveal() != newCA ||
+			out.ClientCertPEM.Reveal() != set.TLS().CertPEM() ||
+			!out.ClientKeyPEM.Equal(set.TLS().KeyPEM()) ||
+			out.InsecureSkipVerify != set.TLS().InsecureSkipVerify() {
+			out.CaPEM = shared.NewSecret(newCA)
+			out.ClientCertPEM = shared.NewSecret(set.TLS().CertPEM())
+			out.ClientKeyPEM = set.TLS().KeyPEM()
+			out.InsecureSkipVerify = set.TLS().InsecureSkipVerify()
 			// Force buildClientOptions to rebuild tls.Config from PEMs.
 			out.TLSConfig = nil
 			changed = true

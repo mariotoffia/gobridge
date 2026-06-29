@@ -457,3 +457,67 @@ func TestEdge_ErrorResponsesAreGeneric(t *testing.T) {
 		t.Fatalf("expected generic message 'route location failed', got: %s", body)
 	}
 }
+
+// TestEdge_IdempotencyKeyHeaderStampedAtIngress confirms the receiver
+// maps the standard, NON-reserved Idempotency-Key request header (plus
+// the X-Dedup-Id / X-Ordering-Key companions) onto EnvelopeInput's
+// first-class fields, so an external HTTP producer can supply
+// idempotency without using the anti-spoofed x-bridge.* namespace — the
+// delivered envelope carries the reserved headers stamped on the trusted
+// side of the ingress strip.
+func TestEdge_IdempotencyKeyHeaderStampedAtIngress(t *testing.T) {
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "idem-hdr"}, nil)
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	deliveryCh := make(chan ports.Delivery, 1)
+	go func() {
+		_ = recv.Run(ctx, func(_ context.Context, d ports.Delivery) error {
+			deliveryCh <- d
+			return nil
+		})
+	}()
+	waitReceiverReady(t, recv, 2*time.Second)
+
+	type httpResult struct {
+		rec *httptest.ResponseRecorder
+	}
+	resultCh := make(chan httpResult, 1)
+	go func() {
+		rec := postJSON(t, factory.Handler(), "/transport/http/receivers/idem-hdr/messages",
+			map[string]any{
+				"subject": "order.created",
+				"payload": json.RawMessage(`{}`),
+			}, map[string]string{
+				"Idempotency-Key": "abc",
+				"X-Dedup-Id":      "dedup-9",
+				"X-Ordering-Key":  "order-9",
+			})
+		resultCh <- httpResult{rec: rec}
+	}()
+
+	var env *messaging.Envelope
+	select {
+	case d := <-deliveryCh:
+		env = d.Envelope()
+		_ = d.Ack(context.Background())
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for delivery")
+	}
+	<-resultCh
+
+	if v, _ := env.Header(messaging.HeaderIdempotencyKey); v != "abc" {
+		t.Fatalf("HeaderIdempotencyKey = %v, want abc", v)
+	}
+	if v, _ := env.Header(messaging.HeaderDeduplicationID); v != "dedup-9" {
+		t.Fatalf("HeaderDeduplicationID = %v, want dedup-9", v)
+	}
+	if v, _ := env.Header(messaging.HeaderOrderingKey); v != "order-9" {
+		t.Fatalf("HeaderOrderingKey = %v, want order-9", v)
+	}
+}

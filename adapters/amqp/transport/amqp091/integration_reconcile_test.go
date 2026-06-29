@@ -83,7 +83,7 @@ func TestIntegration_Reconcile_FirstFailureDoesNotPoisonSubsequentReconciles(t *
 	got := make(chan string, 1)
 	go func() {
 		_ = recv.Run(recvCtx, func(_ context.Context, d ports.Delivery) error {
-			got <- d.Envelope().ID
+			got <- d.Envelope().ID()
 			_ = d.Ack(recvCtx)
 			recvCancel()
 			return nil
