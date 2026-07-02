@@ -120,7 +120,7 @@ graph TD
 
 2. **SQS sender uses `transport` directly** -- No session needed. Each `SendMessageBatch` call is independent.
 
-3. **Binding `address`** -- For SQS, the binding address is informational (the queue URL comes from sender options). For MQTT senders, the address would override `default_topic`.
+3. **Binding `address`** -- For SQS the address names the sender's bound queue; it may be the bare queue name (as here, `telemetry-events`) or the full queue URL, and the queue URL itself still comes from sender options. It does not route per message. For MQTT senders, the address would override `default_topic`.
 
 4. **`max_in_flight: 100`** -- Limits concurrent messages being processed. Prevents the bridge from overwhelming the SQS sender during traffic spikes. When 100 messages are in-flight, the MQTT receiver pauses accepting new deliveries (backpressure).
 

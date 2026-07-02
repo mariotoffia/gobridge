@@ -82,7 +82,7 @@ func TestHeadersToAttributes_Basic(t *testing.T) {
 		"timestamp": time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 
-	attrs, _ := headersToAttributes(headers, sqsMaxMessageAttributes)
+	attrs, _ := headersToAttributes(headers, sqsMaxMessageAttributes, 0)
 
 	if *attrs["custom"].StringValue != "value" {
 		t.Fatal("custom should be String")
@@ -106,7 +106,7 @@ func TestHeadersToAttributes_ExcludesFIFOFields(t *testing.T) {
 		"normal":                        "value",
 	}
 
-	attrs, _ := headersToAttributes(headers, sqsMaxMessageAttributes)
+	attrs, _ := headersToAttributes(headers, sqsMaxMessageAttributes, 0)
 
 	if _, ok := attrs[messaging.HeaderOrderingKey]; ok {
 		t.Fatal("ordering key should be excluded from attributes")
@@ -121,7 +121,7 @@ func TestHeadersToAttributes_ExcludesFIFOFields(t *testing.T) {
 
 // Verifies nil headers produce nil attributes.
 func TestHeadersToAttributes_Nil(t *testing.T) {
-	if attrs, dropped := headersToAttributes(nil, sqsMaxMessageAttributes); attrs != nil || dropped != 0 {
+	if attrs, dropped := headersToAttributes(nil, sqsMaxMessageAttributes, 0); attrs != nil || dropped != 0 {
 		t.Fatal("nil headers should return nil attrs and zero dropped")
 	}
 }
@@ -131,7 +131,7 @@ func TestHeadersToAttributes_EmptyValues(t *testing.T) {
 	headers := map[string]any{
 		"unsupported": struct{}{},
 	}
-	if attrs, dropped := headersToAttributes(headers, sqsMaxMessageAttributes); attrs != nil || dropped != 0 {
+	if attrs, dropped := headersToAttributes(headers, sqsMaxMessageAttributes, 0); attrs != nil || dropped != 0 {
 		t.Fatal("unsupported types should be skipped, resulting in nil and zero dropped")
 	}
 }

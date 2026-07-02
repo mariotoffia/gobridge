@@ -67,7 +67,7 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		return shared.ErrInvalidTopic.WithMessage("no topic specified and no default topic configured")
 	}
 
-	pub := PublishFromEnvelope(env, topic, s.opts, s.session.clock())
+	pub := PublishFromEnvelope(env, topic, s.opts, s.session.clock(), s.metrics)
 
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "mqtt: publishing",

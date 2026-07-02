@@ -309,6 +309,23 @@ func TestConfig_Validate_APIKeyMinimum(t *testing.T) {
 	}
 }
 
+// A rejected under-floor inline api_key must produce an error that names
+// the 16-character minimum as the cause (HTTP-N3), so an operator whose
+// previously accepted short key now fails understands why instead of
+// seeing an opaque validation failure.
+func TestConfig_Validate_APIKeyFloorErrorNamesMinimum(t *testing.T) {
+	err := transport.Config{APIKey: shared.NewSecret("short")}.Validate()
+	if err == nil {
+		t.Fatal("expected an error for a 5-character inline api_key")
+	}
+	msg := err.Error()
+	for _, want := range []string{"api_key", "too short", "minimum is 16"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("floor error must name the 16-char minimum as the cause; missing %q in: %s", want, msg)
+		}
+	}
+}
+
 // rawJSON is a minimal ports.RawConfig that decodes via a JSON round
 // trip, exercising the registry decode path (Register -> decode ->
 // Config.Validate) end-to-end.

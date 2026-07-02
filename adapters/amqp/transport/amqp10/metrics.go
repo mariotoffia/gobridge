@@ -11,4 +11,12 @@ const (
 	MetricAMQP10AcceptLatency    = "AMQP10AcceptLatency"
 	MetricAMQP10Reconnects       = "AMQP10Reconnects"
 	MetricAMQP10EventDropped     = "AMQP10EventDropped"
+	// MetricAMQP10DelayedRetryUnhonored counts delayed (backoff) retries
+	// whose requested spacing the client could not honor. AMQP 1.0 has no
+	// portable client-side delayed-redelivery primitive, so a Retry with a
+	// positive delay is handed back to the broker (ModifyMessage) and the
+	// broker — not the bridge — decides when to redeliver. A climbing count
+	// means the configured retry backoff is effectively broker-driven on this
+	// transport (see acl_delivery.go Retry, finding 2 / G-N2).
+	MetricAMQP10DelayedRetryUnhonored = "AMQP10DelayedRetryUnhonored"
 )

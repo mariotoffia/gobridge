@@ -41,6 +41,13 @@ type Delivery struct {
 	mu       sync.Mutex
 	settled  bool
 	settleOK bool
+
+	// delayWarnOnce dedupes the "delayed retry not honored" Warn to once
+	// per receiver link. It is shared by every Delivery created from the
+	// same link (set by receiverLink.Receive) so an unhonored delayed
+	// retry warns once per link rather than once per message (G-N2). A nil
+	// guard (directly-constructed deliveries) warns on each call.
+	delayWarnOnce *sync.Once
 }
 
 // NewDelivery wraps an AMQP 1.0 message as a ports.Delivery.
@@ -144,16 +151,13 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) erro
 	if after > 0 {
 		// Finding 2 (delayed-retry boundary): the broker, not this
 		// client, controls redelivery timing for a modified outcome, so
-		// the runtime's requested backoff is not honored here. Surface it
-		// at Debug (rather than silently) so operators can see when a
-		// configured backoff is effectively broker-driven.
-		if logging.DebugEnabled(d.logger) {
-			d.logger.Log(ctx, logging.LevelDebug,
-				"amqp10: delayed retry not honored client-side; broker controls redelivery timing",
-				"envelope_id", d.env.ID(),
-				"requested_delay", after,
-			)
-		}
+		// the runtime's requested backoff is NOT honored here. This is a
+		// silent retry-spacing loss, so surface it two ways (G-N2): a
+		// per-message counter for rate/alerting and a once-per-link Warn
+		// (deduped via delayWarnOnce) so operators see it without
+		// per-message log spam.
+		d.metrics.Counter(MetricAMQP10DelayedRetryUnhonored, 1)
+		d.warnDelayedRetryUnhonored(after)
 		err = d.settle.ModifyMessage(ctx, d.msg, &amqp.ModifyMessageOptions{
 			DeliveryFailed:    true,
 			UndeliverableHere: false,
@@ -181,4 +185,28 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) erro
 // flow control rather than visibility timeouts.
 func (d *Delivery) Extend(_ context.Context, _ time.Time) error {
 	return shared.ErrNotSupported
+}
+
+// warnDelayedRetryUnhonored emits a single Warn per receiver link when a
+// delayed retry cannot be honored client-side. delayWarnOnce is shared by
+// every Delivery created from the same link, so the warning fires once
+// per link rather than once per message; MetricAMQP10DelayedRetryUnhonored
+// still records every occurrence. A nil guard (directly-constructed
+// deliveries) warns on each call.
+func (d *Delivery) warnDelayedRetryUnhonored(after time.Duration) {
+	if d.logger == nil {
+		return
+	}
+	emit := func() {
+		d.logger.Warn(
+			"amqp10: delayed retry not honored client-side; broker controls redelivery timing",
+			"envelope_id", d.env.ID(),
+			"requested_delay", after,
+		)
+	}
+	if d.delayWarnOnce != nil {
+		d.delayWarnOnce.Do(emit)
+		return
+	}
+	emit()
 }

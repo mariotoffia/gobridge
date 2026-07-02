@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -106,5 +107,78 @@ func TestSession_BlockedWatcher_DegradesAndRecovers(t *testing.T) {
 	})
 	if lastErr := sess.Health(ctx).LastError; lastErr != nil {
 		t.Errorf("LastError should clear after unblock, got %v", lastErr)
+	}
+}
+
+// TestSession_SetBlocked_StaleWatcherAfterReconnect_DoesNotDegrade proves
+// the generation guard on setBlocked (AMQP091-N1). A blocked-watcher bound
+// to a dropped connection can still deliver a buffered {Active:true} AFTER
+// the session has reconnected onto a fresh, healthy connection. Without the
+// guard that stale write pins the healthy connection to Degraded +
+// ErrBrokerBusy — a broker resource alarm that no longer applies. The
+// current connection identity is the generation token, so a write bound to
+// a superseded connection must be ignored.
+func TestSession_SetBlocked_StaleWatcherAfterReconnect_DoesNotDegrade(t *testing.T) {
+	// c1 is the original connection; dropping it forces a reconnect onto c2.
+	c1 := newMockConnection()
+	c1.NotifyCloseChan = make(chan error, 1)
+	c2 := newMockConnection()
+
+	var dialCount atomic.Int32
+	sess := newResilienceSession(func(string) (amqpConnection, error) {
+		if dialCount.Add(1) == 1 {
+			return c1, nil
+		}
+		return c2, nil
+	})
+
+	ctx := context.Background()
+	if err := sess.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sess.Close(ctx) }()
+
+	// Sanity: c1 is the current connection right after Start.
+	sess.mu.Lock()
+	started := sess.conn == c1
+	sess.mu.Unlock()
+	if !started {
+		t.Fatal("expected c1 to be the current connection after Start")
+	}
+
+	// Drop c1 to force a reconnect; wait until c2 is the current connection.
+	close(c1.NotifyCloseChan)
+	wait.Until(t, 2*time.Second, "session reconnected onto c2", func() bool {
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		return sess.connected && sess.conn == c2
+	})
+
+	// The freshly reconnected connection is healthy.
+	if sl := sess.Health(ctx).ServiceLevel; sl == ports.ServiceLevelDegraded {
+		t.Fatalf("freshly reconnected session should not be degraded, got %v", sl)
+	}
+
+	// The stale watcher for the dropped c1 delivers its buffered alarm.
+	// The generation guard must reject it, leaving c2 healthy.
+	if sess.setBlocked(c1, true, "low on memory") {
+		t.Fatal("setBlocked from the dropped c1 should be rejected (stale generation)")
+	}
+	h := sess.Health(ctx)
+	if h.ServiceLevel == ports.ServiceLevelDegraded {
+		t.Fatal("stale watcher write from dropped c1 degraded the healthy c2 (generation guard missing)")
+	}
+	if h.LastError != nil {
+		t.Fatalf("stale watcher write set LastError on healthy c2: %v", h.LastError)
+	}
+
+	// Positive control: a write from the CURRENT connection is honoured,
+	// proving the guard discriminates by connection rather than rejecting
+	// every write.
+	if !sess.setBlocked(c2, true, "low on memory") {
+		t.Fatal("setBlocked from the current c2 should be honoured")
+	}
+	if sl := sess.Health(ctx).ServiceLevel; sl != ports.ServiceLevelDegraded {
+		t.Fatalf("current-connection block should degrade session, got %v", sl)
 	}
 }

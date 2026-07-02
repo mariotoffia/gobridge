@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -146,7 +145,7 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body injectRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeStrictJSON(r.Body, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

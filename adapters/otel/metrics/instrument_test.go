@@ -3,7 +3,11 @@ package otelmetrics
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -71,6 +75,67 @@ func TestInstrumentLimit_RejectsDynamicNames(t *testing.T) {
 	// Re-emitting an already-cached instrument is unaffected.
 	client.Counter("m1", 5, nil)
 	assert.Equal(t, 1, errsSeen, "cached instrument re-emit must not error")
+}
+
+// N4 regression: once the instrument cache is full, a concurrent flood of
+// NEW (rejected) dynamic names must not (a) flood the error handler nor
+// (b) serialize the hot path on the write Lock. Rejection reporting is
+// throttled to one report per rejectReportInterval, and the rejected fast
+// path bypasses the write Lock entirely, so the emitters must complete
+// without deadlocking. Run with -race to catch a bad fast-path change.
+func TestInstrumentLimit_RejectFloodRateLimited(t *testing.T) {
+	t.Parallel()
+
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	defer func() { _ = mp.Shutdown(context.Background()) }()
+
+	var reports atomic.Int64
+	client := newMeterClientFromProvider(mp, Config{
+		MaxInstruments: 2,
+		errorHandler:   func(error) { reports.Add(1) },
+	})
+
+	// Fill the cache to its bound so every further distinct name is rejected.
+	client.Counter("static.a", 1, nil)
+	client.Gauge("static.b", 1, nil)
+	require.Zero(t, reports.Load(), "instruments within the bound must not report")
+
+	const (
+		workers   = 8
+		perWorker = 2000
+	)
+	done := make(chan struct{})
+	go func() {
+		var wg sync.WaitGroup
+		wg.Add(workers)
+		for w := 0; w < workers; w++ {
+			go func(w int) {
+				defer wg.Done()
+				for i := 0; i < perWorker; i++ {
+					// Every name is new => rejected against the full cache.
+					client.Counter(fmt.Sprintf("dyn.%d.%d", w, i), 1, nil)
+				}
+			}(w)
+		}
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("rejected-emit flood deadlocked: reject fast path must not take the write Lock")
+	}
+
+	// The whole flood falls within one rejectReportInterval, so exactly one
+	// rejection is surfaced despite workers*perWorker rejected emits.
+	require.Equal(t, int64(1), reports.Load(),
+		"rejection reporting must be rate-limited to one per window, not flooded per emit")
+
+	// A cached name still records without error after the flood.
+	client.Counter("static.a", 5, nil)
+	require.Equal(t, int64(1), reports.Load(), "cached re-emit must not report")
 }
 
 type failingMetricExporter struct {

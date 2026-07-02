@@ -22,24 +22,23 @@ func TestHAConfig_FailoverInvariants(t *testing.T) {
 	assert.Equal(t, 5*time.Second, cfg.StepDownGrace, "StepDownGrace")
 	assert.Equal(t, 2*time.Second, cfg.RenewJitter, "RenewJitter")
 	assert.Equal(t, 3, cfg.MaxRenewFails, "MaxRenewFails")
-	assert.Zero(t, cfg.RenewInterval,
-		"RenewInterval kept zero so the manager derives LeaseTTL/MaxRenewFails")
+	assert.Equal(t, 14*time.Second, cfg.RenewInterval,
+		"RenewInterval pinned to 14s so RenewInterval*MaxRenewFails < LeaseTTL (A8-R1)")
 
 	// Invariant 1: a graceful step-down must finish before the lease would
 	// expire, so the old owner stops sending before a new owner takes over.
 	assert.Less(t, cfg.StepDownGrace, cfg.LeaseTTL, "StepDownGrace must be < LeaseTTL")
 
-	// Invariant 2: MaxRenewFails renew attempts fit inside one TTL. Derive
-	// the renew interval the same way runtime/session/manager.go does for a
-	// zero RenewInterval, then check it sums to <= LeaseTTL.
-	derived := cfg.LeaseTTL / time.Duration(cfg.MaxRenewFails)
-	assert.Equal(t, 15*time.Second, derived, "derived RenewInterval = LeaseTTL / MaxRenewFails")
-	assert.LessOrEqual(t, derived*time.Duration(cfg.MaxRenewFails), cfg.LeaseTTL,
-		"RenewInterval * MaxRenewFails must be <= LeaseTTL")
+	// Invariant 2: MaxRenewFails renew attempts fit STRICTLY inside one TTL,
+	// so the third (recovering) attempt lands before expiry instead of exactly
+	// on the boundary (A8-R1-leasettl-margin). RenewInterval is pinned (not the
+	// derived LeaseTTL/MaxRenewFails, which would sit on the boundary).
+	assert.Less(t, cfg.RenewInterval*time.Duration(cfg.MaxRenewFails), cfg.LeaseTTL,
+		"RenewInterval * MaxRenewFails must be < LeaseTTL")
 
 	// Invariant 3: jitter stays small relative to the renew interval (well
 	// under half) so a jittered renewal cannot drift toward the TTL.
-	assert.Less(t, cfg.RenewJitter, derived/2, "RenewJitter must be << derived RenewInterval")
+	assert.Less(t, cfg.RenewJitter, cfg.RenewInterval/2, "RenewJitter must be << RenewInterval")
 
 	// Sanity: HAConfig is a strictly tighter preset than DefaultConfig where
 	// the timing knobs are overridden.
@@ -53,4 +52,32 @@ func TestHAConfig_FailoverInvariants(t *testing.T) {
 	assert.Equal(t, def.DrainMaxConcurrency, cfg.DrainMaxConcurrency,
 		"DrainMaxConcurrency inherited from default")
 	assert.NotNil(t, cfg.DrainStrategy, "DrainStrategy inherited from default")
+}
+
+// TestLeaseRenewMargin_BothConfigs pins the A8-R1-leasettl-margin invariant
+// for BOTH presets: RenewInterval*MaxRenewFails must be STRICTLY less than
+// LeaseTTL, so the final (MaxRenewFails-th) renew attempt lands before the
+// lease-expiry boundary rather than on it. That margin makes the documented
+// "tolerate two transient renew failures then recover on the third" guarantee
+// literally true for the default and HA presets alike. The presets pin
+// RenewInterval explicitly precisely to create this margin; a zero here would
+// collapse to the derived LeaseTTL/MaxRenewFails and sit exactly on the
+// boundary (120*3=360=LeaseTTL for the default, 15*3=45=LeaseTTL for HA).
+func TestLeaseRenewMargin_BothConfigs(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  session.Config
+	}{
+		{"default", session.DefaultConfig("telemetry", true)},
+		{"ha", session.HAConfig("telemetry", true)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.NotZero(t, tc.cfg.RenewInterval, "RenewInterval must be pinned (non-zero)")
+			assert.Greater(t, tc.cfg.MaxRenewFails, 0, "MaxRenewFails must be positive")
+			span := tc.cfg.RenewInterval * time.Duration(tc.cfg.MaxRenewFails)
+			assert.Less(t, span, tc.cfg.LeaseTTL,
+				"RenewInterval*MaxRenewFails (%s) must be < LeaseTTL (%s) so the "+
+					"final renew lands before the expiry boundary", span, tc.cfg.LeaseTTL)
+		})
+	}
 }

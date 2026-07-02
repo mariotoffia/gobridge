@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	goruntime "runtime/debug"
 	"sync"
 	"time"
@@ -41,6 +42,12 @@ type Runtime struct {
 	locator           *cluster.Locator
 
 	shutdownTimeout time.Duration
+
+	// randFloat supplies the [0,1) value used to jitter session-restart
+	// backoff (superviseSession). Production leaves it nil and the supervisor
+	// falls back to math/rand/v2.Float64; tests inject a deterministic source
+	// so the jittered wait is reproducible under the fake clock.
+	randFloat func() float64
 
 	credRefresherClose func(context.Context)
 
@@ -285,6 +292,12 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	select {
 	case <-waitDone:
 	case <-ctx.Done():
+		// Pre-cancelled / early-expiring ctx: we stop waiting for background
+		// goroutines and proceed to close metrics/tracer below. A straggler
+		// (e.g. a drainer still finalising) may therefore emit a counter or span
+		// after its provider is closed. That is benign: OTel Counter/Start calls
+		// on a shut-down provider are no-ops and the SDK is concurrency-safe, so
+		// no panic, race, or corruption results (OTEL-N6).
 		errs = append(errs, ctx.Err())
 	}
 
@@ -330,8 +343,12 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 		// Close releases the exporter/provider; Flush alone does not shut the
-		// metric reader down. Bounded by the same flush budget (K2).
-		if err := metrics.Close(flushCtx); err != nil {
+		// metric reader down. Close under closeCtx — the same full-budget context
+		// the tracer Close uses below — NOT the halved flushCtx: a slow-but-
+		// successful Flush must not eat into Close's deadline and turn an
+		// otherwise-clean provider shutdown into a spurious ctx error on the Stop
+		// result (OTEL-N5, K2).
+		if err := metrics.Close(closeCtx); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -391,4 +408,133 @@ func (rt *Runtime) startBackground(ctx context.Context, name string, fn func(con
 			}
 		}
 	})
+}
+
+// superviseSession wraps a session manager's Run so a transient failure
+// (broker reconnect, lease re-acquire) restarts JUST that session with jittered,
+// capped exponential backoff, instead of tearing down the whole runtime and
+// every unrelated route (C3-FU2). Isolation guarantees, by design:
+//
+//   - The global healthy/terminal flags are NEVER flipped, so a failing session
+//     cannot trip /live (pod restart) or /health and sink unrelated routes.
+//   - A permanent failure (bad broker URL, revoked credentials, a rejected
+//     declare) is retried forever at the maxBackoff cap rather than escalated to
+//     a pod restart — restarting the pod would kill every healthy co-tenant
+//     session and, for a permanent fault, not fix anything. The fault stays
+//     OBSERVABLE without a global signal: MetricSessionRestarts fires on every
+//     restart (a continuous, rate-based, self-clearing flap signal), the session
+//     is recorded in componentErrors (surfaced as failed_components), and the
+//     session's live DeepHealth keeps readiness (/ready?level=...) red so the pod
+//     is pulled from rotation. Alert on the MetricSessionRestarts rate or
+//     readiness — not on liveness or a point-in-time failed_components snapshot,
+//     which the pre-retry clear (below) can momentarily show empty even for a
+//     still-failing session.
+//   - Backoff resets to minBackoff once a run has stayed healthy for
+//     stabilityWindow, so a fresh blip after hours of health retries promptly
+//     (1s) instead of at the climbed 30s cap.
+//   - componentErrors is cleared on a clean stop and before each retry, so a
+//     recovered session does not leave a permanent phantom in failed_components;
+//     a still-broken session re-records on its next failure.
+//   - Equal-jitter spreads N sessions recovering from a shared broker/lease-store
+//     outage so they do not reconnect in lockstep (thundering herd).
+//
+// A ErrStaleFencingToken is a clean stop (another instance owns the lease), not a
+// fault to retry. A PANIC is intentionally NOT recovered here so it still
+// propagates to startBackground's recover and remains terminal — a panic is a
+// bug, fail-fast; only clean errors are isolated.
+func (rt *Runtime) superviseSession(sid string, run func(context.Context) error) func(context.Context) error {
+	const (
+		minBackoff = 1 * time.Second
+		maxBackoff = 30 * time.Second
+		// stabilityWindow is how long a run must stay up before it counts as
+		// "recovered": a run that survived a full cap interval has clearly
+		// reconnected, so the climbed backoff ladder is reset.
+		stabilityWindow = maxBackoff
+	)
+	name := "session:" + sid
+	// rt.metrics is nil unless WithMetrics was supplied — the production builder
+	// omits it and Start falls back to a Noop locally. Mirror that fallback: a
+	// nil-deref on the restart counter would panic into startBackground's
+	// recover and set terminal, i.e. the exact whole-runtime teardown this
+	// isolation exists to prevent.
+	metrics := rt.metrics
+	if metrics == nil {
+		metrics = &ports.NoopExporter{}
+	}
+	randFloat := rt.randFloat
+	if randFloat == nil {
+		randFloat = rand.Float64
+	}
+	return func(ctx context.Context) error {
+		backoff := minBackoff
+		for {
+			runStart := rt.clk.Now()
+			err := run(ctx)
+			if err == nil || ctx.Err() != nil {
+				rt.clearComponentError(name) // clean stop: drop any prior fault
+				return nil
+			}
+			rt.setComponentError(name, err)
+			if errors.Is(err, shared.ErrStaleFencingToken) {
+				// Another instance won the lease; stop cleanly (unchanged
+				// pre-existing semantics), leaving the recorded reason.
+				return nil
+			}
+			metrics.Counter(shared.MetricSessionRestarts, 1,
+				shared.Tag{Key: shared.TagKeySessionID, Value: sid})
+			// A run that stayed healthy for a sustained window before failing
+			// has recovered; forget the climbed ladder so this fresh blip
+			// retries promptly instead of at the 30s cap.
+			if rt.clk.Since(runStart) >= stabilityWindow {
+				backoff = minBackoff
+			}
+			wait := equalJitter(backoff, randFloat)
+			if rt.logger != nil {
+				rt.logger.Warn("session component failed; restarting in isolation",
+					"component", name, "error", err, "backoff", wait)
+			}
+			timer := rt.clk.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil
+			case <-timer.C():
+			}
+			// About to retry: drop the recorded fault so a run that now recovers
+			// and stays healthy leaves no permanent phantom in componentErrors /
+			// failed_components. A still-broken session re-records on its next
+			// failure; MetricSessionRestarts is the authoritative flap signal.
+			rt.clearComponentError(name)
+			if backoff < maxBackoff {
+				backoff = min(backoff*2, maxBackoff)
+			}
+		}
+	}
+}
+
+// equalJitter applies equal-jitter to a restart backoff: the wait is half the
+// backoff plus a random span over the other half, so wait ∈ [backoff/2, backoff).
+// This spreads N session supervisors recovering from a shared broker or
+// lease-store outage instead of letting them retry on identical wall-clock
+// boundaries (thundering herd). randFloat returns a value in [0,1).
+func equalJitter(backoff time.Duration, randFloat func() float64) time.Duration {
+	half := backoff / 2
+	return half + time.Duration(randFloat()*float64(half))
+}
+
+// setComponentError records a background component's failure for ComponentErrors
+// (surfaced as failed_components in the health body).
+func (rt *Runtime) setComponentError(name string, err error) {
+	rt.mu.Lock()
+	rt.componentErrors[name] = err
+	rt.mu.Unlock()
+}
+
+// clearComponentError removes a previously-recorded component failure once the
+// component has recovered or stopped cleanly, so failed_components does not
+// report a stale phantom fault for the pod's remaining life.
+func (rt *Runtime) clearComponentError(name string) {
+	rt.mu.Lock()
+	delete(rt.componentErrors, name)
+	rt.mu.Unlock()
 }

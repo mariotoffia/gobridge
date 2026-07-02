@@ -249,7 +249,8 @@ func TestSessionManager_ReconnectReconcileOK_NoError(t *testing.T) {
 //	T1: Enter renewLoop
 //	T2: Push SessionConnected, ReconcileErr set
 //	T3: renewLoop receives error from handleSessionEvent
-//	T4: Run re-acquires lease and hits Reconcile error again → exits
+//	T4: Run surfaces the reconcile error directly (no re-acquire) so
+//	    superviseSession can restart this session in isolation (C7-N2)
 //
 // ───────────────────────────────────────────────────────────────
 //
@@ -297,5 +298,90 @@ func TestSessionManager_RenewLoop_ReconnectReconcileError_Exits(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run should exit after reconcile failure in renewLoop")
+	}
+}
+
+// TestSessionManager_ExclusiveReconcileFailure_EmitsDistinctSignalNotLeaseTransfer
+// is the regression guard for C7-N2. When an exclusive session's reconcile
+// fails on reconnect (inside renewLoop) the lease is still held and renewing —
+// it is NOT a lease loss. The manager must therefore:
+//
+//   - NOT emit MetricLeaseTransfers (the failure + isolated restart is not a
+//     lease hand-off; counting it pollutes lease-transfer observability), and
+//   - emit the DISTINCT LeaseStateReconcileFailed signal rather than
+//     LeaseStateLost (which would mis-observe the blip as a lost lease), and
+//   - surface the reconcile error from Run so superviseSession restarts this
+//     one session in isolation.
+//
+// Before the fix the reconcile error was relabelled lease.lost + LeaseStateLost
+// and the subsequent same-owner re-acquire incremented MetricLeaseTransfers.
+func TestSessionManager_ExclusiveReconcileFailure_EmitsDistinctSignalNotLeaseTransfer(t *testing.T) {
+	rec := &ports.RecordingExporter{}
+	sess := NewFakeSession()
+	leaseStore := NewFakeLeaseStore()
+
+	mgr := session.NewFromConfig(
+		session.Config{
+			SessionID:     "sess-c7n2",
+			Exclusive:     true,
+			LeaseTTL:      5 * time.Second,
+			RenewInterval: 100 * time.Millisecond,
+			RenewJitter:   0,
+			MaxRenewFails: 3,
+			StepDownGrace: 50 * time.Millisecond,
+		},
+		sess, leaseStore, "bridge-1", nil,
+	)
+	mgr.SetMetrics(rec)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- mgr.Run(context.Background()) }()
+
+	// Wait until the exclusive session has acquired the lease and completed its
+	// initial reconcile, so the failing reconcile below lands on the RECONNECT
+	// path in renewLoop (not the initial acquire reconcile).
+	wait.Until(t, 2*time.Second, "exclusive session acquired lease and reconciled",
+		func() bool { return sess.PlanCount() > 0 })
+
+	sess.SetReconcileErr(errors.New("subscribe denied after reconnect"))
+	sess.PushEvent(ports.SessionEvent{Type: ports.SessionConnected, Timestamp: time.Now()})
+
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "reconcile") {
+			t.Fatalf("expected the reconcile error surfaced from Run, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run should surface the reconcile failure for isolated restart")
+	}
+
+	// A reconcile blip must never be metered as a lease transfer.
+	if got := rec.FindEntries(shared.MetricLeaseTransfers); len(got) != 0 {
+		t.Fatalf("reconcile failure must not emit MetricLeaseTransfers, got %d", len(got))
+	}
+
+	// Drain the buffered lease-event channel (cap 16, populated synchronously
+	// before Run returned via a non-blocking send). The failure must show up as
+	// the DISTINCT LeaseStateReconcileFailed and never as LeaseStateLost.
+	var states []session.LeaseState
+	for draining := true; draining; {
+		select {
+		case ev := <-mgr.LeaseStateChanged():
+			states = append(states, ev.State)
+		default:
+			draining = false
+		}
+	}
+	sawReconcileFailed := false
+	for _, s := range states {
+		if s == session.LeaseStateLost {
+			t.Errorf("reconcile failure must not push LeaseStateLost, states=%v", states)
+		}
+		if s == session.LeaseStateReconcileFailed {
+			sawReconcileFailed = true
+		}
+	}
+	if !sawReconcileFailed {
+		t.Errorf("expected a LeaseStateReconcileFailed event, states=%v", states)
 	}
 }

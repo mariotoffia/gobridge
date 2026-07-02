@@ -214,13 +214,13 @@ func TestEviction_PrefersHalfOpenOverOpen(t *testing.T) {
 		key := "key-" + string(rune('A'+i%26)) + string(rune('0'+i/26))
 		b := cb.NewBreaker(key, cfg.WithDefaults(), nil)
 		b.ForceStateForTest(cb.StateOpen, time.Now())
-		p.breakers[key] = b
+		p.breakers[key] = &breakerEntry{breaker: b}
 	}
 
 	halfOpenKey := "key-halfopen"
 	hb := cb.NewBreaker(halfOpenKey, cfg.WithDefaults(), nil)
 	hb.ForceStateForTest(cb.StateHalfOpen, time.Time{})
-	p.breakers[halfOpenKey] = hb
+	p.breakers[halfOpenKey] = &breakerEntry{breaker: hb}
 
 	p.evictOldest()
 	_, halfOpenExists := p.breakers[halfOpenKey]

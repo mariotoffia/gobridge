@@ -16,4 +16,9 @@ const (
 	// route — a routing-disagreement loop that this node breaks instead of
 	// re-forwarding.
 	MetricHTTPForwardLoopRefused = "HTTPForwardLoopRefused"
+	// MetricSSEDeadlineUnsupported counts SSE streams whose ResponseWriter
+	// chain does not support per-write deadlines (http.ResponseController
+	// could not set one). While non-zero, slow-client eviction is inert for
+	// those streams and a stalled reader can pin a goroutine — alert on it.
+	MetricSSEDeadlineUnsupported = "SSEDeadlineUnsupported"
 )

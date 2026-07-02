@@ -181,6 +181,18 @@ schemas:
         description: Routes configured on this instance.
         items:
           $ref: "#/schemas/TopologyRouteView"
+      config_version:
+        type: integer
+        description: >
+          Optimistic-concurrency version of the running configuration, as
+          reported by the wired config provider. Additive and optional:
+          present only when a config source is available (omitted otherwise,
+          so a missing provider is not confused with version 0). When several
+          instances share one config file, a lagging config_version identifies
+          an instance that has not yet converged on the latest committed
+          configuration. A zero value means the config has never been
+          committed via the transaction API.
+        example: 7
 
   MonitorRouteView:
     type: object

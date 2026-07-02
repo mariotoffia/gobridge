@@ -356,301 +356,365 @@ _Added 2026-07-02. All 117 audit findings above were remediated across Waves 0�
 
 | Severity | Count |
 | --- | --- |
-| MEDIUM | 5 |
-| LOW | 39 |
-| NICE | 4 |
+| MEDIUM | 5 (✅ resolved) |
+| LOW | 40 (✅ resolved) |
+| NICE | 4 (✅ resolved) |
 
 ### MEDIUM (5)
+
+> **✅ RESOLVED 2026-07-02** on branch `fix/prod-ready-medium-followups` (`make lint` + `make test` green).
+> Each item below carries a **Resolution** note. One adjacent shape surfaced during the
+> adversarial review of these fixes — a receiver whose `session_id` never gets a session
+> **manager** (distinct from the planless-manager case P4 closes) — is tracked as a new
+> follow-up: **`ADV-P4-FU1`** under LOW below.
 
 #### `ADV-F1-P3` — amqp091
 amqp091 producer exchange never auto-declared (PublisherPlan empty); publish to an absent custom exchange fails visibly (404), not silent
 
 - **Files:** `bridge/specs.go`, `adapters/amqp/transport/amqp091/session.go`
 - **Notes:** F1 left SessionPlan.Publishers empty (documented ponytail boundary). amqp091 declarePublisher reads exchange name solely from pub.Topic; that name lives in the opaque typed sender PluginConfig (amqp091.Config.Sender.Exchange) which the transport-neutral bridge cannot read without importing the adapter (arch-lint forbidden) or a new ports accessor. SenderDef/BindingDef carry routing key (Address), not exchange. Failure is VISIBLE: PublishConfirmed -> channel 404 -> mapPublishError -> retry/DLQ (sender.go:119-129), so no silent loss. Fix needs a transport-neutral exchange accessor (ports interface the adapter implements) so bridge can emit PublisherPlan{Topic: exchange} and pre-declare. Out of bridge-only scope. Related to existing F11.
+- **Resolution (2026-07-02):** Added transport-neutral optional interface `ports.PublishingConfig { PublisherTopic() string }`; `amqp091.Config` implements it returning `Sender.Exchange`. `bridge/specs.go:sessionPlanFor` now emits a `PublisherPlan` (deduped by exchange, first-wins) for every sender bound to the session, so `declarePublisher` pre-declares the producer exchange. The declare is **best-effort / non-fatal**: on broker rejection (`PRECONDITION_FAILED` for a pre-existing exchange, `ACCESS_REFUSED` under least-privilege creds) the session logs a warning, increments `AMQP091PublisherDeclareFailed`, and continues — a pre-existing / externally-managed exchange is never taken down, and a genuinely-absent one still fails visibly at publish (404). `sender.exchange` names the declared exchange; the `publisher.*` block only decorates topology. Tests: `adapters/amqp/transport/amqp091/prodready_publisher_declare_test.go` (non-fatal publisher vs. fatal subscription asymmetry), `bridge/session_plan_test.go`. Docs: `docs/transport-configuration.md` (Publisher-side exchange auto-declare).
 
 #### `HTTP-N1` — http
 SSE per-write deadline silently no-ops when fronting middleware wraps ResponseWriter without Unwrap() -> slow-client pins handler goroutine (H4 failure returns)
 
 - **Files:** `adapters/http/transport/sender_sse.go`
 - **Notes:** NICE-TO-HAVE: probe SetWriteDeadline once at stream start, warn+metric when unsupported so slow-client eviction inertness is observable.
+- **Resolution (2026-07-02):** Added `MetricSSEDeadlineUnsupported` counter (`adapters/http/transport/metrics.go`), emitted once per stream in `ServeHTTP` alongside the existing start-of-stream warn when `write_timeout > 0` but the (possibly middleware-wrapped) `ResponseWriter` exposes no working `SetWriteDeadline` (no `Unwrap()` chain reaching one). Slow-client eviction inertness is now observable, not silent. Test: `prodready_sse_deadline_test.go` (bare recorder increments the counter; a deadline-capable writer does not).
 
 #### `C3-FU2` — runtime
 Whole-runtime terminal on a single session lease blip: one session re-acquire failure cancels the entire runtime (all routes) rather than isolating the failed session. Consider per-session failure isolation.
 
 - **Files:** `runtime/bridge.go`, `runtime/supervisor.go`
 - **Notes:** Acceptable now: single-use re-acquire failure is rare (3 renew fails ~30s outage) and restart yields a clean fleet. Follow-up: per-session restart/quarantine to avoid blast radius.
+- **Resolution (2026-07-02):** Session managers now run under `Runtime.superviseSession`, which isolates a single session's failure from the fleet. On `mgr.Run` error (ctx still live) it records the session in `componentErrors`, emits `MetricSessionRestarts`, and retries with capped-exponential backoff **plus equal-jitter** (`wait ∈ [backoff/2, backoff]`), resetting the backoff after a sustained-stability window and clearing the session's `componentErrors` entry on clean stop / before a successful retry. It never sets terminal or global `healthy=false`, so other routes keep running; panics still hit `startBackground`'s recover (documented boundary). Unbounded retry is deliberate — a terminal ceiling would reintroduce the exact whole-fleet outage this issue fixes; permanent failures instead surface via the continuous `MetricSessionRestarts` rate, `componentErrors`, and per-session readiness (`/ready?level=...`). Tests: `runtime/session_supervise_test.go` (fleet survival, backoff reset after sustained recovery, componentErrors cleared after recovery; all pass with `-race`).
 
 #### `E5-FU1` — runtime/route+adapters
 Transport redelivery-count headers (sqs./asb./amqp10.delivery-count) survive bridge-to-bridge hops and can win receiveCount precedence over the fresh local count, mis-firing max_replay_attempts in chained mixed-transport topologies (premature DLQ = good-message loss, or stale<cap = no cap).
 
 - **Files:** `runtime/route/dispatch.go:355-363`, `adapters/azure/transport/servicebus/acl_outbound.go`, `adapters/amqp/transport/amqp10/acl_outbound.go`, `adapters/aws/transport/sqs`
 - **Notes:** Discovered by E5 adversarial review (e5-adversarial). NOT a receiveCount bug — root cause is adapter ACLs carrying foreign transport count headers across hops (these keys are transport-namespaced, NOT x-bridge.* reserved, so unclassified + unstripped). Reachable: foreign count header carried at egress (servicebus/acl_outbound.go:91, amqp10/acl_outbound.go:117 pass non-own-prefix props) and re-imported at ingress (servicebus/acl_inbound.go:60-64, amqp10/acl_inbound.go:70-74). Repro: env {asb.delivery-count:9, amqp10.delivery-count:uint32(0)} -> receiveCount=9 not 1. E5 fix marginally widens a PRE-EXISTING class (sqs stale header already won before). Documented in dispatch.go:344-349 receiveCount comment. Two fix options: (A) strip sqs./asb./amqp10. count keys at egress in each adapter ACL (or do not re-import foreign ones at ingress); (B) thread source-transport identity from RouteRunner into receiveCount so it reads ONLY the local transport count (local ingress always overwrites its own key fresh; foreign keys are always stale). Related cluster: PROD_READY_ISSUES #91/#115/#205 (x-bridge.* hop hygiene). Own unit + review.
+- **Resolution (2026-07-02):** Chose the runtime-chokepoint strip (Option A, but transport-agnostic and in one place) over threading source identity. New helper `stripInboundReceiveCounts(env)` (`runtime/route/dispatch.go`) deletes the three foreign redelivery-count keys (`sqs./asb./amqp10.delivery-count`); applied to the **outbound clone** in `sendDirectHold` and to a **pre-persist clone** in `buildOutboxRecords`, never to the source env (receiveCount is re-read on retry paths). Downstream hops now read only the fresh local count, so `max_replay_attempts` can no longer be tripped early (nor stuck below cap) by a stale cross-hop count, and the wire is cleaned of foreign bookkeeping. Test: `runtime/route/dispatch_test.go` (stale foreign count stripped; fresh local count preserved; nil-header safe).
 
 #### `ADV-F1-P4` — validate
 Receiver with topics on a session that only gets a planless session-sender manager silently subscribes to nothing (F1-class silent loss)
 
 - **Files:** `validate/blueprint_graph.go`
 - **Notes:** REACHABLE shape: shared_outbox route omits its Session block but a binding has session_id==receiver.SessionID; that session gets only a planless RegisterSessionSender manager (bridge_start.go:194-199) so a plan-driven receiver on it subscribes to nothing. Pre-existing, NOT introduced by F1. CAVEAT (why not a naive guard): the obvious guard "receiver with topics requires a route Session.SessionID==its SessionID" FALSE-POSITIVES on amqp10, whose receivers self-establish links on start independent of the plan (amqp10/session.go:271-272; plan feeds only Health). validate/ is config-only and cannot distinguish plan-driven (mqtt/amqp091) from self-establishing (amqp10) transports without adapter knowledge arch-lint forbids. Correct fix needs a transport capability (e.g. PlanDrivenSubscriptions) surfaced to the builder, OR move the check to the builder where transport factories/Capabilities() are available. Verified against source 2026-06-30.
+- **Resolution (2026-07-02):** Fixed functionally (no validate-layer guard, so the amqp10 false-positive is avoided). `bridge/builder_complete.go`'s `RegisterSessionSender` loop now sets `sc.Plan = sessionPlanFor(b.cfg, bd.SessionID)`, so a session that previously received only a planless sender manager now also carries the plan needed to reconcile its plan-driven receiver subscriptions (harmless for amqp10/servicebus where the plan feeds only Health; necessary for mqtt/amqp091). **Scope note:** this closes the *planless-manager* shape. A distinct adjacent shape — a receiver whose `session_id` resolves to **no manager at all** — is out of scope and tracked below as `ADV-P4-FU1`.
 
-### LOW (39)
+### LOW (40)
+
+> **✅ RESOLVED 2026-07-02** on branch `fix/prod-ready-medium-followups` (`make lint` + `make test` green). Each item carries a **Resolution** note; entries marked *verify-keep* were confirmed already-correct, and a few carry a documented deferral with its rationale (no silent gaps).
+
+#### `ADV-P4-FU1` — bridge/builder
+Receiver whose `session_id` resolves to NO session manager (neither plan-driven nor planless) silently subscribes to nothing — the missing-manager sibling of `ADV-F1-P4`.
+
+- **Files:** `bridge/builder_complete.go`, `bridge/specs.go`
+- **Notes:** Surfaced by the adversarial review of the `ADV-F1-P4` fix (2026-07-02). P4 closed the *planless-manager* case (a session that gets a planless sender manager now also carries a reconcilable plan). This item is the distinct case where `receiver.SessionID` maps to no manager whatsoever, so nothing ever reconciles its subscriptions and the receiver is silently inert. A naive validate-layer guard false-positives on amqp10 (self-establishes links, plan-independent), same reason `ADV-F1-P4` was not fixed in `validate/`. Correct fix: surface a transport `PlanDrivenSubscriptions` capability to the builder so it can require a session manager only for plan-driven transports (mqtt/amqp091) and skip the check for self-establishing ones (amqp10). Deferred: needs a new ports capability + builder threading, out of this branch's scope.
+- **Resolution (2026-07-02):** FIXED. New transport capability `ports.CapPlanDrivenSubscriptions`, advertised **only** by the mqtt (paho) and amqp091 factories (amqp10/sqs/asb/http deliberately do not). `bridge/builder_complete.go` `validatePlanDrivenReceiverSessions` runs as a final `wireRoutes` pass over the exact builder-managed session set: a route-referenced receiver bound to an unmanaged session whose transport advertises the capability now **fails the build**, naming the receiver, transport and `session_id`. Self-establishing (amqp10) and address-direct (sqs/asb/http) transports are skipped — the exact false-positive that blocked the validate-layer fix. The capability lives on the transport factory (which arch-lint lets the composition root read). Test: `bridge/plan_driven_receiver_test.go` (mqtt-like orphan fails naming rx/session/transport; amqp10-like builds).
 
 #### `OTEL-N3` — adapters/otel
 Outbox-path causality gap: store-and-forward never injects the bridge hop at drain; downstream parents on upstream span (traced) or starts disconnected trace (untraced).
 
 - **Files:** `runtime/route/dispatch.go`
 - **Notes:** Strict improvement over pre-K1 (bridge span now joins upstream trace via Extract) and documented in dispatch.go. Full fix = persist+re-inject at drain time. Tracked.
+- **Resolution (2026-07-02):** FIXED (persist-at-build, route-local, no schema change). `runtime/route/helpers.go` `buildOutboxRecords` now stamps this bridge's active span onto the **persisted clone**'s W3C headers (the source env is never mutated), deleting any stale `traceparent`/`tracestate` first; it is a no-op when tracing is off (Inject writes zero keys) and mirrors the existing `sendDirectHold` inject. This closes the causality gap so downstream hops parent on the bridge span, not a bare/disconnected upstream. A distinct drain-hop span (needs a Tracer threaded into `outbox.Config`/`Drainer`, cross-package) is deferred and documented. Test: `TestBuildOutboxRecords_StampsBridgeSpanForDrain`.
 
 #### `OTEL-N4` — adapters/otel/metrics
 Metrics limit hot-path cliff: once cache full, every NEW name misses RLock fast path, takes Lock, rejected, calls onError on every emit → serialize + flood under dynamic-name misuse.
 
 - **Files:** `adapters/otel/metrics/acl_client.go`
 - **Notes:** K9 correctly trades OOM for bounded-but-noisy failure. Only bites operator misuse (runtime emits static set). Consider once-per-name/rate-limited rejection reporting.
+- **Resolution (2026-07-02):** FIXED. `adapters/otel/metrics/acl_client.go`: an `RLock` fast-path rejects when the instrument cache is full (caches only grow — invariant documented) so the rejected hot path never serializes on the write lock; the write path double-checks existence and fullness. `reportInstrumentError` rate-limits the full-cache rejection to one report per minute via a lock-free atomic CAS (the timestamp is sourced from an injected `clock.Clock`, defaulting to `clock.System`, per the forbidigo/no-`time.Now` rule), and the error string is built only when actually reported (allocation-free reject). Test: `TestInstrumentLimit_RejectFloodRateLimited` (8×2000 names, asserts `onError` fires once).
 
 #### `AMQP091-N1` — amqp091
 setBlocked stale {Active:true} from a dropped-connection watcher can pin a healthy conn to Degraded+ErrBrokerBusy (no epoch guard)
 
 - **Files:** `adapters/amqp/transport/amqp091/session.go`, `acl_client.go`
 - **Notes:** NICE-TO-HAVE: pass a generation token / conn to setBlocked and ignore writes from a non-current connection.
+- **Resolution (2026-07-02):** FIXED. `session.go` `setBlocked(conn, active, reason)` now reads `s.conn` under `s.mu` and rejects the write when `conn != s.conn` (a connection-identity generation token); the blocked-watcher continues on rejection with no phantom metric/log. A stale watcher from a dropped connection can no longer degrade a healthy reconnect. No new state. Test: `TestSession_SetBlocked_StaleWatcherAfterReconnect_DoesNotDegrade` (fails without the guard).
 
 #### `AMQP091-N2` — amqp091
 map-path ReceiverConfigFromOptions lets explicit prefetch_count:0 mean unlimited, contradicting typed path 0->defaultPrefetchCount
 
 - **Files:** `adapters/amqp/transport/amqp091/config.go`
 - **Notes:** NICE-TO-HAVE: low-level/manual users only (managed uses typed path); latent backpressure footgun.
+- **Resolution (2026-07-02):** FIXED. `config.go` `ReceiverConfigFromOptions` now guards `prefetch_count`: an explicit `0` resolves to `defaultPrefetchCount` (mirroring the typed `ReceiverParams.applyDefaults` `0→default`), while negatives pass through unchanged; the default is tied to the `defaultPrefetchCount` const. Test: `TestReceiverConfigFromOptions_ExplicitZeroPrefetch_UsesDefault`.
 
 #### `G-N1` — amqp10
 amqp10 egress is a 3rd divergent policy (IsReservedHeader && !IsBridgeToBridgeHeader) vs StripInternalOnlyHeaders / strip-all
 
 - **Files:** `adapters/amqp/transport/amqp10/acl_outbound.go`
 - **Notes:** DECIDED: keep amqp10 fail-closed predicate (stronger; reviewer agrees more-correct). Unify only if a shared StripNonPropagatedReservedHeaders lands across ALL transports (cross-cutting, deferred).
+- **Resolution (2026-07-02):** VERIFY-KEEP. `acl_outbound.go`'s `IsReservedHeader && !IsBridgeToBridgeHeader` egress test is the stronger fail-closed policy (strips internal-only and unclassified `x-bridge.*`, lets bridge-to-bridge headers through). Unifying it into a shared `StripNonPropagatedReservedHeaders` across all transports is deferred; the file is unchanged.
 
 #### `G-N2` — amqp10
 F2 unhonored delayed-retry logged Debug only; ops-invisible retry-spacing loss
 
 - **Files:** `adapters/amqp/transport/amqp10/acl_delivery.go`, `metrics.go`
 - **Notes:** NICE-TO-HAVE: add MetricAMQP10DelayedRetryUnhonored counter + once-per-link Warn.
+- **Resolution (2026-07-02):** FIXED. `acl_delivery.go`: a per-message `MetricAMQP10DelayedRetryUnhonored` counter (the settle guard prevents double-count) plus a once-per-link `Warn` via a shared, nil-safe `*sync.Once` rebuilt per `createLink`. Delayed-retry-not-honored is now observable per message and warned once per link. Test: `TestDelivery_DelayedRetryUnhonored_MetricAndWarn`.
 
 #### `G-N3` — amqp10
 Health over-reports active when plan.Subscriptions > registered receivers during startup
 
 - **Files:** `adapters/amqp/transport/amqp10/session.go`
 - **Notes:** NICE-TO-HAVE (partly pre-existing): clamp active to link-derived counts.
+- **Resolution (2026-07-02):** FIXED. `session.go`: health now computes `linkUp = registered - downCount` and clamps `active > linkUp`, preventing over-report when the plan wants more receivers than are self-established during startup. Test: `TestSession_Health_ActiveClampedToRegistered` (plan=2, 1 up → active=1, wanted=2, degraded).
 
 #### `ASB-D1` — asb
 ASB docs: broker-side MaxDeliveryCount auto-DLQ is a 2nd dead-letter sink; queue delayed-retry reuses MessageID (dedup-loss caveat); RAD+no-DLQ at-most-once drop
 
 - **Files:** `adapters/azure/transport/servicebus/doc.go`
 - **Notes:** DOC-DEFERRED (Wave 5). asb-adversarial approach-challenges: doc "exactly once in one place" overstated; subscription abandon-not-schedule merits ADR.
+- **Resolution (2026-07-02):** FIXED (doc-comment). `adapters/azure/transport/servicebus/doc.go`: added the subscription abandon-instead-of-schedule design-note trade-off; the queue delayed-retry **dedup caveat** (`buildRetryMessage` reuses the original `MessageID`, so `RequiresDuplicateDetection` can silently discard the rescheduled copy within its `DuplicateDetectionHistoryTimeWindow`); softened the overstated "exactly once, one place" claim to **at-least-once with idempotency** (the DLQ write and source `CompleteMessage` are two separate steps); and kept the distinct broker `MaxDeliveryCount` second DLQ sink. Comment-only.
 
 #### `ASB-N1` — asb
 Pre-existing time.Sleep in delivery_autoextend_retry_test.go / delivery_test.go (fake-clock sync)
 
 - **Files:** `adapters/azure/transport/servicebus/delivery_autoextend_retry_test.go`, `delivery_test.go`
 - **Notes:** Reviewer scoped OUT (pre-existing, allowlisted). Track for a determinism sweep: signal-channel handshake instead of sleep.
+- **Resolution (2026-07-02):** FIXED (test determinism). The Service Bus auto-extend/renewal tests now use buffered signal channels (`signalClock`/`signalTicker` emitting on started/stopped) so six fake-clock-sync tests use `<-started`/`<-renewed` handshakes with zero `time.Sleep`/`time.Now`; two genuinely real-clock tests are retained and documented (timing-allowlisted). Deterministic under `-race -count=5`.
 
 #### `J-N1` — aws-stores
 outbox keyCache slow leak: claimed-but-never-completed records evicted only on terminal Complete → unbounded in the limit under lease churn (bounded ~0 healthy)
 
 - **Files:** `adapters/aws/store/dynamodboutbox/acl_store.go`
 - **Notes:** aws-adv N1. LRU/size cap or evict-on-condition-failure.
+- **Resolution (2026-07-02):** FIXED. `adapters/aws/store/dynamodboutbox/acl_keycache.go`: a bounded LRU (container/list, mirroring `runtime/outbox/depth_cache.go`, cap 100k) replaces the unbounded key cache, fixing growth from claimed-never-completed keys under lease churn; a miss falls back to the bounded GSI resolve (always correct). Test: `TestKeyCache_BoundedUnderClaimChurn`.
 
 #### `J-N3` — aws-stores
 Complete returns ErrNotFound after GSI-retry exhaustion → re-delivery instead of Complete-retry on genuine GSI lag (at-least-once holds)
 
 - **Files:** `adapters/aws/store/dynamodboutbox/acl_store.go`
 - **Notes:** aws-adv N3. retryable/timeout error so caller retries Complete.
+- **Resolution (2026-07-02):** FIXED. `acl_store.go` `Complete`'s GSI-exhaustion branch now returns `shared.ErrTimeout` (transient) instead of `ErrNotFound` (permanent): the record exists and is merely claimed, and GSI lag ≠ absence. The safe direction keeps the record claimed and retries once the GSI converges (at-least-once holds) with no hot loop (retried next drain). Test: `TestComplete_GSILagExhaustion_ReturnsRetryable`.
 
 #### `J-N6` — aws-stores
 cold-partition seed seed==0 does not persist a fence row → repeated bounded scan each Claim until first claim raises fence (self-heals, safe)
 
 - **Files:** `adapters/aws/store/dynamodboutbox/acl_store.go`
 - **Notes:** aws-adv N6. raiseFence raise-only so seed race safe.
+- **Resolution (2026-07-02):** VERIFY-KEEP. `raiseFence` is raise-only monotonic (`attribute_not_exists OR #mcv < :ver`, nil on cond-fail). A cold-seed `0` self-heals: `Claim` unconditionally `raiseFence(token.Version)` after `maxClaimVersion`, persisting the fence on first claim. An optional seed-persist write was declined (net-negative extra write). Persistence is confirmed by the J-N7 test.
 
 #### `J-N7` — aws-stores
 integration gap: J5/J2/J3/J6 unit-only vs fakes; Docker/LocalStack concurrent claimers + cold-seed race would close residual
 
 - **Files:** `adapters/aws/store/**`
 - **Notes:** aws-adv N7. Deferred to make check-all.
+- **Resolution (2026-07-02):** FIXED (test). `store_concurrent_test.go` `TestConcurrentClaimersColdSeedRace`: 25 records in a fresh no-fence partition, 8 concurrent owners at the same fence version racing the `seed==0` cold path against real DynamoDB-local. Asserts no double-claim, all 25 claimed once, and the fence persisted (a later v0 claim → `ErrStaleFencingToken`). Docker/ddblocal-gated (runs under `check-all`, skips `-short`/no-Docker).
 
 #### `C3-FU5` — cmd
 Pre-existing (not from C3): both selects in run() read supDone. If the supervisor self-exits first, the first select consumes supDone, so the second select blocks until the full ShutdownTimeout elapses before returning. Bounded/benign (slow-but-correct shutdown). The C3 terminal path is unaffected (first select consumes terminalCh, not supDone).
 
 - **Files:** `cmd/gobridge/main.go`
 - **Notes:** Reviewer residual NICE-TO-HAVE, explicitly pre-existing + out of C3 scope. Fix: track whether supDone was already consumed, or use a bool/nil-channel guard on the second read.
+- **Resolution (2026-07-02):** FIXED. `cmd/gobridge/main.go`: a `supExited` bool set in the primary `select` case on `<-supDone`, and an `awaitSupervisorShutdown` helper that returns immediately when the supervisor already self-exited (else the original bounded select). Signal/terminal paths are unchanged. Tests: `SkipsWaitWhenSupervisorAlreadyExited` / `WaitsForSupervisorToUnwind` / `ReturnsOnDeadline`.
 
 #### `A8-R2-validate-stale-msg` — config/validate.go
 validate.go:199-205 stale_claim_duration warning propagates the imprecise rationale ("without reducing duplicate sends", "closer to step_down_grace + 15s"). Real constraint: stale_claim must exceed the worst-case drain-batch timeout (same-owner stranded-claim recovery, DynamoDB-only); grace+15s is only a rule of thumb. Refine the warning message to state the drain-ceiling constraint.
 
 - **Files:** `config/validate.go:199-205`
 - **Notes:** From a8-resilience review. Pre-existing code, not added by A8; left untouched to keep A8 doc-scoped. A8 docs now state the correct rationale and remain consistent with the grace+15s rule-of-thumb the validator nudges toward.
+- **Resolution (2026-07-02):** FIXED (text-only). `config/validate.go` warning + doc now state the real constraint: the stale-claim duration must exceed the worst-case drain-batch timeout, bounds same-owner stranded-claim recovery, is DynamoDB-only, and does **not** gate failover hand-off; the `step_down_grace + 15s` figure is demoted to a rule-of-thumb. The threshold (`stale > 2*maxGrace`) is unchanged; the eight existing `TestValidateStaleClaimDuration_*` cases still pass.
 
 #### `D2-FU1` — docs
 Doc: visibility/lock timeout + auto-extend validator interaction + migration note
 
 - **Files:** `docs/transports/*`
 - **Notes:** Docs sweep: document validator skips SendTimeout<window/2 when auto_extend on; only auto_extend:false + short window + long send is rejected (correct). ASB LockDuration is client-side mirror of broker value; operators should mirror broker lock. Also (reviewer NTH): document that ASB lock_duration must match the broker entity LockDuration, else auto_extend:false + declared-short lock_duration produces a fail-fast validator rejection on the declared value.
+- **Resolution (2026-07-02):** FIXED (docs). `docs/transport-configuration.md`: new SQS and Service Bus "Resilience Behavior" sections documenting why the validator skips the send-timeout-vs-window check under `auto_extend` (guard `!SourceAutoExtend && vis>0 && SendTimeout>=vis/2`); the SQS 2s floor (`minAutoExtendVisibilitySeconds=2` disables auto-extend even when requested, so the check re-applies); and `lock_duration` as a client-side mirror (broker `LockedUntil` governs, a declared-short value is rejected under `auto_extend:false`), plus a migration note. All claims traced to code.
 
 #### `DOC-DEFERRED-S21` — docs
 scenario 21 transform.New uses non-existent API (name arg + WithTransformFunc + domain.Envelope + env.Headers map-write)
 
 - **Files:** `docs/scenarios/21-amqp-cross-protocol.md:249`
 - **Notes:** Not a mechanical single-return fix: reflects an old/imagined transform API that never existed in current code (New(cfg)(*Processor,error), no name, no options, mapping-based). Setting a CONSTANT header (partner-version=2) may not be expressible via transform mappings -> needs capability reconciliation in Wave 5 cross-plugin docs sweep. Do NOT botch mechanically.
+- **Resolution (2026-07-02):** FIXED. The scenario-21 Go block was rewritten to the **real** transform API: `transform.New(Config{Name, Mappings})` (no name arg, no `WithTransformFunc`), the `SimpleMapping(src, target)` helper, a `header.`-prefixed `Target` to write an envelope header, and `partner-version=2` via a synthetic `Source` + `DefaultValue` fallback (there is no constant-header primitive) with an honest blockquote caveat. Runtime-verified against the package; only the `.md` changed.
 
 #### `J-N4` — docs
 CloudWatch 256-byte dim prefix collision → two values sharing prefix collapse to one series (inherent to CW limit)
 
 - **Files:** `adapters/aws/metrics/cloudwatch/acl_batcher.go`
 - **Notes:** aws-adv N4. Doc caution.
+- **Resolution (2026-07-02):** FIXED (doc-comment). `adapters/aws/metrics/cloudwatch/acl_batcher.go` `truncateField`: an operator caution that two dimension values sharing a ≥256-byte prefix truncate to the same string and collapse into one CloudWatch series (`maxDimensionField=256`, `buildDimensions`), framed as inherent to the CloudWatch limit (not a bug), with guidance to keep high-cardinality values distinct within the first 256 bytes. Comment-only.
 
 #### `HTTP-N2` — http
 SSE Send streams bridge-to-bridge x-bridge.* (tenant-id/forwarded-from/correlation/trace) to possibly-external subscribers
 
 - **Files:** `adapters/http/transport/sender_sse.go`, `doc.go`
 - **Notes:** H2 scoped to internal-only strip by design; DOC: if any SSE endpoint is public, operators must strip full x-bridge.* at the edge (or add per-destination egress ACL).
+- **Resolution (2026-07-02):** FIXED (doc). `adapters/http/transport/doc.go`: a caveat that on **public** SSE endpoints the retained `x-bridge.*` headers plus `traceparent`/`tracestate` are serialized to every subscriber and must be egress-ACL'd or stripped at the edge.
 
 #### `HTTP-N3` — http
 min-16 api_key floor is a silent breaking change for <16-char inline keys; no warning against reusing api_key as forward token
 
 - **Files:** `adapters/http/transport/config.go`, `doc.go`
 - **Notes:** Release-note the floor; warn that reusing api_key as ForwardToken reopens H1 spoofing.
+- **Resolution (2026-07-02):** FIXED. `config.go`'s API-key floor error now names both the too-short length and the minimum (16), and `doc.go` gains a release note plus a warning that the `api_key` is not the forward token. Test: `TestConfig_Validate_APIKeyFloorErrorNamesMinimum`.
 
 #### `A6-R1` — httpapi
 Expose running config_version on GET /topology for continuous fleet monitoring
 
 - **Files:** `httpapi/monitor.go`, `spec/httpapi/http-api.yaml`, `spec/httpapi/components.yaml`
 - **Notes:** A6 adversarial NICE-TO-HAVE N1. handleTopology (monitor.go ~145-165) returns instance_id/running/routes; s.cfg.ConfigProvider() is already wired and reachable, so the running config version could be surfaced as a response field for scrapeable fleet-convergence monitoring (no continuous metric/HTTP field exists today). Deferred from A6 because it is a contract change: requires updating the OpenAPI spec (spec/httpapi/http-api.yaml + components.yaml) and would pull in contract-reviewer scope — out of proportion for a LOW NICE-TO-HAVE during a doc/observability fix. A6 instead points operators at Supervisor.Config().Version (the real programmatic surface). Pick up as a contract-aware change in the Wave 4 httpapi unit.
+- **Resolution (2026-07-02):** FIXED. `monitor.go` `configVersion()` is nil-safe (reads `s.cfg.ConfigProvider().Version`), and `handleTopology` adds `config_version` **only** when a provider is wired (additive, avoiding conflating no-provider with v0). Spec: `TopologyResponse.config_version` (optional) in `components.yaml` and the `getTopology` description. Test: `TestHandleTopology_ConfigVersion` (present==7 / omitted).
 
 #### `B9-FU-STRICTJSON` — httpapi
 Optional: strict JSON body decode (reject trailing garbage / multi-value) shared across create/patch/inject handlers
 
 - **Files:** `httpapi/admin_config.go`, `httpapi/admin.go`
 - **Notes:** httpapi-adversarial NICE-TO-HAVE. B9 finding (malformed->silent default txn) is CLOSED. Residual: {"ttl":"90s"}JUNK->201 honors leading value + ignores trailing (NOT default, milder); null->201 default (well-formed, defensible); multi-value->first wins. Same one-value Decode pattern in handleInject(admin.go:149) + handleConfigTxnPatch(admin_config.go:127). Proper fix = shared decodeStrictJSON (Decode + assert dec.Decode(&struct{}{})==io.EOF) across all 3. YAGNI now: no data-loss/security impact, finding closed.
+- **Resolution (2026-07-02):** FIXED. `httpapi/decode.go` `decodeStrictJSON` decodes one value then asserts the next `Decode` is `io.EOF`, else returns a distinct `errTrailingData` (so an empty body still yields defaults, but `{json}JUNK`/multi-value bodies are rejected 400). Used by the config-txn create/patch/inject handlers. Test: `TestStrictJSON_RejectsTrailingAndMultiValue`.
 
 #### `C3-FU3` — mqtt
 Make Paho session reusable (resubscribe on re-Start) for true in-process lease re-acquire, eliminating the process-restart cost for exclusive MQTT.
 
 - **Files:** `adapters/mqtt/transport/paho/acl_session.go`
 - **Notes:** Single-use is deliberate (client-ID uniqueness). Reusable would need careful clean-session/clientID handling. Follow-up, not required for correctness.
+- **Resolution (2026-07-02):** VERIFY-KEEP. The single-use `Session` is intentional: `Start()` guards `if s.closed → ErrUnavailable`, with the clientID-uniqueness/clean-session rationale documented. Reuse would need careful clientID/clean-session handling and is deliberately not done. Regression `bug_start_after_close_test.go` (4 `TestBugSAC_*`) passes.
 
 #### `MQTT-ADR1` — mqtt
 ADR: MQTT in-flight QoS1/2 settlement on session step-down (drop-and-ack vs disconnect-first-redeliver vs EnableManualAcknowledgment+post-emit-ack)
 
 - **Files:** `adapters/mqtt/transport/paho/acl_router.go`, `delivery.go`
 - **Notes:** Reverted stop-gate => current model = forward-in-flight + broker-redelivers-un-acked-on-socket-teardown. True graceful drain is manager-deferred (C7 + manual-ack future). Ratify as ADR.
+- **Resolution (2026-07-02):** FIXED (doc-comment). `adapters/mqtt/transport/paho/delivery.go` gains a "Design decision: in-flight QoS 1/2 settlement on session step-down" block recording the ratified forward-in-flight + broker-redelivery model (no consume-gate before disconnect), contrasting the three options (drop-and-ACK stop-gate reverted/lossy; disconnect-first chosen; `EnableManualAcknowledgment` deferred) and noting that true graceful drain is SessionManager-deferred (finding C7). No ADR directory invented. Comment-only.
 
 #### `MQTT-N1` — mqtt
 Non-string bridge-to-bridge header values silently skipped on egress (v.(string) else continue), no counter
 
 - **Files:** `adapters/mqtt/transport/paho/acl_headers.go`
 - **Notes:** Pre-existing, consistent with sibling transports; out of strict scope. A non-string idempotency-key/tenant-id would drop without signal.
+- **Resolution (2026-07-02):** FIXED. `acl_headers.go` `PublishFromEnvelope` gains a variadic `...ports.MetricsExporter` (mirroring `NewSession`, zero churn to its ~20 four-arg callers); the egress loop counts dropped non-string headers and emits `MetricMQTTNonStringHeaderDropped` once, with `sender.go` passing `s.metrics`. Tests: `NonStringHeaderIncrementsCounter` and `AllStringHeaders_NoDropCounter`.
 
 #### `L8-FU1` — processors/circuitbreaker
 Pre-existing (NOT introduced by L1/L8/L11): fetch-breaker-then-use-outside-p.mu in Process — a concurrent evictOldest can drop the breaker another goroutine is mid-flight on, transiently yielding two breakers per key and dropping the orphan state update. Manifests only under cache-full high-cardinality churn (the regime L8 now surfaces via Stats().OpenEvictions). Proper fix (refcount or hold-lock-across-call) is non-trivial and risks serializing throughput — defer as its own unit.
 
 - **Files:** `processors/circuitbreaker/processor.go`
 - **Notes:** From cb-adversarial NICE-4.
+- **Resolution (2026-07-02):** FIXED. `processor.go` now keys the breaker map on `*breakerEntry{breaker, inFlight atomic.Int32}`. `Process` pins `inFlight` under `p.mu` with the decrement deferred first (so it fires last, after `AfterRequest`), and `evictOldest` skips any entry with `inFlight>0` across all tiers. Pin and evict are serialized under `p.mu`; the cache bound is soft under extreme churn (bounded, self-correcting overshoot) — documented, no hot-path serialization. Test: `TestProcessor_InFlightBreakerSurvivesEvictionChurn`.
 
 #### `OTEL-N5` — runtime
 Metrics Flush+Close share one halved shutdownTimeout/2 budget; slow Flush can push Close(provider.Shutdown) to deadline → spurious ctx error appended to Stop result (provider still shuts down).
 
 - **Files:** `runtime/bridge.go`
 - **Notes:** Harmless (Flush != shutdown, comment accurate). Tracer gets its own full closeTimeout. Give Close its own budget for clean shutdown errors.
+- **Resolution (2026-07-02):** FIXED. `bridge.go` calls `metrics.Close(closeCtx)` with the full close budget instead of the halved `flushCtx` (matching `tracer.Close`), so a slow-but-successful flush no longer eats the close deadline and produces a spurious ctx error on clean shutdown. Test: `TestStop_MetricsCloseGetsOwnBudget_NoSpuriousError` (fails if reverted).
 
 #### `OTEL-N6` — runtime
 Straggler drainer after close when Stop ctx pre-cancelled: select skips wg.Wait, proceeds to close metrics/tracer while drainer may emit.
 
 - **Files:** `runtime/bridge.go`
 - **Notes:** Benign — OTel counter/span calls on shut-down provider are no-ops (SDK concurrency-safe). Note only.
+- **Resolution (2026-07-02):** VERIFY-KEEP (+comment). `bridge.go`'s pre-cancelled `Stop` ctx skips `wg.Wait`; a straggler emit after provider `Close` is benign (OTel Counter/Start on a shut-down provider are concurrency-safe no-ops). Documented; no synchronization added (which would slow every shutdown for a non-bug).
 
 #### `A4-R1-replaycount-decouple` — runtime/outbox + domain/persistence + dynamo
 Transient retries still increment replay_count, so an outage longer than the poison budget DLQs good messages (memory/SQLite ~6x sooner than DynamoDB). Root-cause fix: bound delivery attempts by record AGE not claim count. Larger change across aggregate, snapshot, Dynamo store. Marked with ponytail comment in loop.go Run.
 
 - **Files:** `runtime/outbox/loop.go`, `domain/persistence/outbox.go`
 - **Notes:** Deferred per adversarial reviewer; 5s floor is the ship-gate mitigation.
+- **Resolution (2026-07-02):** VERIFY-KEEP + safe observability add; root-cause deferred. Verified the 5s `transientRetryFloor` is present and working and the cross-store "~6× sooner" claim (memory/sqlite implement `OutboxReleaser` → release+reclaim ~every 5s; DynamoDB has no `Release` → stale-claim reclaim ~every 30s; 30/5=6). Added a point-of-loss `WARN` at `handlePoison` (previously silent) with `record_id`/`replay_count`/`max_replay_attempts` — replay-count exhaustion is the only route to the poison DLQ, so the WARN faithfully marks premature-DLQ-from-outage. Pure observability, no schema/behavior change. The root-cause fix (age-based `IsPoisoned` decoupled from `replayCount`) needs a `firstAttemptAt` field threaded through the aggregate + `OutboxSnapshot` + all three stores (sqlite migration, dynamo reconcile vs the 30s stale reset) plus a `MaxDeliveryAge` knob — its own migration-bearing unit, deferred. Test: `TestOutboxDrainer_PoisonReplayExhaustion_EmitsObservableWarn`.
 
 #### `A4-R2-other-releaseerr-ordering` — runtime/outbox/retry.go
 Rare degraded path: if store Release returns a non-stale store error (e.g. SQLite I/O error), processRecord returns nil -> head counted as success + group continues -> later same-key record may overtake the stranded head. Requires a store write error precisely on Release. Reviewer-blessed fallback; no data loss (head recovers via version/stale reclaim).
 
 - **Files:** `runtime/outbox/retry.go`
 - **Notes:** Documented residual; fixing fully needs a second signal + conditional releaseRemainder, over-engineering a rare store-failure path.
+- **Resolution (2026-07-02):** VERIFY-KEEP, comment-only. A non-stale `Release` error (the `default` branch) returns `nil` so the drain loop does not cancel sibling sends. Verified no data loss: the head stays durably Claimed (Release did not transition it and it was never Completed) and is re-sent in persisted order via version/stale reclaim once the lease version advances (per the `OutboxReleaser` contract). Added a precise residual comment documenting the head-counted-as-success/group-continues/overtake window and its recovery; fully closing it would need a distinct release-failed signal plus a conditional `releaseRemainder` — over-engineering for a store error that must land precisely on `Release` — so it is deliberately deferred.
 
 #### `E5-FU2` — runtime/route
 receiveCount hardcodes 3 transport header strings that mirror unexported adapter constants in separate modules with no compile/test pin; an adapter rename silently disables max_replay for that transport with zero failing tests.
 
 - **Files:** `runtime/route/dispatch.go:330`, `335`, `340`
 - **Notes:** Discovered by E5 adversarial review. Runtime cannot import adapter packages (layer rule) and keys are unexported (servicebus/headers.go:20, amqp10/headers.go:21, sqs inline acl_inbound.go:186+193). Coupling IS documented (dispatch.go:324-326 comment) and an adapter rename breaks the adapter own header test (e.g. sqs headers_test.go:68) alerting the dev, so not fully silent. Fix options: cross-module contract test, or move the 3 keys into a shared domain/messaging header-name registry both layers import (reviewer ADR, borderline/reversible). Defer; values stable + documented.
+- **Resolution (2026-07-02):** FIXED (contract test, no registry). `dispatch.go`'s `receiveCountHeaderKeys` ordered slice (reused by E5-FU3, not gratuitous) is pinned by `TestReceiveCountHeaderKeys_WireContract`, which fixes the three wire strings and the slice, with per-key comments naming each adapter header source and its paired adapter-side pin test (sqs/servicebus/amqp10 `headers_test`). Renaming either side breaks a test.
 
 #### `E5-FU3` — runtime/route
 headerInt returns (0,false) for a present-but-unparseable count -> receiveCount treats it as first delivery (rc=0) -> on DirectHold a permanently-failing recoverable send retries unbounded with no signal.
 
 - **Files:** `runtime/route/dispatch.go:385-389`
 - **Notes:** Discovered by E5 adversarial review. Fail-open is defensible (do not DLQ a good message on a parse error) but the silent unbounded retry is unobservable. Adapters only stamp well-typed int/uint32 on the direct ingress path, so this needs header injection or a future adapter regression to hit. Minimal fix: when key present but uninterpretable, emit a debug log/metric. uint32-max->int (64-bit) and float64 truncation are NON-ISSUES per reviewer. Defer.
+- **Resolution (2026-07-02):** FIXED (observability, fail-open unchanged). `dispatch.go` emits `MetricReceiveCountUnparseable` + a debug log at the DirectHold chokepoint; the unparseable path fires only when there is **no** usable fallback (a literal-0 or valid fallback is not a false positive). The new transport-agnostic metric is added to `domain/shared/metrics.go` (and both exhaustive test lists). Tests: `UnparseableReceiveCountEmitsSignal` and an unparseable-key truth table.
 
 #### `C3-FU4` — runtime/session
 Add a real-adapter test exercising step-down concurrent with in-flight delivery (Probe 5 NICE-TO-HAVE) — current coverage uses fakes + the single-use regression.
 
 - **Files:** `runtime/session`
 - **Notes:** Adversarial Probe 5: no real-adapter step-down-concurrent-with-delivery test. Fakes + singleUseSession cover the manager logic; an integration-tagged test would harden it.
+- **Resolution (2026-07-02):** FIXED (test, fake-based, normal suite). `manager_stepdown_delivery_test.go` `TestSessionManager_StepDownConcurrentWithInflightDelivery`: an in-flight delivery via `mgr.Token()` (real `tokenFn` gate) with a version-fenced sink snapshots the owner token v1, stalls mid-settle across a fake-clock step-down; the manager re-acquires (fence v2>v1); the new term settles; the stalled v1 settle is fenced out — exactly-once. Asserts source closed, gate cleared, monotonic fence, no double-ack, clean shutdown. Addresses adversarial Probe 5.
 
 #### `A8-R1-leasettl-margin` — runtime/session/config.go
 Optional non-zero margin so RenewInterval*MaxRenewFails < LeaseTTL (e.g. LeaseTTL 48-50s) or a per-renew timeout < RenewInterval, making the "tolerates 2 transient renew failures then recovers on the 3rd" claim literally true and lifting the final renewal off the expiry boundary. Resilience-auditor classed it NICE-TO-HAVE; equality is acceptable given DefaultConfig parity (120*3=360).
 
 - **Files:** `runtime/session/config.go:118-126 (HAConfig) and :66-80 (DefaultConfig)`
 - **Notes:** From a8-resilience review. MUST apply to BOTH HAConfig and DefaultConfig (identical zero-margin structure). No safety impact (lease store + version fencing guarantee single-commit); availability/spurious-failover only.
+- **Resolution (2026-07-02):** FIXED. `runtime/session/config.go` now pins `RenewInterval` explicitly just under the derived value in **both** presets (Default 110s: 110×3=330 < 360 TTL, 30s margin; HA 14s: 14×3=42 < 45 TTL, 3s margin). `LeaseTTL`/`MaxRenewFails`/failover-SLA are unchanged, and the zero-derivation path (custom `Config{RenewInterval:0}`) still derives. This makes "tolerates 2 renew failures, recovers on the 3rd" literally true. Test: `TestLeaseRenewMargin_BothConfigs` (strict `<` for both).
 
 #### `SQS-D1` — sqs
 Scenario docs 02/03/05 should note address:<queue-name> now accepted (not only full URL); F8 batch_size direct-API-only note in scenario 02
 
 - **Files:** `docs/scenarios/02-sqs-to-sqs.md`, `docs/scenarios/03-mqtt-to-sqs.md`, `docs/scenarios/05-durable-shared-outbox.md`
 - **Notes:** DOC-DEFERRED to Wave 5 docs sweep.
+- **Resolution (2026-07-02):** FIXED (docs). Scenarios 02/03/05 now note that an SQS binding `address` may be a **bare queue name** (not only a full URL), per `addressMatchesQueue`/`ValidateAddress`; scenario 02 adds the note that `batch_size` sizes `SendBatch` only and does **not** apply to the per-delivery dispatch or outbox-drain paths (zero `SendBatch` callers in `runtime/`, verified). Doc-only.
 
 #### `SQS-N1` — sqs
 Attr size cap counts header bytes only, ignores MessageBody (256KiB shared budget)
 
 - **Files:** `adapters/aws/transport/sqs/acl_outbound.go`
 - **Notes:** NICE-TO-HAVE from sqs-adversarial: thread len(Payload) into starting budget OR scope comment to header-bytes-only. Non-loss (MapError surfaces SQS oversize).
+- **Resolution (2026-07-02):** FIXED. `sqs/acl_outbound.go` `headersToAttributes` takes a `bodyBytes int` seed so body + attributes are measured together against the 256KiB `sqsMaxMessageBytes` budget (the caller passes `len(env.Payload())`); bridge-to-bridge headers are ranked first so app metadata drops before dedup-critical headers, and `bodyBytes=0` preserves prior behavior. Test: `TestHeadersToAttributes_BodySharesSizeBudget`.
 
 #### `SQS-N2` — sqs
 attributeValue has no bool case; bool headers skipped uncounted (invisible)
 
 - **Files:** `adapters/aws/transport/sqs/acl_outbound.go`
 - **Notes:** NICE-TO-HAVE from sqs-adversarial: map bool->String or count in dropped metric so the loss is visible.
+- **Resolution (2026-07-02):** VERIFY-KEEP + regression test. `attributeValue` already renders `bool` as an SQS `String` ("true"/"false"); no code change (laziest-correct). Test: `TestHeadersToAttributes_BoolBecomesStringAttribute` (DataType==String, dropped==0).
 
 #### `D2-FU2` — sqs+asb
 Bounds validation for SQS visibility_timeout / ASB lock_duration vs broker limits
 
 - **Files:** `adapters/aws/transport/sqs/config_plugin.go`, `adapters/azure/transport/servicebus/config_plugin.go`
 - **Notes:** ASB allows 5s..5min lock; Validate() does not clamp/check. Distinct from D2. Reviewer NICE-TO-HAVE #2.
+- **Resolution (2026-07-02):** FIXED (both transports, fail-fast). `sqs/config_plugin.go` `Validate` bounds `VisibilityTimeout` to `[0,43200]`s (0=30s default); `servicebus/config_plugin.go` `Validate` bounds `LockDuration` to `0` or `[5s,5m]`. Field and range are named in the existing error style. Tests: `TestConfig_Validate_VisibilityTimeoutBounds` and `TestConfig_Validate_LockDurationBounds`.
 
 #### `ADV-F1-P2` — validate
 No validation that a receiver/session pair share a transport; mixed-transport session is a silent misconfig
 
 - **Files:** `validate/blueprint_graph.go`
 - **Notes:** sessionPlanFor unions receivers by SessionID regardless of Transport. Nothing guarantees all receivers on a session share the session transport (blueprint_graph.go:66-70 checks only FK existence). Not a regression (a mixed-transport session is already broken independent of the plan; amqp091 configFromPlan returns ok=false on foreign config -> default direct, no panic). Clean transport-neutral guard available: in the receiver collectIDs closure compare r.Transport against sessionsByID[r.SessionID].Transport when both non-empty. No false-positive risk. Low value (obvious misconfig).
+- **Resolution (2026-07-02):** FIXED. `validate/blueprint_graph.go` builds a `sessionsByID` map and adds an else-if guard (`r.Transport!="" && sess.Transport!="" && they differ`) yielding a clear error, so a receiver whose explicit transport conflicts with its session's transport is caught at validation. Test: `TestValidateBlueprintGraph_ReceiverSessionTransport` (mismatch fails; match and inherited pass).
 
 ### NICE (4)
+
+> **✅ RESOLVED 2026-07-02** — see per-item **Resolution** notes below.
 
 #### `C7-N3` — adapters/mqtt/transport/paho
 startCtx dead state: write-only in production after C7 (assigned acl_session.go:272, read only by tests). Remove field + bug_reconcile_before_start_test.go/BUG-A machinery, or document retention. Refresh stale reconcileMu doc (session.go:37-40).
 
 - **Files:** `adapters/mqtt/transport/paho/session.go`, `acl_session.go`
 - **Notes:** From c7-adversarial NICE-TO-HAVE #3. Cleanup caused by the fix; deferred to avoid destabilizing a verified MEDIUM fix - needs careful source read of the ordering invariant the BUG-A test guards.
+- **Resolution (2026-07-02):** FIXED (removal). The write-only `startCtx` field is fully removed (grep-clean), making the nil-parent-context panic in `OnConnectionUp` unreachable (the manager owns reconcile). Two dead tests were removed; `TestBugA_Integration_ReconcileBeforeStart` is kept (it guards the real invariant via `activeSubs`/`SessionReconciled`, with no `startCtx` dependency).
 
 #### `C7-N4` — adapters/mqtt/transport/paho
 Probe-4 TOCTOU defense-in-depth: handleConnectionUp does not take reconcileMu, so an in-flight prior-connect reconcile could rewrite activeSubs after reset (narrow ephemeral-session window). Take reconcileMu in handleConnectionUp or re-validate post-Subscribe.
 
 - **Files:** `adapters/mqtt/transport/paho/session_lifecycle.go`
 - **Notes:** From c7-adversarial NICE-TO-HAVE #4. LOW/theoretical: persistent/exclusive sessions moot; ephemeral window yields redundant no-op or Subscribe-error->terminal (no silent loss). Lock-ordering change - defer to avoid deadlock risk on a verified fix.
+- **Resolution (2026-07-02):** DEFERRED (documented). Acquiring `reconcileMu` in `handleConnectionUp` would violate autopaho's `OnConnectionUp` "must not block" contract — `reconcile()` holds `reconcileMu` across network Subscribe/Unsubscribe, and blocking the sole connection-manager goroutine is not provably deadlock-free. The TOCTOU worst case is a redundant re-subscribe or an observable Subscribe-error→terminal, never silent loss. The hazard is documented in `session_lifecycle.go` `handleConnectionUp`; erring toward safety.
 
 #### `C7-N1` — adapters/mqtt/transport/paho + runtime
 Transient vs permanent reconcile failure: a momentary reconnect-resubscribe blip terminates the whole bridge (manager.go:238 -> bridge.go:375). Consider bounded in-manager retry for non-ACL errors before going terminal.
 
 - **Files:** `runtime/manager.go`, `runtime/bridge.go`
 - **Notes:** From c7-adversarial NICE-TO-HAVE #1. Conscious trade-off: correct as-is (terminal+alarm right for permanent ACL failure).
+- **Resolution (2026-07-02):** VERIFY-KEEP (+docs). The premise is stale after C3-FU2: sessions now run under `superviseSession` (not bare `startBackground`), which restarts just that session with capped backoff on a transient fault including a reconcile blip (C7-N2). A permanent reconcile failure stays observable (`MetricReconcileFailures` + `MetricSessionRestarts` + readiness) rather than being escalated to a pod restart. No in-manager retry was added (it would duplicate `superviseSession` and risk masking permanent failure). Documented in `bridge_start.go`.
 
 #### `C7-N2` — runtime
 Exclusive-path conflation: reconcile errors relabeled lease.lost (+MetricLeaseTransfers, LeaseStateLost) at manager_lease.go:114-123. Emit distinct reconcile-failure signal for accurate observability.
 
 - **Files:** `runtime/manager_lease.go`
 - **Notes:** From c7-adversarial NICE-TO-HAVE #2.
-
+- **Resolution (2026-07-02):** FIXED. `manager.go` adds a distinct `LeaseStateReconcileFailed` (appended, iota-stable); `manager_lease.go` `afterRenewLoopExit` classifies via an `errLeaseLostAfterRenewal` sentinel so a reconcile blip emits the distinct signal, clears `hasLease`, and propagates to `superviseSession` (no `lease.lost`/`LeaseStateLost`/`MetricLeaseTransfers`), while a genuine loss/clean nil keeps the old re-acquire path. This stops a reconcile blip from polluting lease-transfer metrics. Test: `TestSessionManager_ExclusiveReconcileFailure_EmitsDistinctSignalNotLeaseTransfer`.

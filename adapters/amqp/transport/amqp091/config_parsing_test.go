@@ -177,6 +177,25 @@ func TestReceiverConfigFromOptions_Defaults(t *testing.T) {
 	}
 }
 
+// TestReceiverConfigFromOptions_ExplicitZeroPrefetch_UsesDefault validates
+// that an explicit prefetch_count:0 on the map path is treated as the
+// bounded default, matching the typed path (ReceiverParams.applyDefaults).
+// A zero prefetch means "unlimited" to the broker, so leaking it would let
+// a manual-settlement consumer be handed the whole queue at once.
+func TestReceiverConfigFromOptions_ExplicitZeroPrefetch_UsesDefault(t *testing.T) {
+	cfg := ReceiverConfigFromOptions(map[string]any{"prefetch_count": 0})
+	if cfg.PrefetchCount != defaultPrefetchCount {
+		t.Fatalf("explicit prefetch_count:0 -> %d, want bounded default %d (0 means unlimited to the broker)",
+			cfg.PrefetchCount, defaultPrefetchCount)
+	}
+
+	// A positive explicit value is still honoured unchanged.
+	cfg = ReceiverConfigFromOptions(map[string]any{"prefetch_count": 5})
+	if cfg.PrefetchCount != 5 {
+		t.Fatalf("explicit prefetch_count:5 -> %d, want 5", cfg.PrefetchCount)
+	}
+}
+
 // TestSenderConfigFromOptions_DefaultTimeout validates default timeout.
 func TestSenderConfigFromOptions_DefaultTimeout(t *testing.T) {
 	cfg := SenderConfigFromOptions(nil)

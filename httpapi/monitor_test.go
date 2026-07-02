@@ -98,3 +98,43 @@ func TestMonitorHandleReady_NotRunning(t *testing.T) {
 
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
+
+// TestHandleTopology_ConfigVersion validates the fleet-convergence field
+// (A6-R1): GET /topology surfaces the running config_version when a
+// ConfigProvider is wired, and omits it entirely when none is configured so
+// a missing provider is never confused with config version 0.
+func TestHandleTopology_ConfigVersion(t *testing.T) {
+	t.Run("present when config provider is wired", func(t *testing.T) {
+		rt := runtime.New(runtime.WithInstanceID("topo-cfgver"))
+		cfg := testConfig()
+		cfg.ConfigProvider = func() *ports.BridgeConfig {
+			return &ports.BridgeConfig{Version: 7}
+		}
+		s := New(rt, cfg)
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/topology", nil)
+		s.handleTopology(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		var body map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		assert.Equal(t, float64(7), body["config_version"],
+			"config_version must reflect the version returned by the ConfigProvider")
+	})
+
+	t.Run("omitted when no config provider is wired", func(t *testing.T) {
+		rt := runtime.New(runtime.WithInstanceID("topo-nocfg"))
+		s := New(rt, testConfig()) // testConfig wires no ConfigProvider
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/topology", nil)
+		s.handleTopology(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		var body map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		_, present := body["config_version"]
+		assert.False(t, present, "config_version must be omitted when no ConfigProvider is wired")
+	})
+}

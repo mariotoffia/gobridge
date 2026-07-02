@@ -10,8 +10,9 @@
 // Emit metric names from a bounded, static set (see
 // domain/shared/metrics.go). The instrument cache is bounded by
 // WithMaxInstruments (default 1024); once full, a new (dynamic) name is
-// rejected and surfaced via the error handler instead of growing the
-// cache without bound.
+// rejected instead of growing the cache without bound, and the rejection
+// is surfaced via the error handler (rate-limited to avoid flooding it
+// under sustained dynamic-name misuse).
 //
 // # Export-failure visibility
 //

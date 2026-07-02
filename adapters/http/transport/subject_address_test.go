@@ -40,11 +40,18 @@ type recordingMetrics struct {
 	timers int
 	counts int
 	gauges int
+	// byName tracks per-metric-name counter totals so a test can assert a
+	// specific counter fired, not just the aggregate.
+	byName map[string]int64
 }
 
-func (r *recordingMetrics) Counter(_ string, _ int64, _ ...shared.Tag) {
+func (r *recordingMetrics) Counter(name string, n int64, _ ...shared.Tag) {
 	r.mu.Lock()
 	r.counts++
+	if r.byName == nil {
+		r.byName = make(map[string]int64)
+	}
+	r.byName[name] += n
 	r.mu.Unlock()
 }
 
@@ -71,6 +78,14 @@ func (r *recordingMetrics) total() int {
 	// Gauges are emitted only by ServeHTTP (client connect/disconnect),
 	// never by Send, so they do not count toward Send-path emission.
 	return r.timers + r.counts
+}
+
+// counterCount returns the recorded total for a single counter metric
+// (zero if it was never emitted).
+func (r *recordingMetrics) counterCount(name string) int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.byName[name]
 }
 
 // newSSESenderForTest constructs an SSESender bound to the given

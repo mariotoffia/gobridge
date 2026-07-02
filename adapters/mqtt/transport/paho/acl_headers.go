@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 const headerMQTTResponseTopic = "mqtt.response-topic"
@@ -201,8 +202,15 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 // exists to produce; it is consumed by the pahoConn ACL seam
 // (acl_client.go PublishEnvelope) and by the legacy Sender path.
 //
+// An optional MetricsExporter (variadic, mirroring NewSession) is used to
+// count bridge-to-bridge / application headers dropped because their value
+// is not a string (MQTT-N1): such a value cannot become an MQTT user
+// property, so the drop is recorded via MetricMQTTNonStringHeaderDropped
+// instead of vanishing silently. When no exporter is supplied the drop is
+// still applied, just uncounted (test/legacy call sites).
+//
 //aclcheck:allow-export
-func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptions, clk clock.Clock) *pahov5.Publish {
+func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptions, clk clock.Clock, metrics ...ports.MetricsExporter) *pahov5.Publish {
 	if clk == nil {
 		clk = clock.System
 	}
@@ -216,6 +224,7 @@ func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptio
 
 	props := &pahov5.PublishProperties{}
 	hasProps := false
+	droppedNonString := 0
 
 	if env.ID() != "" {
 		props.User = append(props.User, pahov5.UserProperty{
@@ -275,11 +284,20 @@ func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptio
 			}
 			s, ok := v.(string)
 			if !ok {
+				// A bridge-to-bridge / application header with a non-string
+				// value cannot be serialised as an MQTT user property.
+				// Count the drop (finding MQTT-N1) so a lost idempotency-key
+				// or tenant-id is observable rather than silent.
+				droppedNonString++
 				continue
 			}
 			props.User = append(props.User, pahov5.UserProperty{Key: k, Value: s})
 			hasProps = true
 		}
+	}
+
+	if droppedNonString > 0 && len(metrics) > 0 && metrics[0] != nil {
+		metrics[0].Counter(MetricMQTTNonStringHeaderDropped, int64(droppedNonString))
 	}
 
 	if hasProps {

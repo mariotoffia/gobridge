@@ -17,8 +17,9 @@ func TestFactory_Capabilities(t *testing.T) {
 	caps := f.Capabilities()
 
 	want := map[ports.Capability]bool{
-		ports.CapStatefulSession:  false,
-		ports.CapSourceRedelivery: false,
+		ports.CapStatefulSession:         false,
+		ports.CapSourceRedelivery:        false,
+		ports.CapPlanDrivenSubscriptions: false,
 	}
 
 	for _, c := range caps {
@@ -31,8 +32,8 @@ func TestFactory_Capabilities(t *testing.T) {
 		}
 	}
 
-	if len(caps) != 2 {
-		t.Errorf("len(Capabilities) = %d, want 2", len(caps))
+	if len(caps) != 3 {
+		t.Errorf("len(Capabilities) = %d, want 3", len(caps))
 	}
 }
 

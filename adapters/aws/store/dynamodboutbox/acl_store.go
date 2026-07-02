@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"sort"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -74,12 +73,13 @@ type Store struct {
 	resolveMaxAttempts int
 	resolveBackoff     time.Duration
 
-	// keyCache maps an application record ID to its base-table (PK, SK),
+	// keys maps an application record ID to its base-table (PK, SK),
 	// populated on Claim so Complete can address the base table directly
 	// instead of resolving through the eventually consistent RecordIDIndex
 	// GSI (which can lag and report not-found, causing duplicate delivery).
-	keyMu    sync.Mutex
-	keyCache map[string]recordKey
+	// It is a bounded LRU so claimed-but-never-completed entries (lease
+	// churn) cannot grow it without limit; see keyCache (J-N1).
+	keys *keyCache
 }
 
 type recordKey struct {
@@ -163,7 +163,7 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 
 		resolveMaxAttempts: defaultResolveMaxAttempts,
 		resolveBackoff:     defaultResolveBackoff,
-		keyCache:           make(map[string]recordKey),
+		keys:               newKeyCache(defaultMaxKeyCache),
 	}
 	for _, o := range opts {
 		o(s)
@@ -513,8 +513,18 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 			return err
 		}
 		if pk == "" {
-			return shared.ErrNotFound.
-				WithMessage("outbox record not found").
+			// The Claim-populated key cache missed (e.g. a cold cache after a
+			// process restart) and the eventually consistent RecordIDIndex GSI
+			// still had not converged after the bounded resolve retry. The
+			// record was just claimed, so it exists in the base table — this is
+			// GSI replication lag, not a genuine absence. A permanent
+			// ErrNotFound here would tell the caller to give up completing and
+			// let the record be re-DELIVERED on the next stale/version reclaim;
+			// a transient timeout instead keeps it claimed so the caller
+			// retries Complete once the GSI catches up, closing the
+			// duplicate-delivery window (at-least-once still holds). See J-N3.
+			return shared.ErrTimeout.
+				WithMessage("outbox record key resolution timed out: RecordIDIndex GSI lag").
 				With("recordID", id)
 		}
 
@@ -878,23 +888,13 @@ func (s *Store) sleep(ctx context.Context, d time.Duration) error {
 }
 
 func (s *Store) cacheKey(recordID, pk, sk string) {
-	if recordID == "" {
-		return
-	}
-	s.keyMu.Lock()
-	s.keyCache[recordID] = recordKey{pk: pk, sk: sk}
-	s.keyMu.Unlock()
+	s.keys.put(recordID, recordKey{pk: pk, sk: sk})
 }
 
 func (s *Store) lookupKey(recordID string) (recordKey, bool) {
-	s.keyMu.Lock()
-	k, ok := s.keyCache[recordID]
-	s.keyMu.Unlock()
-	return k, ok
+	return s.keys.get(recordID)
 }
 
 func (s *Store) evictKey(recordID string) {
-	s.keyMu.Lock()
-	delete(s.keyCache, recordID)
-	s.keyMu.Unlock()
+	s.keys.remove(recordID)
 }

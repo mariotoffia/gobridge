@@ -61,14 +61,20 @@ type Config struct {
 }
 
 // DefaultConfig returns a Config with recommended defaults.
-// RenewInterval defaults to zero, which causes the session manager to
-// derive it as LeaseTTL / MaxRenewFails at construction time.
+//
+// RenewInterval is pinned to 110s rather than left zero (which would derive
+// LeaseTTL/MaxRenewFails = 120s and place the third renew attempt exactly on
+// the 360s expiry boundary). At 110s the three attempts sum to 330s, strictly
+// under LeaseTTL, so the owner tolerates two transient renew failures and the
+// third (recovering) attempt lands ~30s before expiry instead of racing it
+// (A8-R1-leasettl-margin). A custom Config that leaves RenewInterval zero
+// still derives LeaseTTL/MaxRenewFails at construction time.
 func DefaultConfig(sessionID string, exclusive bool) Config {
 	return Config{
 		SessionID:           sessionID,
 		Exclusive:           exclusive,
 		LeaseTTL:            360 * time.Second,
-		RenewInterval:       0, // derived: LeaseTTL / MaxRenewFails
+		RenewInterval:       110 * time.Second, // 110*3=330s < 360s TTL: final renew off the expiry boundary (A8-R1)
 		RenewJitter:         5 * time.Second,
 		MaxRenewFails:       3,
 		StepDownGrace:       routing.DefaultStepDownGrace,
@@ -84,8 +90,8 @@ func DefaultConfig(sessionID string, exclusive bool) Config {
 // starts from DefaultConfig and tightens only the lease-timing knobs, keeping
 // the same drain strategy and batch sizes.
 //
-// Timing: LeaseTTL=45s, MaxRenewFails=3 (so the derived RenewInterval is 15s),
-// RenewJitter=2s, StepDownGrace=5s. Those values encode these invariants:
+// Timing: LeaseTTL=45s, RenewInterval=14s, MaxRenewFails=3, RenewJitter=2s,
+// StepDownGrace=5s. Those values encode these invariants:
 //
 //   - Worst-case failover is approximately LeaseTTL (~45s) plus the new
 //     owner's acquire+connect time. A standby cannot acquire the Lease until
@@ -101,15 +107,17 @@ func DefaultConfig(sessionID string, exclusive bool) Config {
 //     timings. A brief duplicate *send* — never a duplicate commit — is
 //     possible during the failover overlap (the same at-least-once window as
 //     DefaultConfig), so downstream consumers must be idempotent.
-//   - RenewInterval * MaxRenewFails <= LeaseTTL (15s * 3 = 45s): MaxRenewFails
-//     renew attempts fit inside one TTL, so the owner tolerates two
-//     consecutive transient renew failures before stepping down.
-//   - RenewJitter (2s) stays small relative to the 15s RenewInterval.
+//   - RenewInterval * MaxRenewFails < LeaseTTL (14s * 3 = 42s < 45s): the
+//     three renew attempts fit inside one TTL with a 3s margin, so the owner
+//     tolerates two consecutive transient renew failures and the third
+//     (recovering) attempt lands before expiry instead of on the boundary
+//     (A8-R1-leasettl-margin).
+//   - RenewJitter (2s) stays small relative to the 14s RenewInterval.
 //     DefaultConfig's 5s would be a third of the interval and risk late
 //     renewals drifting past the TTL.
 //
 // Tradeoff: faster failover costs ~8x more lease-store renewal writes (every
-// ~15s vs ~120s) and tolerates fewer transient renew failures, so blip-prone
+// ~14s vs ~110s) and tolerates fewer transient renew failures, so blip-prone
 // networks see more spurious step-downs. For such networks relax LeaseTTL
 // toward 60s.
 //
@@ -128,7 +136,7 @@ func DefaultConfig(sessionID string, exclusive bool) Config {
 func HAConfig(sessionID string, exclusive bool) Config {
 	cfg := DefaultConfig(sessionID, exclusive)
 	cfg.LeaseTTL = 45 * time.Second
-	cfg.RenewInterval = 0 // keep derived: LeaseTTL / MaxRenewFails = 15s
+	cfg.RenewInterval = 14 * time.Second // 14*3=42s < 45s TTL: final renew off the expiry boundary (A8-R1)
 	cfg.RenewJitter = 2 * time.Second
 	cfg.MaxRenewFails = 3
 	cfg.StepDownGrace = 5 * time.Second

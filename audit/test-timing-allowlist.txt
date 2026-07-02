@@ -18,19 +18,12 @@
 ./adapters/azure/transport/servicebus/delivery_autoextend_retry_test.go:47:	time.Sleep(20 * time.Millisecond)     // OTHER: let goroutine process tick
 ./adapters/azure/transport/servicebus/delivery_autoextend_retry_test.go:74:		time.Sleep(1 * time.Millisecond)
 ./adapters/azure/transport/servicebus/delivery_autoextend_retry_test.go:79:		time.Sleep(20 * time.Millisecond)     // OTHER: let goroutine process tick
-./adapters/azure/transport/servicebus/delivery_test.go:179:		time.Sleep(1 * time.Millisecond)
-./adapters/azure/transport/servicebus/delivery_test.go:183:	time.Sleep(20 * time.Millisecond)     // OTHER: let goroutine process tick
-./adapters/azure/transport/servicebus/delivery_test.go:212:	time.Sleep(20 * time.Millisecond) // OTHER: goroutine teardown yield
-./adapters/azure/transport/servicebus/delivery_test.go:240:	time.Sleep(20 * time.Millisecond) // OTHER: goroutine teardown yield
-./adapters/azure/transport/servicebus/delivery_test.go:262:	time.Sleep(200 * time.Millisecond) // NEGATIVE: verify no lock renewal when auto-extend disabled (tightened from 1500ms)
-./adapters/azure/transport/servicebus/delivery_test.go:305:	time.Sleep(2500 * time.Millisecond)
-./adapters/azure/transport/servicebus/delivery_test.go:307:	time.Sleep(100 * time.Millisecond) // SYNC: drain after stop
 ./adapters/azure/transport/servicebus/integration_test.go:69:		time.Sleep(backoff) // OTHER: external emulator warmup backoff between probes
 ./adapters/http/transport/benchmark_test.go:103:				time.Sleep(time.Millisecond) // OTHER: polling for SSE client registration in benchmark
 ./adapters/http/transport/integration_edge_cases_r3_test.go:357:		time.Sleep(2 * time.Second) // OTHER: simulates slow remote for context cancellation test
 ./adapters/http/transport/integration_single_bridge_test.go:57:		time.Sleep(10 * time.Millisecond) // OTHER: internal polling interval in test helper
-./adapters/http/transport/subject_address_test.go:288:		time.Sleep(10 * time.Millisecond)
-./adapters/http/transport/subject_address_test.go:348:		time.Sleep(10 * time.Millisecond)
+./adapters/http/transport/subject_address_test.go:303:		time.Sleep(10 * time.Millisecond)
+./adapters/http/transport/subject_address_test.go:363:		time.Sleep(10 * time.Millisecond)
 ./adapters/mqtt/transport/paho/analysis_router_test.go:167:	time.Sleep(100 * time.Millisecond) // OTHER: race window — let concurrent register/unregister/route goroutines exercise
 ./adapters/mqtt/transport/paho/analysis_sender_test.go:243:	time.Sleep(80 * time.Millisecond)
 ./adapters/mqtt/transport/paho/analysis_session_test.go:285:			time.Sleep(time.Duration(trial+1) * 100 * time.Microsecond) // OTHER: race window — Close during concurrent pushEvent
@@ -87,7 +80,6 @@
 ./runtime/route_runner_concurrent_test.go:49:		time.Sleep(50 * time.Millisecond) // OTHER: simulated processing duration
 ./runtime/runtime_resilience_test.go:157:	time.Sleep(50 * time.Millisecond) // SYNC: let drainer start and reach poll loop
 ./runtime/runtime_resilience_test.go:330:	time.Sleep(200 * time.Millisecond) // NEGATIVE: verify stale fencing token does not kill runtime
-./runtime/s12_timeout_alignment_test.go:208:			time.Sleep(20 * time.Millisecond) // SYNC: poll interval in inline wait loop
 ./runtime/session/manager_clock_test.go:141:		time.Sleep(5 * time.Millisecond) // OTHER: real-time sync for clocktest.Fake
 ./runtime/session/manager_clock_test.go:145:	time.Sleep(20 * time.Millisecond)
 ./runtime/session/manager_clock_test.go:172:	time.Sleep(20 * time.Millisecond)

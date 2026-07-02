@@ -45,6 +45,44 @@
 // Routes that need at-least-once semantics on top of an MQTT source must
 // use DeliveryMode shared_outbox; durability comes from the outbox store
 // and the egress sender, NOT from broker redelivery.
+//
+// # Design decision: in-flight QoS 1/2 settlement on session step-down
+//
+// When an exclusive session loses its lease (or the process shuts down)
+// this adapter does NOT gate consumption before disconnecting. The
+// ratified model is forward-in-flight + broker-redelivery: Session.Close
+// (session_lifecycle.go) flips the closed guard, disconnects the
+// ConnectionManager, and awaits in-flight handlers bounded by the Close
+// context. Because Route is synchronous and the Paho client sends the
+// PUBACK/PUBCOMP only after Route returns (acl_router.go), a QoS 1/2
+// publish that is mid-dispatch when the socket tears down is left
+// UN-ACKED, so a persistent/exclusive broker session redelivers it to the
+// next owner — at-least-once, with the durable outbox's version fence
+// stopping a double-commit of the same record.
+//
+// Three options were considered; the first two were rejected:
+//
+//   - Drop-and-ACK (a stop-gate that stops pulling new work, then drains
+//     the in-flight set): rejected. The Paho Router seam ACKs after Route
+//     returns and cannot NACK, so "stop, then drain" would have to
+//     drop-and-ACK whatever was already read — silently LOSING those
+//     in-flight publishes. An earlier stop-gate along these lines was
+//     reverted for exactly this reason.
+//   - Disconnect-first-then-redeliver: the CHOSEN model above. Tearing the
+//     socket down before acking is the only seam-safe way to force
+//     redelivery, so it is preferred over any adapter-local drop.
+//   - EnableManualAcknowledgment + post-emit ACK: the correct long-term
+//     fix (ack only after emit has taken ownership, which enables a true
+//     quiesce), but it is a Client-scoped re-architecture around
+//     OnPublishReceived that is deliberately NOT taken here.
+//
+// True graceful drain — quiescing the source before disconnect so no
+// in-flight publish is interrupted — is therefore deferred to the manager
+// layer: the runtime SessionManager is the single owner of lease
+// step-down and reconnect (finding C7) and is where a future
+// EnableManualAcknowledgment path would land. Until then, step-down
+// correctness rests on broker redelivery and the outbox fence, not on an
+// adapter-local drain.
 package paho
 
 import (

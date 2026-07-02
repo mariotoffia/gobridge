@@ -244,10 +244,28 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		})
 	}
 
+	// Session managers run under superviseSession (NOT bare startBackground): a
+	// transient session fault — including a reconcile-on-reconnect blip
+	// (session/manager.go handleSessionEvent, session/manager_lease.go
+	// afterRenewLoopExit) — restarts JUST this session with capped backoff
+	// instead of tearing down the whole runtime. A PERMANENT reconcile failure
+	// (e.g. an ACL that keeps rejecting SUBSCRIBE) is likewise not escalated to
+	// a pod restart; it stays observable via MetricReconcileFailures +
+	// MetricSessionRestarts + per-session readiness. This supersedes the old
+	// "reconcile blip terminates the whole bridge" behaviour, so no extra
+	// in-manager reconcile retry is added: it would duplicate this isolation and
+	// risk masking a permanent failure behind another retry layer (C7-N1).
 	for sid, mgr := range rt.sessionMgrs {
-		rt.startBackground(ctx, "session:"+sid, mgr.Run)
+		rt.startBackground(ctx, "session:"+sid, rt.superviseSession(sid, mgr.Run))
 	}
 
+	// Drainers run under startBackground (terminal-on-error) — correct AS-IS:
+	// Drainer.Run only ever returns ctx.Err() (every drain fault — stale token,
+	// transient egress, claim failure — is absorbed and retried inside its own
+	// poll loop, see runtime/outbox/loop.go). A non-ctx return is therefore
+	// impossible, so a transient drain fault can never trip terminal, and the
+	// ctx.Err() shutdown return is filtered by startBackground's ctx.Err()==nil
+	// guard. No supervisor wrapper is warranted (REV-3-routeiso).
 	for i, drainer := range rt.drainers {
 		name := "drainer:" + drainer.PartitionKey()
 		if name == "drainer:" {
@@ -256,6 +274,22 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		rt.startBackground(ctx, name, drainer.Run)
 	}
 
+	// Route runners run under startBackground (terminal-on-error) — correct
+	// AS-IS: RouteRunner.Run returns whatever Receiver.Run returns, and by the
+	// Receiver contract (ports/transport.go) that is ctx.Err()/nil on shutdown
+	// or an UNRECOVERABLE error. Each adapter isolates transient transport
+	// faults inside its own bounded reconnect loop (amqp091 waitForReconnect,
+	// sqs poll backoff, mqtt session reconnect) and surfaces only permanent /
+	// misconfig errors (queue missing, access refused, protocol error). Nor can
+	// the emit callback (route/runner.go) inject a transient error: message
+	// PROCESSING runs in a detached goroutine whose failures never propagate
+	// back through emit, and emit itself only returns ctx.Err() (backpressure /
+	// shutdown — acquireSlots blocks, it does not fail transiently) or a
+	// defensive "callback after receiver stopped" guard (a receiver bug). All of
+	// these SHOULD fail-fast → pod restart; blanket-wrapping them in unbounded
+	// retry would mask a real fatal bug and hot-loop on a fault the adapter
+	// deliberately declined to retry. Transient isolation belongs in the
+	// adapter, not here (REV-3-routeiso).
 	for _, entry := range rt.entries {
 		rt.startBackground(ctx, "route:"+entry.config.ID, entry.runner.Run)
 	}

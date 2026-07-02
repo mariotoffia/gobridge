@@ -80,7 +80,15 @@ func (c Config) Validate() error {
 		return fmt.Errorf("http: max_clients must be >= 0")
 	}
 	if key := c.APIKey.Reveal(); key != "" && len(key) < minAPIKeyLength {
-		return fmt.Errorf("http: api_key must be at least %d characters when set", minAPIKeyLength)
+		// Name the 16-char minimum as the cause. A short inline key that
+		// an earlier build accepted now fails this floor (HTTP-N3); an
+		// error that did not spell out the minimum left operators
+		// guessing why. Reporting the too-short length of an
+		// already-rejected, unusable key is a config-time aid, not a
+		// secret leak.
+		return fmt.Errorf(
+			"http: inline api_key is too short: %d characters, minimum is %d",
+			len(key), minAPIKeyLength)
 	}
 	if c.Mode != "" && c.Mode != "sse" {
 		return fmt.Errorf("http: unsupported sender mode %q (only \"sse\" supported)", c.Mode)

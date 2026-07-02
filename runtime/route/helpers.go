@@ -88,9 +88,37 @@ func (r *RouteRunner) validateAddress(bindingID, address string) error {
 	return nil
 }
 
-func (r *RouteRunner) buildOutboxRecords(env *messaging.Envelope, plans []routing.DispatchPlan) ([]*persistence.OutboxRecord, error) {
+func (r *RouteRunner) buildOutboxRecords(ctx context.Context, env *messaging.Envelope, plans []routing.DispatchPlan) ([]*persistence.OutboxRecord, error) {
 	now := r.clk.Now()
 	records := make([]*persistence.OutboxRecord, len(plans))
+
+	// Persist the envelope without the source transport's redelivery-count
+	// headers so a drained record forwarded to the next hop does not carry a
+	// stale count the downstream bridge would misread as its own (E5-FU1).
+	// Clone so the source envelope (re-read by receiveCount on retry paths) is
+	// untouched; NewOutboxRecord deep-clones again per record.
+	persisted := env.Clone()
+	stripInboundReceiveCounts(persisted)
+
+	// Continue the distributed trace across the store-and-forward hop (OTEL-N3):
+	// stamp THIS bridge's active ingress span onto the persisted envelope's W3C
+	// headers so a record drained later — by a separate drainer that no longer
+	// holds this span in context — still propagates a bridge hop downstream.
+	// Without this the clone carries only the upstream traceparent, so the
+	// receiving service parents on the upstream span (skipping this bridge) or,
+	// absent one, starts a disconnected trace. Mirrors the direct-hold inject in
+	// sendDirectHold: any stale upstream traceparent/tracestate is removed first
+	// so it cannot ride alongside the fresh bridge span, SetHeader is the trusted
+	// per-key path, and when tracing is disabled Inject returns no keys so the
+	// block is skipped and the upstream headers pass through untouched. Applied
+	// to the clone only; the source envelope is never mutated.
+	if injected := r.tracer.Inject(ctx, map[string]any{}); len(injected) > 0 {
+		persisted.DeleteHeader(messaging.HeaderTraceParent)
+		persisted.DeleteHeader(messaging.HeaderTraceState)
+		for k, v := range injected {
+			persisted.SetHeader(k, v)
+		}
+	}
 
 	for i, plan := range plans {
 		sessionID := r.sessionIDForBinding(plan.BindingID)
@@ -111,7 +139,7 @@ func (r *RouteRunner) buildOutboxRecords(env *messaging.Envelope, plans []routin
 			BindingID:       plan.BindingID,
 			SessionID:       sessionID,
 			Address:         plan.Address,
-			Envelope:        *env,
+			Envelope:        *persisted,
 			DispatchHeaders: plan.Headers,
 			CreatedAt:       now,
 			ExpiresAt:       env.ExpiresAt(),

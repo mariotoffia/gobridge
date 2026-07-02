@@ -66,3 +66,69 @@ func TestReceiveCount_NoHeaders(t *testing.T) {
 		t.Errorf("receiveCount() = %d, want 0", got)
 	}
 }
+
+// TestStripInboundReceiveCounts pins the E5-FU1 egress chokepoint helper: it
+// must delete EVERY transport redelivery-count header so a stale upstream count
+// cannot ride a bridge-to-bridge hop, while leaving all other headers untouched.
+func TestStripInboundReceiveCounts(t *testing.T) {
+	t.Run("removes every count header, keeps the rest", func(t *testing.T) {
+		// WHY: bridge B may receive an envelope carrying every upstream count
+		// header at once (defensive) alongside a benign app header and a
+		// transport-namespaced sibling that is NOT a count. The strip must be
+		// key-exact: only the three count keys go, proving it is not a blunt
+		// "asb.*" prefix wipe that would also clobber unrelated transport
+		// metadata. (A true x-bridge.* reserved header cannot be built via
+		// MustEnvelope — its panic guard — so the sibling is the witness.)
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
+			ID:      "strip",
+			Payload: []byte("p"),
+			Headers: map[string]any{
+				headerSQSReceiveCount:     3,
+				headerASBDeliveryCount:    5,
+				headerAMQP10DeliveryCount: uint32(7),
+				"x-app.tenant":            "acme",
+				"asb.enqueued-time":       "2025-01-01T00:00:00Z",
+			},
+		})
+
+		stripInboundReceiveCounts(env)
+
+		for _, k := range []string{headerSQSReceiveCount, headerASBDeliveryCount, headerAMQP10DeliveryCount} {
+			if _, ok := env.Headers()[k]; ok {
+				t.Errorf("count header %q must be stripped", k)
+			}
+		}
+		if v, ok := env.Headers()["x-app.tenant"]; !ok || v != "acme" {
+			t.Errorf("benign header x-app.tenant = %v (present=%v), want \"acme\"", v, ok)
+		}
+		if _, ok := env.Headers()["asb.enqueued-time"]; !ok {
+			t.Error("transport-namespaced non-count header asb.enqueued-time must survive the strip")
+		}
+	})
+
+	t.Run("stale upstream count can no longer win receiveCount", func(t *testing.T) {
+		// WHY: cross-hop precedence proof. Before the strip the stale upstream
+		// asb count (9) is what receiveCount returns; after the strip it returns
+		// 0 (first delivery), so bridge B establishes its own count instead of
+		// inheriting bridge A's.
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
+			ID:      "precedence",
+			Payload: []byte("p"),
+			Headers: map[string]any{headerASBDeliveryCount: 9},
+		})
+		if got := receiveCount(env); got != 9 {
+			t.Fatalf("receiveCount before strip = %d, want 9 (stale upstream count wins)", got)
+		}
+		stripInboundReceiveCounts(env)
+		if got := receiveCount(env); got != 0 {
+			t.Fatalf("receiveCount after strip = %d, want 0 (stale count no longer rides the hop)", got)
+		}
+	})
+
+	t.Run("nil headers do not panic", func(t *testing.T) {
+		// WHY: DeleteHeader is nil-safe; a first-delivery envelope built without
+		// headers must strip cleanly rather than panic.
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "x", Payload: []byte("p")})
+		stripInboundReceiveCounts(env) // must not panic
+	})
+}

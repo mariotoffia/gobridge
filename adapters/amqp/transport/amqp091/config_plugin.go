@@ -2,6 +2,9 @@ package amqp091
 
 import (
 	"errors"
+	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
@@ -10,6 +13,7 @@ import (
 
 // Compile-time interface contract.
 var _ ports.CredentialedConfig = (*Config)(nil)
+var _ ports.PublishingConfig = (*Config)(nil)
 
 // Config is the typed PluginConfig for the AMQP 0-9-1 (RabbitMQ)
 // transport. It nests session/receiver/sender role configs and is
@@ -110,6 +114,63 @@ type PublisherParams struct {
 
 // Kind reports the registry discriminator.
 func (Config) Kind() string { return "amqp.amqp091" }
+
+// PublisherTopic returns the exchange this sender publishes to, so the bridge
+// can thread it into the session plan and the session's declarePublisher can
+// pre-declare it (ports.PublishingConfig). The declared exchange NAME is always
+// sourced from sender.exchange (the exact exchange Send publishes to); the
+// declaration TOPOLOGY (exchange_type/durable/auto_delete/arguments) is read
+// from the separate publisher.* block, which only decorates that exchange —
+// publisher.exchange is NOT a second name and is ignored here. Set sender.exchange
+// alone and the exchange is declared with defaults (direct, non-durable); add a
+// publisher.* block to declare non-default topology. Empty means "no exchange to
+// declare" (default-exchange publish); declarePublisher no-ops on an empty topic.
+// The declare is best-effort: see Session.reconcile.
+func (c Config) PublisherTopic() string { return c.Sender.Exchange }
+
+// PublisherTopologyKey returns a deterministic descriptor of the exchange
+// DECLARATION topology this sender contributes (ports.PublishingConfig), so the
+// bridge can distinguish a legitimate identical re-declaration of an
+// already-advertised exchange from a genuinely DIVERGENT one when it dedups
+// senders by exchange name (first-declare-wins) — REV-2-topowarn. It encodes
+// EXACTLY the fields declarePublisher passes to ExchangeDeclare: exchange_type
+// (default "direct", mirroring publisherParams), durable, auto_delete, and the
+// exchange-argument table (keys sorted for determinism), all read from the
+// publisher.* block. The routing key is deliberately excluded — it is a
+// per-message property, not part of the exchange declaration, so two senders on
+// the same exchange with different routing keys do NOT diverge. Two configs
+// declaring the same exchange topology therefore yield an identical key.
+func (c Config) PublisherTopologyKey() string {
+	p := c.Publisher
+	exchangeType := p.ExchangeType
+	if exchangeType == "" {
+		exchangeType = "direct"
+	}
+	return fmt.Sprintf("type=%s;durable=%t;auto_delete=%t;args=%s",
+		exchangeType, p.Durable, p.AutoDelete, stableArgs(p.ExchangeArguments))
+}
+
+// stableArgs renders an AMQP argument table as a deterministic string (keys
+// sorted) so two tables can be compared for equality regardless of map
+// iteration order.
+func stableArgs(args map[string]any) string {
+	if len(args) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, "%s=%v", k, args[k])
+	}
+	return b.String()
+}
 
 // Validate checks the unified config. Empty role-specific fields are
 // allowed because the same Config is reused across all three specs
