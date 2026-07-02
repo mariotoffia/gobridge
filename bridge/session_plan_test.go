@@ -56,8 +56,8 @@ func TestSessionPlanFor_UnionAcrossReceiversOnSharedSession(t *testing.T) {
 	assert.Equal(t, "topic/b", plan.Subscriptions[2].Topic)
 	assert.Equal(t, 2, plan.Subscriptions[2].QoS)
 
-	// Publishers is intentionally empty (documented transport-neutral
-	// boundary: the exchange name lives in the opaque typed sender config).
+	// Publishers is empty because this cfg declares no senders — there is
+	// nothing implementing ports.PublishingConfig to advertise an exchange.
 	assert.Empty(t, plan.Publishers)
 }
 
@@ -85,8 +85,8 @@ func TestSessionPlanFor_PassesTypedSubscriptionConfigThrough(t *testing.T) {
 }
 
 // TestSessionPlanFor_EmptyAndDegenerateInputs covers the nil/empty guards and
-// confirms Publishers is always empty (the documented boundary), even when a
-// sender is bound to the session.
+// confirms Publishers stays empty when a sender is bound to the session but its
+// typed config (here nil) does not implement ports.PublishingConfig.
 func TestSessionPlanFor_EmptyAndDegenerateInputs(t *testing.T) {
 	assert.Empty(t, sessionPlanFor(nil, "s1").Subscriptions, "nil cfg")
 	assert.Empty(t, sessionPlanFor(&ports.BridgeConfig{}, "").Subscriptions, "empty sessionID")
@@ -106,7 +106,7 @@ func TestSessionPlanFor_EmptyAndDegenerateInputs(t *testing.T) {
 	}
 	got := sessionPlanFor(withSender, "s1")
 	assert.Len(t, got.Subscriptions, 1)
-	assert.Empty(t, got.Publishers, "Publishers stays empty even with a sender on the session")
+	assert.Empty(t, got.Publishers, "empty because this sender's nil Config doesn't implement ports.PublishingConfig")
 }
 
 // ---------------------------------------------------------------------------
@@ -242,5 +242,179 @@ func TestBuilder_AssemblesAndThreadsSessionPlan_SharedSessionUnion(t *testing.T)
 	}
 	assert.Equal(t, map[string]int{"topic/a": 1, "topic/b": 2}, got,
 		"reconciled plan must carry the per-session union of both receivers' topics")
-	assert.Empty(t, plan.Publishers, "Publishers intentionally empty (documented boundary)")
+	assert.Empty(t, plan.Publishers, "empty because the mqtt sender's config doesn't implement ports.PublishingConfig")
+}
+
+// ---------------------------------------------------------------------------
+// White-box unit tests for the Publishers side of sessionPlanFor (F1-P3): a
+// sender whose typed config implements ports.PublishingConfig advertises its
+// exchange, which the bridge threads into PublisherPlan.Topic so amqp091's
+// declarePublisher auto-declares it.
+// ---------------------------------------------------------------------------
+
+// pubDeclConfig is a LOCAL test stub implementing both ports.PluginConfig and
+// the OPTIONAL ports.PublishingConfig. It stands in for a transport's typed
+// sender config (e.g. amqp091.Config) so the bridge test can exercise the
+// Publishers path WITHOUT importing any adapter — the bridge package must never
+// depend on an adapter (.go-arch-lint.yml), not even in tests.
+type pubDeclConfig struct{ topic string }
+
+func (*pubDeclConfig) Kind() string             { return "test.pubdecl" }
+func (*pubDeclConfig) Validate() error          { return nil }
+func (c *pubDeclConfig) PublisherTopic() string { return c.topic }
+
+// TestSessionPlanFor_PublishersFromDeclarer proves sessionPlanFor derives
+// Publishers from senders bound to the session whose typed config implements
+// ports.PublishingConfig: the exchange name is threaded verbatim, deduped by
+// name, and empty/other-session senders contribute nothing.
+func TestSessionPlanFor_PublishersFromDeclarer(t *testing.T) {
+	t.Run("declarer contributes one publisher with verbatim config", func(t *testing.T) {
+		stub := &pubDeclConfig{topic: "ex.orders"}
+		cfg := &ports.BridgeConfig{
+			Senders: []ports.SenderDef{
+				{ID: "tx1", Transport: "amqp091", SessionID: "s1", Config: stub},
+			},
+		}
+
+		plan := sessionPlanFor(cfg, "s1")
+
+		require.Len(t, plan.Publishers, 1)
+		assert.Equal(t, "ex.orders", plan.Publishers[0].Topic)
+		assert.Same(t, stub, plan.Publishers[0].Config,
+			"typed sender Config must pass through verbatim (same pointer)")
+	})
+
+	t.Run("deduped by exchange name", func(t *testing.T) {
+		cfg := &ports.BridgeConfig{
+			Senders: []ports.SenderDef{
+				{ID: "tx1", Transport: "amqp091", SessionID: "s1", Config: &pubDeclConfig{topic: "ex.orders"}},
+				{ID: "tx2", Transport: "amqp091", SessionID: "s1", Config: &pubDeclConfig{topic: "ex.orders"}},
+			},
+		}
+
+		plan := sessionPlanFor(cfg, "s1")
+
+		require.Len(t, plan.Publishers, 1, "two senders on the same exchange collapse to one publisher")
+		assert.Equal(t, "ex.orders", plan.Publishers[0].Topic)
+	})
+
+	t.Run("empty topic contributes nothing", func(t *testing.T) {
+		cfg := &ports.BridgeConfig{
+			Senders: []ports.SenderDef{
+				{ID: "tx1", Transport: "amqp091", SessionID: "s1", Config: &pubDeclConfig{topic: ""}},
+			},
+		}
+
+		assert.Empty(t, sessionPlanFor(cfg, "s1").Publishers,
+			"an empty PublisherTopic() means no exchange to declare")
+	})
+
+	t.Run("sender on a different session contributes nothing", func(t *testing.T) {
+		cfg := &ports.BridgeConfig{
+			Senders: []ports.SenderDef{
+				{ID: "tx1", Transport: "amqp091", SessionID: "other", Config: &pubDeclConfig{topic: "ex.orders"}},
+			},
+		}
+
+		assert.Empty(t, sessionPlanFor(cfg, "s1").Publishers,
+			"only senders bound to the target session contribute publishers")
+	})
+}
+
+// TestBuilder_ThreadsSessionPlan_Path2SessionSender_F1P4 is the end-to-end
+// regression guard for F1-P4: a session registered ONLY via the builder's
+// Path-2 session-sender loop (a shared_outbox binding whose session is no
+// route's primary) must reconcile its receivers' subscriptions, not the empty
+// plan that session.DefaultConfig carries.
+//
+// The dedicated session (s-ded) runs on a distinct transport factory so it is
+// the ONLY session backed by the plan-capturing fake — the route's primary
+// session (s-primary) uses the plain fake and never touches the capture. A
+// receiver (rx-ded) bound to s-ded carries the topic the reconciled plan must
+// contain.
+//
+// Before the fix builder_complete.go built the session-sender config with
+// session.DefaultConfig(...) (empty plan) and never threaded sessionPlanFor,
+// so the capture would hold zero subscriptions and this test FAILS. After the
+// fix (sc.Plan = sessionPlanFor(b.cfg, bd.SessionID)) it PASSES.
+func TestBuilder_ThreadsSessionPlan_Path2SessionSender_F1P4(t *testing.T) {
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "bridge-p4", DrainTimeout: "1s"},
+		Stores: ports.StoresConfig{
+			Lease:  &ports.StoreConfig{Type: "memory"},
+			Outbox: &ports.StoreConfig{Type: "memory"},
+		},
+		Sessions: []ports.SessionDef{
+			{ID: "s-primary", Transport: "plain", SessionMode: "exclusive"},
+			{ID: "s-ded", Transport: "cap", SessionMode: "exclusive"},
+		},
+		Receivers: []ports.ReceiverDef{
+			{ID: "rx-main", Transport: "plain"},
+			// rx-ded is bound to the DEDICATED (Path-2) session and carries the
+			// topic the reconciled plan must contain.
+			{ID: "rx-ded", Transport: "cap", SessionID: "s-ded", Topics: []ports.SubscriptionDef{
+				{Topic: "topic/dedicated", QoS: 1},
+			}},
+		},
+		Senders: []ports.SenderDef{
+			{ID: "tx-primary", Transport: "plain", SessionID: "s-primary"},
+			{ID: "tx-ded", Transport: "cap", SessionID: "s-ded"},
+		},
+		Bindings: []ports.BindingDef{
+			{ID: "b-primary", SenderID: "tx-primary", SessionID: "s-primary", Address: "topic/a"},
+			// b-ded targets s-ded, a dedicated fan-out session that is no route's
+			// primary, so it is reached ONLY via the Path-2 session-sender loop.
+			{ID: "b-ded", SenderID: "tx-ded", SessionID: "s-ded", Address: "topic/b"},
+		},
+		Routes: []ports.RouteDef{
+			{
+				ID:           "r1",
+				ReceiverID:   "rx-main",
+				DeliveryMode: "shared_outbox",
+				DispatchMode: "fanout",
+				Policy:       ports.PolicyDef{OnPermanentFailure: "drop", OnExpired: "drop"},
+				Bindings:     []string{"b-primary", "b-ded"},
+				Session:      &ports.RouteSessionDef{SessionID: "s-primary", SenderID: "tx-primary"},
+			},
+		},
+	}
+
+	dedSess := &planCapturingSession{reconciled: make(chan struct{}, 1)}
+	capTF := &planCapturingTransportFactory{session: dedSess}
+
+	rt, err := NewBuilder(cfg).
+		RegisterTransportFactory("plain", &fakeTransportFactory{}).
+		RegisterTransportFactory("cap", capTF).
+		RegisterStoreFactory("memory", &fakeStoreFactory{}).
+		Build(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, rt)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	require.NoError(t, rt.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer stopCancel()
+		_ = rt.Stop(stopCtx)
+	})
+
+	// Handshake: the Path-2 session manager reconciles once its (fake) lease is
+	// acquired. The safety timeout only fires on a regression (empty/absent
+	// plan). No time.Sleep is used.
+	select {
+	case <-dedSess.reconciled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for the Path-2 session.Reconcile (plan never threaded to the session-sender)")
+	}
+
+	plan := dedSess.snapshotPlan()
+
+	got := make(map[string]int, len(plan.Subscriptions))
+	for _, s := range plan.Subscriptions {
+		got[s.Topic] = s.QoS
+	}
+	assert.Equal(t, map[string]int{"topic/dedicated": 1}, got,
+		"a Path-2 session-sender must reconcile its receivers' subscriptions, not an empty plan (F1-P4)")
 }

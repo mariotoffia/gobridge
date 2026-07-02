@@ -161,7 +161,20 @@ func TestSessionOptionsFromMap_TLSStruct(t *testing.T) {
 	}
 }
 
-// verifies SenderConfig.validate accepts any config (no required fields).
+// verifies Config.PublisherTopic exposes the sender exchange (F1-P3) so the
+// transport-neutral bridge can thread it into the session plan and have
+// declarePublisher auto-declare it. The compile-time assertion in
+// config_plugin.go (var _ ports.PublishingConfig = (*Config)(nil)) proves the
+// interface is satisfied; this proves the value.
+func TestConfig_PublisherTopic(t *testing.T) {
+	if got := (Config{Sender: SenderParams{Exchange: "ex.orders"}}).PublisherTopic(); got != "ex.orders" {
+		t.Errorf("PublisherTopic() = %q, want %q", got, "ex.orders")
+	}
+	if got := (Config{}).PublisherTopic(); got != "" {
+		t.Errorf("PublisherTopic() with no exchange = %q, want empty (nothing to declare)", got)
+	}
+}
+
 func TestSenderConfig_Validate(t *testing.T) {
 	cfg := SenderConfig{}
 	if err := cfg.validate(); err != nil {

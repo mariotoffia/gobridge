@@ -29,8 +29,8 @@
 ./adapters/http/transport/benchmark_test.go:103:				time.Sleep(time.Millisecond) // OTHER: polling for SSE client registration in benchmark
 ./adapters/http/transport/integration_edge_cases_r3_test.go:357:		time.Sleep(2 * time.Second) // OTHER: simulates slow remote for context cancellation test
 ./adapters/http/transport/integration_single_bridge_test.go:57:		time.Sleep(10 * time.Millisecond) // OTHER: internal polling interval in test helper
-./adapters/http/transport/subject_address_test.go:288:		time.Sleep(10 * time.Millisecond)
-./adapters/http/transport/subject_address_test.go:348:		time.Sleep(10 * time.Millisecond)
+./adapters/http/transport/subject_address_test.go:303:		time.Sleep(10 * time.Millisecond)
+./adapters/http/transport/subject_address_test.go:363:		time.Sleep(10 * time.Millisecond)
 ./adapters/mqtt/transport/paho/analysis_router_test.go:167:	time.Sleep(100 * time.Millisecond) // OTHER: race window — let concurrent register/unregister/route goroutines exercise
 ./adapters/mqtt/transport/paho/analysis_sender_test.go:243:	time.Sleep(80 * time.Millisecond)
 ./adapters/mqtt/transport/paho/analysis_session_test.go:285:			time.Sleep(time.Duration(trial+1) * 100 * time.Microsecond) // OTHER: race window — Close during concurrent pushEvent

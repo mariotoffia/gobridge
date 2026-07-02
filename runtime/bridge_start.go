@@ -245,7 +245,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	}
 
 	for sid, mgr := range rt.sessionMgrs {
-		rt.startBackground(ctx, "session:"+sid, mgr.Run)
+		rt.startBackground(ctx, "session:"+sid, rt.superviseSession(sid, mgr.Run))
 	}
 
 	for i, drainer := range rt.drainers {

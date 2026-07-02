@@ -57,6 +57,22 @@ type PluginConfig interface {
 	Validate() error
 }
 
+// PublishingConfig is an OPTIONAL interface a transport's typed sender
+// PluginConfig may implement to advertise the topic/exchange it publishes to,
+// mirroring the CredentialedConfig optional-config idiom. The
+// transport-neutral bridge cannot read a transport-specific field (e.g.
+// amqp091.Config.Sender.Exchange) without importing the adapter (forbidden by
+// .go-arch-lint.yml), so it type-asserts to this accessor to thread the name
+// into connectivity.PublisherPlan.Topic — which the adapter then declares on a
+// best-effort basis (a declare that the broker rejects, e.g. against an
+// externally-managed or least-privilege exchange, must not tear the session
+// down; publishing still works when the exchange already exists). Transports
+// whose broker needs no publish-side topology (MQTT, SQS, Service Bus) simply
+// don't implement it.
+type PublishingConfig interface {
+	PublisherTopic() string
+}
+
 // RawConfig is an opaque carrier for not-yet-decoded plugin options.
 // It is produced by the config-source adapter (yaml/json/etc.) and
 // consumed by exactly one plugin decoder. It MUST NOT cross any

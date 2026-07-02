@@ -66,6 +66,12 @@ const (
 const (
 	MetricMQTTReconnects    = "MQTTReconnects"
 	MetricReconcileFailures = "ReconcileFailures"
+	// MetricSessionRestarts counts per-session supervised restarts: a session
+	// manager returned a transient error and was restarted in isolation
+	// (capped backoff) instead of tearing down the whole runtime (C3-FU2).
+	// A rising value flags a session that keeps failing to reconnect/re-acquire
+	// its lease while the rest of the bridge stays up — alert on it.
+	MetricSessionRestarts = "SessionRestarts"
 )
 
 // Standard dimension key names for metric tags.

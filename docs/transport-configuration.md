@@ -615,6 +615,44 @@ This declares:
 2. Queue `my-queue` (durable)
 3. Binding from `my-exchange` to `my-queue` with routing key `events`
 
+#### Publisher-side exchange auto-declare (best-effort)
+
+A sender's target exchange is also pre-declared during `Reconcile`, so a route
+that publishes to an exchange the bridge owns works without a separate
+provisioning step:
+
+```yaml
+senders:
+  - id: notification-publisher
+    transport: amqp091
+    session_id: rabbit-conn
+    options:
+      exchange: "notifications"        # names the exchange to declare + publish to
+      routing_key: "order.confirmed"
+      publisher:                       # optional: topology for that exchange
+        exchange_type: "topic"
+        durable: true
+```
+
+Two rules govern the declaration:
+
+- **`sender.exchange` names the exchange; the `publisher.*` block only
+  decorates it.** The declared name is always `sender.exchange` (the exact
+  exchange `Send` publishes to). `exchange_type`, `durable`, `auto_delete`, and
+  `exchange_arguments` come from the separate `publisher.*` block. With
+  `sender.exchange` set and no `publisher.*` block, the exchange is declared with
+  defaults (`direct`, non-durable). `publisher.exchange` is **not** a second name
+  and is ignored by the declare.
+- **The declare is best-effort — it never takes a route down.** If the broker
+  rejects it (`PRECONDITION_FAILED` when the exchange already exists with
+  different topology, or `ACCESS_REFUSED` under least-privilege credentials that
+  lack `configure`), the session logs a warning, increments
+  `AMQP091PublisherDeclareFailed`, and continues. Publishing still works when the
+  exchange already exists; a genuinely-absent exchange the bridge cannot create
+  instead fails visibly at publish time (404 → retry/DLQ). This makes it safe to
+  point a sender at an externally-managed exchange without pre-declaring a
+  matching `publisher.*` topology.
+
 ### Settlement Mapping
 
 | `ports.Delivery` method | AMQP 0-9-1 operation | Notes |

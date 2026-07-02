@@ -198,3 +198,84 @@ func send(t *testing.T, sender *transport.SSESender, id string) {
 		t.Fatalf("Send(%s): %v", id, err)
 	}
 }
+
+// newMetricsSSESender builds an SSESender via the public factory wired to
+// a recording metrics exporter with the given WriteTimeout (heartbeat
+// pinned to 1h so it never fires mid-test).
+func newMetricsSSESender(t *testing.T, id string, writeTimeout time.Duration) (*transport.SSESender, *recordingMetrics) {
+	t.Helper()
+	rec := &recordingMetrics{}
+	factory := transport.NewFactory(transport.WithFactoryMetrics(rec))
+	s, err := factory.NewSender(context.Background(), ports.SenderSpec{
+		ID: id,
+		Config: transport.Config{
+			Mode:              "sse",
+			WriteTimeout:      writeTimeout,
+			HeartbeatInterval: time.Hour,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewSender: %v", err)
+	}
+	return s.(*transport.SSESender), rec
+}
+
+// When the ResponseWriter chain cannot set a per-write deadline,
+// slow-client eviction is inert and a stalled reader can pin the handler
+// goroutine (HTTP-N1). A bare httptest.ResponseRecorder is exactly such a
+// writer — it flushes but has no SetWriteDeadline, so
+// http.ResponseController.SetWriteDeadline returns http.ErrNotSupported —
+// so the handler must emit MetricSSEDeadlineUnsupported. Operators need a
+// countable signal to alert on, not just a log line.
+func TestSSESender_DeadlineUnsupportedEmitsMetric(t *testing.T) {
+	sender, rec := newMetricsSSESender(t, "sse-nodl", 5*time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest("GET", "/transport/http/senders/sse-nodl/events", nil).WithContext(ctx)
+
+	done := make(chan struct{})
+	go func() {
+		sender.ServeHTTP(httptest.NewRecorder(), req)
+		close(done)
+	}()
+
+	wait.Until(t, 2*time.Second, "deadline-unsupported metric emitted", func() bool {
+		return rec.counterCount(transport.MetricSSEDeadlineUnsupported) >= 1
+	})
+
+	cancel()
+	wait.RequireClosed(t, done, 2*time.Second)
+}
+
+// Negative control: a writer that DOES support SetWriteDeadline keeps
+// eviction working, so the unsupported-deadline metric must stay at zero.
+func TestSSESender_DeadlineSupportedDoesNotEmitMetric(t *testing.T) {
+	sender, rec := newMetricsSSESender(t, "sse-hasdl", 5*time.Second)
+
+	w := newFakeSSEWriter(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest("GET", "/transport/http/senders/sse-hasdl/events", nil).WithContext(ctx)
+
+	done := make(chan struct{})
+	go func() {
+		sender.ServeHTTP(w, req)
+		close(done)
+	}()
+
+	wait.Until(t, 2*time.Second, "SSE client registered", func() bool {
+		return sender.ClientCount() >= 1
+	})
+	// Drive one frame so the handler has provably passed the deadline probe
+	// before asserting the metric stayed at zero.
+	send(t, sender, "e1")
+	wait.RequireReceive(t, w.writes, 2*time.Second)
+
+	if got := rec.counterCount(transport.MetricSSEDeadlineUnsupported); got != 0 {
+		t.Fatalf("deadline-supported writer must not emit %s, got %d", transport.MetricSSEDeadlineUnsupported, got)
+	}
+
+	cancel()
+	wait.RequireClosed(t, done, 2*time.Second)
+}

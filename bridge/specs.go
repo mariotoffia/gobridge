@@ -72,17 +72,12 @@ func senderSpecFrom(def ports.SenderDef) ports.SenderSpec {
 // two are unaffected by the empty-plan defect; the union is still assembled
 // uniformly for every transport at no cost.
 //
-// ponytail: Publishers is intentionally left empty. Declaring a publisher
-// needs the exchange NAME as PublisherPlan.Topic — amqp091's
-// declarePublisher reads the exchange solely from pub.Topic and no-ops on
-// an empty Topic. That name lives inside the sender's opaque typed
-// PluginConfig (e.g. amqp091.Config.Sender.Exchange); the transport-neutral
-// bridge cannot read it without importing the adapter (forbidden by
-// .go-arch-lint.yml: bridge MUST NOT depend on any adapter) or adding a
-// transport-neutral exchange accessor (an adapter + ports change, out of
-// scope for this bridge-only fix). Senders that publish to an address
-// directly (MQTT / SQS / ASB) need no pre-declaration, so an empty
-// Publishers list is already correct for them.
+// ponytail: Publishers is the per-session set of sender exchanges advertised
+// via ports.PublishingConfig, deduped by exchange name. A sender whose typed
+// config doesn't implement the interface, or whose exchange is empty,
+// contributes nothing (MQTT / SQS / ASB publish directly to an address and need
+// no pre-declaration). This threads the exchange name into PublisherPlan.Topic
+// so amqp091's declarePublisher best-effort declares the publish-side exchange (F1-P3).
 func sessionPlanFor(cfg *ports.BridgeConfig, sessionID string) connectivity.SessionPlan {
 	if cfg == nil || sessionID == "" {
 		return connectivity.SessionPlan{}
@@ -97,7 +92,30 @@ func sessionPlanFor(cfg *ports.BridgeConfig, sessionID string) connectivity.Sess
 		// reconcile plan never drift.
 		subs = append(subs, receiverSpecFrom(rd).Subscriptions...)
 	}
-	return connectivity.SessionPlan{Subscriptions: subs}
+	var pubs []connectivity.PublisherPlan
+	seen := make(map[string]bool)
+	for i := range cfg.Senders {
+		sd := cfg.Senders[i]
+		if sd.SessionID != sessionID {
+			continue
+		}
+		decl, ok := sd.Config.(ports.PublishingConfig)
+		if !ok {
+			continue
+		}
+		topic := decl.PublisherTopic()
+		if topic == "" || seen[topic] {
+			// Dedup by exchange name, keeping the FIRST sender's Config. Two
+			// senders naming the same exchange with divergent publisher.*
+			// topology collapse to the first — matching the broker's own
+			// first-declare-wins semantics (a second, conflicting declare would
+			// PRECONDITION_FAIL) and the runtime's first-wins session dedup.
+			continue
+		}
+		seen[topic] = true
+		pubs = append(pubs, connectivity.PublisherPlan{Topic: topic, Config: sd.Config})
+	}
+	return connectivity.SessionPlan{Subscriptions: subs, Publishers: pubs}
 }
 
 // Package bridge specs.go intentionally omits a StoreSpec converter:

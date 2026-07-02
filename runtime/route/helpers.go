@@ -92,6 +92,14 @@ func (r *RouteRunner) buildOutboxRecords(env *messaging.Envelope, plans []routin
 	now := r.clk.Now()
 	records := make([]*persistence.OutboxRecord, len(plans))
 
+	// Persist the envelope without the source transport's redelivery-count
+	// headers so a drained record forwarded to the next hop does not carry a
+	// stale count the downstream bridge would misread as its own (E5-FU1).
+	// Clone so the source envelope (re-read by receiveCount on retry paths) is
+	// untouched; NewOutboxRecord deep-clones again per record.
+	persisted := env.Clone()
+	stripInboundReceiveCounts(persisted)
+
 	for i, plan := range plans {
 		sessionID := r.sessionIDForBinding(plan.BindingID)
 		if sessionID == "" {
@@ -111,7 +119,7 @@ func (r *RouteRunner) buildOutboxRecords(env *messaging.Envelope, plans []routin
 			BindingID:       plan.BindingID,
 			SessionID:       sessionID,
 			Address:         plan.Address,
-			Envelope:        *env,
+			Envelope:        *persisted,
 			DispatchHeaders: plan.Headers,
 			CreatedAt:       now,
 			ExpiresAt:       env.ExpiresAt(),

@@ -57,6 +57,7 @@ func TestMetricConstants_TransportAgnostic(t *testing.T) {
 		shared.MetricProcessorTimeouts,
 		shared.MetricMQTTReconnects,
 		shared.MetricReconcileFailures,
+		shared.MetricSessionRestarts,
 	}
 
 	for _, v := range values {
@@ -112,6 +113,7 @@ func TestMetricConstants_NonEmpty(t *testing.T) {
 		shared.MetricProcessorTimeouts,
 		shared.MetricMQTTReconnects,
 		shared.MetricReconcileFailures,
+		shared.MetricSessionRestarts,
 	}
 
 	seen := make(map[string]bool, len(metrics))

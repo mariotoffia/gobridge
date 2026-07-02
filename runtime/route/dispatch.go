@@ -59,6 +59,11 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	// delivery envelope. The logical Subject is preserved; the destination
 	// address travels via OutboundMessage.Address.
 	outbound := env.Clone()
+	// Drop the source transport's stale redelivery-count headers from the
+	// outbound clone so they cannot ride this bridge-to-bridge hop and be
+	// misread as the downstream bridge's own receiveCount (E5-FU1). The source
+	// env is left intact: receiveCount(env) is re-read from it on retry/poison.
+	stripInboundReceiveCounts(outbound)
 	if plan.Headers != nil {
 		outbound.StampHeaders(messaging.MergeHeaders(outbound.Headers(), plan.Headers, true))
 	}
@@ -386,6 +391,20 @@ func receiveCount(env *messaging.Envelope) int {
 		return n + 1 // 0-based AMQP delivery-count -> 1-based receive count
 	}
 	return 0
+}
+
+// stripInboundReceiveCounts removes every source-transport redelivery-count
+// header from env. It is applied to the OUTBOUND (cloned) envelope at each
+// egress chokepoint so a stale upstream count cannot ride a bridge-to-bridge
+// hop and be misread as the downstream bridge's own receiveCount (E5-FU1).
+// The downstream bridge re-establishes the count from its own transport's
+// redelivery header (or treats the message as a first delivery). Never call
+// this on a source envelope: receiveCount is re-read from the source on the
+// retry/poison paths. DeleteHeader is nil-safe.
+func stripInboundReceiveCounts(env *messaging.Envelope) {
+	env.DeleteHeader(headerSQSReceiveCount)
+	env.DeleteHeader(headerASBDeliveryCount)
+	env.DeleteHeader(headerAMQP10DeliveryCount)
 }
 
 // headerInt reads key from h and coerces the common numeric encodings a

@@ -268,14 +268,18 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	s.armWriteDeadline(rc)
-	if s.cfg.writeTimeout > 0 && !s.deadlineProbe(rc) && s.cfg.logger != nil {
-		// The per-write deadline is the slow-client eviction mechanism
-		// (H4). If the ResponseWriter chain does not support it (e.g. a
-		// fronting middleware that wraps without Unwrap), eviction is inert
-		// and a stalled reader would pin this goroutine. Warn once so the
-		// gap is visible rather than silent.
-		s.cfg.logger.Warn("sse: per-write deadline unsupported by ResponseWriter; slow-client eviction disabled",
-			"client_id", clientID)
+	// The per-write deadline is the slow-client eviction mechanism (H4).
+	// If the ResponseWriter chain does not support it (e.g. a fronting
+	// middleware that wraps without Unwrap), eviction is inert and a
+	// stalled reader would pin this goroutine. Emit a metric so the gap is
+	// countable/alertable even when no logger is configured, and warn once
+	// so it is also visible in logs.
+	if s.cfg.writeTimeout > 0 && !s.deadlineProbe(rc) {
+		s.cfg.metrics.Counter(MetricSSEDeadlineUnsupported, 1)
+		if s.cfg.logger != nil {
+			s.cfg.logger.Warn("sse: per-write deadline unsupported by ResponseWriter; slow-client eviction disabled",
+				"client_id", clientID)
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()

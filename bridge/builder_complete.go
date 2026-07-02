@@ -274,6 +274,11 @@ func (b *Builder) wireRoutes(
 			}
 			sc := session.DefaultConfig(bd.SessionID, true)
 			sc.ConnectAfterLease = true
+			// Thread the session's desired topology so a session registered only
+			// via a binding (Path-2) still reconciles its receivers' subscriptions
+			// and sender exchanges instead of an empty plan (F1-P4). Mirrors the
+			// Path-1 assignment above. bd.SessionID is non-empty (guarded above).
+			sc.Plan = sessionPlanFor(b.cfg, bd.SessionID)
 			if err := rt.RegisterSessionSender(sc, sess, snd); err != nil {
 				return fmt.Errorf("bridge: register session sender %q: %w", bd.SessionID, err)
 			}

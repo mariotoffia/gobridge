@@ -356,43 +356,60 @@ _Added 2026-07-02. All 117 audit findings above were remediated across Waves 0�
 
 | Severity | Count |
 | --- | --- |
-| MEDIUM | 5 |
-| LOW | 39 |
+| MEDIUM | 5 (✅ resolved) |
+| LOW | 40 |
 | NICE | 4 |
 
 ### MEDIUM (5)
+
+> **✅ RESOLVED 2026-07-02** on branch `fix/prod-ready-medium-followups` (`make lint` + `make test` green).
+> Each item below carries a **Resolution** note. One adjacent shape surfaced during the
+> adversarial review of these fixes — a receiver whose `session_id` never gets a session
+> **manager** (distinct from the planless-manager case P4 closes) — is tracked as a new
+> follow-up: **`ADV-P4-FU1`** under LOW below.
 
 #### `ADV-F1-P3` — amqp091
 amqp091 producer exchange never auto-declared (PublisherPlan empty); publish to an absent custom exchange fails visibly (404), not silent
 
 - **Files:** `bridge/specs.go`, `adapters/amqp/transport/amqp091/session.go`
 - **Notes:** F1 left SessionPlan.Publishers empty (documented ponytail boundary). amqp091 declarePublisher reads exchange name solely from pub.Topic; that name lives in the opaque typed sender PluginConfig (amqp091.Config.Sender.Exchange) which the transport-neutral bridge cannot read without importing the adapter (arch-lint forbidden) or a new ports accessor. SenderDef/BindingDef carry routing key (Address), not exchange. Failure is VISIBLE: PublishConfirmed -> channel 404 -> mapPublishError -> retry/DLQ (sender.go:119-129), so no silent loss. Fix needs a transport-neutral exchange accessor (ports interface the adapter implements) so bridge can emit PublisherPlan{Topic: exchange} and pre-declare. Out of bridge-only scope. Related to existing F11.
+- **Resolution (2026-07-02):** Added transport-neutral optional interface `ports.PublishingConfig { PublisherTopic() string }`; `amqp091.Config` implements it returning `Sender.Exchange`. `bridge/specs.go:sessionPlanFor` now emits a `PublisherPlan` (deduped by exchange, first-wins) for every sender bound to the session, so `declarePublisher` pre-declares the producer exchange. The declare is **best-effort / non-fatal**: on broker rejection (`PRECONDITION_FAILED` for a pre-existing exchange, `ACCESS_REFUSED` under least-privilege creds) the session logs a warning, increments `AMQP091PublisherDeclareFailed`, and continues — a pre-existing / externally-managed exchange is never taken down, and a genuinely-absent one still fails visibly at publish (404). `sender.exchange` names the declared exchange; the `publisher.*` block only decorates topology. Tests: `adapters/amqp/transport/amqp091/prodready_publisher_declare_test.go` (non-fatal publisher vs. fatal subscription asymmetry), `bridge/session_plan_test.go`. Docs: `docs/transport-configuration.md` (Publisher-side exchange auto-declare).
 
 #### `HTTP-N1` — http
 SSE per-write deadline silently no-ops when fronting middleware wraps ResponseWriter without Unwrap() -> slow-client pins handler goroutine (H4 failure returns)
 
 - **Files:** `adapters/http/transport/sender_sse.go`
 - **Notes:** NICE-TO-HAVE: probe SetWriteDeadline once at stream start, warn+metric when unsupported so slow-client eviction inertness is observable.
+- **Resolution (2026-07-02):** Added `MetricSSEDeadlineUnsupported` counter (`adapters/http/transport/metrics.go`), emitted once per stream in `ServeHTTP` alongside the existing start-of-stream warn when `write_timeout > 0` but the (possibly middleware-wrapped) `ResponseWriter` exposes no working `SetWriteDeadline` (no `Unwrap()` chain reaching one). Slow-client eviction inertness is now observable, not silent. Test: `prodready_sse_deadline_test.go` (bare recorder increments the counter; a deadline-capable writer does not).
 
 #### `C3-FU2` — runtime
 Whole-runtime terminal on a single session lease blip: one session re-acquire failure cancels the entire runtime (all routes) rather than isolating the failed session. Consider per-session failure isolation.
 
 - **Files:** `runtime/bridge.go`, `runtime/supervisor.go`
 - **Notes:** Acceptable now: single-use re-acquire failure is rare (3 renew fails ~30s outage) and restart yields a clean fleet. Follow-up: per-session restart/quarantine to avoid blast radius.
+- **Resolution (2026-07-02):** Session managers now run under `Runtime.superviseSession`, which isolates a single session's failure from the fleet. On `mgr.Run` error (ctx still live) it records the session in `componentErrors`, emits `MetricSessionRestarts`, and retries with capped-exponential backoff **plus equal-jitter** (`wait ∈ [backoff/2, backoff]`), resetting the backoff after a sustained-stability window and clearing the session's `componentErrors` entry on clean stop / before a successful retry. It never sets terminal or global `healthy=false`, so other routes keep running; panics still hit `startBackground`'s recover (documented boundary). Unbounded retry is deliberate — a terminal ceiling would reintroduce the exact whole-fleet outage this issue fixes; permanent failures instead surface via the continuous `MetricSessionRestarts` rate, `componentErrors`, and per-session readiness (`/ready?level=...`). Tests: `runtime/session_supervise_test.go` (fleet survival, backoff reset after sustained recovery, componentErrors cleared after recovery; all pass with `-race`).
 
 #### `E5-FU1` — runtime/route+adapters
 Transport redelivery-count headers (sqs./asb./amqp10.delivery-count) survive bridge-to-bridge hops and can win receiveCount precedence over the fresh local count, mis-firing max_replay_attempts in chained mixed-transport topologies (premature DLQ = good-message loss, or stale<cap = no cap).
 
 - **Files:** `runtime/route/dispatch.go:355-363`, `adapters/azure/transport/servicebus/acl_outbound.go`, `adapters/amqp/transport/amqp10/acl_outbound.go`, `adapters/aws/transport/sqs`
 - **Notes:** Discovered by E5 adversarial review (e5-adversarial). NOT a receiveCount bug — root cause is adapter ACLs carrying foreign transport count headers across hops (these keys are transport-namespaced, NOT x-bridge.* reserved, so unclassified + unstripped). Reachable: foreign count header carried at egress (servicebus/acl_outbound.go:91, amqp10/acl_outbound.go:117 pass non-own-prefix props) and re-imported at ingress (servicebus/acl_inbound.go:60-64, amqp10/acl_inbound.go:70-74). Repro: env {asb.delivery-count:9, amqp10.delivery-count:uint32(0)} -> receiveCount=9 not 1. E5 fix marginally widens a PRE-EXISTING class (sqs stale header already won before). Documented in dispatch.go:344-349 receiveCount comment. Two fix options: (A) strip sqs./asb./amqp10. count keys at egress in each adapter ACL (or do not re-import foreign ones at ingress); (B) thread source-transport identity from RouteRunner into receiveCount so it reads ONLY the local transport count (local ingress always overwrites its own key fresh; foreign keys are always stale). Related cluster: PROD_READY_ISSUES #91/#115/#205 (x-bridge.* hop hygiene). Own unit + review.
+- **Resolution (2026-07-02):** Chose the runtime-chokepoint strip (Option A, but transport-agnostic and in one place) over threading source identity. New helper `stripInboundReceiveCounts(env)` (`runtime/route/dispatch.go`) deletes the three foreign redelivery-count keys (`sqs./asb./amqp10.delivery-count`); applied to the **outbound clone** in `sendDirectHold` and to a **pre-persist clone** in `buildOutboxRecords`, never to the source env (receiveCount is re-read on retry paths). Downstream hops now read only the fresh local count, so `max_replay_attempts` can no longer be tripped early (nor stuck below cap) by a stale cross-hop count, and the wire is cleaned of foreign bookkeeping. Test: `runtime/route/dispatch_test.go` (stale foreign count stripped; fresh local count preserved; nil-header safe).
 
 #### `ADV-F1-P4` — validate
 Receiver with topics on a session that only gets a planless session-sender manager silently subscribes to nothing (F1-class silent loss)
 
 - **Files:** `validate/blueprint_graph.go`
 - **Notes:** REACHABLE shape: shared_outbox route omits its Session block but a binding has session_id==receiver.SessionID; that session gets only a planless RegisterSessionSender manager (bridge_start.go:194-199) so a plan-driven receiver on it subscribes to nothing. Pre-existing, NOT introduced by F1. CAVEAT (why not a naive guard): the obvious guard "receiver with topics requires a route Session.SessionID==its SessionID" FALSE-POSITIVES on amqp10, whose receivers self-establish links on start independent of the plan (amqp10/session.go:271-272; plan feeds only Health). validate/ is config-only and cannot distinguish plan-driven (mqtt/amqp091) from self-establishing (amqp10) transports without adapter knowledge arch-lint forbids. Correct fix needs a transport capability (e.g. PlanDrivenSubscriptions) surfaced to the builder, OR move the check to the builder where transport factories/Capabilities() are available. Verified against source 2026-06-30.
+- **Resolution (2026-07-02):** Fixed functionally (no validate-layer guard, so the amqp10 false-positive is avoided). `bridge/builder_complete.go`'s `RegisterSessionSender` loop now sets `sc.Plan = sessionPlanFor(b.cfg, bd.SessionID)`, so a session that previously received only a planless sender manager now also carries the plan needed to reconcile its plan-driven receiver subscriptions (harmless for amqp10/servicebus where the plan feeds only Health; necessary for mqtt/amqp091). **Scope note:** this closes the *planless-manager* shape. A distinct adjacent shape — a receiver whose `session_id` resolves to **no manager at all** — is out of scope and tracked below as `ADV-P4-FU1`.
 
-### LOW (39)
+### LOW (40)
+
+#### `ADV-P4-FU1` — bridge/builder
+Receiver whose `session_id` resolves to NO session manager (neither plan-driven nor planless) silently subscribes to nothing — the missing-manager sibling of `ADV-F1-P4`.
+
+- **Files:** `bridge/builder_complete.go`, `bridge/specs.go`
+- **Notes:** Surfaced by the adversarial review of the `ADV-F1-P4` fix (2026-07-02). P4 closed the *planless-manager* case (a session that gets a planless sender manager now also carries a reconcilable plan). This item is the distinct case where `receiver.SessionID` maps to no manager whatsoever, so nothing ever reconciles its subscriptions and the receiver is silently inert. A naive validate-layer guard false-positives on amqp10 (self-establishes links, plan-independent), same reason `ADV-F1-P4` was not fixed in `validate/`. Correct fix: surface a transport `PlanDrivenSubscriptions` capability to the builder so it can require a session manager only for plan-driven transports (mqtt/amqp091) and skip the check for self-establishing ones (amqp10). Deferred: needs a new ports capability + builder threading, out of this branch's scope.
 
 #### `OTEL-N3` — adapters/otel
 Outbox-path causality gap: store-and-forward never injects the bridge hop at drain; downstream parents on upstream span (traced) or starts disconnected trace (untraced).

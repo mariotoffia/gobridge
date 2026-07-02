@@ -10,6 +10,7 @@ import (
 
 // Compile-time interface contract.
 var _ ports.CredentialedConfig = (*Config)(nil)
+var _ ports.PublishingConfig = (*Config)(nil)
 
 // Config is the typed PluginConfig for the AMQP 0-9-1 (RabbitMQ)
 // transport. It nests session/receiver/sender role configs and is
@@ -110,6 +111,19 @@ type PublisherParams struct {
 
 // Kind reports the registry discriminator.
 func (Config) Kind() string { return "amqp.amqp091" }
+
+// PublisherTopic returns the exchange this sender publishes to, so the bridge
+// can thread it into the session plan and the session's declarePublisher can
+// pre-declare it (ports.PublishingConfig). The declared exchange NAME is always
+// sourced from sender.exchange (the exact exchange Send publishes to); the
+// declaration TOPOLOGY (exchange_type/durable/auto_delete/arguments) is read
+// from the separate publisher.* block, which only decorates that exchange —
+// publisher.exchange is NOT a second name and is ignored here. Set sender.exchange
+// alone and the exchange is declared with defaults (direct, non-durable); add a
+// publisher.* block to declare non-default topology. Empty means "no exchange to
+// declare" (default-exchange publish); declarePublisher no-ops on an empty topic.
+// The declare is best-effort: see Session.reconcile.
+func (c Config) PublisherTopic() string { return c.Sender.Exchange }
 
 // Validate checks the unified config. Empty role-specific fields are
 // allowed because the same Config is reused across all three specs

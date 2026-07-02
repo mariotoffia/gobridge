@@ -16,4 +16,13 @@ const (
 	// A non-zero, climbing count distinguishes broker pushback from
 	// ordinary send timeouts.
 	MetricAMQP091Blocked = "AMQP091Blocked"
+	// MetricAMQP091PublisherDeclareFailed counts publish-side exchange
+	// auto-declares that the broker rejected (e.g. PRECONDITION_FAILED against
+	// an externally-managed exchange, or ACCESS_REFUSED under least-privilege
+	// credentials). Publisher declare is best-effort: the failure is metered
+	// here rather than aborting the session, because publishing to the exchange
+	// still works when it already exists (ADV-F1-P3). A climbing count means the
+	// bridge cannot own the exchange topology and an operator should pre-declare
+	// it (or grant configure permission).
+	MetricAMQP091PublisherDeclareFailed = "AMQP091PublisherDeclareFailed"
 )

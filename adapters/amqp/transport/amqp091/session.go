@@ -312,7 +312,25 @@ func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan conne
 
 	for _, pub := range plan.Publishers {
 		if err := s.declarePublisher(conn, pub); err != nil {
-			return err
+			// Publisher-exchange auto-declare is BEST-EFFORT, unlike
+			// subscription declare above (which is fatal — you cannot consume
+			// from a queue that cannot be declared). The sender never declared
+			// its exchange before F1-P3; publishing to an externally-managed or
+			// least-privilege exchange worked without it. An active re-declare
+			// of such an exchange legitimately fails (PRECONDITION_FAILED on a
+			// topology mismatch, ACCESS_REFUSED without configure permission),
+			// yet publishing to it still works. Aborting reconcile here would
+			// take a previously-working publish route DOWN. So warn + meter and
+			// continue: a genuinely-absent exchange the bridge cannot create
+			// still fails visibly at publish time (404 -> retry/DLQ), exactly as
+			// it did before this auto-declare existed (ADV-F1-P3).
+			s.metrics.Counter(MetricAMQP091PublisherDeclareFailed, 1,
+				shared.Tag{Key: shared.TagKeyEntity, Value: pub.Topic})
+			if s.logger != nil {
+				s.logger.Warn("amqp091: publisher exchange auto-declare failed; "+
+					"continuing (publish still works if the exchange already exists)",
+					"exchange", pub.Topic, "error", err)
+			}
 		}
 	}
 
